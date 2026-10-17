@@ -18,7 +18,7 @@ import {
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
-import { publisherMeter } from "../telemetry";
+import { lazyCounter, lazyHistogram } from "../telemetry";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
@@ -433,6 +433,36 @@ const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
 /** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
 const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
 
+const queryExecutionHistogram = lazyHistogram(
+   "malloy_model_query_duration",
+   "How long it takes to execute a Malloy model query",
+);
+/**
+ * Warehouse bytes SCANNED by model queries, summed — not bytes billed. The
+ * backend reports what the query processed; BigQuery then bills a 10MB minimum
+ * per query, so spend runs above this on small reads. Named for what it holds
+ * rather than for what it is used for: a metric name is the one surface that
+ * cannot be corrected after the fact without renaming the series, and `cost`
+ * would have implied money.
+ *
+ * A counter rather than a histogram: the question is "how much did this cost
+ * over a period", which is a sum, and bytes as a histogram VALUE would need
+ * bucket boundaries spanning kilobytes to terabytes to say anything useful.
+ *
+ * Only advances for backends that report the figure — today BigQuery, whose
+ * job metadata carries `totalBytesProcessed` in the same response the driver
+ * already fetches. **Absent is not zero.** Snowflake exposes bytes only in
+ * `QUERY_HISTORY`, keyed by query id, so getting it inline would cost an extra
+ * round trip per query; it belongs to a deferred join on the query tag
+ * instead. Postgres has no equivalent. A dashboard summing this across
+ * connections silently understates every non-BigQuery one.
+ */
+const queryScannedBytesCounter = lazyCounter(
+   "malloy_model_query_scanned_bytes",
+   "Warehouse bytes scanned by Malloy model queries, where the backend reports them. NOT bytes billed: BigQuery bills a 10MB minimum per query, so spend exceeds this on small reads.",
+   "By",
+);
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -716,43 +746,6 @@ export class Model {
       QueryMaterializer,
       readonly RowLevelGraftEntry[]
    >();
-   private meter = publisherMeter();
-   private queryExecutionHistogram = this.meter.createHistogram(
-      "malloy_model_query_duration",
-      {
-         description: "How long it takes to execute a Malloy model query",
-         unit: "ms",
-      },
-   );
-   /**
-    * Warehouse bytes SCANNED by model queries, summed — not bytes billed. The
-    * backend reports what the query processed; BigQuery then bills a 10MB minimum
-    * per query, so spend runs above this on small reads. Named for what it holds
-    * rather than for what it is used for: a metric name is the one surface that
-    * cannot be corrected after the fact without renaming the series, and `cost`
-    * would have implied money.
-    *
-    * A counter rather than a histogram: the question is "how much did this cost
-    * over a period", which is a sum, and bytes as a histogram VALUE would need
-    * bucket boundaries spanning kilobytes to terabytes to say anything useful.
-    *
-    * Only advances for backends that report the figure — today BigQuery, whose
-    * job metadata carries `totalBytesProcessed` in the same response the driver
-    * already fetches. **Absent is not zero.** Snowflake exposes bytes only in
-    * `QUERY_HISTORY`, keyed by query id, so getting it inline would cost an extra
-    * round trip per query; it belongs to a deferred join on the query tag
-    * instead. Postgres has no equivalent. A dashboard summing this across
-    * connections silently understates every non-BigQuery one.
-    */
-   private queryScannedBytesCounter = this.meter.createCounter(
-      "malloy_model_query_scanned_bytes",
-      {
-         description:
-            "Warehouse bytes scanned by Malloy model queries, where the backend reports them. NOT bytes billed: BigQuery bills a 10MB minimum per query, so spend exceeds this on small reads.",
-         unit: "By",
-      },
-   );
-
    constructor(
       packageName: string,
       modelPath: string,
@@ -6711,13 +6704,13 @@ export class Model {
          } else {
             const endTime = performance.now();
             const executionTime = endTime - startTime;
-            this.queryExecutionHistogram.record(
+            queryExecutionHistogram().record(
                executionTime,
                this.queryMetricAttributes({
                   environment: queryMetadataInput?.environment,
                   queryName,
                   sourceName,
-                  status: "error",
+                  status: "rejected",
                }),
             );
             throw new BadRequestError(
@@ -6914,17 +6907,20 @@ export class Model {
                // attribute breaks no consumer — unlike a new enum value, which is
                // mirrored into clients generated strictly from it.
                recordStorageServeRouting("storage", shaped.origin);
-               logger.info("Serving query from storage tier (virtual-source)", {
-                  modelPath: this.modelPath,
-                  origin: shaped.origin,
-                  // The sources in the SHAPE, not the package's whole binding set:
-                  // a stale binding is dropped before the shape is built.
-                  storageSources: shaped.bindings.map((b) => b.sourceName),
-               });
+               logger.debug(
+                  "Serving query from storage tier (virtual-source)",
+                  {
+                     modelPath: this.modelPath,
+                     origin: shaped.origin,
+                     // The sources in the SHAPE, not the package's whole binding set:
+                     // a stale binding is dropped before the shape is built.
+                     storageSources: shaped.bindings.map((b) => b.sourceName),
+                  },
+               );
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               // info, matching the storage-hit line above: the two halves of one
-               // routing decision, and this is the half an operator needs. A
+               // info, unlike the storage-hit line above (which the routing
+               // counter already carries): this is the half an operator needs. A
                // fallback is silent by design — the query succeeds, the rows are
                // correct, only the tier is lost — so at debug the reason for a
                // package that never serves from storage is unreadable in any
@@ -7097,10 +7093,10 @@ export class Model {
          // For other query parsing errors, wrap as BadRequestError
          const errorMessage =
             error instanceof Error ? error.message : String(error);
-         logger.error("Query parsing error", {
+         logger.warn("Query parsing error", {
             error,
             errorMessage,
-            environmentName: this.packageName,
+            packageName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,
@@ -7164,7 +7160,7 @@ export class Model {
                   "source",
                );
             }
-            this.queryExecutionHistogram.record(
+            queryExecutionHistogram().record(
                performance.now() - startTime,
                this.queryMetricAttributes({
                   environment: queryMetadataInput?.environment,
@@ -7247,7 +7243,7 @@ export class Model {
                : undefined,
       });
       if (runCount !== undefined && runCount > 1) {
-         this.queryExecutionHistogram.record(
+         queryExecutionHistogram().record(
             performance.now() - startTime,
             this.queryMetricAttributes({
                environment: queryMetadataInput?.environment,
@@ -7416,7 +7412,7 @@ export class Model {
             // Record error metrics
             const errorEndTime = performance.now();
             const errorExecutionTime = errorEndTime - startTime;
-            this.queryExecutionHistogram.record(
+            queryExecutionHistogram().record(
                errorExecutionTime,
                this.queryMetricAttributes({
                   environment: queryMetadataInput?.environment,
@@ -7459,7 +7455,7 @@ export class Model {
                : undefined;
             if (gateDenial) {
                logger.debug("Gate given unbound; denying opaquely", {
-                  environmentName: this.packageName,
+                  packageName: this.packageName,
                   modelPath: this.modelPath,
                   error: err instanceof Error ? err.message : String(err),
                });
@@ -7479,7 +7475,7 @@ export class Model {
                   logger.error("Query execution error", {
                      error: err,
                      errorMessage,
-                     environmentName: this.packageName,
+                     packageName: this.packageName,
                      modelPath: this.modelPath,
                      query,
                      queryName,
@@ -7618,14 +7614,14 @@ export class Model {
          servedFrom,
          rowsLimit: rowLimit,
       });
-      this.queryExecutionHistogram.record(executionTime, metricAttributes);
+      queryExecutionHistogram().record(executionTime, metricAttributes);
       // Only advanced when the backend actually reported a figure, so the counter
       // stays absent rather than reading a false zero on a backend that cannot
       // report one. A query served from storage never reaches here with a cost:
       // it touched no warehouse, which is the entire point.
       const queryCostBytes = queryResults.runStats?.queryCostBytes;
       if (queryCostBytes !== undefined) {
-         this.queryScannedBytesCounter.add(queryCostBytes, metricAttributes);
+         queryScannedBytesCounter().add(queryCostBytes, metricAttributes);
       }
       return {
          result: wrappedResult,
@@ -7672,7 +7668,7 @@ export class Model {
    }
 
    /**
-    * The label set for {@link queryExecutionHistogram}. Every recording site
+    * The label set for `queryExecutionHistogram`. Every recording site
     * builds its labels here so the success and error paths cannot drift apart.
     *
     * <b>The query text and the returned row count are deliberately absent.</b>
@@ -7696,7 +7692,8 @@ export class Model {
       environment?: string;
       queryName?: string;
       sourceName?: string;
-      status: "success" | "error";
+      /** `rejected`: a request malformed before anything compiled, kept out of `error` so the error rate means failed queries. */
+      status: "success" | "error" | "rejected";
       connection?: string;
       servedFrom?: ServedFrom;
       rowsLimit?: number;

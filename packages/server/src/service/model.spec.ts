@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { API, MalloyError, Runtime } from "@malloydata/malloy";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import sinon from "sinon";
 
@@ -15,6 +15,11 @@ import {
    PayloadTooLargeError,
    ResponseUnserializableError,
 } from "../errors";
+import { resetInstrumentsForTesting } from "../telemetry";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { Model, ModelType } from "./model";
 import { StorageServeShape } from "./model_serve_shape";
 
@@ -1249,8 +1254,19 @@ describe("service/model", () => {
       const originalMode = process.env.PERSIST_STORAGE_MODE;
       const originalDefaultRows = process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
       const originalMetadata = process.env.PUBLISHER_QUERY_METADATA;
+      let metrics: MetricsHarness;
+      /** Attribute sets recorded on the query duration histogram. */
+      const recordedQueries = () =>
+         metrics.collectAttributes("malloy_model_query_duration");
 
-      afterEach(() => {
+      beforeEach(async () => {
+         metrics = await startMetricsHarness();
+         resetInstrumentsForTesting();
+      });
+
+      afterEach(async () => {
+         await metrics.shutdown();
+         resetInstrumentsForTesting();
          sinon.restore();
          for (const [name, original] of [
             ["PERSIST_STORAGE_MODE", originalMode],
@@ -1510,12 +1526,7 @@ describe("service/model", () => {
             } as unknown as Awaited<
                ReturnType<StorageServeShape["loadServeShapeQuery"]>
             >);
-         const recordStub = sinon.stub(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (model as any).queryExecutionHistogram,
-            "record",
-         );
-         return { model, liveRun, recordStub };
+         return { model, liveRun };
       }
 
       it("caps the live retry by the LIVE row limit when the store fails at prepare", async () => {
@@ -2010,16 +2021,14 @@ describe("service/model", () => {
          // one grows the metric for as long as the process serves traffic. They
          // belong on the request log, not here. This pins the exclusion, because
          // re-adding one is a one-line change that looks harmless.
-         const { model, recordStub } = routedModel({
+         const { model } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
          });
 
          await model.getQueryResults(undefined, undefined, "run: daily -> x");
 
-         for (const attrs of recordStub
-            .getCalls()
-            .map((c) => c.args[1] as Record<string, unknown>)) {
+         for (const attrs of await recordedQueries()) {
             expect(attrs["malloy.model.query.query"]).toBeUndefined();
             expect(attrs["malloy.model.query.rows_total"]).toBeUndefined();
          }
@@ -2029,7 +2038,7 @@ describe("service/model", () => {
          // Without these the only identity on the metric is a bare model path,
          // which is neither unique across packages nor able to answer "whose
          // queries are being served from storage".
-         const { model, recordStub } = routedModel({
+         const { model } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
          });
@@ -2045,9 +2054,8 @@ describe("service/model", () => {
             { environment: "acme___prod" },
          );
 
-         const success = recordStub
-            .getCalls()
-            .map((c) => c.args[1] as Record<string, string>)
+         const success = (await recordedQueries())
+            .map((a) => a as Record<string, string>)
             .find((a) => a["malloy.model.query.status"] === "success");
          expect(success?.["malloy.environment"]).toBe("acme___prod");
          expect(success?.["malloy.package"]).toBe(packageName);
@@ -2056,16 +2064,15 @@ describe("service/model", () => {
       it("does not record a live-served answer as a storage hit", async () => {
          // The hit rate is the tier's headline KPI; counting a fallback as a hit
          // makes it RISE while the tier is broken.
-         const { model, recordStub } = routedModel({
+         const { model } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
          });
 
          await model.getQueryResults(undefined, undefined, "run: daily -> x");
 
-         const success = recordStub
-            .getCalls()
-            .map((c) => c.args[1] as Record<string, string>)
+         const success = (await recordedQueries())
+            .map((a) => a as Record<string, string>)
             .find((a) => a["malloy.model.query.status"] === "success");
          expect(success?.["malloy.model.query.served_from"]).toBe(
             "live_fallback",
@@ -2076,7 +2083,7 @@ describe("service/model", () => {
          // A broad outage takes the warehouse down alongside the store, so the
          // retry failing is ordinary — and an unmapped throw turns a clean 400
          // into a 500 with no error metric behind it.
-         const { model, recordStub } = routedModel({
+         const { model } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
             liveRunFails: true,
@@ -2086,11 +2093,26 @@ describe("service/model", () => {
             model.getQueryResults(undefined, undefined, "run: daily -> x"),
          ).rejects.toThrow(BadRequestError);
 
-         const errored = recordStub
-            .getCalls()
-            .map((c) => c.args[1] as Record<string, string>)
+         const errored = (await recordedQueries())
+            .map((a) => a as Record<string, string>)
             .find((a) => a["malloy.model.query.status"] === "error");
          expect(errored).toBeDefined();
+      });
+
+      it("labels a request malformed before compiling as rejected, not error", async () => {
+         // The error series is the failed-query rate; a request that never
+         // named a runnable query is the caller's shape problem.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+         await expect(model.getQueryResults("daily")).rejects.toThrow(
+            BadRequestError,
+         );
+         const statuses = (await recordedQueries()).map(
+            (a) => a["malloy.model.query.status"],
+         );
+         expect(statuses).toEqual(["rejected"]);
       });
 
       it("decides on the SHAPE's bindings, not the package's", async () => {

@@ -48,9 +48,16 @@ function lazyInstrument<T>(create: () => T): () => T {
    return () => (instrument ??= create());
 }
 
-export function lazyCounter(name: string, description: string): () => Counter {
+export function lazyCounter(
+   name: string,
+   description: string,
+   unit?: string,
+): () => Counter {
    return lazyInstrument(() =>
-      publisherMeter().createCounter(name, { description }),
+      publisherMeter().createCounter(name, {
+         description,
+         ...(unit ? { unit } : {}),
+      }),
    );
 }
 
