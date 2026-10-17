@@ -218,6 +218,11 @@ export function BuilderGrid({
                                       onStep: (to: number) => {
                                          if (to === (each.colspan ?? 1)) return;
                                          editor.update((draft) => {
+                                            if (
+                                               !Number.isInteger(index) ||
+                                               index < 0
+                                            )
+                                               return;
                                             const tile = draft.tiles[index];
                                             if (tile)
                                                draft.tiles[index] = withSpan(
@@ -251,6 +256,11 @@ export function BuilderGrid({
                                       onEnd: sizing.endHeight,
                                       onStep: (to) =>
                                          editor.update((draft) => {
+                                            if (
+                                               !Number.isInteger(index) ||
+                                               index < 0
+                                            )
+                                               return;
                                             const tile = draft.tiles[index];
                                             if (!tile) return;
                                             if (to === undefined)
