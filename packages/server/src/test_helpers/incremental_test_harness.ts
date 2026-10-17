@@ -5,10 +5,15 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
+   MalloyConfig,
    Runtime,
    type ModelMaterializer,
    type PersistSource,
 } from "@malloydata/malloy";
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
+import type { BuildPlanPackage } from "../service/build_plan";
 
 /**
  * Shared real-compile harness for the incremental specs (declaration,
@@ -86,4 +91,53 @@ export async function compilePersistSources(
       sources[source.name] = source;
    }
    return { sources, materializer };
+}
+
+/**
+ * Build-plan packages on disk, for specs that drive `compilePackageBuildPlan` /
+ * `computePackageBuildPlan` through the real compiler: `create` writes `files`
+ * (model path → text, or one model's text as `m.malloy`) into a fresh temp
+ * directory and returns a package over one in-memory DuckDB named `duckdb`.
+ * Call `cleanup` from an afterEach.
+ */
+export function tempBuildPlanPackages(): {
+   create: (
+      files: string | Record<string, string>,
+      overrides?: Partial<BuildPlanPackage>,
+   ) => Promise<BuildPlanPackage>;
+   cleanup: () => Promise<void>;
+} {
+   const dirs: string[] = [];
+   return {
+      create: async (files, overrides = {}) => {
+         const models =
+            typeof files === "string" ? { "m.malloy": files } : files;
+         const dir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "publisher-buildplan-"),
+         );
+         dirs.push(dir);
+         for (const [modelFile, modelText] of Object.entries(models)) {
+            await fs.writeFile(path.join(dir, modelFile), modelText);
+         }
+         const { duckdb, connections } = duckdbTestConnections();
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(() => connections);
+         return {
+            getModelPaths: () => Object.keys(models),
+            getPackagePath: () => dir,
+            getMalloyConfig: () => malloyConfig,
+            getMalloyConnection: async () => duckdb,
+            ...overrides,
+         };
+      },
+      cleanup: async () => {
+         await Promise.all(
+            dirs
+               .splice(0)
+               .map((d) =>
+                  fs.rm(d, { recursive: true, force: true }).catch(() => {}),
+               ),
+         );
+      },
+   };
 }
