@@ -30,6 +30,8 @@ import {
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
+import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { pollFor } from "../../test_helpers/poll";
 
 // Pin the baseline: every test in this file runs unconfigured (lexical)
 // unless it sets a provider itself, regardless of ambient EMBEDDING_* env
@@ -1764,12 +1766,10 @@ describe("get_context semantic retrieval", () => {
       handler: Handler,
       params: Record<string, unknown>,
    ) {
-      for (let i = 0; i < 200; i++) {
-         const payload = parse(await handler(params));
-         if (payload.retrieval === "semantic") return payload;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      throw new Error("retrieval never became semantic");
+      return pollFor(
+         async () => parse(await handler(params)),
+         (payload) => payload.retrieval === "semantic",
+      );
    }
 
    // Two sources declaring the same field name, which is the shape an
@@ -2061,7 +2061,7 @@ describe("get_context semantic retrieval", () => {
                }),
             ).retrieval,
          );
-         await new Promise((resolve) => setTimeout(resolve, 5));
+         await embeddingSyncQueue.idle();
       }
 
       // Nothing was deleted: the scope narrowed the SCAN, not the cache.
@@ -2628,12 +2628,10 @@ describe("get_context semantic retrieval", () => {
 
       // The sync fails (the provider answers 500), so the search is now an
       // error. Wait for the cooldown to be reached, then check the listing.
-      let result = await handler(search);
-      for (let i = 0; i < 400 && !result.isError; i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         result = await handler(search);
-      }
-      expect(result.isError).toBe(true);
+      await pollFor(
+         () => handler(search),
+         (result) => result.isError === true,
+      );
       const inError = await handler(listing);
       expect(inError.isError).toBe(false);
       expect(parse(inError).sources.length).toBeGreaterThan(0);

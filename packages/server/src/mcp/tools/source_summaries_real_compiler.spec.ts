@@ -52,6 +52,7 @@ import {
    getEmbeddingIndexStatus,
    trySemanticSearch,
 } from "./embedding_index";
+import { notIndexing, pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { getPackageIndex } from "./package_entities";
 import { indexSettingsOf } from "./index_settings";
@@ -158,24 +159,22 @@ describe("source summaries through the sync, over the real compiler's entities",
       const pkg = settingsPkg();
 
       // Run the sync the way a search starts it, with the package's own list.
-      for (let i = 0; i < 400; i++) {
-         const result = await trySemanticSearch({
-            db,
-            provider,
-            pkg,
-            environmentName: "env",
-            packageName: "sync",
-            entities: index.retrievalEntities as never,
-            queries: [
-               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
-            ],
-            perSourceWindow: 10,
-         });
-         if (!("unavailable" in result) || result.unavailable !== "indexing") {
-            break;
-         }
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      await pollFor(
+         () =>
+            trySemanticSearch({
+               db,
+               provider,
+               pkg,
+               environmentName: "env",
+               packageName: "sync",
+               entities: index.retrievalEntities as never,
+               queries: [
+                  { targetIndex: 0, text: "find it", kinds: ["dimension"] },
+               ],
+               perSourceWindow: 10,
+            }),
+         notIndexing,
+      );
 
       const asked = chat.prompts.map(
          (p) => /^Source name: (.*)$/m.exec(p)?.[1],

@@ -7,6 +7,14 @@ import net from "net";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
+import { pollUntil as poll } from "../../src/test_helpers/poll";
+
+/** `src/test_helpers/poll`'s pollUntil, at an interval suited to HTTP and process polls. */
+export const pollUntil = (
+   predicate: () => Promise<boolean> | boolean,
+   timeoutMs: number,
+   intervalMs = 200,
+): Promise<boolean> => poll(predicate, timeoutMs, intervalMs);
 
 const SERVER_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
@@ -27,20 +35,6 @@ export async function getFreePort(): Promise<number> {
          );
       });
    });
-}
-
-/** True once `predicate` is, or false if `timeoutMs` passes first. */
-export async function pollUntil(
-   predicate: () => Promise<boolean> | boolean,
-   timeoutMs: number,
-   intervalMs = 200,
-): Promise<boolean> {
-   const deadline = Date.now() + timeoutMs;
-   while (Date.now() < deadline) {
-      if (await predicate()) return true;
-      await new Promise((r) => setTimeout(r, intervalMs));
-   }
-   return false;
 }
 
 /** A fresh temp directory, removed by the returned `cleanup`. */

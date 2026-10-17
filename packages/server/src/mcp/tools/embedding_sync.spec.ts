@@ -30,6 +30,7 @@ import {
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
+import { pollUntil } from "../../test_helpers/poll";
 import {
    createEntityEmbeddingsTable,
    createEntityKeyphrasesTable,
@@ -98,9 +99,9 @@ describe("SerialQueue", () => {
          events.push("second:start");
          events.push("second:end");
       });
-      // Let the event loop run: the second job must not start while the first
-      // is held.
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // Let the event loop turn (every pending promise job runs first): the
+      // second job must not start while the first is held.
+      await new Promise((resolve) => setImmediate(resolve));
       expect(events).toEqual(["first:start"]);
       expect(queue.size).toBe(2);
 
@@ -166,10 +167,7 @@ function heldProvider() {
    );
    /** Wait until `n` requests have arrived, then let the next one through. */
    const arrived = async (n: number) => {
-      for (let i = 0; i < 400 && requests.length < n; i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(requests.length).toBeGreaterThanOrEqual(n);
+      expect(await pollUntil(() => requests.length >= n)).toBe(true);
    };
    const release = () => releases.shift()!();
    return { provider, requests, arrived, release };
@@ -292,7 +290,7 @@ describe("enqueuePackageSync", () => {
       // The first package's request is on the wire and held. The second
       // package has not even been prepared: it waits for the first to finish.
       await held.arrived(1);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise((resolve) => setImmediate(resolve));
       expect(order).toEqual(["first:prepared"]);
       expect(held.requests.length).toBe(1);
 

@@ -34,6 +34,7 @@ import {
    storeServing,
 } from "../../test_helpers/get_context_join_fixture";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
+import { pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { registerGetContextTool } from "./get_context_tool";
 import { getPackageIndex } from "./package_entities";
@@ -139,17 +140,15 @@ async function freshHandler(packageName: string) {
       });
       return JSON.parse(result.content[0].resource?.text as string);
    };
-   const untilSemantic = async (
+   const untilSemantic = (
       params: Record<string, unknown>,
       scope: Record<string, unknown> = {},
-   ) => {
-      for (let i = 0; i < 1_000; i++) {
-         const payload = await call(params, scope);
-         if (payload.retrieval === "semantic") return payload;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      throw new Error("retrieval never became semantic");
-   };
+   ) =>
+      pollFor(
+         () => call(params, scope),
+         (payload) => payload.retrieval === "semantic",
+         5_000,
+      );
    return { pkg, store, call, untilSemantic };
 }
 
