@@ -67,12 +67,6 @@ export interface PipelineSettings {
    joinMaxDepth: number;
    /** Base of the score multiplier for assembled join copies, applied as `base ** (hops + 1)`; null means none. */
    joinDamping: number | null;
-   /**
-    * How scores are published. Today `cosine`: a row's score is its cosine.
-    * Rows a refine stage rated carry `raw` and are published through the
-    * knots whatever this says, so nothing reads it yet.
-    */
-   scoring: "cosine" | "knots";
    /** Response size budget in characters; null means no budget. */
    maxChars: number | null;
    /** Characters held back from maxChars for the envelope. */
@@ -92,7 +86,6 @@ export const PIPELINE_SETTINGS: PipelineSettings = {
    },
    joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
    joinDamping: 0.9,
-   scoring: "cosine",
    maxChars: 35_000,
    reserveChars: 1_000,
 };

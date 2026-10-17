@@ -12,12 +12,10 @@ import { assembleCards } from "./get_context_assembly";
 import {
    PIPELINE_SETTINGS,
    runCardStages,
-   runQueryStages,
    runRankStages,
    type CardState,
    type CardStage,
    type PipelineContext,
-   type QueryStage,
    type RankStage,
    type RankedState,
    type Retriever,
@@ -286,7 +284,6 @@ function runListing(
 
 // The stages and retrievers runContextQuery runs; a new stage is one file and
 // one line here.
-const QUERY_STAGES: QueryStage[] = [];
 const RETRIEVERS: readonly Retriever[] = [semanticRetriever, lexicalRetriever];
 // Source match is listed only for a request it applies to, so a trace shows
 // no row for it otherwise (refine and rerank report "skipped" when off; this
@@ -399,8 +396,6 @@ async function runContextQuery(
       return traceSummary ? { retrieval_trace } : {};
    };
 
-   // Query stages may rewrite what is searched for; none is registered yet.
-   ctx.request = await runQueryStages(QUERY_STAGES, ctx.request, ctx);
    const request = ctx.request;
 
    // Tier 3: nothing to rank -> enumerate what the targets name.

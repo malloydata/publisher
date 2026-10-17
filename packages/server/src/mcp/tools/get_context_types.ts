@@ -131,8 +131,6 @@ export interface ResultEntity {
    targetReasons?: Map<number, string>;
    /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
    joinHops?: number;
-   /** Unused until value attach runs. Nested dimension values. */
-   values?: Array<{ value: string; score: number }>;
 }
 
 /** A join as reported in source context: enough to write the traversal. */

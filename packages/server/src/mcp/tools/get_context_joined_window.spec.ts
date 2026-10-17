@@ -209,7 +209,6 @@ describe("assembly's card cap leaves room for the dotted rows", () => {
       entityWindow: { perSourcePerTarget: 10 },
       joinMaxDepth: 10,
       joinDamping: 0.9,
-      scoring: "cosine",
       maxChars: null,
       reserveChars: 1_000,
    } as PipelineSettings;

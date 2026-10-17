@@ -53,7 +53,6 @@ const SETTINGS: PipelineSettings = {
    entityWindow: { perSourcePerTarget: 10 },
    joinMaxDepth: 10,
    joinDamping: 0.9,
-   scoring: "cosine",
    maxChars: null,
    reserveChars: 1_000,
 };

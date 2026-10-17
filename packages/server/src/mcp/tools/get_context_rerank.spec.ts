@@ -404,23 +404,6 @@ describe("rerank prompt", () => {
       expect(chat.prompts[0]).toContain("Description: Docs of b.");
    });
 
-   it("lists at most 5 values per entity when values exist", async () => {
-      const f = entity("state", 0.9, {
-         source: "a",
-         values: Array.from({ length: 8 }, (_, i) => ({
-            value: `v${i}`,
-            score: 1,
-         })),
-      });
-      const chat = scriptedChat(reply({ a: 3, b: 3 }));
-      await rerankStage.run(
-         state([card("a", 3.9, [f]), card("b", 3.8)]),
-         ctxFor(chat),
-      );
-      expect(chat.prompts[0]).toContain("Values: v0, v1, v2, v3, v4");
-      expect(chat.prompts[0]).not.toContain("v5");
-   });
-
    it("never sends an access predicate or the raw annotation fallback", async () => {
       const f = entity("state", 0.9, {
          source: "a",

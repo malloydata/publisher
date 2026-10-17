@@ -137,9 +137,6 @@ function promptSource(
          name: r.name,
          kind: r.kind,
          description: scrubForEgress(r.embedDoc ?? ""),
-         ...(r.values && r.values.length > 0
-            ? { values: r.values.slice(0, 5).map((v) => v.value) }
-            : {}),
       }));
    return {
       source: card.source,
