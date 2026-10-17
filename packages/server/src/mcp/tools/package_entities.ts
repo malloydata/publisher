@@ -12,6 +12,7 @@ import { referencedGivenNames } from "../../service/authorize";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
 import type { PipelineSettings } from "./get_context_pipeline";
+import { compareText } from "./retrieval_shared";
 import type {
    Entity,
    JoinReach,
@@ -37,17 +38,6 @@ function truncateDoc(doc: string, max: number): string {
    const cut = doc.slice(0, max);
    const lastSpace = cut.lastIndexOf(" ");
    return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
-}
-
-/**
- * Stable order for two paths, by UTF-16 codepoint.
- *
- * Deliberately not `localeCompare`: called with no locale it uses the
- * runtime's, so the same bytes sort differently under a different LANG. Every
- * caller here wants "the same order everywhere", never a human-friendly one.
- */
-export function comparePaths(a: string, b: string): number {
-   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -587,7 +577,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // servers on identical bytes could walk the same package in different
    // orders, which is the one thing this sort exists to prevent.
    const models = [...(await pkg.listModels())].sort((a, b) =>
-      comparePaths(a.path ?? "", b.path ?? ""),
+      compareText(a.path ?? "", b.path ?? ""),
    );
 
    const modelPaths = models.flatMap((m) => (m.path ? [m.path] : []));
@@ -1054,7 +1044,7 @@ function collapseAliases(entities: Entity[]): Entity[] {
          // picks WHICH name survives a collapse, so a locale-dependent
          // comparison would let two servers answer with different spellings
          // of the same field.
-         return comparePaths(a.name, b.name);
+         return compareText(a.name, b.name);
       })[0];
       // The DOC survives independently of the name. A raw column that carries
       // the only `#(doc)` in the group would otherwise lose it, and `aliases`

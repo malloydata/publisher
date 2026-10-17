@@ -23,7 +23,7 @@ import {
 } from "./embedding_index";
 import { compareRanked, scopeKeysWithJoins } from "./get_context_assembly";
 import type { PipelineContext, Retriever } from "./get_context_pipeline";
-import { matchesScope, sanitize, scopeKeysFor } from "./get_context_request";
+import { matchesScope, scopeKeysFor } from "./get_context_request";
 import {
    REASON_BY_UNAVAILABLE,
    bestTargetOf,
@@ -35,6 +35,7 @@ import type {
    RetrievalReason,
 } from "./get_context_types";
 import { embeddedEntitiesOf, entityCardKey } from "./package_entities";
+import { round4, sanitizeLunrQuery } from "./retrieval_shared";
 
 /**
  * The package's index state, read to explain why a search could not be
@@ -194,7 +195,7 @@ export const semanticRetriever: Retriever = {
                         .filter((e) => assembling || matchesScope(e, request));
                      return matches.map((e) => ({
                         ...projectEntity(e, environmentName, packageName),
-                        score: Math.round(hit.score * 10_000) / 10_000,
+                        score: round4(hit.score),
                         rawScore: hit.score,
                         targetScores: hit.targetScores,
                      }));
@@ -291,7 +292,7 @@ export const lexicalRetriever: Retriever = {
       // needed.
       const bestByRef = new Map<string, Map<number, number>>();
       for (const search of request.searches) {
-         const sanitized = sanitize(search.text);
+         const sanitized = sanitizeLunrQuery(search.text);
          if (!sanitized) continue;
          let targetHits: lunr.Index.Result[] = [];
          try {

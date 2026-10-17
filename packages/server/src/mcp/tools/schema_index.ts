@@ -12,6 +12,11 @@ import {
 // humanizeName and the similarity floor are shared with the package index on
 // purpose: a query is humanized the same way whichever index answers it.
 import { humanizeName } from "./embedding_index";
+import {
+   PROVIDER_FAILURE_COOLDOWN_MS,
+   providerKeyFor,
+   sanitizeLunrQuery,
+} from "./retrieval_shared";
 
 /**
  * Ranking layer for `search_database_schema`.
@@ -117,13 +122,6 @@ export const MAX_COLUMNS_IN_INDEX_TEXT = 60;
 export const MAX_CACHED_SCHEMAS = 8;
 
 /**
- * After a provider failure, this schema stays lexical for this long, so a down
- * or misconfigured endpoint costs one timeout per window rather than one per
- * call. Same shape as the package index's cooldown.
- */
-export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
-
-/**
  * The text indexed for one table: its humanized schema and table name, then its
  * humanized column names. `orders_line_item` becomes "orders line item", so a
  * query for "order line items" matches where a raw-identifier match could not.
@@ -168,15 +166,6 @@ export function schemaFingerprint(tables: SchemaTableEntity[]): string {
 }
 
 /**
- * lunr treats several characters as query operators; strip them so a
- * plain-English query never throws and is matched as an OR of its terms.
- * Same treatment search_malloy_docs applies for the same reason.
- */
-export function sanitizeQuery(query: string): string {
-   return query.replace(/[~^:*+\-"]/g, " ").trim();
-}
-
-/**
  * Rank `tables` against `query` with lunr/BM25 over the same text the semantic
  * path embeds, so the two modes see one recipe. Returns [] for an empty or
  * operator-only query, and never throws: a lunr failure is logged and degrades
@@ -188,7 +177,7 @@ export function rankLexically(
    limit: number,
    cacheKey?: string,
 ): RankedResult {
-   const sanitized = sanitizeQuery(query);
+   const sanitized = sanitizeLunrQuery(query);
    if (!sanitized || tables.length === 0) return { hits: [], matched: 0 };
 
    const fingerprint = cacheKey ? schemaFingerprint(tables) : "";
@@ -346,10 +335,6 @@ export function _resetSchemaIndexStateForTests(): void {
    cooldownUntilMs.clear();
 }
 
-function providerKeyFor(provider: EmbeddingModel): string {
-   return `${provider.model}\x00${provider.dimensions ?? ""}\x00${provider.documentPrefix ?? ""}`;
-}
-
 /**
  * Rank semantically, or return null to mean "use lexical". Never throws.
  *
@@ -479,7 +464,7 @@ export async function rankTables(args: {
    // scored against it, returning arbitrary tables presented as ranked matches
    // for a query that has none. Same input, same schema, two different answers
    // depending on an operator's env var.
-   if (!sanitizeQuery(query)) {
+   if (!sanitizeLunrQuery(query)) {
       // "lexical", not "semantic": no embedding call was made, and `ranking`
       // reports what actually happened everywhere else in this file (it
       // degrades to lexical on cooldown, above the table cap, and on provider

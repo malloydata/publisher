@@ -13,7 +13,7 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { sanitize } from "./get_context_request";
+import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
 import { entityId } from "./get_context_response";
 import { registerGetContextTool } from "./get_context_tool";
 import { registerListPackagesTool } from "./list_packages_tool";

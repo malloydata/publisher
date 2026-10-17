@@ -259,7 +259,3 @@ export function scopeKeysFor(
    }
    return keys;
 }
-
-export function sanitize(query: string): string {
-   return query.replace(/[~^:*+\-"]/g, " ").trim();
-}

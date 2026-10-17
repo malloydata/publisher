@@ -47,6 +47,7 @@ import {
 } from "./get_context_response";
 import type { ResolvedRequest, ResultEntity } from "./get_context_types";
 import { scrubForEgress } from "./keyphrases";
+import { compareText } from "./retrieval_shared";
 
 /**
  * Most candidates one source sends to the model, per target: the scan's window
@@ -107,9 +108,6 @@ const candidateKey = (row: { name: string; source?: string }) =>
 function refinedSearches(request: ResolvedRequest) {
    return request.searches.filter((s) => s.targetType !== "source");
 }
-
-/** Plain code-unit order, so the cut does not depend on the host's locale. */
-const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Cosine descending; ties by source then name, so the cut does not depend on scan order. */
 function byCosine(a: Candidate, b: Candidate): number {

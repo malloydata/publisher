@@ -1,17 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { recordLlmCall, recordLlmRetry } from "../llm_metrics";
 import {
-   recordLlmCall,
-   recordLlmRetry,
-   type LlmFailureReason,
-} from "../llm_metrics";
-import {
-   HttpRequestError,
    malformedReply,
    type RetryPolicy,
    withRetry,
 } from "../service/http_retry";
+import { httpFailureReason } from "./http";
 import type {
    EmbeddingModel,
    EmbedOptions,
@@ -156,21 +152,9 @@ export class BatchEmbeddingModel implements EmbeddingModel {
             this.provider,
             "embedding",
             Date.now() - started,
-            embeddingFailureReason(error),
+            httpFailureReason(error),
          );
          throw error;
       }
    }
-}
-
-function embeddingFailureReason(error: unknown): LlmFailureReason {
-   if (error instanceof HttpRequestError) {
-      if (error.status === undefined)
-         return error.retryable ? "timeout" : "other";
-      if (error.status === 401 || error.status === 403) return "auth";
-      if (error.status === 429) return "rate_limited";
-      if (error.status >= 500) return "server_error";
-      return "client_error";
-   }
-   return "invalid_response";
 }

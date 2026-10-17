@@ -25,6 +25,7 @@ import type {
    ResultEntity,
 } from "./get_context_types";
 import { enterJoin, sourceContextKey } from "./package_entities";
+import { compareText, round4 } from "./retrieval_shared";
 
 /**
  * Whether a source row carries a real verdict: a model rated it (source match
@@ -65,11 +66,6 @@ export function foldRaw(
    if (row.raw === undefined) return current;
    if (row.kind === "source" && !isUnratedOnScale(row)) return row.raw;
    return current === undefined || row.raw > current ? row.raw : current;
-}
-
-/** Plain code-unit order, so the result does not depend on the host's locale. */
-function compareText(a: string, b: string): number {
-   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -213,8 +209,6 @@ export function scopeKeysWithJoins(
    }
    return keys;
 }
-
-const round4 = (x: number) => Math.round(x * 10_000) / 10_000;
 
 function dampTargetScores(
    row: ResultEntity,

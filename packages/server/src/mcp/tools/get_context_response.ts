@@ -26,6 +26,7 @@ import type {
    SourceContextJoin,
 } from "./get_context_types";
 import { sourceContextKey } from "./package_entities";
+import { round4 } from "./retrieval_shared";
 import type { StoredSourceSummary } from "./source_summaries";
 
 /**
@@ -359,7 +360,7 @@ function matchedTargetsFor(
          return [
             {
                search_text,
-               relevance: Math.round(relevance * 10_000) / 10_000,
+               relevance: round4(relevance),
                ...(match_reason ? { match_reason } : {}),
             },
          ];

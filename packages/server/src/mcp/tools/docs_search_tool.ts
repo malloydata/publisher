@@ -9,6 +9,7 @@ import { buildMalloyUri } from "../handler_utils";
 import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import rawIndex from "./docs_search/malloy_docs_index.json";
+import { sanitizeLunrQuery } from "./retrieval_shared";
 
 interface DocEntry {
    title: string;
@@ -44,12 +45,6 @@ const searchDocsShape = {
 };
 type SearchDocsParams = z.infer<z.ZodObject<typeof searchDocsShape>>;
 
-// lunr treats several characters as query operators; strip them so a plain-English
-// query never throws and is matched as an OR of its terms.
-export function sanitize(query: string): string {
-   return query.replace(/[~^:*+\-"]/g, " ").trim();
-}
-
 /**
  * Search the bundled docs index and return up to `max` matches. Pure over the
  * module-level index asset, so it is unit-testable without a server. An empty or
@@ -59,7 +54,7 @@ export function searchDocsIndex(
    query: string,
    max: number,
 ): Array<{ title: string; url: string; excerpt: string }> {
-   const sanitized = sanitize(query);
+   const sanitized = sanitizeLunrQuery(query);
    if (!sanitized) return [];
 
    let hits: lunr.Index.Result[] = [];

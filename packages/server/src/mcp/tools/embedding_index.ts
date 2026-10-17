@@ -24,6 +24,10 @@ import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { SyncRequestBudget } from "./get_context_llm";
 import { indexSettingsOf, type IndexSettings } from "./index_settings";
 import {
+   PROVIDER_FAILURE_COOLDOWN_MS,
+   providerKeyFor,
+} from "./retrieval_shared";
+import {
    KeyphraseStageError,
    countNeedingLlm,
    deleteEnvironmentKeyphrases,
@@ -77,13 +81,6 @@ export function getMaxEmbeddedEntities(): number {
 export function setMaxEmbeddedEntities(cap: number): void {
    maxEmbeddedEntities = cap;
 }
-/**
- * After a provider failure the package's semantic path answers `cooldown`
- * for this long, so a down or misconfigured endpoint costs one timeout
- * per window, not one per call. get_context returns an error for it; there is
- * no lexical ranking in its place while a provider is configured.
- */
-export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
 /**
  * After a dims-mismatch purge, suppress further purges for this long. It
  * MUST exceed PROVIDER_FAILURE_COOLDOWN_MS. A dims-mismatch backoff arms
@@ -758,7 +755,9 @@ const oversizeWarned = new Set<string>();
 // Effective timing windows. Mutable only so tests can drive real expiry
 // deterministically with small sleeps (the cooldown-vs-suppression
 // relationship is real-time and not otherwise unit-observable); production
-// always uses the exported constants.
+// always uses the exported constants. While a package is cooling down its
+// semantic path answers `cooldown`; get_context returns an error for it, with
+// no lexical ranking in its place while a provider is configured.
 let cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
 
 /**
@@ -930,21 +929,6 @@ function isPermanentlyFailed(
       failed.fingerprint === fingerprint &&
       failed.providerKey === providerKey
    );
-}
-
-/**
- * The model/dims request-config a sync ran under. Rows embedded under one
- * config are not interchangeable with another's, so both the search path and
- * the readiness test compare it; defined here so they cannot disagree.
- */
-function providerKeyFor(provider: EmbeddingModel): string {
-   return [
-      provider.model,
-      provider.dimensions ?? "",
-      // Text put before indexed text changes every vector, so it is part of
-      // what makes two syncs interchangeable.
-      provider.documentPrefix,
-   ].join(KEY_SEPARATOR);
 }
 
 /** What one pass over an entity set's desired rows yields. */
