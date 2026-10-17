@@ -360,40 +360,9 @@ export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   const connectionController = new ConnectionController(environmentStore);
-
-   /**
-    * Shed load before querying the warehouse, the way getModelForQuery does for
-    * the other MCP tools.
-    *
-    * Every tier that reaches the warehouse calls this, not just the ranked one:
-    * introspection can pull 100k rows, and tier 5 waives the column cap and can
-    * fan out one DESCRIBE per file, so it is the most expensive of the three.
-    * Without it the memory governor cannot see any of this traffic.
-    */
-   /**
-    * The warning for tables whose path could not be pasted, or [] if all could.
-    *
-    * A helper rather than an inline push because it was previously built only
-    * in the listing branch, so the single-table tier omitted `malloySource`
-    * with no explanation at all: the same silence the omission exists to avoid.
-    */
-   const unpastableWarning = (entities: SchemaTableEntity[]): string[] => {
-      // canPasteSource, NOT isPastableTablePath: the field is withheld for two
-      // reasons and this must count both, or the narrower one goes unexplained.
-      // The predicate was extracted for exactly this and the filter was not
-      // switched over, so the silence it was meant to end survived.
-      const n = entities.filter((e) => !canPasteSource(e)).length;
-      if (n === 0) return [];
-      return [
-         `${n} table(s) have a path this server will not vouch for across every dialect it serves, so malloySource is omitted for them rather than risk a line that does not compile. Build it from tablePath: on your own dialect the path may work as-is, or may need the offending segment quoted. Double quotes on DuckDB, Postgres, Snowflake, Trino and SQL Server; backticks on MySQL, BigQuery and Databricks.`,
-      ];
-   };
-
-   const assertCanAdmit = async (environmentName: string) => {
-      (
-         await environmentStore.getEnvironment(environmentName, false)
-      ).assertCanAdmitQuery();
+   const deps: TierDeps = {
+      environmentStore,
+      connectionController: new ConnectionController(environmentStore),
    };
 
    mcpServer.tool(
@@ -411,8 +380,6 @@ export function registerSearchDatabaseSchemaTool(
             limit,
             offset,
          } = params;
-         const max = limit ?? DEFAULT_LIMIT;
-         const skip = offset ?? 0;
          const uri = buildMalloyUri(
             {
                environment: environmentName,
@@ -433,389 +400,38 @@ export function registerSearchDatabaseSchemaTool(
          });
 
          try {
-            // Tier 1: no environment -> what environments exist, and what
-            // Each tier is reached by what is MISSING, so an argument below the
-            // tier that was reached does nothing. Silently, the response looks
-            // like a successful answer to the question actually asked: ask for
-            // tableName without schemaName and you get the schema list back,
-            // from which an agent reasonably concludes the table is not there.
-            // Naming what was ignored makes each of those self-describing.
-            const ignored: string[] = [];
-            const noteIgnored = (
-               entries: readonly (readonly [string, unknown])[],
-            ) => {
-               for (const [name, value] of entries) {
-                  // Deduped: two rules can name the same argument. Called with
-                  // connectionName and packageName but no environmentName, the
-                  // tier-1 rule and the sandbox rule below both fire on
-                  // packageName, and the warning read "Ignored connectionName,
-                  // packageName, ..., packageName".
-                  if (
-                     value !== undefined &&
-                     value !== "" &&
-                     !ignored.includes(name)
-                  ) {
-                     ignored.push(name);
-                  }
-               }
-            };
-            // Paging arguments only mean something on a table listing, so they
-            // are ignored by every other tier and by a ranked search.
-            const pagingArgs = [
-               ["limit", limit],
-               ["offset", offset],
-            ] as const;
-            if (!environmentName) {
-               noteIgnored([
-                  ["connectionName", connectionName],
-                  ["packageName", packageName],
-                  ["schemaName", schemaName],
-                  ["tableName", tableName],
-                  ["searchQuery", searchQuery],
-                  ...pagingArgs,
-               ]);
-            } else if (!connectionName) {
-               noteIgnored([
-                  ["packageName", packageName],
-                  ["schemaName", schemaName],
-                  ["tableName", tableName],
-                  ["searchQuery", searchQuery],
-                  ...pagingArgs,
-               ]);
-            } else if (!schemaName) {
-               noteIgnored([
-                  ["tableName", tableName],
-                  ["searchQuery", searchQuery],
-                  ...pagingArgs,
-               ]);
-            } else if (tableName) {
-               // Tier 5 wins over tier 4; say so rather than dropping the rest.
-               noteIgnored([["searchQuery", searchQuery], ...pagingArgs]);
-            } else if (searchQuery !== undefined) {
-               // Ranked results cannot be paged, so offset does nothing here.
-               // Without this the tool silently returns the same top hits for
-               // every offset, and an agent paging a ranked result loops.
-               noteIgnored([["offset", offset]]);
-            }
-            // packageName only selects anything for the per-package sandbox.
-            // On any other connection the controller drops it, so an agent that
-            // passed it believes it scoped the search to that package and did
-            // not. This is the last ignored argument that went unreported.
-            if (connectionName && connectionName !== SANDBOX_CONNECTION) {
-               noteIgnored([["packageName", packageName]]);
-            }
-            const ignoredWarning =
-               ignored.length > 0
-                  ? [
-                       `Ignored ${ignored.join(", ")}. Each level needs the one above it: environmentName, then connectionName (with packageName for the per-package "duckdb" sandbox), then schemaName, then either tableName or searchQuery. limit and offset apply only to a plain table listing, and offset does nothing on a ranked search because ranked results cannot be paged.`,
-                    ]
-                  : [];
-
-            // Tier 1: no environment -> what environments exist, and what
-            // connections each has, so an agent with no prior knowledge starts here.
-            if (!environmentName) {
-               const environments = await environmentStore.listEnvironments();
-               const results = await Promise.all(
-                  environments.map(async (env) => {
-                     const name = env.name ?? "";
-                     let connections: ResponseConnection[] = [];
-                     try {
-                        const environment =
-                           await environmentStore.getEnvironment(name, false);
-                        connections = await listConnectionsFor(environment);
-                     } catch (error) {
-                        logger.debug(
-                           "[MCP Tool searchDatabaseSchema] Could not list connections",
-                           {
-                              environmentName: name,
-                              error:
-                                 error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                           },
-                        );
-                     }
-                     return { name, connections };
-                  }),
-               );
-               return jsonResource(uri, {
-                  environments: results,
-                  ...(ignoredWarning.length > 0
-                     ? { warnings: ignoredWarning }
-                     : {}),
-               });
-            }
-
-            // Tier 2: environment only -> its connections.
-            if (!connectionName) {
-               const environment = await environmentStore.getEnvironment(
-                  environmentName,
-                  false,
-               );
-               const connections = await listConnectionsFor(environment);
-               return jsonResource(uri, {
-                  environmentName,
-                  connections,
-                  ...(ignoredWarning.length > 0
-                     ? { warnings: ignoredWarning }
-                     : {}),
-               });
-            }
-
-            // Tier 3: connection only -> its schemas. Shed load first: this
-            // queries the warehouse too, and on DuckDB it can list cloud
-            // directories.
-            if (!schemaName) {
-               await assertCanAdmit(environmentName);
-               const schemas = await connectionController.listSchemas(
-                  environmentName,
-                  connectionName,
-                  packageName,
-               );
-               return jsonResource(uri, {
-                  environmentName,
-                  connectionName,
-                  schemas: schemas.map((s) => ({
-                     name: s.name ?? "",
-                     isDefault: s.isDefault ?? false,
-                     isHidden: s.isHidden ?? false,
-                  })),
-                  ...(ignoredWarning.length > 0
-                     ? { warnings: ignoredWarning }
-                     : {}),
-               });
-            }
-
-            // Tier 5 (checked before 4): one named table, in full. The most
-            // expensive tier, since it waives the column cap and can fan out one
-            // DESCRIBE per file on the cloud branches.
-            if (tableName) {
-               await assertCanAdmit(environmentName);
-               const tables = await connectionController.listTables(
-                  environmentName,
-                  connectionName,
-                  schemaName,
-                  [tableName],
-                  packageName,
-               );
-               if (tables.length === 0) {
-                  return jsonToolError(
+            const tier = resolveTier(params);
+            const warnings = ignoredArgsWarning(params, tier.tier);
+            switch (tier.tier) {
+               case "environments":
+                  return await listEnvironmentsTier(deps, uri, warnings);
+               case "connections":
+                  return await listConnectionsTier(deps, uri, tier, warnings);
+               case "schemas":
+                  return await listSchemasTier(
+                     deps,
                      uri,
-                     {
-                        message: `Table "${tableName}" not found in schema "${schemaName}" of connection "${connectionName}".`,
-                        suggestions: [
-                           `List the schema's tables by calling this tool with schemaName "${schemaName}" and no tableName.`,
-                           "Check the table name's spelling and case; some warehouses are case-sensitive.",
-                        ],
-                     },
-                     { tables: [] },
+                     tier,
+                     packageName,
+                     warnings,
                   );
-               }
-               // Several dialects ignore the tableNames filter entirely: the
-               // DuckDB cloud and Azure branches list a whole directory. Without
-               // this, asking for one table on a 200-file prefix returns all 200,
-               // each with every column, because the branch below waives the
-               // column cap on the assumption that one table was requested.
-               const exact = tables.filter(
-                  (t) => bareTableName(t.resource ?? "") === tableName,
-               );
-               // Fall back to a case-insensitive match, but only when nothing
-               // matched exactly, so a warehouse holding both `Orders` and
-               // `orders` still resolves to the one that was asked for. Without
-               // the fallback, asking for `orders` against `Orders.parquet`
-               // returned not-found on exactly the dialects this filter exists
-               // to protect: the ones that ignore the tableNames filter and
-               // hand back a whole directory.
-               const matching =
-                  exact.length > 0
-                     ? exact
-                     : tables.filter(
-                          (t) =>
-                             bareTableName(t.resource ?? "").toLowerCase() ===
-                             tableName.toLowerCase(),
-                       );
-               const entities = (matching.length > 0 ? matching : tables).map(
-                  (t) => toEntity(t, connectionName, schemaName),
-               );
-               if (matching.length === 0) {
-                  return jsonToolError(
+               case "table":
+                  return await describeTableTier(
+                     deps,
                      uri,
-                     {
-                        message: `Table "${tableName}" not found in schema "${schemaName}" of connection "${connectionName}".`,
-                        suggestions: [
-                           `This schema lists ${tables.length} table(s). Call this tool with schemaName "${schemaName}" and no tableName to see them.`,
-                           "Check the table name's spelling and case; some warehouses are case-sensitive.",
-                        ],
-                     },
-                     { tables: [] },
+                     tier,
+                     packageName,
+                     warnings,
                   );
-               }
-               return jsonResource(uri, {
-                  environmentName,
-                  connectionName,
-                  schemaName,
-                  // No column cap here: asking for one table is how you ask for
-                  // all of its columns.
-                  tables: entities.map((e) =>
-                     toResponseTable(e, {
-                        maxColumns: Number.MAX_SAFE_INTEGER,
-                     }),
-                  ),
-                  totalAvailable: entities.length,
-                  returned: entities.length,
-                  ...(() => {
-                     const w = [
-                        ...ignoredWarning,
-                        ...unpastableWarning(entities),
-                     ];
-                     return w.length > 0 ? { warnings: w } : {};
-                  })(),
-               });
+               case "tables":
+                  return await listTablesTier(
+                     deps,
+                     uri,
+                     tier,
+                     params,
+                     warnings,
+                  );
             }
-
-            // Tier 4: a schema's tables, listed or ranked.
-            await assertCanAdmit(environmentName);
-            const allTables = await connectionController.listTables(
-               environmentName,
-               connectionName,
-               schemaName,
-               undefined,
-               packageName,
-            );
-            const entities = allTables.map((t) =>
-               toEntity(t, connectionName, schemaName),
-            );
-            const warnings: string[] = [...ignoredWarning];
-
-            // A schema with nothing registered in it is not necessarily an
-            // empty database. A DuckDB connection over local or cloud data
-            // files addresses those files by path, so information_schema is
-            // legitimately empty while the data is right there. Returning a
-            // bare [] reads as "no data", which sends an agent down the wrong
-            // path; say which of the two it is.
-            if (entities.length === 0) {
-               warnings.push(
-                  `No tables are registered in schema "${schemaName}". If this connection reads data files directly (DuckDB over CSV or Parquet), those files are not listed in a schema; reference them by path instead, for example ${connectionName}.table('data/orders.parquet'). Otherwise check the schema name against the schema list for this connection.`,
-               );
-            }
-
-            let page: { entity: SchemaTableEntity; score?: number }[];
-            let ranking: RankingMode | undefined;
-            let nextOffset: number | undefined;
-            let matched: number | undefined;
-
-            if (searchQuery !== undefined) {
-               const provider = resolveProvider();
-               const ranked = await rankTables({
-                  tables: entities,
-                  query: searchQuery,
-                  limit: max,
-                  provider,
-                  // packageName is in the key ONLY for the per-package
-                  // sandbox, because that is the only connection for which it
-                  // changes what gets introspected: two packages each present
-                  // a "duckdb" connection with a "memory.main" schema holding
-                  // entirely different tables. For any other connection the
-                  // controller ignores packageName, so including it would let
-                  // a caller mint unlimited distinct keys for one schema, each
-                  // costing a full re-embed and a retained entry.
-                  cacheKey: [
-                     environmentName,
-                     connectionName === SANDBOX_CONNECTION
-                        ? (packageName ?? "")
-                        : "",
-                     connectionName,
-                     schemaName,
-                  ].join("\x00"),
-               });
-               // An empty query ran no ranking at all, so reporting a mode
-               // would contradict the warning that says none ran.
-               ranking = ranked.emptyQuery ? undefined : ranked.ranking;
-               matched = ranked.emptyQuery ? undefined : ranked.matched;
-               page = ranked.hits.map((hit) => ({
-                  entity: hit,
-                  score: hit.score,
-               }));
-               // Only when there was something to match against; an empty
-               // schema already explained itself above.
-               if (ranked.emptyQuery) {
-                  // Not "nothing matched": nothing was asked. Telling an agent
-                  // to broaden a query that was never run sends it in circles.
-                  warnings.push(
-                     `searchQuery carried no searchable content, so no ranking was run. Provide words to search for, or omit searchQuery to list the schema's tables.`,
-                  );
-               } else if (ranked.hits.length === 0 && entities.length > 0) {
-                  warnings.push(
-                     `No table in "${schemaName}" matched "${searchQuery}". List the schema without a searchQuery to see everything in it.`,
-                  );
-               }
-               // Ranked results cannot be paged, so a cut here is invisible
-               // unless it is stated: totalAvailable counts the whole schema,
-               // not the matches, and an agent reading "20 of 500" concludes
-               // nothing else matched and stops.
-               if (ranked.matched > page.length) {
-                  // Worded per mode, because the two count different things and
-                  // one of them is nearly meaningless on its own. Lexical
-                  // ranking is an OR over terms, so every table sharing one
-                  // common column name (`customer_id`, `created_at`) counts as
-                  // a match: on a real warehouse that number is routinely the
-                  // whole schema, and telling an agent to raise `limit` on the
-                  // strength of it just fills the response with noise. Narrow
-                  // first is the advice that actually helps.
-                  warnings.push(
-                     ranked.ranking === "lexical"
-                        ? `${ranked.matched} tables share at least one term with "${searchQuery}"; the top ${page.length} by relevance are shown. Term-matching counts loosely, so a large number here is normal and does not mean that many tables are relevant. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}) if you want more of this ranking.`
-                        : `${ranked.matched} tables scored above the relevance floor for "${searchQuery}"; the top ${page.length} are shown. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}).`,
-                  );
-               }
-            } else {
-               page = entities
-                  .slice(skip, skip + max)
-                  .map((entity) => ({ entity }));
-               if (skip + max < entities.length) {
-                  nextOffset = skip + max;
-                  warnings.push(
-                     `Showing ${page.length} of ${entities.length} tables. Pass offset ${nextOffset} for the next page, or add a searchQuery to narrow.`,
-                  );
-               } else if (page.length === 0 && entities.length > 0) {
-                  // Distinguishes "you paged past the end" from "this schema
-                  // is empty", which otherwise return the identical shape.
-                  warnings.push(
-                     `offset ${skip} is past the end of this schema, which has ${entities.length} tables. Use an offset below ${entities.length}, or omit it to start from the beginning.`,
-                  );
-               }
-            }
-
-            warnings.push(
-               ...unpastableWarning(page.map(({ entity }) => entity)),
-            );
-
-            const capped = page.filter(
-               ({ entity }) => entity.columns.length > MAX_COLUMNS_PER_TABLE,
-            ).length;
-            if (capped > 0) {
-               warnings.push(
-                  `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; only the first ${MAX_COLUMNS_PER_TABLE} are shown. Pass tableName to see all columns of one table.`,
-               );
-            }
-
-            return jsonResource(uri, {
-               environmentName,
-               connectionName,
-               schemaName,
-               tables: page.map(({ entity, score }) =>
-                  toResponseTable(entity, {
-                     maxColumns: MAX_COLUMNS_PER_TABLE,
-                     score,
-                  }),
-               ),
-               totalAvailable: entities.length,
-               returned: page.length,
-               ...(matched !== undefined ? { matched } : {}),
-               ...(nextOffset !== undefined ? { nextOffset } : {}),
-               ...(ranking ? { ranking } : {}),
-               ...(warnings.length > 0 ? { warnings } : {}),
-            });
          } catch (error) {
             const identifier = [environmentName, connectionName, schemaName]
                .filter(Boolean)
@@ -828,6 +444,526 @@ export function registerSearchDatabaseSchemaTool(
          }
       },
    );
+}
+
+/** What the tiers that reach a store or a warehouse need. */
+interface TierDeps {
+   environmentStore: EnvironmentStore;
+   connectionController: ConnectionController;
+}
+
+/**
+ * Which level of the drill-down a call reaches. Each tier is reached by the
+ * first argument that is MISSING, so the arguments a tier needs are known to be
+ * present once it is chosen.
+ */
+type Tier =
+   | { tier: "environments" }
+   | { tier: "connections"; environmentName: string }
+   | { tier: "schemas"; environmentName: string; connectionName: string }
+   | {
+        tier: "table";
+        environmentName: string;
+        connectionName: string;
+        schemaName: string;
+        tableName: string;
+     }
+   | {
+        tier: "tables";
+        environmentName: string;
+        connectionName: string;
+        schemaName: string;
+     };
+
+function resolveTier(params: SearchDatabaseSchemaParams): Tier {
+   const { environmentName, connectionName, schemaName, tableName } = params;
+   if (!environmentName) return { tier: "environments" };
+   if (!connectionName) return { tier: "connections", environmentName };
+   if (!schemaName) {
+      return { tier: "schemas", environmentName, connectionName };
+   }
+   // Tier 5 (one named table) is checked before tier 4 and wins over it.
+   if (tableName) {
+      return {
+         tier: "table",
+         environmentName,
+         connectionName,
+         schemaName,
+         tableName,
+      };
+   }
+   return { tier: "tables", environmentName, connectionName, schemaName };
+}
+
+/**
+ * The warning naming the arguments the reached tier does not read, or [].
+ *
+ * An argument below the tier that was reached does nothing. Silently, the
+ * response looks like a successful answer to the question actually asked: ask
+ * for tableName without schemaName and you get the schema list back, from
+ * which an agent reasonably concludes the table is not there. Naming what was
+ * ignored makes each of those self-describing.
+ */
+function ignoredArgsWarning(
+   params: SearchDatabaseSchemaParams,
+   tier: Tier["tier"],
+): string[] {
+   const {
+      connectionName,
+      packageName,
+      schemaName,
+      tableName,
+      searchQuery,
+      limit,
+      offset,
+   } = params;
+   const ignored: string[] = [];
+   const noteIgnored = (entries: readonly (readonly [string, unknown])[]) => {
+      for (const [name, value] of entries) {
+         // Deduped: two rules can name the same argument. Called with
+         // connectionName and packageName but no environmentName, the
+         // tier-1 rule and the sandbox rule below both fire on
+         // packageName, and the warning read "Ignored connectionName,
+         // packageName, ..., packageName".
+         if (value !== undefined && value !== "" && !ignored.includes(name)) {
+            ignored.push(name);
+         }
+      }
+   };
+   // Paging arguments only mean something on a table listing, so they
+   // are ignored by every other tier and by a ranked search.
+   const pagingArgs = [
+      ["limit", limit],
+      ["offset", offset],
+   ] as const;
+   switch (tier) {
+      case "environments":
+         noteIgnored([
+            ["connectionName", connectionName],
+            ["packageName", packageName],
+            ["schemaName", schemaName],
+            ["tableName", tableName],
+            ["searchQuery", searchQuery],
+            ...pagingArgs,
+         ]);
+         break;
+      case "connections":
+         noteIgnored([
+            ["packageName", packageName],
+            ["schemaName", schemaName],
+            ["tableName", tableName],
+            ["searchQuery", searchQuery],
+            ...pagingArgs,
+         ]);
+         break;
+      case "schemas":
+         noteIgnored([
+            ["tableName", tableName],
+            ["searchQuery", searchQuery],
+            ...pagingArgs,
+         ]);
+         break;
+      case "table":
+         // Tier 5 wins over tier 4; say so rather than dropping the rest.
+         noteIgnored([["searchQuery", searchQuery], ...pagingArgs]);
+         break;
+      case "tables":
+         // Ranked results cannot be paged, so offset does nothing here.
+         // Without this the tool silently returns the same top hits for
+         // every offset, and an agent paging a ranked result loops.
+         if (searchQuery !== undefined) noteIgnored([["offset", offset]]);
+         break;
+   }
+   // packageName only selects anything for the per-package sandbox.
+   // On any other connection the controller drops it, so an agent that
+   // passed it believes it scoped the search to that package and did
+   // not. This is the last ignored argument that went unreported.
+   if (connectionName && connectionName !== SANDBOX_CONNECTION) {
+      noteIgnored([["packageName", packageName]]);
+   }
+   return ignored.length > 0
+      ? [
+           `Ignored ${ignored.join(", ")}. Each level needs the one above it: environmentName, then connectionName (with packageName for the per-package "duckdb" sandbox), then schemaName, then either tableName or searchQuery. limit and offset apply only to a plain table listing, and offset does nothing on a ranked search because ranked results cannot be paged.`,
+        ]
+      : [];
+}
+
+/** Spread into a payload: `warnings` when there are any, nothing otherwise. */
+function withWarnings(warnings: string[]): { warnings?: string[] } {
+   return warnings.length > 0 ? { warnings } : {};
+}
+
+/**
+ * Shed load before querying the warehouse, the way getModelForQuery does for
+ * the other MCP tools.
+ *
+ * Every tier that reaches the warehouse calls this, not just the ranked one:
+ * introspection can pull 100k rows, and tier 5 waives the column cap and can
+ * fan out one DESCRIBE per file, so it is the most expensive of the three.
+ * Without it the memory governor cannot see any of this traffic.
+ */
+async function assertCanAdmit(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+): Promise<void> {
+   (
+      await environmentStore.getEnvironment(environmentName, false)
+   ).assertCanAdmitQuery();
+}
+
+/**
+ * The warning for tables whose path could not be pasted, or [] if all could.
+ *
+ * A helper rather than an inline push because it was previously built only
+ * in the listing branch, so the single-table tier omitted `malloySource`
+ * with no explanation at all: the same silence the omission exists to avoid.
+ */
+function unpastableWarning(entities: SchemaTableEntity[]): string[] {
+   // canPasteSource, NOT isPastableTablePath: the field is withheld for two
+   // reasons and this must count both, or the narrower one goes unexplained.
+   // The predicate was extracted for exactly this and the filter was not
+   // switched over, so the silence it was meant to end survived.
+   const n = entities.filter((e) => !canPasteSource(e)).length;
+   if (n === 0) return [];
+   return [
+      `${n} table(s) have a path this server will not vouch for across every dialect it serves, so malloySource is omitted for them rather than risk a line that does not compile. Build it from tablePath: on your own dialect the path may work as-is, or may need the offending segment quoted. Double quotes on DuckDB, Postgres, Snowflake, Trino and SQL Server; backticks on MySQL, BigQuery and Databricks.`,
+   ];
+}
+
+/** The not-found error for a named table, with a first suggestion that fits the case. */
+function tableNotFound(
+   uri: string,
+   tier: Extract<Tier, { tier: "table" }>,
+   listSuggestion: string,
+) {
+   return jsonToolError(
+      uri,
+      {
+         message: `Table "${tier.tableName}" not found in schema "${tier.schemaName}" of connection "${tier.connectionName}".`,
+         suggestions: [
+            listSuggestion,
+            "Check the table name's spelling and case; some warehouses are case-sensitive.",
+         ],
+      },
+      { tables: [] },
+   );
+}
+
+/**
+ * Tier 1: no environment -> what environments exist, and what connections
+ * each has, so an agent with no prior knowledge starts here.
+ */
+async function listEnvironmentsTier(
+   { environmentStore }: TierDeps,
+   uri: string,
+   warnings: string[],
+) {
+   const environments = await environmentStore.listEnvironments();
+   const results = await Promise.all(
+      environments.map(async (env) => {
+         const name = env.name ?? "";
+         let connections: ResponseConnection[] = [];
+         try {
+            const environment = await environmentStore.getEnvironment(
+               name,
+               false,
+            );
+            connections = await listConnectionsFor(environment);
+         } catch (error) {
+            logger.debug(
+               "[MCP Tool searchDatabaseSchema] Could not list connections",
+               {
+                  environmentName: name,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+         }
+         return { name, connections };
+      }),
+   );
+   return jsonResource(uri, {
+      environments: results,
+      ...withWarnings(warnings),
+   });
+}
+
+/** Tier 2: environment only -> its connections. */
+async function listConnectionsTier(
+   { environmentStore }: TierDeps,
+   uri: string,
+   { environmentName }: Extract<Tier, { tier: "connections" }>,
+   warnings: string[],
+) {
+   const environment = await environmentStore.getEnvironment(
+      environmentName,
+      false,
+   );
+   const connections = await listConnectionsFor(environment);
+   return jsonResource(uri, {
+      environmentName,
+      connections,
+      ...withWarnings(warnings),
+   });
+}
+
+/**
+ * Tier 3: connection only -> its schemas. Shed load first: this queries the
+ * warehouse too, and on DuckDB it can list cloud directories.
+ */
+async function listSchemasTier(
+   { environmentStore, connectionController }: TierDeps,
+   uri: string,
+   { environmentName, connectionName }: Extract<Tier, { tier: "schemas" }>,
+   packageName: string | undefined,
+   warnings: string[],
+) {
+   await assertCanAdmit(environmentStore, environmentName);
+   const schemas = await connectionController.listSchemas(
+      environmentName,
+      connectionName,
+      packageName,
+   );
+   return jsonResource(uri, {
+      environmentName,
+      connectionName,
+      schemas: schemas.map((s) => ({
+         name: s.name ?? "",
+         isDefault: s.isDefault ?? false,
+         isHidden: s.isHidden ?? false,
+      })),
+      ...withWarnings(warnings),
+   });
+}
+
+/**
+ * Tier 5 (checked before 4): one named table, in full. The most expensive
+ * tier, since it waives the column cap and can fan out one DESCRIBE per file
+ * on the cloud branches.
+ */
+async function describeTableTier(
+   { environmentStore, connectionController }: TierDeps,
+   uri: string,
+   tier: Extract<Tier, { tier: "table" }>,
+   packageName: string | undefined,
+   warnings: string[],
+) {
+   const { environmentName, connectionName, schemaName, tableName } = tier;
+   await assertCanAdmit(environmentStore, environmentName);
+   const tables = await connectionController.listTables(
+      environmentName,
+      connectionName,
+      schemaName,
+      [tableName],
+      packageName,
+   );
+   if (tables.length === 0) {
+      return tableNotFound(
+         uri,
+         tier,
+         `List the schema's tables by calling this tool with schemaName "${schemaName}" and no tableName.`,
+      );
+   }
+   // Several dialects ignore the tableNames filter entirely: the
+   // DuckDB cloud and Azure branches list a whole directory. Without
+   // this, asking for one table on a 200-file prefix returns all 200,
+   // each with every column, because the branch below waives the
+   // column cap on the assumption that one table was requested.
+   const exact = tables.filter(
+      (t) => bareTableName(t.resource ?? "") === tableName,
+   );
+   // Fall back to a case-insensitive match, but only when nothing
+   // matched exactly, so a warehouse holding both `Orders` and
+   // `orders` still resolves to the one that was asked for. Without
+   // the fallback, asking for `orders` against `Orders.parquet`
+   // returned not-found on exactly the dialects this filter exists
+   // to protect: the ones that ignore the tableNames filter and
+   // hand back a whole directory.
+   const matching =
+      exact.length > 0
+         ? exact
+         : tables.filter(
+              (t) =>
+                 bareTableName(t.resource ?? "").toLowerCase() ===
+                 tableName.toLowerCase(),
+           );
+   if (matching.length === 0) {
+      return tableNotFound(
+         uri,
+         tier,
+         `This schema lists ${tables.length} table(s). Call this tool with schemaName "${schemaName}" and no tableName to see them.`,
+      );
+   }
+   const entities = matching.map((t) =>
+      toEntity(t, connectionName, schemaName),
+   );
+   return jsonResource(uri, {
+      environmentName,
+      connectionName,
+      schemaName,
+      // No column cap here: asking for one table is how you ask for
+      // all of its columns.
+      tables: entities.map((e) =>
+         toResponseTable(e, {
+            maxColumns: Number.MAX_SAFE_INTEGER,
+         }),
+      ),
+      totalAvailable: entities.length,
+      returned: entities.length,
+      ...withWarnings([...warnings, ...unpastableWarning(entities)]),
+   });
+}
+
+/** Tier 4: a schema's tables, listed or ranked. */
+async function listTablesTier(
+   { environmentStore, connectionController }: TierDeps,
+   uri: string,
+   {
+      environmentName,
+      connectionName,
+      schemaName,
+   }: Extract<Tier, { tier: "tables" }>,
+   params: SearchDatabaseSchemaParams,
+   ignoredWarning: string[],
+) {
+   const { packageName, searchQuery, limit, offset } = params;
+   const max = limit ?? DEFAULT_LIMIT;
+   const skip = offset ?? 0;
+   await assertCanAdmit(environmentStore, environmentName);
+   const allTables = await connectionController.listTables(
+      environmentName,
+      connectionName,
+      schemaName,
+      undefined,
+      packageName,
+   );
+   const entities = allTables.map((t) =>
+      toEntity(t, connectionName, schemaName),
+   );
+   const warnings: string[] = [...ignoredWarning];
+
+   // A schema with nothing registered in it is not necessarily an
+   // empty database. A DuckDB connection over local or cloud data
+   // files addresses those files by path, so information_schema is
+   // legitimately empty while the data is right there. Returning a
+   // bare [] reads as "no data", which sends an agent down the wrong
+   // path; say which of the two it is.
+   if (entities.length === 0) {
+      warnings.push(
+         `No tables are registered in schema "${schemaName}". If this connection reads data files directly (DuckDB over CSV or Parquet), those files are not listed in a schema; reference them by path instead, for example ${connectionName}.table('data/orders.parquet'). Otherwise check the schema name against the schema list for this connection.`,
+      );
+   }
+
+   let page: { entity: SchemaTableEntity; score?: number }[];
+   let ranking: RankingMode | undefined;
+   let nextOffset: number | undefined;
+   let matched: number | undefined;
+
+   if (searchQuery !== undefined) {
+      const provider = resolveProvider();
+      const ranked = await rankTables({
+         tables: entities,
+         query: searchQuery,
+         limit: max,
+         provider,
+         // packageName is in the key ONLY for the per-package
+         // sandbox, because that is the only connection for which it
+         // changes what gets introspected: two packages each present
+         // a "duckdb" connection with a "memory.main" schema holding
+         // entirely different tables. For any other connection the
+         // controller ignores packageName, so including it would let
+         // a caller mint unlimited distinct keys for one schema, each
+         // costing a full re-embed and a retained entry.
+         cacheKey: [
+            environmentName,
+            connectionName === SANDBOX_CONNECTION ? (packageName ?? "") : "",
+            connectionName,
+            schemaName,
+         ].join("\x00"),
+      });
+      // An empty query ran no ranking at all, so reporting a mode
+      // would contradict the warning that says none ran.
+      ranking = ranked.emptyQuery ? undefined : ranked.ranking;
+      matched = ranked.emptyQuery ? undefined : ranked.matched;
+      page = ranked.hits.map((hit) => ({
+         entity: hit,
+         score: hit.score,
+      }));
+      // Only when there was something to match against; an empty
+      // schema already explained itself above.
+      if (ranked.emptyQuery) {
+         // Not "nothing matched": nothing was asked. Telling an agent
+         // to broaden a query that was never run sends it in circles.
+         warnings.push(
+            `searchQuery carried no searchable content, so no ranking was run. Provide words to search for, or omit searchQuery to list the schema's tables.`,
+         );
+      } else if (ranked.hits.length === 0 && entities.length > 0) {
+         warnings.push(
+            `No table in "${schemaName}" matched "${searchQuery}". List the schema without a searchQuery to see everything in it.`,
+         );
+      }
+      // Ranked results cannot be paged, so a cut here is invisible
+      // unless it is stated: totalAvailable counts the whole schema,
+      // not the matches, and an agent reading "20 of 500" concludes
+      // nothing else matched and stops.
+      if (ranked.matched > page.length) {
+         // Worded per mode, because the two count different things and
+         // one of them is nearly meaningless on its own. Lexical
+         // ranking is an OR over terms, so every table sharing one
+         // common column name (`customer_id`, `created_at`) counts as
+         // a match: on a real warehouse that number is routinely the
+         // whole schema, and telling an agent to raise `limit` on the
+         // strength of it just fills the response with noise. Narrow
+         // first is the advice that actually helps.
+         warnings.push(
+            ranked.ranking === "lexical"
+               ? `${ranked.matched} tables share at least one term with "${searchQuery}"; the top ${page.length} by relevance are shown. Term-matching counts loosely, so a large number here is normal and does not mean that many tables are relevant. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}) if you want more of this ranking.`
+               : `${ranked.matched} tables scored above the relevance floor for "${searchQuery}"; the top ${page.length} are shown. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}).`,
+         );
+      }
+   } else {
+      page = entities.slice(skip, skip + max).map((entity) => ({ entity }));
+      if (skip + max < entities.length) {
+         nextOffset = skip + max;
+         warnings.push(
+            `Showing ${page.length} of ${entities.length} tables. Pass offset ${nextOffset} for the next page, or add a searchQuery to narrow.`,
+         );
+      } else if (page.length === 0 && entities.length > 0) {
+         // Distinguishes "you paged past the end" from "this schema
+         // is empty", which otherwise return the identical shape.
+         warnings.push(
+            `offset ${skip} is past the end of this schema, which has ${entities.length} tables. Use an offset below ${entities.length}, or omit it to start from the beginning.`,
+         );
+      }
+   }
+
+   warnings.push(...unpastableWarning(page.map(({ entity }) => entity)));
+
+   const capped = page.filter(
+      ({ entity }) => entity.columns.length > MAX_COLUMNS_PER_TABLE,
+   ).length;
+   if (capped > 0) {
+      warnings.push(
+         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; only the first ${MAX_COLUMNS_PER_TABLE} are shown. Pass tableName to see all columns of one table.`,
+      );
+   }
+
+   return jsonResource(uri, {
+      environmentName,
+      connectionName,
+      schemaName,
+      tables: page.map(({ entity, score }) =>
+         toResponseTable(entity, {
+            maxColumns: MAX_COLUMNS_PER_TABLE,
+            score,
+         }),
+      ),
+      totalAvailable: entities.length,
+      returned: page.length,
+      ...(matched !== undefined ? { matched } : {}),
+      ...(nextOffset !== undefined ? { nextOffset } : {}),
+      ...(ranking ? { ranking } : {}),
+      ...withWarnings(warnings),
+   });
 }
 
 /**
