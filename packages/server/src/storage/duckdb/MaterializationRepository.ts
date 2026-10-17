@@ -8,6 +8,7 @@ import {
    MaterializationUpdate,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
+import { newId, Row, rowTimestamps, updateRow } from "./rows";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "MANIFEST_FILE_READY",
@@ -48,14 +49,6 @@ export class DuplicateActiveMaterializationError extends Error {
 export class MaterializationRepository {
    constructor(private db: DuckDBConnection) {}
 
-   private generateId(): string {
-      return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-   }
-
-   private now(): Date {
-      return new Date();
-   }
-
    // Intentionally UNBOUNDED when no limit is passed: callers may rely on the
    // full history for a single package, which is bounded by how often that one
    // package is built.
@@ -75,8 +68,8 @@ export class MaterializationRepository {
          sql += " OFFSET ?";
          params.push(options.offset);
       }
-      const rows = await this.db.all<Record<string, unknown>>(sql, params);
-      return rows.map(this.mapRow);
+      const rows = await this.db.all<Row>(sql, params);
+      return rows.map(mapRow);
    }
 
    /**
@@ -104,11 +97,11 @@ export class MaterializationRepository {
    }
 
    async getById(id: string): Promise<Materialization | null> {
-      const row = await this.db.get<Record<string, unknown>>(
+      const row = await this.db.get<Row>(
          "SELECT * FROM materializations WHERE id = ?",
          [id],
       );
-      return row ? this.mapRow(row) : null;
+      return row ? mapRow(row) : null;
    }
 
    async getActive(
@@ -116,11 +109,11 @@ export class MaterializationRepository {
       packageName: string,
    ): Promise<Materialization | null> {
       const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
-      const row = await this.db.get<Record<string, unknown>>(
+      const row = await this.db.get<Row>(
          `SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN (${placeholders})`,
          [environmentId, packageName, ...ACTIVE_STATUSES],
       );
-      return row ? this.mapRow(row) : null;
+      return row ? mapRow(row) : null;
    }
 
    async create(
@@ -129,9 +122,8 @@ export class MaterializationRepository {
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
    ): Promise<Materialization> {
-      const id = this.generateId();
-      const now = this.now();
-      const iso = now.toISOString();
+      const id = newId();
+      const iso = new Date().toISOString();
       // Set active_key iff the row is in a non-terminal state. The unique
       // index on active_key makes the race-free conditional insert: a second
       // concurrent create on the same (environment, package) fails here rather
@@ -142,7 +134,7 @@ export class MaterializationRepository {
       const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
-         const rows = await this.db.all<Record<string, unknown>>(
+         const rows = await this.db.all<Row>(
             `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
             RETURNING *`,
@@ -157,7 +149,7 @@ export class MaterializationRepository {
                iso,
             ],
          );
-         return this.mapRow(rows[0]);
+         return mapRow(rows[0]);
       } catch (err) {
          if (isUniqueViolation(err, "idx_materializations_active_key")) {
             throw new DuplicateActiveMaterializationError(
@@ -173,57 +165,30 @@ export class MaterializationRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization> {
-      const now = this.now();
-      const setClauses: string[] = [];
-      const params: unknown[] = [];
+      // Clear active_key on any transition to a terminal state; set it on
+      // any transition to a non-terminal state. The unique index
+      // guarantees we can never end up with two active rows for the same
+      // (environment, package).
+      const activeKey =
+         updates.status === undefined
+            ? []
+            : TERMINAL_STATUSES.has(updates.status)
+              ? ["active_key = NULL"]
+              : ["active_key = environment_id || '|' || package_name"];
 
-      if (updates.status !== undefined) {
-         setClauses.push(`status = ?`);
-         params.push(updates.status);
-         // Clear active_key on any transition to a terminal state; set it on
-         // any transition to a non-terminal state. The unique index
-         // guarantees we can never end up with two active rows for the same
-         // (environment, package).
-         if (TERMINAL_STATUSES.has(updates.status)) {
-            setClauses.push(`active_key = NULL`);
-         } else {
-            setClauses.push(
-               `active_key = environment_id || '|' || package_name`,
-            );
-         }
-      }
-      if (updates.startedAt !== undefined) {
-         setClauses.push(`started_at = ?`);
-         params.push(updates.startedAt.toISOString());
-      }
-      if (updates.completedAt !== undefined) {
-         setClauses.push(`completed_at = ?`);
-         params.push(updates.completedAt.toISOString());
-      }
-      if (updates.error !== undefined) {
-         setClauses.push(`error = ?`);
-         params.push(updates.error);
-      }
-      if (updates.metadata !== undefined) {
-         setClauses.push(`metadata = ?`);
-         params.push(
-            updates.metadata ? JSON.stringify(updates.metadata) : null,
-         );
-      }
-      if (updates.manifest !== undefined) {
-         setClauses.push(`manifest = ?`);
-         params.push(
-            updates.manifest ? JSON.stringify(updates.manifest) : null,
-         );
-      }
-
-      setClauses.push(`updated_at = ?`);
-      params.push(now.toISOString());
-      params.push(id);
-
-      await this.db.run(
-         `UPDATE materializations SET ${setClauses.join(", ")} WHERE id = ?`,
-         params,
+      await updateRow(
+         this.db,
+         "materializations",
+         id,
+         {
+            status: updates.status,
+            started_at: updates.startedAt?.toISOString(),
+            completed_at: updates.completedAt?.toISOString(),
+            error: updates.error,
+            metadata: jsonOrNull(updates.metadata),
+            manifest: jsonOrNull(updates.manifest),
+         },
+         activeKey,
       );
 
       const updated = await this.getById(id);
@@ -265,25 +230,32 @@ export class MaterializationRepository {
          [environmentId, packageName],
       );
    }
+}
 
-   private mapRow(row: Record<string, unknown>): Materialization {
-      const metadata = parseJsonColumn<Record<string, unknown>>(row.metadata);
-      return {
-         id: row.id as string,
-         environmentId: row.environment_id as string,
-         packageName: row.package_name as string,
-         status: row.status as MaterializationStatus,
-         manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
-         metadata,
-         startedAt: row.started_at ? new Date(row.started_at as string) : null,
-         completedAt: row.completed_at
-            ? new Date(row.completed_at as string)
-            : null,
-         error: row.error != null ? (row.error as string) : null,
-         createdAt: new Date(row.created_at as string),
-         updatedAt: new Date(row.updated_at as string),
-      };
-   }
+function mapRow(row: Row): Materialization {
+   const metadata = parseJsonColumn<Row>(row.metadata);
+   return {
+      id: row.id as string,
+      environmentId: row.environment_id as string,
+      packageName: row.package_name as string,
+      status: row.status as MaterializationStatus,
+      manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
+      metadata,
+      startedAt: row.started_at ? new Date(row.started_at as string) : null,
+      completedAt: row.completed_at
+         ? new Date(row.completed_at as string)
+         : null,
+      error: row.error != null ? (row.error as string) : null,
+      ...rowTimestamps(row),
+   };
+}
+
+/** `undefined` stays unset; null and other falsy values are written as NULL. */
+function jsonOrNull(
+   value: object | null | undefined,
+): string | null | undefined {
+   if (value === undefined) return undefined;
+   return value ? JSON.stringify(value) : null;
 }
 
 /** Parse a nullable JSON text column, returning null on absence or parse error. */

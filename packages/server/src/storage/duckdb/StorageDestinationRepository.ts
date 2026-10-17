@@ -3,6 +3,7 @@
 
 import { StorageDestination } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
+import { newId, Row, rowTimestamps } from "./rows";
 
 /**
  * Persistence for an environment's storage destinations, so the
@@ -18,27 +19,23 @@ import { DuckDBConnection } from "./DuckDBConnection";
 export class StorageDestinationRepository {
    constructor(private db: DuckDBConnection) {}
 
-   private generateId(): string {
-      return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-   }
-
    async list(environmentId: string): Promise<StorageDestination[]> {
-      const rows = await this.db.all<Record<string, unknown>>(
+      const rows = await this.db.all<Row>(
          "SELECT * FROM storage_destinations WHERE environment_id = ? ORDER BY name",
          [environmentId],
       );
-      return rows.map(this.mapToDestination);
+      return rows.map(mapToDestination);
    }
 
    async getByName(
       environmentId: string,
       name: string,
    ): Promise<StorageDestination | null> {
-      const row = await this.db.get<Record<string, unknown>>(
+      const row = await this.db.get<Row>(
          "SELECT * FROM storage_destinations WHERE environment_id = ? AND name = ?",
          [environmentId, name],
       );
-      return row ? this.mapToDestination(row) : null;
+      return row ? mapToDestination(row) : null;
    }
 
    /**
@@ -67,7 +64,7 @@ export class StorageDestinationRepository {
          return { ...existing, ...destination, updatedAt: now };
       }
 
-      const id = this.generateId();
+      const id = newId();
       await this.db.run(
          `INSERT INTO storage_destinations
              (id, environment_id, name, type, config, created_at, updated_at)
@@ -95,16 +92,15 @@ export class StorageDestinationRepository {
          [environmentId],
       );
    }
+}
 
-   private mapToDestination(row: Record<string, unknown>): StorageDestination {
-      return {
-         id: row.id as string,
-         environmentId: row.environment_id as string,
-         name: row.name as string,
-         type: row.type as string,
-         config: JSON.parse(row.config as string),
-         createdAt: new Date(row.created_at as string),
-         updatedAt: new Date(row.updated_at as string),
-      };
-   }
+function mapToDestination(row: Row): StorageDestination {
+   return {
+      id: row.id as string,
+      environmentId: row.environment_id as string,
+      name: row.name as string,
+      type: row.type as string,
+      config: JSON.parse(row.config as string),
+      ...rowTimestamps(row),
+   };
 }
