@@ -445,7 +445,10 @@ source: t is base -> { group_by: a }
             tables.includes("never_answered")
                ? new Promise<void>(() => {})
                : Promise.resolve(),
-         { jobTimeoutMs: 1500 },
+         // Room for a fresh worker to start and report the malformed tag
+         // before the stuck model times the job out; 1.5s was not enough on
+         // Windows CI.
+         { jobTimeoutMs: 5000 },
       );
       const { logger } = await import("../logger");
       const logSpy = spyOn(logger, "log");
@@ -676,7 +679,9 @@ source: orders is duckdb.table('shared_t') extend {
             tables.includes("never_answered")
                ? new Promise<void>(() => {})
                : Promise.resolve(),
-         { jobTimeoutMs: 500 },
+         // The retried load starts a fresh worker inside this budget; 500ms
+         // was not enough on Windows CI.
+         { jobTimeoutMs: 3000 },
       );
       try {
          // Retried as soon as the timeout is reported, while the worker that

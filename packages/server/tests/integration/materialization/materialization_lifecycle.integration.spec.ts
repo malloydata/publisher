@@ -326,8 +326,15 @@ describe("Materialization REST API: single-call (E2E)", () => {
 
             // The payoff: the served query now scans the materialized table and
             // no longer recomputes from the base CSV, and /compile previews the
-            // same routed SQL it would execute.
-            const routedExecuted = await executedSql();
+            // same routed SQL it would execute. The run reports
+            // MANIFEST_FILE_READY before its auto-load binds the table, so wait
+            // for the routing rather than assume it.
+            const routedExecuted = await pollFor(
+               executedSql,
+               (sql) => !sql.includes("data/orders.csv"),
+               "the served query never routed to the materialized table",
+               30_000,
+            );
             const routedCompiled = await compiledSql();
             expect(routedExecuted).not.toContain("data/orders.csv");
             expect(routedCompiled).not.toContain("data/orders.csv");
