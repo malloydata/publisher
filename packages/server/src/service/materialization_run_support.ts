@@ -10,7 +10,6 @@ import { recordStorageTableRetained } from "../materialization_metrics";
 import {
    BuildInstruction,
    isLegacyFailedEntry,
-   LedgerEntry,
    MaterializationStatus,
    ManifestEntry,
    RefusedSource,
@@ -22,10 +21,6 @@ import {
    deriveAnnotationFields,
    compilerBuildId,
 } from "./build_plan";
-import {
-   type IncrementalLineage,
-   type WatermarkBound,
-} from "./incremental_apply";
 import { type QueryContext, type QueryMetadata } from "./query_metadata";
 import type { components } from "../api";
 import { getPersistStorageMode } from "../config";
@@ -381,74 +376,6 @@ export function readAuthorFile(url: string): string | undefined {
    } catch {
       return undefined;
    }
-}
-
-/**
- * What an incremental refresh DID to the table, as the manifest entry's field,
- * or nothing for a source that is not refreshed incrementally at all.
- *
- * Reported because it cannot be inferred: every fallback in the delta path
- * answers success and rebuilds, so a caller that instructed a delta and got a
- * rebuild sees an identical entry otherwise. It is also how a caller supplying
- * its own ledger tells that its entries are being advanced from.
- *
- * `none` names the do-nothing case rather than leaving it to absence, so absence
- * carries ONE meaning: this source is not refreshed incrementally. The
- * alternative reads the same for a skip and for a plain full-refresh source, and
- * `ledger` cannot break the tie — an incremental source over an empty table
- * reports no boundary either.
- */
-export function refreshFields(
-   did: "delta" | "full" | "none" | undefined,
-): { refresh: "delta" | "full" | "none" } | Record<never, never> {
-   return did ? { refresh: did } : {};
-}
-
-/**
- * The manifest entry's `ledger` field: the boundary this refresh left in force,
- * self-contained — the table it belongs to, the value, and the source
- * definition it was measured under. A caller that owns the ledger stores this
- * object and returns it verbatim in the next run's `buildInstructions.ledger`;
- * nothing else about it needs to be understood, which is the point.
- *
- * The ONLY place a boundary is reported, which is why it is emitted whoever owns
- * the ledger, and on every path that leaves one in force — a delta, a seed, or a
- * skip that applied nothing. It is also how progress is observed: a
- * `coveredThrough` that moved between runs is a delta that applied. The boundary
- * is not repeated on the entry itself, because the value alone is not
- * comparable across runs: it means something only alongside the watermark and
- * the source address it was measured under, which are right here.
- *
- * Nothing when there is no boundary: a non-incremental source, or an incremental
- * one whose source is empty (no boundary is derivable, so none is recorded).
- * Spread into the entry so that case adds no key at all rather than an explicit
- * undefined.
- */
-export function ledgerFields(
-   lineage: IncrementalLineage | undefined,
-   bound: WatermarkBound | undefined,
-): { ledger: LedgerEntry } | Record<never, never> {
-   if (!lineage || !bound) return {};
-   return {
-      ledger: {
-         connectionName: lineage.connectionName,
-         physicalTableName: lineage.physicalTableName,
-         // Absent for a colocated table, which is what absence MEANS on the wire.
-         // Spread rather than set to undefined so the field is not present-and-null
-         // for every colocated source a caller stores.
-         ...(lineage.storageDestinationName
-            ? { storageDestinationName: lineage.storageDestinationName }
-            : {}),
-         coveredThrough: bound.value,
-         coveredThroughType: bound.malloyType,
-         watermark: lineage.watermarkName,
-         ...(lineage.mergeKeys.length > 0
-            ? { mergeKeys: lineage.mergeKeys }
-            : {}),
-         strategy: lineage.strategy,
-         sourceEntityId: lineage.sourceEntityId,
-      },
-   };
 }
 
 /**

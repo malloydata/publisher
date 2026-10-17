@@ -2,6 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../logger";
+import type { PersistSource } from "@malloydata/malloy";
+import { Manifest } from "@malloydata/malloy";
+import { recordSourceBuildDuration } from "../materialization_metrics";
+import type {
+   BuildInstruction,
+   ManifestEntry,
+} from "../storage/DatabaseInterface";
+import {
+   collectIncrementalDeclarations,
+   CompiledBuildPlan,
+   deriveColumns,
+} from "./build_plan";
+import { storageDeltaTarget } from "./incremental_storage";
+import {
+   STORAGE_TARGET_DIALECT,
+   type StorageIncrementalRefresh,
+} from "./materialization_build_session";
+import type { QueryMetadata } from "./query_metadata";
 import { recordIncrementalStep } from "../materialization_metrics";
 import type {
    IncrementalLedgerEntry,
@@ -594,4 +612,284 @@ function reportDeltaApplied(params: {
 }): void {
    recordIncrementalStep("delta");
    logger.info("Applied an incremental delta", params);
+}
+
+/**
+ * What an incremental refresh DID to the table, as the manifest entry's field,
+ * or nothing for a source that is not refreshed incrementally at all.
+ *
+ * Reported because it cannot be inferred: every fallback in the delta path
+ * answers success and rebuilds, so a caller that instructed a delta and got a
+ * rebuild sees an identical entry otherwise. It is also how a caller supplying
+ * its own ledger tells that its entries are being advanced from.
+ *
+ * `none` names the do-nothing case rather than leaving it to absence, so absence
+ * carries ONE meaning: this source is not refreshed incrementally. The
+ * alternative reads the same for a skip and for a plain full-refresh source, and
+ * `ledger` cannot break the tie — an incremental source over an empty table
+ * reports no boundary either.
+ */
+export function refreshFields(
+   did: "delta" | "full" | "none" | undefined,
+): { refresh: "delta" | "full" | "none" } | Record<never, never> {
+   return did ? { refresh: did } : {};
+}
+
+/**
+ * The manifest entry's `ledger` field: the boundary this refresh left in force,
+ * self-contained — the table it belongs to, the value, and the source
+ * definition it was measured under. A caller that owns the ledger stores this
+ * object and returns it verbatim in the next run's `buildInstructions.ledger`;
+ * nothing else about it needs to be understood, which is the point.
+ *
+ * The ONLY place a boundary is reported, which is why it is emitted whoever owns
+ * the ledger, and on every path that leaves one in force — a delta, a seed, or a
+ * skip that applied nothing. It is also how progress is observed: a
+ * `coveredThrough` that moved between runs is a delta that applied. The boundary
+ * is not repeated on the entry itself, because the value alone is not
+ * comparable across runs: it means something only alongside the watermark and
+ * the source address it was measured under, which are right here.
+ *
+ * Nothing when there is no boundary: a non-incremental source, or an incremental
+ * one whose source is empty (no boundary is derivable, so none is recorded).
+ * Spread into the entry so that case adds no key at all rather than an explicit
+ * undefined.
+ */
+export function ledgerFields(
+   lineage: IncrementalLineage | undefined,
+   bound: WatermarkBound | undefined,
+): { ledger: LedgerEntry } | Record<never, never> {
+   if (!lineage || !bound) return {};
+   return {
+      ledger: {
+         connectionName: lineage.connectionName,
+         physicalTableName: lineage.physicalTableName,
+         // Absent for a colocated table, which is what absence MEANS on the wire.
+         // Spread rather than set to undefined so the field is not present-and-null
+         // for every colocated source a caller stores.
+         ...(lineage.storageDestinationName
+            ? { storageDestinationName: lineage.storageDestinationName }
+            : {}),
+         coveredThrough: bound.value,
+         coveredThroughType: bound.malloyType,
+         watermark: lineage.watermarkName,
+         ...(lineage.mergeKeys.length > 0
+            ? { mergeKeys: lineage.mergeKeys }
+            : {}),
+         strategy: lineage.strategy,
+         sourceEntityId: lineage.sourceEntityId,
+      },
+   };
+}
+
+/**
+ * The run's incremental context, or undefined when no source in the package
+ * asked for an incremental refresh — which is the common case, and which keeps
+ * the build path byte-for-byte what it was.
+ *
+ * Resolved from the compiled plan rather than the wire plan because the
+ * declaration is read off the compiled source (its output schema and query
+ * definition), neither of which the wire plan carries.
+ */
+export function incrementalRunContext(
+   compiled: CompiledBuildPlan,
+   run: {
+      environmentId: string;
+      packageName: string;
+      materializationId: string;
+      forceRefresh: boolean;
+      now: Date;
+      /**
+       * The caller-supplied ledger, when the caller owns it. Undefined means
+       * the local store, as before; present (even empty) replaces it for the
+       * whole run.
+       */
+      ledger: LedgerEntry[] | undefined;
+   },
+   localLedger: IncrementalLedgerStore,
+): IncrementalRunContext | undefined {
+   // An unreadable declaration is dropped by collectIncrementalDeclarations
+   // (with a warn), so that source builds full, like every other source whose
+   // declaration the delta path cannot act on.
+   const declarations: Record<string, IncrementalDeclaration> = {};
+   for (const [sourceID, declaration] of Object.entries(
+      collectIncrementalDeclarations(compiled.sources),
+   )) {
+      if (declaration.incremental) declarations[sourceID] = declaration;
+   }
+   if (Object.keys(declarations).length === 0) return undefined;
+   const { ledger, ...rest } = run;
+   return {
+      ...rest,
+      declarations,
+      ledger: localLedger,
+      ...(ledger !== undefined
+         ? { callerLedger: indexCallerLedger(ledger) }
+         : {}),
+   };
+}
+
+/**
+ * Advance one source's serving table by a bounded delta, if that is what this
+ * refresh should do.
+ *
+ * Returns the source's manifest entry when the table was advanced in place (or
+ * needed nothing), and `undefined` to mean "rebuild it" — in which case the
+ * caller falls through to the CTAS below, which is the ordinary full build.
+ * Every reason for that fallback is logged and counted by
+ * {@link reportIncrementalStep}.
+ *
+ * The DML runs on the SOURCE connection with the same run options as the rest
+ * of the build, so a delta shows up in the warehouse's query history as part of
+ * the same attributable unit of work as the seed it replaces.
+ */
+export async function refreshOneSourceIncrementally(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   target: DeltaTarget;
+   manifest: Manifest;
+   /**
+    * How the source read its stored upstreams, from the classification the
+    * full build made (see {@link upstreamReuseFromManifest}). A delta or a
+    * skip reads the same upstreams the rebuild would, and an absent field
+    * reads as "no persisted upstream", so the entry carries it either way.
+    */
+   upstreamReuse: Pick<
+      ManifestEntry,
+      "upstreamReuse" | "upstreamRecomputeReason"
+   >;
+}): Promise<ManifestEntry | undefined> {
+   const { context, lineage, persistSource, instruction, target } = params;
+   const sourceEntityId = instruction.sourceEntityId;
+
+   const step = await planSourceRefresh({
+      context,
+      lineage,
+      target,
+      columns: deriveColumns(persistSource).map((c) => String(c.name)),
+      reseed: instruction.reseed,
+   });
+   const outcome = await applyIncrementalStep({
+      context,
+      lineage,
+      step,
+      target,
+      sourceName: persistSource.name,
+   });
+   if (!outcome.applied) return undefined;
+   if (outcome.durationMs !== undefined) {
+      recordSourceBuildDuration(outcome.durationMs, "delta");
+   }
+
+   // Both a delta and a skip leave the existing table serving, so it still has
+   // to appear in the build manifest: a downstream source built later in this
+   // run resolves its upstream through here, and an absent entry would make it
+   // recompute the upstream from raw instead.
+   params.manifest.update(sourceEntityId, {
+      tableName: target.quotedTablePath,
+   });
+   return {
+      sourceEntityId,
+      sourceName: persistSource.name,
+      materializedTableId: instruction.materializedTableId,
+      physicalTableName: lineage.physicalTableName,
+      connectionName: persistSource.connectionName,
+      realization: instruction.realization,
+      ...params.upstreamReuse,
+      rowCount: null,
+      buildDurationMs: outcome.durationMs ?? null,
+      // The delta script runs through applyDeltaScript rather than a single
+      // connection.runSQL whose result reaches here, so there is no cost figure
+      // to report even on a backend that would supply one.
+      queryCostBytes: null,
+      // A delta reports where it advanced to; a skip reports the boundary
+      // that stays in force. Either way the caller reads coverage from the
+      // entry rather than inferring it from the run's outcome.
+      ...ledgerFields(lineage, outcome.coveredThrough),
+      // A skip applied nothing and says so, rather than leaving a reader to
+      // infer it from an absent field: its unchanged `ledger` boundary
+      // already says the table stands where it did.
+      ...refreshFields(outcome.refresh),
+   };
+}
+
+/**
+ * The in-place refresh a stored source may get instead of a rebuild, as the two
+ * moments a build session can offer it: before the CTAS (advance, or decline
+ * and let the rebuild run) and after one (record where the rebuilt table
+ * reaches).
+ *
+ * Both halves have to run INSIDE the session, which is why they are callbacks
+ * rather than steps around the build: the plan probes the destination to decide,
+ * and the post-rebuild boundary is probed from the table itself — and the
+ * session holding that destination read-write exists only for this one source's
+ * refresh.
+ */
+export function storageRefreshFor(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   destinationName: string;
+   physicalTableName: string;
+   /** The unprojected build SQL — see storageDeltaTarget. */
+   buildSQL: string;
+   queryMetadata?: QueryMetadata;
+}): StorageIncrementalRefresh {
+   const { context, lineage, persistSource, instruction } = params;
+   return {
+      plan: async ({ session, sourceType, handle, quotedTablePath }) => {
+         const { target, readCost } = storageDeltaTarget({
+            session,
+            sourceType,
+            handle,
+            destinationName: params.destinationName,
+            physicalTableName: params.physicalTableName,
+            quotedTablePath,
+            lineage,
+            persistSource,
+            buildSQL: params.buildSQL,
+            queryMetadata: params.queryMetadata,
+         });
+         const step = await planSourceRefresh({
+            context,
+            lineage,
+            target,
+            columns: deriveColumns(persistSource).map((c) => String(c.name)),
+            reseed: instruction.reseed,
+         });
+         const outcome = await applyIncrementalStep({
+            context,
+            lineage,
+            step,
+            target,
+            sourceName: persistSource.name,
+         });
+         if (!outcome.applied) {
+            // The rebuild about to run replaces the table the boundary
+            // describes, so the boundary is dropped BEFORE it starts rather
+            // than overwritten after: a crash mid-rebuild would otherwise leave
+            // a boundary pointing at data that no longer exists, and the next
+            // run would apply a delta on top of it.
+            await resetLedger(context, lineage);
+            return undefined;
+         }
+         return {
+            durationMs: outcome.durationMs,
+            coveredThrough: outcome.coveredThrough,
+            refresh: outcome.refresh ?? "none",
+            readCost: readCost(),
+         };
+      },
+      afterSeed: ({ session, quotedTablePath }) =>
+         advanceLedgerAfterSeed({
+            context,
+            lineage,
+            quotedTablePath,
+            dialect: STORAGE_TARGET_DIALECT,
+            runner: (sql) => session.runSQL(sql),
+         }),
+   };
 }
