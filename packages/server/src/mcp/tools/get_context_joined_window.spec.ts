@@ -32,12 +32,11 @@ import {
    type EmbeddableEntity,
    type SemanticSearchResult,
 } from "./embedding_index";
+import { notIndexing, pollFor } from "../../test_helpers/poll";
 import { assembleCards } from "./get_context_assembly";
 import type { PipelineContext, PipelineSettings } from "./get_context_pipeline";
-import {
-   MAX_JOINED_ROWS_PER_SOURCE_TARGET,
-   type ResultEntity,
-} from "./get_context_tool";
+import { MAX_JOINED_ROWS_PER_SOURCE_TARGET } from "./get_context_response";
+import type { ResultEntity } from "./get_context_types";
 
 // One source with four direct dimensions and four dotted ones. The dotted ones
 // score HIGHER than every direct field, the way a date dimension's `year`
@@ -135,14 +134,7 @@ async function scan(
          ? {}
          : { perSourceJoinedWindow: joinedWindow }),
    };
-   for (let i = 0; i < 200; i++) {
-      const result = await trySemanticSearch(args);
-      if (!("unavailable" in result) || result.unavailable !== "indexing") {
-         return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("sync never completed");
+   return pollFor(() => trySemanticSearch(args), notIndexing);
 }
 
 function names(result: SemanticSearchResult): string[] {
@@ -211,7 +203,6 @@ describe("assembly's card cap leaves room for the dotted rows", () => {
       entityWindow: { perSourcePerTarget: 10 },
       joinMaxDepth: 10,
       joinDamping: 0.9,
-      scoring: "cosine",
       maxChars: null,
       reserveChars: 1_000,
    } as PipelineSettings;

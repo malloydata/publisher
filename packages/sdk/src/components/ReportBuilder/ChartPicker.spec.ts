@@ -38,13 +38,21 @@ describe("chartChoices", () => {
       ]);
    });
 
+   it("names the model's own chart Default, with a quiet line saying where it is set", () => {
+      expect(chartChoices(undefined, "default")[0]).toEqual({
+         value: "default",
+         label: "Default",
+         hint: "As set in the model",
+      });
+   });
+
    it("enables big_value only for an aggregate-only view, and says what it needs otherwise", () => {
       expect(enabled({ aggregateOnly: true }, "default")).toContain(
          "big_value",
       );
       expect(choice("big_value", {}, "default")).toMatchObject({
          disabled: true,
-         reason: "Needs a view with only totals (no group by)",
+         reason: "Needs results that are only totals (no group by)",
       });
    });
 
@@ -57,7 +65,7 @@ describe("chartChoices", () => {
          choice("shape_map", { chart: "bar_chart" }, "default"),
       ).toMatchObject({
          disabled: true,
-         reason: "Needs a view that already carries a map chart",
+         reason: "Needs a map chart set in the model",
       });
    });
 
@@ -78,10 +86,10 @@ describe("chartChoices", () => {
 
    it("words the reason by why the view's shape is unknown", () => {
       expect(choice("big_value", undefined, "default", "loading").reason).toBe(
-         "Still loading this view's details",
+         "Still loading this tile's details",
       );
       expect(choice("shape_map", undefined, "default", "unlisted").reason).toBe(
-         "Not a view the catalog lists, so its shape is unknown",
+         "Not in the model's list, so its shape is unknown",
       );
    });
 
@@ -134,7 +142,7 @@ describe("chartChoices on a view whose shape the model reported", () => {
    it("does not say a view of totals and a nest has a group by", () => {
       const nested = { shape: { groupBys: 0, totals: 1 } };
       expect(choice("big_value", nested, "default").reason).toBe(
-         "Needs a view with only totals (no group by)",
+         "Needs results that are only totals (no group by)",
       );
    });
 

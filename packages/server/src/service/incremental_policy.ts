@@ -16,32 +16,22 @@ type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /**
- * The gate for a source's INCREMENTAL declaration, plus its advisory
- * (non-blocking) findings.
+ * The gate for a source's INCREMENTAL declaration, plus advisory findings.
  *
- * STRICT everywhere a package is admitted: publish/PATCH answer a 400 whose body
- * is these messages joined, and a package LOAD fails the same way (see
- * Package.loadViaWorker). Load is not the lenient half here, unlike the
- * persistence-policy gate, because a package can be admitted without ever
- * touching the publish endpoint — a control plane uploads it to storage and a
- * worker loads it — and a rejection nobody sees means the author asked for
- * incremental refresh and silently gets a full rebuild forever. The advisories
- * never block anything and ride the package's operator warnings array.
+ * STRICT everywhere a package is admitted: publish/PATCH answer a 400 with these
+ * messages, and a package LOAD fails the same way (see Package.loadViaWorker).
+ * Unlike the persistence-policy gate, load is not lenient: a package can reach a
+ * worker without the publish endpoint, and a rejection nobody sees means a
+ * silent full rebuild forever. Advisories never block; they ride the package's
+ * warnings array.
  *
- * Why a gate at all, rather than letting the build path cope: `refresh=` is
- * ALREADY populated on published packages that nobody ever validated, because it
- * used to be inert metadata pass-through. The moment the build path reads the
- * mode, a package that says `refresh="incremental"` and nothing else becomes
- * silently incremental-eligible. These rules must therefore be live no later
- * than that read — and gates-first is the safe order, since a rejection changes
- * no behavior.
+ * The build path relies on this gate: `refresh=` may appear on unvalidated
+ * packages, and without it a bare `refresh="incremental"` would be silently
+ * incremental-eligible.
  *
- * Every rule reads the EFFECTIVE MERGED tag (see resolveIncrementalDeclaration):
- * a source that extends a persisted parent inherits the parent's declaration, so
- * asking "did this source declare it locally" would let an inherited
- * `refresh="incremental"` through ungated. That is also why several messages
- * offer `-watermark` as a fix: for an inheriting child, removing the key means
- * negating it.
+ * Every rule reads the EFFECTIVE MERGED tag (see resolveIncrementalDeclaration),
+ * which is why several messages offer `-watermark`: an inheriting child removes
+ * a key by negating it.
  */
 
 /** One source's inputs to the gate. */
@@ -54,9 +44,8 @@ export interface IncrementalPolicySource {
    /** The source's `#@ persist storage=` destination, when it declares one. */
    storageDestination?: string;
    /**
-    * The source's content address. Two sources can share one, which is what
-    * {@link sharedAddressAdvisories} is for; absent when the plan could not
-    * report it, which simply leaves that check silent.
+    * The source's content address, for {@link sharedAddressAdvisories}; absent
+    * when the plan could not report it, which silences that check.
     */
    sourceEntityId?: string;
    declaration: IncrementalDeclaration;
@@ -155,9 +144,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
       );
    }
 
-   // Rule 5: malformed key VALUES. Detected on the raw tag entries, because the
-   // scalar read drops a non-text value — without this the array form would
-   // misdiagnose as rule 2's "no watermark declared".
+   // Rule 5: malformed key VALUES, from the raw tag — otherwise the array form
+   // would misdiagnose as rule 2's "no watermark declared".
    for (const m of d.malformed) {
       out.push(malformedMessage(sourceName, m.key, m.problem, m.detail));
    }
@@ -186,9 +174,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    }
 
    // Rule 3: merge_key= without watermark=, in ANY mode. Distinct from rule 2 so
-   // the message can state the whole chain rather than the generic "no
-   // watermark" — a merge key alone is not half a declaration, it is the far end
-   // of one.
+   // the message can state the whole chain.
    if (d.declaredMergeKey && !d.declaredWatermark) {
       out.push(
          `${where} declares merge_key= without watermark=. The declaration is a ` +
@@ -209,22 +195,16 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
       );
    }
 
-   // The remaining rules are about MACHINERY, so they only fire for a source
-   // that actually asked to be incremental. On a non-incremental source rule 1
-   // has already named the real problem, and piling on would bury it.
+   // The remaining rules are about machinery; on a non-incremental source rule 1
+   // has already named the real problem.
    if (!d.incremental) return out;
 
-   // Rule 6: a SOURCE dialect the publisher can derive a bounded range for — it
-   // needs a literal spelling for every watermark type and a frontier probe. An
-   // allowlist rather than a capability probe for this phase: a delta writes into
-   // a table that is already serving, so "we have not proven this engine" must
-   // read as no.
-   //
-   // The source's dialect, not the table's: a `storage=` source is computed by
-   // its warehouse and materialized into the destination engine, and it is the
-   // warehouse that has to express the range. Where the DML lands is checked
-   // separately, and cannot fail for a legal destination — see
-   // INCREMENTAL_TARGET_DML_DIALECTS.
+   // Rule 6: a SOURCE dialect the publisher can derive a bounded range for (a
+   // literal for every watermark type plus a frontier probe). An allowlist, not
+   // a capability probe: a delta writes into a serving table, so an unproven
+   // engine must read as no. The source's dialect, not the table's — the
+   // warehouse expresses the range; where the DML lands is checked separately
+   // (see INCREMENTAL_TARGET_DML_DIALECTS).
    const dialect = source.dialect ?? "";
    if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(dialect)) {
       out.push(
@@ -236,9 +216,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
             `refresh="full" here; the supported set widens in a later release.`,
       );
    } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
-      // Rule 7: kept distinct from rule 6 even though the allowlist currently
-      // subsumes it, so the two can widen independently — a dialect can gain
-      // transactional DML long before it gains MERGE.
+      // Rule 7: distinct from rule 6 though currently subsumed by it, so the
+      // two can widen independently.
       out.push(
          `${where} declares merge_key=, which needs a MERGE statement that ` +
             `dialect "${dialect}" does not have. Remove merge_key= to replace ` +
@@ -261,9 +240,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
       );
    }
 
-   // Rule 11: a name that resolved to an aggregate-produced column. Read from
-   // the query definition's field kinds, because on the output schema an
-   // aggregate's column is indistinguishable from a dimension.
+   // Rule 11: a name that resolved to an aggregate-produced column.
    const aggregates = aggregateBacked([d.watermark, ...d.mergeKeys]);
    if (aggregates.length > 0) {
       out.push(
@@ -276,8 +253,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
       );
    }
 
-   // Rule 10: nothing to build a `<` range from. Note that struct/array columns
-   // never reach the output schema at all, so they land in rule 8 instead.
+   // Rule 10: nothing to build a `<` range from (struct/array columns land in
+   // rule 8, since they never reach the output schema).
    if (
       d.watermark !== undefined &&
       d.watermark.kind !== "unresolved" &&
@@ -291,11 +268,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
       );
    }
 
-   // Rule 9: a merge_key= that repeats the watermark. Redundant at best, and
-   // actively misleading: it opts the author into the WEAKER guarantee while they
-   // believe they asked for the stronger one — a row restated with an advanced
-   // watermark no longer matches its predecessor, so the merge inserts a
-   // duplicate exactly where the author wanted it replaced.
+   // Rule 9: a merge_key= that repeats the watermark.
    if (d.watermarkInMergeKeys && d.watermark !== undefined) {
       out.push(
          `${where} declares merge_key= including the watermark dimension ` +
@@ -307,8 +280,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
       );
    }
 
-   // Rule 12: any window field. Conservative on purpose, with the eventual
-   // criterion stated so the message survives the narrowing.
+   // Rule 12: any window field. Conservative on purpose; the message states the
+   // eventual criterion.
    if (d.calculateFields.length > 0) {
       out.push(
          `${where} declares ${MODE} but computes ` +
@@ -331,12 +304,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
 
 /**
  * The declaration facts the covered_through ledger RECORDS, as one comparable
- * string. Two sources sharing a content address share the ledger row keyed by
- * it, so if these differ the row cannot describe both.
- *
- * Deliberately the recorded set and not the whole declaration: an advisory that
- * fired on a difference the ledger does not store would name a conflict that
- * costs nothing.
+ * string. Only the recorded set: a difference the ledger does not store costs
+ * nothing, so it should not fire an advisory.
  */
 function recordedLineage(d: IncrementalDeclaration): string {
    const watermark = d.watermark;
@@ -350,27 +319,15 @@ function recordedLineage(d: IncrementalDeclaration): string {
 }
 
 /**
- * Sources that resolve to ONE content address, when at least one of them declares
+ * Sources that resolve to ONE content address, when at least one declares
  * incremental refresh.
  *
- * The address is a hash of the connection and the canonical SQL — not the source
- * name, not `name=`, not the model file, and deliberately not the declarations.
- * So two sources whose bodies compile to identical SQL share it, which a rename
- * or a copy-paste into a second model file produces without any other change.
- * Everything downstream is keyed by that address: one manifest entry, and one
- * covered_through row.
- *
- * For an ordinary source this merely wastes a definition. For an incremental one
- * it is worse, and worse silently:
- *
- *   - Declarations that DIFFER cannot both be described by one ledger row, so
- *     each build finds the other's lineage recorded and re-seeds — forever,
- *     advancing nothing, while the logs report a rebuild each time.
- *   - Declarations that AGREE fare better but still collapse: one table is built
- *     and the other `name=` never exists.
- *
- * Neither is visible from the model text, which is why it is worth a warning
- * even though the build path handles both safely.
+ * The address hashes the connection and canonical SQL only (not names or
+ * declarations), so a copy-paste shares it, and downstream there is one manifest
+ * entry and one covered_through row. For incremental sources this fails
+ * silently: DIFFERING declarations re-seed each other forever; AGREEING ones
+ * collapse so one `name=` table is never built. The build path is safe either
+ * way, but neither is visible from the model text.
  */
 function sharedAddressAdvisories(
    sources: IncrementalPolicySource[],
@@ -390,9 +347,7 @@ function sharedAddressAdvisories(
 
       const conflicting =
          new Set(group.map((s) => recordedLineage(s.declaration))).size > 1;
-      // Reported on EVERY source in the group, not just the first: the author has
-      // to be able to find the collision from whichever one they are looking at,
-      // and there is no basis for calling one of them the original.
+      // Reported on EVERY source in the group: none is the "original".
       for (const source of group) {
          const others = group
             .filter((s) => s !== source)
@@ -431,11 +386,8 @@ export function incrementalPolicyAdvisories(
       const { declaration: d } = source;
       const at = { model: source.modelPath ?? "", subject: source.sourceName };
 
-      // An unknown key is passed through by design (a new persist directive must
-      // not need a publisher change), which means a typo is passed through too.
-      // This warning is the ONLY guard for a misspelled `merge_key=`, which
-      // otherwise degrades silently to a keyless delta — the weaker strategy,
-      // chosen by nobody.
+      // Unknown keys pass through by design, so this is the ONLY guard for a
+      // misspelled `merge_key=`, which would silently degrade to range replace.
       for (const key of d.unknownKeys) {
          warnings.push({
             ...at,
@@ -449,12 +401,8 @@ export function incrementalPolicyAdvisories(
       }
 
       if (d.incremental && d.watermark !== undefined && !d.declaredMergeKey) {
-         // The cost half of this advisory is per-engine, so it is stated for the
-         // engine the table actually lives in. A warehouse prunes a range DELETE
-         // by partitioning or clustering; a `storage=` table is columnar files in
-         // a DuckLake catalog, where the same DELETE rewrites whichever files the
-         // range touches — so naming partitioning there would point the author at
-         // a knob that does not exist on their table.
+         // Per-engine cost: a warehouse prunes a range DELETE by partitioning; a
+         // `storage=` DuckLake table has no such knob and rewrites touched files.
          const rangeDeleteCost = source.storageDestination
             ? `(b) the range DELETE rewrites every stored file the range ` +
               `touches, so a wide range costs more than its row count suggests — ` +

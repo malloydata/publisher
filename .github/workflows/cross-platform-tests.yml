@@ -262,52 +262,52 @@ jobs:
         run: bun run --cwd packages/create-malloy-package test:e2e
         shell: bash
 
-      # Split into two bun-test invocations (two processes). The unit specs
+      # Split into three bun-test invocations (three processes). The unit specs
       # under src/ use `mock.module(...)` to stub out `StorageManager` and
       # other modules; Bun does not scope those mocks to a single file: they
       # persist in the process-wide module cache and poison any later spec
       # that imports the real module. Running integration specs (which import
       # src/server.ts and expect the real StorageManager) in a separate
-      # process avoids the carry-over.
+      # process avoids the carry-over. The component specs (tests/component:
+      # real DuckDB, compiler and worker pool, but no listeners or fixed
+      # ports) get a process of their own for the same reason.
       #
-      # The two processes run at the same time. They share no state: the
+      # The three processes run at the same time. They share no state: the
       # integration servers own packages/server's publisher.db and
-      # publisher_data/, and every unit spec that touches storage uses a temp
-      # directory or a directory of its own under the working directory. Each
+      # publisher_data/, and every unit or component spec that touches storage
+      # uses a temp directory or a directory of its own under the working
+      # directory. Each
       # process loads Malloy and DuckDB once, as it would alone, so running
       # them side by side takes about as long as the longer of the two rather
       # than their sum (271s down to 146s locally). Splitting further does not
       # pay: `bun test --parallel` reloads those modules for every file and
       # made the unit suite slower, not faster.
       #
-      # The unit suite runs in the background into a log that is printed once
-      # both have finished, so the two outputs do not interleave; the step
-      # fails if either suite does.
+      # The unit and component suites run in the background into logs that
+      # are printed once all three have finished, so the outputs do not
+      # interleave; the step fails if any suite does.
       #
-      # TODO: Remove the integration retry once we clone the samples and mount
-      # them for CI. The suite boots a real server which clones
-      # `malloy-samples` from GitHub on startup; that clone occasionally fails
-      # on hosted runners with transient git/disk errors (`fetch-pack: invalid
-      # index-pack output`). A retry is cheaper and less invasive than wrapping
-      # the clone in server code.
-      - name: Run unit and integration tests
+      # The integration suite runs once. It needs no network: packages come from
+      # the repo and its fixtures, and DuckDB extensions are baked above.
+      - name: Run unit, component and integration tests
         env:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         run: |
           unit_log="$RUNNER_TEMP/server-unit-tests.log"
           bun run --cwd packages/server test:unit --serial > "$unit_log" 2>&1 &
           unit_pid=$!
+          component_log="$RUNNER_TEMP/server-component-tests.log"
+          bun run --cwd packages/server test:component > "$component_log" 2>&1 &
+          component_pid=$!
 
-          integration_status=1
-          for attempt in 1 2 3; do
-            if bun run --cwd packages/server test:integration --serial; then
-              integration_status=0
-              break
-            fi
-            echo "Integration tests failed on attempt $attempt."
-          done
+          if bun run --cwd packages/server test:integration --serial; then
+            integration_status=0
+          else
+            integration_status=$?
+          fi
 
           if wait "$unit_pid"; then unit_status=0; else unit_status=$?; fi
+          if wait "$component_pid"; then component_status=0; else component_status=$?; fi
 
           # bun leaves the step's stdout pipe non-blocking. Off Windows, a
           # multi-megabyte `cat` into it then fails with "write error:
@@ -318,7 +318,9 @@ jobs:
           fi
           echo "===== Unit tests (ran alongside the integration tests above) ====="
           cat "$unit_log"
+          echo "===== Component tests (ran alongside the integration tests above) ====="
+          cat "$component_log"
 
-          echo "unit tests exit $unit_status, integration tests exit $integration_status"
-          [ "$unit_status" -eq 0 ] && [ "$integration_status" -eq 0 ]
+          echo "unit tests exit $unit_status, component tests exit $component_status, integration tests exit $integration_status"
+          [ "$unit_status" -eq 0 ] && [ "$component_status" -eq 0 ] && [ "$integration_status" -eq 0 ]
         shell: bash

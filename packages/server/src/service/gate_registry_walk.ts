@@ -2,41 +2,27 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The `sourceRegistry`-following fallback for finding a struct's inherited
- * `#(authorize)` gate, shared between `Model` (`service/model.ts`, request
- * time) and `extractSourcesFromModelDef` (`service/source_extraction.ts`,
- * package load) — plus, separately, {@link resolveQuerySourceBase}, the
- * `query_source` base lookup ALSO shared between the two.
+ * Finding a struct's inherited `#(authorize)` gate, shared by `Model`
+ * (request time) and `extractSourcesFromModelDef` (package load), plus
+ * {@link resolveQuerySourceBase}, the `query_source` base lookup both use.
  *
- * Malloy's `annotations.inherits` chain covers an `extend {}` derivation
- * whose OWN deriving statement carries an annotation (which demotes the
- * base's to `.inherits`). It does NOT run for the more common case measured
- * here: `extend {}`/`extend { rename: … }`/`extend { except: … }`/
- * `extend { accept: … }` with NO annotation of their own — Malloy instead
- * copies the base's annotation NOTE OBJECTS directly onto the deriving
- * struct's OWN `annotations`, by reference (confirmed against
- * `@malloydata/malloy` 0.0.427), which is why `ownLevelNoteTexts` on the
- * struct ITSELF already finds the gate for that shape and neither this
- * function nor `resolveDeclaredSource` is reached for it in practice — see
- * `validateAuthorizeProbes`'s doc for why that made source-identity the wrong
- * signal for "does this entry point declare its own gate".
+ * How Malloy carries a base's annotations onto a derived struct:
+ *  - `extend {}` (also with `rename:`/`except:`/`accept:`) carrying NO
+ *    annotation of its own: the base's note objects are copied, by reference,
+ *    onto the derived struct's OWN `annotations`. Reading the struct's own
+ *    notes already finds the gate, so authored-vs-inherited must be decided by
+ *    note identity, not source identity (see `validateAuthorizeProbes`).
+ *  - a deriving statement that DOES carry an annotation demotes the base's
+ *    notes to `annotations.inherits`, which {@link ancestorGateExprs} walks.
+ *  - a `query_source` (`Z is X -> {...}`) carries no `annotations` at all and
+ *    its registry entry self-references; the only link back to `X` is
+ *    `Z.query.structRef` ({@link resolveQuerySourceBase}). That hop is NOT
+ *    folded into {@link ancestorGateExprs}: `Model.collectEntryPointGates`
+ *    takes it in its own recursion, so folding it in would double the result.
+ *    `extractSourcesFromModelDef` uses {@link effectiveAncestorGateExprs}.
  *
- * What `annotations.inherits` genuinely does NOT cover — confirmed the same
- * way — is a `query_source` (`Z is X -> {...}`): a `query_source`-typed
- * `StructDef` carries no `annotations` at all, and its OWN `sourceRegistry`
- * entry self-references (Malloy elides a real link for this shape exactly like
- * it elides one for a trivial `extend {}`). The only surviving link from `Z`
- * back to `X` is `Z.query.structRef` — see {@link resolveQuerySourceBase},
- * which is deliberately NOT folded into {@link ancestorGateExprs}:
- * `Model.collectEntryPointGates` already takes that hop as its own separate
- * recursion, so folding it in here would double its result rather than fill a
- * gap. `extractSourcesFromModelDef` has no such recursion and calls
- * {@link resolveQuerySourceBase} directly.
- *
- * Kept light on purpose: this is imported by `source_extraction.ts`, which is
- * bundled into the package-load worker (see that module's doc comment) — no
- * runtime/materializer/telemetry imports here, only `@malloydata/malloy`
- * types plus the pure annotation helpers.
+ * Bundled into the package-load worker via `source_extraction.ts`: keep
+ * imports to `@malloydata/malloy` types and pure annotation helpers.
  */
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
@@ -51,20 +37,15 @@ import { collectAuthorizeExprsForRoute } from "./authorize";
 export const ANCESTOR_WALK_MAX_DEPTH = 32;
 
 /**
- * The DECLARED source a struct was created from, via `ModelDef.sourceRegistry`
- * (`referenceID` — set for a plain join or unmodified rename — then the
- * struct's own `sourceID`).
+ * The declared source a struct was created from, via `ModelDef.sourceRegistry`
+ * (`referenceID` first, then `sourceID`).
  *
- * Three outcomes, and collapsing the last two would fail OPEN:
- *  - `resolved` — the declaration this struct derives from.
- *  - `none` — there is nothing to follow: no id, no registry, or every entry
- *    resolves back to `struct` itself (it IS its own declaration). The
- *    overwhelmingly common case for an ordinary top-level source, so this
- *    has to mean "no gate here", not "deny".
- *  - `unresolvable` — an entry WAS found for one of the ids and did not yield
- *    a usable `SourceDef` (a `source_registry_reference` naming something
- *    absent from `modelDef.contents`, or a non-source entry). The base exists
- *    and we cannot read it, so the caller denies.
+ * Collapsing the last two outcomes would fail open:
+ *  - `resolved`: the declaration this struct derives from.
+ *  - `none`: nothing to follow (no id, no registry, or the entry is `struct`
+ *    itself). The common case for a top-level source; means "no gate here".
+ *  - `unresolvable`: an entry exists but does not yield a usable `SourceDef`.
+ *    The base exists and cannot be read, so the caller denies.
  */
 export function resolveDeclaredSource(
    struct: SourceDef,
@@ -94,56 +75,30 @@ export function resolveDeclaredSource(
 }
 
 /**
- * The gate a struct carries from the source it was derived FROM, used when
- * the struct declares no `#(authorize)` of its own.
+ * The gate a struct inherits from the source it was derived from, used when
+ * it declares no gate of its own.
  *
- * Malloy does not leave a base's annotations at top level once the deriving
- * statement carries any annotation of its own — ANY annotation, not just an
- * authorize one:
- *  - `source: x is base extend {}` with its own note demotes the base's
- *    annotations to `annotations.inherits` (`define-source.ts`);
- *  - an annotated `join_one:`/`join_many:` REPLACES the joined struct's
- *    annotations outright, with no `inherits` at all (`join.ts`) — there the
- *    struct's own `sourceID`/`referenceID` is the only surviving link back;
- *  - a `query_source` (`Z is X -> {...}`) carries no `annotations` at all —
- *    see this module's doc comment — so the ONLY link back to `X` is the
- *    `sourceRegistry` fallback below; the `annotations.inherits` chain never
- *    runs for this shape.
- * Reading OWN `blockNotes` alone therefore loses the base's gate to a stray
- * render tag, doc comment, or a `query_source` derivation, whoever wrote it.
- * All three links are followed here, nearest first, and the first ancestor
- * that declares a gate wins.
+ * Once the deriving statement carries ANY annotation (not just an authorize
+ * one), Malloy no longer leaves the base's annotations at top level:
+ *  - an annotated `extend {}` demotes them to `annotations.inherits`;
+ *  - an annotated `join_one:`/`join_many:` replaces them outright, leaving
+ *    `sourceID`/`referenceID` as the only link back;
+ *  - a `query_source` carries none, leaving only the registry link.
+ * So reading own notes alone would lose the base's gate to a stray render tag
+ * or doc comment. All links are followed, nearest first; the first ancestor
+ * declaring a gate wins ("own wins over ancestor" is what lets a curated
+ * extension replace a locked base's gate). Each level is read with
+ * {@link ownLevelNoteTexts} so a gate under `notes` is found too.
  *
- * Each level is read with {@link ownLevelNoteTexts} rather than `blockNotes`,
- * so a base whose gate landed under `notes` is still found on every link.
+ * Fail-closed: an exhausted walk or an `unresolvable` registry link returns
+ * `["false"]`, never `[]`: the chain exists and was not read to its end.
  *
- * "Own wins over ancestor" is what keeps the documented locked-base +
- * curated-extension idiom working (an extension declaring its own gate
- * replaces the base's).
- *
- * Fail-closed on unreadable IR: an exhausted `annotations.inherits` walk (the
- * cap was hit) or an `unresolvable` registry link returns `["false"]` rather
- * than `[]` — the chain exists and was not read to its end, so "no gate" would
- * be a silent allow on a source whose base may be locked. That sentinel is
- * synthesized on EITHER route, not only the `authorize` route: because
- * own-wins-over-ancestor is decided independently per route (an ancestor with
- * its own `#(authorize)` note but no `#(authorize)` one resolves one
- * route right there and sends only the other further up the chain), the two
- * routes' walks over the same struct can diverge before either one reaches
- * this same unreadable branch — a `authorize` call cannot rely on an
- * `authorize` call (over the same struct, same modelDef) having already
- * denied via its own `["false"]`, because it may never have reached this
- * branch at all. Synthesizing on both risks folding two `false` filters into
- * one grafted materializer for the same query instead of one — harmless
- * (still zero rows, same `AccessDeniedError`) and, per the per-query
- * `recordRowLevelGateDecision` call sites, does not double the metric either.
- *
- * `route` filters every level's own notes to that route ONLY
- * ({@link collectAuthorizeExprsForRoute}) — this is what makes
- * own-wins-over-ancestor PER ROUTE: an ancestor's `#(authorize)` note
- * does not satisfy a caller asking for `route === "authorize"`, so the walk
- * correctly continues past it (or falls through to the fail-closed sentinel)
- * rather than treating an unrelated route's note as "no gate here, stop".
+ * Own-wins-over-ancestor is decided per `route`: each level's notes are
+ * filtered to that route, so another route's note does not stop the walk.
+ * Because the two routes' walks can diverge, neither can rely on the other
+ * having already denied, so the sentinel is synthesized on both. Grafting
+ * two `false` filters for one query is harmless and does not double the
+ * metric.
  */
 export function ancestorGateExprs(
    struct: SourceDef,
@@ -161,35 +116,27 @@ export function ancestorGateExprs(
       inherited = inherited.inherits;
    }
    if (inherited) return ["false"];
-   // The registry link is followed as deep as the inherits chain, not one
-   // hop: `seen` (struct identity) is what stops a cycle, so truncating the
-   // recursion would just lose a gate two declarations up (fail open).
+   // Followed as deep as the inherits chain: `seen` stops cycles, and
+   // truncating would lose a gate two declarations up (fail open).
    seen.add(struct);
    if (seen.size > ANCESTOR_WALK_MAX_DEPTH) {
       return ["false"];
    }
    const declared = resolveDeclaredSource(struct, modelDef);
-   // A registry entry we found but could not read is NOT the same as "this
-   // struct has no base" — it means the link to a base exists and the walk
-   // failed to follow it, so the gate on the other end is unknown. Deny.
+   // A link exists but could not be followed, so the gate is unknown: deny.
    if (declared.kind === "unresolvable") {
       return ["false"];
    }
-   // A CYCLE returns `[]` ("no gate here"), not `["false"]`, and that is sound
-   // because of a CALLER PRECONDITION, not because a cycle is harmless in
-   // itself. Every call site reads the struct's OWN gate first and only calls
-   // this walk when that came back empty (`./gate_classification`'s
-   // `gateExprsForOwnAnnotations`, `extractSourcesFromModelDef`'s
-   // per-route own-exprs check). So on an A->B->A cycle the struct at the far
-   // end is either an ancestor whose own notes the line below has already
-   // read, or the starting struct itself — whose own gate the caller read
-   // before calling. Nothing is skipped either way.
+   // A cycle returns `[]`, not `["false"]`, which is sound only because of a
+   // caller precondition: every call site reads the struct's OWN gate first
+   // and calls this walk only when that was empty. On an A->B->A cycle the far
+   // end is an ancestor already read or the starting struct, so nothing is
+   // skipped.
    //
-   // Do NOT "harden" this to `["false"]`: a diamond or self-referencing
-   // derivation legitimately revisits a struct, and denying there denies every
-   // query against it. And do NOT hoist this walk above a call site's own-gate
-   // read — that read IS the precondition, and losing it turns this `[]` into a
-   // real fail-open with nothing else to catch it.
+   // Do not change this to `["false"]`: diamonds and self-references
+   // legitimately revisit a struct, and that would deny every query on it.
+   // Do not hoist this walk above a call site's own-gate read either; losing
+   // that read turns this `[]` into a real fail-open.
    if (declared.kind === "none" || seen.has(declared.source)) return [];
    const exprs = collectAuthorizeExprsForRoute(
       ownLevelNoteTexts(declared.source.annotations),
@@ -201,16 +148,11 @@ export function ancestorGateExprs(
 }
 
 /**
- * The `SourceDef` a `query_source` struct (`Z is X -> {...}`) derives from,
- * via `query.structRef` — `undefined` if `struct` is not a `query_source`, or
- * if the ref cannot be resolved to a usable `SourceDef` (a string ref naming
- * something absent from `modelDef.contents`, or a non-source entry).
+ * The `SourceDef` a `query_source` (`Z is X -> {...}`) derives from, via
+ * `query.structRef`; `undefined` if `struct` is not a `query_source` or the
+ * ref does not resolve to a `SourceDef`.
  *
- * Duck-typed rather than imported: `QuerySourceDef` isn't re-exported from
- * the package root (same situation as `given.ts`'s `MalloyGiven`). Mirrors,
- * and is called by, `Model.collectEntryPointGates`'s identical resolution —
- * see this module's doc comment for why the recursion around it stays
- * separate per caller while the lookup itself is shared.
+ * Duck-typed because `QuerySourceDef` is not exported from the package root.
  */
 export function resolveQuerySourceBase(
    struct: SourceDef,
@@ -227,13 +169,10 @@ export function resolveQuerySourceBase(
 }
 
 /**
- * The `SourceDef` a `query_source` struct's own base resolved to when that
- * base is itself a composite (`source: qs is compose(a, b) -> {...}`) —
- * Malloy resolves the composite to exactly one concrete member for THIS
- * derivation, carried on `query.compositeResolvedSourceDef`, NOT on
- * `query.structRef` (the raw composite) or `query.pipeline`. Mirrors, and is
- * called by, `Model.collectEntryPointGates`'s identical resolution — see
- * this module's doc comment.
+ * For a `query_source` whose base is a composite (`qs is compose(a, b) ->
+ * {...}`), the member Malloy resolved for this derivation. It is carried on
+ * `query.compositeResolvedSourceDef`, not `query.structRef` (the raw
+ * composite).
  */
 export function resolveCompositeResolvedBase(
    struct: SourceDef,
@@ -248,48 +187,27 @@ export function resolveCompositeResolvedBase(
 }
 
 /**
- * {@link ancestorGateExprs}, extended with the TWO hops it deliberately
- * doesn't take — see this module's doc comment for why: a `query_source`'s
- * base via {@link resolveQuerySourceBase}, and (additively — Malloy models
- * these as two independently meaningful links, not alternatives) that base's
- * own composite-member resolution via {@link resolveCompositeResolvedBase}.
- * Used only by `extractSourcesFromModelDef`, which (unlike
- * `Model.collectEntryPointGates`) has no separate recursion of its own to
- * take either hop.
+ * {@link ancestorGateExprs} plus the two hops it does not take: a
+ * `query_source`'s base ({@link resolveQuerySourceBase}) and, additively,
+ * its composite-member resolution ({@link resolveCompositeResolvedBase}).
+ * For `extractSourcesFromModelDef`, which has no recursion of its own for
+ * either hop.
  *
- * Returns GROUPS, not one flat expression list — see `authorize.ts`'s
- * `AuthorizeMap` doc for why. The query-source base's own gate and the
- * composite-member's own gate are two DIFFERENT declaring sources' gates,
- * which must AND, not OR; concatenating them into one `string[]` (the
- * pre-groups shape) silently turned that AND into an OR the moment either hop
- * fired, which is the row-level authorization leak this grouping exists to
- * close. Each hop below contributes at most one group.
+ * Returns groups, not a flat list (see `AuthorizeMap`): the base's gate and
+ * the composite member's gate belong to different declaring sources and must
+ * AND. Flattening them into one list would OR them, a row-level leak. Each
+ * hop contributes at most one group.
  *
- * A base that cannot be resolved denies (`[["false"]]`) rather than reporting
- * "no gate": a `query_source` derives from something by construction, so
- * failing to read its base is IR this walk failed to follow, not evidence
- * the source is ungated — same posture as `collectEntryPointGates`'s
- * identical case. The composite-member hop has no equivalent deny: it is
- * additive, so a query-source with no composite member to resolve simply
- * contributes nothing extra, exactly as `collectEntryPointGates` treats it.
+ * An unresolvable `query_source` base denies (`[["false"]]`): it derives from
+ * something by construction, so failing to read it is not evidence of no
+ * gate. The composite hop is additive and has no such deny.
  *
- * Malloy's composite resolver copies the query-source base's OWN annotation
- * NOTE OBJECTS onto the resolved member struct's OWN `blockNotes`, by
- * reference, alongside the member's own notes (confirmed against
- * `@malloydata/malloy` — the same by-reference copy this module's header
- * documents for `extend {}`). Reading the member's own notes without
- * excluding that copy would fold the base's gate INTO the member's own group
- * — one source's conjunction polluted with another source's condition, which
- * reintroduces the base's term under the member's attribution one level down
- * even after the two hops are kept as separate groups. `parentOwnNotes` — the
- * base's own notes, by IDENTITY — is subtracted from the member's own notes
- * before they are read, exactly the discriminator
- * `Model.findSourceByOwnAnnotationIdentity`
- * (`service/model.ts`) already uses for the analogous join-field question.
+ * Malloy's composite resolver copies the base's own note objects onto the
+ * resolved member's own notes, by reference. Those are subtracted by identity
+ * (`parentOwnNotes`) before reading the member's gate; otherwise the base's
+ * condition would be folded into the member's group.
  *
- * `route` is threaded through every own-notes read and every recursive call —
- * see {@link ancestorGateExprs}'s doc for why own-wins-over-ancestor and the
- * fail-closed sentinel both have to be decided PER ROUTE.
+ * `route` is threaded through every read; see {@link ancestorGateExprs}.
  */
 export function effectiveAncestorGateExprs(
    struct: SourceDef,
@@ -305,14 +223,7 @@ export function effectiveAncestorGateExprs(
    const base = resolveQuerySourceBase(struct, modelDef);
    if (!base) {
       const duck = struct as unknown as { type: string };
-      // The fail-closed sentinel, synthesized on BOTH routes — see
-      // `ancestorGateExprs`'s doc for why own-wins-over-ancestor is decided
-      // per route, so a `authorize` call cannot rely on the
-      // `authorize` call over the same struct having already denied here.
-      // Closes a structural gap in the walk rather than a documented live
-      // leak: the two routes' walks over the same struct can diverge before
-      // either reaches this branch, but every construction found so far
-      // fails package load before a served model can exercise it.
+      // Fail-closed sentinel, on both routes (see `ancestorGateExprs`).
       if (duck.type === "query_source") {
          groups.push(["false"]);
       }
@@ -347,22 +258,14 @@ export function effectiveAncestorGateExprs(
 }
 
 /**
- * Every struct reachable from `roots` by the two derivation hops
- * {@link effectiveAncestorGateExprs} takes — {@link resolveQuerySourceBase} and
- * {@link resolveCompositeResolvedBase} — transitively, and EXCLUDING the roots
- * themselves.
+ * Every struct reachable from `roots` (excluded) by the two hops
+ * {@link effectiveAncestorGateExprs} takes, transitively.
  *
- * `modelDef.contents` u `sourceRegistry` is not a superset of what the gate
- * walks can reach, and the gap is not exotic: through an import, a
- * `query_source`'s base arrives as an INLINE `SourceDef` on `query.structRef`
- * rather than as a name into `contents`, and a composite's resolved member is
- * synthesized and lives in neither collection. Any sweep that wants to answer
- * "does a gate (or a near miss) exist ANYWHERE this model's gate walks look"
- * has to follow both, or it answers `false` for a genuinely gated model.
- *
- * Identity-guarded, so a diamond or a self-referencing derivation terminates,
- * and a string `structRef` that resolves back into `contents` contributes
- * nothing (it is already a root).
+ * `modelDef.contents` plus `sourceRegistry` does not cover everything the
+ * gate walks reach: an imported `query_source`'s base arrives inline on
+ * `query.structRef`, and a composite's resolved member lives in neither. A
+ * sweep asking "is there a gate anywhere the walks look" must follow both or
+ * it answers `false` for a gated model. Identity-guarded against cycles.
  */
 export function derivedStructsReachable(
    roots: readonly SourceDef[],

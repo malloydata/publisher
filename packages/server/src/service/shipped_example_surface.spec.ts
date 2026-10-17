@@ -13,7 +13,7 @@
  *   - Every query now enters through an `import`. Malloy marks imported entries
  *     `exported: false` and inlines their struct at the reference site, which is
  *     exactly the shape that once denied AUTHORIZED callers by grafting a gate
- *     onto an entry nothing consults (see authorize_import_hop.integration.spec.ts,
+ *     onto an entry nothing consults (see tests/component/authorize/import_hop.spec.ts,
  *     whose header notes no other fixture put a gated source behind an import).
  *     The example now does, permanently.
  *   - The givens that drive the notebook's Parameters panel are declared in the

@@ -38,9 +38,8 @@ import type { Package } from "../service/package";
 import { logger } from "../logger";
 
 /**
- * Remediation for a ServiceUnavailableError, shared by every caller that homes
- * one. The error covers both the memory governor and the concurrency slots, so
- * the wording names both rather than only memory.
+ * Remediation for a ServiceUnavailableError. It covers both the memory governor
+ * and the concurrency slots, so the wording names both.
  */
 export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
    "Retry once the publisher is below its configured memory or concurrency limit.",
@@ -48,20 +47,14 @@ export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
 ];
 
 /**
- * Turns a thrown error into agent-facing ErrorDetails, homed by error class.
+ * Turns a thrown error into agent-facing ErrorDetails, homed by error class, so
+ * a missing package or a back-pressure rejection is not dressed up as a Malloy
+ * syntax problem. Only classes about the caller's Malloy or request get the
+ * Malloy advice; anything else is reported as internal.
  *
- * Without this, a tool that funnels every failure through getMalloyErrorDetails
- * dresses each one up as a Malloy language problem: a missing package tells the
- * agent to check its Malloy syntax, and a back-pressure rejection sends it
- * hunting for a typo instead of retrying.
- *
- * Only the classes that really are about the caller's Malloy or request reach
- * the Malloy advice; anything else is reported as internal rather than blamed
- * on the model. Routing by class and not by message is deliberate:
- * getMalloyErrorDetails refines on message patterns that the shipped engine
- * does not emit (its syntax pattern wants "no viable alternative at input"
- * where a real error says "unexpected '@'"), so "did it refine?" would send
- * genuine compile errors to the internal branch.
+ * Routing is by class, not message: getMalloyErrorDetails's message patterns
+ * do not all match what the shipped engine emits, so "did it refine?" would
+ * send genuine compile errors to the internal branch.
  *
  * @param operation The operation that failed (e.g. 'compile', 'reloadPackage').
  * @param identifier The resource it failed on (e.g. 'env/package').
@@ -72,9 +65,8 @@ export function classifyToolError(
    error: unknown,
 ): ErrorDetails {
    if (error instanceof OffSurfaceError) {
-      // Checked before the not-found branch, which would drop this message and
-      // tell the agent to check its spelling. The message names the surface and
-      // the fix, and is only ever built where nothing is gated (see the class).
+      // Before the not-found branch, which would drop this message and tell the
+      // agent to check its spelling.
       return {
          message: error.message,
          suggestions: [
@@ -84,10 +76,8 @@ export function classifyToolError(
       } satisfies ErrorDetails;
    }
    if (error instanceof PackageManifestError) {
-      // An unusable publisher.json, from reload_package or a package-scope
-      // compile_model. The internal branch would call it unexpected and say to
-      // retry, and the Malloy branch would send the agent to its .malloy files.
-      // The message already names the field and what was wrong with it.
+      // An unusable publisher.json: neither "retry" (internal) nor "check your
+      // .malloy files" (Malloy) applies.
       return {
          message: error.message,
          suggestions: [
@@ -103,23 +93,17 @@ export function classifyToolError(
       error instanceof EnvironmentNotFoundError ||
       error instanceof PackageNotFoundError ||
       error instanceof ModelNotFoundError ||
-      // A query-boundary denial is a deliberate 404, and reporting it as a
-      // server fault would tell the caller to contact support about a boundary
-      // that is working. getNotFoundError also drops the source name this class
-      // is careful not to confirm.
+      // A query-boundary denial is a deliberate 404; getNotFoundError also
+      // drops the source name this class is careful not to confirm.
       error instanceof NotQueryableError ||
-      // A mistyped connection name is the most likely caller error of all, and
-      // as an unclassified throw it came back as "unexpected internal error,
-      // try again later", which an agent then does forever.
+      // Otherwise reported as internal, and an agent retries it forever.
       error instanceof ConnectionNotFoundError
    ) {
       return getNotFoundError(identifier);
    }
    if (error instanceof ConnectionFailedError) {
-      // The database could not be reached. The internal branch below would
-      // call it unexpected, and nothing here should send the agent to its
-      // Malloy. The driver's text can name an internal host, so it is logged
-      // and left out, as on the HTTP 502.
+      // The driver's text can name an internal host, so it is logged and left
+      // out of the response, as on the HTTP 502.
       logInternalFailure(
          `Database unreachable during ${operation}`,
          error,
@@ -134,9 +118,6 @@ export function classifyToolError(
       } satisfies ErrorDetails;
    }
    if (error instanceof UnconfiguredConnectionError) {
-      // The model names a connection this environment does not have. Nothing
-      // the agent can change in the query fixes that, and a retry fails the
-      // same way.
       return {
          message: `${error.message}. The model for ${identifier} uses a connection this environment does not have, so the query never ran.`,
          suggestions: [
@@ -146,9 +127,7 @@ export function classifyToolError(
       } satisfies ErrorDetails;
    }
    if (error instanceof ConnectionAuthError) {
-      // The database rejected the connection's credentials. Retrying or
-      // rewriting the query fails the same way until the connection is fixed.
-      // The driver's text can name the user or account, so it is logged.
+      // The driver's text can name the user or account, so it is only logged.
       logInternalFailure(
          `Connection credentials rejected during ${operation}`,
          error,
@@ -163,16 +142,12 @@ export function classifyToolError(
       } satisfies ErrorDetails;
    }
    if (error instanceof ServiceUnavailableError) {
-      // Back-pressure: surface the server's own message so the caller knows to
-      // retry rather than to go edit its Malloy.
       return {
          message: error.message,
          suggestions: [...BACK_PRESSURE_SUGGESTIONS],
       } satisfies ErrorDetails;
    }
    if (error instanceof ConnectionPoolExhaustedError) {
-      // Transient: the query never reached the database because every session
-      // this server may open for the connection was busy.
       return {
          message: error.message,
          suggestions: [
@@ -182,10 +157,8 @@ export function classifyToolError(
       } satisfies ErrorDetails;
    }
    if (error instanceof ResponseUnserializableError) {
-      // Checked before the shared branch below, which would otherwise offer to
-      // raise the cap. There is no cap at which a response that will not
-      // serialize starts serializing, so that advice would send an agent to
-      // change a setting and hit the identical failure.
+      // Before the shared branch below, whose "raise the cap" advice cannot
+      // help a response that will not serialize at any cap.
       return {
          message: error.message,
          suggestions: [
@@ -198,12 +171,9 @@ export function classifyToolError(
       error instanceof QueryTimeoutError ||
       error instanceof PayloadTooLargeError
    ) {
-      // The query was too slow or too big. Both classes already carry their own
-      // "refine the query" remediation in the message, so the suggestions say
-      // the part the message leaves out and the internal branch got backwards:
-      // this is not transient, and retrying it unchanged fails identically.
-      // That distinction is the whole reason these are 504/413 and not the
-      // retryable 503 (see the QueryTimeoutError docstring in errors.ts).
+      // The messages already say to refine the query; the suggestions add that
+      // this is not transient, which is why these are 504/413 and not the
+      // retryable 503.
       return {
          message: error.message,
          suggestions: [
@@ -215,18 +185,9 @@ export function classifyToolError(
    // Must precede the Malloy branch: InvalidArgumentError extends
    // BadRequestError, which that branch matches.
    if (error instanceof InvalidArgumentError) {
-      // One named argument was malformed, and it is NOT about Malloy. A schema
-      // introspection argument error ("DuckDB schema name must be qualified as
-      // catalog.schema") answered with the Malloy advice came back with four
-      // suggestions about checking `source:` and `view:` keywords in a model
-      // file the caller never mentioned. These messages are already specific;
-      // the suggestions only need to say that retrying unchanged is pointless.
-      //
-      // Deliberately NOT widened to BadRequestError, which the branch below
-      // still handles. That class is also the general wrapper for query-time
-      // failures, including "Model compilation failed: ..." (the fallback for
-      // compile errors that are not ModelCompilationError), and those are
-      // genuine Malloy problems that want the syntax guidance and doc links.
+      // A malformed argument that is not about Malloy, so it must not get the
+      // Malloy advice. Not widened to BadRequestError: that class also wraps
+      // genuine query-time compile failures, which do want the Malloy advice.
       return {
          message: error.message,
          suggestions: [
@@ -236,35 +197,21 @@ export function classifyToolError(
       } satisfies ErrorDetails;
    }
    if (
-      // A raw engine error: what a bad query throws (syntax, undefined name,
-      // field not found). executeQuery's catch sees these, so they must keep
-      // the Malloy advice.
       error instanceof MalloyError ||
-      // The same thing wrapped: what a failed compile or reload throws.
       error instanceof ModelCompilationError ||
-      // An #(authorize) denial, whose message getMalloyErrorDetails recognizes.
+      // getMalloyErrorDetails recognizes the #(authorize) denial message.
       error instanceof AccessDeniedError ||
-      // A malformed request is the caller's to fix, not ours to retry. Covers
-      // model.ts's query-time failures, which are about Malloy.
       error instanceof BadRequestError
    ) {
       return getMalloyErrorDetails(operation, identifier, error);
    }
-   // Everything else (a filesystem EACCES, a TypeError, a worker crash, a
-   // timeout) is not the caller's Malloy. Telling them to check their syntax
-   // sends them to edit a model that is fine.
    return getInternalError(operation, error);
 }
 
 /**
- * Fetches and validates the Package and Model instances needed for query execution.
- * Handles errors related to package/model access and initial compilation.
- *
- * The resolved Environment comes back with the model because a query needs it for
- * more than the lookup: it owns the connection configs the per-query metadata
- * layers are read from.
- *
- * @returns An object containing the Model instance or a pre-formatted ErrorDetails object.
+ * Resolves the model to query, or the ErrorDetails explaining why it cannot be.
+ * The Environment is returned too because it owns the connection configs the
+ * per-query metadata layers are read from.
  */
 export async function getModelForQuery(
    environmentStore: EnvironmentStore,
@@ -280,23 +227,20 @@ export async function getModelForQuery(
          environmentName,
          false,
       );
-      // Shed load before any disk / DB work; mirrors the HTTP query
-      // controllers so MCP traffic obeys the same back-pressure rules.
+      // Shed load before any disk / DB work, as the HTTP query controllers do.
       environment.assertCanAdmitQuery();
       const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
-      if (!model || model.getModelType() === "notebook") {
-         // Ensure it's actually a model
+      if (!model || model.getType() === "notebook") {
          const details = getNotFoundError(
             `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
          );
          return { error: details };
       }
-      // Attempt to get the model definition early to catch initial compilation errors
-      await model.getModel(); // This might throw ModelCompilationError
+      // Surface a compilation error here rather than mid-query.
+      await model.getModel();
       return { model, environment, pkg };
    } catch (error) {
-      // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;
       if (error instanceof EnvironmentNotFoundError) {
          errorDetails = classifyToolError(
@@ -319,25 +263,19 @@ export async function getModelForQuery(
             error,
          );
       } else if (error instanceof AccessDeniedError) {
-         // An #(authorize) denial during model setup. Funnel through
-         // getMalloyErrorDetails (which recognizes the access-denied message and
-         // gives supply-the-givens guidance) so a 403 never surfaces as an
-         // opaque internal error. Defensive: the gate fires during query
-         // execution today, not setup, but this keeps every error class homed.
+         // Defensive: the #(authorize) gate fires at query time, not setup, but
+         // a 403 must never surface as an opaque internal error.
          errorDetails = getMalloyErrorDetails(
             "executeQuery (load model)",
             `${environmentName}/${packageName}/${modelPath}`,
             error,
          );
       } else if (error instanceof ServiceUnavailableError) {
-         // Back-pressure: don't dress this up as a 404/500. Surface the
-         // server's own message so the MCP caller knows to retry.
          errorDetails = {
             message: error.message,
             suggestions: [...BACK_PRESSURE_SUGGESTIONS],
          } satisfies ErrorDetails;
       } else {
-         // Unexpected error during setup
          errorDetails = getInternalError("executeQuery (Setup)", error);
       }
       logger.error(
@@ -349,13 +287,8 @@ export async function getModelForQuery(
 }
 
 /**
- * Constructs a malloy:// URI string identifying the model a tool response came
- * from. Attached as `uri` metadata on tool results (get-context, execute-query,
- * docs-search); it is not a fetchable MCP resource.
- *
- * @param components The URI parts (environment, package, and optionally the model).
- * @param fragment Optional fragment identifier (e.g., "result", "get-context").
- * @returns A malloy:// URI string.
+ * Builds the malloy:// URI attached as `uri` metadata on tool results. It
+ * identifies where a result came from; it is not a fetchable MCP resource.
  */
 export function buildMalloyUri(
    components: {
@@ -371,7 +304,6 @@ export function buildMalloyUri(
    if (components.environment) {
       path += encodeURIComponent(components.environment);
    } else {
-      // Default to 'home' if not provided, consistent with current behavior
       path += "home";
    }
 
@@ -388,7 +320,7 @@ export function buildMalloyUri(
 
    // The URL constructor normalizes malloy://path to malloy:///path, so we
    // build the string manually to keep the malloy://environment/... shape.
-   let uriString = "malloy:/" + path; // Start with one slash after scheme
+   let uriString = "malloy:/" + path;
 
    if (fragment) {
       uriString += "#" + fragment;

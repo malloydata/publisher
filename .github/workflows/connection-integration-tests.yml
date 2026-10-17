@@ -12,7 +12,7 @@ on:
       - "packages/server/src/service/materialization_build_session.ts"
       - "packages/server/src/service/build_read_cost.ts"
       - "packages/server/src/service/build_query_tag.ts"
-      - "packages/server/src/service/storage_build_bigquery.integration.spec.ts"
+      - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
       # Produces the value the manifest assertion pins.
       - "packages/server/src/service/materialization_service.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
@@ -33,7 +33,7 @@ on:
       - "packages/server/src/service/materialization_build_session.ts"
       - "packages/server/src/service/build_read_cost.ts"
       - "packages/server/src/service/build_query_tag.ts"
-      - "packages/server/src/service/storage_build_bigquery.integration.spec.ts"
+      - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
       # Produces the value the manifest assertion pins.
       - "packages/server/src/service/materialization_service.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
@@ -179,5 +179,5 @@ jobs:
       - name: Run storage= build integration tests
         run: |
           cd packages/server
-          bun test --timeout 100000 ./src/service/storage_build_bigquery.integration.spec.ts
+          bun test --timeout 100000 ./tests/component/storage_build_bigquery.component.spec.ts
 

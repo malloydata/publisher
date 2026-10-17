@@ -82,7 +82,7 @@ export function mentionsChartTag(line: string): boolean {
 }
 
 /**
- * The line that previews "From the view" on a tile whose saved body may carry
+ * The line that previews "Default" on a tile whose saved body may carry
  * a chart line of its own: the chart tags taken off, and nothing put on.
  * Unlike Table's line it does not negate `viz`, so it is not a choice of
  * rendering: what the view's own shape gives is what draws.

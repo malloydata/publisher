@@ -18,7 +18,7 @@ import {
    getPackageIndex,
    JOIN_TOPOLOGY_MAX_DEPTH,
    sourceContextKey,
-} from "./get_context_tool";
+} from "./package_entities";
 
 async function indexOfFixture() {
    const { pkg } = await compileJoinFixture();

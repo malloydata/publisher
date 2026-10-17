@@ -2,18 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Shared utilities for surfacing Malloy `Given` declarations on
- * compiled models.
- *
- * The Malloy SDK's `Given` class is declared in
- * `@malloydata/malloy/dist/api/foundation/core.d.ts` but is not
- * re-exported from the package root, so we duck-type against the
- * surface we actually use and don't pull in the private type.
- *
- * Lives here so both the main-thread `Model` constructor and the
- * package-load worker can use the same conversion. The worker
- * imports this file directly (it's pure TypeScript with no native
- * deps, so it's safe to bundle into the worker entry).
+ * Surfacing Malloy `Given` declarations on compiled models. Shared by the
+ * main-thread `Model` and the package-load worker, so it must stay pure
+ * TypeScript with no native deps.
  */
 
 import {
@@ -37,9 +28,8 @@ import type { Tag } from "@malloydata/malloy-tag";
 import { motlyTag, tagNumeric, tagText } from "./motly";
 
 /**
- * Duck-typed shape of a Malloy SDK `Given` instance (the value type
- * of `Model.givens`). `Given` itself isn't re-exported from the
- * package root, but the `Annotations` view it returns is.
+ * Duck-typed shape of a Malloy SDK `Given` (the value type of
+ * `Model.givens`), which the package root does not re-export.
  */
 export interface MalloyGiven {
    readonly name: string;
@@ -56,57 +46,36 @@ export interface MalloyGiven {
 export type GivenControlKind = "select" | "multiselect";
 
 /**
- * Where a `select`/`multiselect` control gets its options: a named `query=`, a
- * `source=` + `dimension=` pair, or a `query=` with a `dimension=` naming which
- * of its columns to read. All three run through the ordinary query endpoint, so
- * none of them is a new capability.
- *
- * With `query=` alone the first column of each row is used, so a single-column
- * `group_by` needs no `dimension=`. Mirrors the `GivenSuggest` schema in
- * `api-doc.yaml`; the two are one contract and have to move together.
+ * Where a `select`/`multiselect` control gets its options: `query=` alone
+ * (first column of each row), `source=` + `dimension=`, or `query=` +
+ * `dimension=`. All run through the ordinary query endpoint. Mirrors the
+ * `GivenSuggest` schema in `api-doc.yaml`; the two must move together.
  */
 export interface GivenSuggestSpec {
    query?: string;
    source?: string;
    dimension?: string;
    /**
-    * The givens the suggest query needs in its request to RUN: those the
-    * source it reads is scoped by (a source-level `where: … ~ $X`) or gated by
-    * (an `#(authorize)` expression reading `$X`), plus, for the `query=` form,
-    * the ones the named query itself references. A client sends the current
-    * values of exactly these and nothing else, so a gated source's options load
-    * while the option list still does not depend on the page's other filters.
-    * Absent when the query needs none, or from a server too old to say.
+    * The givens the suggest query needs to RUN: those its source is scoped
+    * or gated by, plus, for `query=`, those the named query references. A
+    * client sends exactly these, so a gated source's options load without
+    * the option list depending on the page's other filters.
     */
    givenNames?: string[];
 }
 
 /**
- * How a given should be presented as an input control.
- *
- * Declared on the `given:` itself, which is what makes it portable: a
- * dashboard, a notebook, and an SDK host all render the same control for the
- * same given without any of them restating it. Authoring one of these per
- * surface would let them drift, which is the whole reason it lives here.
+ * How a given is presented as an input control. Declared on the `given:`
+ * itself so every surface (dashboard, notebook, SDK host) renders the same
+ * control without restating it and drifting.
  */
 export interface GivenControlSpec {
    label?: string;
    /**
-    * Helper text for the control, from a `# description=` tag.
-    *
-    * There is a second, older spelling: `#(description="…")`, an app-route
-    * annotation that clients re-parse themselves. It still works and still has
-    * live callers, so nothing here retires it. It is worth knowing why the
-    * plain-tag form is only now available. `docs/givens.md` weighed exactly
-    * this form and rejected it, correctly at the time, because plain `#` tags
-    * are Malloy's reserved namespace and `malloyGivenToApi` drops them before
-    * `annotations` reaches a client. Reading them here server-side is what
-    * changes that, so the tag form becomes readable for the first time.
-    *
-    * It is also the form that compiles clean: Malloy takes an annotation's
-    * route up to the first whitespace, so `#(description="Earliest report
-    * date")` warns `malformed-route` on every compile, while `# description=`
-    * carries no route and does not.
+    * Helper text, from a `# description=` tag. The older app-route spelling
+    * `#(description="…")` still works client-side, but warns
+    * `malformed-route` on every compile (Malloy ends a route at the first
+    * whitespace); the plain tag carries no route and compiles clean.
     */
    description?: string;
    control?: GivenControlKind;
@@ -115,11 +84,7 @@ export interface GivenControlSpec {
    suggest?: GivenSuggestSpec;
 }
 
-/**
- * Wire/API shape of a given. Structurally identical to the
- * `components["schemas"]["Given"]` shape from the OpenAPI spec —
- * callers can cast freely.
- */
+/** Wire shape of a given; structurally identical to the OpenAPI `Given`. */
 export interface MalloyGivenApi extends GivenControlSpec {
    name: string;
    type: string;
@@ -129,31 +94,17 @@ export interface MalloyGivenApi extends GivenControlSpec {
    /** True when the given declares no default: a query that reads it fails until a value is supplied. */
    required?: boolean;
    /**
-    * The given's default as a Malloy source literal — one literal per declared
-    * `type`. Examples across the type range: `'WN'` or `"WN"` (string), `2003`
-    * (number), `true` (boolean), `@2024-01-01` (date), `f'WN'` (filter). Omitted
-    * when the given has no default. Consumers render/prefill it per `type` (e.g.
-    * unquote a string).
+    * The default as a Malloy source literal (`'WN'`, `2003`, `true`,
+    * `@2024-01-01`, `f'WN'`); omitted when there is none.
     */
    default?: string;
 }
 
 /**
- * A tag value that is present *and* says something, for the fields where an
- * empty value cannot mean anything.
- *
- * `text()` returns `""` for `label=""`, which passes an `!== undefined` check
- * and ships an empty label, an empty helper text, or worst of all a `suggest`
- * block whose `query=""` satisfies the runnable check below and tells a client
- * to fetch options from nothing. Absent and empty are the same intent here, so
- * they get the same answer: omit the field. Note that is *not* a fallback to
- * something type-derived; only `control` has one of those, and `control` is the
- * one field this does not guard (an empty value fails its enum check anyway).
- * An absent `label` is simply an absent label.
- *
- * This is deliberately NOT folded into {@link tagText}, which is also how given
- * *values* are read, and there an empty string is a legitimate value (an empty
- * filter is not an absent filter).
+ * A tag value that is present and non-blank. An empty `query=""` would
+ * otherwise pass the runnable check below and send a client to fetch options
+ * from nothing. Not folded into {@link tagText}, which also reads given
+ * *values*, where an empty string is legitimate.
  */
 function presentText(
    tag: Tag | undefined,
@@ -164,14 +115,9 @@ function presentText(
 }
 
 /**
- * Read the control contract out of a given declaration's annotations.
- *
- * The input is the raw annotation texts, MOTLY route included: these are plain
- * `#` tags, which `MalloyGivenApi.annotations` deliberately excludes (it
- * carries only caller-facing app routes like `#(doc)`). So the control fields
- * are *derived* here and shipped alongside, rather than left for each client to
- * re-parse. A client re-parsing them would need the MOTLY parser and the
- * filter-literal quoting workaround, and would drift from the dashboard path.
+ * Read the control contract from a given's raw annotation texts. These are
+ * plain `#` tags, which `MalloyGivenApi.annotations` excludes, so the fields
+ * are derived server-side rather than re-parsed (and drifting) per client.
  */
 export function readGivenControlSpec(
    annotationTexts: readonly string[],
@@ -180,10 +126,9 @@ export function readGivenControlSpec(
    const tag = motlyTag(annotationTexts);
    if (!tag) return spec;
 
-   // Every read goes through the throw-safe helpers: `Tag.text()` raises on a
-   // date literal MOTLY accepts and `Date` rejects, and both production callers
-   // map over every given with no try/catch, so an unguarded read would turn one
-   // typo into a failed load for the whole package.
+   // Only throw-safe helpers: `Tag.text()` raises on some date literals, and
+   // callers map over every given without a try/catch, so one typo would
+   // fail the whole package's load.
    const label = presentText(tag, "label");
    if (label !== undefined) spec.label = label;
 
@@ -209,17 +154,10 @@ export function readGivenControlSpec(
       if (source !== undefined) parsed.source = source;
       const dimension = presentText(suggest, "dimension");
       if (dimension !== undefined) parsed.dimension = dimension;
-      // Emit only a block a client can actually run, which is the three forms
-      // `GivenSuggest` documents: `query` alone, `source` + `dimension`, or
-      // `query` + `dimension`. `source` alone names no column and `dimension`
-      // alone names nothing to read it from, so neither can fetch options.
-      //
-      // Dropping the block does NOT rescue the control: a declared
-      // `control=select` still ships, so the client is told to render a list and
-      // given no source for it. That is the same position as any `control=select`
-      // carrying no `suggest` at all, which the schema permits and a client has
-      // to handle anyway, so this does not invent a new state. What it avoids is
-      // publishing a `suggest` that looks runnable and is not.
+      // Emit only a runnable block: `source` alone names no column and
+      // `dimension` alone names nothing to read. A `control=select` without a
+      // `suggest` is a state clients already handle; a `suggest` that looks
+      // runnable and is not would be a new one.
       const runnable =
          parsed.query !== undefined ||
          (parsed.source !== undefined && parsed.dimension !== undefined);
@@ -229,46 +167,6 @@ export function readGivenControlSpec(
    return spec;
 }
 
-/**
- * Convert a Malloy SDK `Given` to the wire/API shape.
- *
- * Two fields are deliberately not surfaced:
- *
- * - `location` — Malloy's `DocumentLocation.url` is an absolute
- *   `file://` path on the publisher's filesystem. Surfacing it
- *   would leak the OS user, install directory, and internal
- *   layout. Existing `Filter` introspection does not expose
- *   location either; matching that floor. A future PR can add a
- *   sanitised package-relative path if a client needs it.
- *
- * - `default` is surfaced as the rendered source literal
- *   (`given._internal.defaultText` — e.g. a string `'WN'`, number
- *   `2003`, boolean `true`, date `@2024-01-01`, or filter `f'WN'`).
- *   Malloy's public surface still exposes only the parsed `.default`
- *   AST; `_internal.defaultText` is the already-rendered string, so we
- *   forward it verbatim rather than re-implement the printer. Omitted
- *   when the given has no default.
- *
- * `annotations` is restricted to app-route annotations (bracketed,
- * caller-facing, e.g. `#(doc)`), excluding Malloy's reserved routes
- * (plain `#` tags, `#"` doc strings, `##!` pragmas), which aren't part
- * of the given's surface contract.
- *
- * Type rendering: a scalar renders as its own name (`string`,
- * `number`, `boolean`, `date`, `timestamp`, `timestamptz`,
- * `error`), a filter as `filter<…>`, and an ARRAY as
- * `<element>[]` — `number[]`, `string[]`.
- *
- * The array case is not decoration. A set-valued given is how a
- * `#(secure)` attribute is declared (a scalar cannot be one: it
- * has no value that fails closed), so it is the shape every
- * row-level access boundary uses. Rendering the bare `array`
- * discriminator loses the element type and yields text that is
- * not valid Malloy, which breaks any consumer that re-declares a
- * given from this field rather than merely displaying it — the
- * storage tier's serve shape does exactly that. A `record`
- * given, if the grammar gains one, still renders bare.
- */
 /** Whether a given declares no default: its parsed default and its rendered text are both absent. */
 function givenDeclaresNoDefault(given: MalloyGiven): boolean {
    const loose = given as unknown as {
@@ -279,6 +177,18 @@ function givenDeclaresNoDefault(given: MalloyGiven): boolean {
    return parsed === undefined && loose._internal?.defaultText === undefined;
 }
 
+/**
+ * Convert a Malloy SDK `Given` to the wire shape.
+ *
+ * - `location` is never surfaced: it is an absolute `file://` path that
+ *   would leak the OS user and install layout.
+ * - `annotations` keeps only caller-facing app routes (e.g. `#(doc)`), not
+ *   Malloy's reserved routes.
+ * - An array type renders as `<element>[]`, not bare `array`: set-valued
+ *   givens are how `#(secure)` attributes are declared, and the storage
+ *   tier's serve shape re-declares givens from this text, so it must be
+ *   valid Malloy.
+ */
 export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    const type = given.type;
    const renderedType =
@@ -302,12 +212,10 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       // the control tags live.
       ...readGivenControlSpec(allNotes.map((note) => note.text)),
       ...(allNotes.some((note) => note.route === "secure") && { secure: true }),
-      // `_internal.defaultText` is the already-rendered source literal of the
-      // given's default. It lives on Malloy's private `_internal` (the public
-      // surface exposes only the parsed `.default` AST node, not a stringified
-      // form), so we reach it through a localized cast rather than widening the
-      // duck-typed `MalloyGiven` — which would collide with the SDK `Given`'s
-      // own private `_internal` at every `as MalloyGiven` cast site.
+      // The rendered literal exists only on Malloy's private `_internal` (the
+      // public `.default` is an AST). A local cast, because widening
+      // `MalloyGiven` would collide with the SDK `Given`'s own `_internal` at
+      // every `as MalloyGiven` site.
       default: (given as { _internal?: { defaultText?: string } })._internal
          ?.defaultText,
       // From the parsed default and the rendered text together, so neither
@@ -317,11 +225,9 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
 }
 
 /**
- * Collect the given names referenced anywhere in a slice of Malloy IR.
- *
- * A view's `TurtleDef` carries no `givenUsage` summary the way a `Query` does,
- * but its pipeline holds the `{ node: 'given', refName }` reference nodes
- * themselves, so a structural walk answers the same question exactly.
+ * Collect the given names referenced anywhere in a slice of Malloy IR. A
+ * view's `TurtleDef` has no `givenUsage` summary, but its pipeline holds the
+ * `{ node: 'given', refName }` nodes, so a structural walk is exact.
  */
 export function collectGivenRefs(value: unknown, into: Set<string>): void {
    if (Array.isArray(value)) {
@@ -347,13 +253,9 @@ export interface SuggestGivenLookup {
 
 /**
  * The gate expressions a `suggest` over `name` must supply givens for: BOTH
- * routes, unioned.
- *
- * A dropdown's own query is an ordinary query against the source, so it meets
- * the same two gates. A lock given it omits is an unsupplied gate given and
- * denies (403); a filter given it omits cannot be grafted. Reading one route
- * here is what left a migrated source's controls showing "Options
- * unavailable".
+ * routes, unioned. A dropdown's query is an ordinary query and meets both
+ * gates: an omitted lock given denies (403), and an omitted filter given
+ * cannot be grafted.
  */
 export function gateGivenSource(
    sources: readonly {
@@ -369,15 +271,12 @@ export function gateGivenSource(
 }
 
 /**
- * Build the lookup a `suggest` is resolved against, from a compiled model.
- *
- * A source's names are the givens its own `where:` reads plus the ones its
- * EFFECTIVE gates read on BOTH routes; the caller supplies the gate expressions
- * per source (see {@link gateGivenSource}) because inheritance (`extend` of a
- * gated base) is resolved by `extractSourcesFromModelDef`, not here. A named query's names are its own
- * `givenUsage` plus its source's. `surfaced`, when given, narrows every answer
- * to names the entry can actually bind, since sending any other guarantees an
- * "unknown given" error.
+ * Build the lookup a `suggest` is resolved against. A source's names are the
+ * givens its own `where:` reads plus those its EFFECTIVE gates read; the
+ * caller supplies the gates (see {@link gateGivenSource}) because inheritance
+ * is resolved by `extractSourcesFromModelDef`. A named query adds its own
+ * `givenUsage`. `surfaced` narrows every answer to names the entry can bind,
+ * since any other yields an "unknown given" error.
  */
 export function suggestGivenLookup(
    modelDef: ModelDef,
@@ -476,14 +375,10 @@ const FILTER_PARSERS: Record<
 };
 
 /**
- * Refuse a request whose value for a `filter<T>` given does not parse as a
- * `T` filter, with the parser's own reason. Malloy refuses it too, but only
- * once the query compiles, and its message loses the reason
- * (`Filter expression parse error: [object Object].`).
- *
- * Checks only givens the model declares, with the same parser Malloy uses, so
- * a value this accepts is one the compiler reads. An unknown name is left to
- * Malloy's own "unknown given" error.
+ * Refuse a `filter<T>` given value that does not parse as a `T` filter, with
+ * the parser's own reason (Malloy's later refusal prints `[object Object]`).
+ * Uses Malloy's parser, so anything accepted here compiles. Unknown names are
+ * left to Malloy's "unknown given" error.
  */
 export function assertFilterGivensParse(
    declared: readonly { name?: string; type?: string }[] | undefined,

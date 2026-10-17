@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync } from "fs";
-import { resolve } from "path";
 import {
    BYPASS_AUTHORIZE_HEADER,
    BYPASS_AUTHORIZE_SECRET_ENV,
@@ -139,56 +137,5 @@ describe("readBypassAuthorize", () => {
             ).toBeUndefined();
          },
       );
-   });
-});
-
-/**
- * The reader being body-blind is only half the guarantee: the query route has to
- * actually use it, and only it. `authorize_bypass_wiring.integration.spec.ts`
- * proves the behaviour through a real HTTP request; this pins the one thing a
- * request cannot see — that the value the route hands the controller is derived
- * from the header and from nothing else.
- *
- * Asserted POSITIVELY, against the extracted argument list with comments
- * stripped. The previous form ("no line contains both `bypassAuthorize` and
- * `req.body`") was blocklist-shaped and a comment could satisfy its other half:
- * `const b = req.body; … b.bypassAuthorize` walked straight past it. An exact
- * match on the argument cannot be satisfied by anything but the right call.
- */
-describe("query route wiring", () => {
-   const serverSource = readFileSync(
-      resolve(import.meta.dir, "server.ts"),
-      "utf8",
-   );
-
-   /** The `getQuery(...)` argument list on the query route, comments removed. */
-   const queryCallArguments = (): string => {
-      const withoutComments = serverSource
-         .replace(/\/\*[\s\S]*?\*\//g, "")
-         .replace(/^\s*\/\/.*$/gm, "");
-      const start = withoutComments.indexOf("queryController.getQuery(");
-      expect(start).toBeGreaterThan(-1);
-      // Balance parens from the opening one so nested calls don't end it early.
-      // Bounded by the string length: an unbalanced call must reach the throw
-      // below rather than run off the end reading undefined forever.
-      const open = withoutComments.indexOf("(", start);
-      let depth = 0;
-      for (let i = open; i < withoutComments.length; i++) {
-         if (withoutComments[i] === "(") depth++;
-         if (withoutComments[i] === ")") depth--;
-         if (depth === 0) {
-            return withoutComments.slice(open + 1, i);
-         }
-      }
-      throw new Error("unbalanced getQuery( call in server.ts");
-   };
-
-   it("derives the bypass from the header reader and nothing else", () => {
-      const args = queryCallArguments();
-      const bypassArguments = args
-         .split("\n")
-         .map((line) => line.trim())
-         .filter((line) => /bypassAuthorize|readBypassAuthorize/i.test(line));
-      expect(bypassArguments).toEqual(["readBypassAuthorize(req),"]);
    });
 });

@@ -11,6 +11,7 @@ import { MaterializationScheduler } from "../../../src/service/materialization_s
 import { MaterializationService } from "../../../src/service/materialization_service";
 import { environmentStore } from "../../../src/server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { allTerminal, pollFor, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +21,6 @@ const PACKAGE_NAME = "persist-schedule-test";
 const CRON = "0 6 * * *"; // the fixture's daily schedule
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 const CONFIG = { tickIntervalMs: 60_000, maxFiresPerTick: 10 };
-const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
 // The restart-recovery anchor is only unit-tested against a stubbed
 // getLatestScheduledFireAt. This drives the real sequence end to end: a real
@@ -63,12 +63,7 @@ describe("MaterializationScheduler restart recovery (E2E, real store)", () => {
       }
 
       // Wait for the package to load into the store the scheduler sweeps.
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}`);
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      await waitUntilOk(`${baseUrl}${API}`, "Test package");
    });
 
    afterAll(async () => {
@@ -103,14 +98,15 @@ describe("MaterializationScheduler restart recovery (E2E, real store)", () => {
    }
 
    async function pollAllTerminal(): Promise<void> {
-      const deadline = Date.now() + 90_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}/materializations`);
-         const rows = (await res.json()) as Array<Record<string, unknown>>;
-         if (rows.every((m) => TERMINAL.includes(m.status as string))) return;
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error("materializations did not all reach a terminal state");
+      await pollFor(
+         async () =>
+            (await (
+               await fetch(`${baseUrl}${API}/materializations`)
+            ).json()) as Array<Record<string, unknown>>,
+         allTerminal,
+         "materializations did not all reach a terminal state",
+         90_000,
+      );
    }
 
    it(

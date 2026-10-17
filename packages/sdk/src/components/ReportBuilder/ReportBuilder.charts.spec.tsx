@@ -87,7 +87,7 @@ describe("ReportBuilder: charts", () => {
       const names = enabledCharts();
       // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
       expect(names).toEqual([
-         "From the view",
+         "Default",
          "Table",
          "Line",
          "Bar",
@@ -112,7 +112,7 @@ describe("ReportBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       pickChart("Bar");
-      pickChart("From the view");
+      pickChart("Default");
       closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save",
@@ -238,14 +238,14 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for Key figures"));
-      expect(enabledCharts()).toEqual(["From the view", "Table", "Big value"]);
+      expect(enabledCharts()).toEqual(["Default", "Table", "Big value"]);
       const line = chartItems().find((o) => primary(o) === "Line");
       expect(line?.textContent).toContain(
          "This view has no field for the x-axis",
       );
       pickChart("Table");
-      pickChart("From the view");
-      expect(enabledCharts()).toEqual(["From the view", "Table", "Big value"]);
+      pickChart("Default");
+      expect(enabledCharts()).toEqual(["Default", "Table", "Big value"]);
    });
 
    it("says the shape is unknown, rather than what the view lacks, when no model reported it", async () => {
@@ -260,7 +260,7 @@ source: a is scoped_orders extend {
       fireEvent.click(screen.getByLabelText("Settings for Key figures"));
       const big = chartItems().find((o) => primary(o) === "Big value");
       expect(big?.textContent).toContain(
-         "Not a view the catalog lists, so its shape is unknown",
+         "Not in the model's list, so its shape is unknown",
       );
    });
 });

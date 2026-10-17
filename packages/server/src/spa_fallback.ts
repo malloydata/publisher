@@ -4,48 +4,26 @@
 /**
  * What the SPA catch-all should do with a request nothing else claimed.
  *
- * The catch-all exists so the single-page app can own its client-side routes:
- * any unmatched path returns `index.html` and React Router decides. The cost is
- * that a request for a *file* also gets `index.html`, with HTTP 200, and a 200
- * carrying HTML is indistinguishable from a working page: an unknown
- * `/api/v0/...` answering 200 plus HTML, or `/<env>/<pkg>/index.html` rendering
- * the app shell and then "Unrecognized file type: index.html", a confident error
- * about the wrong thing, since the path was what was wrong.
+ * Unmatched paths get `index.html` so the SPA owns its client-side routes, but
+ * a file request answered with the shell and a 200 reads as a working page. So
+ * the shell is served only for paths that can plausibly be app routes:
  *
- * So the shell is served only for paths that can plausibly BE app routes. A file
- * request gets a real answer instead:
+ *   - `/<env>/<pkg>/<file.ext>`: redirect to the static URL that serves it (a
+ *     candidate the caller confirms against what is loaded).
+ *   - anything else naming a file: 404, naming the path.
+ *   - an unknown path under the API prefix: 404 as JSON.
  *
- *   - `/<env>/<pkg>/<file.ext>` is the package's own static file addressed on
- *     the app's route instead of the static route, which is the mistake worth
- *     fixing rather than merely reporting: redirect to the URL that serves it.
- *     A `redirect` is a CANDIDATE, not a verdict: the caller checks that the
- *     environment exists first, because `/assets/foo/bar.js` matches this shape
- *     too and redirecting it produces a worse answer than the 404 below.
- *   - anything else that names a file: 404, saying which path was requested.
- *   - an unknown path under the API prefix: 404 as JSON, since a client that
- *     asked the API for something expects JSON either way.
- *
- * Deciding by extension rather than by "did anything match" is what keeps this
- * from eating real routes: an environment or package whose NAME contains a dot
- * (`/examples/my.pkg`) is still an app route, because `.pkg` is not something
- * the web serves. Only the extensions below divert.
+ * Deciding by extension keeps names containing a dot (`/examples/my.pkg`) app
+ * routes; only the extensions below divert.
  */
 
 /**
- * Extensions that mean "this is a file, not a view". Deliberately a closed list
- * of what a package's `public/` directory actually serves: a name outside it is
- * treated as an app route, so an unusual package name keeps working.
- *
- * `.malloy` and `.malloynb` are absent on purpose, because those ARE app routes (the
- * model and notebook viewers), and diverting them would break the product's
- * most-used URLs.
- *
- * Also absent, and not an oversight: `yaml`/`yml`, `xml`, `md`, `wasm`,
- * `webmanifest`. Those fall through to the app, which names the path and
- * links to the static URL, so the outcome is already reasonable and the list
- * stays short. `package-asset-urls.spec.ts` depends on `yaml` being absent to
- * exercise that app-side page, so adding it here breaks that test rather than
- * completing anything.
+ * A closed list of what a package's `public/` directory serves; any other
+ * extension is treated as an app route, so unusual package names keep working.
+ * `.malloy` and `.malloynb` are absent because they are app routes (the
+ * viewers). `yaml`, `xml`, `md` and the like fall through to the app, which
+ * links to the static URL; `package-asset-urls.spec.ts` relies on `yaml` being
+ * absent.
  */
 const ASSET_EXTENSIONS = new Set([
    "avif",
@@ -74,19 +52,10 @@ const ASSET_EXTENSIONS = new Set([
 ]);
 
 /**
- * Third segments that belong to the app rather than to a package's `public/`
- * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
- * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer.
- *
- * A report is not a segment: its route is its path without `.malloy`
- * (`docs/reports-design.md` §9), wherever it lives, so the caller asks the
- * loaded package whether `<path>.malloy` is a served report (see `reportPath`
- * on the redirect candidate). That keeps a report whose name ends in an asset
- * extension (`sales/report.csv.malloy`) in the app, and a package's own
- * `public/dashboards/<file>` reachable. The deprecated `dashboards/<name>` and
- * `notebooks/<name>` alias links stay in the app only when a report is named
- * `<name>`.
+ * Third segments the app owns, so `/<env>/<pkg>/<here>/...` reaches the SPA
+ * even with an asset extension (`data-apps/<file>.html` is the embedded data
+ * app viewer). Reports are not listed: the caller asks the package whether
+ * `<reportPath>.malloy` is a served report (`docs/reports-design.md` §9).
  */
 const SPA_OWNED_SEGMENTS = new Set(["data-apps"]);
 
@@ -94,10 +63,9 @@ export type SpaFallbackAction =
    /** Serve the app shell. */
    | { kind: "spa" }
    /**
-    * A package file addressed on the app route. A CANDIDATE only: the caller
-    * confirms both names against what it has loaded before redirecting, because
-    * `/assets/foo/bar.js` has this shape too and the static route would answer a
-    * bad name with an internal-error JSON that echoes it back.
+    * A package file addressed on the app route. A candidate only: the caller
+    * confirms both names are loaded, because `/assets/foo/bar.js` has this
+    * shape too and the static route would echo a bad name back.
     */
    | {
         kind: "redirect";
@@ -114,13 +82,10 @@ export type SpaFallbackAction =
    /**
     * A file request nothing served. `path` is safe to echo back.
     *
-    * `appRouteCandidate` is set when the path is short enough to be an app route
-    * (`/<env>` or `/<env>/<pkg>`) whose NAME merely happens to end in a servable
-    * extension, which names may: a package called `report.html` is legal. The
-    * caller turns it back into `spa` only if those names really are things it has
-    * loaded. Requiring the package too is what keeps `/<env>/style.css` a 404
-    * rather than an app shell with a 200, which is the defect this module exists
-    * to remove.
+    * `appRouteCandidate` is set for `/<env>` or `/<env>/<pkg>`, since a name may
+    * end in a servable extension (`report.html` is a legal package name). The
+    * caller turns it into `spa` only if those names are loaded, which keeps
+    * `/<env>/style.css` a 404.
     */
    | {
         kind: "assetNotFound";
@@ -159,30 +124,21 @@ export function classifySpaFallback(
    const last = segments[segments.length - 1] ?? "";
    if (!ASSET_EXTENSIONS.has(extensionOf(last))) return { kind: "spa" };
 
-   // Names a file from here on, except where the app owns the route anyway, as
-   // `data-apps/<file>.html` does. Checked before the redirect so those keep
-   // reaching the SPA rather than falling through to a 404.
+   // Checked before the redirect so app-owned segments keep reaching the SPA.
    if (segments.length >= 3 && SPA_OWNED_SEGMENTS.has(segments[2])) {
       return { kind: "spa" };
    }
 
-   // A package's files live under `/environments/<env>/packages/<pkg>/...`, and
-   // the app's equivalent route is `/<env>/<pkg>/...`. Three segments or more,
-   // so there is a file path after the two names.
+   // `/<env>/<pkg>/<file...>` maps to `/environments/<env>/packages/<pkg>/...`.
    if (segments.length >= 3) {
-      // Already the static form: that route owns its prefix and answers 404
-      // itself, so it never reaches here. Guarding anyway means a future
-      // reordering degrades to a 404 rather than to a redirect loop.
+      // The static route answers its own 404s; this guard turns a future
+      // route reordering into a 404 rather than a redirect loop.
       const alreadyStaticForm =
          segments[0] === "environments" && segments[2] === "packages";
-      // A dot segment gets re-resolved by the client against the new prefix,
-      // pointing the redirect somewhere other than the package that was typed.
-      // Three spellings, all refused: the literal `.`/`..`; `%2e%2e`, which a URL
-      // parser treats as a dot segment while resolving the Location, so it walks
-      // out of the `/environments/<env>/packages/<pkg>/` prefix this redirect
-      // exists to pin; and a backslash, which browsers fold to `/` first. Decode
-      // before comparing, and treat a malformed escape as suspect rather than
-      // assuming it is inert.
+      // A dot segment would be re-resolved by the client and walk the Location
+      // out of the package prefix. Refused in every spelling: `.`/`..`, encoded
+      // `%2e%2e`, and a backslash (browsers fold it to `/`). A malformed escape
+      // is treated as suspect.
       const traverses = segments.some((segment) => {
          let decoded: string;
          try {
@@ -195,12 +151,8 @@ export function classifySpaFallback(
       if (!alreadyStaticForm && !traverses) {
          const [environmentName, packageName, ...rest] = segments;
          const reportPath = rest.join("/");
-         // A reader who knows the files live in `public/` guesses that segment,
-         // but the static route joins the request path onto `<pkg>/public`, so
-         // passing it through would resolve to `public/public/<file>` and 404.
-         // Dropping it is what makes the guess reach the file. A package that
-         // really ships `public/public/<file>` is still reachable by asking for
-         // it on the static route directly.
+         // A guessed `public/` segment is dropped: the static route already
+         // joins onto `<pkg>/public`, so keeping it would 404.
          if (rest[0] === "public" && rest.length > 1) rest.shift();
          return {
             kind: "redirect",
@@ -216,9 +168,6 @@ export function classifySpaFallback(
       }
    }
 
-   // One or two segments can still be `/<env>` or `/<env>/<pkg>`, and a name may
-   // legally end in a servable extension. Hand both names back so the caller can
-   // tell "a package called report.html" from "a missing asset".
    return {
       kind: "assetNotFound",
       path: requestPath,
@@ -263,17 +212,10 @@ export interface LoadedRoutes {
 
 /**
  * {@link classifySpaFallback}, with its candidates settled against what is
- * loaded:
- *
- * - A redirect candidate is the app shell when its path is a report's route (a
- *   report whose name ends in an asset extension is a route, not a file); a
- *   404 when its environment or package is not loaded, since `/assets/foo/bar.js`
- *   has the same shape and the static route would answer a bad name with JSON
- *   that echoes it back; otherwise the redirect.
- * - An `/<env>` or `/<env>/<pkg>` whose name merely ends in a servable
- *   extension (`report.html` is a legal package name) is the app shell when
- *   those names are loaded, and stays a 404 otherwise, which is what keeps
- *   `/examples/style.css` a 404.
+ * loaded: a redirect candidate becomes the app shell when its path is a
+ * report's route, a 404 when its package is not loaded, and otherwise stays a
+ * redirect; an `appRouteCandidate` becomes the app shell only when its names
+ * are loaded.
  */
 export function resolveSpaFallback(
    requestPath: string,
@@ -289,8 +231,6 @@ export function resolveSpaFallback(
          .map(decodeSegment)
          .join("/");
       if (!loaded.hasPackage(environmentName, packageName)) {
-         // Null, not the names: a candidate whose names did not resolve is
-         // not an app route either.
          return {
             kind: "assetNotFound",
             path: requestPath,

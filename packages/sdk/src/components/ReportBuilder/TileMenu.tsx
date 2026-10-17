@@ -395,7 +395,9 @@ export function TileMenu({
                   >
                      <ListItemText
                         primary={choice.label}
-                        {...(choice.reason ? { secondary: choice.reason } : {})}
+                        {...((choice.reason ?? choice.hint)
+                           ? { secondary: choice.reason ?? choice.hint }
+                           : {})}
                      />
                      {choice.value === chartState && (
                         <ListItemIcon sx={{ minWidth: 0, ml: 2 }}>

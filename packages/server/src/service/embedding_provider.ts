@@ -4,42 +4,32 @@
 import { EmbeddingConfig, getEmbeddingSettings } from "../config";
 import { createEmbeddingModel } from "../providers/registry";
 import { loadedRetrievalConfig } from "../retrieval_config";
+import { BatchEmbeddingModel } from "../providers/embedding_http";
+import { openAiEmbedChunk } from "../providers/openai_compatible";
 import {
    DEFAULT_RETRY,
    HttpRequestError,
-   isRetryableStatus,
-   malformedReply,
-   parseRetryAfterMs,
    RetryPolicy,
    withRetry,
 } from "./http_retry";
-import type {
-   EmbeddingModel,
-   EmbedOptions,
-   ProviderName,
-} from "../providers/types";
+import type { EmbeddingModel, FetchFn } from "../providers/types";
 
-/** Timeout for bulk (index-build) embedding calls. */
-export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
+export {
+   EMBEDDING_BATCH_TIMEOUT_MS,
+   MAX_EMBED_INPUT_CHARS,
+   prepareEmbeddingInput,
+} from "../providers/embedding_http";
+
 /**
- * Timeout for the single per-request query embedding. Much shorter than
- * the bulk timeout: this call sits on the latency path of every semantic
- * `get_context` call, and a slow endpoint must degrade to lexical
- * quickly rather than stall the tool.
+ * Timeout for the per-request query embedding. Shorter than the bulk timeout
+ * because it is on every semantic `get_context` call's latency path; a slow
+ * endpoint must degrade to lexical quickly.
  */
 export const EMBEDDING_QUERY_TIMEOUT_MS = 5_000;
-/** Per-input character cap (matches the hosted indexing pipeline). */
-export const MAX_EMBED_INPUT_CHARS = 1_024;
 /** Inputs per HTTP request; large packages embed in several requests. */
 export const MAX_EMBED_BATCH_SIZE = 512;
 
-type FetchFn = typeof fetch;
-
-/**
- * The retry machinery lives in ./http_retry so the chat adapters share it.
- * The embedding names stay as aliases: callers and tests import them from
- * here.
- */
+/** Embedding-named aliases of the shared ./http_retry machinery. */
 export const EmbeddingRequestError = HttpRequestError;
 export type EmbeddingRequestError = HttpRequestError;
 export type EmbeddingRetryPolicy = RetryPolicy;
@@ -53,234 +43,44 @@ export function withEmbeddingRetry<T>(
    return withRetry(attempt, policy, "Embedding request");
 }
 
-interface EmbeddingResponseItem {
-   index?: number;
-   embedding?: number[];
-}
-
 /**
- * Collapse whitespace (newlines confuse some embedding models) and cap
- * the input length, mirroring the hosted indexing pipeline's input
- * preparation. Never returns an empty string: providers reject empty
- * input items with a 400, which would fail a whole package's batch, so
- * text that collapses to nothing (a whitespace-only backtick identifier)
- * becomes a placeholder token instead. This is the single choke point
- * for that invariant; the index hashes this same function's output, so
- * hash and sent text cannot drift. Exported for tests and for
- * content-hashing: the hash must cover the text actually sent, so a
- * truncation-boundary edit re-embeds.
+ * The OpenAI-compatible `/embeddings` client: {@link openAiEmbedChunk} under
+ * the shared batching, retry and metrics of {@link BatchEmbeddingModel}.
  */
-export function prepareEmbeddingInput(text: string): string {
-   const cleaned = text.replace(/\s+/g, " ").trim();
-   const capped =
-      cleaned.length > MAX_EMBED_INPUT_CHARS
-         ? cleaned.slice(0, MAX_EMBED_INPUT_CHARS)
-         : cleaned;
-   return capped || "-";
-}
-
-/**
- * Minimal client for an OpenAI-compatible `/embeddings` endpoint, called
- * with global fetch (no provider SDK; see fetchFromPublisherDataplane for
- * the outbound-HTTP precedent this follows). The API key travels only in
- * the Authorization header and must never be logged; error messages carry
- * at most a 200-char body excerpt and never echo request headers.
- */
-export class EmbeddingProvider implements EmbeddingModel {
-   constructor(
-      private config: EmbeddingConfig,
-      private fetchFn: FetchFn = fetch,
-   ) {}
-
-   get provider(): ProviderName {
-      return this.config.provider ?? "openai-compatible";
-   }
-
-   get model(): string {
-      return this.config.model;
-   }
-
-   get maxBatch(): number {
-      return MAX_EMBED_BATCH_SIZE;
-   }
-
-   get queryPrefix(): string {
-      return this.config.queryPrefix ?? "";
-   }
-
-   get documentPrefix(): string {
-      return this.config.documentPrefix ?? "";
-   }
-
-   /** {@link embedBatch} with the bulk timeout and no retry unless given. */
-   embed(texts: string[], options: EmbedOptions = {}): Promise<number[][]> {
-      return this.embedBatch(
-         texts,
-         options.timeoutMs ?? EMBEDDING_BATCH_TIMEOUT_MS,
-         options.retry,
+export class EmbeddingProvider extends BatchEmbeddingModel {
+   constructor(config: EmbeddingConfig, fetchFn: FetchFn = fetch) {
+      super(
+         config.provider ?? "openai-compatible",
+         {
+            provider: config.provider ?? "openai-compatible",
+            model: config.model,
+            dimensions: config.dimensions,
+            minSimilarity: config.minSimilarity,
+            queryPrefix: config.queryPrefix ?? "",
+            documentPrefix: config.documentPrefix ?? "",
+         },
+         MAX_EMBED_BATCH_SIZE,
+         openAiEmbedChunk({
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            model: config.model,
+            dimensions: config.dimensions,
+            fetchFn,
+         }),
       );
    }
-
-   /**
-    * Cosine-similarity floor for this provider's vectors. Carried on the
-    * provider because the right floor is a property of the embedding model
-    * (see DEFAULT_EMBEDDING_MIN_SIMILARITY), so it belongs with the model
-    * that produced the vectors rather than at each comparison site.
-    */
-   get minSimilarity(): number {
-      return this.config.minSimilarity;
-   }
-
-   get dimensions(): number | undefined {
-      return this.config.dimensions;
-   }
-
-   /**
-    * Embed `texts` in order. Inputs are prepared (whitespace-collapsed,
-    * capped) and sent in batches of {@link MAX_EMBED_BATCH_SIZE}. Throws
-    * on any HTTP, timeout, or malformed-response failure; callers own the
-    * fallback-to-lexical decision. With `retry`, each request is retried on
-    * the failures that can clear (see {@link EmbeddingRetryPolicy}).
-    */
-   async embedBatch(
-      texts: string[],
-      timeoutMs: number,
-      retry?: EmbeddingRetryPolicy,
-   ): Promise<number[][]> {
-      const vectors: number[][] = [];
-      for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
-         const chunk = texts
-            .slice(i, i + MAX_EMBED_BATCH_SIZE)
-            .map(prepareEmbeddingInput);
-         vectors.push(
-            ...(retry
-               ? await withEmbeddingRetry(
-                    () => this.embedChunk(chunk, timeoutMs),
-                    retry,
-                 )
-               : await this.embedChunk(chunk, timeoutMs)),
-         );
-      }
-      return vectors;
-   }
-
-   private async embedChunk(
-      inputs: string[],
-      timeoutMs: number,
-   ): Promise<number[][]> {
-      const url = `${this.config.baseUrl}/embeddings`;
-      const body: Record<string, unknown> = {
-         model: this.config.model,
-         input: inputs,
-      };
-      if (this.config.dimensions !== undefined) {
-         body.dimensions = this.config.dimensions;
-      }
-
-      let response: Response;
-      try {
-         response = await this.fetchFn(url, {
-            method: "POST",
-            headers: {
-               "Content-Type": "application/json",
-               Authorization: `Bearer ${this.config.apiKey}`,
-            },
-            body: JSON.stringify(body),
-            signal: AbortSignal.timeout(timeoutMs),
-         });
-      } catch (error) {
-         const reason =
-            (error as Error)?.name === "TimeoutError"
-               ? `timed out after ${timeoutMs}ms`
-               : (error as Error).message;
-         // A network failure or timeout may clear on its own.
-         throw new EmbeddingRequestError(
-            `Embedding request to ${url} failed: ${reason}`,
-            undefined,
-            true,
-            undefined,
-            (error as Error)?.name === "TimeoutError"
-               ? `Embedding request failed: timed out after ${timeoutMs}ms`
-               : "Embedding request failed: the endpoint could not be reached",
-         );
-      }
-
-      if (!response.ok) {
-         // Auth-failure bodies commonly reflect the presented credential
-         // (OpenAI's 401 echoes partial key characters; a self-hosted
-         // proxy may echo the whole token), and this message is logged
-         // by callers. Drop those bodies entirely, and scrub any literal
-         // occurrence of the key from the rest.
-         let detail: string;
-         if (response.status === 401 || response.status === 403) {
-            detail = "authentication failed; check EMBEDDING_API_KEY";
-         } else {
-            const bodyText = await response.text().catch(() => "");
-            detail = bodyText
-               .split(this.config.apiKey)
-               .join("[REDACTED]")
-               .slice(0, 200);
-         }
-         throw new EmbeddingRequestError(
-            `Embedding request to ${url} failed (${response.status}): ${detail}`,
-            response.status,
-            isRetryableStatus(response.status),
-            parseRetryAfterMs(response.headers.get("retry-after")),
-            `Embedding request failed (${response.status}): ${detail}`,
-         );
-      }
-
-      const json = (await response.json()) as {
-         data?: EmbeddingResponseItem[];
-      };
-      const data = json?.data;
-      if (!Array.isArray(data) || data.length !== inputs.length) {
-         throw malformedReply(
-            "Embedding response",
-            url,
-            `expected ${inputs.length} embeddings, got ${Array.isArray(data) ? data.length : "none"}`,
-         );
-      }
-
-      // The response documents per-item `index` fields; place by index
-      // defensively rather than assuming order.
-      const vectors = new Array<number[] | undefined>(inputs.length);
-      for (let i = 0; i < data.length; i++) {
-         const item = data[i];
-         const idx = typeof item?.index === "number" ? item.index : i;
-         if (
-            !Array.isArray(item?.embedding) ||
-            item.embedding.length === 0 ||
-            // Numeric contents, not just shape: a provider returning
-            // [1, null, "x"] would otherwise be stored and misbehave
-            // silently (NaN scores) at search time.
-            !item.embedding.every(
-               (n: unknown) => typeof n === "number" && Number.isFinite(n),
-            ) ||
-            idx < 0 ||
-            idx >= inputs.length ||
-            vectors[idx] !== undefined
-         ) {
-            throw malformedReply("Embedding response", url, `bad item ${i}`);
-         }
-         vectors[idx] = item.embedding;
-      }
-      return vectors as number[][];
-   }
 }
 
-// Cached on a settings fingerprint, never on null: a call after the env
-// changes (tests, operator restarts with new vars are moot, but the
-// integration suite runs many specs in one process) always sees the
-// current configuration instead of a stale provider or a sticky "off".
+// Cached on a settings fingerprint, never on null, so a call after the env
+// changes (many specs share one process) sees the current configuration
+// rather than a stale provider or a sticky "off".
 let cached: { fingerprint: string; provider: EmbeddingModel } | null = null;
 let testOverride: { provider: EmbeddingModel | null } | null = null;
 
 /**
- * Whether the operator has turned the embedding feature on at all.
- * Malformed companion vars still count as configured: the operator
- * clearly intends the feature, so the retrieval marker and a warning
- * must surface rather than silently reporting plain lexical.
+ * Whether the operator has turned the embedding feature on. Malformed
+ * companion vars still count, so the retrieval marker and a warning surface
+ * rather than silently reporting plain lexical.
  */
 export function embeddingConfigured(): boolean {
    if (testOverride) {

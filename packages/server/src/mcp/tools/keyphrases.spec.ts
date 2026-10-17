@@ -30,6 +30,7 @@ import {
    jsonResponse,
    stubFetch,
 } from "../../test_helpers/fetch_stub";
+import { notIndexing, pollFor, pollUntil } from "../../test_helpers/poll";
 import { createChatModel } from "../../providers/registry";
 import type { ChatModel, JsonChatRequest } from "../../providers/types";
 import { setRetrievalConfig } from "../../retrieval_config";
@@ -422,7 +423,8 @@ describe("stored keyphrases", () => {
          completeJson: async (req) => {
             active++;
             peak = Math.max(peak, active);
-            await new Promise((r) => setTimeout(r, 15));
+            // Yield a macrotask so every pooled worker starts first.
+            await new Promise((r) => setImmediate(r));
             active--;
             return chat.model.completeJson(req);
          },
@@ -576,23 +578,22 @@ async function search(
    pkg: Package,
    entities: readonly EmbeddableEntity[] = SYNC_ENTITIES,
 ) {
-   for (let i = 0; i < 400; i++) {
-      const result = await trySemanticSearch({
-         db,
-         provider,
-         pkg,
-         environmentName: "env",
-         packageName: "sync",
-         entities,
-         queries: [{ targetIndex: 0, text: "find it", kinds: ["dimension"] }],
-         perSourceWindow: 10,
-      });
-      if (!("unavailable" in result) || result.unavailable !== "indexing") {
-         return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("sync never completed");
+   return pollFor(
+      () =>
+         trySemanticSearch({
+            db,
+            provider,
+            pkg,
+            environmentName: "env",
+            packageName: "sync",
+            entities,
+            queries: [
+               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
+            ],
+            perSourceWindow: 10,
+         }),
+      notIndexing,
+   );
 }
 
 const status = (
@@ -633,9 +634,7 @@ describe("the sync", () => {
          queries: [{ targetIndex: 0, text: "find it", kinds: ["dimension"] }],
          perSourceWindow: 10,
       });
-      for (let i = 0; i < 400 && deleted === undefined; i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      expect(await pollUntil(() => deleted !== undefined)).toBe(true);
       await embeddingSyncQueue.idle();
       await deleted;
       expect(inner.calls).toHaveLength(1);
@@ -729,7 +728,7 @@ describe("the sync", () => {
       _setChatModelForTests(chat.model, { concurrency: 1 });
       const { provider, sent } = recordingEmbedder();
       const pkg = pkgWith();
-      let outcome = await trySemanticSearch({
+      const outcome = await trySemanticSearch({
          db,
          provider,
          pkg,
@@ -740,23 +739,7 @@ describe("the sync", () => {
          perSourceWindow: 10,
       });
       expect("unavailable" in outcome && outcome.unavailable).toBe("indexing");
-      for (let i = 0; i < 200; i++) {
-         outcome = await trySemanticSearch({
-            db,
-            provider,
-            pkg,
-            environmentName: "env",
-            packageName: "sync",
-            entities: SYNC_ENTITIES,
-            queries: [
-               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
-            ],
-            perSourceWindow: 10,
-         });
-         if ("unavailable" in outcome && outcome.unavailable === "cooldown")
-            break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      expect(await search(provider, pkg)).toEqual({ unavailable: "cooldown" });
       const s = await status(provider, pkg);
       expect(s.status).toBe("error");
       expect(s.stage).toBe("keyphrase");
@@ -797,23 +780,7 @@ describe("the sync", () => {
       _setChatModelForTests(chat, { concurrency: 1 });
       const { provider } = recordingEmbedder();
       const pkg = pkgWith();
-      for (let i = 0; i < 400; i++) {
-         const result = await trySemanticSearch({
-            db,
-            provider,
-            pkg,
-            environmentName: "env",
-            packageName: "sync",
-            entities: SYNC_ENTITIES,
-            queries: [
-               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
-            ],
-            perSourceWindow: 10,
-         });
-         if ("unavailable" in result && result.unavailable === "cooldown")
-            break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      expect(await search(provider, pkg)).toEqual({ unavailable: "cooldown" });
       const s = await status(provider, pkg);
       expect(s.stage).toBe("keyphrase");
       expect(s.lastError?.message).toContain("Keyphrase generation failed");

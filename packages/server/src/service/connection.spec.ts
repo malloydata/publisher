@@ -18,6 +18,7 @@ import path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import {
+   attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
    buildEnvironmentMalloyConfig,
@@ -35,9 +36,12 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
+import { listStorageTables } from "./materialization_build_session";
 import {
    ConnectionPoolExhaustedError,
+   internalErrorToHttpError,
    PayloadTooLargeError,
+   StorageCatalogNotFoundError,
    UnconfiguredConnectionError,
    UnsupportedCatalogFormatError,
 } from "../errors";
@@ -1700,6 +1704,119 @@ describe("connection integration tests", () => {
                      }
                      expect(err).toBeInstanceOf(UnsupportedCatalogFormatError);
                      expect((err as Error).message).toContain("9999.0");
+                  },
+                  { timeout: 60000 },
+               );
+
+               // A fresh session, so what it has attached is only what the call
+               // under test attached.
+               const freshSession = async (label: string) => {
+                  const workDir = await fs.mkdtemp(
+                     path.join(os.tmpdir(), `dl-${label}-`),
+                  );
+                  const conn = new DuckDBConnection(label, ":memory:", workDir);
+                  createdConnections.push(conn);
+                  return conn;
+               };
+
+               const schemaExists = async (
+                  conn: DuckDBConnection,
+                  schema: string,
+               ) => {
+                  await conn.runSQL(
+                     `ATTACH '${pgConnString()}' AS insp_s (TYPE postgres, READ_ONLY);`,
+                  );
+                  const r = await conn.runSQL(
+                     `SELECT count(*) AS n FROM duckdb_schemas() ` +
+                        `WHERE database_name = 'insp_s' AND schema_name = '${schema}';`,
+                  );
+                  return firstValue(r.rows) > 0;
+               };
+
+               it(
+                  "finds a catalog that was never created absent, and attaches nothing",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("absent");
+                     const cfg = await duckLakeConfig("dl_absent", schema);
+                     const conn = await freshSession("dl_absent_probe");
+
+                     expect(
+                        await attachDuckLakeReadOnlyIfPresent(
+                           conn,
+                           "dl_absent",
+                           cfg,
+                        ),
+                     ).toBe(false);
+                     const attached = await conn.runSQL(
+                        `SELECT count(*) AS n FROM duckdb_databases() WHERE database_name = 'dl_absent';`,
+                     );
+                     expect(firstValue(attached.rows)).toBe(0);
+                     // Looking must not create the catalog, or its schema.
+                     expect(await schemaExists(conn, schema)).toBe(false);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "attaches a catalog that exists",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("present");
+                     const cfg = await duckLakeConfig("dl_present", schema);
+                     const boot = await bootstrapCatalog("dl_present", cfg);
+                     await boot.runSQL(
+                        `CREATE OR REPLACE TABLE dl_present.t AS SELECT 3 AS x`,
+                     );
+
+                     const conn = await freshSession("dl_present_probe");
+                     expect(
+                        await attachDuckLakeReadOnlyIfPresent(
+                           conn,
+                           "dl_present",
+                           cfg,
+                        ),
+                     ).toBe(true);
+                     const r = await conn.runSQL(`SELECT x FROM dl_present.t;`);
+                     expect(firstValue(r.rows)).toBe(3);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "lists a storage destination that was never built as a 404, not a failed attach",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("list_absent");
+                     const cfg = await duckLakeConfig("dl_list", schema);
+                     let err: unknown;
+                     try {
+                        await listStorageTables({
+                           destinationName: "dl_list",
+                           destinationConnection: {
+                              name: "dl_list",
+                              type: "ducklake",
+                              ducklakeConnection: cfg,
+                           } as ApiConnection,
+                           schemaName: "main",
+                           environmentPath: testEnvironmentPath,
+                        });
+                     } catch (e) {
+                        err = e;
+                     }
+                     expect(err).toBeInstanceOf(StorageCatalogNotFoundError);
+                     expect(internalErrorToHttpError(err as Error).status).toBe(
+                        404,
+                     );
                   },
                   { timeout: 60000 },
                );

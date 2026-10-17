@@ -42,7 +42,7 @@ test.describe("builder chart type", () => {
    const renderAs = (scope: Locator | Page) =>
       scope.locator("[data-malloy-render-as]").first();
 
-   test("a linear report's tile follows the picker: bar, from the view, table", async ({
+   test("a linear report's tile follows the picker: bar, default, table", async ({
       page,
    }) => {
       await page.goto(`/${pe.env}/${pe.pkg}/category-review?edit`);
@@ -67,7 +67,7 @@ test.describe("builder chart type", () => {
          "bar",
          { timeout: 60_000 },
       );
-      await pickChart(page, tile, "From the view");
+      await pickChart(page, tile, "Default");
       await expect(renderAs(tile)).toHaveAttribute(
          "data-malloy-render-as",
          "line",
@@ -146,10 +146,10 @@ test.describe("builder chart type", () => {
          page.locator("[data-malloy-render-as]").first(),
       ).toHaveAttribute("data-malloy-render-as", "bar", { timeout: 60_000 });
 
-      // Table, then From the view, each saved and read back by the reader.
+      // Table, then Default, each saved and read back by the reader.
       for (const [option, drawn] of [
          ["Table", "table"],
-         ["From the view", "line"],
+         ["Default", "line"],
       ] as const) {
          await page.goto(`/${pe.env}/${pe.pkg}/${slug}?edit`);
          await editorOpen(page);
@@ -182,7 +182,7 @@ test.describe("builder chart type", () => {
       );
       for (const [option, drawn] of [
          ["Table", "table"],
-         ["From the view", "line"],
+         ["Default", "line"],
       ] as const) {
          await pickChart(page, tile, option);
          await expect(renderAs(tile)).toHaveAttribute(

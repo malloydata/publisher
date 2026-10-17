@@ -5,7 +5,7 @@ import { URLReader } from "@malloydata/malloy";
 import { DataStyles } from "@malloydata/render";
 import { logger } from "./logger";
 
-export function compileDataStyles(styles: string): DataStyles {
+function compileDataStyles(styles: string): DataStyles {
    try {
       return JSON.parse(styles) as DataStyles;
    } catch (error) {
@@ -13,8 +13,11 @@ export function compileDataStyles(styles: string): DataStyles {
    }
 }
 
-// TODO replace this with actual JSON metadata import functionality, when it exists
-export async function dataStylesForFile(
+/**
+ * Data styles named by `--! styles <file>` lines. A file that cannot be read
+ * is logged and contributes nothing, so the author sees no error.
+ */
+async function dataStylesForFile(
    url: string,
    text: string,
    urlReader: URLReader,
@@ -24,8 +27,6 @@ export async function dataStylesForFile(
    for (const line of text.split("\n")) {
       if (line.startsWith(PREFIX)) {
          const fileName = line.trimEnd().substring(PREFIX.length);
-         // TODO instead of failing silently when the file does not exist, perform this after the WebView has been
-         //      created, so that the error can be shown there.
          let stylesText;
          try {
             stylesText = (await urlReader.readURL(
@@ -42,10 +43,8 @@ export async function dataStylesForFile(
    return styles;
 }
 
-// TODO Come up with a better way to handle data styles. Perhaps this is
-//      an in-language understanding of model "metadata". For now,
-//      we abuse the `URLReader` API to keep track of requested URLs
-//      and accumulate data styles for those files.
+// Malloy has no model-metadata mechanism for data styles, so this wraps the
+// `URLReader` to accumulate the styles of every file it reads.
 export class HackyDataStylesAccumulator implements URLReader {
    private urlReader: URLReader;
    private dataStyles: DataStyles = {};

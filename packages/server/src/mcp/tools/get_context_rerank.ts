@@ -4,30 +4,16 @@
 /**
  * Rerank: one LLM call scores whole sources against the user's question, so a
  * source that merely holds one well-matching field does not outrank the source
- * that can answer.
+ * that can answer. Runs on the assembled cards before paging: the best
+ * `topSources` go to the model (the rest still count in `total_available`), a
+ * card's new relevance is the model's 0–3 score plus a tiebreak preserving its
+ * listed order, and a card scored below RERANK_MIN_KEPT_LEVEL is pruned unless
+ * the request pins a source. Entity relevances do not change. A failed call
+ * fails the stage; there is no fallback.
  *
- * Runs on the assembled cards, before paging:
- *
- *   1. with 0 or 1 cards there is nothing to rank and the stage is skipped;
- *   2. cards are sorted by their raw relevance and the best `topSources`
- *      (default 8) go to the model; the rest are discarded, but they still
- *      count in `total_available`;
- *   3. the model returns {index, score: 0..3} per source, best first;
- *   4. a card's new relevance is `score + tiebreak`, where the tiebreak is
- *      `(n_in_level - 1 - rank_in_level) * 0.1` in the order the model listed
- *      the cards of that level (the step shrinks past 10 cards in a level, so
- *      the tiebreak stays under 1), and a card the model left out gets 0;
- *   5. a card whose score from the model is below 2 is pruned, unless the
- *      request pins a source (then nothing is pruned: the caller already
- *      chose). The cut is on that score, never on the tiebreak.
- *
- * The entities' own relevances do not change. A failed call fails the stage
- * (StageError); there is no fallback.
- *
- * What is sent: source and model path names, the package name, `#(doc)` text,
- * and up to 20 entities per source with their names, kinds and `#(doc)` text.
- * Values would be listed too, but none are indexed yet. The text goes through
- * scrubForEgress, so no access predicate can ride along.
+ * What is sent: source, model path and package names, `#(doc)` text, and up to
+ * RERANK_ENTITIES_PER_SOURCE entities per source, all scrubbed by
+ * scrubForEgress so no access predicate can ride along.
  */
 
 import {
@@ -42,7 +28,7 @@ import type {
    PipelineContext,
 } from "./get_context_pipeline";
 import { mapRawScore } from "./get_context_scoring";
-import { sourceContextKey } from "./get_context_tool";
+import { sourceContextKey } from "./package_entities";
 import { scrubForEgress } from "./keyphrases";
 
 /** Entities listed under each source in the prompt. */
@@ -97,9 +83,9 @@ const MAX_TIEBREAK = 0.9;
 /**
  * Relevance per index from the model's list: `score + tiebreak`. Within one
  * score the first listed gets the largest tiebreak, `(n - 1) * 0.1`, and the
- * last gets 0, so the model's order inside a level survives the sort. With more
- * than 10 cards in a level the step shrinks to `0.9 / (n - 1)`: a fixed 0.1
- * let the first of 12 cards rated 1 reach 2.1, past a card the model rated 2.
+ * last gets 0, so the model's order inside a level survives the sort. Past 10
+ * cards in a level the step shrinks to `0.9 / (n - 1)` so a tiebreak never
+ * lifts a card past the next level.
  */
 export function relevanceFromReply(
    scores: ReadonlyArray<{ index: number; score: number }>,
@@ -137,9 +123,6 @@ function promptSource(
          name: r.name,
          kind: r.kind,
          description: scrubForEgress(r.embedDoc ?? ""),
-         ...(r.values && r.values.length > 0
-            ? { values: r.values.slice(0, 5).map((v) => v.value) }
-            : {}),
       }));
    return {
       source: card.source,

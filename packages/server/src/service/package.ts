@@ -26,10 +26,8 @@ import {
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
-import { llmConfigured } from "../providers/active";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
-   assertRequiredStagesAvailable,
    type PackageRetrievalSettings,
 } from "./package_retrieval";
 import {
@@ -103,12 +101,9 @@ import type {
 } from "./preaggregation_validation";
 
 /**
- * Pre-aggregation violations that WARN at both gates rather than refusing.
- *
- * Both concern a field the source does not publicly expose. What stops a hidden
- * field reaching a rollup is the planner's own skip, not either gate — see
- * {@link Package.formatInvalidPreaggregatePolicy} for that, and for the two
- * reasons refusing was wrong rather than merely strict.
+ * Pre-aggregation violations that warn at both gates rather than refusing: a
+ * field the source does not publicly expose. See
+ * {@link Package.formatInvalidPreaggregatePolicy}.
  */
 const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "non_public_measure",
@@ -171,6 +166,12 @@ import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
+import {
+   applyLoadGates,
+   assertOutcomeStagesAvailable,
+   loadOutcomeOrThrow,
+   warnInvalidExplores,
+} from "./package_load_gates";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -191,10 +192,7 @@ interface ServedReport {
    /** The basename, a display label. */
    name: string;
    layout: ReportLayout;
-   /**
-    * A `.malloy` report's tiles (either layout), or, for one that failed to
-    * compile, its name and layout carrying `error`. Absent on a `.malloynb`.
-    */
+   /** Tiles, or name and layout plus `error` if it failed to compile; absent on a `.malloynb`. */
    manifest?: ServedReportManifest & { error?: string };
    /** A `.malloy` report's compiled text ("" when unreadable); absent on a `.malloynb`. */
    text?: string;
@@ -246,20 +244,16 @@ type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
 
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
-// A thunk lets callers pass a live reference to the *current* environment
-// MalloyConfig so the package wrapper resolves environment connections against the
-// generation that's active at lookup time, not the one that was current when
-// the package was first loaded.
+// A thunk resolves environment connections against the config generation
+// active at lookup time, not the one current when the package loaded.
 type PackageConnectionInput =
    | MalloyConfig
    | Map<string, Connection>
    | (() => MalloyConfig);
 
 /**
- * Project the full wire entries down to the Malloy-runtime binding map
- * (`sourceEntityId -> { tableName }`) used to hydrate models. The freshness
- * fields are dropped here — they gate the serve path per query, not model
- * hydration.
+ * Project wire entries to the `sourceEntityId -> { tableName }` map that
+ * hydrates models. Freshness fields gate the serve path per query, not hydration.
  */
 function toTableNameManifest(
    entries: FreshnessManifest,
@@ -272,13 +266,8 @@ function toTableNameManifest(
 }
 
 /**
- * Classify a failed package load into the `status` label shared by the
- * `malloy_package_load_duration` histogram and the per-phase load metrics, so
- * both slice failures identically. A real Malloy/model compile error is a 4xx
- * `compilation_error`; a gate refusing what the package declares, or a
- * publisher.json that cannot be used, is a 4xx `policy_rejected`; a rewrapped
- * pool-infrastructure failure is a transient
- * `pool_unavailable`; anything else is a generic `error`.
+ * The failure `status` label shared by the load-duration histogram and the
+ * per-phase load metrics, so both slice failures identically.
  */
 function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    if (error instanceof ModelCompilationError || error instanceof MalloyError) {
@@ -304,39 +293,22 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private malloyConfig: MalloyConfig;
-   /**
-    * Resolves the environment's storage destinations for a serve-shape
-    * compile. Set by the owning Environment; see
-    * {@link setServeDestinationConfig}.
-    */
+   /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
-   // Build-manifest binding state (Malloy Persistence v0). When bound, these
-   // entries (sourceEntityId -> { tableName }) are what served queries use to route
-   // persist sources to their materialized physical tables; they are also reused
-   // by the /compile preview so previewed SQL matches executed SQL. Surfaced on
-   // /status (via getPackageMetadata) so the control plane can confirm a worker
-   // actually bound the distributed manifest instead of inferring it from logs.
+   // Bound build manifest (sourceEntityId -> { tableName }): routes persist
+   // sources to their materialized tables for served queries and the /compile
+   // preview alike, so previewed SQL matches executed SQL. Surfaced on /status
+   // so the control plane can confirm a worker bound it.
    private buildManifestEntries: BuildManifest["entries"] | undefined;
-   // The full wire entries retained at bind (sourceEntityId -> { tableName,
-   // dataAsOf, freshnessWindowSeconds, freshnessFallback }). Unlike
-   // {@link buildManifestEntries} (the tableName-only projection baked into the
-   // hydration runtime and reused by /compile), this keeps the control-plane
-   // freshness fields so the serve path can re-evaluate `age vs window` per
-   // query. Undefined when the package is serving live (unbound).
+   // The full wire entries, freshness fields included, so the serve path can
+   // re-evaluate age vs window per query. Undefined when serving live.
    private freshnessEntries: FreshnessManifest | undefined;
-   // `storage=` serve bindings (materialized-into-storage sources), derived from
-   // a build's full manifest entries and pushed onto each Model so a query can
-   // route through the virtual-source serve transform. Distinct from the
-   // same-connection freshnessEntries above (which the manifest substitution
-   // uses); a storage source serves cross-connection via bindings, not the
-   // manifest. Empty ⇒ no storage serve routing.
+   // `storage=` serve bindings, pushed onto each Model for the virtual-source
+   // serve transform. A storage source serves cross-connection through these,
+   // not through the same-connection manifest above.
    private storageServeBindings: ReturnType<typeof deriveServeBindings> = [];
-   // Memoized freshness-filtered manifest for the serve path. Almost all queries
-   // in a window share the same included set, so this is recomputed only when a
-   // retained entry actually crosses its window (`validUntil`, the next
-   // staleSince) or when a rebind replaces the entries (cleared in
-   // recordManifestBinding). validUntil === Infinity means no included entry has
-   // an evaluable window, so the result is stable until the next rebind.
+   // Memoized freshness-filtered manifest, recomputed when an entry crosses its
+   // window (`validUntil`) or a rebind clears it. Infinity: stable until rebind.
    private freshManifestCache:
       | { manifest: BuildManifest["entries"]; validUntil: number }
       | undefined;
@@ -344,109 +316,67 @@ export class Package {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
-   // The package's persist build plan: a deterministic property of the compiled
-   // package (per-source sourceEntityId, columns, build SQL, dependency graphs),
-   // computed once at load from the live (unbound) models so it is stable for a
-   // given (package version, connection config). Null when the package declares
-   // no persist source. Surfaced read-only on getPackageMetadata() so a caller
-   // can derive build instructions without a separate plan round-trip.
+   // The persist build plan, computed once at load from the unbound models, so
+   // it is stable per (package version, connection config). Null when the
+   // package declares no persist source.
    private buildPlan: BuildPlan | null = null;
-   // Memoized {@link getPreaggregateEntityIds}, keyed on the plan it was derived
-   // from so a reload recomputes without an explicit invalidation.
+   // Keyed on the plan it came from, so a reload recomputes it.
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
-   // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
-   // recognize as a materializable build root, so they produced no plan entry
-   // and would be a silent no-op (served live). Surfaced as an operator warning
-   // and hard-refused at build. See build_plan.detectDroppedPersistSources.
+   // `#@ persist` sources getBuildPlan() did not treat as build roots, which
+   // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
    // Which sources may be served from a materialized table, decided at compile
-   // (build_plan.collectSourceEligibility) because that is where the compiled
-   // sources exist. Consulted when binding serve bindings, which deliberately
-   // does not recompile.
-   //
-   // `undefined` means NOT KNOWN — the plan compute failed (it does live schema
-   // RPCs, so a warehouse blip is the ordinary way) and the package loaded
-   // anyway. Distinct from "nothing is eligible", and refused the same way: an
-   // unknown answer must not read as consent. See bindStorageServeBindings.
+   // where the compiled sources exist; binding does not recompile. `undefined`
+   // means NOT KNOWN (the plan compute failed) and is refused like "nothing is
+   // eligible": an unknown answer must not read as consent.
    private sourceEligibility: SourceEligibility | undefined = undefined;
-   // The colocated-tier analogue of `sourceEligibility`
-   // (build_plan.collectColocatedSourceEligibility), consulted when binding a
-   // colocated (same-connection) manifest. Keyed by sourceEntityId, not name —
-   // see that type's doc. Same "undefined means not known, refuse" rule.
+   // The colocated (same-connection) analogue, keyed by sourceEntityId. Same
+   // "undefined means refuse" rule.
    private colocatedSourceEligibility: ColocatedSourceEligibility | undefined =
       undefined;
-   // Per-source incremental-refresh gate inputs (the resolved `refresh=` /
-   // `watermark=` / `merge_key=` declaration), keyed by sourceID to match the
-   // wire plan. Resolved at
-   // compile for the same reason as sourceEligibility: the rules read the
-   // compiled output schema and the query definition's field kinds, neither of
-   // which the wire plan carries. Empty when the plan compute failed, which
-   // leaves the gate silent — safe, because the build path dispatches a delta
-   // only for a declaration it can read.
+   // Incremental-refresh gate inputs, resolved at compile because the rules read
+   // the compiled schema, which the wire plan lacks. Empty when the plan compute
+   // failed; safe, as the build only dispatches a delta it can read.
    private incrementalPolicySources: IncrementalPolicySource[] = [];
-   // Non-fatal render-tag findings aggregated across the package's models (each
-   // tagged with its model path), surfaced read-only on
-   // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
-   // tag does not fail the load (see Model.validateRenderTags); this is the
-   // response-level signal that a tag is misconfigured.
+   // Non-fatal render-tag findings across the models; a bad tag does not fail
+   // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
-   // Load-time report lint findings, on the same read-only warnings surface
-   // as the render-tag ones. Refreshed with the reports on load and reload.
    private reportWarnings: ApiPackageWarning[] = [];
    /** Linear reports whose cells the reader refused; set with the reports. */
    private readerWarnings: ApiPackageWarning[] = [];
-   // Every served report, of either layout, keyed by path, in path order
-   // (`docs/reports-design.md` §1). Computed once per load/reload rather than
-   // per request: the artifact tag is a property of the compiled model, so it
-   // can only change when the models do. A grid report that failed to compile
-   // has no readable tag, so it lands here carrying its error rather than
-   // disappearing. Its keys are what makes a file a report for the query
-   // boundary, and each `text` lets a report's own derived sources prove they
-   // derive from the surface.
+   // Every served report keyed by path, in path order, computed per load (the
+   // tag only changes with the models). A grid report that failed to compile
+   // stays, carrying its error. Its keys define what is a report for the query
+   // boundary; each `text` lets a report's derived sources prove their origin.
    private reports = new Map<string, ServedReport>();
    /** Every file discovery found carrying an artifact tag, with its status. */
    private reportFiles = new Map<string, ReportFile>();
    /** The last discovery, which the lint re-runs over. */
    private discovery?: ReportDiscovery;
-   /**
-    * Manifest-shape warnings the load tolerated: the `explores` and
-    * `queryableSources` deprecations and a root-level `scope`. Kept so publish
-    * can report a still-parsing-but-outdated manifest, and carried on the
-    * package's `warnings` (see getPackageMetadata).
-    */
+   /** Manifest deprecations the load tolerated, reported at publish and in `warnings`. */
    private manifestWarnings: string[] = [];
    /**
-    * What this package is currently serving, refreshed on load and on every
-    * reload. `servedRevision` identifies the load; `sourceContentSha` is a
-    * content hash over the served files, so it answers the question a caller
-    * actually has after an edit -- did the bytes the server read change --
-    * which `servedRevision` cannot, being minted fresh either way.
+    * What this package is serving, refreshed on every load. `servedRevision`
+    * identifies the load; `sourceContentSha` says whether the served bytes changed.
     */
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
    /**
-    * The agent skills this package ships, read from `skills/` on load and on
-    * every reload. Refreshed in the same call that recomputes the content sha,
-    * so a skill edit is covered by the reload receipt by construction rather
-    * than by remembering to add it.
+    * The skills in `skills/`, refreshed with the content sha so a skill edit is
+    * covered by the reload receipt by construction.
     */
    private packageSkills: SkillEntry[] = [];
    private packageSkillWarnings: string[] = [];
    /**
-    * The manifest's `agents` value as the worker read it, unvalidated. Held
-    * apart from `packageMetadata` so a metadata PATCH cannot replace it; the
-    * validated agents below are derived from it in refreshServingIdentity.
+    * The manifest's raw `agents` value, held apart from `packageMetadata` so a
+    * metadata PATCH cannot replace it.
     */
    private rawAgents: unknown;
    private packageAgents = new Map<string, PackageAgent>();
    private packageAgentWarnings: string[] = [];
-   /**
-    * The manifest's `retrieval` block as read at load (prompt files included).
-    * Replaced on reload, which is how an edit to it, or to a prompt file,
-    * takes effect.
-    */
+   /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
    private retrievalSettings: PackageRetrievalSettings =
       DEFAULT_PACKAGE_RETRIEVAL;
    private static meter = publisherMeter();
@@ -455,9 +385,7 @@ export class Package {
       {
          description: "Time taken to load a Malloy package",
          unit: "ms",
-         // OTel's default buckets top out at 10s, censoring the slow-load tail.
-         // Use the shared load-duration buckets (→5min) so p95/p99 of large
-         // package loads are resolvable. See LOAD_DURATION_BUCKETS_MS.
+         // OTel's default buckets stop at 10s and would censor the slow tail.
          advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },
    );
@@ -554,20 +482,12 @@ export class Package {
    }
 
    /**
-    * Re-derive the serving identity, and re-read the package's own skills.
+    * Re-derive the serving identity and re-read the package's skills and
+    * agents, as one operation so the set that is served and the set that is
+    * hashed are the same (a skill edit must move the reload receipt).
     *
-    * The two are one operation on purpose. The sha is the reload receipt, and
-    * a receipt that ignored skill files would report "nothing changed" for a
-    * skill edit that did in fact reach the server -- the exact false negative
-    * the receipt exists to prevent. Reading the skills here is what supplies
-    * the paths, so the set that is served and the set that is hashed are the
-    * same set.
-    *
-    * Not run by the constructor: {@link lintWorkerOutcome} builds a throwaway
-    * Package per package-scope compile and has no use for it. {@link create}
-    * and {@link reloadAllModels} call it. Call after anything that changes which
-    * files are served or what they contain; a reload that leaves the bytes identical still mints a new
-    * revision, and correctly leaves the sha alone.
+    * Not run by the constructor: {@link lintWorkerOutcome}'s throwaway Package
+    * has no use for it. Call after anything that changes the served files.
     */
    public refreshServingIdentity(): void {
       this.servedRevision = mintServedRevision();
@@ -600,18 +520,10 @@ export class Package {
    }
 
    /**
-    * Push the discovery-curation policy down onto each Model. Curation (file
-    * listing via `explores` and within-file `export {}` filtering) is enabled
-    * whenever the package resolves a non-empty surface. That surface is either
-    * an `explores` the author wrote in publisher.json or one derived from a
-    * root `index.malloy`, and this code cannot tell the two apart by design
-    * (see resolveExplores) — so "no `explores` key" does NOT mean "uncurated".
-    * No surface at all preserves legacy listings. Re-derived on reload and
-    * metadata PATCH (the inputs can change there).
+    * True when the package has a non-empty resolved surface, written or derived
+    * from `index.malloy` (so "no `explores` key" does not mean "uncurated").
+    * The one test curation, boundary and listing all share.
     */
-   /** True when the package has a non-empty resolved surface, whoever
-    *  authored it. Single source of truth so the curation/boundary/listing
-    *  derivations can't drift out of sync. */
    private exploresDeclared(): boolean {
       const explores = this.packageMetadata.explores;
       return !!(explores && explores.length > 0);
@@ -624,39 +536,14 @@ export class Package {
    private surfaceWidenedWarning: string | undefined;
 
    /**
-    * Report that this package was curated a moment ago and is not any more.
+    * Warn that this package was curated before the reload and is not now.
+    * Losing a surface (deleting or renaming `index.malloy`) is the one curation
+    * change nothing else reports: the withheld sources become listed and
+    * queryable by name again. (Curation only; `#(authorize)` is unaffected.)
     *
-    * Losing a surface is the one curation change nothing else reports. Every
-    * other transition leaves something behind to look at: a surface that
-    * APPEARS warns at load, a malformed `explores` refuses the load, a broken
-    * surface file fails the reload and is reported stale. But deleting or
-    * renaming `index.malloy` simply resolves to no surface, which is an
-    * ordinary uncurated package, and an uncurated package has nothing to say
-    * about itself. The sources that file was withholding are listed and
-    * queryable again from that moment, and the author who deleted a file they
-    * thought was theirs to delete is told nothing.
-    *
-    * `previousSurface` is the resolved `explores` from before the reload. Every
-    * path that replaces this package's surface calls this: an in-place
-    * {@link reloadAllModels} (materialization, manifest rebind) passes its own
-    * surface from before it re-read the tree, and a full reload in
-    * {@link Environment} passes the surface of the package it replaces. A
-    * process restart has no "before", so it cannot report this.
-    *
-    * Only `undefined` counts as lost, and the distinction is the whole point:
-    *
-    *  - `undefined` is "no `explores` key and no root index.malloy", which is
-    *    what deleting or renaming the surface file resolves to. Nobody asked
-    *    for it and nothing else says it happened.
-    *  - `[]` is an author writing `"explores": []`, the old opt-out. They
-    *    asked for exactly this and already get a warning about the key.
-    *
-    * It is a transition, so it is said once, on the reload that caused it; the
-    * next reload of an already-uncurated package clears it.
-    *
-    * This is curation, not access control -- nothing gated by `#(authorize)`
-    * becomes reachable, and hiding was never denying. What widens is what is
-    * listed and what answers by name.
+    * `previousSurface` is the resolved `explores` from before the reload. Only
+    * a now-`undefined` surface counts: `"explores": []` was asked for and is
+    * already warned about. Said once, on the reload that caused it.
     */
    public noteSurfaceChangeFrom(previousSurface: string[] | undefined): void {
       this.surfaceWidenedWarning = undefined;
@@ -680,26 +567,10 @@ export class Package {
    }
 
    /**
-    * True when this package's surface is its `index.malloy`, which is what the
-    * convention produces when the manifest declares no `explores`.
-    *
-    * Derived from the tree and the resolved surface rather than from a stored
-    * origin, deliberately: nothing records where a surface came from, and
-    * nothing should. The question this answers is not "who wrote it" but "is
-    * there an index.malloy the author is looking at", and that has the same
-    * answer either way.
-    *
-    * It is therefore TRUE for a hand-written `explores: ["index.malloy"]`, and
-    * a remedy this selects has to hold for that author too. The file is the
-    * same; the manifest key is not, and a remedy that says to delete the file
-    * without also clearing the key would leave that package listing nothing.
-    * Every message below is worded to cover both.
-    *
-    * Used ONLY to pick the wording of a warning's remedy. Every message that
-    * says "add it to 'explores'" is advice with no target for a package that
-    * has no such key, and a dashboard file cannot be exported from an
-    * index.malloy at all. It must never gate behavior: the surface behaves
-    * identically whichever source produced it.
+    * True when this package's surface is its `index.malloy`, including a
+    * hand-written `explores: ["index.malloy"]` (nothing records a surface's
+    * origin), so the remedies it selects are worded for both. Used ONLY to
+    * word warnings; it must never gate behavior.
     */
    private surfaceIsIndexModel(): boolean {
       const explores = this.packageMetadata.explores;
@@ -716,6 +587,7 @@ export class Package {
       return explores && explores.length > 0 ? new Set(explores) : null;
    }
 
+   /** Push discovery curation (`explores` listing, `export {}` filtering) onto each Model. */
    private applyDiscoveryPolicyToModels(): void {
       const curationEnabled = this.exploresDeclared();
       for (const model of this.models.values()) {
@@ -724,47 +596,27 @@ export class Package {
    }
 
    /**
-    * Push the package-level query-boundary policy down onto each Model so the
-    * query chokepoint can enforce it without a back-reference to the Package:
-    * `Model.getQueryResults` (the HTTP query route and the MCP tool). The
-    * `/compile` path is deliberately NOT a chokepoint — it is exempt from the
-    * boundary (see Environment.compileSource); only `#(authorize)` gates it.
-    * Derived once here (and on reload) rather than per query: the policy only
-    * changes when the manifest is (re)read.
-    *
-    * Policy: queryable == discoverable. The boundary is inert unless the
-    * package resolved a surface (no curated surface ⇒ nothing to restrict) AND
-    * `queryableSources` is "declared" (the default; "all" decouples the axes).
-    * A surface derived from a root `index.malloy` arms it exactly as a written
-    * `explores` does, so an absent manifest key does not mean an inert
-    * boundary. When active, a model file is a query entry point only if it is
-    * on that surface; within-file curation (`export {}`) is read off each
-    * Model.
+    * Push the query-boundary policy onto each Model, where
+    * `Model.getQueryResults` enforces it (`/compile` is exempt; only
+    * `#(authorize)` gates it). Policy: queryable == discoverable. Inert unless
+    * the package resolved a surface AND `queryableSources` is "declared" (the
+    * default). When active, a model file is an entry point only if it is on
+    * the surface.
     */
    private applyQueryBoundaryToModels(): void {
       const exploresDeclared = this.exploresDeclared();
       const exploreSet = this.exploreSet();
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
-      // The PACKAGE-wide queryable surface: the union of every explores-listed
-      // model's export closure, not just the requested model's: a source
-      // declared queryable (its file is listed in explores) must stay
-      // queryable when addressed through a model that imports it, since agents
-      // commonly post every query to one model path.
+      // The PACKAGE-wide surface: the union of every listed model's export
+      // closure, so a queryable source stays queryable through a model that
+      // imports it (agents often post every query to one model path).
       //
-      // Each entry maps a name to the DEFINITION IDENTITIES exported under it,
-      // never to the bare name. Keying on names alone would admit by collision:
-      // listed model A exporting `customers` would clear the gate for the name
-      // everywhere, and listed model B that imports a different, hidden
-      // `customers` would then serve the hidden one, because the gate matched
-      // the name while Malloy resolved the declaration in B's namespace. With
-      // identities, a request is admitted only when the requested model
-      // resolves the name to the very declaration a listed model exported —
-      // which is what makes the union genuinely admit nothing new. A legitimate
-      // re-export still works: the exporting model's closure carries the
-      // declaration's own location, wherever the file it lives in.
-      // (Relies on applyDiscoveryPolicyToModels having run first, so
-      // getSources()/getQueries() are already export-curated.)
+      // Keyed by name to DEFINITION IDENTITIES, never bare names: by name alone,
+      // listed A exporting `customers` would admit a different, hidden
+      // `customers` that model B resolves. Identity admits only the very
+      // declaration a listed model exported.
+      // (Requires applyDiscoveryPolicyToModels first, for export curation.)
       let packageCuratedSources:
          | ReadonlyMap<string, ReadonlySet<string>>
          | undefined;
@@ -787,17 +639,12 @@ export class Package {
             else into.set(name, new Set([identity]));
          };
          for (const [modelPath, model] of this.models) {
-            // Only .malloy files curate a query surface. A notebook listed in
-            // explores is already invalid (getInvalidExplores flags it) but is
-            // served fail-safe, and must not contribute names here — the
-            // sibling loops (listModels, emptyDiscoveryWarnings) filter the
-            // same way.
+            // Only .malloy files curate a surface; a listed notebook is invalid
+            // and contributes nothing (as in listModels).
             if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
             if (!exploreSet.has(modelPath)) continue;
-            // Nor does a report, even when `explores` lists it (the shape
-            // older advice produced): it reads the surface, it never adds to
-            // it. An untagged file is not a report wherever it lives, so a
-            // listing publishes it like any other file.
+            // Nor does a report, even when listed: it reads the surface, it
+            // never adds to it.
             if (this.isServedReport(modelPath)) continue;
             for (const source of model.getSources() ?? []) {
                add(sources, source.name, model.definitionIdentity(source.name));
@@ -841,23 +688,10 @@ export class Package {
    }
 
    /**
-    * Push a sibling-model lookup down onto each Model: given a `file://` URL,
-    * find the `.malloy`/`.malloynb` file it names among this PACKAGE's own
-    * discovered models (every one is compiled independently — see the
-    * worker's `filterModelPaths`/`recursive` scan — regardless of whether
-    * anything imports it, or whether the served model's own compile promoted
-    * it to a `modelDef.contents` entry) and hand back that sibling's own
-    * `ModelDef`. See `./filter_binding_guard`'s `SiblingModelDefResolver` doc
-    * for why a served model needs this at all: a selective `import { name }
-    * from "file"` or a notebook cell's narrower per-cell compile can leave an
-    * ancestor file with no `modelDef.contents` entry of its own, even though
-    * the package compiled it fine on its own.
-    *
-    * Built fresh from `this.models`/`this.packagePath` (never memoized across
-    * calls) and re-run alongside {@link applyDiscoveryPolicyToModels}/
-    * {@link applyQueryBoundaryToModels} — both at construction and after a
-    * reload swaps `this.models` wholesale — so every model always resolves
-    * against the CURRENT model set, never a stale one from before a reload.
+    * Give each Model a lookup from a `file://` URL to a sibling model's own
+    * `ModelDef` (see `SiblingModelDefResolver` in `./filter_binding_guard` for
+    * why). Rebuilt whenever `this.models` is replaced, so it never resolves
+    * against a stale set.
     */
    private applySiblingModelResolverToModels(): void {
       const byUrl = new Map<string, Model>();
@@ -880,14 +714,9 @@ export class Package {
       packagePath: string,
       environmentMalloyConfig: PackageConnectionInput,
       /**
-       * Delete `packagePath` if the load fails. Opt-in, and only correct for a
-       * caller that created the directory itself (an install staged into place),
-       * where the half-built tree is Publisher's to clean up and `installPackage`
-       * rolls the previous one back. Every other caller loads a directory that
-       * already existed: a reload of a package that is currently serving, or a
-       * user directory registered via addPackage. Deleting those on a transient
-       * compile error destroys the source and takes the package offline, so the
-       * default is to leave the directory alone.
+       * Delete `packagePath` if the load fails. Only for a caller that created
+       * the directory (a staged install); for any existing directory, deleting
+       * on a transient compile error would destroy the source.
        */
       cleanupDirectoryOnFailure: boolean = false,
    ): Promise<Package> {
@@ -901,12 +730,9 @@ export class Package {
       });
 
       try {
-         // The MalloyConfig is always built on the main thread — it
-         // owns the live native connection handles the package needs
-         // to *serve queries* after load (workers can't share native
-         // handles across the V8 isolate boundary). The worker proxies
-         // non-duckdb connection lookups back through this MalloyConfig
-         // during compile.
+         // Built on the main thread: it owns the native connection handles
+         // that serve queries, which cannot cross the isolate boundary. The
+         // worker proxies non-duckdb lookups back through it during compile.
          const malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
             typeof environmentMalloyConfig === "function"
@@ -924,20 +750,15 @@ export class Package {
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
-         console.error(error);
          const endTime = performance.now();
          const executionTime = endTime - startTime;
          this.packageLoadHistogram.record(executionTime, {
             malloy_package_name: packageName,
             status: packageLoadFailureStatus(error),
          });
-         // Clean up the package directory only when the caller opted in (an
-         // install that staged this tree), and never when packagePath is an
-         // in-place mount symlink (watch mode). Removing it would unmount the
-         // package, so a transient compile error from a half-typed model saved
-         // mid-edit would brick the package until a restart. The symlink points
-         // at the user's live source, which is left untouched; the next save
-         // recompiles against it.
+         // Clean up only when the caller opted in, and never a watch-mode
+         // symlink: removing it would unmount the package on a half-typed save
+         // until a restart.
          try {
             if (!cleanupDirectoryOnFailure) {
                logger.info(
@@ -965,17 +786,12 @@ export class Package {
       }
    }
 
-   /**
-    * The package's API metadata as the worker read it from publisher.json.
-    */
+   /** The package's API metadata as the worker read it from publisher.json. */
    private static packageConfigFromOutcome(
       environmentName: string,
       packageName: string,
       outcome: LoadPackageOutcome,
    ): ApiPackage {
-      // Override the manifest-derived resource URI — the worker only
-      // returns name/description from publisher.json, but the rest of
-      // the API surface expects a `resource` field too.
       return {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
@@ -984,55 +800,33 @@ export class Package {
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,
          manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
-         // Always surface a non-null `materialization` object once the package
-         // has loaded (schedule null when the manifest declares no policy). The
-         // control plane treats object-present as the authoritative "this is
-         // what the manifest says" signal and object-absent as "metadata not
-         // available this request" — so it must never be dropped to null on a
-         // successfully loaded package, or the CP can misread a transient
-         // absence as a schedule removal. See `parsePackageMaterialization`.
+         // Never null on a loaded package: the control plane reads an absent
+         // object as "metadata unavailable" and a present one as authoritative,
+         // so null could be misread as a schedule removal.
          materialization: outcome.packageMetadata.materialization ?? {
             schedule: null,
             freshness: null,
          },
-         // The canonical home for the package's declared tags, mirrored from the
-         // block above — which is where the wire originally carried them. Both
-         // are populated for as long as the deprecated home is supported, so a
-         // client migrates when it chooses rather than when this ships.
+         // The canonical home for the tags, mirrored in `materialization` for
+         // as long as that deprecated home is supported.
          queryMetadata:
             outcome.packageMetadata.materialization?.queryMetadata ?? null,
-         // Package-level persist scope mode, applied uniformly to every persist
-         // source/index. Defaults to "package" (cross-version reuse) when the
-         // manifest omits it.
          scope: outcome.packageMetadata.scope ?? "package",
       };
    }
 
    /**
     * Turn the worker's compiled models into live `Model`s and validate their
-    * render tags. Render tags are checked here, on the main thread, because the
-    * renderer is too heavy to load inside the pure-CPU package-load worker. A
-    * misconfigured tag never fails the load; its findings are returned to ride
-    * the package response as non-fatal `warnings`.
+    * render tags (here, because the renderer is too heavy for the worker). A
+    * bad tag never fails the load; its findings become non-fatal `warnings`.
+    * Shared by load, reload and package-scope compile so their findings cannot
+    * drift. Touches no package state.
     *
-    * One function for the load, the in-place reload and the package-scope
-    * compile ({@link lintWorkerOutcome}), so the render-tag findings a compile
-    * reports cannot drift from the ones a reload reports. It touches no
-    * package state.
-    *
-    * `onCompileError` is the one way the callers differ. A load ("throw")
-    * fails on the first model that did not compile. A reload ("placeholder")
-    * keeps a failed model as `Model.fromCompilationError`, and likewise keeps a
-    * model whose render-tag validation threw unexpectedly, so one bad file does
-    * not cost the package its other models. `afterHydrate` runs once per
-    * compiled model, in order, before it is added (the load path's
-    * persist-name check).
-    *
-    * `ctx.compile` marks the package-scope compile. Its caller reports every
-    * failed model in the response, so the per-model "failed during reload"
-    * line is not logged: a compile is not a reload, and an agent iterating on
-    * a broken file would otherwise fill the operator log. A render-tag check
-    * that throws is a server fault, so it is still logged, as "during compile".
+    * `onCompileError`: a load ("throw") fails on the first failed model; a
+    * reload ("placeholder") keeps it as `Model.fromCompilationError` so one bad
+    * file does not cost the others. `afterHydrate` runs per model before it is
+    * added. `ctx.compile` skips the per-model failure log, since the compile
+    * response reports those and an iterating agent would flood the log.
     */
    private static async hydrateWorkerModels(
       outcome: LoadPackageOutcome,
@@ -1042,12 +836,7 @@ export class Package {
          malloyConfig: MalloyConfig;
          buildManifest?: BuildManifest["entries"];
          compile?: boolean;
-         /**
-          * The what-if text a package-scope compile was given. A model that
-          * fails to compile is kept as a placeholder, and without this the
-          * placeholder carries no text, so a reader of it judges the saved
-          * file instead of the edit.
-          */
+         /** The what-if text, so a failed model's placeholder carries the edit, not the saved file. */
          replacement?: LoadPackageRequest["replacement"];
       },
       onCompileError: "throw" | "placeholder",
@@ -1090,8 +879,7 @@ export class Package {
                   modelPath: sm.modelPath,
                   error: err.message,
                });
-               // The outer catch in Package.create records the total metric +
-               // cleans the package directory.
+               // Package.create's catch records the metric and cleans up.
                throw err;
             }
             if (!ctx.compile) {
@@ -1118,10 +906,9 @@ export class Package {
                },
             );
          } catch (hydrateErr) {
-            // A load and a reload fail on this, as they always have. A compile
-            // keeps going: one model that will not hydrate costs that model's
-            // findings, not every other file's. The finding is an error, since
-            // the reload this compile previews would fail on it.
+            // A load and reload fail here. A compile keeps going so one model
+            // costs only its own findings, reported as an error because the
+            // reload it previews would fail.
             if (!ctx.compile) throw hydrateErr;
             logger.warn("Model hydration failed during compile", {
                packageName,
@@ -1154,9 +941,8 @@ export class Package {
          try {
             warnings = await model.validateRenderTags();
          } catch (renderErr) {
-            // Defensive: validateRenderTags logs its findings and does not
-            // throw. On reload an unexpected internal failure is recorded as
-            // this model's compilationError rather than aborting the reload.
+            // Defensive: validateRenderTags should not throw. On reload, keep a
+            // placeholder rather than abort.
             if (onCompileError === "throw") throw renderErr;
             const err =
                renderErr instanceof Error
@@ -1187,10 +973,8 @@ export class Package {
          for (const w of warnings) {
             renderTagWarnings.push({
                model: sm.modelPath,
-               // Spelled out rather than spread. A spread is exempt from
-               // excess-property checking exactly like a named interface, so
-               // `...w` would carry a stale field name through a rename in
-               // `api-doc.yaml` without the compiler noticing.
+               // Spelled out, not spread: a spread escapes excess-property
+               // checks, so an api-doc.yaml rename would go unnoticed.
                subject: w.subject,
                message: w.message,
                severity: w.severity,
@@ -1205,26 +989,12 @@ export class Package {
    }
 
    /**
-    * The render-tag and dashboard findings a reload of this worker outcome
-    * would put on the package's `warnings`, for the package-scope compile.
+    * The render-tag and report findings a reload of this outcome would put on
+    * `warnings`, for the package-scope compile. Runs the reload's own steps on
+    * a throwaway Package, so a what-if never touches the served one.
     *
-    * Runs the reload's own two steps, {@link hydrateWorkerModels} (keeping
-    * failed models, as a reload does) and {@link discoverReports}, on a
-    * throwaway Package built from the outcome. The served package is never
-    * read or written, so a what-if cannot leak into what is served. The
-    * outcome's metadata carries the surface the worker resolved from
-    * publisher.json or a root index.malloy, so the tile lint answers against
-    * the same surface a reload would.
-    *
-    * Not covered: notebook findings (the compile reports those itself), and
-    * every warning that needs the build plan or a bound manifest (storage,
-    * persist, materialization, collision), which only a real load computes.
-    *
-    * With a replacement source, the hydrated models already reflect it. A
-    * replacement that fails to compile carries no text back from the worker, so
-    * its placeholder is handed the replacement text, and discovery decides from
-    * that whether it is a dashboard (and so whether a drill to it resolves)
-    * rather than reading the saved file.
+    * Not covered: notebook findings (the compile reports those), and warnings
+    * that need the build plan or a bound manifest, which only a real load has.
     */
    public static async lintWorkerOutcome(
       environmentName: string,
@@ -1266,9 +1036,7 @@ export class Package {
       try {
          await pkg.discoverReports("compile");
       } catch (err) {
-         // Discovery is meant never to throw, but a fault in it must not
-         // reject the whole compile, and a missing list reads exactly like a
-         // clean package. Say the findings are unknown instead.
+         // A missing list would read as clean; say the findings are unknown.
          logger.warn("Report lint failed during compile", {
             packageName,
             error: errMessage(err),
@@ -1294,20 +1062,9 @@ export class Package {
    }
 
    /**
-    * Load the package via the package-load worker pool. The worker
-    * performs the CPU-bound bulk of the load off-thread (manifest
-    * read, every `.malloy` / `.malloynb` compile) and ships back a
-    * structured-clonable `LoadPackageOutcome`. Database probes
-    * (`.parquet` / `.csv`) run on the main thread, in parallel with
-    * the worker compile, against the package's existing DuckDB
-    * connection — they're async-IO-bound and don't compete with the
-    * worker for CPU.
-    *
-    * Pool-infrastructure failures (worker crash, RPC timeout, pool
-    * shutting down) are rewrapped as `ServiceUnavailableError` so
-    * the HTTP layer responds 503 (transient, retryable). Real compile
-    * errors (`MalloyError` / `ModelCompilationError`) propagate
-    * unchanged so they keep their 4xx mapping.
+    * Load the package via the worker pool, which does the CPU-bound manifest
+    * read and compiles. Database probes are IO-bound and run on the main thread
+    * in parallel. Pool failures become 503s; compile errors keep their 4xx.
     */
    private static async loadViaWorker(
       environmentName: string,
@@ -1319,13 +1076,9 @@ export class Package {
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
-      // Submit the worker job and run database probing on the main
-      // thread in parallel. We isolate the worker-job promise inside
-      // a wrapper so we can map pool-infrastructure failures (worker
-      // crash, RPC timeout, pool shutting down) to a 503 without
-      // accidentally re-mapping `readDatabases`'s own errors.
-      const workerOutcome = pool
-         .loadPackage({
+      // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
+      const workerOutcome = loadOutcomeOrThrow(
+         pool.loadPackage({
             packagePath,
             packageName,
             environmentName,
@@ -1333,49 +1086,13 @@ export class Package {
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
-         })
-         .catch((err: unknown) => {
-            // Compile errors surface in-band via
-            // `LoadPackageOutcome.models[i].compilationError`; if the
-            // pool itself rejects, it's an infra-side failure
-            // (shutting down, worker spawn failed, worker crashed,
-            // RPC timeout) and the client should retry. Real Malloy
-            // compile errors deserialised by the pool still carry
-            // their MalloyError / ModelCompilationError identity, and an
-            // unusable publisher.json its PackageManifestError identity —
-            // let those bubble untouched so they keep their 4xx
-            // mapping in `errors.ts`.
-            const realError =
-               err instanceof Error
-                  ? err
-                  : new Error(
-                       `Package-load worker pool failure: ${String(err)}`,
-                    );
-            if (
-               realError instanceof MalloyError ||
-               realError instanceof ModelCompilationError ||
-               realError instanceof PackageManifestError
-            ) {
-               throw realError;
-            }
-            throw new ServiceUnavailableError(
-               `Package-load worker pool unavailable: ${realError.message}`,
-               // The worker's failure may be a refused filesystem access on
-               // the package's own files, which the error mapper reads from
-               // the cause; a bare 503 would read as "retry".
-               { cause: realError },
-            );
-         });
+         }),
+      );
       const [outcome, databases] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
       ]);
-      // A stage the package requires (`enabled: true`) needs the operator's
-      // LLM; without one the package does not load.
-      assertRequiredStagesAvailable(
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
-         llmConfigured(),
-      );
+      assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -1398,11 +1115,7 @@ export class Package {
          outcome,
       );
 
-      // Build live `Model`s from worker output. Any per-model compile
-      // failure aborts the load — matches the historical behaviour of
-      // `Package.create` failing the whole package on the first model
-      // error. (`Package.reloadAllModels` keeps the failed-model
-      // placeholders instead.)
+      // Any model compile failure aborts the load (reload keeps placeholders).
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
       let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
@@ -1416,14 +1129,11 @@ export class Package {
             { packageName, packagePath, malloyConfig },
             "throw",
             async (sm) => {
-               // Reject unquoted `#@ persist name=` annotations at load:
-               // an unquoted name is dropped from the build plan, so the source
-               // would publish but never materialize. Scan the raw `.malloy`
-               // source (the ground truth for quoting); throws a
-               // ModelCompilationError (424). `.malloy` only: `#@ persist` is a
-               // model-file directive and does not appear in `.malloynb`
-               // notebooks. If that ever changes, widen this guard so the
-               // identifier-injection check still covers notebooks.
+               // Reject an unquoted `#@ persist name=`: it is dropped from the
+               // build plan, so the source would never materialize. Reads the
+               // raw source, the ground truth for quoting. `.malloy` only,
+               // because `#@ persist` cannot appear in a `.malloynb`; widen this
+               // if that changes, to keep the identifier-injection check.
                if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
                   const modelSource = await fs.readFile(
                      path.join(packagePath, sm.modelPath),
@@ -1434,11 +1144,8 @@ export class Package {
             },
          ));
       } catch (err) {
-         // Record the load's phase cost tagged with the terminal status before
-         // the error propagates to the outer catch (which records the total).
-         // Only in-band compile failures reach here — the worker already
-         // produced `outcome.timings`; a pool failure throws before `outcome`
-         // exists and carries no timings, so it's simply not recorded.
+         // Only in-band compile failures reach here; a pool failure has no
+         // timings to record.
          recordPackageLoadPhases(
             outcome.timings,
             packageLoadFailureStatus(err),
@@ -1475,40 +1182,50 @@ export class Package {
       pkg.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       pkg.rawAgents = outcome.packageMetadata.agents;
-      // Install the per-query freshness resolver on the freshly-built models.
-      // At create time no manifest is bound yet, so the resolver returns
-      // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
+      // No manifest is bound yet, so this serves live until a bind.
       pkg.wireFreshnessResolvers();
       pkg.refreshServingIdentity();
 
-      // The persist build plan, derived off the live (unbound) models before
-      // the caller binds any configured manifest, so the surfaced plan reflects
-      // the canonical build (not the manifest-rewritten SQL). The load worker
-      // derives it from its own compile (see LoadPackageResult.buildPlan).
-      // Deriving it here compiles every model a second time on this thread,
-      // blocking the event loop for as long as the worker's compile took, so it
-      // happens only when the worker left the plan at its soft deadline, for a
-      // package whose load came close to the job timeout. Best-effort: a plan
-      // failure is logged, not fatal — the package still serves; the plan is
-      // just absent.
-      //
-      // A failure also leaves `sourceEligibility` unknown, which refuses every
-      // storage serve binding until a load succeeds (see
-      // bindStorageServeBindings). Serving live is a slower answer, not a wrong
-      // one; admitting an unexamined binding would be a wrong one.
-      //
-      // It ALSO leaves `colocatedSourceEligibility` unknown, and that one is a
-      // bigger blast radius: colocated is the default tier, not gated by
-      // PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
-      // for the package to live recompute (see bindColocatedServeManifest and
-      // its recordColocatedBindDropped("build_plan_unavailable") counter).
-      let buildPlanMs: number | undefined;
+      const buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
+
+      applyLoadGates(pkg);
+      // After the gates, so a bad declaration is rejected before a companion is
+      // compiled. Unbound, the companion recomputes from the base until a bind.
+      await pkg.pushPreaggregateServeModels();
+      pkg.logEmptyDiscoveryWarnings();
+
+      recordPackageLoadPhaseDurations({
+         worker: workerDoneTime - dispatchTime,
+         hydrate: hydrationTimings.hydrateMs,
+         render_validation: hydrationTimings.renderValidationMs,
+         discovery: reportTimings.discoveryMs,
+         lint: reportTimings.lintMs,
+         build_plan: buildPlanMs,
+         total: performance.now() - startTime,
+      });
+      return pkg;
+   }
+
+   /**
+    * Apply the persist build plan, derived from the unbound models so it
+    * reflects the canonical build. The worker normally supplies it; deriving
+    * it here recompiles every model on this thread, so that happens only when
+    * the worker left it at its soft deadline. Best-effort: a failure is logged
+    * and the package serves without a plan.
+    *
+    * A failure leaves both eligibilities unknown, which refuses every storage
+    * AND colocated serve binding until a load succeeds: serving live is slower,
+    * an unexamined binding could be wrong.
+    *
+    * Returns how long it took, or undefined when it failed.
+    */
+   private async applyLoadBuildPlan(
+      workerPlan: LoadPackageOutcome["buildPlan"],
+   ): Promise<number | undefined> {
       const buildPlanPhaseStart = performance.now();
       try {
-         const workerPlan = outcome.buildPlan;
-         // Before a failed plan throws: the main-thread derivation records
-         // each refusal and skipped digest as it goes, so one that fails
-         // part-way has already counted them.
+         // Before a failed plan throws, matching the main-thread derivation,
+         // which counts these as it goes.
          for (const [reason, count] of Object.entries(
             workerPlan?.eligibilityRefused ?? {},
          )) {
@@ -1534,20 +1251,19 @@ export class Package {
             incrementalDeclarations,
          } = workerPlan
             ? workerPlan.outcome
-            : await computePackageBuildPlan(pkg);
-         pkg.buildPlan = plan;
-         pkg.droppedPersistSources = droppedPersistSources;
-         pkg.sourceEligibility = sourceEligibility;
-         pkg.colocatedSourceEligibility = colocatedSourceEligibility;
-         pkg.incrementalPolicySources = Object.entries(plan?.sources ?? {})
+            : await computePackageBuildPlan(this);
+         this.buildPlan = plan;
+         this.droppedPersistSources = droppedPersistSources;
+         this.sourceEligibility = sourceEligibility;
+         this.colocatedSourceEligibility = colocatedSourceEligibility;
+         this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
             .filter(([sourceID]) => incrementalDeclarations[sourceID])
             .map(([sourceID, source]) => ({
                sourceName: source.name,
                modelPath: source.modelPath,
                dialect: source.dialect,
                storageDestination: source.annotationFields?.storage,
-               // Carried so the gate can spot two sources resolving to ONE
-               // address, which collapses them onto one table and one boundary.
+               // So the gate can spot two sources resolving to one table.
                sourceEntityId: source.sourceEntityId,
                declaration: incrementalDeclarations[sourceID],
             }));
@@ -1557,159 +1273,30 @@ export class Package {
                : performance.now() - buildPlanPhaseStart,
             workerPlan ? "worker" : "main_thread",
          );
-         buildPlanMs = performance.now() - buildPlanPhaseStart;
+         return performance.now() - buildPlanPhaseStart;
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(
-            `Failed to compute build plan for package ${packageName}`,
+            `Failed to compute build plan for package ${this.packageName}`,
             {
-               packageName,
+               packageName: this.packageName,
                error: errMessage(err),
             },
          );
       }
-
-      // Fail-safe at load: a bad explores entry doesn't fail the package
-      // (its models still load and listModels hides the unmatched entry — it
-      // never falls back to listing everything). Warn so the misconfig is
-      // visible; the publish path rejects it outright (see package.controller).
-      const invalidMsg = pkg.formatInvalidExplores();
-      if (invalidMsg) {
-         logger.warn(`Package ${packageName} has invalid explores`, {
-            packageName,
-            detail: invalidMsg,
-         });
-      }
-      // Same fail-safe split for the persistence-policy gate: an existing
-      // package whose manifest violates the scope/schedule/freshness rules
-      // still loads (warn), but a publish of it is rejected (see
-      // package.controller).
-      const invalidPolicy = pkg.formatInvalidPersistencePolicy();
-      if (invalidPolicy) {
-         logger.warn(
-            `Package ${packageName} has an invalid persistence policy`,
-            {
-               packageName,
-               detail: invalidPolicy,
-            },
-         );
-      }
-      // The incremental-refresh gate does NOT get that fail-safe split: an
-      // invalid `#@ persist` declaration fails the load, the way a model that
-      // does not compile fails it.
-      //
-      // Publish cannot be the only strict point, because a package can arrive
-      // without one: uploaded to a control plane's storage and loaded by a
-      // worker, it never passes through POST/PATCH /packages. Warning here left
-      // the rejection in a worker log while the author — the only person who can
-      // fix the declaration — saw a clean publish and a source that quietly
-      // rebuilt in full forever.
-      //
-      // BadRequestError, for the 400: a control plane resolves the status off
-      // the error and otherwise defaults to 424, which would describe an
-      // authoring error as a dependency failure. The message carries EVERY
-      // rejection, so two broken declarations take one republish to fix.
-      //
-      // The accepted cost: `refresh=` was inert metadata before these rules, so
-      // a package published earlier saying refresh="incremental" and nothing
-      // else now stops serving until it is fixed. That is the one rule with any
-      // legacy exposure (watermark= and merge_key= did not exist as keys), the
-      // feature is gated behind `##! experimental.persistence`, and a bare
-      // refresh="incremental" is an authoring error worth surfacing rather than
-      // carrying — so every rule keeps the same severity, with no special cases.
-      const invalidIncremental = pkg.formatInvalidIncrementalPolicy();
-      if (invalidIncremental) {
-         // Logged as well as thrown: the throw is what the author reads, the log
-         // is the operator's copy.
-         logger.error(
-            `Package ${packageName} has an invalid incremental refresh policy`,
-            {
-               packageName,
-               detail: invalidIncremental,
-            },
-         );
-         throw new BadRequestError(invalidIncremental);
-      }
-      // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
-      // given on formatInvalidPreaggregatePolicy: a declaration that cannot take
-      // effect is invisible in the answers, so warning here would leave the
-      // author believing they had a rollup.
-      //
-      // Except the access-modifier pair, which warns at publish and at load —
-      // see formatInvalidPreaggregatePolicy for why, and why warning is safe
-      // there when it would not be for the others.
-      const accessWarnings = pkg.preaggregateAccessWarnings();
-      if (accessWarnings.length > 0) {
-         logger.warn(
-            `Package ${packageName} pre-aggregates a field the source hides`,
-            {
-               packageName,
-               detail: accessWarnings.map((w) => w.message).join("\n"),
-            },
-         );
-      }
-      const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
-      if (invalidPreaggregate) {
-         logger.error(
-            `Package ${packageName} has an invalid pre-aggregation declaration`,
-            {
-               packageName,
-               detail: invalidPreaggregate,
-            },
-         );
-         throw new BadRequestError(invalidPreaggregate);
-      }
-      // Persist-target collisions are ALWAYS warn-only at load (never fail an
-      // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
-      // the flag only governs whether they REJECT a publish (see
-      // package.controller). Surface them so an operator can remediate.
-      const collisions = pkg.persistenceCollisionWarnings();
-      if (collisions.length > 0) {
-         logger.warn(`Package ${packageName} has persist-target collisions`, {
-            packageName,
-            detail: collisions.join("\n"),
-         });
-      }
-      // After the gates, so a package with a bad declaration is rejected rather
-      // than having a companion compiled for it. At create time no manifest is
-      // bound yet, so the companion routes to a rollup that recomputes from the
-      // base until a bind triggers reloadAllModels — correct answers, no
-      // acceleration, which is the same resting state as the rest of the persist
-      // path.
-      await pkg.pushPreaggregateServeModels();
-      pkg.logEmptyDiscoveryWarnings();
-
-      recordPackageLoadPhaseDurations({
-         worker: workerDoneTime - dispatchTime,
-         hydrate: hydrationTimings.hydrateMs,
-         render_validation: hydrationTimings.renderValidationMs,
-         discovery: reportTimings.discoveryMs,
-         lint: reportTimings.lintMs,
-         build_plan: buildPlanMs,
-         total: performance.now() - startTime,
-      });
-      return pkg;
+      return undefined;
    }
 
    public getPackageName(): string {
       return this.packageName;
    }
 
-   /**
-    * The package's persist build plan (per-source sourceEntityId, columns, build SQL,
-    * dependency graphs), or null when the package declares no persist source.
-    * A deterministic property of the compiled package; callers derive build
-    * instructions from it for an orchestrated materialization.
-    */
+   /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
       return this.buildPlan;
    }
 
-   /**
-    * The package-level `materialization` config (from publisher.json),
-    * the least-specific layer for resolving per-source freshness/schedule in the
-    * build plan. Null when the package declares no policy.
-    */
+   /** The package-level `materialization` config, the least specific layer; null when none. */
    public getMaterializationConfig(): NonNullable<
       ApiPackage["materialization"]
    > | null {
@@ -1717,15 +1304,9 @@ export class Package {
    }
 
    /**
-    * The package's declared `queryMetadata` — the least specific author-declared
-    * layer, and the counterpart to {@link Model.getDeclaredQueryMetadata}.
-    *
-    * Prefers the canonical top-level field and falls back to the deprecated
-    * `materialization.queryMetadata`. The fallback is not dead code: a PATCH may
-    * still set the block (an un-migrated client), and metadata assembled by
-    * anything that predates the top-level field carries only the block. Callers
-    * want the package's bag, not its build policy, and should not have to know
-    * which home it arrived in.
+    * The package's declared `queryMetadata`, the least specific layer. Falls
+    * back to the deprecated `materialization.queryMetadata`, which an
+    * un-migrated PATCH can still set.
     */
    public getDeclaredQueryMetadata(): QueryMetadata | null {
       return (
@@ -1736,13 +1317,8 @@ export class Package {
    }
 
    /**
-    * Every `queryMetadata` bag this package's authors declared, at whatever
-    * level, as declared. What the publish gate needs in order to name the line
-    * to edit.
-    *
-    * Whether a source persists does not enter into it. A bag on a source rides
-    * every query against that source, materialized or not, so a source is listed
-    * because it declared something — not because a build reads it.
+    * Every `queryMetadata` bag declared at any level, so the publish gate can
+    * name the line to edit. Persisting or not, a source bag rides every query.
     */
    private queryMetadataDeclarations(): QueryMetadataDeclaration[] {
       const packageDeclaration = this.getDeclaredQueryMetadata();
@@ -1757,10 +1333,7 @@ export class Package {
                   ? [
                        {
                           level: "model" as const,
-                          // The model path goes in `modelPath`, not `subject`:
-                          // the wire schema keeps the two apart, so a client
-                          // filtering findings by model missed every one of
-                          // these while `subject` read like a source name.
+                          // `modelPath`, not `subject`: clients filter by model.
                           modelPath: model.getPath(),
                           queryMetadata: modelDeclaration,
                        },
@@ -1771,10 +1344,7 @@ export class Package {
                   .map(({ sourceName, queryMetadata }) => ({
                      level: "source" as const,
                      subject: sourceName,
-                     // A source name is unique within a model, not within a
-                     // package: without the path, two models declaring a
-                     // same-named source produce identical findings that dedupe
-                     // to a single message naming neither file.
+                     // Source names are unique per model, not per package.
                      modelPath: model.getPath(),
                      queryMetadata,
                   })),
@@ -1784,19 +1354,10 @@ export class Package {
    }
 
    /**
-    * How many properties a statement actually SENDS, per model file, once the
-    * package, model-file and source layers have merged.
-    *
-    * The budget is the one rule that cannot be checked per declaration: every
-    * layer can sit under the author budget while their merge sits over it, and
-    * it is the merge that rides the statement.
-    *
-    * The FLOOR — package ⊕ model file — is reported for every model, whether or
-    * not any of its sources declares anything. Sizing only the declaring sources
-    * missed the common shape outright: a package and a model file that overflow
-    * together published clean whenever no source in the file happened to add a
-    * tag, and every query against every source in that file then shed context
-    * properties.
+    * How many properties a statement actually sends, per model file, once the
+    * layers merge: each layer can fit the budget while the merge does not. The
+    * floor (package ⊕ model file) is reported for every model, even one whose
+    * sources declare nothing.
     */
    private queryMetadataEffectiveMerges(): {
       modelPath: string;
@@ -1828,28 +1389,13 @@ export class Package {
    }
 
    /**
-    * ON THE `/status` POLL PATH: this runs for every package in every
-    * environment, every few seconds, because `EnvironmentStore.getStatus()`
-    * serializes each environment through `listPackages()`. Anything added to the
-    * computed spreads below must be trivially cheap or memoized on the Model --
-    * an unmemoized walk over model fields here reached seconds of synchronous
-    * CPU per poll and blocked the event loop for every other request.
+    * ON THE `/status` POLL PATH: runs for every package every few seconds.
+    * Anything added below must be trivially cheap or memoized on the Model; an
+    * unmemoized walk over model fields blocks the event loop for seconds.
     */
    public getPackageMetadata(): ApiPackage {
-      // Overlay the server-computed fields onto the stored metadata: the
-      // explores misconfig warnings (loading is fail-safe — the package still
-      // serves with the bad entry hidden — so this is the only non-log signal
-      // that it's broken) and the manifest-binding state (so /status reflects
-      // whether persist sources are actually routed to materialized tables).
-      // Always returns a copy so these overlays never mutate the stored
-      // metadata; the binding fields are authoritative from the private state.
-      //
-      // `name` is the registered package name (the environment's identity for
-      // this package), not the value read from the package's own manifest —
-      // those can differ (e.g. a package installed under a different name than
-      // its publisher.json declares). `listPackages` already overrides it to
-      // the registered name; surfacing it here keeps the single-package GET
-      // consistent without relying on a returned-reference mutation.
+      // A copy with the server-computed fields overlaid. `name` is the
+      // registered name, which can differ from the one in publisher.json.
       const metadata: ApiPackage = {
          ...this.packageMetadata,
          name: this.packageName,
@@ -1866,17 +1412,12 @@ export class Package {
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
       }
-      // Render-tag findings, dashboard lint findings, and storage= warnings share
-      // the one operator-facing warnings array (the {model, subject, message}
-      // shape carries all of them).
+      // Every advisory finding shares one warnings array. Each must ride the
+      // API because the load tolerates it, so otherwise only the log says so.
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
-         // A package skill that could not be read or is missing a description.
-         // Advisory like the rest: a bad markdown file must not cost the
-         // package its models, and this is the only non-log signal that a
-         // skill the author wrote is not being served.
          ...this.packageSkillWarnings.map((message) => ({
             message,
             severity: "warn" as const,
@@ -1887,58 +1428,21 @@ export class Package {
          })),
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
-         // A `#@ persist` the compile-time gate refused. Without this the
-         // refusal is computed, recorded on the build plan, and read by nobody:
-         // the package publishes, the source is served live, and the author who
-         // wrote the annotation is told nothing. Same operator-facing fact as
-         // storageWarnings() — no table, answers come from the warehouse — so it
-         // belongs in the same place.
          ...this.persistRefusalWarnings(),
-         // A listed model whose curated surface is empty. Advisory (an
-         // import-only file is legitimate and must not block a publish, so it
-         // stays out of exploresWarnings), but it must ride the API, or a
-         // package whose listed files surface nothing reports no warning.
+         // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
-         // Content on a deprecated format: a `.malloynb` notebook, and a source
-         // declaring `#(filter)` annotations. Both still load and run, so this
-         // is advisory; it rides the API so a client can say so on the package
-         // rather than leave it to the server log.
          ...deprecatedFormatWarnings(this.models),
-         // A grid basename two reports share: the deprecated by-name route
-         // answers 409 for it.
          ...ambiguousDashboardNameWarnings(this),
-         // The whole surface failed to compile, so every model in the package
-         // is refused by name. Rides the API for the same reason as the line
-         // above, and more urgently: the 404s it causes name models that are
-         // not themselves broken, so nothing else points at the cause.
+         // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
-         // The surface this package had before the last reload is gone. Rides
-         // the API because it is the only record: an uncurated package looks
-         // exactly like one that was never curated.
          ...(this.surfaceWidenedWarning !== undefined
             ? [{ message: this.surfaceWidenedWarning }]
             : []),
-         // A within-package persist-target collision spans two or more sources, so
-         // there is no single subject field; the message names them. Surfaced here
-         // (alongside the load-path log) so an operator can see it on the status
-         // API like the other persist warnings — see persistenceCollisionWarnings.
+         // A collision spans sources, so it has no subject; the message names them.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
-         // `#@ preaggregate` on a field the source hides. These are the two
-         // violations that WARN at load rather than failing it, and this array is
-         // what makes that a warning rather than silence: without it the package
-         // loads, the rollup does not happen, and the only trace is a line in the
-         // server log. The operator-facing fact is the same one storageWarnings()
-         // reports for a mode-off rollup — it is not built, and queries are
-         // answered from the base — so it belongs in the same place.
          ...this.preaggregateAccessWarnings(),
-         // Incremental declarations that are LEGAL but probably not what the
-         // author meant: an unrecognized persist key (the only guard against a
-         // typo'd merge_key=, which degrades silently), and the keyless-delta
-         // advisory. Never rejections — see incrementalPolicyAdvisories.
+         // Legal but probably unintended, e.g. a typo'd merge_key=.
          ...incrementalPolicyAdvisories(this.incrementalPolicySources),
-         // Materialization-config findings: a queryMetadata property that will
-         // not do what it says, and manifest shapes that still parse but are
-         // deprecated. Advisory by design — none of these blocks a publish.
          ...materializationConfigWarnings({
             declarations: this.queryMetadataDeclarations(),
             effectiveMerges: this.queryMetadataEffectiveMerges(),
@@ -1948,15 +1452,8 @@ export class Package {
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
       }
-      // Surface what's bound for the cross-connection storage serve so a caller
-      // can confirm a materialized source is routed (vs. inferring from logs).
       if (this.storageServeBindings.length > 0) {
-         // `origin` rides the projection for the same reason it rides the routing
-         // metric: this list now contains rows whose `sourceName` names nothing in
-         // any model file, and a caller resolving them against the package's
-         // models would read a miss as corruption. An added attribute breaks no
-         // consumer, where a caller that has to guess from the name shape would be
-         // guessing from a digest.
+         // `origin` marks rows (rollups) whose `sourceName` is in no model file.
          metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
             origin: b.origin ?? "persist",
             sourceName: b.sourceName,
@@ -1967,24 +1464,14 @@ export class Package {
       return metadata;
    }
 
-   /**
-    * The currently-bound build-manifest entries (sourceEntityId -> { tableName }), or
-    * undefined when the package is serving live. Reused by the /compile preview
-    * so previewed SQL gets the same persist-source -> physical-table routing as
-    * execution.
-    */
+   /** The bound manifest entries, or undefined when serving live; reused by /compile. */
    public getBuildManifestEntries(): BuildManifest["entries"] | undefined {
       return this.buildManifestEntries;
    }
 
    /**
-    * Whether the package currently has a bound (non-empty) same-connection
-    * `tableName` manifest — i.e. a prior bind substituted colocated physical tables
-    * at compile time. Used by the manifest-rebind tier split to decide whether a
-    * pure-storage refresh can skip the {@link reloadAllModels} recompile: it can
-    * only skip when there is nothing to substitute now AND nothing was
-    * substituted before (otherwise dropping the last colocated entry must recompile
-    * to revert it).
+    * Whether a non-empty colocated manifest is bound. A pure-storage refresh may
+    * skip the recompile only if nothing is substituted now or was before.
     */
    public hasBoundTableNameManifest(): boolean {
       return (
@@ -1994,30 +1481,18 @@ export class Package {
    }
 
    /**
-    * Whether the package currently has (non-empty) `storage=` serve bindings.
-    * Used by the manifest-rebind tier split so a refresh whose storage entries
-    * vanished still clears the old bindings (rather than leaving them routing at
-    * a table the host no longer vouches for) — the storage mirror of
-    * {@link hasBoundTableNameManifest}.
+    * Whether `storage=` serve bindings exist, so a refresh whose storage entries
+    * vanished still clears them.
     */
    public hasStorageServeBindings(): boolean {
       return this.storageServeBindings.length > 0;
    }
 
    /**
-    * The freshness-filtered build manifest for the serve path, evaluated at
-    * `now`. Persistence.md §9.3 Phase B: a query on a `#@ persist` source may
-    * use its materialized table only while the table is within its declared
-    * freshness window; otherwise it falls back per the entry's `fallback`
-    * (`live`/`fail` drop the entry → serve live; `stale_ok` keeps it → serve the
-    * stale table). Un-gated entries (no window) always route to the table.
-    *
-    * Undefined when the package is serving live (unbound) — callers then apply
-    * no per-query override and the runtime serves live.
-    *
-    * Memoized: recomputed only when a retained entry crosses its window
-    * (monotonic fresh→stale, so a single `validUntil` deadline suffices) or when
-    * a rebind replaces the entries. Cheap O(1) hit on the common path.
+    * The freshness-filtered manifest at `now`: a table is used only within its
+    * window, else per its `fallback` (`live`/`fail` drop it, `stale_ok` keeps
+    * it); an entry with no window always routes. Undefined when unbound.
+    * Memoized: fresh→stale is monotonic, so one `validUntil` deadline suffices.
     */
    public getFreshBuildManifest(
       now: number = Date.now(),
@@ -2037,12 +1512,7 @@ export class Package {
       return manifest;
    }
 
-   /**
-    * Install the per-query freshness resolver on every owned model so the serve
-    * path (Model.getQueryResults / executeNotebookCell) applies the
-    * freshness-filtered manifest as a per-query Malloy `buildManifest` override.
-    * Idempotent; called after (re)building the model set.
-    */
+   /** Install the per-query freshness resolvers on every model; idempotent. */
    private wireFreshnessResolvers(): void {
       for (const model of this.models.values()) {
          model.setFreshnessResolver(() => this.getFreshBuildManifest());
@@ -2053,17 +1523,9 @@ export class Package {
    }
 
    /**
-    * The `sourceEntityId`s of the sources pre-aggregation SYNTHESIZED, as
-    * distinct from the `#@ persist` sources an author declared. Read off the
-    * build plan's `origin`, which exists to carry exactly this provenance — not
-    * matched on the rollup naming convention, which would silently misclassify
-    * an author's source that happened to share the shape.
-    *
-    * Consumed by Model.withoutPreaggregateEntries, which keeps these entries away
-    * from every runnable except the companion model that declares them.
-    *
-    * Memoized on the build plan's identity: the plan is replaced wholesale on
-    * load, so reference equality is a sufficient and always-correct key.
+    * The `sourceEntityId`s pre-aggregation synthesized, read off the plan's
+    * `origin` (never the rollup naming convention, which an author's source
+    * could share). Memoized on plan identity; the plan is replaced wholesale.
     */
    public getPreaggregateEntityIds(): ReadonlySet<string> {
       if (this.preaggregateEntityIdCache?.plan === this.buildPlan) {
@@ -2080,17 +1542,9 @@ export class Package {
    }
 
    /**
-    * Record that `uri`'s manifest is bound to the served models, and report the
-    * package as bound.
-    *
-    * Asserts the status rather than deriving it, so it holds for a bind that
-    * carried no colocated entries to count — see the call site in
-    * `Environment.bindManifest` for why the count cannot stand in for it. Called
-    * once both tiers have applied, so it is authoritative over anything
-    * {@link recordManifestBinding} computed earlier in the same bind.
-    *
-    * `unbound` remains the state for a package with no manifest bound, and
-    * {@link markManifestBindFailed} still owns the degraded `live_fallback`.
+    * Record that `uri`'s manifest is bound. Asserted rather than derived from
+    * the entry count (a bind may carry no colocated entries); called after both
+    * tiers apply, so it overrides {@link recordManifestBinding}.
     */
    public markManifestBound(uri: string): void {
       this.boundManifestUri = uri;
@@ -2105,22 +1559,14 @@ export class Package {
       this.manifestBindingStatus = "live_fallback";
    }
 
-   /**
-    * Store the entries applied by the latest (re)bind for reuse (/compile) and
-    * observability (/status). An empty map means the manifest was cleared, so
-    * the package reverts to live (unbound).
-    */
+   /** Store the latest bind's entries; an empty map reverts to live (unbound). */
    private recordManifestBinding(entries: FreshnessManifest): void {
       const count = Object.keys(entries).length;
-      // Full wire entries (with freshness) drive the per-query serve-path gate;
-      // the tableName-only projection is what /compile and /status consume.
       this.freshnessEntries = count > 0 ? entries : undefined;
       this.buildManifestEntries =
          count > 0 ? toTableNameManifest(entries) : undefined;
       this.manifestEntryCount = count;
       this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
-      // A rebind replaces the entries, so any memoized freshness-filtered
-      // manifest is stale — drop it so the next query recomputes.
       this.freshManifestCache = undefined;
       if (count === 0) {
          this.boundManifestUri = null;
@@ -2128,50 +1574,16 @@ export class Package {
    }
 
    /**
-    * Bind (or clear) the package's `storage=` serve bindings from a build's full
-    * manifest entries, and push them onto every loaded model so a query can be
-    * routed through the virtual-source serve transform. Called by the build's
-    * post-run distribution with the full {@link ManifestEntry} map (which
-    * carries `storageDestinationName` + captured `schema`); only entries that
-    * were materialized into a storage destination produce a binding. Re-applied
-    * on model reload via {@link pushStorageServeBindingsToModels}.
-    */
-   /**
-    * Re-establish the colocated (same-connection) serve routing from a
-    * FreshnessManifest WITHOUT recompiling — the analogue of
-    * {@link bindStorageServeBindings} for the in-warehouse tier, used to
-    * restore serving on load from the package's own latest persisted
-    * materialization. Colocated routing is applied at query time as a per-query
-    * `buildManifest` override (see {@link getFreshBuildManifest} and
-    * Model.getQueryResults), so setting the in-memory entries is sufficient; the
-    * freshness resolver is already wired on every model from
-    * {@link Package.create}. Distinct from {@link reloadAllModels}, which also
-    * recompiles — the recompile is not what routes the query, so a pure
-    * restore-on-load skips it (no double compile after the load-time compile).
-    * An empty map clears the binding (reverts to serving live).
+    * Restore colocated (same-connection) serve routing on load WITHOUT
+    * recompiling: routing is a per-query `buildManifest` override, so setting
+    * the entries suffices. An empty map reverts to live.
     *
-    * Filtered against {@link colocatedSourceEligibility} the same way
-    * {@link bindStorageServeBindings} filters against `sourceEligibility` —
-    * POSITIVELY, and dropped rather than fatal on a miss. For an authorize-gated
-    * colocated source with a self-built manifest entry that predates the model
-    * changing under it (a source built ungated, then re-annotated with an
-    * unattributed or unclassifiable gate before the next rebuild converges),
-    * THIS filter is what stops that stale entry from being bound here.
-    *
-    * It is ONE of four paths that reach {@link recordManifestBinding}, and the
-    * only one this filter covers — this is the load-time local-store restore
-    * path ({@link Environment}'s call at package-load time). The other three
-    * all go through {@link reloadAllModels} (`bindManifest`,
-    * `bindPackageColocatedServeManifest`, and the materialization service's own
-    * `reloadAllModelsForPackage`), which writes `entries` into
-    * `recordManifestBinding` UNFILTERED — no eligibility check runs there at
-    * all. Those three paths are safe anyway, but not because of anything here:
-    * they rely entirely on the per-query `#(authorize)` graft re-applying at
-    * read time (`Model.buildGraftedMaterializer`), the same mechanism that
-    * makes admitting a proven row-level gate safe in the first place. This
-    * function's positive check is a belt for the one path that has no
-    * recompile to re-derive eligibility from; it is not a boundary the other
-    * three paths pass through, and nothing should be built assuming it is.
+    * Filtered POSITIVELY against {@link colocatedSourceEligibility}; a miss is
+    * dropped, not fatal. This filter covers only this load-time restore path.
+    * The three paths through {@link reloadAllModels} record entries UNFILTERED
+    * and rely on the per-query `#(authorize)` graft
+    * (`Model.buildGraftedMaterializer`); do not treat this check as a boundary
+    * they pass through.
     */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
       const eligibility = this.colocatedSourceEligibility;
@@ -2202,11 +1614,7 @@ export class Package {
          );
       }
       if (eligibility === undefined && dropped > 0) {
-         // Distinct from the per-entry warnings above: this package's build
-         // plan never computed at all, so EVERY colocated binding just
-         // dropped — not one source's own refusal. Colocated is the default
-         // tier (not gated by PERSIST_STORAGE_MODE), so this is a silent
-         // whole-tier availability regression until the next successful load.
+         // The whole default tier just reverted to live, not one source.
          logger.warn(
             "Colocated serve bindings dropped package-wide: the build plan never computed, so no source could be examined for eligibility",
             { packageName: this.packageName, droppedCount: dropped },
@@ -2216,33 +1624,17 @@ export class Package {
    }
 
    /**
-    * Bind the storage serve bindings a host vouches for — minus any whose source
-    * this package's own eligibility gate refuses.
+    * Bind the `storage=` serve bindings a host vouches for, minus any this
+    * package's eligibility gate refuses, and push them onto every model.
     *
-    * The host is authoritative about WHICH TABLE backs a source; it owns
-    * generations and rollout. It cannot be authoritative about WHETHER a source
-    * may be served from a frozen table at all, because that is decided by
-    * compiling the model, which the host does not do. A `given`-referencing
-    * source is the case that matters: a given binds per query for row-level
-    * access control, so one table built once and served to everyone hands every
-    * caller the rows filtered for whoever built it.
+    * The host knows WHICH table backs a source, not WHETHER a frozen table may
+    * serve it: only a compile knows that. A `given`-referencing source binds
+    * per query for row-level access, so one shared table would hand every
+    * caller the builder's rows (a source can gain a `given` after its build).
     *
-    * A manifest can name such a source without anyone being careless — a source
-    * that was given-free when it was built acquires a `given` on the next model
-    * edit, and the old manifest still points at a real table until convergence
-    * catches up.
-    *
-    * Eligibility must be established POSITIVELY: a binding is honored only if its
-    * source is in the eligible set. Two states would otherwise pass as consent,
-    * and both are reachable without anyone forging anything —
-    *  - the plan compute failed, so nothing was examined at all;
-    *  - the source never reached the plan, because Malloy admits only
-    *    query-shaped sources as build roots and a `#@ persist` on a filtered
-    *    pass-through is dropped (see `droppedPersistSources`) — the same
-    *    row-level-access shape this gate exists for.
-    *
-    * Refused bindings are DROPPED, not fatal: that source serves live, which is
-    * always correct because the tier is a performance tier. The rest bind.
+    * Eligibility must be POSITIVE: a failed plan compute or a source missing
+    * from the plan must not read as consent. Refused bindings are dropped, and
+    * that source serves live, which is always correct.
     */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
@@ -2252,16 +1644,10 @@ export class Package {
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
       );
       const eligibility = this.sourceEligibility;
-      // Keyed by source NAME, and a rollup's name is generated — so a rollup
-      // binding passes this filter only because `collectSourceEligibility` walks
-      // the compiled sources, which INCLUDE the synthesized rollups, and records
-      // them under those generated names.
-      //
-      // That is load-bearing and easy to break from a distance: scoping
-      // `collectSourceEligibility` to authored sources would switch off every
-      // storage rollup in every package, with one warn line per binding as the
-      // only symptom and nothing else failing. Stated here because this is where
-      // the dependency is consumed rather than where it is created.
+      // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
+      // also records the synthesized rollups under their generated names.
+      // Scoping it to authored sources would silently switch off every storage
+      // rollup.
       const eligible = new Set(eligibility?.eligible ?? []);
       const allowed = derived.filter((binding) => {
          if (eligible.has(binding.sourceName)) return true;
@@ -2275,8 +1661,7 @@ export class Package {
             {
                packageName: this.packageName,
                sourceName: binding.sourceName,
-               // A rollup's name is generated, so on its own it names nothing an
-               // operator can look up. Saying what it is rescues the line.
+               // A generated rollup name means nothing to an operator alone.
                ...(binding.origin === "preaggregate"
                   ? { kind: "pre-aggregation rollup" }
                   : {}),
@@ -2290,13 +1675,9 @@ export class Package {
    }
 
    /**
-    * Compile each model's synthesized pre-aggregation companion so the serve path
-    * can route to a rollup (see Model.buildPreaggregateServeModel). Called after
-    * (re)building the model set, and again after a manifest bind, since the
-    * companion is compiled against the manifest that substitutes its tables.
-    *
-    * A no-op for a model with no usable `#@ preaggregate`: synthesis returns
-    * nothing and the model's serve path is left exactly as it was.
+    * Compile each model's pre-aggregation companion so the serve path can route
+    * to a rollup. Re-run after a manifest bind, since the companion compiles
+    * against the manifest. A no-op for a model with no `#@ preaggregate`.
     */
    private async pushPreaggregateServeModels(): Promise<void> {
       for (const model of this.models.values()) {
@@ -2316,14 +1697,9 @@ export class Package {
    }
 
    /**
-    * Set the connections this package's materialization serve shapes compile
-    * against: the environment's storage destinations, and nothing a model
-    * in this package can name. Called by the owning Environment after load.
-    *
-    * Separate from {@link malloyConfig} on purpose. That one is what the author's
-    * models resolve through, and a destination must not be reachable from it;
-    * these two configs being the same object is the bug this split exists to
-    * prevent. Absent ⇒ no storage serve routing, so queries serve live.
+    * Set the connections serve shapes compile against: the environment's
+    * storage destinations. Kept apart from {@link malloyConfig} so no author
+    * model can reach a destination. Absent ⇒ queries serve live.
     */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.serveDestinationConfig = provider;
@@ -2337,11 +1713,7 @@ export class Package {
       }
    }
 
-   /**
-    * Drop every model's memoized materialization serve shape, so the next routed
-    * query recompiles it. Called by the owning Environment when the destinations
-    * those shapes were compiled against are replaced.
-    */
+   /** Drop every model's memoized serve shape, when its destinations are replaced. */
    public invalidateServeShapes(): void {
       for (const model of this.models.values()) {
          model.invalidateServeShapeCache();
@@ -2349,15 +1721,9 @@ export class Package {
    }
 
    /**
-    * Surface entries that don't resolve to a real `.malloy` model in this
-    * package, each with an actionable reason. Empty when there is no surface
-    * or every entry resolves. In practice this can only fire for an `explores`
-    * an author wrote: a surface derived from a root `index.malloy` names a
-    * file that was just read off disk, so it always resolves.
-    *
-    * The listing already fails safe — a non-resolving entry matches no model in
-    * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
-    * load path can warn and the publish path can reject (see package.controller).
+    * `explores` entries that don't resolve to a `.malloy` model, each with a
+    * reason. Listing already fails safe (they hide); this says why, so load
+    * can warn and publish can reject.
     */
    public getInvalidExplores(
       exploresOverride?: string[],
@@ -2401,63 +1767,16 @@ export class Package {
       );
    }
 
-   /**
-    * The {@link exploreWarnings} joined into one string, or "" if none.
-    * Newline-separated so multiple invalid entries stay one-per-line in the
-    * 400 message rather than running together.
-    */
+   /** The {@link exploreWarnings}, one per line, or "" if none. */
    public formatInvalidExplores(exploresOverride?: string[]): string {
       return this.exploreWarnings(exploresOverride).join("\n");
    }
 
    /**
-    * Publish-gate for the package's Malloy Persistence policy (persistence.md
-    * §3.1, §9.2–§9.5). Scope is a single package-level mode (`Package.scope`)
-    * and a materialization cron is package-root-only and version-scope-only.
-    * The rules, read off the resolved build plan + manifest:
-    *
-    *  1. Per-source `#@ persist ... sharing=`/`schedule=` are retired — declaring
-    *     either on a source is an error (scope is package-level; a schedule is
-    *     package-root-only). Detected via the raw `annotationFields`.
-    *  2. `materialization.schedule` is legal only when `scope: version` (a
-    *     package-scoped lineage is reused across versions, so a single
-    *     per-version cadence is meaningless).
-    *  3. `materialization.schedule` and freshness (package `materialization.freshness`
-    *     or any source `freshness`) are mutually exclusive — declare either the
-    *     power tier or the objective tier, never both.
-    *
-    * The cross-package dependency rule (a `scope: version` scheduled package may
-    * not depend on a package-scoped upstream) is not enforced here: scope is
-    * uniform within a package, so an intra-package dependency can never violate
-    * it, and the publisher's build plan is intra-package only — a cross-package
-    * upstream's scope is not resolvable from the single `Package` served. It is
-    * deferred to the scheduler slice (R1–R3), which resolves cross-package scope.
-    *
-    * Strict at publish (package.controller), warn-only at load/reload
-    * (loadViaWorker) — same split as explores.
-    */
-   /**
-    * Operator-facing warnings for `#@ persist storage=<conn>` sources whose
-    * storage annotation is NOT being honored on the serve path, so a degraded
-    * source is visible on `/status` rather than silently serving live. Emitted
-    * per {@link getPersistStorageMode}:
-    *  - `off`: the annotation is ignored entirely (serving live from the source
-    *    warehouse) — the kill-switch resting state.
-    *  - `write-only`: the source materializes into storage but the serve path is
-    *    not routed to the materialized table (served live).
-    *  - `on`: no warning — the source is (or falls back to being) served per the
-    *    transform; per-query fallback is a query-time event, not a load warning.
-    * Read straight off the compiled build plan's `annotationFields.storage`
-    * (undefined when the package declares no persist sources).
-    */
-   /**
-    * Operator-facing warnings for `#@ persist` sources that Malloy's
-    * getBuildPlan() did not recognize as a materializable build root (observed
-    * for a filtered pass-through `X is <table> extend { where … }`). Without a
-    * signal the annotation is a silent no-op — no build, no error, served live —
-    * so surface it on `/status`. The build path additionally hard-refuses (see
-    * MaterializationService). Independent of {@link buildPlan} being null, since
-    * a package whose ONLY persist source is dropped has no plan at all.
+    * Warnings for `#@ persist` sources getBuildPlan() did not treat as build
+    * roots (e.g. a filtered pass-through), which would otherwise silently serve
+    * live. Independent of {@link buildPlan}: a package whose only persist
+    * source is dropped has no plan.
     */
    private droppedPersistWarnings(): ApiPackageWarning[] {
       return this.droppedPersistSources.map((d) => ({
@@ -2473,22 +1792,10 @@ export class Package {
    }
 
    /**
-    * Warnings for the `#@ persist` sources the compile-time eligibility gates
-    * refused, read off the build plan's `refusedSources`.
-    *
-    * The gate's own message is carried VERBATIM. It already names the source, the
-    * reason and the remedy, and rebuilding a second wording here from `reason`
-    * would be a second text to keep in step with the first — one that drifts
-    * silently, since nothing compares them. The cost is that the message repeats
-    * the source name the `subject` field also carries; that is the cheaper defect.
-    *
-    * `subject` names a rollup by its BASE source, never by its own. A rollup's
-    * name is synthesized and appears in no file the author can open, so the
-    * generated name answers a question nobody asked (the reason
-    * {@link storageWarnings} does the same). The base is reachable only while the
-    * entry is ALSO in `sources`, which for this tier is the authorize refusal
-    * alone — a storage-refused rollup is deliberately absent from `sources`, and
-    * there the subject is omitted rather than filled with the digest.
+    * Warnings for the `#@ persist` sources the compile-time gates refused,
+    * carrying the gate's message verbatim so there is one wording to maintain.
+    * A rollup's `subject` is its BASE source (its own name is generated), and
+    * is omitted when the base is unavailable.
     */
    private persistRefusalWarnings(): ApiPackageWarning[] {
       const refused = this.buildPlan?.refusedSources;
@@ -2506,6 +1813,11 @@ export class Package {
       });
    }
 
+   /**
+    * Warnings for `storage=` sources the serve path is not honoring, per
+    * {@link getPersistStorageMode}: `off` ignores the annotation, `write-only`
+    * builds but does not route. `on` warns nothing.
+    */
    private storageWarnings(): ApiPackageWarning[] {
       const mode = getPersistStorageMode();
       if (mode === "on" || !this.buildPlan?.sources) return [];
@@ -2513,33 +1825,13 @@ export class Package {
       for (const source of Object.values(this.buildPlan.sources)) {
          const storage = source.annotationFields?.storage?.trim();
          if (!storage) continue;
-         // A rollup needs its own wording, and not for tidiness. The authored
-         // message says the source "is served live from its own warehouse", which
-         // for a rollup is doubly wrong: a rollup is not a source anyone queries
-         // by name, and there is no live reading of it to fall back to — the
-         // acceleration simply does not happen and every query is answered from
-         // the base, correctly. Reusing the authored text would also imply the
-         // annotation is merely inert, when the thing an operator needs to know is
-         // that nothing was built at all.
+         // A rollup gets its own wording: nobody queries it by name and there is
+         // no live reading of it; queries are answered from the base. It is named
+         // by its base source and grain (what the author typed), never its
+         // generated name. In the default `off` mode this is the only signal.
+         // The grain is a SET: the wire carries sorted dimensions, not the
+         // authored order.
          const rollup = source.preaggregate;
-         // Named by the BASE source and the grain, never by the rollup's own
-         // name. A rollup's name is generated and appears in no file the author
-         // can open, so a warning carrying it — as the `subject` did — gives them
-         // nothing to act on: they wrote `storage=` on a measure and get back a
-         // digest. The base and grain are what they typed, and the wire plan
-         // carries both right here.
-         //
-         // This is the only signal in the DEFAULT configuration. `off` is what
-         // every deployment ships with, so this warning, not any refusal, is what
-         // a first author of a `storage=` rollup actually reads — and in a feature
-         // whose characteristic failure is correct answers with no acceleration
-         // and no error, a warning nobody can trace back is one step from no
-         // signal at all.
-         // The grain is rendered as a SET, not quoted back. The wire plan carries
-         // only canonically sorted, de-duplicated dimensions — the authored text
-         // does not cross that boundary — so quoting would misrepresent any
-         // multi-dimension grain the author did not happen to write in
-         // alphabetical order. A set claims only what is true of it.
          const at = rollup
             ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
               `(${rollup.grainDimensions.join(", ")}) declare `
@@ -2563,9 +1855,6 @@ export class Package {
                 `routed to the materialized table (served live).`;
          warnings.push({
             model: source.modelPath ?? "",
-            // The base source for a rollup: the thing the author can find. Its
-            // own generated name would be the accurate answer to a question
-            // nobody asked.
             subject: rollup ? rollup.baseSourceName : source.name,
             message,
          });
@@ -2573,11 +1862,13 @@ export class Package {
       return warnings;
    }
 
+   /**
+    * The Malloy Persistence policy's REJECTION rules: a non-empty result fails a
+    * publish and disarms the scheduler (warn-only at load). Advisory findings go
+    * to materializationConfigWarnings. Cross-package scope rules are not
+    * checked: the build plan is intra-package only.
+    */
    public persistencePolicyWarnings(): string[] {
-      // REJECTION rules only: a non-empty result fails a publish and disarms the
-      // scheduler. Advisory findings (queryMetadata problems, a deprecated
-      // manifest shape) go to the operator warnings array instead — see
-      // materializationConfigWarnings.
       const warnings: string[] = [];
       const sources = this.buildPlan?.sources
          ? Object.values(this.buildPlan.sources)
@@ -2587,7 +1878,7 @@ export class Package {
       const packageFreshness = materialization?.freshness ?? null;
       const scope = this.packageMetadata.scope ?? "package";
 
-      // Rule 1: per-source sharing/schedule are no longer part of the model.
+      // Rule 1: per-source sharing/schedule are retired.
       for (const source of sources) {
          const fields = source.annotationFields ?? {};
          if (fields.sharing !== undefined) {
@@ -2634,11 +1925,8 @@ export class Package {
          }
       }
 
-      // Rule 4: the cron must be a valid 5-field UNIX expression (no L/W/#/?
-      // extensions — see CronEvaluator). Enforced here so publish (strict),
-      // PATCH (strict), package load (warn), and the standalone scheduler all
-      // apply the identical rule — a garbage cron can no longer pass publish
-      // and then silently never arm.
+      // Rule 4: a valid 5-field cron, here so publish, PATCH, load and the
+      // scheduler all apply one rule and a bad cron cannot silently never arm.
       if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
          warnings.push(
             `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
@@ -2651,80 +1939,35 @@ export class Package {
       return warnings;
    }
 
-   /**
-    * The {@link persistencePolicyWarnings} joined into one string, or "" if the
-    * package's persistence policy is valid.
-    */
+   /** The {@link persistencePolicyWarnings}, one per line, or "" if valid. */
    public formatInvalidPersistencePolicy(): string {
       return this.persistencePolicyWarnings().join("\n");
    }
 
    /**
-    * REJECTION messages for the sources' incremental-refresh declarations
-    * (`refresh="incremental"` with `watermark=` / `merge_key=`): an incoherent
-    * declaration chain, a malformed key value, a name that is not a materialized
-    * output column, an unsupported dialect, or a window function. See
-    * incremental_policy for the rules.
-    *
-    * Kept SEPARATE from {@link persistencePolicyWarnings} — which is about the
-    * manifest's scope/schedule/freshness policy — so the two gates stay
-    * independently readable; both are joined into the same publish 400. Unlike
-    * that one, a non-empty result here also fails the LOAD (see loadViaWorker),
-    * so a package is never served with a declaration this rejected.
+    * REJECTION messages for incremental-refresh declarations (rules in
+    * incremental_policy). Unlike {@link persistencePolicyWarnings}, a non-empty
+    * result also fails the LOAD.
     */
    public incrementalPolicyWarnings(): string[] {
       return incrementalPolicyRejections(this.incrementalPolicySources);
    }
 
-   /**
-    * The {@link incrementalPolicyWarnings} joined into one string, or "" when
-    * every source's incremental declaration is valid.
-    */
+   /** The {@link incrementalPolicyWarnings}, one per line, or "" if valid. */
    public formatInvalidIncrementalPolicy(): string {
       return this.incrementalPolicyWarnings().join("\n");
    }
 
    /**
-    * REJECTION messages for every `#@ preaggregate` declaration in the package
-    * that cannot take effect: one on something other than a measure, one whose
-    * measure cannot be re-aggregated from a stored partial, one whose grain does
-    * not resolve against its source. See preaggregation_validation for the rules.
+    * REJECTION messages for `#@ preaggregate` declarations that cannot take
+    * effect (rules in preaggregation_validation), strict at publish AND load:
+    * pre-aggregation is invisible when it works, so an ignored declaration
+    * would show correct numbers and no acceleration, with no one told.
     *
-    * Strict at publish AND at load, like {@link incrementalPolicyWarnings} and
-    * unlike {@link persistencePolicyWarnings}. The reason is specific to this
-    * feature: pre-aggregation is invisible when it works, since a query never
-    * names a rollup and returns the same answer either way. So an author whose
-    * declaration was quietly ignored sees correct numbers, assumes acceleration,
-    * and finds out from a bill. Warning at load would put that discovery in an
-    * operator's log and leave the one person who can fix it reading a clean
-    * publish.
-    */
-   /**
-    * The violations that make a package invalid, which is every one except the
-    * access-modifier pair. Used by BOTH the publish gate and the load gate.
-    *
-    * Those two warn instead, and appear in the package's `warnings`. Two reasons,
-    * and neither is that they matter less.
-    *
-    * Upgrade safety: before this validation existed a package annotating a hidden
-    * field published and loaded — nothing read access modifiers, and the companion
-    * whose compile would have failed is swallowed — so refusing it now would stop
-    * an already-published package from loading because a new rule was added, and a
-    * permanent load failure is retried rather than abandoned.
-    *
-    * And they produce a refusal an author cannot act on. An annotation INHERITED
-    * onto a source that then hides the measure raises this, while that source
-    * produces no plan at all — the base's rollup is unaffected and nothing is
-    * exposed. The message asks them to make the field public or drop an annotation
-    * that is not on that source, so following it means giving up either the hiding
-    * or the rollup. Refusing a safe model with unfollowable advice is worse than
-    * saying plainly that the annotation does nothing here.
-    *
-    * Safe to warn because the refusal was never the enforcement: the planner skips
-    * a hidden measure and a hidden grain dimension outright
-    * (planSourcePreaggregation), so no plan exists, nothing is built, and nothing
-    * can be served whether or not anyone reads the message. Which is also why that
-    * skip has its own tests rather than resting on this gate.
+    * The access-modifier pair only warns: refusing would stop already-published
+    * packages loading, and an inherited annotation on a hiding source yields
+    * advice the author cannot follow. Warning is safe because the planner
+    * itself skips hidden fields (planSourcePreaggregation), so nothing is built.
     */
    public formatInvalidPreaggregatePolicy(): string {
       return this.preaggregateMessages(
@@ -2738,8 +1981,6 @@ export class Package {
          PREAGG_WARN_ONLY.has(code),
       ).map(({ modelPath, violation }) => ({
          model: modelPath,
-         // A source-level violation carries no field, so the source is the
-         // subject; a field-level one names the field.
          subject: violation.fieldName ?? violation.sourceName,
          message: violation.message,
       }));
@@ -2749,21 +1990,12 @@ export class Package {
       keep: (code: PreaggregateViolationCode) => boolean,
    ): string[] {
       return this.preaggregateFindings(keep).map(
-         // The model path is prepended because the same source name can occur
-         // in two models, and the author needs to know which file to open.
+         // Source names repeat across models; name the file.
          ({ modelPath, violation }) => `${modelPath}: ${violation.message}`,
       );
    }
 
-   /**
-    * Violations kept by `keep`, paired with the model that produced them.
-    *
-    * Structured rather than pre-formatted because the two consumers want
-    * different things: the publish/load gates want one prose blob, while the
-    * warnings array wants `{model, subject, message}` like every other member of
-    * it. Flattening first would make the second parse back out what the violation
-    * already carries.
-    */
+   /** Violations kept by `keep`, paired with their model, unformatted for both consumers. */
    private preaggregateFindings(
       keep: (code: PreaggregateViolationCode) => boolean,
    ): { modelPath: string; violation: PreaggregateViolation }[] {
@@ -2780,29 +2012,15 @@ export class Package {
    }
 
    /**
-    * Within-package persist-target COLLISION warnings: two DISTINCT persist
-    * sources (different `sourceEntityId`) that resolve to the same physical
-    * table — the same resolved `name=` (or source-name fallback) in the same
-    * destination connection. The publisher self-assigns a materialized table's
-    * physical name from `name=` verbatim, so two such sources would clobber each
-    * other: the second build's `CREATE OR REPLACE` overwrites the first, two
-    * manifest entries point at one table, and a GC drop of one takes out the
-    * other. Two IMPORTS of the SAME source (identical `sourceEntityId`) are
-    * intentional dedup and NOT flagged.
+    * Within-package persist-target COLLISIONS: distinct sources (by
+    * `sourceEntityId`) resolving to one physical table in one destination,
+    * where each build would overwrite the other. Imports of the same source are
+    * not flagged. The destination comes from the DECLARED annotation, so the
+    * storage kill switch never hides a collision.
     *
-    * The destination is resolved from the DECLARED annotation, independent of
-    * {@link getPersistStorageMode}, so the kill switch never changes whether a
-    * package has a latent collision.
-    *
-    * Deliberately SEPARATE from {@link persistencePolicyWarnings} because the
-    * rollout is staged: these are surfaced warn-only at load AND publish, and
-    * only block a publish once `PERSIST_COLLISION_ENFORCE` is set (see
-    * {@link getPersistCollisionEnforce}) — a package published before this check
-    * existed may carry a latent collision, so an un-gated reject would break a
-    * routine re-publish. This is a WITHIN-package/version check only: a `name=`
-    * change ACROSS versions, or a cross-package collision, needs the
-    * cross-version/global view the host has and the publisher
-    * does not.
+    * Warn-only unless `PERSIST_COLLISION_ENFORCE` is set, so packages published
+    * before this check still republish. Cross-version and cross-package
+    * collisions need the host's global view.
     */
    public persistenceCollisionWarnings(): string[] {
       const sources = this.buildPlan?.sources
@@ -2816,16 +2034,10 @@ export class Package {
          const fields = source.annotationFields ?? {};
          const physicalName = (fields.name || source.name).trim();
          const storage = fields.storage?.trim();
-         // storage= into a real destination lands there; absent, the source is
-         // built colocated (into its own warehouse).
          const destination = storage ? storage : source.connectionName;
-         // Verbatim key. Limitation: names that differ only by case or quoting
-         // (`Foo` vs `foo`, `"foo"` vs `foo`) key distinctly here but may fold to
-         // the same physical table on a case-folding destination — such variants
-         // evade this within-package check. Normalizing correctly is
-         // destination-dialect-dependent, so it's left verbatim; the host's
-         // ownership-scoped production naming and the destination's own identifier
-         // rules are the backstop.
+         // Verbatim key: names differing only by case or quoting may still fold
+         // to one table on some destinations. Normalizing is dialect-dependent,
+         // so the host's naming is the backstop.
          const key = `${destination} ${physicalName}`;
          const bucket = targets.get(key) ?? {
             name: physicalName,
@@ -2857,29 +2069,16 @@ export class Package {
       return warnings;
    }
 
-   /**
-    * Collision warnings joined for the publish gate: the string is non-empty
-    * (and thus a publish rejection) only when `PERSIST_COLLISION_ENFORCE` is set;
-    * otherwise collisions are surfaced warn-only (at load and publish) without
-    * blocking. See {@link persistenceCollisionWarnings}.
-    */
+   /** Collisions as a publish rejection; "" unless `PERSIST_COLLISION_ENFORCE` is set. */
    public formatPersistenceCollisionRejections(): string {
       if (!getPersistCollisionEnforce()) return "";
       return this.persistenceCollisionWarnings().join("\n");
    }
 
    /**
-    * One message per LISTED model whose discovery surface is empty: its export
-    * closure yields no sources and no named queries (an import-only file that
-    * re-exports nothing, an `export {}` that filters everything out, or an
-    * empty file). Such a model renders a blank page and lists as [] to an
-    * agent, which reads as broken; the fix is an explicit re-export, or
-    * unlisting the file. Log-only at load, and surfaced on the package's
-    * warnings array (see getPackageMetadata) — deliberately NOT part of
-    * exploreWarnings, which is strict-at-publish: import-only files are a
-    * legitimate pattern and must not block a publish. Hidden (non-listed)
-    * models are skipped — nobody browses them, so an empty surface there is
-    * just normal plumbing.
+    * One message per LISTED model that exports no sources or queries, which
+    * reads as broken. Advisory, not in exploreWarnings: import-only files are
+    * legitimate. Unlisted models are skipped.
     */
    public emptyDiscoveryWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
@@ -2891,9 +2090,6 @@ export class Package {
          // A report exports nothing by design; it reads the surface.
          if (exploreSet && this.isServedReport(modelPath)) continue;
          if (model.hasEmptyDiscoverySurface()) {
-            // When the file IS the whole surface, nothing in the package can be
-            // queried, which is the thing worth saying. One empty file among
-            // several listed ones only takes itself off the surface.
             warnings.push({
                model: modelPath,
                message: this.surfaceIsIndexModel()
@@ -2910,39 +2106,14 @@ export class Package {
    }
 
    /**
-    * One message when every model on this package's surface failed to compile.
+    * One message when every model on the surface failed to compile: the surface
+    * then exports nothing and the boundary refuses every model with a 404,
+    * including ones that compiled. Only reachable through {@link reloadAllModels}
+    * called directly (materialization / rebind); a first load fails outright and
+    * a normal reload keeps the last good model and reports it stale.
     *
-    * The curated surface is the union of what the listed models export, so a
-    * surface that does not compile exports nothing, and the boundary then
-    * refuses every model in the package -- including the ones that compiled
-    * perfectly well. Each gets the 404 a hidden model gets: the same words a
-    * missing model gets where the model is gated, and an off-surface
-    * explanation where it is not.
-    *
-    * NARROW ON PURPOSE, because the edit paths an author uses already report
-    * this better than a warning could:
-    *
-    *  - FIRST LOAD: a compile error fails the whole package. It is absent, and
-    *    named in `/status` loadErrors. Nothing serves an empty surface.
-    *  - RELOAD, whether from the chokidar watcher, MCP `reload_package` or REST
-    *    `?reload=true`: all three go through `Environment.loadPackage`, which
-    *    keeps the last good compiled model serving and records a
-    *    `staleCompileErrors` entry, so `/status` reports the package with
-    *    `stale: true` AND the compile error. The surface never empties.
-    *
-    * What is left is {@link reloadAllModels} called directly -- the
-    * materialization / manifest rebind paths (`reloadAllModelsForPackage`,
-    * `bindManifest`). Those replace a model that fails to compile with a
-    * placeholder and do NOT go through `loadPackage`, so they are the one way
-    * to reach a package that is serving, is not stale, and whose surface
-    * exports nothing. Rare, and the only path where nothing else would say so.
-    *
-    * Deliberately NOT a fallback to uncurated. Falling open on a typo would
-    * expose sources the author curated away, which is worse than refusing them;
-    * the gap is that the refusal is unexplained, so this explains it.
-    * {@link emptyDiscoveryWarnings} does not cover this -- it skips a model
-    * that failed to compile, by design, so that a compile error is reported
-    * once rather than twice.
+    * Never a fallback to uncurated: falling open on a typo would expose what the
+    * author curated away. This only explains the refusal.
     */
    public brokenSurfaceWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
@@ -2954,17 +2125,11 @@ export class Package {
             !this.isServedReport(modelPath),
       );
       if (surface.length === 0) return [];
-      // Only when NOTHING on the surface compiled. One broken file beside a
-      // working one still leaves a surface, and that file's own error is
-      // report enough.
+      // Only when NOTHING on the surface compiled; otherwise a surface remains.
       if (!surface.every(([, model]) => !!model.getCompilationError())) {
          return [];
       }
-      // Models off the surface that compiled FINE, which is the count worth
-      // reporting: they are the ones refused for someone else's typo. Served
-      // dashboards and notebooks are not on the surface and not refused. A hidden
-      // model that failed to compile of its own accord was not taken down by
-      // this, and has its own error on the listing.
+      // Off-surface models that compiled fine: refused for someone else's typo.
       const collateral = Array.from(this.models.entries()).filter(
          ([modelPath, model]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
@@ -2972,9 +2137,7 @@ export class Package {
             !this.isServedReport(modelPath) &&
             !model.getCompilationError(),
       ).length;
-      // ONE message, however many files the surface spans. Emitting it per
-      // file would have each copy claim to be the whole surface, which is only
-      // true when the surface is one file.
+      // ONE message, however many files the surface spans.
       const [firstPath] = surface[0];
       const subject =
          surface.length === 1
@@ -3052,29 +2215,15 @@ export class Package {
    }
 
    /**
-    * Quote each manifest entry's physical table path for its connection's
-    * dialect, mirroring the build side: the builder CREATEs the table with
-    * {@link quoteTablePath} (per-segment, case-preserved), so on a case-folding
-    * engine (Snowflake uppercases unquoted identifiers) the stored name is only
-    * reachable through the same quoting. Malloy pastes a manifest `tableName`
-    * into `FROM` verbatim by contract (a bare name means "let the engine
-    * fold"), so the case-preserving producer — us — must hand it the quoted
-    * form. Same module quotes CREATE and read: the two sides cannot drift.
+    * Quote each manifest table path for its connection's dialect, mirroring how
+    * the builder CREATEs it: Malloy pastes `tableName` into `FROM` verbatim, so
+    * on a case-folding engine the case-preserved name is reachable only quoted.
+    * An already-quoted name passes through.
     *
-    * A name already carrying a quote character is passed through verbatim (it
-    * is already canonical SQL; control-plane-assigned names are sanitized to
-    * `[A-Za-z0-9_\-.]` and can never contain one).
-    *
-    * Two cases bind verbatim, and they are NOT the same signal:
-    * - No `connectionName`: a bare/engine-folding producer that never recorded
-    *   a connection (simple_builder / malloy-cli). Expected and benign — the
-    *   pre-change behavior, bound silently, nothing regresses.
-    * - `connectionName` present but unresolvable: a genuine misconfiguration
-    *   (the connection was renamed/removed, or the manifest is out of sync with
-    *   this package's config). This one entry is degraded — but the source
-    *   would not serve regardless of quoting, since Malloy needs the connection
-    *   to run any query against it, so we degrade just this entry rather than
-    *   fail the whole package bind, and log at ERROR with a fix.
+    * Verbatim otherwise in two different cases: no `connectionName` (an
+    * engine-folding producer; benign), or an unresolvable one (a
+    * misconfiguration; that entry is degraded and logged at ERROR, not the
+    * whole bind, since it could not serve anyway).
     */
    private async quoteBoundTableNames(
       entries: FreshnessManifest,
@@ -3129,29 +2278,14 @@ export class Package {
    }
 
    /**
-    * Re-compile every model in the package against a new build
-    * manifest (called after a materialization build commits new
-    * physicalised tables). Runs through the package-load worker pool
-    * — same off-main-thread compile path as initial `Package.create`
-    * — so a reload of a large package can't block the K8s liveness
-    * probe.
-    *
-    * Unlike `Package.create`, a per-model compile failure here does
-    * NOT abort the reload: we keep the failed model as a placeholder
-    * (`Model.fromCompilationError`) in `this.models`, matching the
-    * historical reload semantics. Whole-pool failures (worker crash,
-    * timeout, pool shutting down) propagate as `ServiceUnavailableError`
-    * — the caller (manifest service) decides how to retry.
+    * Recompile every model against a new build manifest, in the worker pool so
+    * a large package cannot block the liveness probe. A failed model is kept as
+    * a placeholder rather than aborting; pool failures propagate as
+    * `ServiceUnavailableError` for the caller to retry.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
-      // Quote each bound physical name for its connection's dialect BEFORE any
-      // projection: everything downstream (model hydration, the per-query
-      // freshness gate, /compile, /status) reads the entries recorded here, so
-      // this is the one place the write side's quoting is mirrored onto reads.
+      // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
-      // Models are hydrated against the tableName-only projection; the freshness
-      // fields gate the serve path per query (via getFreshBuildManifest), not
-      // model hydration.
       const buildManifest = toTableNameManifest(entries);
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
@@ -3160,10 +2294,8 @@ export class Package {
          manifestEntryCount: Object.keys(buildManifest).length,
       });
 
-      const pool = getPackageLoadPool();
-      let outcome;
-      try {
-         outcome = await pool.loadPackage({
+      const outcome = await loadOutcomeOrThrow(
+         getPackageLoadPool().loadPackage({
             packagePath: this.packagePath,
             packageName: this.packageName,
             environmentName: this.environmentName,
@@ -3171,30 +2303,11 @@ export class Package {
             defaultConnectionName: "duckdb",
             buildManifest,
             withPreaggregateCompanions: true,
-         });
-      } catch (err) {
-         const realError =
-            err instanceof Error
-               ? err
-               : new Error(`Package-load worker pool failure: ${String(err)}`);
-         if (
-            realError instanceof MalloyError ||
-            realError instanceof ModelCompilationError ||
-            realError instanceof PackageManifestError
-         ) {
-            throw realError;
-         }
-         throw new ServiceUnavailableError(
-            `Package-load worker pool unavailable: ${realError.message}`,
-            { cause: realError },
-         );
-      }
+         }),
+      );
 
       // Same check as create, before anything is swapped.
-      assertRequiredStagesAvailable(
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
-         llmConfigured(),
-      );
+      assertOutcomeStagesAvailable(outcome);
 
       const { models: nextModels, renderTagWarnings } =
          await Package.hydrateWorkerModels(
@@ -3207,23 +2320,17 @@ export class Package {
             },
             "placeholder",
          );
-      // Discover against the models about to be installed, before any of them
-      // is, and install both in one synchronous step below: a query must never
-      // see the new models with the previous reports (or the reverse), whose
-      // entry points and surface flags differ.
+      // Discover before installing, then install models and reports in one
+      // synchronous step: a query must never see one without the other.
       const discoveryStarted = performance.now();
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
       // Before refreshServingIdentity, which reads the agents it declares.
       this.rawAgents = outcome.packageMetadata.agents;
-      // The identity describes the source bytes just compiled, and a caller
-      // polling it after an edit needs it to move as soon as the new models
-      // are installed.
+      // Move the identity as soon as the new models are installed.
       this.refreshServingIdentity();
-      // A reload re-reads publisher.json in the worker; pick up any change to
-      // the explore set and query-boundary mode so listModels()/the gate
-      // reflect edited explores without a full Package.create.
+      // Pick up publisher.json edits to the surface and boundary mode.
       const previousSurface = this.packageMetadata.explores;
       this.packageMetadata.explores = outcome.packageMetadata.explores;
       this.noteSurfaceChangeFrom(previousSurface);
@@ -3235,13 +2342,10 @@ export class Package {
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
       this.installReports(discovery);
-      // The freshly-compiled models start with no serve bindings and no serve
-      // connections; re-apply both so a reload preserves serve routing.
+      // New models start with no serve routing; re-apply it.
       this.pushStorageServeBindingsToModels();
       this.pushServeDestinationConfigToModels();
-      // Same for pre-aggregation, and this is also where a manifest bind lands
-      // (bindManifest → reloadAllModels), so the companion is recompiled against
-      // the manifest that substitutes its rollup tables.
+      // Also where a manifest bind lands, so the companion compiles against it.
       await this.pushPreaggregateServeModels();
       // Read against the reports installed above.
       this.renderTagWarnings =
@@ -3250,8 +2354,7 @@ export class Package {
       this.recordDeprecatedUsage(outcome);
       this.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
-      // The tile lint asks the query boundary about each tile, so it runs once
-      // the refreshed surface is installed.
+      // After installReports: the tile lint asks the refreshed boundary.
       const lintStarted = performance.now();
       await this.relintReports({ textLint: true });
       this.reportDiscovered(
@@ -3259,25 +2362,9 @@ export class Package {
          discovery,
          discoveryMs + performance.now() - lintStarted,
       );
-      // Remember what we just bound so /compile can route identically and
-      // /status can report the binding. An empty map reverts to live (unbound).
-      // Retains the full freshness entries so the serve-path gate can evaluate
-      // them per query.
       this.recordManifestBinding(entries);
-      // Install the per-query freshness resolver on the rebuilt model set so the
-      // serve path applies the freshness-filtered manifest as a per-query
-      // override.
       this.wireFreshnessResolvers();
-      // Re-run the fail-safe warning against the refreshed model set: an edit
-      // to publisher.json that introduces a bad entry should surface in the
-      // logs on reload too, not only at initial load (loadViaWorker).
-      const invalidMsg = this.formatInvalidExplores();
-      if (invalidMsg) {
-         logger.warn(`Package ${this.packageName} has invalid explores`, {
-            packageName: this.packageName,
-            detail: invalidMsg,
-         });
-      }
+      warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
    }
 
@@ -3292,16 +2379,9 @@ export class Package {
    public async listModels(
       options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
-      // When the package resolved a surface — an `explores` in publisher.json
-      // or a root `index.malloy` — only those models are listed; every other
-      // .malloy file still compiles for import/join resolution but is hidden.
-      // No surface → every model is listed (backward-compatible default), but
-      // note that means no surface, not merely no manifest key. Notebooks are
-      // unaffected (see listNotebooks) — they are always public.
-      //
-      // `includeHiddenFilesAndSources` lists the hidden files too, each marked
-      // `isHidden: true`. Running them takes the same option on the query
-      // route (Model.getQueryResults).
+      // With a surface, only its models are listed; the rest still compile for
+      // imports but are hidden (`includeHiddenFilesAndSources` lists them,
+      // marked `isHidden`). No surface lists every model.
       const exploreSet = this.exploreSet();
       const isHidden = (modelPath: string) =>
          !!exploreSet && !exploreSet.has(modelPath);
@@ -3311,8 +2391,7 @@ export class Package {
                if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
                // A linear report is listed as a report, surface or not.
                if (this.getReportLayout(modelPath) === "linear") return false;
-               // A grid report is not a model on the surface even when
-               // `explores` lists it: it is listed as a report instead.
+               // A grid report is listed as a report, even when `explores` lists it.
                if (!exploreSet) return true;
                if (this.isServedReport(modelPath)) return false;
                return (
@@ -3343,29 +2422,18 @@ export class Package {
    }
 
    /**
-    * Whether the query boundary restricts anything at all: `explores` declared
-    * AND `queryableSources` left at `"declared"`. Under `"all"` the boundary is
-    * inert and every compiled source stays directly queryable. An unrecognised
-    * `queryableSources` counts as `"declared"`, which is what the spec says.
-    *
-    * Shared so a finding cannot assert a policy the package does not have.
-    * `Model.hasEmptyDiscoverySurface` is about the DISCOVERY surface and is
-    * indifferent to this mode, so a warning about queries being refused has to
-    * check the mode itself rather than lean on that predicate.
+    * Whether the query boundary restricts anything: a surface AND
+    * `queryableSources` not `"all"`. A warning about refused queries must check
+    * this, not the discovery-only `Model.hasEmptyDiscoverySurface`.
     */
    private queryBoundaryActive(): boolean {
       if (this.packageMetadata.queryableSources === "all") return false;
-      // `exploresDeclared` rather than an `exploreSet() !== null` comparison:
-      // the two coincide by construction, but this is the stated source of
-      // truth for the fact and it does not allocate a Set to answer it.
       return this.exploresDeclared();
    }
 
    /**
-    * A file's text as the compile read it, else as saved; undefined when it
-    * cannot be read. The compiled text first, because a package compile's
-    * replacement is not on disk and the saved file would answer for the old
-    * text. Never throws.
+    * A file's text as compiled (a compile's replacement is not on disk), else
+    * as saved; undefined when unreadable. Never throws.
     */
    private async readModelText(
       model: Model,
@@ -3397,11 +2465,8 @@ export class Package {
    }
 
    /**
-    * What a `.malloy` that can be a report is, by the one tag reader
-    * (`report.ts`): a compiled file by its own model-level notes, and a file
-    * with no facts (it failed to compile, or its facts could not be read) by
-    * the same notes read off its text. Never throws: a file it cannot read is
-    * no report.
+    * A `.malloy` file's report tag, from its compiled facts or, lacking those,
+    * its text. Never throws: an unreadable file is no report.
     */
    private async readFileReportTag(
       model: Model,
@@ -3420,19 +2485,9 @@ export class Package {
    }
 
    /**
-    * Re-read the package's reports from its compiled models and install them.
-    * Called at load, and as a dry run from a package-scope compile; a reload
-    * discovers against the models it is about to install instead (see
-    * {@link reloadAllModels}), so nothing is ever served with the previous
-    * set. Never throws: a package whose reports can't be read still serves its
-    * models.
-    *
-    * `compile` is the dry run on the throwaway package
-    * {@link lintWorkerOutcome} builds: it skips reading cells and the per-file
-    * text lint (the package-scope compile reports those itself, with
-    * positions), and is timed but neither counted nor logged as a load (see
-    * {@link reportDiscovered}). A check that throws is a server fault, not a
-    * finding, so it is still logged, marked `during: "compile"`.
+    * Discover and install the package's reports, at load or as a compile's dry
+    * run (which skips cell reading and the text lint, and is not counted).
+    * Never throws: unreadable reports do not cost the models.
     */
    private async discoverReports(
       during: Exclude<ReportDiscoveryDuring, "reload">,
@@ -3447,13 +2502,7 @@ export class Package {
       return { discoveryMs: linting - started, lintMs: finished - linting };
    }
 
-   /**
-    * Report what one discovery pass found. Every pass is timed. A load or
-    * reload also counts its files, reports and findings, logs one `info`
-    * summary and a `debug` line per finding (the findings themselves ride the
-    * package's `warnings`). A compile's dry run is a what-if, so it stops at
-    * the timing.
-    */
+   /** Time every discovery pass; a load or reload also counts and logs its findings. */
    private reportDiscovered(
       during: ReportDiscoveryDuring,
       discovery: ReportDiscovery,
@@ -3487,10 +2536,7 @@ export class Package {
       }
    }
 
-   /**
-    * Count the deprecated features this package uses, once per load or
-    * reload: each seam counts its own (`service/deprecated/*`).
-    */
+   /** Count the deprecated features this package uses, once per load or reload. */
    private recordDeprecatedUsage(outcome: LoadPackageOutcome): void {
       recordDeprecatedFormatUsage(this.models);
       recordDeprecatedManifestKeys(
@@ -3499,25 +2545,17 @@ export class Package {
    }
 
    /**
-    * What every file of `models` is as a report (`docs/reports-design.md`
-    * §1): one map, keyed by path in path order, with a status per file that
-    * carries an artifact tag. Where a file lives decides nothing: any `.malloy`
-    * outside `public/` whose model-level tag makes it a report is one, except
-    * the root `index.malloy`, which is the surface. A `.malloynb` is a linear
-    * report. Two reports may share a basename; neither shadows the other.
-    *
-    * Reads `models` only, never the package's installed state, so a reload can
-    * discover against the models it has not swapped in yet. Reads each linear
-    * report's cells into its model, unless `during` is `compile`.
+    * What every file of `models` is as a report (`docs/reports-design.md` §1),
+    * keyed by path in path order. Location decides nothing, except that the
+    * root `index.malloy` is the surface. Reads `models` only, never installed
+    * state, so a reload can discover before swapping models in.
     */
    private async discoverReportsIn(
       models: ReadonlyMap<string, Model>,
       during: ReportDiscoveryDuring,
    ): Promise<ReportDiscovery> {
       const files = new Map<string, ReportFile>();
-      // Every model, not just the reports, because `# drill` is declared on a
-      // model dimension: a tag in a package with no reports at all is exactly
-      // as breakable and would otherwise never be checked.
+      // Every model, not just reports: `# drill` lives on model dimensions.
       const allFacts = new Map<string, ReportModelFacts>();
       const taggedIndexPaths: string[] = [];
       const dropped = (modelPath: string, why: string): ReportFile => {
@@ -3567,17 +2605,12 @@ export class Package {
             continue;
          const name = reportName(modelPath);
          if (tag.status !== "report") {
-            // A tag that makes no report (it does not parse, sets the removed
-            // `kind=`, or is a linear report written as `run:` cells): the lint
-            // says why, and the file is an ordinary model.
+            // A tag that makes no report: the lint says why.
             files.set(modelPath, { status: "invalid", name, facts });
             continue;
          }
          if (!facts && !model.getCompilationError()) {
-            // No facts and no compile error to show, which a corrupt worker
-            // payload can produce (`Model.fromSerialized` builds a model with
-            // neither). A report disappearing with nothing said is the case
-            // worth reporting.
+            // A corrupt worker payload can produce neither; do not drop silently.
             files.set(
                modelPath,
                dropped(modelPath, "Report file produced no facts and no error"),
@@ -3594,23 +2627,16 @@ export class Package {
                model: modelPath,
                error: errMessage(err),
             });
-            // The tag is readable (it was read off the same facts); it was the
-            // manifest CONSTRUCTION that failed, and a report has nothing else
-            // to show.
             files.set(modelPath, { status: "dropped", name });
             continue;
          }
          if (facts && !manifest) {
-            // A grid tag that describes no tiles (or an empty list): not
-            // served until it has one, and explained by the lint. A linear
-            // tag always lists its tiles (`report.ts`), so it never lands here.
+            // A grid tag with no tiles: not served, explained by the lint.
             files.set(modelPath, { status: "tileless", name, facts });
             continue;
          }
          if (!facts) {
-            // The file failed to compile, so its tiles cannot be read. It is
-            // listed anyway carrying the error, because a broken report
-            // should be visibly broken rather than absent.
+            // Failed to compile: listed with its error, visibly broken, not absent.
             manifest = {
                name,
                layout: tag.layout,
@@ -3621,9 +2647,7 @@ export class Package {
                error: model.getCompilationError()?.message,
             };
          }
-         // Every report is served whatever the surface is: the surface limits
-         // what its tiles may read, not whether it is listed (see
-         // applyQueryBoundaryToModels and lintTilesAgainstSurface).
+         // Served whatever the surface: it limits what tiles read, not listing.
          files.set(modelPath, {
             status: "served",
             name,
@@ -3631,17 +2655,14 @@ export class Package {
             report: { path: modelPath, name, layout: tag.layout, manifest },
          });
       }
-      // The compiled text of each `.malloy` report, so the query boundary
-      // derives a report's own sources from the text its IR came from (at a
-      // package-scope compile, the caller's replacement), and the cell reader
-      // never slices a file newer than the compile.
+      // The compiled text, so derived sources and cells match the IR, never a
+      // newer file.
       for (const file of files.values()) {
          const report = file.report;
          if (!report || !report.path.endsWith(MODEL_FILE_SUFFIX)) continue;
          const model = models.get(report.path);
          if (!model) continue;
-         // Unreadable text only costs the file its own derived sources: it is
-         // still a report, reading the surface directly.
+         // Unreadable text only costs the report its own derived sources.
          report.text = (await this.readModelText(model, report.path)) ?? "";
       }
       const readerWarnings =
@@ -3719,11 +2740,9 @@ export class Package {
    }
 
    /**
-    * Read every linear `.malloy` report's definition cells (its imports and
-    * givens), which the deprecated notebook route serves ahead of its tiles. A
-    * reader refusal is the report's error, returned as a finding: the model
-    * still compiles, so nothing else would say so. It is counted and logged
-    * with the other findings (see {@link reportDiscovered}).
+    * Read each linear report's definition cells, for the deprecated notebook
+    * route. A reader refusal is returned as a finding, since the model still
+    * compiles and nothing else would say so.
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3749,11 +2768,7 @@ export class Package {
    /** Whether the last lint ran the per-file text lint, which a re-lint keeps. */
    private lintIncludesText = false;
 
-   /**
-    * Re-run the report lint against the current surface. Discovery calls it;
-    * so does a metadata PATCH, which can change the surface without changing
-    * any file, so the tile findings stay true to what is served.
-    */
+   /** Re-run the report lint; also after a metadata PATCH, which can change the surface. */
    public async relintReports(
       options: { textLint?: boolean } = {},
    ): Promise<void> {
@@ -3768,15 +2783,10 @@ export class Package {
    }
 
    /**
-    * One finding per tile or filter suggest that the query
-    * route will refuse for reading a source the surface does not publish. The
-    * report is listed and every tile compiles, because /compile is exempt
-    * from the surface, so without this the author sees nothing wrong until a
-    * tile answers 404.
-    *
-    * Asks the model the same two checks the query route runs
-    * ({@link Model.surfaceRefusal}), so the lint and the query cannot
-    * disagree. A request that does not compile is left to the other lints.
+    * One finding per tile or filter suggest the query route will refuse as
+    * off-surface (/compile is exempt, so nothing else would say so). Uses the
+    * query route's own check ({@link Model.surfaceRefusal}), so they cannot
+    * disagree.
     */
    private async lintTilesAgainstSurface(
       modelPath: string,
@@ -3784,8 +2794,7 @@ export class Package {
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
-      // `source` is absent when the query route's refusal would not name it
-      // (a gated model), and then neither does the warning.
+      // `source` is absent when the refusal would not name it (a gated model).
       const { unexported, fixFor } = this.surfaceIsIndexModel()
          ? {
               unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
@@ -3827,8 +2836,7 @@ export class Package {
                `empty.`,
          });
       }
-      // Each check compiles one query against the loaded model, independently
-      // of the others, so they run together; the order of findings is kept.
+      // Independent compiles, run together; findings keep their order.
       const refusals = await Promise.all(
          checks.map(({ request }) => model.surfaceRefusal(request)),
       );
@@ -3846,18 +2854,9 @@ export class Package {
    }
 
    /**
-    * The report lint: one pass per report, of either layout, wherever it
-    * lives, and per file whose tag makes no report, plus the package-wide
-    * checks (drill, given tags, curation).
-    *
-    * Per file, the manifest checks (`lintReport`, or for a tagged file that
-    * produced no report, `lintUndiscoveredReport`) and the text checks
-    * (`lintNotebookText`, with line numbers) run together, so the one finding
-    * both can make, an artifact tag that does not parse, is reported once.
-    *
-    * Never throws: a lint failure must not cost the package its reports. The
-    * findings ride the package response as non-fatal `warnings`, the same
-    * surface render-tag findings use, rather than a separate verb.
+    * The report lint: per tagged file, plus the package-wide checks (drill,
+    * given tags, curation). Per file, manifest and text checks run together so
+    * a finding both make (an unparseable tag) is reported once. Never throws.
     */
    private async lintReports(
       discovery: ReportDiscovery,
@@ -3868,9 +2867,7 @@ export class Package {
          modelPath.endsWith(MODEL_FILE_SUFFIX),
       );
       try {
-         // First because they cannot throw, so these survive a truncation that
-         // costs everything after them, and a report that vanished with no
-         // explanation is the worst thing on this surface to lose.
+         // First, because they cannot throw: a vanished report must always be explained.
          for (const [modelPath, { status, name }] of files) {
             if (status !== "dropped") continue;
             warnings.push({
@@ -3885,9 +2882,7 @@ export class Package {
             });
          }
          for (const [modelPath, { report, name }] of files) {
-            // A name outside the documented pattern is served and only noted:
-            // it still addresses the deprecated `…/dashboards/{name}` route,
-            // encoded.
+            // Served and only noted: the by-name route still works, encoded.
             if (report?.layout !== "grid" || matchesDocumentedReportName(name))
                continue;
             warnings.push({
@@ -3910,8 +2905,6 @@ export class Package {
          for (const [modelPath, file] of files) {
             if (file.status === "dropped") continue;
             const manifest = file.report?.manifest;
-            // A served report is checked against its manifest; a `.malloynb`
-            // has none (and no facts).
             const facts =
                file.status !== "served" || manifest ? file.facts : undefined;
             const fileFindings: ApiPackageWarning[] = [];
@@ -3949,11 +2942,9 @@ export class Package {
                });
             }
          }
-         // Drill tags live on model dimensions, not on any one report, so
-         // they are reported against the package rather than a single file,
-         // and they are scanned across every model rather than only the
-         // reports. A report dropped because it could not be read is still
-         // where a drill points; its own finding states the cause.
+         // Drill tags live on model dimensions, so every model is scanned. A
+         // dropped report still counts as a drill target; its own finding
+         // states the cause.
          const drillFacts = Array.from(discovery.allFacts.values());
          const reportPaths = new Set(
             Array.from(discovery.files)
@@ -3969,9 +2960,7 @@ export class Package {
          for (const finding of lintSelfDrills(drillFacts)) {
             warnings.push(finding);
          }
-         // Scanned across every model for the same reason as the drill lints: a
-         // given is declared on a model and reached through imports, so a broken
-         // declaration in a file no report imports is exactly as silent.
+         // Every model too: givens are reached through imports.
          for (const finding of lintGivenTags(drillFacts)) {
             warnings.push(finding);
          }
@@ -3983,15 +2972,8 @@ export class Package {
             packageName: this.packageName,
             error: errMessage(err),
          });
-         // Say so on the surface the findings ride, not only in the server log.
-         // This catch wraps every phase above, so a throw keeps the findings
-         // collected up to that point and drops the rest, and a shorter list is
-         // indistinguishable from a cleaner package. It names the check
-         // CLASSES rather than a phase, because it cannot tell which was lost.
-         // It omits the dropped-by-error and unconventional-name kinds on
-         // purpose: those are pure pushes over what discovery computed, so
-         // they always survive. The thrown message stays in the log: it is an
-         // ARBITRARY throw, so its text is unbounded.
+         // A truncated list would read as a cleaner package, so say so. The
+         // thrown text, which is unbounded, stays in the log.
          warnings.push({
             message:
                `Report lint stopped early, so this list is incomplete: an ` +
@@ -4009,13 +2991,9 @@ export class Package {
    }
 
    /**
-    * Each file on the curated surface, with the file that puts it there: the
-    * one that imports it on the way from the root `index.malloy`, directly or
-    * through other files, or `explores` for a file `explores` lists. A file
-    * absent here is off the surface. The same closure decides
-    * `report-on-surface` and the worker's `explores` advice reads reports by
-    * the same tag reader, so following that advice cannot move a file on or
-    * off the surface.
+    * Each file on the curated surface, mapped to what puts it there: its
+    * importer on the way from the root `index.malloy`, or `explores`. A file
+    * absent here is off the surface.
     */
    private surfaceImporters(): Map<string, string> {
       const importers = new Map<string, string>();
@@ -4046,11 +3024,8 @@ export class Package {
    }
 
    /**
-    * The curation edges reports anywhere make reachable (§6): a tagged root
-    * `index.malloy`, whose tag is ignored because it is the surface; and a
-    * report on the surface (`index.malloy` imports it, directly or through
-    * other files, or `explores` lists it), which is served as a report and
-    * adds nothing to the surface.
+    * Curation findings: a tagged root `index.malloy` (the tag is ignored), and a
+    * report on the surface, which adds nothing to it.
     */
    private curationWarnings(discovery: ReportDiscovery): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
@@ -4095,15 +3070,9 @@ export class Package {
    }
 
    /**
-    * A `.jsx` (or `.tsx`) in the package's top-level `dashboards/` directory.
-    *
-    * That directory means nothing to Publisher, but it is where Malloyyo looks
-    * for a dashboard's custom component, and Publisher does not implement
-    * that, so the file is inert here. This exists for the migration case: a
-    * Malloyyo repo registered unchanged would otherwise show its custom
-    * dashboards as an empty tile grid, or as nothing at all, with no
-    * indication that a file was skipped. Say so at load, and name the surface
-    * that does run author-written code.
+    * A `.jsx`/`.tsx` in `dashboards/`, where Malloyyo looks for custom
+    * components. Publisher does not run them, so a migrated repo is told so
+    * rather than seeing an empty grid.
     */
    private async unsupportedComponentWarnings(): Promise<ApiPackageWarning[]> {
       const dir = safeJoinUnderRoot(this.packagePath, MALLOYYO_DASHBOARDS_DIR);
@@ -4150,9 +3119,8 @@ export class Package {
 
    /**
     * Whether the write path may replace this file: a `.malloy` carrying an
-    * artifact tag, whatever discovery made of it (a report, served or not,
-    * or a tag that makes none, which saving the fix is how it gets served).
-    * Never a model, an untagged file, a `.malloynb`, the root `index.malloy`,
+    * artifact tag, served or not (saving the fix is how a broken one gets
+    * served). Never an untagged file, a `.malloynb`, the root `index.malloy`,
     * or anything in `public/`.
     */
    public isWritableReport(modelPath: string): boolean {
@@ -4194,8 +3162,6 @@ export class Package {
          layout: report.layout,
          title: manifest?.title ?? listing.title ?? report.name,
          description: manifest?.description ?? listing.description,
-         // The builder opens a `.malloy` report, which is written as tiles; a
-         // `.malloynb` it cannot.
          editable: report.path.endsWith(MODEL_FILE_SUFFIX),
          ...(error !== undefined && { error }),
       };
@@ -4229,8 +3195,6 @@ export class Package {
          try {
             notebook = await this.models.get(report.path)?.getNotebook();
          } catch (err) {
-            // A report whose notebook cannot be read answers with its error
-            // rather than failing the request.
             entry.error = errMessage(err);
          }
       }
@@ -4269,19 +3233,14 @@ export class Package {
          lookupConnection: async (name?: string) => {
             if (!name || name === "duckdb") {
                const connection = await base.lookupConnection(name);
-               // The per-package :memory: sandbox is a Publisher-owned DuckDB
-               // session too. Pin it against implicit auto-install so
-               // EXTENSION_FETCH_POLICY covers it — otherwise local-only's
-               // no-network guarantee had a hole here (the sandbox has no
-               // attached databases, so the env attach paths never touch it).
+               // Pin the sandbox against implicit auto-install too, or
+               // EXTENSION_FETCH_POLICY local-only would have a network hole.
                if (connection instanceof DuckDBConnection) {
                   await applyExtensionSessionSettings(connection);
                }
                return connection;
             }
-            // Resolve against the *current* environment MalloyConfig so a
-            // connection-generation swap on Environment propagates without a
-            // package reload.
+            // The *current* environment config, so a connection swap needs no reload.
             return getEnvironmentMalloyConfig().connections.lookupConnection(
                name,
             );
@@ -4315,9 +3274,7 @@ export class Package {
       try {
          await fs.stat(packageConfigPath);
       } catch (error) {
-         // A missing manifest, or a package path that is not a directory,
-         // is "does not exist". Anything else, an EACCES on the package
-         // directory above all, is rethrown so it is reported as what it is.
+         // Only ENOENT/ENOTDIR mean "does not exist"; an EACCES is rethrown as itself.
          const code = (error as NodeJS.ErrnoException).code;
          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          logger.error(`Can't find ${packageConfigPath}`);
@@ -4335,13 +3292,8 @@ export class Package {
       if (databasePaths.length === 0) {
          return [];
       }
-      // Resolve the package's duckdb connection ONCE and reuse it for
-      // every schema/row-count probe in this package. Malloy caches the
-      // materialized connection on the MalloyConfig so the same instance
-      // will be returned to model compiles later in `Package.create`.
-      // This is the substantive optimization over the previous code:
-      // we go from `databasePaths.length` separate DuckDBConnections
-      // (each doing its own native init + extension load) to one.
+      // One duckdb connection for every probe (each would otherwise do its
+      // own native init); Malloy caches it for later model compiles too.
       const conn = await malloyConfig.connections.lookupConnection("duckdb");
       return await Promise.all(
          databasePaths.map(async (databasePath): Promise<ApiDatabase> => {
@@ -4356,13 +3308,8 @@ export class Package {
                   type: "embedded" as const,
                };
             } catch (error) {
-               // One unreadable data file (a partial or corrupt spreadsheet,
-               // an interrupted download, an extension that failed to bake)
-               // must not drop the whole package. Report it the way a model
-               // that fails to compile is reported: the entry stays in the
-               // listing carrying `error` instead of `info`, so the failure
-               // is visible over the API rather than looking like the file
-               // was never there.
+               // One unreadable file must not drop the package; list it with
+               // `error` instead of `info`, like a model that fails to compile.
                const message =
                   error instanceof Error ? error.message : String(error);
                logger.warn("Could not read package database", {
@@ -4389,9 +3336,7 @@ export class Package {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
          })
          .filter((modelPath: string) => {
-            // Excel writes a sibling owner file (~$name.xlsx) whenever the
-            // workbook is open. It is not real data and is not a valid zip, so
-            // skip it before the extension match rather than fail to probe it.
+            // Excel's lock file (~$name.xlsx) is not data.
             if (path.basename(modelPath).startsWith("~$")) {
                return false;
             }
@@ -4410,19 +3355,12 @@ export class Package {
    ): Promise<ApiTableDescription> {
       const fullPath = path.join(packagePath, databasePath);
 
-      // Create a DuckDB source then:
-      // 1. Load the model and get the table schema from model
-      // 2. Run a query to get the row count from the table
-      // ConnectionRuntime is cheap (just a wrapper), and creating one
-      // per call keeps each probe's compile state isolated. The
-      // expensive piece — the underlying DuckDBConnection — is shared
-      // across all probes via `conn` (resolved once in readDatabases).
+      // A cheap runtime per probe isolates compile state; the connection is shared.
       const runtime = new ConnectionRuntime({
          urlReader: new EmptyURLReader(),
          connections: [conn],
       });
-      // Normalize path to use forward slashes for cross-platform compatibility
-      // DuckDB on Windows supports forward slashes, and this avoids escaping issues
+      // Forward slashes work on Windows DuckDB and avoid escaping.
       const normalizedPath = fullPath.replace(/\\/g, "/");
       const model = runtime.loadModel(
          `source: temp is duckdb.table('${normalizedPath}')`,

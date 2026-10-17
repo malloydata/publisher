@@ -102,7 +102,7 @@ is a Console convenience.
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
   back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
   from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
-  tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map,
+  tile's **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map,
   Segment map and Bar and line; a choice the view cannot render stays in the list, greyed, with its reason under it.
   **Color** sets a chart's color from the theme's series, or any other, as a `# theme.palette.series` line.
   The layout is the file's: the builder draws the report as its `layout=` says and never rewrites
