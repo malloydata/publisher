@@ -22,11 +22,7 @@ import {
 } from "./builderControls";
 import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
-import {
-   isQueryTile,
-   type DashboardDocument,
-   type QueryTile,
-} from "./document";
+import type { DashboardDocument, QueryTile } from "./document";
 import { FilterStrip, type FixedFilter } from "./FilterStrip";
 import { clockTime, type SaveStatusProps } from "./SaveStatus";
 import { SELECTION_RING_PX } from "./TileFrame";
@@ -39,6 +35,7 @@ import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
+import { useTileHeight } from "./useTileHeight";
 import { useTileResize } from "./useTileResize";
 import { layoutRules } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
@@ -331,6 +328,16 @@ export function ReportBuilder({
             if (tile) tile.colspan = span;
          }),
    });
+   // Dragging a tile's bottom edge sets its height in rows, the same way.
+   const sizing = useTileHeight({
+      tiles: editor.document.tiles,
+      onStart: selectTile,
+      commit: (index, rows) =>
+         editor.update((draft) => {
+            const tile = draft.tiles[index];
+            if (tile) tile.height = rows;
+         }),
+   });
    const tiles = useTileEditing({
       editor,
       rules,
@@ -372,12 +379,9 @@ export function ReportBuilder({
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
             if (dragging || selected === undefined || !rules.widths) return;
+            // Any tile, an inherited one too: its width is on its entry.
             const tile = editor.document.tiles[selected];
-            if (
-               !tile ||
-               (isQueryTile(tile) && tile.declaration.kind === "inherited")
-            )
-               return;
+            if (!tile) return;
             const span = nudgedSpan(
                tile.colspan ?? defaultSpan,
                delta,
@@ -622,6 +626,7 @@ export function ReportBuilder({
                   editor={editor}
                   reorder={reorder}
                   resizing={resizing}
+                  sizing={sizing}
                   gridBox={gridBox}
                   defaultSpan={defaultSpan}
                   rules={rules}

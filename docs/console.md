@@ -87,7 +87,8 @@ is a Console convenience.
   status, undo and redo, an **Add** menu (a tile, text or a filter), and
   **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
   report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
-  its width (a label says the width it will snap to), and set its chart and clickable cells, or duplicate it,
+  its width and the one on its bottom edge to set its height in rows (a label says what it will snap to;
+  double-click the bottom grip to fit the result again), and set its chart and clickable cells, or duplicate it,
   from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
   insert one between two. **Add → Tile** lists every view in the package, grouped by source and
   searchable, and runs the picked one as a preview beside its title and chart choices (**Add text

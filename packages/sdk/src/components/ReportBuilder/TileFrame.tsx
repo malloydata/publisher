@@ -16,7 +16,12 @@ import {
 } from "../RemoveBadge";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
-import { BARE_RING_OFFSET_PX, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
+import {
+   BARE_RING_OFFSET_PX,
+   GRID_GAP_PX,
+   MAX_TILE_ROWS,
+   MIN_TILE_ROWS,
+} from "../Dashboard/DashboardGrid";
 import {
    TILE_HEADING_CLASS,
    TileCard,
@@ -59,6 +64,7 @@ export function TileFrame({
    onResizeStart,
    onResizeMove,
    onResizeEnd,
+   heightEdge,
    children,
 }: {
    tile: DashboardTile;
@@ -93,6 +99,22 @@ export function TileFrame({
       span: number;
       columns: number;
       onStep: (to: number) => void;
+   };
+   /**
+    * The bottom edge, which sets the height in grid rows: dragged, or focused
+    * and stepped with the arrow keys. Delete or a double-click puts the tile
+    * back to fitting its content. Absent, the tile has no bottom handle.
+    */
+   heightEdge?: {
+      /** Its rows: the set height, or the drag's preview; absent while it fits its content. */
+      rows: number | undefined;
+      /** This edge is being dragged. */
+      dragging: boolean;
+      onStart: (event: PointerEvent<HTMLDivElement>) => void;
+      onMove: (event: PointerEvent<HTMLDivElement>) => void;
+      onEnd: (event: PointerEvent<HTMLDivElement>) => void;
+      /** A keyboard step, or `undefined` to fit the content again. */
+      onStep: (to: number | undefined) => void;
    };
    children: ReactNode;
 }) {
@@ -130,6 +152,13 @@ export function TileFrame({
                   // pass the height on rather than shrink to
                   // the tile.
                   display: "grid",
+                  // A set height holds the row too, so the tile
+                  // shrinks to it rather than the row growing to
+                  // the tile's content.
+                  ...(tile.height !== undefined && {
+                     gridTemplateRows: "minmax(0, 1fr)",
+                     minHeight: 0,
+                  }),
                   // And the WIDTH the other way: it must
                   // follow the grid item down when a tile is
                   // narrowed, not stay as wide as the chart
@@ -413,6 +442,14 @@ export function TileFrame({
                   </Box>
                )}
 
+               {heightEdge && (
+                  <HeightEdge
+                     edge={heightEdge}
+                     label={tileLabel(tile)}
+                     selected={selected}
+                  />
+               )}
+
                {onInsertAfter && (
                   <IconButton
                      className="builder-affordance"
@@ -670,3 +707,153 @@ function SpreadDotsIcon() {
       </SvgIcon>
    );
 }
+
+/**
+ * A tile's bottom edge: the height handle, laid out like the width handle
+ * turned on its side, so the two read as one control.
+ */
+function HeightEdge({
+   edge,
+   label,
+   selected,
+}: {
+   edge: NonNullable<Parameters<typeof TileFrame>[0]["heightEdge"]>;
+   label: string;
+   selected: boolean;
+}) {
+   const { theme } = usePublisherTheme();
+   const ui = theme.ui;
+   const { rows, dragging } = edge;
+   const fit = rows === undefined;
+   return (
+      <Box
+         className="builder-affordance"
+         {...{ [NO_DRAG]: "" }}
+         role="separator"
+         tabIndex={0}
+         aria-orientation="horizontal"
+         aria-label={`Height of ${label}`}
+         aria-valuemin={MIN_TILE_ROWS}
+         aria-valuemax={MAX_TILE_ROWS}
+         {...(fit ? {} : { "aria-valuenow": rows })}
+         aria-valuetext={fit ? "Fits its content" : heightLabel(rows)}
+         onKeyDown={(event) => {
+            const now = rows ?? MIN_TILE_ROWS;
+            const to =
+               event.key === "ArrowDown"
+                  ? now + 1
+                  : event.key === "ArrowUp"
+                    ? now - 1
+                    : event.key === "Home"
+                      ? MIN_TILE_ROWS
+                      : event.key === "End"
+                        ? MAX_TILE_ROWS
+                        : event.key === "Delete" || event.key === "Backspace"
+                          ? null
+                          : undefined;
+            if (to === undefined) return;
+            // The builder's own arrow-key nudge must not act on it too.
+            event.preventDefault();
+            event.stopPropagation();
+            if (to === null) {
+               if (!fit) edge.onStep(undefined);
+               return;
+            }
+            const held = Math.min(Math.max(to, MIN_TILE_ROWS), MAX_TILE_ROWS);
+            if (held !== rows) edge.onStep(held);
+         }}
+         onPointerDown={edge.onStart}
+         onPointerMove={edge.onMove}
+         onPointerUp={edge.onEnd}
+         onPointerCancel={edge.onEnd}
+         onClick={(event) => event.stopPropagation()}
+         onDoubleClick={(event) => {
+            event.stopPropagation();
+            if (!fit) edge.onStep(undefined);
+         }}
+         sx={(mui) => ({
+            position: "absolute",
+            left: 0,
+            right: 0,
+            // Straddles the edge, as the width handle does.
+            bottom: "-8px",
+            height: "16px",
+            cursor: "row-resize",
+            touchAction: "none",
+            zIndex: 2,
+            opacity: dragging || selected ? 1 : 0,
+            transition: `opacity ${MOTION_FAST}`,
+            ...reducedMotionSx,
+            "&:hover": { opacity: 1 },
+            "&:focus-visible": {
+               opacity: 1,
+               outline: `2px solid ${theme.accent}`,
+               outlineOffset: 1,
+               borderRadius: "3px",
+            },
+            "&::before": {
+               content: '""',
+               position: "absolute",
+               top: "50%",
+               left: "50%",
+               transform: "translate(-50%, -50%)",
+               width: "40px",
+               height: "12px",
+               boxSizing: "border-box",
+               borderRadius: ui.radius.control,
+               border: `1px solid ${
+                  dragging ? theme.accent : edgeColor(theme.cardBorder)
+               }`,
+               bgcolor: mui.palette.background.paper,
+               boxShadow:
+                  "0 1px 2px rgba(16, 24, 40, 0.10), 0 2px 6px rgba(16, 24, 40, 0.08)",
+               transition: `border-color ${MOTION_FAST}`,
+            },
+            "&::after": {
+               content: '""',
+               position: "absolute",
+               top: "50%",
+               left: "50%",
+               transform: "translate(-50%, -50%)",
+               width: "16px",
+               height: "5px",
+               borderTop: `1.5px solid ${
+                  dragging ? theme.accent : mui.palette.text.secondary
+               }`,
+               borderBottom: `1.5px solid ${
+                  dragging ? theme.accent : mui.palette.text.secondary
+               }`,
+               boxSizing: "border-box",
+               opacity: dragging ? 1 : 0.7,
+            },
+            "&:hover::before": { borderColor: theme.accent },
+            "&:hover::after": { borderColor: theme.accent, opacity: 1 },
+         })}
+      >
+         {dragging && rows !== undefined && (
+            <Box
+               aria-hidden
+               sx={(mui) => ({
+                  position: "absolute",
+                  left: "50%",
+                  bottom: "50%",
+                  transform: "translate(32px, 50%)",
+                  px: 1,
+                  py: 0.5,
+                  borderRadius: ui.radius.control,
+                  bgcolor: mui.palette.text.primary,
+                  color: mui.palette.background.paper,
+                  ...ui.type.label,
+                  whiteSpace: "nowrap",
+                  pointerEvents: "none",
+               })}
+            >
+               {heightLabel(rows)}
+            </Box>
+         )}
+      </Box>
+   );
+}
+
+/** A height in words, for the drag's label and a screen reader. */
+const heightLabel = (rows: number) => `${rows} rows tall`;

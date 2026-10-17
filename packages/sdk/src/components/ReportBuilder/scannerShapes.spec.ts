@@ -243,12 +243,12 @@ source: a is scoped_orders extend {
   view: other is { aggregate: m is count() }
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[1].colspan = 6;
+         d.tiles[1].label = "W";
       });
       expect(out).toContain(
-         "  # colspan=6\n  view: other is { aggregate: m is count() }",
+         '  # label="W"\n  view: other is { aggregate: m is count() }',
       );
-      expect(out).not.toContain("colspan=6\n    group_by: cat");
+      expect(out).not.toContain('label="W"\n    group_by: cat');
    });
 
    // declarationExtent: `//` inside a quoted literal is not a comment, so a
@@ -260,10 +260,10 @@ source: a is one extend {
   view: y is vy
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[1].colspan = 4;
+         d.tiles[1].label = "W";
       });
-      expect(out).toContain("  # colspan=4\n  view: y is vy");
-      expect(out).not.toContain("colspan=4\n  view: x");
+      expect(out).toContain('  # label="W"\n  view: y is vy');
+      expect(out).not.toContain('label="W"\n  view: x');
    });
 
    // declarationExtent: a brace inside a single-quoted filter literal is text,
@@ -280,10 +280,10 @@ source: a is one extend {
   view: other is { aggregate: m is count() }
 }`;
          const out = await spliced(source, (d) => {
-            d.tiles[1].colspan = 4;
+            d.tiles[1].label = "W";
          });
          expect(out).toContain(
-            "  # colspan=4\n  view: other is { aggregate: m is count() }",
+            '  # label="W"\n  view: other is { aggregate: m is count() }',
          );
       }
    });
@@ -300,10 +300,10 @@ source: a is one extend {
   view: other is { aggregate: m is count() }
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[1].colspan = 4;
+         d.tiles[1].label = "W";
       });
       expect(out).toContain(
-         "  # colspan=4\n  view: other is { aggregate: m is count() }",
+         '  # label="W"\n  view: other is { aggregate: m is count() }',
       );
    });
 });

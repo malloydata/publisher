@@ -18,6 +18,7 @@ import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
+import { tileHeightPx } from "../Dashboard/DashboardGrid";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
 import {
@@ -502,7 +503,11 @@ export function EditorSurface({
                         : {};
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
-                  height={TILE_MAX_HEIGHT}
+                  height={
+                     tile.height !== undefined
+                        ? tileHeightPx(tile.height)
+                        : TILE_MAX_HEIGHT
+                  }
                />
             );
          },
@@ -659,8 +664,8 @@ function sameTile(
 }
 
 /**
- * A tile less what only frames its result: its title, subtitle, width, row
- * and card are drawn by the tile around the result, not sent with the query.
+ * A tile less what only frames its result: its title, subtitle, width, row,
+ * height and card are drawn by the tile around the result, not sent with the query.
  * Retitling a tile re-ran it before, and its chart blinked as the same rows
  * were drawn again.
  */
@@ -670,6 +675,7 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle: _subtitle,
       colspan: _colspan,
       break: _break,
+      height: _height,
       borderless: _borderless,
       ...runs
    } = tile as DocumentTile & {
@@ -677,6 +683,7 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle?: unknown;
       colspan?: unknown;
       break?: unknown;
+      height?: unknown;
       borderless?: unknown;
    };
    return runs as DocumentTile;

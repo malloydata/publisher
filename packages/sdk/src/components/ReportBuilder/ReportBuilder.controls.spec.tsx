@@ -205,9 +205,11 @@ describe("Duplicate, from a tile's menu", () => {
       screen.getByRole("button", { name: "Save", hidden: true }).click();
       await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
       const text = saved.mock.calls[0]?.[0] ?? "";
-      expect(text).toContain('tiles=["a -> by_cat", "a -> by_category_tile"]');
+      expect(text).toContain(
+         'tiles=["a -> by_cat", "a -> by_category_tile" { colspan=6 }]',
+      );
       expect(text).toMatch(
-         /# colspan=6\n\s*# label="By category"\n\s*view: by_category_tile is by_category/,
+         /\n\n\s*# label="By category"\n\s*view: by_category_tile is by_category/,
       );
    });
 

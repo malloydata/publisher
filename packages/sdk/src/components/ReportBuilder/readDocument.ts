@@ -263,6 +263,20 @@ function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
    };
 }
 
+/** A view's own `# colspan` and `# break`, read as the builder always has. */
+function viewLayout(
+   t:
+      | { numeric(key: string): number | undefined; has(key: string): boolean }
+      | null
+      | undefined,
+): { colspan?: number; break?: boolean } {
+   const colspan = t?.numeric("colspan");
+   return {
+      ...(colspan === undefined ? {} : { colspan }),
+      ...(t?.has("break") ? { break: true } : {}),
+   };
+}
+
 /** A grid width: a plain decimal positive integer, else undefined. */
 function gridWidth(
    tag: { text(key: string): string | undefined } | undefined,
@@ -278,7 +292,39 @@ function gridWidth(
    return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
-const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
+/** A quoted run expression, with the `{ … }` of layout an entry may carry after it. */
+const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"\s*(\{[\s\S]*\})?$/;
+
+/** The layout a `tiles=[…]` entry carries, read the way the server reads it. */
+function entryLayout(
+   tag:
+      | {
+           text(key: string): string | undefined;
+           has(key: string): boolean;
+        }
+      | undefined,
+): { colspan?: number; break?: boolean; height?: number } {
+   const colspan = gridWidth(tag, "colspan");
+   const height = gridWidth(tag, "height");
+   return {
+      ...(colspan === undefined ? {} : { colspan }),
+      ...(tag?.has("break") ? { break: tag.text("break") !== "false" } : {}),
+      ...(height === undefined ? {} : { height }),
+   };
+}
+
+/** An entry's layout over a view's own: each property the entry sets wins, and a `break` that ends up off is no field. */
+function placed(
+   view: { colspan?: number; break?: boolean },
+   entry: { colspan?: number; break?: boolean; height?: number },
+): { colspan?: number; break?: true; height?: number } {
+   const colspan = entry.colspan ?? view.colspan;
+   return {
+      ...(colspan === undefined ? {} : { colspan }),
+      ...((entry.break ?? view.break) ? { break: true as const } : {}),
+      ...(entry.height === undefined ? {} : { height: entry.height }),
+   };
+}
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
@@ -438,19 +484,23 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
                reason: `Two text tiles are named \`${textName}\`, so the builder cannot tell them apart.`,
             };
          }
-         const colspan = gridWidth(textTag, "colspan");
          tiles.push({
             kind: "text",
             name: textName,
             markdown:
                parsed.textBlocks.find((block) => block.name === textName)
                   ?.body ?? "",
-            ...(colspan === undefined ? {} : { colspan }),
-            ...(textTag.has("break") ? { break: true } : {}),
+            ...placed({}, entryLayout(textTag)),
          });
          continue;
       }
       const entry = quoted?.[1] ?? entryText;
+      const own = entryLayout(
+         quoted?.[2]
+            ? (parseAnnotation([`# tile ${quoted[2]}`]).tag?.tag("tile") ??
+                 undefined)
+            : undefined,
+      );
       const steps = quoted ? tileSteps(entry) : undefined;
       if (!steps) {
          return {
@@ -473,6 +523,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             name: viewName,
             source: sourceName,
             declaration: { kind: "inherited" },
+            ...placed({}, own),
          });
          continue;
       }
@@ -505,11 +556,8 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             ...(t?.text("subtitle")
                ? { subtitle: t.text("subtitle") as string }
                : {}),
-            ...(t?.numeric("colspan") !== undefined
-               ? { colspan: t.numeric("colspan") as number }
-               : {}),
+            ...placed(viewLayout(t), own),
             ...chartField(view.tags),
-            ...(t?.has("break") ? { break: true } : {}),
             ...(t?.has("borderless") ? { borderless: true } : {}),
          });
          continue;
@@ -532,11 +580,8 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
          ...(t?.text("subtitle")
             ? { subtitle: t.text("subtitle") as string }
             : {}),
-         ...(t?.numeric("colspan") !== undefined
-            ? { colspan: t.numeric("colspan") as number }
-            : {}),
+         ...placed(viewLayout(t), own),
          ...chartField(view.tags),
-         ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });
    }

@@ -46,9 +46,11 @@ describe("spliceDashboardDocument: what it preserves", () => {
       expect(out).toContain(
          "  // Why this tile leads: revenue is the number people ask about first.",
       );
-      expect(out).toContain("  # colspan=4");
-      expect(out).not.toContain(
-         '# colspan=6\n  # break\n  # label="By category"\n  view: by_cat',
+      // The width moves to the entry, and the break with it, so the tile's
+      // layout has one home; the comment stays where it was.
+      expect(out).toContain('"a -> by_cat" { colspan=4 break }');
+      expect(out).toContain(
+         '  // Why this tile leads: revenue is the number people ask about first.\n  # label="By category"\n  view: by_cat',
       );
    });
 
@@ -109,11 +111,11 @@ source: a is scoped_orders extend {
 
    it("writes both when the tile had no tags at all", async () => {
       const out = await spliced(UNTAGGED, (d) => {
-         d.tiles[0].colspan = 4;
+         queryTile(d, 0).label = "Cat";
          queryTile(d, 0).filters = [{ field: "category", given: "CATEGORY" }];
       });
       expect(out).toContain(
-         "  # colspan=4\n  view: by_cat is by_category + { where: category ~ $CATEGORY }",
+         '  # label="Cat"\n  view: by_cat is by_category + { where: category ~ $CATEGORY }',
       );
    });
 
@@ -1437,12 +1439,11 @@ source: a is one extend {
          });
       });
       expect(out).toContain(
-         'tiles=["a -> by_cat", "a -> by_brand", "a -> by_state_tile"]',
+         'tiles=["a -> by_cat", "a -> by_brand", "a -> by_state_tile" { colspan=6 }]',
       );
       expect(out).toContain(`  # colspan=6
   view: by_brand is by_brand_view
 
-  # colspan=6
   # label="By state"
   view: by_state_tile is sales_by_state + { where: category ~ $CATEGORY }
 }`);
@@ -1467,7 +1468,7 @@ source: a is one extend {
          });
       });
       expect(out)
-         .toBe(`## artifact { title="T" tiles=["a -> x", "products_tiles -> by_brand_tile"] }
+         .toBe(`## artifact { title="T" tiles=["a -> x", "products_tiles -> by_brand_tile" { colspan=4 }] }
 import { one, products } from "../m.malloy"
 
 source: a is one extend {
@@ -1475,7 +1476,6 @@ source: a is one extend {
 }
 
 source: products_tiles is products extend {
-  # colspan=4
   view: by_brand_tile is by_brand
 }
 `);
@@ -1526,10 +1526,24 @@ describe("spliceDashboardDocument: what it refuses", () => {
    it("refuses to restyle a tile declared on its source", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const r = await splice(source, (d) => {
-         d.tiles[0].colspan = 6;
+         queryTile(d, 0).label = "Brands";
       });
       expect(r.ok).toBe(false);
       if (spliceFailed(r)) expect(r.reason).toContain("declared on its source");
+   });
+
+   // Its layout is not the model's, though: the entry is this report's own.
+   it("lays out a tile declared on its source by its entry", async () => {
+      const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].colspan = 6;
+         d.tiles[0].height = 4;
+      });
+      expect(out).toBe(
+         `## artifact { title="T" tiles=["orders -> by_brand" { colspan=6 height=4 }] }\nimport { orders } from '../orders.malloy'`,
+      );
+      const back = await openDocument(out);
+      expect(back.tiles[0]).toMatchObject({ colspan: 6, height: 4 });
    });
 
    it("refuses a new tile that is not a reference to a view", async () => {
@@ -2057,14 +2071,15 @@ ${comment}
          "  /* it was\n     # colspan=12\n     until the map stopped fitting */",
       ],
    ] as const) {
-      it(`patches the tag above ${kind} rather than writing a second one`, async () => {
+      it(`moves the width off the tag above ${kind} rather than leaving it there`, async () => {
          const out = await spliced(dashed(comment), (d) => {
             d.tiles[0].colspan = 3;
          });
-         // The comment survives to the byte, the one real tag is rewritten in
-         // place, and no second one appears under the comment.
+         // The comment survives to the byte, the one real tag is taken off,
+         // and the width lands on the entry.
+         expect(out).toContain('"a -> revenue" { colspan=3 }');
          expect(out).toContain(
-            `  # colspan=3\n${comment}\n  view: revenue is sales`,
+            `source: a is one extend {\n${comment}\n  view: revenue is sales`,
          );
          expect(out).not.toContain("# colspan=6");
       });
@@ -2310,9 +2325,11 @@ source: regional is duckdb.sql("""
    // WITHIN the source's own extent, which used to be just the `source:` line.
    it("finds and retags a view declared inside the source, not just its own line", async () => {
       const out = await spliced(MULTILINE, (d) => {
-         d.tiles[0].colspan = 6;
+         queryTile(d, 0).label = "Regions";
       });
-      expect(out).toContain("  # colspan=6\n  view: by_region is region_view");
+      expect(out).toContain(
+         '  # label="Regions"\n  view: by_region is region_view',
+      );
    });
 
    // planRemovedTiles: the LAST view before the extend's own closing brace.
@@ -2482,8 +2499,9 @@ source: a is one extend {
       expect(out).toContain(
          "##|(markdown) intro\n## How to read this page\n|##\n",
       );
+      expect(out).toContain('"a -> x" { colspan=4 }');
       expect(out).toContain(
-         "  #|(markdown)\n  # Lead tile\n  |#\n  # colspan=4\n",
+         "  #|(markdown)\n  # Lead tile\n  |#\n  view: x is vx",
       );
    });
 
@@ -2534,7 +2552,10 @@ source: a is one extend {
       const out = await spliced(WITH_COMMENTED_CLOSER, (d) => {
          d.tiles.find((t) => t.name === "x")!.colspan = 4;
       });
-      expect(out).toContain("  # colspan=4\n  /*\n  |# looks like a closer\n");
+      expect(out).toContain('"a -> x" { colspan=4 }');
+      expect(out).toContain(
+         "  view: u is vu\n\n  /*\n  |# looks like a closer\n",
+      );
       expect(out).not.toContain("colspan=6");
       expect(out).toContain(
          "  #|(markdown)\n  # Prev\n  |#\n  view: u is vu\n",

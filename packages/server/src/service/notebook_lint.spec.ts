@@ -680,6 +680,16 @@ describe("notebook lint", () => {
          ]);
       });
 
+      it("warns that a height means nothing on a query entry of a notebook", () => {
+         expect(
+            lint(
+               `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v" { height=3 }] }\n${SOURCE}${BLOCK}`,
+            ).map((finding) => finding.message),
+         ).toEqual([
+            "Line 1: `height` on the `a -> v` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove it.",
+         ]);
+      });
+
       it("reads the artifact tag written as a ##| block", () => {
          const block = `##| artifact { layout=linear\n  tiles=[\n    intro { kind=text },\n    "a -> v"\n  ]\n}\n|##\n`;
          expect(lint(`${block}${SOURCE}${BLOCK}`)).toEqual([]);

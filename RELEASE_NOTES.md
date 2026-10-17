@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Tiles have heights, and a report lays out each tile on its own entry
+
+A tile's entry in `tiles=[…]` can now carry its layout: `"overview -> kpis" { colspan=12 height=2 }`. `colspan` and `break` there win over the view's `# colspan` and `# break` (and `break=false` turns a view's break off), so one view can sit at a different width on each report, and a tile on a view the report imports can be resized at all. `height=N` is new: the tile's height in grid rows of 80px, plus the 16px gaps between them. A chart fills it, a table scrolls in it, and a tile keeps its height beside a taller neighbour instead of stretching to it. Without one a tile is as tall as its result, as before. The manifest's tiles carry `height`, and the lint now reads an entry's `colspan`, `break` and `height` instead of calling them unread.
+
+In the Console builder each tile has a second grip, on its bottom edge, that sets its height in whole rows (arrow keys step it; Delete or a double-click fits the result again). Resizing or moving a tile now writes its layout on its entry and takes the view's `# colspan` and `# break` off, so the layout has one home; an untouched tile's tags are left as written.
+
 ## [Unreleased] — The builder's filter row is in the same order as the reader's
 
 The report builder drew its filter row in a different order from the report it edits. It put the file's own filters first and the model's after them. The reader lists a filter when a tile first reads it, going through the tiles in order, and within each tile it lists what the tile's source reads before the tile's own `where:` bindings. So a report whose model filters every tile by Manufacturer read "Manufacturer, Subject, Recall date" in the view and "Subject, Recall date, Manufacturer" in the builder. The builder now uses the reader's rule, so both show the same row. A filter you add lands where the saved report will put it: after the filters its tile already has. A host that draws its own row for a report should take the manifest's `givens` in the order given, not regroup them by where each given is declared.

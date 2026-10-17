@@ -23,6 +23,7 @@ import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileReorder } from "./useTileReorder";
+import type { useTileHeight } from "./useTileHeight";
 import type { useTileResize } from "./useTileResize";
 
 /**
@@ -34,6 +35,7 @@ export function BuilderGrid({
    editor,
    reorder,
    resizing,
+   sizing,
    gridBox,
    defaultSpan = 1,
    rules,
@@ -52,6 +54,8 @@ export function BuilderGrid({
    editor: ReportEditorHandle;
    reorder: ReturnType<typeof useTileReorder>;
    resizing: ReturnType<typeof useTileResize>;
+   /** The bottom edges: a tile's height, dragged in whole rows. */
+   sizing?: ReturnType<typeof useTileHeight>;
    gridBox: RefObject<HTMLDivElement | null>;
    /** The span a tile with no `# colspan` is drawn at: as wide as the reader draws it. */
    defaultSpan?: number;
@@ -80,6 +84,7 @@ export function BuilderGrid({
    const { dragging, preview, onDragStart, onDragOver, onDragEnd } = reorder;
    const { columns } = rules;
    const { resize, startResize, onResize, endResize } = resizing;
+   const tall = sizing?.height;
    // What the grid lays out: the document, except mid-gesture, where it is
    // the preview — the tile being resized at its previewed width, or the tiles
    // in their previewed order. So the row reflows under the pointer exactly as
@@ -91,7 +96,11 @@ export function BuilderGrid({
          ? editor.document.tiles.map((each, index) =>
               index === resize.index ? { ...each, colspan: resize.span } : each,
            )
-         : (preview ?? editor.document.tiles)
+         : tall !== undefined
+           ? editor.document.tiles.map((each, index) =>
+                index === tall.index ? { ...each, height: tall.rows } : each,
+             )
+           : (preview ?? editor.document.tiles)
    ).map(drawn);
    // And, while a drag is live, the empty end of every row as a drop target.
    // While an edge is dragged too: narrowing a tile frees columns its row-mate
@@ -149,7 +158,7 @@ export function BuilderGrid({
                                    onInsertAfter: () => openAdd(index + 1),
                                 }
                               : {})}
-                           {...(rules.widths && resizable(each)
+                           {...(rules.widths
                               ? {
                                    resizing: resize?.index === index,
                                    width: {
@@ -167,6 +176,26 @@ export function BuilderGrid({
                                       startResize(event, index),
                                    onResizeMove: onResize,
                                    onResizeEnd: endResize,
+                                }
+                              : {})}
+                           {...(rules.widths && sizing
+                              ? {
+                                   heightEdge: {
+                                      rows: each.height,
+                                      dragging: tall?.index === index,
+                                      onStart: (event) =>
+                                         sizing.startHeight(event, index),
+                                      onMove: sizing.onHeight,
+                                      onEnd: sizing.endHeight,
+                                      onStep: (to) =>
+                                         editor.update((draft) => {
+                                            const tile = draft.tiles[index];
+                                            if (!tile) return;
+                                            if (to === undefined)
+                                               delete tile.height;
+                                            else tile.height = to;
+                                         }),
+                                   },
                                 }
                               : {})}
                            onSelect={() => onSelect(index)}
@@ -247,11 +276,3 @@ const headingOf = (
       ),
    };
 };
-
-/**
- * Whether dragging this tile's edge can be saved: its width is a tag this file
- * owns. An inherited tile's tags live on the model's view, which the builder
- * does not write.
- */
-const resizable = (tile: DashboardTile): boolean =>
-   isTextTile(tile) || tile.declaration.kind !== "inherited";

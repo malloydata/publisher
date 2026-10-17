@@ -52,6 +52,30 @@ export function tileGridColumn(
    return tile.break ? `1 / span ${span}` : `span ${span}`;
 }
 
+/** One grid row, in px: the unit `height=N` on a tile's entry counts in. */
+export const TILE_ROW_PX = 80;
+
+/** Fewest and most rows the builder offers for a tile's height; a hand-written file may go outside them. */
+export const MIN_TILE_ROWS = 2;
+export const MAX_TILE_ROWS = 16;
+
+/**
+ * A tile `rows` grid rows tall, in px: the rows and the gaps between them, so
+ * a tile placed on explicit rows later lands on exactly this height.
+ */
+export const tileHeightPx = (rows: number) =>
+   rows * TILE_ROW_PX + (rows - 1) * GRID_GAP_PX;
+
+/** The rows a tile `px` tall is closest to, held to what the builder offers. */
+export const rowsForHeight = (px: number) =>
+   Math.min(
+      Math.max(
+         Math.round((px + GRID_GAP_PX) / (TILE_ROW_PX + GRID_GAP_PX)),
+         MIN_TILE_ROWS,
+      ),
+      MAX_TILE_ROWS,
+   );
+
 /** Narrowest a tile that sets no `colspan` is drawn, by the reader and the builder alike. */
 export const MIN_TILE_PX = 240;
 
@@ -104,6 +128,8 @@ export function defaultTileSpan(
 export interface GridTile {
    colspan?: number;
    break?: boolean;
+   /** `height=N` on its entry: rows tall. Absent, the tile is as tall as its row. */
+   height?: number;
 }
 
 /**
@@ -205,6 +231,16 @@ export function DashboardGrid<T extends GridTile>({
                   // width, the chart's box shrinks with it, and the renderer
                   // redraws to fit — the same way it already did on growth.
                   minWidth: 0,
+                  // A set height is the tile's own, not its row's: it holds
+                  // that height beside a taller neighbour rather than
+                  // stretching to it, and the card inside fills it.
+                  // A grid item's row is as tall as its content's minimum, so
+                  // the row is held to the box: the result shrinks to fit it.
+                  ...(tile.height !== undefined && {
+                     height: tileHeightPx(tile.height),
+                     alignSelf: "start",
+                     gridTemplateRows: "minmax(0, 1fr)",
+                  }),
                   // Only above `md`: the narrow breakpoint is one column, where
                   // a span would overflow the grid rather than widen anything.
                   gridColumn: {
