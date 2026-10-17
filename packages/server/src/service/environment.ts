@@ -187,6 +187,174 @@ export function resetAdmissionTelemetryForTesting(): void {
    resetCompileTelemetryForTesting();
 }
 
+/** The publisher.json fields a metadata write may set. */
+type PackageManifestUpdate = {
+   name: string;
+   description?: string;
+   location?: string;
+   explores?: string[];
+   queryableSources?: "declared" | "all";
+   manifestLocation?: string | null;
+   scope?: ApiPackage["scope"];
+   queryMetadata?: ApiPackage["queryMetadata"];
+   materialization?: ApiPackage["materialization"];
+};
+
+/**
+ * The publisher.json to write: the manifest on disk with `metadata` applied,
+ * preserving what the caller did not send.
+ */
+function mergePackageManifest(
+   existingManifest: Record<string, unknown>,
+   metadata: PackageManifestUpdate,
+): Record<string, unknown> {
+   const onDiskMaterialization =
+      existingManifest.materialization !== null &&
+      typeof existingManifest.materialization === "object" &&
+      !Array.isArray(existingManifest.materialization)
+         ? (existingManifest.materialization as Record<string, unknown>)
+         : undefined;
+
+   // Scope has two homes: `materialization.scope` (canonical) and the
+   // manifest root (deprecated). The server writes BOTH, in sync, for as
+   // long as the root form is supported:
+   //
+   //  - writing only the root would author a manifest this build's loader
+   //    refuses, since a root that disagrees with an existing envelope is a
+   //    conflict (see resolvePackageScope);
+   //  - writing only the envelope would silently downgrade a package read
+   //    by an older publisher, which knows only the root and would default
+   //    to `package` — cross-version table reuse for a package declared
+   //    `version`.
+   //
+   // A caller can only express scope through the top-level `scope` field
+   // (the wire materialization block has no `scope`), so an envelope value
+   // already on disk is preserved rather than dropped by a materialization
+   // PATCH that says nothing about it.
+   const resolvedScope =
+      metadata.scope ??
+      (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
+      (existingManifest.scope as ApiPackage["scope"] | undefined);
+
+   // A materialization PATCH replaces the block wholesale, which is right
+   // for schedule and freshness — they are the policy the caller is
+   // setting, and they are mutually exclusive with each other.
+   // `queryMetadata` is orthogonal to both: a client setting a schedule
+   // has no reason to re-send the package's tags, and dropping them
+   // silently untags every statement the package's builds issue. So it is
+   // preserved on omission, like `scope` above.
+   //
+   // A NULL is preserve too, not a clear — one rule at both wire homes.
+   // Null used to clear here while null on the canonical field preserved,
+   // which protected a client that serializes unset fields as null only
+   // if it had already migrated off this home. The clear is an EMPTY bag,
+   // which is unambiguous and which no such client emits by accident.
+   const preservedQueryMetadata =
+      metadata.materialization !== undefined &&
+      metadata.materialization?.queryMetadata == null &&
+      onDiskMaterialization?.queryMetadata !== undefined
+         ? { queryMetadata: onDiskMaterialization.queryMetadata }
+         : {};
+
+   const materializationBase: Record<string, unknown> | undefined =
+      metadata.materialization !== undefined
+         ? { ...metadata.materialization, ...preservedQueryMetadata }
+         : onDiskMaterialization !== undefined
+           ? { ...onDiskMaterialization }
+           : undefined;
+   const materializationBlock =
+      resolvedScope !== undefined
+         ? { ...(materializationBase ?? {}), scope: resolvedScope }
+         : materializationBase;
+
+   // `queryMetadata` has two homes as well, migrating the opposite way to
+   // `scope`: the manifest ROOT is canonical and the envelope is
+   // deprecated. Same dual-write rule and the same reason — writing only
+   // the root would leave an older publisher, which reads only the
+   // envelope, serving untagged statements for a package that asked to be
+   // tagged.
+   //
+   // A caller can express tags at either wire home, so precedence follows
+   // the same order the manifest resolver uses: the canonical top-level
+   // field, then the deprecated block, then what is already on disk. A
+   // client that has not migrated keeps working; one that has is not
+   // overruled by a block it did not send.
+   //
+   // A null anywhere in this chain is "not provided", never a clear — the
+   // one rule at both homes (see preservedQueryMetadata). Clearing is an
+   // empty bag, which parses to "no tags" and reaches both homes like any
+   // other value.
+   const resolvedQueryMetadata =
+      metadata.queryMetadata ??
+      (materializationBlock as { queryMetadata?: unknown } | undefined)
+         ?.queryMetadata ??
+      (existingManifest as { queryMetadata?: unknown }).queryMetadata;
+
+   // Update with new metadata. `explores`/`queryableSources` are only
+   // overwritten when the caller explicitly provides them; otherwise the
+   // existing on-disk value is preserved via the spread (an undefined here
+   // must not erase it).
+   // A convention-derived surface is never written. A GET of an
+   // index.malloy-curated package echoes the surface the server derived,
+   // so an ordinary read-modify-write PATCH -- one that meant to change
+   // only the description -- hands that derived value back, and writing
+   // it would freeze a surface that tracks the file into a key that does
+   // not. The two behave identically until the file is renamed or
+   // replaced: the convention then follows it, while the frozen key names
+   // a model that no longer exists, and the package silently lists and
+   // serves nothing. Recognizable because it is the exact value the
+   // convention produces, in a manifest that declares no `explores` (a
+   // surface naming a file that is not there was already rejected
+   // upstream by formatInvalidExplores, so the file exists). Declaring it
+   // by hand buys nothing the convention does not already give.
+   const echoesDerivedSurface =
+      existingManifest.explores === undefined &&
+      Array.isArray(metadata.explores) &&
+      metadata.explores.length === 1 &&
+      metadata.explores[0] === INDEX_MODEL_NAME;
+
+   return {
+      ...existingManifest,
+      name: metadata.name,
+      // Only when provided: an undefined here is dropped by
+      // JSON.stringify and so would erase the description on disk, which
+      // a PATCH that did not mention it never meant.
+      ...(metadata.description !== undefined
+         ? { description: metadata.description }
+         : {}),
+      ...(metadata.explores !== undefined && !echoesDerivedSurface
+         ? { explores: metadata.explores }
+         : {}),
+      ...(metadata.queryableSources !== undefined
+         ? { queryableSources: metadata.queryableSources }
+         : {}),
+      ...(metadata.manifestLocation !== undefined
+         ? { manifestLocation: metadata.manifestLocation }
+         : {}),
+      ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
+      ...(resolvedQueryMetadata !== undefined
+         ? { queryMetadata: resolvedQueryMetadata }
+         : {}),
+      // Mirrored into the deprecated home too, so a package tagged
+      // through the canonical field still reads as tagged on a publisher
+      // that only knows the envelope. Only when that home already exists
+      // or the caller wrote to it: mirroring unconditionally introduced a
+      // `materialization` block into a manifest that never had one, which
+      // is the shape being migrated AWAY from, appearing in a file whose
+      // author only ever used the canonical field.
+      ...(materializationBlock !== undefined
+         ? {
+              materialization: {
+                 ...materializationBlock,
+                 ...(resolvedQueryMetadata !== undefined
+                    ? { queryMetadata: resolvedQueryMetadata }
+                    : {}),
+              },
+           }
+         : {}),
+   };
+}
+
 /** Cap on runtime add failures kept per environment for /status. */
 const MAX_RECORDED_ADD_FAILURES = 100;
 
@@ -1965,71 +2133,11 @@ export class Environment {
                canonicalPath,
             });
          } catch (err) {
-            // Rollback: clobber whatever (partial) content sits at canonical
-            // — Package.create's own failure-cleanup may have already rm'd
-            // the directory, so the most common outcome here is ENOENT.
-            // `force: true` plus the `.catch(() => {})` make this a
-            // best-effort wipe whose only job is to leave the rename-back
-            // below a clean destination. Then put the old tree back if we
-            // moved one aside.
-            await fs.promises
-               .rm(canonicalPath, { recursive: true, force: true })
-               .catch(() => {});
-            let restored = false;
-            if (retiredPath) {
-               try {
-                  await fs.promises.rename(retiredPath, canonicalPath);
-                  restored = true;
-               } catch (restoreErr) {
-                  logger.error(
-                     "Failed to restore retired package after install rollback",
-                     {
-                        error: restoreErr,
-                        retiredPath,
-                        canonicalPath,
-                     },
-                  );
-               }
-            }
-            await fs.promises
-               .rm(stagingPath, { recursive: true, force: true })
-               .catch(() => {});
-            if (oldPackage && restored) {
-               // The rollback put the old tree back and the previous package is
-               // still in `this.packages` (it is only replaced on success
-               // below), so it is genuinely still serving. Deleting its status
-               // would strand it: listPackages enumerates packageStatuses, so
-               // the package would answer getPackage while being invisible to
-               // listings and discovery until a restart.
-               this.setPackageStatus(packageName, PackageStatus.SERVING);
-            } else {
-               // Either there was nothing to fall back to (a first install), or
-               // the restore did not happen: the rename-back threw, or the old
-               // tree was never on disk to retire. The canonical path is then
-               // missing or still holds the rejected content, so the cached
-               // package no longer matches disk and must not be advertised as
-               // serving. Drop both, and keep the two maps agreeing.
-               this.deletePackageStatus(packageName);
-               if (oldPackage) {
-                  // Retire before dropping it, the same way every other eviction
-                  // here does: once it leaves this.packages, closeAllConnections
-                  // can no longer reach its MalloyConfig, so its native handles
-                  // would never be released. Retire rather than shut down
-                  // inline, because withPackageLock does not cover queries that
-                  // already took this Package from an earlier getPackage; the
-                  // drain lets those finish first.
-                  this.retireConnectionGeneration(
-                     `package ${packageName}`,
-                     () => oldPackage.getMalloyConfig().shutdown("close"),
-                  );
-               }
-               this.packages.delete(packageName);
-            }
-            logger.debug("install.phase2.rollback", {
-               environmentName: this.environmentName,
-               packageName,
-               restored,
-               errorName: err instanceof Error ? err.name : "Unknown",
+            await this.rollbackInstallSwap(packageName, err, {
+               canonicalPath,
+               retiredPath,
+               stagingPath,
+               oldPackage,
             });
             throw err;
          }
@@ -2043,22 +2151,7 @@ export class Environment {
          });
 
          if (retiredPath) {
-            const pathToClean = retiredPath;
-            setImmediate(() => {
-               logger.debug("install.phase3.retired_cleanup", {
-                  environmentName: this.environmentName,
-                  packageName,
-                  retiredPath: pathToClean,
-               });
-               void fs.promises
-                  .rm(pathToClean, { recursive: true, force: true })
-                  .catch((err) => {
-                     logger.warn(
-                        `Failed to clean up retired package directory ${pathToClean}`,
-                        { error: err },
-                     );
-                  });
-            });
+            this.scheduleRetiredTreeCleanup(packageName, retiredPath);
          }
 
          // Metadata the caller sent with the install (a publish's
@@ -2073,6 +2166,115 @@ export class Environment {
          }
 
          return newPackage;
+      });
+   }
+
+   /**
+    * Undo a failed Phase 2 swap: wipe the canonical path, put the retired tree
+    * back if one was moved aside, and leave the package maps agreeing with
+    * what is now on disk. The caller rethrows `err`.
+    */
+   private async rollbackInstallSwap(
+      packageName: string,
+      err: unknown,
+      {
+         canonicalPath,
+         retiredPath,
+         stagingPath,
+         oldPackage,
+      }: {
+         canonicalPath: string;
+         retiredPath: string | undefined;
+         stagingPath: string;
+         oldPackage: Package | undefined;
+      },
+   ): Promise<void> {
+      // Rollback: clobber whatever (partial) content sits at canonical
+      // — Package.create's own failure-cleanup may have already rm'd
+      // the directory, so the most common outcome here is ENOENT.
+      // `force: true` plus the `.catch(() => {})` make this a
+      // best-effort wipe whose only job is to leave the rename-back
+      // below a clean destination. Then put the old tree back if we
+      // moved one aside.
+      await fs.promises
+         .rm(canonicalPath, { recursive: true, force: true })
+         .catch(() => {});
+      let restored = false;
+      if (retiredPath) {
+         try {
+            await fs.promises.rename(retiredPath, canonicalPath);
+            restored = true;
+         } catch (restoreErr) {
+            logger.error(
+               "Failed to restore retired package after install rollback",
+               {
+                  error: restoreErr,
+                  retiredPath,
+                  canonicalPath,
+               },
+            );
+         }
+      }
+      await fs.promises
+         .rm(stagingPath, { recursive: true, force: true })
+         .catch(() => {});
+      if (oldPackage && restored) {
+         // The rollback put the old tree back and the previous package is
+         // still in `this.packages` (it is only replaced on success
+         // below), so it is genuinely still serving. Deleting its status
+         // would strand it: listPackages enumerates packageStatuses, so
+         // the package would answer getPackage while being invisible to
+         // listings and discovery until a restart.
+         this.setPackageStatus(packageName, PackageStatus.SERVING);
+      } else {
+         // Either there was nothing to fall back to (a first install), or
+         // the restore did not happen: the rename-back threw, or the old
+         // tree was never on disk to retire. The canonical path is then
+         // missing or still holds the rejected content, so the cached
+         // package no longer matches disk and must not be advertised as
+         // serving. Drop both, and keep the two maps agreeing.
+         this.deletePackageStatus(packageName);
+         if (oldPackage) {
+            // Retire before dropping it, the same way every other eviction
+            // here does: once it leaves this.packages, closeAllConnections
+            // can no longer reach its MalloyConfig, so its native handles
+            // would never be released. Retire rather than shut down
+            // inline, because withPackageLock does not cover queries that
+            // already took this Package from an earlier getPackage; the
+            // drain lets those finish first.
+            this.retireConnectionGeneration(`package ${packageName}`, () =>
+               oldPackage.getMalloyConfig().shutdown("close"),
+            );
+         }
+         this.packages.delete(packageName);
+      }
+      logger.debug("install.phase2.rollback", {
+         environmentName: this.environmentName,
+         packageName,
+         restored,
+         errorName: err instanceof Error ? err.name : "Unknown",
+      });
+   }
+
+   /** Phase 3: remove the retired tree once the lock is released. */
+   private scheduleRetiredTreeCleanup(
+      packageName: string,
+      retiredPath: string,
+   ): void {
+      setImmediate(() => {
+         logger.debug("install.phase3.retired_cleanup", {
+            environmentName: this.environmentName,
+            packageName,
+            retiredPath,
+         });
+         void fs.promises
+            .rm(retiredPath, { recursive: true, force: true })
+            .catch((err) => {
+               logger.warn(
+                  `Failed to clean up retired package directory ${retiredPath}`,
+                  { error: err },
+               );
+            });
       });
    }
 
@@ -2382,17 +2584,7 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: {
-         name: string;
-         description?: string;
-         location?: string;
-         explores?: string[];
-         queryableSources?: "declared" | "all";
-         manifestLocation?: string | null;
-         scope?: ApiPackage["scope"];
-         queryMetadata?: ApiPackage["queryMetadata"];
-         materialization?: ApiPackage["materialization"];
-      },
+      metadata: PackageManifestUpdate,
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
@@ -2407,151 +2599,10 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         const onDiskMaterialization =
-            existingManifest.materialization !== null &&
-            typeof existingManifest.materialization === "object" &&
-            !Array.isArray(existingManifest.materialization)
-               ? (existingManifest.materialization as Record<string, unknown>)
-               : undefined;
-
-         // Scope has two homes: `materialization.scope` (canonical) and the
-         // manifest root (deprecated). The server writes BOTH, in sync, for as
-         // long as the root form is supported:
-         //
-         //  - writing only the root would author a manifest this build's loader
-         //    refuses, since a root that disagrees with an existing envelope is a
-         //    conflict (see resolvePackageScope);
-         //  - writing only the envelope would silently downgrade a package read
-         //    by an older publisher, which knows only the root and would default
-         //    to `package` — cross-version table reuse for a package declared
-         //    `version`.
-         //
-         // A caller can only express scope through the top-level `scope` field
-         // (the wire materialization block has no `scope`), so an envelope value
-         // already on disk is preserved rather than dropped by a materialization
-         // PATCH that says nothing about it.
-         const resolvedScope =
-            metadata.scope ??
-            (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
-            (existingManifest.scope as ApiPackage["scope"] | undefined);
-
-         // A materialization PATCH replaces the block wholesale, which is right
-         // for schedule and freshness — they are the policy the caller is
-         // setting, and they are mutually exclusive with each other.
-         // `queryMetadata` is orthogonal to both: a client setting a schedule
-         // has no reason to re-send the package's tags, and dropping them
-         // silently untags every statement the package's builds issue. So it is
-         // preserved on omission, like `scope` above.
-         //
-         // A NULL is preserve too, not a clear — one rule at both wire homes.
-         // Null used to clear here while null on the canonical field preserved,
-         // which protected a client that serializes unset fields as null only
-         // if it had already migrated off this home. The clear is an EMPTY bag,
-         // which is unambiguous and which no such client emits by accident.
-         const preservedQueryMetadata =
-            metadata.materialization !== undefined &&
-            metadata.materialization?.queryMetadata == null &&
-            onDiskMaterialization?.queryMetadata !== undefined
-               ? { queryMetadata: onDiskMaterialization.queryMetadata }
-               : {};
-
-         const materializationBase: Record<string, unknown> | undefined =
-            metadata.materialization !== undefined
-               ? { ...metadata.materialization, ...preservedQueryMetadata }
-               : onDiskMaterialization !== undefined
-                 ? { ...onDiskMaterialization }
-                 : undefined;
-         const materializationBlock =
-            resolvedScope !== undefined
-               ? { ...(materializationBase ?? {}), scope: resolvedScope }
-               : materializationBase;
-
-         // `queryMetadata` has two homes as well, migrating the opposite way to
-         // `scope`: the manifest ROOT is canonical and the envelope is
-         // deprecated. Same dual-write rule and the same reason — writing only
-         // the root would leave an older publisher, which reads only the
-         // envelope, serving untagged statements for a package that asked to be
-         // tagged.
-         //
-         // A caller can express tags at either wire home, so precedence follows
-         // the same order the manifest resolver uses: the canonical top-level
-         // field, then the deprecated block, then what is already on disk. A
-         // client that has not migrated keeps working; one that has is not
-         // overruled by a block it did not send.
-         //
-         // A null anywhere in this chain is "not provided", never a clear — the
-         // one rule at both homes (see preservedQueryMetadata). Clearing is an
-         // empty bag, which parses to "no tags" and reaches both homes like any
-         // other value.
-         const resolvedQueryMetadata =
-            metadata.queryMetadata ??
-            (materializationBlock as { queryMetadata?: unknown } | undefined)
-               ?.queryMetadata ??
-            (existingManifest as { queryMetadata?: unknown }).queryMetadata;
-
-         // Update with new metadata. `explores`/`queryableSources` are only
-         // overwritten when the caller explicitly provides them; otherwise the
-         // existing on-disk value is preserved via the spread (an undefined here
-         // must not erase it).
-         // A convention-derived surface is never written. A GET of an
-         // index.malloy-curated package echoes the surface the server derived,
-         // so an ordinary read-modify-write PATCH -- one that meant to change
-         // only the description -- hands that derived value back, and writing
-         // it would freeze a surface that tracks the file into a key that does
-         // not. The two behave identically until the file is renamed or
-         // replaced: the convention then follows it, while the frozen key names
-         // a model that no longer exists, and the package silently lists and
-         // serves nothing. Recognizable because it is the exact value the
-         // convention produces, in a manifest that declares no `explores` (a
-         // surface naming a file that is not there was already rejected
-         // upstream by formatInvalidExplores, so the file exists). Declaring it
-         // by hand buys nothing the convention does not already give.
-         const echoesDerivedSurface =
-            existingManifest.explores === undefined &&
-            Array.isArray(metadata.explores) &&
-            metadata.explores.length === 1 &&
-            metadata.explores[0] === INDEX_MODEL_NAME;
-
-         const updatedManifest = {
-            ...existingManifest,
-            name: metadata.name,
-            // Only when provided: an undefined here is dropped by
-            // JSON.stringify and so would erase the description on disk, which
-            // a PATCH that did not mention it never meant.
-            ...(metadata.description !== undefined
-               ? { description: metadata.description }
-               : {}),
-            ...(metadata.explores !== undefined && !echoesDerivedSurface
-               ? { explores: metadata.explores }
-               : {}),
-            ...(metadata.queryableSources !== undefined
-               ? { queryableSources: metadata.queryableSources }
-               : {}),
-            ...(metadata.manifestLocation !== undefined
-               ? { manifestLocation: metadata.manifestLocation }
-               : {}),
-            ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
-            ...(resolvedQueryMetadata !== undefined
-               ? { queryMetadata: resolvedQueryMetadata }
-               : {}),
-            // Mirrored into the deprecated home too, so a package tagged
-            // through the canonical field still reads as tagged on a publisher
-            // that only knows the envelope. Only when that home already exists
-            // or the caller wrote to it: mirroring unconditionally introduced a
-            // `materialization` block into a manifest that never had one, which
-            // is the shape being migrated AWAY from, appearing in a file whose
-            // author only ever used the canonical field.
-            ...(materializationBlock !== undefined
-               ? {
-                    materialization: {
-                       ...materializationBlock,
-                       ...(resolvedQueryMetadata !== undefined
-                          ? { queryMetadata: resolvedQueryMetadata }
-                          : {}),
-                    },
-                 }
-               : {}),
-         };
+         const updatedManifest = mergePackageManifest(
+            existingManifest,
+            metadata,
+         );
 
          // Write back to file
          await fs.promises.writeFile(
