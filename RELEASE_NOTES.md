@@ -29,6 +29,8 @@ The report builder drew its filter row in a different order from the report it e
 
 The builder's text no longer assumes the reader knows tiles run Malloy views. In the chart menu, "From the view" is now **Default**, with "As set in the model" under it. The reasons on greyed-out charts no longer say "view" either, and nor does the text for adding a tile. A host's tests that look up these labels or roles by name need the new strings: `Default`, `Search the model`, and the `From the model` listbox.
 
+A filter's menu now speaks of the report's default as well. "Open the report with this value" becomes **Make this the report's default**. Once it is, the menu shows a quiet **Report default** with a check. The button that clears it says **Use the model's default** for a model's filter, or **Use the filter's default** for one the report declares itself, since that one falls back to the default written in the report.
+
 ## [0.9.14] — ReportEditor can run its queries at a pinned version while the document stays unversioned
 
 `ReportEditor` takes a new optional `queryVersionId`. The `?versionId=` on `resourceUri` decided two things at once: the package version the builder queries, and the identity of the document being edited (its kept-draft key, its save target, the "pinned version" caption, and the pinned-package save path). A host whose package republishes on every change needs those apart. When it pinned the version, every republish orphaned the kept edits and Save went down the pinned path. When it didn't, Edit missed every result the reader had just cached at that version and re-ran every tile.
