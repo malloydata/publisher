@@ -26,6 +26,13 @@ builder as a one-column layout of text and query tiles, and a cell-format file
 converts to that layout on open. The sections are kept as the record of what was
 decided then._
 
+_Status, 2026-10-17: Malloyyo compatibility is no longer a constraint, so a
+grammar item no longer waits on an agreement there. Free placement and tile
+heights (G1) and layout on the tile entry (G3) have shipped in PR #1453:
+`row`, `col`, `colspan`, `rowspan` and `break` on a tile's entry, with
+drag-anywhere placement and a bottom-edge height grip in the builder. The
+road from here to best in class is §10, which supersedes §9's ordering._
+
 Status as of 2026-09-15: the builder is wired into the Console (PR #1158,
 branch `sdk/dashboard-document`) at `…/dashboards/<slug>/edit`, edits real
 package dashboards, saves into the browser's document storage, and exports the
@@ -140,9 +147,9 @@ layout that rewrites every tile at once, which was built and dropped by decision
 
 | Area                     | State of the art                                                                             | Builder today                                                                                                | Class                     |
 | ------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------- |
-| Placement                | Dense column grid; row, col, width, height per tile; free drag and drop                      | Flow grid; order and `colspan`; a drop into a row's empty end. No row index, no height.                      | Format (G1)               |
+| Placement                | Dense column grid; row, col, width, height per tile; free drag and drop                      | Shipped 2026-10-17 (#1453): `row`/`col`/`colspan`/`rowspan` on the entry; drag anywhere; push-down; heights  | Done (G1)                 |
 | Tabs                     | Tabbed dashboards                                                                            | None                                                                                                         | Format (G2)               |
-| Tile kinds               | Query, text, markdown, button, image, embedded content, filter tile, merged results          | Query tiles only; one markdown header per page                                                               | Format (G2)               |
+| Tile kinds               | Query, text, markdown, button, image, embedded content, filter tile, merged results          | Query and text tiles                                                                                         | Runtime (§10, item 9)     |
 | Query authoring          | Each tile owns an inline query edited in an explore UI                                       | A tile names an existing view, optionally refined by a filter                                                | Runtime, then Format (G3) |
 | Control types            | A dozen or so                                                                                | Six: search, select, multiselect, range slider, time range, date picker                                      | Runtime plus tags         |
 | Required, curated values | Present                                                                                      | None                                                                                                         | Runtime plus tags         |
@@ -602,6 +609,12 @@ proposal; the rest go together, since they interact.
 
 ### G1 · Positional layout and tile heights
 
+_Shipped 2026-10-17 (PR #1453), without waiting on a grammar agreement: the
+entry carries `row`, `col`, `colspan` and `rowspan`
+(`"overview -> kpis" { row=1 col=1 colspan=12 rowspan=3 }`); any `row` makes
+the report placed, on fixed 80px row tracks; the builder places on drag and
+pushes covered tiles down. The plan below is the record._
+
 _Extension:_ per-tile placement in `tiles=[…]`, as element properties the tag
 parser already accepts: `tiles=[revenue_trend { row=2 col=1 width=6 height=2 }]`,
 or a `row`/`height` pair over the existing `colspan`. _Who agrees:_ Malloyyo
@@ -635,6 +648,10 @@ management, and the notebook builder of §7 follows;
 the `.malloy` one and `.malloynb` is the import.
 
 ### G3 · Layout on the tile entry, not the view
+
+_Shipped 2026-10-17 (PR #1453) for layout: `colspan` and `break` on a query
+tile's entry win over the view's tags, and the builder writes layout there.
+`label`, `subtitle` and `borderless` still live on the view._
 
 _Extension:_ read `colspan`, `break`, `label`, `subtitle`, `borderless` (and G1's
 placement) off the tile entry as well as the view, entry winning. Additive and
@@ -709,6 +726,64 @@ splice approach no longer needs one.
    fixtures, then the renderer and the builder; the shared editor core can be
    generalized alongside.
 5. Renderer and parser issues upstream, when there is appetite to file them.
-6. When the grammar lands: placement, tabs, entry-level layout for query tiles
-   (§8). Text tiles, with `colspan` and `break` on their entry, do not wait
-   for it.
+6. Placement and entry-level layout for query tiles shipped 2026-10-17
+   (#1453) without waiting on the grammar; tabs are §10, item 6.
+
+## 10. Road to best in class (2026-10-17)
+
+Where reports go from here, now that placement and heights have shipped and
+the format is Publisher's own. Measured against the state of the art in report
+and dashboard builders, not against any one product. Sizes: **S** is a few
+days, **M** about a week, **L** several weeks. "Where" follows the
+OSS-first rule: a capability lives in open-source Publisher, and the
+reliability around it (schedules, guarantees, stored state) lives in Credible,
+with Publisher keeping the hooks and file format.
+
+### Viewers: exploring from the page
+
+| #   | Improvement                       | What it means                                                                                                                                                                                    | Where                                                      | Size | Status                                                        |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | ---- | ------------------------------------------------------------- |
+| 1   | Click any mark to filter the page | Clicking a bar, slice or state filters every other tile, with a chip naming what is applied and one click to clear it. Replaces drill-from-table-cells-only as the way to explore.               | Publisher: renderer click events, filter row, `# drill`    | M    | Not started; recommended next                                 |
+| 2   | Better drill                      | Drill from a total or any chart mark, not only a dimension cell; the rows behind it in a side panel; a way back to where you were.                                                               | Publisher                                                  | M    | Not started                                                   |
+| 3   | Better filters                    | Date presets ("last 30 days", "this quarter", compare to previous period), searchable multi-select, filters that narrow each other (Region limits State), curated value lists, required filters. | Publisher: `Given` schema and control tags (an API change) | M    | Not started                                                   |
+| 4   | Tile actions                      | Full-screen, download as CSV, PNG or PDF, show the query, explore from here, all on the tile's menu.                                                                                             | Publisher                                                  | S    | Not started (explore from here exists for hosts that wire it) |
+
+### Authors: fewer reasons to leave the builder
+
+| #   | Improvement                  | What it means                                                                                                                                                        | Where                                    | Size | Status                                                         |
+| --- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ---- | -------------------------------------------------------------- |
+| 5   | Edit a tile's query in place | Fields, filters and sort chosen in a panel inside the tile, written as the tile's own view, instead of editing a view in the model. Changes who can author a report. | Publisher: builder and splice writer     | L    | Not started; design now                                        |
+| 6   | Tabs                         | `tab=` on each entry, the open tab in the URL, add, rename and reorder tabs in the builder.                                                                          | Publisher: entry layout, reader, builder | M    | Not started                                                    |
+| 7   | Richer value tiles           | Change against the previous period, a trend line, a target with conditional colour on a `# big_value`.                                                               | Renderer, or Publisher's KPI cards       | M    | Not started                                                    |
+| 8   | Text that reads the data     | Titles and text tiles that show current values and filters ("Revenue for {Region}: $2.1M").                                                                          | Publisher: text tiles and headings       | M    | Not started                                                    |
+| 9   | More tile kinds              | Image, link button, divider or section header, and an embedded page from the package's `public/` folder.                                                             | Publisher: `kind=` on the entry          | M    | Not started                                                    |
+| 10  | Finish placement             | Arrow keys move a placed tile one cell at a time; a "pack upward" action to close gaps; per-tile phone heights.                                                      | Publisher: builder and reader            | S    | Placement shipped (#1453); these three refinements not started |
+
+### Reliability and delivery
+
+| #   | Improvement          | What it means                                                                                                                                       | Where                                                                                  | Size | Status                                                   |
+| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---- | -------------------------------------------------------- |
+| 11  | Faster first view    | Show each tile's last result while the new one runs, load tiles progressively, and say why a tile is slow or empty.                                 | Publisher for progressive loading and messages; Credible for result caching guarantees | M    | Not started (tiles already wait until near the viewport) |
+| 12  | Version history      | What changed, who changed it, roll back to an earlier version. The files make this cheap.                                                           | Publisher over the package's history; Credible for stored versions                     | M    | Not started                                              |
+| 13  | Sharing and delivery | Share links that keep the current filters, embed with fixed filters, scheduled email or Slack snapshots, alerts ("tell me when revenue drops 10%"). | Publisher for links and embed; Credible for schedules and alerts                       | L    | Not started                                              |
+| 14  | Comments             | Comments pinned to a tile or a data point.                                                                                                          | Credible for stored threads; Publisher for the anchors                                 | M    | Not started                                              |
+
+### Also open from earlier sections
+
+- **Renderer asks** (§8): more chart types, table sort by header, conditional
+  formatting, reference and trend lines, value labels, axis ranges, and a
+  `shape_map` that sizes from its box.
+- **Settings** (§3): timezone, auto-refresh and download defaults, which ride
+  on the same `Given` and artifact-tag changes as item 3.
+- **Malloyyo-compatibility code**: removable now that it is not a constraint;
+  cleanup with no user-visible change.
+
+### Order
+
+1. Click a mark to filter the page (1), since it touches the renderer, the
+   filter row and drill, and every viewer notices it.
+2. Tabs (6) and richer value tiles (7): short and very visible.
+3. Better filters (3) and tile actions (4).
+4. Edit a tile's query in place (5): design alongside 1–3, build after.
+5. The rest in the order their users ask for them, with delivery (13) and
+   comments (14) planned with Credible.
