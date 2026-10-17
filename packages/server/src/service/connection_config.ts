@@ -350,7 +350,9 @@ type ServiceAccountKey = {
    [key: string]: unknown;
 };
 
-function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
+export function parseServiceAccountKey(
+   json?: string,
+): ServiceAccountKey | undefined {
    if (!json) return undefined;
    const keyData = JSON.parse(json) as ServiceAccountKey;
    const requiredFields = ["type", "project_id", "private_key", "client_email"];

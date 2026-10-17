@@ -74,6 +74,7 @@ import {
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
+   parseServiceAccountKey,
    postgresStatementTimeoutMs,
    PROXIED_SSLMODES,
 } from "./connection_config";
@@ -457,31 +458,12 @@ function parseBigQueryServiceAccount(
    name: string | undefined,
    config: components["schemas"]["BigqueryConnection"],
 ): BigQueryServiceAccount {
-   if (config.serviceAccountKeyJson) {
-      const keyData = JSON.parse(config.serviceAccountKeyJson as string);
-
-      const requiredFields = [
-         "type",
-         "project_id",
-         "private_key",
-         "client_email",
-      ];
-      for (const field of requiredFields) {
-         if (!keyData[field]) {
-            throw new Error(
-               `Invalid service account key: missing "${field}" field`,
-            );
-         }
-      }
-
-      if (keyData.type !== "service_account") {
-         throw new Error('Invalid service account key: incorrect "type" field');
-      }
-
+   const keyData = parseServiceAccountKey(config.serviceAccountKeyJson);
+   if (keyData) {
       return {
-         projectId: keyData.project_id || config.defaultProjectId,
+         projectId: (keyData.project_id || config.defaultProjectId) as string,
          serviceAccountJson: config.serviceAccountKeyJson as string,
-         clientEmail: keyData.client_email,
+         clientEmail: keyData.client_email as string,
       };
    }
    throw new Error(
