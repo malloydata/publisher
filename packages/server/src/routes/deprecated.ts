@@ -49,6 +49,7 @@ export function registerDeprecatedRoutes(
          controller.listDashboards(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -60,6 +61,7 @@ export function registerDeprecatedRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.dashboardName,
+            req.query.versionId,
          ),
       ),
    );
@@ -70,6 +72,7 @@ export function registerDeprecatedRoutes(
          controller.listNotebooks(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -112,6 +115,7 @@ export function registerDeprecatedRoutes(
             filterParams,
             bypass.value,
             givens,
+            req.query.versionId,
          );
          setFilterDeprecationHeaders(res, {
             filterParams,
@@ -128,6 +132,7 @@ export function registerDeprecatedRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
+            req.query.versionId,
          ),
       ),
    );

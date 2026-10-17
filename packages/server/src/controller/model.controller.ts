@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { ModelNotFoundError, NotQueryableError } from "../errors";
+import {
+   ModelNotFoundError,
+   NotQueryableError,
+   PackageVersionError,
+} from "../errors";
 import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
 
@@ -16,6 +20,8 @@ type ApiCompiledModel = components["schemas"]["CompiledModel"];
  */
 export interface ModelReadOptions {
    includeHiddenFilesAndSources?: boolean;
+   /** The published version to read; absent, empty or null means `latest`. */
+   versionId?: unknown;
 }
 
 export class ModelController {
@@ -34,7 +40,9 @@ export class ModelController {
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: options.versionId,
+      });
       return p.listModels(options);
    }
 
@@ -51,7 +59,9 @@ export class ModelController {
             environmentName,
             false,
          );
-         const p = await environment.getPackage(packageName, false);
+         const p = await environment.getPackage(packageName, false, {
+            versionId: options.versionId,
+         });
          const model = p.getModel(modelPath);
          if (!model) {
             throw new ModelNotFoundError(`${modelPath} does not exist`);
@@ -94,7 +104,8 @@ export class ModelController {
          // Re-throw these as-is, so they keep their 404.
          if (
             error instanceof ModelNotFoundError ||
-            error instanceof NotQueryableError
+            error instanceof NotQueryableError ||
+            error instanceof PackageVersionError
          ) {
             throw error;
          }

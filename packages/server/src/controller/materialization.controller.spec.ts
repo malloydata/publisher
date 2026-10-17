@@ -462,3 +462,46 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toEqual({ runContext: { trigger: "publish", runId: "run-42" } });
    });
 });
+
+describe("MaterializationController responses", () => {
+   // The record keeps the version a run built; the wire Materialization has
+   // no `version` field, so every route leaves it off and the version goes
+   // out in metadata.versionId. With versioning off the record's version is
+   // null, and the response must still match the schema.
+   const run = (version: string | null) => ({
+      id: "m1",
+      environmentId: "env-1",
+      packageName: "pkg",
+      status: "MANIFEST_FILE_READY",
+      manifest: null,
+      metadata: version ? { versionId: version, scope: "version" } : {},
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      version,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+   });
+
+   it("never answers with the record's version, on any route", async () => {
+      for (const version of ["1.0.0", null]) {
+         const service = {
+            createMaterialization: sinon.stub().resolves(run(version)),
+            stopMaterialization: sinon.stub().resolves(run(version)),
+            getMaterialization: sinon.stub().resolves(run(version)),
+            listMaterializations: sinon.stub().resolves([run(version)]),
+         } as unknown as MaterializationService;
+         const controller = new MaterializationController(service);
+         const answers = [
+            await controller.createMaterialization("env", "pkg", {}),
+            await controller.stopMaterialization("env", "pkg", "m1"),
+            await controller.getMaterialization("env", "pkg", "m1"),
+            ...(await controller.listMaterializations("env", "pkg")),
+         ];
+         for (const answer of answers) {
+            expect("version" in answer).toBe(false);
+            expect(answer.metadata).toEqual(run(version).metadata);
+         }
+      }
+   });
+});

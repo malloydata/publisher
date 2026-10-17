@@ -1,17 +1,35 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as os from "os";
 import sinon from "sinon";
 
 import type { components } from "../api";
 import {
    BadRequestError,
    PackageAdmissionRefusedError,
+   PackageVersionError,
    ServiceUnavailableError,
 } from "../errors";
+import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PackageController } from "./package.controller";
+
+const savedVersioning = process.env.PUBLISHER_PACKAGE_VERSIONING;
+
+/** Turn package versioning on for this test, as a versioned publish needs. */
+function versioningOn(): void {
+   process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+}
+
+afterEach(() => {
+   if (savedVersioning === undefined) {
+      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+   } else {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = savedVersioning;
+   }
+});
 
 // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see RELEASE_NOTES deprecations).
 describe("deprecated: explores — PackageController.addPackage validation", () => {
@@ -35,11 +53,17 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
-      const environment = { addPackage, unloadPackage, deletePackage };
+      const environment = {
+         getVersionService: () => null,
+         addPackage,
+         unloadPackage,
+         deletePackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -56,6 +80,57 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
 
       expect(unloadPackage.calledOnceWith("pkg")).toBe(true);
       expect(deletePackage.called).toBe(false);
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("location: a published version runs the publish checks before it is recorded, not as a controller delete", async () => {
+      // A publish from a location is a published version: its tree was just
+      // downloaded, and the version service runs the checks before anything
+      // is recorded, so a refusal leaves nothing to delete or unload.
+      versioningOn();
+      const invalidMsg =
+         "Invalid explores entry 'missing.malloy' in publisher.json: file not found";
+      const mockPackage = {
+         formatInvalidExplores: () => invalidMsg,
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const versions = versionsPublishing(mockPackage);
+      const unloadPackage = sinon.stub().resolves(undefined);
+      const deletePackage = sinon.stub().resolves(undefined);
+      const environment = {
+         getVersionService: () => versions,
+         unloadPackage,
+         deletePackage,
+      };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      await expect(
+         controller.addPackage("env", {
+            name: "pkg",
+            description: "test",
+            location: "gs://bucket/pkg.zip",
+            explores: ["missing.malloy"],
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+
+      expect(versions.publish.calledOnce).toBe(true);
+      expect(typeof versions.publish.firstCall.args[2].validate).toBe(
+         "function",
+      );
+      expect(deletePackage.called).toBe(false);
+      expect(unloadPackage.called).toBe(false);
       expect(addPackageToDatabase.called).toBe(false);
    });
 
@@ -89,7 +164,12 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          );
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
-      const environment = { installPackage, unloadPackage, deletePackage };
+      const environment = {
+         getVersionService: () => null,
+         installPackage,
+         unloadPackage,
+         deletePackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -125,10 +205,13 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
-      const getEnvironment = sinon.stub().resolves({ addPackage });
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ addPackage, getVersionService: () => null });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -167,11 +250,16 @@ describe("PackageController.addPackage persistence policy validation", () => {
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
-      const environment = { addPackage, unloadPackage };
+      const environment = {
+         getVersionService: () => null,
+         addPackage,
+         unloadPackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -183,6 +271,43 @@ describe("PackageController.addPackage persistence policy validation", () => {
       ).rejects.toThrow(cronMsg);
 
       expect(unloadPackage.calledOnceWith("pkg")).toBe(true);
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("location path: the persistence-policy gate refuses the version before it is recorded", async () => {
+      versioningOn();
+      const cronMsg =
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const environment = {
+         getVersionService: () => versionsPublishing(mockPackage),
+      };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      await expect(
+         controller.addPackage("env", {
+            name: "pkg",
+            description: "test",
+            location: "gs://bucket/pkg.zip",
+         }),
+      ).rejects.toThrow(cronMsg);
+
       expect(addPackageToDatabase.called).toBe(false);
    });
 
@@ -210,7 +335,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
                return mockPackage;
             },
          );
-      const environment = { installPackage };
+      const environment = { getVersionService: () => null, installPackage };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -257,12 +382,15 @@ describe("PackageController.addPackage incremental policy validation", () => {
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
-      const getEnvironment = sinon
-         .stub()
-         .resolves({ addPackage, unloadPackage });
+      const getEnvironment = sinon.stub().resolves({
+         addPackage,
+         unloadPackage,
+         getVersionService: () => null,
+      });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -291,10 +419,13 @@ describe("PackageController.addPackage incremental policy validation", () => {
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
-      const getEnvironment = sinon.stub().resolves({ addPackage });
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ addPackage, getVersionService: () => null });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -343,6 +474,7 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
          );
       const updatePackage = sinon.stub().resolves(mockPackage);
       const environment = {
+         getVersionService: () => null,
          peekPackage: () => undefined,
          awaitPackageLoads: async () => {},
          installPackage,
@@ -352,6 +484,7 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -396,6 +529,7 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const _package = { getPackageMetadata: () => metadata };
       const getPackage = sinon.stub().resolves(_package);
       const environment = {
+         getVersionService: () => null,
          getPackage,
          describePackageStatus: () => ({ serving: true, loading: false }),
       };
@@ -466,10 +600,13 @@ describe("PackageController.updatePackage reinstall decision", () => {
    };
 
    function controllerWith(environment: object) {
-      const getEnvironment = sinon.stub().resolves(environment);
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ getVersionService: () => null, ...environment });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -691,7 +828,11 @@ describe("PackageController.reloadPackage", () => {
       const getPackage = sinon.stub().resolves(cached);
       const installPackage = sinon.stub().resolves(reinstalled);
       const environmentStore = {
-         getEnvironment: sinon.stub().resolves({ getPackage, installPackage }),
+         getEnvironment: sinon.stub().resolves({
+            getVersionService: () => null,
+            getPackage,
+            installPackage,
+         }),
       } as unknown as EnvironmentStore;
       const controller = new PackageController(environmentStore);
       sinon
@@ -732,11 +873,46 @@ describe("PackageController.addPackage manifestLocation", () => {
    function addPackageController(environment: object) {
       const environmentStore = {
          publisherConfigIsFrozen: false,
-         getEnvironment: sinon.stub().resolves(environment),
+         serverRootPath: os.tmpdir(),
+         getEnvironment: sinon
+            .stub()
+            .resolves({ getVersionService: () => null, ...environment }),
          addPackageToDatabase: sinon.stub().resolves(undefined),
       } as unknown as EnvironmentStore;
       return new PackageController(environmentStore);
    }
+
+   it("hands the publish the body's location and manifestLocation", async () => {
+      // The downloaded tree's publisher.json does not carry the manifest the
+      // orchestrator computed, so the body is the only place it arrives; the
+      // version is recorded bound to it. A null serves live.
+      versioningOn();
+      const versions = versionsPublishing(installedPackage);
+      const controller = addPackageController({
+         getVersionService: () => versions,
+      });
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+         description: "Sales",
+      });
+      expect(versions.publish.firstCall.args[0]).toBe("pkg");
+      expect(versions.publish.firstCall.args[2]).toMatchObject({
+         sourceLocation: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+         description: "Sales",
+         promotion: "on-publish",
+      });
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: null,
+      });
+      expect(versions.publish.secondCall.args[2].manifestLocation).toBeNull();
+   });
 
    it("a null manifestLocation is not forwarded into the install", async () => {
       // A fresh install serves live already. Forwarded, a null would take the
@@ -753,6 +929,41 @@ describe("PackageController.addPackage manifestLocation", () => {
 
       expect(installPackage.firstCall.args[3]).toEqual({
          update: { location: "gs://bucket/pkg___1.0.0.zip" },
+      });
+   });
+
+   it("a publish with a location binds the body's manifestLocation as part of the install", async () => {
+      // The downloaded tree's publisher.json does not carry the manifest the
+      // orchestrator computed, so the body is the only place it arrives. Left
+      // unapplied, the package came up unbound and was fully reloaded by the
+      // next drift check.
+      const installPackage = sinon.stub().resolves({
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      });
+      const environment = { getVersionService: () => null, installPackage };
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment: sinon.stub().resolves(environment),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: {
+            location: "gs://bucket/pkg___1.0.0.zip",
+            manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+         },
       });
    });
 
@@ -811,38 +1022,307 @@ describe("PackageController.addPackage manifestLocation", () => {
       expect(recordPackageAddFailure.calledTwice).toBe(true);
    });
 
-   it("a publish with a location binds the body's manifestLocation as part of the install", async () => {
-      // The downloaded tree's publisher.json does not carry the manifest the
-      // orchestrator computed, so the body is the only place it arrives. Left
-      // unapplied, the package came up unbound and was fully reloaded by the
-      // next drift check.
-      const installPackage = sinon.stub().resolves({
-         formatInvalidExplores: () => "",
-         formatInvalidPersistencePolicy: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+   it("a versioned publish: an admission refusal is answered, not recorded as a load failure", async () => {
+      // The refusal is this request's answer; the caller places the package
+      // elsewhere. Recorded, it would sit in /status's load errors until this
+      // server next loaded that package, which it may never do. A failure of
+      // the server's own (any other 5xx) is still recorded.
+      versioningOn();
+      const recordPackageAddFailure = sinon.stub();
+      const refusing = addPackageController({
+         getVersionService: () =>
+            versionsPublishing(
+               installedPackage,
+               new PackageAdmissionRefusedError("under memory pressure"),
+            ),
+         recordPackageAddFailure,
       });
-      const environment = { installPackage };
-      const environmentStore = {
-         publisherConfigIsFrozen: false,
-         getEnvironment: sinon.stub().resolves(environment),
-         addPackageToDatabase: sinon.stub().resolves(undefined),
-      } as unknown as EnvironmentStore;
-      const controller = new PackageController(environmentStore);
-
-      await controller.addPackage("env", {
-         name: "pkg",
-         location: "gs://bucket/pkg___1.0.0.zip",
-         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
-      });
-
-      expect(installPackage.calledOnce).toBe(true);
-      expect(installPackage.firstCall.args[3]).toEqual({
-         update: {
+      await expect(
+         refusing.addPackage("env", {
+            name: "pkg",
             location: "gs://bucket/pkg___1.0.0.zip",
-            manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
-         },
+         }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      expect(recordPackageAddFailure.called).toBe(false);
+
+      // Any other 5xx is the server's own problem and is recorded, including
+      // a worker-pool failure that is also a ServiceUnavailableError: its
+      // message carries the cause (an errno) an operator has to fix.
+      const failing = addPackageController({
+         getVersionService: () =>
+            versionsPublishing(
+               installedPackage,
+               new Error("bucket unreachable"),
+            ),
+         recordPackageAddFailure,
       });
+      await expect(
+         failing.addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+         }),
+      ).rejects.toThrow("bucket unreachable");
+      expect(recordPackageAddFailure.calledOnce).toBe(true);
+
+      const workerPool = addPackageController({
+         getVersionService: () =>
+            versionsPublishing(
+               installedPackage,
+               new ServiceUnavailableError(
+                  "Package-load worker pool unavailable: EACCES: permission denied",
+               ),
+            ),
+         recordPackageAddFailure,
+      });
+      await expect(
+         workerPool.addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+         }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      expect(recordPackageAddFailure.calledTwice).toBe(true);
    });
 });
+
+describe("PackageController.updatePackage on a versioned package", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   function versionedPatchController() {
+      const loaded = { name: "pkg" };
+      const versions = {
+         isVersioned: async () => true,
+         latestOf: async () => "2.0.0",
+         getVersion: async () => ({
+            sourceLocation: "gs://bucket/pkg-2.0.0.zip",
+         }),
+         setManifest: sinon.stub().resolves(loaded),
+         setPackageDescription: sinon.stub().resolves(undefined),
+      };
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
+         getEnvironment: sinon.stub().resolves({
+            getVersionService: () => versions,
+            getPackage: sinon.stub().resolves(loaded),
+            describePackage: sinon
+               .stub()
+               .resolves({ name: "pkg", versionId: "2.0.0" }),
+         }),
+      } as unknown as EnvironmentStore;
+      return { controller: new PackageController(environmentStore), versions };
+   }
+
+   it("rebinds latest to a manifest URI, and leaves the binding alone on a null or empty one", async () => {
+      // A generated client serializes a field it was never given as null, so
+      // a null is unset here, as it is on a publish. Read as a clear, it
+      // would turn latest back to serving live with a 200. Clearing is
+      // PUT .../versions/{version}/manifest's.
+      const { controller, versions } = versionedPatchController();
+      for (const manifestLocation of [null, ""]) {
+         const patched = await controller.updatePackage("env", "pkg", {
+            name: null as unknown as string,
+            location: null as unknown as string,
+            manifestLocation,
+            description: null as unknown as string,
+         });
+         expect(patched).toMatchObject({ versionId: "2.0.0" });
+      }
+      expect(versions.setManifest.called).toBe(false);
+
+      await controller.updatePackage("env", "pkg", {
+         manifestLocation: "gs://bucket/pkg-2.0.0.manifest.json",
+      });
+      expect(versions.setManifest.firstCall.args).toEqual([
+         "pkg",
+         "2.0.0",
+         "gs://bucket/pkg-2.0.0.manifest.json",
+      ]);
+   });
+});
+
+describe("PackageController.addPackage with package versioning off or on", () => {
+   const installedPackage = {
+      formatInvalidExplores: () => "",
+      formatInvalidPersistencePolicy: () => "",
+      formatInvalidIncrementalPolicy: () => "",
+      formatInvalidPreaggregatePolicy: () => "",
+      formatPersistenceCollisionRejections: () => "",
+   };
+
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   function controllerWith(versions: object, installPackage: sinon.SinonStub) {
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
+         getEnvironment: sinon.stub().resolves({
+            getVersionService: () => versions,
+            installPackage,
+         }),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      return new PackageController(environmentStore);
+   }
+
+   // logger.warn may already be a spy another spec left in place (health.spec
+   // never restores its own), and spying on it again returns that spy with the
+   // calls it holds; clear them so a test counts only its own.
+   const spyOnWarn = () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      warn.mockClear();
+      return warn;
+   };
+
+   const offWarnings = (warn: { mock: { calls: unknown } }) =>
+      (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+         String(message).includes("Package versioning is off"),
+      );
+
+   it("off (the default): installs in place as before, whatever the tree declares, and warns", async () => {
+      // What every publish from a location did before versions, with the
+      // install's own arguments. The version service is never asked: off, a
+      // publisher.json's version is not read.
+      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      const versions = versionsPublishing(installedPackage);
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const warn = spyOnWarn();
+      try {
+         await controllerWith(versions, installPackage).addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg.zip",
+            manifestLocation: null,
+         });
+
+         expect(installPackage.calledOnce).toBe(true);
+         expect(installPackage.firstCall.args[0]).toBe("pkg");
+         expect(installPackage.firstCall.args[3]).toEqual({
+            update: { location: "gs://bucket/pkg.zip" },
+         });
+         expect(versions.publish.called).toBe(false);
+         const warned = offWarnings(warn);
+         expect(warned).toHaveLength(1);
+         expect(String(warned[0][0])).toContain("package pkg");
+         expect(String(warned[0][0])).toContain(
+            "PUBLISHER_PACKAGE_VERSIONING=on",
+         );
+         expect(warned[0][1]).toEqual({ packageName: "pkg" });
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("off: warns once per package, not on every republish", async () => {
+      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      const controller = controllerWith(
+         versionsPublishing(installedPackage),
+         sinon.stub().resolves(installedPackage),
+      );
+      const warn = spyOnWarn();
+      try {
+         for (const name of ["pkg", "pkg", "other", "pkg"]) {
+            await controller.addPackage("env", {
+               name,
+               location: `gs://bucket/${name}.zip`,
+            });
+         }
+         expect(
+            offWarnings(warn).map(
+               ([, meta]) => (meta as { packageName: string }).packageName,
+            ),
+         ).toEqual(["pkg", "other"]);
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("off: refuses to replace a package that has published versions, naming the flag", async () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      const versions = {
+         ...versionsPublishing(installedPackage),
+         isVersioned: async () => true,
+      };
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const refused = await controllerWith(versions, installPackage)
+         .addPackage("env", { name: "pkg", location: "/srv/pkg" })
+         .then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+      expect(refused).toBeInstanceOf(PackageVersionError);
+      expect((refused as PackageVersionError).reason).toBe(
+         "PACKAGE_IS_VERSIONED",
+      );
+      expect((refused as Error).message).toContain(
+         "PUBLISHER_PACKAGE_VERSIONING=on",
+      );
+      expect(installPackage.called).toBe(false);
+      expect(versions.publish.called).toBe(false);
+   });
+
+   it("on: publishes the tree as a version, never installing in place or warning", async () => {
+      versioningOn();
+      const versions = versionsPublishing(installedPackage);
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const warn = spyOnWarn();
+      try {
+         await controllerWith(versions, installPackage).addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg.zip",
+         });
+         expect(versions.publish.calledOnce).toBe(true);
+         expect(installPackage.called).toBe(false);
+         expect(offWarnings(warn)).toHaveLength(0);
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("on: a tree that declares no version is refused with the version service's 400", async () => {
+      versioningOn();
+      const versions = versionsPublishing(
+         installedPackage,
+         new PackageVersionError("MANIFEST_VERSION_MISSING", "no version"),
+      );
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const refused = await controllerWith(versions, installPackage)
+         .addPackage("env", { name: "pkg", location: "gs://bucket/pkg.zip" })
+         .then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+      expect((refused as PackageVersionError).reason).toBe(
+         "MANIFEST_VERSION_MISSING",
+      );
+      expect(installPackage.called).toBe(false);
+   });
+});
+
+/**
+ * A version service whose publish fails with `failWith` (as a download, or a
+ * tree with no version, does), or otherwise runs the publish checks it is
+ * handed on `loaded`, as the real one does before it records anything, and
+ * answers with it.
+ */
+function versionsPublishing(loaded: unknown, failWith?: Error) {
+   return {
+      isVersioned: async () => false,
+      publish: sinon
+         .stub()
+         .callsFake(
+            async (
+               _packageName: string,
+               _downloader: unknown,
+               options: { validate?: (pkg: unknown) => string | undefined },
+            ) => {
+               if (failWith) throw failWith;
+               const msg = options.validate?.(loaded);
+               if (msg) throw new BadRequestError(msg);
+               return { loaded, version: {}, created: true };
+            },
+         ),
+   };
+}
