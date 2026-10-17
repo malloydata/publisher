@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { setSpan, writtenSpan } from "../Report/layoutRules";
+import { withSpan, writtenSpan } from "../Report/layoutRules";
 import { addTileToDocument } from "./addTileToDocument";
 import { openDocument, queryTile, spliced } from "./testing/fixtures";
 
@@ -27,17 +27,17 @@ const colspanLines = (text: string) =>
 
 describe("a tile's width, as the builder writes it", () => {
    it("takes the colspan line away when a width is set back to one column of two", async () => {
-      const out = await spliced(FILE(undefined, "  # colspan=2\n"), (d) =>
-         setSpan(queryTile(d, 0), 1, 2),
-      );
+      const out = await spliced(FILE(undefined, "  # colspan=2\n"), (d) => {
+         d.tiles[0] = withSpan(queryTile(d, 0), 1, 2);
+      });
       expect(colspanLines(out)).toEqual([]);
       expect(queryTile(await openDocument(out), 0).colspan).toBeUndefined();
    });
 
    it("keeps an explicit one column where a tile with no width draws wider", async () => {
-      const out = await spliced(FILE(4, "  # colspan=2\n"), (d) =>
-         setSpan(queryTile(d, 0), 1, 4),
-      );
+      const out = await spliced(FILE(4, "  # colspan=2\n"), (d) => {
+         d.tiles[0] = withSpan(queryTile(d, 0), 1, 4);
+      });
       expect(colspanLines(out)).toEqual(["  # colspan=1"]);
    });
 
