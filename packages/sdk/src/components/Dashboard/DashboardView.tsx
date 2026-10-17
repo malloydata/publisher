@@ -27,7 +27,9 @@ import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import {
    DashboardGrid,
    GRID_GAP_PX,
+   isPlaced,
    MIN_TILE_PX,
+   PLACED_DEFAULT_ROWSPAN,
    tileHeightPx,
 } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
@@ -284,6 +286,7 @@ export function DashboardView({
 
    const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
+   const placed = isPlaced(tiles);
 
    return (
       <ReportPage
@@ -331,7 +334,7 @@ export function DashboardView({
                      // the tile below it.
                      <Box
                         sx={
-                           tile.rowspan !== undefined
+                           tile.rowspan !== undefined || placed
                               ? { minHeight: 0, overflow: "auto" }
                               : undefined
                         }
@@ -357,8 +360,10 @@ export function DashboardView({
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={
-                           tile.rowspan !== undefined
-                              ? tileHeightPx(tile.rowspan)
+                           tile.rowspan !== undefined || placed
+                              ? tileHeightPx(
+                                   tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
+                                )
                               : (height ?? TILE_MAX_HEIGHT)
                         }
                         maxResultSize={maxResultSize}

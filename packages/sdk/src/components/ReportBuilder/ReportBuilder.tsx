@@ -4,8 +4,12 @@
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { nudgedSpan, useDefaultTileSpan } from "../Dashboard/DashboardGrid";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+   isPlaced,
+   nudgedSpan,
+   useDefaultTileSpan,
+} from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { SavesTo } from "./documentSession";
 import type { ReportEventHandler } from "../Report/telemetry";
@@ -35,6 +39,7 @@ import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
+import { settle } from "./placement";
 import { useTileHeight } from "./useTileHeight";
 import { useTileResize } from "./useTileResize";
 import { layoutRules } from "../Report/layoutRules";
@@ -293,6 +298,7 @@ export function ReportBuilder({
       ?.split("/")
       .at(-1)
       ?.replace(/\.malloy$/, "");
+   // On a grid a move is free placement; on a linear report it reorders.
    const reorder = useTileReorder({
       tiles: editor.document.tiles,
       commit: (next) =>
@@ -300,7 +306,16 @@ export function ReportBuilder({
             draft.tiles = next;
          }),
       onLanded: selectTile,
+      ...(rules.widths ? { placement: { columns, gridBox } } : {}),
    });
+   // After a tile on a placed report changes size, whatever it now covers
+   // is pushed down; a report that flows has nothing to settle.
+   const placesTiles = rules.widths;
+   const place = useCallback(
+      (tiles: DashboardDocument["tiles"], index: number) =>
+         placesTiles && isPlaced(tiles) ? settle(tiles, columns, index) : tiles,
+      [placesTiles, columns],
+   );
    const { dragging } = reorder;
    // Dragging a tile's right edge sets its width, written once on release.
    // A tile with no `# colspan` is drawn as the reader draws it, at least
@@ -326,6 +341,7 @@ export function ReportBuilder({
          editor.update((draft) => {
             const tile = draft.tiles[index];
             if (tile) tile.colspan = span;
+            draft.tiles = place(draft.tiles, index);
          }),
    });
    // Dragging a tile's bottom edge sets its height in rows, the same way.
@@ -339,6 +355,7 @@ export function ReportBuilder({
             if (!tile) return;
             if (rows === undefined) delete tile.rowspan;
             else tile.rowspan = rows;
+            draft.tiles = place(draft.tiles, index);
          }),
    });
    const tiles = useTileEditing({
@@ -393,11 +410,13 @@ export function ReportBuilder({
             if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
                draft.tiles[selected].colspan = span;
+               draft.tiles = place(draft.tiles, selected);
             });
          },
       }),
       [
          defaultSpan,
+         place,
          editor,
          menu,
          filterDialog,
@@ -630,6 +649,7 @@ export function ReportBuilder({
                   reorder={reorder}
                   resizing={resizing}
                   sizing={sizing}
+                  place={place}
                   gridBox={gridBox}
                   defaultSpan={defaultSpan}
                   rules={rules}

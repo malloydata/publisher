@@ -86,7 +86,8 @@ is a Console convenience.
   breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
   status, undo and redo, an **Add** menu (a tile, text or a filter), and
   **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
-  report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
+  report, drag a tile by its heading or its padding to place it in any cell (a tile it lands on moves
+  down), drag the grip on its right edge to set
   its width and the one on its bottom edge to set its height in rows (a label says what it will snap to;
   double-click the bottom grip to fit the result again), and set its chart and clickable cells, or duplicate it,
   from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to

@@ -645,9 +645,10 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
       expect(itemStyleOf("by_cat")).not.toContain("height:");
       fireEvent.keyDown(edge(), { key: "ArrowDown" });
-      expect(edge().getAttribute("aria-valuetext")).toBe("3 rows tall");
-      // Three 80px rows and the two gaps between them.
-      expect(itemStyleOf("by_cat")).toContain("height: 272px");
+      // One row past the fewest a chart is offered (3).
+      expect(edge().getAttribute("aria-valuetext")).toBe("4 rows tall");
+      // Four 80px rows and the three gaps between them.
+      expect(itemStyleOf("by_cat")).toContain("height: 368px");
       fireEvent.keyDown(edge(), { key: "End" });
       expect(edge().getAttribute("aria-valuenow")).toBe("16");
       fireEvent.keyDown(edge(), { key: "Delete" });

@@ -1113,6 +1113,65 @@ describe("service/report_manifest entry layout", () => {
       ]);
    });
 
+   it("reads where a placed tile sits", () => {
+      const manifest = build(
+         withViews(
+            '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=1 colspan=6 }, "orders -> by_month" { row=3 col=7 colspan=6 rowspan=4 }] } dashboard { columns=12 }\n',
+            { "orders -> kpi": [], "orders -> by_month": [] },
+         ),
+      );
+      expect(manifest?.tiles).toEqual([
+         {
+            kind: "query",
+            query: "orders -> kpi",
+            givenNames: [],
+            colspan: 6,
+            row: 1,
+            col: 1,
+         },
+         {
+            kind: "query",
+            query: "orders -> by_month",
+            givenNames: [],
+            colspan: 6,
+            rowspan: 4,
+            row: 3,
+            col: 7,
+         },
+      ]);
+   });
+
+   it("says when placed tiles cover each other, counting a missing rowspan as the default", () => {
+      // kpi takes rows 1-5 by default, so by_month at row 5 covers its last row.
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=1 colspan=6 }, "orders -> by_month" { row=5 col=4 colspan=6 }] } dashboard { columns=12 }\n',
+               { "orders -> kpi": [], "orders -> by_month": [] },
+            ),
+         ),
+      ).toEqual([expect.stringContaining("placed over each other")]);
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=1 colspan=6 }, "orders -> by_month" { row=6 col=4 colspan=6 }] } dashboard { columns=12 }\n',
+               { "orders -> kpi": [], "orders -> by_month": [] },
+            ),
+         ),
+      ).toEqual([]);
+   });
+
+   it("says when a placed tile runs past the grid's right edge", () => {
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=9 colspan=6 }] } dashboard { columns=12 }\n',
+               { "orders -> kpi": [] },
+            ),
+         ),
+      ).toEqual([expect.stringContaining("runs past the 12 columns")]);
+   });
+
    it("checks the entry's width against the grid, not the view's it replaces", () => {
       expect(
          lint(
@@ -2176,7 +2235,9 @@ describe("service/report_manifest grid width and hostile literals", () => {
          finding.includes("carries `label`"),
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
-      expect(carried).toContain("reads only `colspan`, `break` and `rowspan`");
+      expect(carried).toContain(
+         "reads only `row`, `col`, `colspan`, `rowspan` and `break`",
+      );
       expect(carried).toContain("# label");
       // Alongside, not instead of: `intro` is also a tile expression that does
       // not resolve, and the author needs both halves. Saying only that the

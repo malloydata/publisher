@@ -5,7 +5,12 @@ import { DragDropProvider } from "@dnd-kit/react";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, Button } from "@mui/material";
 import type { ReactNode, RefObject } from "react";
-import { DashboardGrid, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
+import {
+   DashboardGrid,
+   GRID_GAP_PX,
+   isPlaced,
+   PLACED_DEFAULT_ROWSPAN,
+} from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { LayoutRules } from "../Report/layoutRules";
 import {
@@ -17,6 +22,7 @@ import {
 } from "./document";
 import { InlineText } from "./InlineText";
 import { gapId, tileEntry, withGaps } from "./layout";
+import { minRowsOf, rowsOf } from "./placement";
 import { builderSensors } from "./sortable";
 import { TextTileBody } from "./TextTileBody";
 import {
@@ -42,6 +48,7 @@ export function BuilderGrid({
    reorder,
    resizing,
    sizing,
+   place = (tiles) => tiles,
    gridBox,
    defaultSpan = 1,
    rules,
@@ -62,6 +69,11 @@ export function BuilderGrid({
    resizing: ReturnType<typeof useTileResize>;
    /** The bottom edges: a tile's height, dragged in whole rows. */
    sizing?: ReturnType<typeof useTileHeight>;
+   /**
+    * The tiles after the one at `index` changed size: on a placed report,
+    * whatever it now covers pushed down. Identity elsewhere.
+    */
+   place?: (tiles: DashboardTile[], index: number) => DashboardTile[];
    gridBox: RefObject<HTMLDivElement | null>;
    /** The span a tile with no `# colspan` is drawn at: as wide as the reader draws it. */
    defaultSpan?: number;
@@ -87,7 +99,8 @@ export function BuilderGrid({
       chrome?: TileChrome,
    ) => ReactNode;
 }) {
-   const { dragging, preview, onDragStart, onDragOver, onDragEnd } = reorder;
+   const { dragging, preview, onDragStart, onDragMove, onDragOver, onDragEnd } =
+      reorder;
    const { columns } = rules;
    const { resize, startResize, onResize, endResize } = resizing;
    const tall = sizing?.height;
@@ -99,22 +112,32 @@ export function BuilderGrid({
       tile.colspan === undefined ? { ...tile, colspan: defaultSpan } : tile;
    const shown = (
       resize !== undefined
-         ? editor.document.tiles.map((each, index) =>
-              index === resize.index ? { ...each, colspan: resize.span } : each,
+         ? place(
+              editor.document.tiles.map((each, index) =>
+                 index === resize.index
+                    ? { ...each, colspan: resize.span }
+                    : each,
+              ),
+              resize.index,
            )
          : tall !== undefined
-           ? editor.document.tiles.map((each, index) =>
-                index === tall.index ? withRowspan(each, tall.rows) : each,
+           ? place(
+                editor.document.tiles.map((each, index) =>
+                   index === tall.index ? withRowspan(each, tall.rows) : each,
+                ),
+                tall.index,
              )
            : (preview ?? editor.document.tiles)
    ).map(drawn);
+   // Placed, every cell is somewhere to drop, so there are no row ends to offer.
+   const placed = isPlaced(shown);
    // And, while a drag is live, the empty end of every row as a drop target.
    // While an edge is dragged too: narrowing a tile frees columns its row-mate
    // does not take, and an undrawn hole there read as a broken layout rather
    // than room to fill. Not otherwise: a gap is only shown mid-gesture.
    const empty = editor.document.tiles.length === 0;
    const entries =
-      dragging || resize !== undefined
+      (dragging || resize !== undefined) && !placed
          ? withGaps(shown, columns)
          : shown.map(tileEntry);
    const heading = (tile: QueryTile) =>
@@ -124,6 +147,7 @@ export function BuilderGrid({
          <DragDropProvider
             sensors={builderSensors}
             onDragStart={onDragStart}
+            onDragMove={onDragMove}
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
          >
@@ -131,12 +155,23 @@ export function BuilderGrid({
                {rules.widths && (dragging || resize !== undefined) && (
                   <GridGuides columns={columns} />
                )}
-               {tall !== undefined && <RowGuides top={tall.guideTop} />}
+               {tall !== undefined ? (
+                  <RowGuides top={tall.guideTop} />
+               ) : (
+                  // Placed, a move snaps to rows as well as columns.
+                  placed &&
+                  (dragging || resize !== undefined) && <RowGuides top={0} />
+               )}
 
                <DashboardGrid
                   tiles={entries}
                   columns={columns}
                   rowGapPx={GRID_GAP_PX}
+                  defaultRowspan={(entry) =>
+                     entry.kind === "tile"
+                        ? rowsOf(entry.tile)
+                        : PLACED_DEFAULT_ROWSPAN.query
+                  }
                   keyOf={(entry) =>
                      entry.kind === "gap"
                         ? gapId(entry.after)
@@ -176,6 +211,10 @@ export function BuilderGrid({
                                          editor.update((draft) => {
                                             const tile = draft.tiles[index];
                                             if (tile) tile.colspan = to;
+                                            draft.tiles = place(
+                                               draft.tiles,
+                                               index,
+                                            );
                                          });
                                       },
                                    },
@@ -190,6 +229,7 @@ export function BuilderGrid({
                                    heightEdge: {
                                       rows: each.rowspan,
                                       dragging: tall?.index === index,
+                                      min: minRowsOf(each),
                                       onStart: (event) =>
                                          sizing.startHeight(event, index),
                                       onMove: sizing.onHeight,
@@ -201,6 +241,10 @@ export function BuilderGrid({
                                             if (to === undefined)
                                                delete tile.rowspan;
                                             else tile.rowspan = to;
+                                            draft.tiles = place(
+                                               draft.tiles,
+                                               index,
+                                            );
                                          }),
                                    },
                                 }

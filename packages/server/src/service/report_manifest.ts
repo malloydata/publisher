@@ -129,10 +129,19 @@ export interface ReportQueryTileSpec extends ReportTileLayout {
    givenNames?: string[];
    /**
     * `rowspan=N` on the tile's entry in `tiles=[…]`: the grid rows it is tall.
-    * Absent, the tile is as tall as its result. Only the entry sets it; a
-    * view's own tags never do.
+    * Absent, the tile is as tall as its result, or on a placed report
+    * {@link PLACED_DEFAULT_ROWSPAN} rows. Only the entry sets it; a view's own
+    * tags never do.
     */
    rowspan?: number;
+   /**
+    * `row=N` and `col=N` on the tile's entry: the grid row and column its top
+    * left corner sits in, counted from 1. A report with any `row` is placed:
+    * its rows are fixed tracks and its tiles sit where they say rather than
+    * flowing. Only the entry sets them.
+    */
+   row?: number;
+   col?: number;
    /**
     * The caller may not read this tile's source. Set only by a compile of
     * caller-submitted text; carries nothing else of the tile, so the answer
@@ -151,6 +160,9 @@ export interface ReportTextTileSpec {
    break?: boolean;
    /** `rowspan=N` on its entry: the grid rows it is tall. */
    rowspan?: number;
+   /** `row=N` and `col=N` on its entry: where it sits on a placed report. */
+   row?: number;
+   col?: number;
 }
 
 export type ReportTileSpec = ReportQueryTileSpec | ReportTextTileSpec;
@@ -355,10 +367,20 @@ interface EntryLayout {
    colspan?: number;
    break?: boolean;
    rowspan?: number;
+   row?: number;
+   col?: number;
 }
 
 /** The properties an entry's layout is written with, and so the only ones the lint lets an entry carry. */
-const ENTRY_LAYOUT_PROPERTIES = ["colspan", "break", "rowspan"];
+const ENTRY_LAYOUT_PROPERTIES = ["row", "col", "colspan", "rowspan", "break"];
+
+/**
+ * Rows a tile with no `rowspan` takes on a placed report, whose rows are fixed
+ * tracks: about the height an unplaced tile is drawn at. Kept equal to the
+ * SDK's `PLACED_DEFAULT_ROWSPAN`, since the lint's overlap check must count
+ * the rows the viewer draws.
+ */
+export const PLACED_DEFAULT_ROWSPAN = { query: 5, text: 2 } as const;
 
 /** One entry of `tiles=[…]`: a run expression or a named text block, each with its own layout. */
 type ArtifactTileEntry =
@@ -368,10 +390,14 @@ type ArtifactTileEntry =
 function readEntryLayout(entry: Tag): EntryLayout {
    const colspan = positiveInteger(tagNumeric(entry, "colspan"));
    const rowspan = positiveInteger(tagNumeric(entry, "rowspan"));
+   const row = positiveInteger(tagNumeric(entry, "row"));
+   const col = positiveInteger(tagNumeric(entry, "col"));
    return {
       ...(colspan !== undefined && { colspan }),
       ...(entry.has("break") && { break: tagText(entry, "break") !== "false" }),
       ...(rowspan !== undefined && { rowspan }),
+      ...(row !== undefined && { row }),
+      ...(col !== undefined && { col }),
    };
 }
 
@@ -380,11 +406,15 @@ function entryLayoutFields(layout: EntryLayout): {
    colspan?: number;
    break?: true;
    rowspan?: number;
+   row?: number;
+   col?: number;
 } {
    return {
       ...(layout.colspan !== undefined && { colspan: layout.colspan }),
       ...(layout.break === true && { break: true as const }),
       ...(layout.rowspan !== undefined && { rowspan: layout.rowspan }),
+      ...(layout.row !== undefined && { row: layout.row }),
+      ...(layout.col !== undefined && { col: layout.col }),
    };
 }
 
@@ -1236,7 +1266,7 @@ export function lintReport(
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
             `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
-               `a tile's entry reads only \`colspan\`, \`break\` and \`rowspan\`.` +
+               `a tile's entry reads only \`row\`, \`col\`, \`colspan\`, \`rowspan\` and \`break\`.` +
                (kind === "text"
                   ? ""
                   : ` The rest of its presentation goes on the view the tile names ` +
@@ -1244,7 +1274,7 @@ export function lintReport(
          );
       }
       const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
-      for (const property of ["colspan", "rowspan"]) {
+      for (const property of ["row", "col", "colspan", "rowspan"]) {
          if (
             entry.has(property) &&
             positiveInteger(tagNumeric(entry, property)) === undefined
@@ -1280,6 +1310,46 @@ export function lintReport(
          );
       }
    }
+   // A placed tile that runs past the grid's right edge, or covers another:
+   // the viewer draws both anyway, the first spilling into an extra column
+   // and the second stacked on its neighbour, so neither is what was meant.
+   if (grid) {
+      const columns = manifest.dashboardColumns;
+      const placed = (manifest.tiles ?? []).flatMap((tile) => {
+         if (tile.row === undefined || tile.col === undefined) return [];
+         const name = tile.kind === "text" ? tile.name : tile.query;
+         const colspan = Math.min(tile.colspan ?? 1, columns ?? Infinity);
+         const rowspan =
+            tile.rowspan ??
+            PLACED_DEFAULT_ROWSPAN[tile.kind === "text" ? "text" : "query"];
+         return [{ name, row: tile.row, col: tile.col, colspan, rowspan }];
+      });
+      for (const tile of placed) {
+         if (columns !== undefined && tile.col + tile.colspan - 1 > columns) {
+            add(
+               `\`${tile.name}\` at col=${tile.col} with colspan=${tile.colspan} runs past the ` +
+                  `${columns} columns of this report. Move it left or narrow it.`,
+            );
+         }
+      }
+      for (let a = 0; a < placed.length; a++) {
+         for (let b = a + 1; b < placed.length; b++) {
+            const [x, y] = [placed[a], placed[b]];
+            const overlaps =
+               x.col < y.col + y.colspan &&
+               y.col < x.col + x.colspan &&
+               x.row < y.row + y.rowspan &&
+               y.row < x.row + x.rowspan;
+            if (overlaps) {
+               add(
+                  `\`${x.name}\` and \`${y.name}\` are placed over each other, so one is ` +
+                     `drawn on top of the other. Move one, or change a colspan or rowspan.`,
+               );
+            }
+         }
+      }
+   }
+
    // A tile whose entry sets its width is not spanned by its view's
    // `# colspan`, so the view's tag is not checked against this grid.
    const entrySpanned = new Set(

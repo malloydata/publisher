@@ -21,9 +21,11 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Tiles have heights, and a report lays out each tile on its own entry
+## [Unreleased] — Tiles can be placed anywhere on the grid, have heights, and are laid out on their own entries
 
 A tile's entry in `tiles=[…]` can now carry its layout: `"overview -> kpis" { colspan=12 rowspan=2 }`. `colspan` and `break` there win over the view's `# colspan` and `# break` (and `break=false` turns a view's break off), so one view can sit at a different width on each report, and a tile on a view the report imports can be resized at all. `rowspan=N` is new: the tile's height in grid rows of 80px, plus the 16px gaps between them. A chart fills it, a table scrolls in it, and a tile keeps its height beside a taller neighbour instead of stretching to it. Without one a tile is as tall as its result, as before. The manifest's tiles carry `rowspan`, and the lint now reads an entry's `colspan`, `break` and `rowspan` instead of calling them unread.
+
+Tiles can now be placed: `row=N col=N` on an entry put its top left corner at that grid cell. A report with any `row` is placed, so its rows are fixed 80px tracks, tiles sit exactly where they say, and empty space can hold a tile (one can sit under a short neighbour beside a tall one). A placed tile with no `rowspan` is 5 rows (a text tile 2); phones stack tiles top to bottom, then left to right. The lint names a placed tile past the grid's right edge and two placed tiles that cover each other. In the Console builder a move on a grid is now free placement: the first move places every tile where it is drawn, the dragged tile snaps to the cell under it, and anything it lands on is pushed down (a resize pushes the same way).
 
 In the Console builder each tile has a second grip, on its bottom edge, that sets its height in whole rows (arrow keys step it; Delete or a double-click fits the result again). Resizing or moving a tile now writes its layout on its entry and takes the view's `# colspan` and `# break` off, so the layout has one home; an untouched tile's tags are left as written.
 

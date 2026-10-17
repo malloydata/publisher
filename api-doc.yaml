@@ -5336,7 +5336,23 @@ components:
             The tile's height in grid rows, from `rowspan=N` on its entry in
             `tiles=[…]`; only the entry sets it. A row is 80px, and a tile N rows
             tall also spans the N-1 row gaps between them. Absent, the tile is
-            as tall as its result, up to the viewer's cap. A grid report only.
+            as tall as its result, up to the viewer's cap; on a placed report
+            (see `row`), 5 rows for a query tile and 2 for a text tile. A grid
+            report only.
+        row:
+          type: integer
+          description: >-
+            The grid row the tile's top sits in, counted from 1, from `row=N` on
+            its entry in `tiles=[…]`. A report where any tile has a `row` is
+            placed: its rows are fixed 80px tracks, and each tile sits at its
+            `row` and `col` rather than flowing. A placed tile with no `row` or
+            `col` fills the first free cell. On a narrow screen tiles stack in
+            one column, ordered by row then column.
+        col:
+          type: integer
+          description: >-
+            The grid column the tile's left edge sits in, counted from 1, from
+            `col=N` on its entry in `tiles=[…]`. See `row`.
 
     ReportCells:
       type: object

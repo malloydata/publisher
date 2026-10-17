@@ -346,13 +346,26 @@ tags, property by property:
   height, a table scrolls inside it, and a text tile scrolls its prose. Without it a tile is as tall as
   its result, up to 400px, and a row is as tall as its tallest tile; a tile with a height keeps it beside
   a taller neighbour. A map draws at its own size, so give it the height it needs.
-  It is named to pair with `colspan`: today tiles still flow, so it sets a height, and it is the
-  count of rows a tile will span once tiles are placed on explicit rows.
-- **An entry reads only these three.** A label, subtitle, chart or card still goes on the view, and the
+  On a placed report (below) it is the rows the tile spans.
+- **`row=N` and `col=N`** place the tile: its top left corner sits in that grid row and column, counted
+  from 1. A report where any tile has a `row` is **placed**. Its rows are then fixed 80px tracks, each
+  tile sits where it says instead of flowing, and empty cells stay empty, which is how a tile can sit
+  under a short neighbour beside a tall one. A placed tile with no `rowspan` is 5 rows (a text tile 2);
+  one with no `row` or `col` fills the first free cell; `break` means nothing. On a narrow screen the
+  tiles stack in one column, top to bottom and then left to right. The lint names a placed tile that
+  runs past the grid's right edge, and two that cover each other.
+- **An entry reads only these five.** A label, subtitle, chart or card still goes on the view, and the
   lint names any other property on an entry.
 - **The Console builder writes here.** Resizing or moving a tile puts its layout on its entry and takes
   the view's `# colspan` and `# break` off, so the layout has one home. A view's tags are left alone
-  until its tile's layout changes.
+  until its tile's layout changes. On a grid a move is free placement: the first move places every tile
+  where it is drawn, so nothing jumps, and the file lists placed tiles in reading order.
+
+```malloy
+## artifact { layout=grid tiles=["overview -> kpis" { row=1 col=1 colspan=12 rowspan=3 }, "overview -> revenue_trend" { row=4 col=1 colspan=6 rowspan=3 }, "overview -> revenue_by_state" { row=4 col=7 colspan=6 rowspan=6 }, "overview -> revenue_by_category" { row=7 col=1 colspan=6 rowspan=3 }] } dashboard { columns=12 }
+```
+
+Here the trend and the category chart stack in the left half beside one tall map.
 
 <a id="laying-out-the-grid"></a>
 
@@ -923,7 +936,7 @@ in the builder. No directory is ever created for you.
 
 From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
 status, undo and redo, an **Add** menu (a tile, text or a filter) and **Done**. The page
-under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to move it,
+under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to place it in any cell, empty space included,
 drag the grip on its right edge to set its width and the one on its bottom edge to set its height, pick its chart and clickable cells from its ⋯
 menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
 table or chart) is the result's, never a move. The width snaps to whole columns, with the columns drawn
@@ -933,7 +946,10 @@ rows the same way; on its edge Up and Down step one row, Home and End go to the 
 Delete, or a double-click on the grip, puts the tile back to auto height. The drag also snaps to auto
 when that is nearer than a whole row: a row of auto tiles is as tall as its tallest result, which is
 rarely a whole number of rows, so this is how a tile is dragged level with an auto neighbour. Both are written on the
-tile's entry in `tiles=[…]`, so a tile on a view the report imports resizes like any other.
+tile's entry in `tiles=[…]`, so a tile on a view the report imports resizes like any other. A move
+snaps to rows and columns, with both drawn behind the tiles, and pushes any tile it lands on straight
+down; so does a resize. Nothing is pulled up to fill a gap. The fewest rows offered are 3 for a query
+tile (a chart needs room to draw) and 1 for a text tile.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
 The ⋯ menu holds **Chart**, a submenu, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its

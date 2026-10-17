@@ -434,20 +434,31 @@ function checkShape(
 /** The tag keys of a tile's layout, which a view declared here carries until the builder moves them to its entry. */
 const LAYOUT_TAG_KEYS: ReadonlySet<string> = new Set(["colspan", "break"]);
 
-/** Whether a tile's place on the grid changed: its width, its row break or its rowspan. */
+/** Whether a tile's place on the grid changed: its width, row break, rowspan, row or column. */
 const layoutChanged = (was: DashboardTile, now: DashboardTile) =>
    was.colspan !== now.colspan ||
    Boolean(was.break) !== Boolean(now.break) ||
-   was.rowspan !== now.rowspan;
+   was.rowspan !== now.rowspan ||
+   was.row !== now.row ||
+   was.col !== now.col;
 
 /** A tile with its layout taken off, for asking whether anything ELSE about it changed. */
 const withoutLayout = <T extends DashboardTile>(tile: T): T => {
-   const { colspan: _c, break: _b, rowspan: _r, ...rest } = tile;
+   const {
+      colspan: _c,
+      break: _b,
+      rowspan: _r,
+      row: _row,
+      col: _col,
+      ...rest
+   } = tile;
    return rest as T;
 };
 
 /** The properties a tile's layout is written as on its entry. */
 const layoutProperties = (tile: DashboardTile): string[] => [
+   ...(tile.row === undefined ? [] : [`row=${tile.row}`]),
+   ...(tile.col === undefined ? [] : [`col=${tile.col}`]),
    ...(tile.colspan === undefined ? [] : [`colspan=${tile.colspan}`]),
    ...(tile.break ? ["break"] : []),
    ...(tile.rowspan === undefined ? [] : [`rowspan=${tile.rowspan}`]),
@@ -501,6 +512,8 @@ function tileEntryText(tile: DashboardTile, written?: string): string {
    drop(/\s*\bcolspan\s*=\s*[^\s}]+/);
    drop(/\s*\bbreak\b(?:\s*=\s*[^\s}]+)?/);
    drop(/\s*\browspan\s*=\s*[^\s}]+/);
+   drop(/\s*\brow\s*=\s*[^\s}]+/);
+   drop(/\s*\bcol\s*=\s*[^\s}]+/);
    const props = [inner.trim(), ...layout].filter(Boolean);
    // A query entry left with nothing in its braces is its expression alone.
    if (props.length === 0) return written.slice(0, open).trimEnd();

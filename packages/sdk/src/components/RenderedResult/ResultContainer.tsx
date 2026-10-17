@@ -160,7 +160,13 @@ export default function ResultContainer({
          }}
       >
          {fill ? (
-            <Box sx={{ position: "absolute", inset: 0 }}>{renderedResult}</Box>
+            // A result taller than the cell it fills (value cards in a tile
+            // set shorter than they are) scrolls rather than being cut off.
+            // A chart is drawn to fit and a table scrolls itself, so neither
+            // shows a bar here.
+            <Box sx={{ position: "absolute", inset: 0, overflowY: "auto" }}>
+               {renderedResult}
+            </Box>
          ) : (
             renderedResult
          )}

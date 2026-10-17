@@ -176,6 +176,9 @@ export interface QueryTile {
    break?: boolean;
    /** `rowspan=N` on its entry: the grid rows it is tall. Only the entry carries it. */
    rowspan?: number;
+   /** `row=N` and `col=N` on its entry: where it sits on a placed report, counted from 1. */
+   row?: number;
+   col?: number;
    borderless?: boolean;
 }
 
@@ -192,6 +195,8 @@ export interface TextTile {
    colspan?: number;
    break?: boolean;
    rowspan?: number;
+   row?: number;
+   col?: number;
 }
 
 export type DashboardTile = QueryTile | TextTile;

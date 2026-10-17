@@ -676,6 +676,8 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       colspan: _colspan,
       break: _break,
       rowspan: _rowspan,
+      row: _row,
+      col: _col,
       borderless: _borderless,
       ...runs
    } = tile as DocumentTile & {
@@ -684,6 +686,8 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       colspan?: unknown;
       break?: unknown;
       rowspan?: unknown;
+      row?: unknown;
+      col?: unknown;
       borderless?: unknown;
    };
    return runs as DocumentTile;

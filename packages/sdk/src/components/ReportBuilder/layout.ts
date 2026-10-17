@@ -97,6 +97,8 @@ export const tileEntry = (tile: DashboardTile, index: number): GridEntry => ({
    colspan: tile.colspan,
    break: tile.break,
    rowspan: tile.rowspan,
+   row: tile.row,
+   col: tile.col,
 });
 
 /** A gap's id: its drop target's, and the grid's key for it. */

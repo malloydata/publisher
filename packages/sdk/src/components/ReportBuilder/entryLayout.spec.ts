@@ -125,4 +125,27 @@ describe("entry layout: writing", () => {
       });
       expect(out).toContain('tiles=["a -> trend" { rowspan=4 }, "a -> kpis"');
    });
+
+   it("writes where a placed tile sits, ahead of its size", async () => {
+      const out = await spliced(TAGGED, (d) => {
+         d.tiles[1].row = 3;
+         d.tiles[1].col = 7;
+         d.tiles[1].colspan = 6;
+      });
+      expect(out).toContain('"a -> trend" { row=3 col=7 colspan=6 }');
+      const back = await openDocument(out);
+      expect(queryTile(back, 1)).toMatchObject({ row: 3, col: 7, colspan: 6 });
+   });
+
+   it("takes a tile's place off without touching its size", async () => {
+      const source = TAGGED.replace(
+         '"a -> trend"',
+         '"a -> trend" { row=3 col=7 colspan=6 }',
+      );
+      const out = await spliced(source, (d) => {
+         delete d.tiles[1].row;
+         delete d.tiles[1].col;
+      });
+      expect(out).toContain('"a -> trend" { colspan=6 }');
+   });
 });

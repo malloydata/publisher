@@ -303,26 +303,47 @@ function entryLayout(
            has(key: string): boolean;
         }
       | undefined,
-): { colspan?: number; break?: boolean; rowspan?: number } {
+): EntryLayout {
    const colspan = gridWidth(tag, "colspan");
    const rowspan = gridWidth(tag, "rowspan");
+   const row = gridWidth(tag, "row");
+   const col = gridWidth(tag, "col");
    return {
       ...(colspan === undefined ? {} : { colspan }),
       ...(tag?.has("break") ? { break: tag.text("break") !== "false" } : {}),
       ...(rowspan === undefined ? {} : { rowspan }),
+      ...(row === undefined ? {} : { row }),
+      ...(col === undefined ? {} : { col }),
    };
+}
+
+/** What an entry in `tiles=[…]` can say about where its tile sits. */
+interface EntryLayout {
+   colspan?: number;
+   break?: boolean;
+   rowspan?: number;
+   row?: number;
+   col?: number;
 }
 
 /** An entry's layout over a view's own: each property the entry sets wins, and a `break` that ends up off is no field. */
 function placed(
    view: { colspan?: number; break?: boolean },
-   entry: { colspan?: number; break?: boolean; rowspan?: number },
-): { colspan?: number; break?: true; rowspan?: number } {
+   entry: EntryLayout,
+): {
+   colspan?: number;
+   break?: true;
+   rowspan?: number;
+   row?: number;
+   col?: number;
+} {
    const colspan = entry.colspan ?? view.colspan;
    return {
       ...(colspan === undefined ? {} : { colspan }),
       ...((entry.break ?? view.break) ? { break: true as const } : {}),
       ...(entry.rowspan === undefined ? {} : { rowspan: entry.rowspan }),
+      ...(entry.row === undefined ? {} : { row: entry.row }),
+      ...(entry.col === undefined ? {} : { col: entry.col }),
    };
 }
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;

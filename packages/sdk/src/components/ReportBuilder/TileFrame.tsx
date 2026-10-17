@@ -20,7 +20,6 @@ import {
    BARE_RING_OFFSET_PX,
    GRID_GAP_PX,
    MAX_TILE_ROWS,
-   MIN_TILE_ROWS,
    TILE_ROW_PX,
 } from "../Dashboard/DashboardGrid";
 import {
@@ -111,6 +110,8 @@ export function TileFrame({
       rows: number | undefined;
       /** This edge is being dragged. */
       dragging: boolean;
+      /** The fewest rows offered: a chart's floor, or prose's. */
+      min: number;
       onStart: (event: PointerEvent<HTMLDivElement>) => void;
       onMove: (event: PointerEvent<HTMLDivElement>) => void;
       onEnd: (event: PointerEvent<HTMLDivElement>) => void;
@@ -156,7 +157,8 @@ export function TileFrame({
                   // A set height holds the row too, so the tile
                   // shrinks to it rather than the row growing to
                   // the tile's content.
-                  ...(tile.rowspan !== undefined && {
+                  ...((tile.rowspan !== undefined ||
+                     tile.row !== undefined) && {
                      gridTemplateRows: "minmax(0, 1fr)",
                      minHeight: 0,
                   }),
@@ -777,19 +779,19 @@ function HeightEdge({
          tabIndex={0}
          aria-orientation="horizontal"
          aria-label={`Height of ${label}`}
-         aria-valuemin={MIN_TILE_ROWS}
+         aria-valuemin={edge.min}
          aria-valuemax={MAX_TILE_ROWS}
          {...(fit ? {} : { "aria-valuenow": rows })}
          aria-valuetext={heightLabel(rows)}
          onKeyDown={(event) => {
-            const now = rows ?? MIN_TILE_ROWS;
+            const now = rows ?? edge.min;
             const to =
                event.key === "ArrowDown"
                   ? now + 1
                   : event.key === "ArrowUp"
                     ? now - 1
                     : event.key === "Home"
-                      ? MIN_TILE_ROWS
+                      ? edge.min
                       : event.key === "End"
                         ? MAX_TILE_ROWS
                         : event.key === "Delete" || event.key === "Backspace"
@@ -803,7 +805,7 @@ function HeightEdge({
                if (!fit) edge.onStep(undefined);
                return;
             }
-            const held = Math.min(Math.max(to, MIN_TILE_ROWS), MAX_TILE_ROWS);
+            const held = Math.min(Math.max(to, edge.min), MAX_TILE_ROWS);
             if (held !== rows) edge.onStep(held);
          }}
          onPointerDown={edge.onStart}

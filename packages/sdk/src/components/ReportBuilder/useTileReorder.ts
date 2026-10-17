@@ -2,11 +2,41 @@
 // SPDX-License-Identifier: MIT
 
 import { move } from "@dnd-kit/helpers";
-import type { DragEndEvent, DragOverEvent } from "@dnd-kit/react";
-import { useRef, useState } from "react";
+import type {
+   DragEndEvent,
+   DragMoveEvent,
+   DragOverEvent,
+} from "@dnd-kit/react";
+import { useRef, useState, type RefObject } from "react";
 import { tileKey, type DashboardTile } from "./document";
 import { keepRowStructure, moveIntoGap } from "./layout";
+import {
+   cellAt,
+   inReadingOrder,
+   placeWhereDrawn,
+   settle,
+   trackWidth,
+   type Box,
+} from "./placement";
 import { GAP_TYPE, type GapData } from "./sortable";
+
+/** The boxes of the tiles as drawn, against the grid's top left corner, by tile key. */
+function drawnBoxes(grid: HTMLElement): Map<string, Box> {
+   const origin = grid.getBoundingClientRect();
+   const boxes = new Map<string, Box>();
+   for (const frame of grid.querySelectorAll<HTMLElement>("[data-tile-key]")) {
+      const key = frame.dataset.tileKey;
+      if (!key) continue;
+      const box = frame.getBoundingClientRect();
+      boxes.set(key, {
+         top: box.top - origin.top,
+         left: box.left - origin.left,
+         width: box.width,
+         height: box.height,
+      });
+   }
+   return boxes;
+}
 
 /**
  * Dragging a tile to reorder it. The gesture is `@dnd-kit/react`'s (see
@@ -19,8 +49,19 @@ export function useTileReorder({
    tiles,
    commit,
    onLanded,
+   placement,
 }: {
    tiles: DashboardTile[];
+   /**
+    * Set on a grid report, where a move is free placement: the tile lands in
+    * the cell under it and anything it covers is pushed down. Absent, a move
+    * reorders the tiles, as a linear report's does.
+    */
+   placement?: {
+      columns: number;
+      /** Wraps the grid, so its box is the grid's. */
+      gridBox: RefObject<HTMLDivElement | null>;
+   };
    /** The order to write when the drag ends somewhere new. */
    commit: (next: DashboardTile[]) => void;
    /** Where the dragged tile came to rest, which the caller selects. */
@@ -57,12 +98,70 @@ export function useTileReorder({
     * rebuilt from the document on each report and written once, on release:
     * ONE history entry for the whole drag, however far it wandered.
     */
-   const onDragStart = () => {
+   // A placement in flight: the tiles placed where they stood when it began,
+   // and the moved tile's box then.
+   const placing = useRef<
+      { base: DashboardTile[]; index: number; from: Box } | undefined
+   >(undefined);
+
+   const onDragStart = (event?: {
+      operation: { source: { id: unknown } | null };
+   }) => {
       setDragging(true);
       previewRef.current = tiles;
+      const grid = placement?.gridBox.current;
+      const id = event?.operation.source?.id;
+      if (!placement || !grid) return;
+      const index = tiles.findIndex((tile) => tileKey(tile) === id);
+      const boxes = drawnBoxes(grid);
+      const from = boxes.get(String(id));
+      if (index < 0 || !from) return;
+      // The first move on a report that flows places every tile where it is
+      // drawn, so nothing jumps; a placed report keeps what it says.
+      const base = placeWhereDrawn(
+         tiles,
+         tiles.map((tile) => boxes.get(tileKey(tile))),
+         placement.columns,
+         trackWidth(grid.getBoundingClientRect().width, placement.columns),
+      );
+      placing.current = { base, index, from };
+      previewRef.current = base;
+      setPreview(base);
+   };
+
+   const onDragMove = (event: DragMoveEvent) => {
+      const live = placing.current;
+      const grid = placement?.gridBox.current;
+      if (!live || !placement || !grid) return;
+      const { x, y } = event.operation.transform;
+      const moved = live.base[live.index];
+      const cell = cellAt(
+         live.from.left + x,
+         live.from.top + y,
+         moved.colspan ?? 1,
+         placement.columns,
+         trackWidth(grid.getBoundingClientRect().width, placement.columns),
+      );
+      const current = previewRef.current?.[live.index];
+      if (current?.row === cell.row && current.col === cell.col) return;
+      const next = settle(
+         live.base.map((tile, index) =>
+            index === live.index ? { ...tile, ...cell } : tile,
+         ),
+         placement.columns,
+         live.index,
+      );
+      previewRef.current = next;
+      setPreview(next);
    };
 
    const onDragOver = (event: DragOverEvent) => {
+      // Placing, where the tile is over says nothing: the cell under it does.
+      // Prevented, so the library does not reorder the tiles under it either.
+      if (placing.current) {
+         event.preventDefault();
+         return;
+      }
       const { source, target } = event.operation;
       if (!source || !target) return;
       const current = previewRef.current ?? tiles;
@@ -96,7 +195,13 @@ export function useTileReorder({
 
    const onDragEnd = (event: DragEndEvent) => {
       setDragging(false);
-      const next = previewRef.current;
+      const wasPlacing = placing.current !== undefined;
+      placing.current = undefined;
+      const previewed = previewRef.current;
+      // Placed tiles are written in reading order, so the file reads the way
+      // the page does and a narrow screen stacks them the same way.
+      const next =
+         wasPlacing && previewed ? inReadingOrder(previewed) : previewed;
       previewRef.current = undefined;
       setPreview(undefined);
       if (event.canceled || !next) return;
@@ -109,5 +214,5 @@ export function useTileReorder({
       if (landing >= 0) onLanded(landing);
    };
 
-   return { dragging, preview, onDragStart, onDragOver, onDragEnd };
+   return { dragging, preview, onDragStart, onDragMove, onDragOver, onDragEnd };
 }

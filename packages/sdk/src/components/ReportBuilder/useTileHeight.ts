@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { rowsForHeight, tileHeightPx } from "../Dashboard/DashboardGrid";
 import { tileKey, type DashboardTile } from "./document";
+import { minRowsOf } from "./placement";
 
 /** A height drag in flight: the tile, what it WOULD be, and where its top sits. */
 export interface HeightState {
@@ -117,7 +118,8 @@ export function useTileHeight({
       const drag = live.current;
       if (!drag) return;
       const px = event.clientY - drag.top;
-      const rows = rowsForHeight(px);
+      const self = tiles[drag.index];
+      const rows = rowsForHeight(px, self ? minRowsOf(self) : undefined);
       const auto = autoHeight(drag);
       // Ties go to rows: a neighbour stretched to the preview is no reason to leave it.
       const next =
