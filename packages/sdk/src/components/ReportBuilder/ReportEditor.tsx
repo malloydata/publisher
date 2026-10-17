@@ -409,6 +409,17 @@ export function ReportEditor(props: ReportEditorProps) {
 
    // One per report, version and server: a draft is never restored onto a
    // file it was not made on.
+   // The file's compiled model, only while the builder is on the text it
+   // compiled. A kept draft, the host's record or a version held back is other
+   // text, whose views can differ under the same names.
+   const fileModel =
+      !textSource &&
+      modelQuery.data?.data &&
+      packageText !== undefined &&
+      opened?.source === packageText
+         ? (modelQuery.data.data as CompiledModel)
+         : undefined;
+
    const draftKey = keepDraft
       ? reportDraftKey({
            server,
@@ -575,9 +586,7 @@ export function ReportEditor(props: ReportEditorProps) {
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                note={note}
-               {...(!textSource && modelQuery.data?.data
-                  ? { fileModel: modelQuery.data.data as CompiledModel }
-                  : {})}
+               {...(fileModel ? { fileModel } : {})}
             />
          )}
       </Stack>
