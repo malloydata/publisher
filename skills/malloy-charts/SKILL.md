@@ -142,7 +142,9 @@ view: summary is {
 }
 ```
 
-**Properties:** `.size`, `.sparkline=<nested_view_name>`, `.comparison_field`, `.comparison_label`, `.down_is_good`
+**Properties on the view:** `size` (`sm`, `md`, `lg`) and `neutral_threshold`, as `# big_value { size=sm }`. Nothing else goes on the view.
+
+**Properties on a measure inside it:** `sparkline`, `comparison_field`, `comparison_label`, `comparison_format` (`pct` or `ppt`) and `down_is_good`. Write them as `# big_value { ... }` on the line above the measure, inside a view tagged `# big_value` (see Advanced Patterns). On the view itself, or on a `nest:`, the renderer refuses them with `Tag 'big_value' on field 'X' is only valid on basic fields inside big_value`.
 
 Put `# label` on every measure. Without it the card shows the raw field name, which is often unclear.
 
@@ -210,7 +212,6 @@ view: kpis is {
         # big_value { sparkline=trend }
         total_revenue is retail_price.sum()
       # line_chart { size=spark y.independent=true }
-      # hidden
       nest: trend is { group_by: bucket is floor(id / 100)::number, aggregate: total_revenue is retail_price.sum(), order_by: bucket, limit: 20 }
     }
 }
@@ -352,37 +353,45 @@ Quote values that contain spaces or a leading `#`. The light/dark default (`defa
 
 ### Sparklines in KPI Cards
 
-A sparkline needs two things: a `# hidden` nested view and a `.sparkline=` property naming it. If it does not show, check that `# hidden` is on the nested view and that its name matches `.sparkline=`.
+A sparkline needs three things:
+
+1. The view is tagged plain `# big_value`.
+2. The measure that gets the sparkline carries `# big_value { sparkline=<nest_name> }`.
+3. A `nest:` with that name is tagged `# line_chart { size=spark }` or `# bar_chart { size=spark }`.
+
+If it does not show, check that the nest's name matches `sparkline=` and that its chart tag has `size=spark`. The nest never renders as a card of its own, so it needs no `# hidden` (the renderer does not read `# hidden` inside a big_value and warns about it).
 
 ```malloy
-# big_value { sparkline=trend }
+# big_value
 view: revenue_kpi is {
   aggregate:
     # label="Revenue"
     # currency
+    # big_value { sparkline=trend }
     revenue
   nest:
     # line_chart { size=spark }
-    # hidden
     trend is { group_by: order_date, aggregate: revenue, order_by: order_date }
 }
 ```
 
 ### KPIs with Comparison Deltas
 
+The comparison options go on the **comparison** measure, and `comparison_field` names the measure the card shows. The comparison measure is not drawn as a card of its own, so it needs no `# hidden`.
+
 ```malloy
-# big_value { comparison_field=prior_month comparison_label="vs Last Month" }
+# big_value
 view: rev_delta is {
   aggregate:
     # label="Revenue"
     # currency
     revenue
-    # hidden
+    # big_value { comparison_field=revenue comparison_label="vs Last Month" }
     prior_month
 }
 ```
 
-Use `down_is_good=true` for metrics where decrease is positive (churn, defects).
+Add `down_is_good=true` to the same tag for metrics where a decrease is good (churn, defects), and `comparison_format=ppt` when both measures are rates and the change should read in percentage points rather than percent.
 
 ### Inline Mini-Charts in Table Rows
 
@@ -435,7 +444,7 @@ view: price_dist is {
 | Heatmap | `# pivot` with color values |
 | Stacked area | `# line_chart` with series (overlaid lines) |
 | Funnel | `# bar_chart` with ordered stages |
-| Gauge/bullet | `# big_value` with `.comparison_field` |
+| Gauge/bullet | `# big_value` with `comparison_field` on the comparison measure |
 
 
 ## Chart Annotations on Queries with `nest:`
@@ -451,7 +460,8 @@ A top-level chart tag (e.g., `# bar_chart`) renders only the outer query; any `n
 | `# currency=usd0m` on measure | `# currency` (no scale) on defs; scale only in views |
 | Several tags on a `nest:` line | One lone tag on the `nest:` line works; with several, put each tag on its own line above the nested view |
 | Tags on same line | One tag per line |
-| Sparkline not showing | Add `# hidden` to nested view AND reference in `.sparkline=` |
+| `sparkline=` or `comparison_*=` on the `# big_value` view line | Plain `# big_value` on the view; put `# big_value { sparkline=... }` or `# big_value { comparison_field=... }` on a measure inside it |
+| Sparkline not showing | Name the nest in the measure's `sparkline=`, and give the nest `# line_chart { size=spark }` |
 | Pivot > 30 columns | Filter/limit the nested group_by |
 
 NOTE: The term 'constructor' is a reserved term in Vega-Lite. If the word 'constructor' appears in the query, it will cause the rendering to fail. Never use it in a query and avoid using it as a dimension in a model.
