@@ -1087,10 +1087,6 @@ export class ConnectionController {
          throw new BadRequestError("Connection configuration is required");
       }
 
-      if (!connectionConfig) {
-         throw new BadRequestError("Connection name is required");
-      }
-
       if (!connectionConfig.type) {
          throw new BadRequestError("Connection type is required");
       }
