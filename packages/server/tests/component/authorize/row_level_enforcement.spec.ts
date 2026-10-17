@@ -831,12 +831,9 @@ source: X is duckdb.table('parent') extend {
       // The gate is grafted into the query, so its given is bound by the same
       // `run()` and Malloy's failure names it. That name is exactly what
       // `docs/authorize.md` promises a denied caller never learns.
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-given-leak-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "m.malloy"),
-            `##! experimental.givens
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "m.malloy": `##! experimental.givens
 
 given:
   ROLE :: string
@@ -846,13 +843,10 @@ source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "m.malloy",
-            connectionsFor(duckdb),
-         );
+         },
+         "m.malloy",
+      );
+      try {
          const err = await model
             .getQueryResults(
                undefined,
@@ -868,8 +862,7 @@ source: X is duckdb.table('parent') extend {
          expect(message).not.toContain("ROLE");
          expect(message).not.toContain("givens");
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
@@ -1118,12 +1111,9 @@ function firstCellResultValue(resultJson: string): unknown {
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
 describe("deprecated: .malloynb — row-level authorize — notebook cells", () => {
    it("CRITICAL — a cell that declares its own source under a row-level gate AND runs it returns correctly filtered rows", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1138,13 +1128,10 @@ source: gated is duckdb.table('parent') extend {
 source: local2 is gated extend {}
 run: local2 -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1168,8 +1155,7 @@ run: local2 -> { aggregate: n is count() }
          // rows (ids 3,4), so the count is 2, not 4.
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
@@ -1177,12 +1163,9 @@ run: local2 -> { aggregate: n is count() }
    // `#(filter)` (see RELEASE_NOTES deprecations).
    describe("deprecated: #(filter)", () => {
       it("CRITICAL — a cell whose #(filter) refinement does not compile surfaces that failure, never a silent unfiltered admit", async () => {
-         const duckdb = await seededDuckdb();
-         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-         try {
-            fs.writeFileSync(
-               path.join(dir, "nb.malloynb"),
-               `>>>malloy
+         const { model, cleanup } = await loadAuthorizeModel(
+            {
+               "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1196,13 +1179,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { aggregate: n is count() }
 `,
-            );
-            const model = await Model.create(
-               "test-pkg",
-               dir,
-               "nb.malloynb",
-               connectionsFor(duckdb),
-            );
+            },
+            "nb.malloynb",
+         );
+         try {
             const loadErr = (model as unknown as { compilationError?: Error })
                .compilationError;
             expect(loadErr).toBeUndefined();
@@ -1221,19 +1201,15 @@ run: gated -> { aggregate: n is count() }
                }),
             ).rejects.toThrow(/nonexistent_field/);
          } finally {
-            await duckdb.close();
-            fs.rmSync(dir, { recursive: true, force: true });
+            await cleanup();
          }
       });
    });
 
    it("CRITICAL — a row-level gate declared and run in the FIRST code cell returns correctly filtered rows (no earlier cell to graft against; grafts its OWN post-declaration scope, repointing the compiled queryDef rather than recompiling text)", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1246,13 +1222,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1265,18 +1238,14 @@ run: gated -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("fail-closed: an empty given on a first-code-cell self-declaring gate yields zero rows, not an unfiltered/leaked count", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1289,13 +1258,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1306,18 +1272,14 @@ run: gated -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(0);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("a row-level gate in a code cell preceded only by markdown also returns correctly filtered rows (same fallback as the first-cell case)", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>markdown
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>markdown
 # Just a heading, no code cell before this one
 
 >>>malloy
@@ -1333,13 +1295,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1350,18 +1309,14 @@ run: gated -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("CRITICAL — a LATER cell that declares and runs its own gated source (not just the first cell) also returns correctly filtered rows — the earlier cell exists but does not carry the declared source, so its scope is just as unusable as cell 0's absence", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 source: unrelated is duckdb.table('childtable') extend { primary_key: id }
@@ -1377,13 +1332,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1394,18 +1346,14 @@ run: gated -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("self-declaring cell, multi-stage pipeline shape (`gated -> {…} -> {…}`) filters correctly", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1418,13 +1366,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1435,18 +1380,14 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("self-declaring cell, named-view shape (`gated -> byorg`) filters correctly", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1460,13 +1401,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> byorg
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1477,18 +1415,14 @@ run: gated -> byorg
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("self-declaring cell, joined-field gate shape (`childtable.name in $GROUPS` via join_one) filters correctly", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1504,13 +1438,10 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { group_by: id, org_id, childtable.name }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1533,18 +1464,14 @@ run: gated -> { group_by: id, org_id, childtable.name }
          ).data?.array_value?.length;
          expect(rowCount).toBe(2);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 
    it("CRITICAL — P0 on the new path: a self-declaring cell's ungated entry point joining a gated source does not fire the joined gate", async () => {
-      const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+      const { model, cleanup } = await loadAuthorizeModel(
+         {
+            "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1561,13 +1488,10 @@ source: joiner is duckdb.table('parent') extend {
 
 run: joiner -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            connectionsFor(duckdb),
-         );
+         },
+         "nb.malloynb",
+      );
+      try {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeUndefined();
@@ -1588,8 +1512,7 @@ run: joiner -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(4);
       } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
+         await cleanup();
       }
    });
 });
