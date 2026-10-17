@@ -1670,22 +1670,11 @@ export class Environment {
                () => this.malloyConfig.malloyConfig,
             );
             this.attachDestinationServeConfig(_package);
-            await this.bindManifestIfConfigured(_package);
-            await this.rebindServeBindingsFromLocalStore(_package);
-            if (existingPackage !== undefined && reload) {
-               this.retireConnectionGeneration(`package ${packageName}`, () =>
-                  existingPackage.getMalloyConfig().shutdown("close"),
-               );
-               _package.noteSurfaceChangeFrom(
-                  existingPackage.getPackageMetadata().explores,
-               );
-            }
-            this.packages.set(packageName, _package);
-            this.notifyPackageLoaded(_package);
-            this.setPackageStatus(packageName, PackageStatus.SERVING);
-            // It loaded, so any earlier failure is stale. A package that failed at
-            // boot can be fixed on disk and reloaded without a restart.
-            this.clearPackageLoadFailure(packageName);
+            await this.commitLoadedPackage(packageName, _package, {
+               bindServeState: true,
+               replaces: existingPackage,
+               reportSurfaceChange: true,
+            });
             logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
@@ -1719,6 +1708,47 @@ export class Environment {
             throw error;
          }
       });
+   }
+
+   /**
+    * Make a freshly created package the served copy: bind its serve state,
+    * retire the copy it replaces, register it and mark it serving. The caller
+    * holds the per-package lock.
+    *
+    * `bindServeState: false` (the add path) skips both the manifest bind and
+    * the local-store serve-binding rebind. `reportSurfaceChange` (the reload
+    * path) warns when the replaced copy published a surface this one lacks;
+    * it runs after the bind, which may itself reload the models in place.
+    */
+   private async commitLoadedPackage(
+      packageName: string,
+      pkg: Package,
+      options: {
+         bindServeState: boolean;
+         replaces?: Package;
+         reportSurfaceChange?: boolean;
+      },
+   ): Promise<void> {
+      const { replaces } = options;
+      if (options.bindServeState) {
+         await this.bindManifestIfConfigured(pkg);
+         await this.rebindServeBindingsFromLocalStore(pkg);
+      }
+      if (replaces) {
+         this.retireConnectionGeneration(`package ${packageName}`, () =>
+            replaces.getMalloyConfig().shutdown("close"),
+         );
+         if (options.reportSurfaceChange) {
+            pkg.noteSurfaceChangeFrom(replaces.getPackageMetadata().explores);
+         }
+      }
+      this.packages.set(packageName, pkg);
+      this.notifyPackageLoaded(pkg);
+      this.setPackageStatus(packageName, PackageStatus.SERVING);
+      // It loaded, so any earlier failure is stale. A package that failed at
+      // boot can be fixed on disk and reloaded, re-added or republished
+      // without a restart.
+      this.clearPackageLoadFailure(packageName);
    }
 
    public async addPackage(
@@ -1775,18 +1805,15 @@ export class Environment {
                () => this.malloyConfig.malloyConfig,
             );
             this.attachDestinationServeConfig(addedPackage);
-            this.packages.set(packageName, addedPackage);
-            this.notifyPackageLoaded(addedPackage);
+            // The add path does not bind serve state; see commitLoadedPackage.
+            await this.commitLoadedPackage(packageName, addedPackage, {
+               bindServeState: false,
+            });
          } catch (error) {
             logger.error("Error adding package", { error });
             this.deletePackageStatus(packageName);
             throw error;
          }
-         this.setPackageStatus(packageName, PackageStatus.SERVING);
-         // Same reasoning as the load and install paths: it is serving now, so an
-         // earlier boot failure is stale. Without this, a package fixed on disk
-         // and re-added keeps its loadError for the life of the process.
-         this.clearPackageLoadFailure(packageName);
          return this.packages.get(packageName);
       });
    }
@@ -2011,20 +2038,10 @@ export class Environment {
          // Best-effort manifest bind happens after the swap commits, outside the
          // rollback window: a manifest that can't be fetched must not undo an
          // otherwise-successful install (the package serves live instead).
-         await this.bindManifestIfConfigured(newPackage);
-         await this.rebindServeBindingsFromLocalStore(newPackage);
-
-         this.packages.set(packageName, newPackage);
-         this.notifyPackageLoaded(newPackage);
-         this.setPackageStatus(packageName, PackageStatus.SERVING);
-         // Publishing a fixed package clears the boot failure it replaces.
-         this.clearPackageLoadFailure(packageName);
-
-         if (oldPackage) {
-            this.retireConnectionGeneration(`package ${packageName}`, () =>
-               oldPackage.getMalloyConfig().shutdown("close"),
-            );
-         }
+         await this.commitLoadedPackage(packageName, newPackage, {
+            bindServeState: true,
+            replaces: oldPackage,
+         });
 
          if (retiredPath) {
             const pathToClean = retiredPath;
