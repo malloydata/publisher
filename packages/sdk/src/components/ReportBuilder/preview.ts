@@ -29,43 +29,65 @@ import { localGivenSpec } from "./localGiven";
  */
 
 /**
- * The controls this document shows: every given some tile binds, this file's
- * own declarations first in declaration order, then the model's in the
- * manifest's order, whether a tile binds one in this file or reads it through
- * the model (`modelReads`, from {@link givensReadThroughModel}).
+ * The controls this document shows, in the order the reader shows them: every
+ * given some tile binds in this file or reads through the model (`modelReads`,
+ * from {@link givensReadThroughModel}).
  *
  * That is the reader's rule — only a given some tile reads becomes a control
- * — applied to the document instead of the manifest. A local declaration is
- * built into a `Given` from its control contract; a model given is the
- * manifest's own spec, which carries what the file cannot say (`givenNames` a
- * suggest is gated by, for one).
+ * — applied to the document instead of the manifest, and so is the order. The
+ * server builds the row tile by tile, in tile order, each tile's givens as its
+ * compiled query reads them: what the tile's source reads first, then the
+ * tile's own `where:` bindings. So here too: per tile, the givens its served
+ * self read (`servedReads`), less the bindings since removed, then the tile's
+ * current bindings not already listed — a new filter lands after the tile's
+ * existing ones, where the save will put it. A model read no tile position
+ * accounts for (no `servedReads` given) goes first, in the manifest's order,
+ * since a model read is a source's and the reader lists a source's first.
+ *
+ * A local declaration is built into a `Given` from its control contract, and
+ * wins over a model given of the same name; a model given is the manifest's
+ * own spec, which carries what the file cannot say (`givenNames` a suggest is
+ * gated by, for one).
  */
 export function previewGivens(
    document: DashboardDocument,
    modelSpecs: readonly Given[],
    modelReads: ReadonlySet<string> = new Set(),
+   servedReads: ReadonlyMap<string, readonly string[]> = new Map(),
 ): Given[] {
-   const bound = new Set<string>();
-   for (const tile of document.tiles)
-      for (const filter of isQueryTile(tile) ? (tile.filters ?? []) : [])
-         bound.add(filter.given);
-
-   const out: Given[] = [];
-   const seen = new Set<string>();
-   for (const local of document.localGivens ?? []) {
-      if (!bound.has(local.name)) continue;
-      seen.add(local.name);
-      out.push(localGivenSpec(local));
+   const order: string[] = [];
+   for (const tile of document.tiles) {
+      if (!isQueryTile(tile)) continue;
+      const binds = (tile.filters ?? []).map((filter) => filter.given);
+      const served =
+         servedReads.get(tileExpressionKey(`${tile.source} -> ${tile.name}`)) ??
+         [];
+      for (const name of served)
+         if (modelReads.has(name) || binds.includes(name)) order.push(name);
+      order.push(...binds);
    }
-   for (const spec of modelSpecs) {
-      if (
-         spec.name === undefined ||
-         seen.has(spec.name) ||
-         !(bound.has(spec.name) || modelReads.has(spec.name))
-      )
-         continue;
-      seen.add(spec.name);
-      out.push(spec);
+   const placed = new Set(order);
+   const unplaced = modelSpecs.flatMap((spec) =>
+      spec.name !== undefined &&
+      modelReads.has(spec.name) &&
+      !placed.has(spec.name)
+         ? [spec.name]
+         : [],
+   );
+
+   const locals = new Map(
+      (document.localGivens ?? []).map((local) => [local.name, local]),
+   );
+   const models = new Map(
+      modelSpecs.flatMap((spec) =>
+         spec.name === undefined ? [] : [[spec.name, spec] as const],
+      ),
+   );
+   const out: Given[] = [];
+   for (const name of new Set([...unplaced, ...order])) {
+      const local = locals.get(name);
+      const spec = local ? localGivenSpec(local) : models.get(name);
+      if (spec) out.push(spec);
    }
    return out;
 }

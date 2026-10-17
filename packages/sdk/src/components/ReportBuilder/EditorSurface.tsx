@@ -312,8 +312,8 @@ export function EditorSurface({
       [doc, opened.document, servedReads],
    );
    const specs = useMemo(
-      () => previewGivens(doc, modelSpecs, modelReads),
-      [doc, modelSpecs, modelReads],
+      () => previewGivens(doc, modelSpecs, modelReads, servedReads),
+      [doc, modelSpecs, modelReads, servedReads],
    );
    // A filter in the row the builder can show and set but not change: say
    // where it is set instead. Not always the model: a report's own `source:`
