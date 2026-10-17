@@ -73,9 +73,8 @@ interface FreshnessLayer {
 }
 
 /**
- * Minimal reader over a Malloy `Tag` (see `@malloydata/malloy-tag`): scalar
- * reads by path, plus the subtree read that a property collection like
- * `queryMetadata { … }` needs.
+ * Minimal reader over a Malloy `Tag`: scalar reads by path, plus the subtree read
+ * a property collection like `queryMetadata { … }` needs.
  */
 export interface ReadableTag {
    text(...path: string[]): string | undefined;
@@ -84,9 +83,8 @@ export interface ReadableTag {
 }
 
 /**
- * Minimal surface a package must expose to compile its build plan. Both
- * {@link Package} (for the read-only `Package.buildPlan`) and the
- * materialization service (for auto-run and orchestrated builds) satisfy it.
+ * Minimal surface a package must expose to compile its build plan; satisfied by
+ * {@link Package} and the materialization service.
  */
 export interface BuildPlanPackage {
    getModelPaths(): string[];
@@ -94,19 +92,16 @@ export interface BuildPlanPackage {
    getMalloyConfig(): MalloyConfig;
    getMalloyConnection(name: string): Promise<MalloyConnection>;
    /**
-    * The package-level `materialization` config (from publisher.json),
-    * used as the least-specific layer when resolving per-source freshness /
-    * schedule. Optional so existing fixtures/callers that don't track it still
-    * typecheck (they resolve without a package default).
+    * The package-level `materialization` config (publisher.json), the
+    * least-specific layer for per-source resolution. Optional: callers without
+    * it resolve with no package default.
     */
    getMaterializationConfig?(): WirePackageMaterialization | null;
 }
 
 /**
- * Result of compiling a package's persist sources: the dependency-ordered
- * build graphs, the persist sources keyed by sourceID, the per-connection
- * digests, and the resolved live connections. The wire {@link BuildPlan} is a
- * projection of this (see {@link deriveBuildPlan}); the build engine consumes
+ * Result of compiling a package's persist sources. The wire {@link BuildPlan} is
+ * a projection of this (see {@link deriveBuildPlan}); the build engine consumes
  * the full structure.
  */
 export interface CompiledBuildPlan {
@@ -115,60 +110,49 @@ export interface CompiledBuildPlan {
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
    /**
-    * sourceID -> the package-relative path of the `.malloy` model that declares
-    * the source (the only place that mapping is known, since a sourceID's
-    * embedded modelURL is an absolute `file://` path with no package boundary).
-    * Optional so existing fixtures/callers that don't track it still typecheck.
+    * sourceID -> package-relative path of the declaring `.malloy` model. Only
+    * known here: a sourceID embeds an absolute `file://` URL with no package
+    * boundary.
     */
    sourceModelPaths?: Record<string, string>;
    /**
-    * Sources carrying a `#@ persist` annotation that Malloy's getBuildPlan() did
-    * NOT recognize as a materializable build root, so they produced no plan entry
-    * and would otherwise be a silent no-op (served live, never materialized). See
-    * {@link detectDroppedPersistSources}. Callers surface these: a load-time
-    * warning and a hard build failure, so a persist annotation is never silently
-    * dropped.
+    * `#@ persist` sources Malloy's getBuildPlan() did NOT recognize as build
+    * roots (see {@link detectDroppedPersistSources}). Callers surface these as a
+    * load-time warning and a hard build failure so the annotation is never a
+    * silent no-op.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
    /**
-    * sourceID -> the rollup it was synthesized from, for the sources that were
-    * synthesized rather than authored. Absent for an ordinary `#@ persist`
-    * source, which is what makes it the provenance signal the wire plan's
-    * `origin`/`preaggregate` fields report.
+    * sourceID -> the rollup it was synthesized from; absent for an authored
+    * `#@ persist` source. The provenance behind the wire plan's
+    * `origin`/`preaggregate` fields.
     */
    preaggregatePlans?: Record<string, RollupPlan>;
    /**
-    * sourceID -> this source's entry-point `#(authorize)` gate classification,
-    * computed HERE (compile time) because this is where the compiled
-    * `{modelDef, materializer}` pair a classification needs exists — see
-    * {@link classifyPersistSourceGate}. Consumed by a relaxation of the
-    * colocated `#@ persist` refusal (`assertColocatedPersistNotAuthorizeGated`)
-    * that decides whether to admit a gated source; recording the outcome here
-    * changes no refusal on its own. Optional so existing fixtures/callers
-    * that don't track it still typecheck.
+    * sourceID -> entry-point `#(authorize)` gate classification, computed at
+    * compile time where the `{modelDef, materializer}` pair exists (see
+    * {@link classifyPersistSourceGate}). Read by
+    * `assertColocatedPersistNotAuthorizeGated` to decide whether to admit a gated
+    * source.
     */
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
 }
 
-/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification:
- *  whether every gate on the entry point RESOLVED, not which route it was
- *  written on. `"row_level"` is the name the colocated relaxation was built
- *  under and is kept so a stored plan still reads; an `#(authorize)` lock
- *  lands there too. That is deliberate — this decides whether a source may be
- *  BUILT, and the lock is decided per request at serve time, where
- *  `Model.queryEntryPointHasRowLevelGate` blocks routing to frozen rows on ANY
- *  collected gate regardless of route. */
+/**
+ * Whether every gate on the entry point RESOLVED, not which route it was written
+ * on. `"row_level"` is kept as the name so stored plans still read; an
+ * `#(authorize)` lock lands there too, deliberately — this decides whether a
+ * source may be BUILT, and `Model.queryEntryPointHasRowLevelGate` blocks routing
+ * to frozen rows per request on ANY collected gate.
+ */
 type PersistSourceGateClassification = "row_level" | "rejected";
 
 /**
- * `classification` is whether the entry point's gates resolved to something
- * enforceable, per `gate_classification.ts`'s vocabulary.
- * `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
- * deep walk finds a note reachable only through a join — see that function's
- * doc for why that must gate the relaxation independently of
- * `classification`: `collectEntryPointGates` does not trace joins, so a
- * join-carried gate can be entirely invisible to `classification` while still
- * being real and enforced-against today.
+ * `classification`: whether the entry point's gates resolved to something
+ * enforceable. `attributed`: `false` when {@link isAuthorizeAttributedToEntryPoint}
+ * finds a note reachable only through a join — checked independently because
+ * `collectEntryPointGates` does not trace joins, so `classification` cannot see
+ * a join-carried gate.
  */
 export interface PersistSourceGateOutcome {
    classification: PersistSourceGateClassification;
@@ -199,13 +183,8 @@ function wireTerm(term: DynamicTerm): WireStrippedTerm {
 
 /**
  * The plan's `partition`, `strippedTerms` and `joinedTerms` for one source.
- *
- * Degrades to omitting a field rather than reporting a wrong one: a refusal here
- * cannot occur for a source that reached this projection (the gate refuses it
- * first), and if one somehow does, reporting nothing says "unpartitioned /
- * nothing stripped", which is what every source built before these fields
- * existed also says. The build does not read these — it re-resolves — so a gap
- * here misinforms a consumer without changing what is written.
+ * Omits a field rather than reporting a wrong one (the gate normally refuses such
+ * a source first). Informational only: the build re-resolves these.
  */
 function planDynamicFields(
    source: PersistSource,
@@ -239,16 +218,10 @@ function planDynamicFields(
 }
 
 /**
- * A source's PUBLIC column names, or a throw if they can't be determined. The
- * strict counterpart to {@link deriveColumns}, which degrades to `[]` because its
- * caller (the wire build plan) only reports columns. Here the list decides what
- * gets WRITTEN, so "unknown" must not read as "nothing to narrow".
- *
- * A name is returned only for a field that is demonstrably a public atomic field;
- * an unreadable field list, an unreadable individual field, or an empty result all
- * throw. Empty is a throw rather than a pass-through because a source with no
- * public atomic columns means everything `getSQL` projects is hidden — the worst
- * case to materialize, not a benign one.
+ * A source's PUBLIC column names, or a throw. The strict counterpart to
+ * {@link deriveColumns}: this list decides what gets WRITTEN, so "unknown" must
+ * not read as "nothing to narrow". Empty throws too — it means everything
+ * `getSQL` projects is hidden.
  */
 function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
@@ -270,24 +243,15 @@ function publicColumnNames(persistSource: PersistSource): string[] {
 
 /**
  * Wrap a source's build SQL to project only its PUBLIC columns. `getSQL` emits
- * every underlying column, including ones the source hides (`except:`, non-public
- * access modifiers); this narrows the physical table to the public surface.
+ * every underlying column, including hidden ones (`except:`, non-public access).
  *
- * A `storage=` build must not materialize a hidden column. Reachability THROUGH
- * the source is separately bounded by the declared serve shape (see
- * `narrowSchemaToPublic`, and the `shape-bounds-physical-columns` scenario that
- * proves a physical column absent from the shape does not resolve). What this
- * projection prevents is the hidden column's values sitting AT REST in the
- * destination store, where direct catalog access reaches them and where the data
- * may have crossed a trust boundary the source's visibility rules were meant to
- * hold. Applies to BOTH storage build paths (the warehouse-passthrough
- * single-source build and the chained "stack on the parent" downstream build).
+ * A `storage=` build must not put a hidden column's values AT REST in the
+ * destination, where direct catalog access reaches them past the source's
+ * visibility rules (reads THROUGH the source are bounded separately by
+ * `narrowSchemaToPublic`). Applies to both storage build paths.
  *
- * Fails CLOSED: if the public surface can't be determined the build is refused,
- * rather than widening to everything `getSQL` projects. This matches the rest of
- * the eligibility surface (see `assertMaterializationEligible`), and it fires
- * before any warehouse or destination SQL runs, so a refusal writes nothing and
- * leaves the previous generation serving.
+ * Fails CLOSED: an undeterminable public surface refuses the build before any
+ * SQL runs, leaving the previous generation serving.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source.
  */
@@ -319,13 +283,10 @@ export function projectToPublicColumns(
 }
 
 /**
- * All key=value fields of a source's `#@ persist` annotation (e.g.
- * `{ name: "engaged_events", realization: "COPY" }`), degrading to {} if the
- * annotation is absent or unparseable. The control plane consumes these — most
- * importantly `name`, which it uses as the materialized table name (and which
- * may carry a dialect-style container path like `dataset.table`). Returning the
- * full set rather than a fixed subset means new persist directives flow through
- * without a publisher change.
+ * All scalar key=value fields of a source's `#@ persist` annotation, or {} if
+ * absent or unparseable. The control plane uses `name` as the table name (it may
+ * carry a container path like `dataset.table`). The full set is returned so new
+ * directives flow through without a publisher change.
  */
 export function deriveAnnotationFields(
    persistSource: PersistSource,
@@ -338,19 +299,16 @@ export function deriveAnnotationFields(
          if (text !== undefined) out[key] = text;
       }
    } catch {
-      // Degrade to {} — mirrors deriveColumns / selfAssignTableName.
+      // Degrade to {}.
    }
    return out;
 }
 
 /**
- * Read the freshness keys (`freshness.window`, `freshness.fallback`) from one
- * Malloy tag layer, keeping only recognized values. These are dotted/nested tag
- * properties, so they are NOT captured by the scalar {@link deriveAnnotationFields}
- * loop and must be read by path here. (Per-source `sharing`/`schedule` were
- * retired — scope is package-level and a schedule is package-root-only — so they
- * are not resolved here; declaring either on a source is a publish-time manifest
- * error, enforced in Package.persistencePolicyWarnings.)
+ * Read `freshness.window` / `freshness.fallback` from one tag layer, keeping only
+ * recognized values. Nested keys, so {@link deriveAnnotationFields} misses them.
+ * Per-source `sharing`/`schedule` are rejected at publish
+ * (Package.persistencePolicyWarnings), not resolved here.
  */
 function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
    if (!tag || typeof tag.text !== "function") return {};
@@ -368,17 +326,10 @@ function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
 }
 
 /**
- * The two homes a model-file (`##`) knob can be declared in, most specific
- * first: the `materialization` envelope, then the bare form.
- *
- * The model-file level mirrors the manifest's shape verbatim — `##
- * materialization.freshness.window="24h"` is the manifest's block in tag syntax
- * — so that is where a file-level reader looks. The bare form
- * (`## freshness.window="24h"`), which shipped first, stays readable underneath:
- * the annotation rides the published package, so a package published before the
- * envelope existed keeps resolving until it is republished. Resolution is
- * per-property, so a file may declare one knob in each home without the envelope
- * hiding the other.
+ * The two homes a model-file (`##`) knob can be declared in: the
+ * `materialization` envelope (mirroring the manifest's shape), then the bare form
+ * (`## freshness.window="24h"`), still read so already-published packages keep
+ * resolving. Callers resolve per property, so each home can set different knobs.
  */
 function modelTagLayers(
    tag: ReadableTag | undefined,
@@ -430,20 +381,17 @@ function safeModelTag(source: PersistSource): ReadableTag | undefined {
 }
 
 /**
- * Resolve a source's EFFECTIVE freshness with most-specific-wins precedence,
- * per field: source annotation > model-file default > package default. Reported
- * verbatim (unset at every level stays null so the control plane can
- * distinguish "unset" — apply platform default — from an explicit declaration).
- * Invalid `fallback` values are dropped, never defaulted. Freshness is valid in
- * both scope modes.
+ * Resolve a source's EFFECTIVE freshness, most-specific-wins per field: source >
+ * model-file > package. Null when unset everywhere, so the control plane can tell
+ * "unset" from a declaration. Invalid `fallback` values are dropped, never
+ * defaulted.
  */
 export function resolveFreshness(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): WireFreshness | null {
    const layers: FreshnessLayer[] = [
-      // `#@ persist` declares knobs bare — the annotation IS a materialization
-      // declaration, so there is no envelope to look under.
+      // `#@ persist` declares knobs bare: it IS the materialization declaration.
       tagFreshnessLayer(safeSourceTag(source)),
       ...modelTagLayers(safeModelTag(source)).map(tagFreshnessLayer),
       packageFreshnessLayer(packageMaterialization),
@@ -460,15 +408,9 @@ export function resolveFreshness(
 }
 
 /**
- * Read the `queryMetadata` property collection from one tag layer. A collection,
- * not a scalar: `queryMetadata { team="finance" env="prod" }` and the equivalent
- * dotted form `queryMetadata.team="finance"` both land here, and neither is
- * captured by the scalar {@link deriveAnnotationFields} loop.
- *
- * Every string-valued property is kept verbatim, including ones that violate
- * Malloy's bag contract — publish reports those as warnings and the runtime
- * clamps them, so an author's typo is visible somewhere instead of vanishing
- * between the annotation and the warehouse.
+ * Read the `queryMetadata` property collection (block or dotted form) from one
+ * tag layer. Every string property is kept verbatim, even ones violating Malloy's
+ * bag contract: publish warns and the runtime clamps, so a typo stays visible.
  */
 function tagQueryMetadataLayer(tag: ReadableTag | undefined): QueryMetadata {
    const subtree =
@@ -483,27 +425,16 @@ function tagQueryMetadataLayer(tag: ReadableTag | undefined): QueryMetadata {
          if (text !== undefined) layer[name] = text;
       }
    } catch {
-      // Degrade to {} — mirrors deriveAnnotationFields / deriveColumns.
       return {};
    }
    return layer;
 }
 
 /**
- * Resolve a source's EFFECTIVE per-query metadata, most-specific-wins PER
- * PROPERTY: `#@ persist queryMetadata.*` > model-file
- * `## materialization.queryMetadata.*` (bare `## queryMetadata.*` underneath) >
- * package `materialization.queryMetadata`.
- *
- * Per-property rather than per-layer, exactly like {@link resolveFreshness}, so a
- * package-wide `team` property survives a source that only overrides `workload`.
- * Null when no layer declares anything, so absence on the wire always means
- * "declared nowhere" rather than "declared empty".
- *
- * This is the value the publisher attaches (merged under its own context) to
- * every statement it issues while building the source. It is deliberately absent
- * from the source's content address: changing a tag must never re-address a
- * table.
+ * Resolve a source's EFFECTIVE per-query metadata for the build path (see
+ * {@link composeDeclaredQueryMetadata} for precedence). Attached to every
+ * statement the build issues, and deliberately absent from the content address:
+ * changing a tag must never re-address a table.
  */
 export function resolveQueryMetadata(
    source: PersistSource,
@@ -519,47 +450,27 @@ export function resolveQueryMetadata(
 /**
  * The author-declared layers of one statement's metadata, composed
  * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
- * `## queryMetadata.*` > package `queryMetadata`.
+ * `## queryMetadata.*` > package `queryMetadata`. Each of the latter two has a
+ * deprecated `materialization.`-prefixed spelling that sits UNDERNEATH its
+ * canonical form — the opposite of freshness (see the body).
  *
- * The package and model-file layers each have a deprecated
- * `materialization.`-prefixed spelling, still read, sitting UNDERNEATH its
- * canonical form — so a file declaring both resolves to the canonical one. That
- * is the OPPOSITE of freshness, where the prefixed spelling IS canonical; the
- * ordering note in the body is where that trap is spelled out.
- *
- * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
- * the same layers from a loaded model, where no `PersistSource` exists. A
- * declaration describes the source's traffic, not only its build, so a served
- * query carries it too; {@link resolveQueryMetadata} is the build-path caller,
- * which still reads both tags off the persist source it is building.
- *
- * A layer whose tag is absent contributes nothing rather than clearing what a
- * less specific layer set — so a package-wide `team` survives a source that only
- * overrides `workload`, and a model with no `##` tag does not erase the package
- * default. Null when no layer declares anything, so absence always means
- * "declared nowhere" rather than "declared empty".
+ * Takes tags rather than a {@link PersistSource} so the serve path can compose
+ * the same layers from a loaded model. An absent layer contributes nothing, so a
+ * package-wide `team` survives a source that only overrides `workload`. Null when
+ * no layer declares anything.
  */
 export function composeDeclaredQueryMetadata(layers: {
-   /**
-    * The package's declared bag — a bag, not the materialization policy that
-    * carries it on the wire. Nothing here needs a schedule or a freshness
-    * window, and threading the policy object through would say this layer is
-    * about materialization when it is not.
-    */
+   /** The package's declared bag, not the materialization policy carrying it. */
    packageDeclaration?: QueryMetadata | null;
    modelTag?: ReadableTag;
    sourceTag?: ReadableTag;
 }): QueryMetadata | null {
-   // Least specific first, so a more specific layer overwrites property by
-   // property.
+   // Least specific first, so later layers overwrite property by property.
    //
-   // `modelTagLayers` yields [envelope, bare], which is most-specific-first for
-   // freshness — there the envelope is the canonical spelling and the bare form
-   // is the legacy one. Query metadata migrates the other way: the bare `##
-   // queryMetadata.*` is canonical and `## materialization.queryMetadata.*` is
-   // deprecated. So the list is consumed as-is rather than reversed, putting the
-   // deprecated spelling underneath. Reversing it let the spelling we tell
-   // authors to stop writing silently override the one we tell them to write.
+   // `modelTagLayers` yields [envelope, bare]. For query metadata the bare form
+   // is canonical and the envelope deprecated, so it is consumed as-is, NOT
+   // reversed: reversing would let the deprecated spelling override the
+   // canonical one.
    const ordered: QueryMetadata[] = [
       layers.packageDeclaration ?? {},
       ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
@@ -577,23 +488,14 @@ export function flattenDependsOn(node: {
 }
 
 /**
- * Yield every persist source of one graph in dependency order — each source's
- * persist dependencies before the source itself — resolving each node's
- * sourceID against the sources map and skipping nodes whose source is absent.
- * Centralizes the graph→source walk shared by the planning and build loops.
+ * Yield every persist source of one graph in dependency order, skipping nodes
+ * whose source is absent from `sources`.
  *
- * <p>Malloy's {@code getBuildPlan()} puts only the <em>root</em> persist sources
- * (the terminals nothing else consumes) in {@code graph.nodes}; every transitive
- * persist dependency is nested under a root in its recursive {@code dependsOn}
- * tree (and present in {@code sources}). Walking only {@code graph.nodes}
- * silently skips every intermediate persist source, so it never gets
- * materialized (it only gets a table by coincidence when it shares a
- * sourceEntityId with a root). We post-order DFS the {@code dependsOn} tree
- * so dependencies are built first (a downstream build can then read its upstream
- * source's freshly materialized table), deduplicating shared (diamond)
- * dependencies by sourceID so each is yielded once. This mirrors the canonical
- * malloy-cli reference build loop (its {@code flattenBuildNodes} +
- * dedup-by-sourceID; see malloydata/malloy-cli src/malloy/build_graph.ts).
+ * `getBuildPlan()` puts only ROOT persist sources in `graph.nodes`; transitive
+ * dependencies are nested in each node's `dependsOn` tree, so walking only
+ * `graph.nodes` would never materialize an intermediate source. Post-order DFS
+ * builds dependencies first and dedups diamonds by sourceID, mirroring
+ * malloy-cli's `flattenBuildNodes` (src/malloy/build_graph.ts).
  */
 export function* iterGraphSources(
    graph: MalloyBuildGraph,
@@ -603,9 +505,8 @@ export function* iterGraphSources(
 
    function* visit(node: BuildNode): Iterable<PersistSource> {
       if (seen.has(node.sourceID)) return;
-      // Dependencies first: a source built later in the run resolves its
-      // upstream references against the tables built earlier (see the Manifest
-      // threading in executeInstructedBuild).
+      // Dependencies first: later builds resolve upstream references against
+      // tables built earlier (see executeInstructedBuild's Manifest threading).
       for (const dep of node.dependsOn) {
          yield* visit(dep);
       }
@@ -623,33 +524,21 @@ export function* iterGraphSources(
 
 /**
  * The sourceEntityId for a persist source: a stable content address of its
- * connection identity and canonical SQL. Centralizes the
- * (source, connectionDigests) call shape so planning, self-instruction, build,
- * and serve-time manifest resolution all agree on the same id.
+ * connection identity and canonical SQL. The only place the publisher derives
+ * the id, so planning, build and serve-time manifest resolution all agree.
  *
- * <p>This is the single seam between the publisher and the Malloy compiler's
- * source-identity recipe. Today it delegates to
- * {@code PersistSource.makeBuildId(connectionDigest, sql)} — the compiler's
- * current hex content hash. The connection's contribution is already
- * fingerprint-aware: when a connection carries an API `fingerprint`, its
- * digest IS that fingerprint verbatim (see applyConnectionFingerprint in
- * connection.ts), so ids stay stable across credential rotation. When the
- * compiler ships the scoped UUID5 sourceEntityId recipe (scope + connection
- * fingerprint + canonical SQL), swap the delegation below to the new compiler
- * API — this function is the only place the publisher derives the id.
+ * The connection digest is fingerprint-aware (see applyConnectionFingerprint in
+ * connection.ts), so ids survive credential rotation.
  */
 export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
-   // The no-options `getSQL()` is load-bearing, and incremental refresh is what
-   // makes it so: this address is the key the covered_through ledger is stored
-   // under (see incremental_build.ts), so it must describe WHAT the source
-   // computes and never HOW FAR a run got. A boundary value reaching this SQL —
-   // via a buildManifest, a given, or a range predicate — would re-address the
-   // table on every refresh, orphaning the data and the boundary together and
-   // re-seeding forever. A declaration alone must not move it either, which is
-   // pinned as fact 1 in incremental_compiler_contract.spec.ts.
+   // The no-options `getSQL()` is load-bearing: this address keys the
+   // covered_through ledger (incremental_build.ts), so it must describe WHAT the
+   // source computes, never HOW FAR a run got. A boundary value in this SQL would
+   // re-address the table every refresh and re-seed forever. A declaration alone
+   // must not move it either (fact 1 in incremental_compiler_contract.spec.ts).
    return source.makeBuildId(
       connectionDigests[source.connectionName],
       addressPartitionLayout(source, source.getSQL()),
@@ -657,13 +546,10 @@ export function computeSourceEntityId(
 }
 
 /**
- * The key the compiler itself files a persist source's table under when it
- * substitutes a manifest entry: `makeBuildId` of the connection digest and
- * the source's SQL, with no partition layout. {@link computeSourceEntityId}
- * folds the layout in, so for a partitioned source the two differ and the
- * compiler cannot find the publisher's entry by its own key; a manifest
- * handed to the compiler for a partitioned chain carries the entry under both
- * (see `manifestForCompiler`).
+ * The key the compiler itself files a source's table under: like
+ * {@link computeSourceEntityId} but without the partition layout. For a
+ * partitioned source the two differ, so a manifest handed to the compiler
+ * carries the entry under both (see `manifestForCompiler`).
  */
 export function compilerBuildId(
    source: PersistSource,
@@ -677,22 +563,13 @@ export function compilerBuildId(
 
 /**
  * Fold a source's `partition=` into the text its address is computed from.
+ * `getSQL()` carries no annotation bytes, so without this a `partition=` change
+ * would be skipped as unchanged and the table would keep the old layout.
  *
- * The layout is part of what the stored artifact IS, and `getSQL()` deliberately
- * carries no annotation bytes — so without this, changing `partition=` leaves
- * the address identical, the build is skipped as unchanged, and the table keeps
- * a layout the author has stopped declaring.
- *
- * Derived from the source here rather than taken as an argument so every caller
- * gets the same answer: `build_targets_address_equality` pins that a plan
- * target's `buildId` equals what this function returns, and a parameter one
- * caller could omit is a way for those two to disagree.
- *
- * A source with no `partition=` appends nothing, so its address is byte-identical
- * to what it was — existing artifacts do not re-address on upgrade. Unlike the
- * boundary values the doc above warns off, this is a declaration: it moves the
- * address ONCE when the author changes it, which is the rebuild they asked for,
- * rather than on every refresh.
+ * Derived here rather than passed in so every caller agrees
+ * (`build_targets_address_equality` pins it). No `partition=` appends nothing,
+ * keeping unpartitioned addresses stable; a change moves the address once, which
+ * is the rebuild the author asked for.
  */
 function addressPartitionLayout(source: PersistSource, sql: string): string {
    let columns: string[] = [];
@@ -701,12 +578,10 @@ function addressPartitionLayout(source: PersistSource, sql: string): string {
          source,
          deriveAnnotationFields(source),
       );
-      // A refusal contributes nothing: the source cannot build at all, so its
-      // address is never used to decide whether one was skipped.
+      // A refusal contributes nothing: such a source cannot build at all.
       if (resolved.ok) columns = resolved.columns;
    } catch {
-      // An unreadable annotation addresses as unpartitioned — the same answer
-      // the source had before it declared one.
+      // An unreadable annotation addresses as unpartitioned.
    }
    if (columns.length === 0) return sql;
    return `${sql}\n-- partitioned by: ${columns.join(", ")}`;
@@ -739,29 +614,16 @@ export async function resolvePackageConnections(
 }
 
 /**
- * Compile every model in the package and collect the dependency-ordered
- * build graphs, persist sources, connection digests, and resolved
- * connections. The build plan is a pure function of the compiled model plus
- * connection config (no warehouse access).
- */
-/**
- * Names of sources in a compiled model that carry a `#@ persist` annotation but
- * are absent from the model's build plan — i.e. Malloy's getBuildPlan() did not
- * recognize them as a materializable build root and silently returned no graph
- * for them.
+ * Names of sources carrying `#@ persist` that are absent from the model's build
+ * plan.
  *
- * BACKSTOP for a Malloy getBuildPlan() gap: it silently returns no graph for a
- * `#@ persist` source whose shape it doesn't treat as a build root (observed for
- * a filtered pass-through `X is <table> extend { where … }`, which stays type
- * `table`; only query-shaped sources are treated as roots). Without this check
- * the annotation is a silent no-op (served live, no build, no error). The primary
- * fix is in Malloy (recognize the shape or emit a diagnostic); until then, detect
- * the annotated-but-absent source here so callers can refuse loudly.
+ * Backstop for a Malloy getBuildPlan() gap: it silently returns no graph for a
+ * persist source it doesn't treat as a build root (e.g. a filtered pass-through
+ * `X is <table> extend { where … }`, which stays type `table`), making the
+ * annotation a silent no-op. Detecting it here lets callers refuse loudly.
  *
- * Reads the annotation exactly as Malloy's own checkPersistAnnotation does
- * (`Annotations(def.annotations).parseAsTag('@').tag.has('persist')`). Best-effort
- * and fail-open: any introspection failure yields no dropped names rather than
- * risking a false positive that would wrongly fail a healthy build.
+ * Reads the annotation as Malloy's checkPersistAnnotation does. Fail-open: an
+ * introspection failure yields no names rather than failing a healthy build.
  */
 function detectDroppedPersistSources(
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -796,44 +658,21 @@ function detectDroppedPersistSources(
 
 /**
  * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
- * whether it is `attributed` — see {@link PersistSourceGateOutcome}'s doc.
+ * whether it is `attributed` — see {@link PersistSourceGateOutcome}.
  *
- * Calls `gate_classification.ts`'s standalone functions directly, rather than
- * standing up a throwaway `Model` — a build-plan compile has exactly the
- * `{modelDef, materializer}` shape those functions operate on (a compiled
- * `ModelDef` plus the live `ModelMaterializer` that produced it), and nothing
- * else. `materializer` MUST be the same one that compiled `modelDef` — see
- * `liftGateCondition`'s doc for why a fresh `loadModel` cannot substitute (it
- * mints a new given identity per call).
+ * `materializer` MUST be the one that compiled `modelDef`: a fresh `loadModel`
+ * mints a new given identity per call (see `liftGateCondition`).
  *
- * Gate GROUPS: each `GateEntry` `collectEntryPointGates` returns is one AND'd
- * group (its own conjunction already folded by `resolveGateShape`'s
- * `gateFilterText`); groups are classified independently here and combined
- * with enforcement's own dominance rule — refuse if ANY group rejects, else
- * `row_level`. No entry-point gate at all (`groups.length === 0`) is
- * vacuously `row_level` (no group to reject) — the source is unrestricted at
- * its entry point; `attributed` is what still catches a gate hiding behind a
- * join in that case. A repeated `#(authorize)` term that any ONE of its
- * siblings can't express (materialization-ineligible) now rejects the whole
- * group, where before a source could declare at most one term — narrower
- * than before, not looser.
+ * Each `GateEntry` is one AND'd group; groups combine by enforcement's dominance
+ * rule — refuse if ANY group rejects, else `row_level`. No gate at all is
+ * vacuously `row_level`; `attributed` still catches a gate behind a join.
  *
- * Fails CLOSED: a throw anywhere in classification (this function's own
- * `try`, not `resolveGateShape`'s internal one — that already degrades a
- * lift/classify failure to `{shape: "rejected"}` without throwing) records
- * `rejected` + `attributed: false`, never a partial/optimistic result.
+ * Fails CLOSED: any throw records `rejected` + `attributed: false`.
  *
- * Deterministic and network-free: `collectEntryPointGates` reads only the
- * already-compiled `modelDef` and struct annotations (no I/O), and
- * `resolveGateShape`'s lift (`liftGateCondition`) compiles a one-row PROBE
- * query through the SAME already-loaded `materializer` — a pure in-memory
- * semantic recompile that only generates SQL text, never opens the warehouse
- * connection or executes anything against it. Load time DOES compile a probe
- * per entry point/gate group (`validateAuthorizeProbes`, `./authorize`), but
- * that call returns `Promise<void>` and keeps no classification result: the
- * only survivor is `SerializedModel.authorizeWarnings: string[]` — so no
- * `row_level`/`rejected` outcome is reachable from that call. This
- * compile-time call is the only place that outcome is actually computed.
+ * Network-free: the lift compiles a probe through the already-loaded
+ * materializer, generating SQL text only. This is the only place the
+ * `row_level`/`rejected` outcome is computed (load-time probe validation keeps
+ * only warnings).
  */
 export async function classifyPersistSourceGate(
    persistSource: PersistSource,
@@ -848,8 +687,7 @@ export async function classifyPersistSourceGate(
          entryStruct,
          modelDef,
          new Set(),
-         // This IS the entry point — see `collectEntryPointGates`'s
-         // `treatAsOwnGate` doc.
+         // This IS the entry point (`treatAsOwnGate`).
          true,
       );
       const graftScope: GraftScope = { modelDef, materializer, cacheScope };
@@ -949,13 +787,9 @@ export async function collectModelBuildPlan(
 ): Promise<void> {
    const { modelPath, packagePath, materializer, malloyModel, getRuntime } =
       args;
-   // Pre-aggregation, at the build-plan seam. Runs BEFORE the two early `return`s
-   // below on purpose: a model can declare `#@ preaggregate` while having no
-   // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
-   // flag, and in both cases the annotation should still produce a rollup —
-   // the SYNTHESIZED model declares the flags it needs and is the only thing
-   // holding a persist source. Skipping here would make a valid annotation a
-   // silent no-op, which the publish gate exists to prevent.
+   // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
+   // `#@ preaggregate` with no persist source and no `experimental.persistence`
+   // flag — the SYNTHESIZED model carries both — and must still get its rollup.
    const synthesized =
       args.synthesized !== undefined
          ? args.synthesized
@@ -971,32 +805,23 @@ export async function collectModelBuildPlan(
       const rollupNames = new Set(
          synthesized.plans.map((p) => p.rollupSourceName),
       );
-      // Graphs wholesale, because they carry the dependency edges: when the
-      // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
-      // it, and pruning that would let a rollup build before the table it
-      // reads exists.
+      // Graphs wholesale: they carry the edge to a persisted base, without
+      // which a rollup could build before the table it reads.
       parts.graphs.push(...rollupPlan.graphs);
-      // Sources: only the rollups. The synthesized model imports the
-      // author's, so a persist source declared there also appears in this
-      // plan — but under the SAME sourceID, since a sourceID embeds the
-      // model that DECLARES a source rather than the one importing it. The
-      // normal path below adds those from the author's own plan, so leaving
-      // them out here avoids re-deriving an identical entry.
+      // Sources: only the rollups. The author's persist sources appear here
+      // too (same sourceID, since it embeds the declaring model) and are added
+      // by the normal path below.
       const planByName = new Map(
          synthesized.plans.map((p) => [p.rollupSourceName, p]),
       );
-      // Lazily built on the first rollup source: same reasoning as the
-      // author-model loop below.
+      // Lazily built, as in the author-model loop below.
       let rollupClassificationCtx:
          | { modelDef: ModelDef; deps: GateClassificationDeps }
          | undefined;
       for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
          if (!rollupNames.has(source.name)) continue;
          parts.sources[sourceID] = source;
-         // The AUTHOR's model path, not the synthesized one: a rollup is
-         // declared by no file, and the model carrying the annotations is
-         // where someone would go to change it (see api-doc's
-         // PersistSourcePlan.modelPath).
+         // The AUTHOR's model path: that is where the annotation is changed.
          parts.sourceModelPaths[sourceID] = modelPath;
          const rollup = planByName.get(source.name);
          if (rollup) parts.preaggregatePlans[sourceID] = rollup;
@@ -1022,15 +847,9 @@ export async function collectModelBuildPlan(
       }
    }
 
-   // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
-   // on any model that lacks the flag — it does NOT return empty. So a
-   // header-less non-persist model in the package (e.g. an imported base
-   // model that only defines raw sources) would abort the entire package
-   // build plan, silently dropping every persist source in every other
-   // model. Mirror Malloy's own guard and skip such models: without the flag
-   // a model cannot carry a functioning persist source anyway. Models that
-   // DO have the flag but declare no persist source return empty graphs and
-   // are skipped by the `graphs.length === 0` check below.
+   // getBuildPlan() THROWS on a model without `##! experimental.persistence`,
+   // which would abort the whole package's plan. Such a model cannot carry a
+   // persist source anyway, so skip it, mirroring Malloy's own guard.
    const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
    if (!modelTag.has("experimental", "persistence")) return;
 
@@ -1043,9 +862,8 @@ export async function collectModelBuildPlan(
       });
    }
 
-   // Detect `#@ persist` sources the plan didn't recognize (see
-   // detectDroppedPersistSources). Runs BEFORE the empty-graphs `return`, so
-   // a model whose ONLY persist source is a dropped shape is still caught.
+   // BEFORE the empty-graphs `return`, so a model whose only persist source is
+   // a dropped shape is still caught.
    const recognizedNames = new Set(
       Object.values(buildPlan.sources).map((s) => s.name),
    );
@@ -1059,9 +877,7 @@ export async function collectModelBuildPlan(
    if (buildPlan.graphs.length === 0) return;
 
    parts.graphs.push(...buildPlan.graphs);
-   // Lazily built on the first persist source: avoids reading
-   // `malloyModel.givens`/`._modelDef` for a model that declares none (a
-   // model can have the persistence flag and yet build no persist source).
+   // Lazily built on the first persist source.
    let classificationCtx:
       | { modelDef: ModelDef; deps: GateClassificationDeps }
       | undefined;
@@ -1108,9 +924,8 @@ export async function resolveConnectionDigests(
          continue;
       }
       if (!connectionDigests[graph.connectionName]) {
-         // getDigest() is fingerprint-aware: a connection configured with an
-         // API `fingerprint` returns it verbatim (applyConnectionFingerprint),
-         // so a credential rotation does not re-address its sources.
+         // Fingerprint-aware (applyConnectionFingerprint), so credential
+         // rotation does not re-address sources.
          connectionDigests[graph.connectionName] = await conn.getDigest();
       }
    }
@@ -1146,37 +961,25 @@ export function deriveBuildPlan(
    const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
-      // One unreadable source must not cost the package its plan (the same
-      // fallback collectIncrementalDeclarations takes). getSQL() and
-      // computeSourceEntityId below throw for a source the colocated tier
-      // deliberately admits — one referencing a given with no default — and an
-      // escaping throw leaves colocatedSourceEligibility unknown, which drops
-      // EVERY colocated binding for the package rather than this one source.
+      // One unreadable source must not cost the package its plan: getSQL()
+      // throws for a colocated source referencing a given with no default, and
+      // an escaping throw would drop EVERY colocated binding for the package.
       try {
          const annotationFields = deriveAnnotationFields(source);
 
-         // Tier-appropriate eligibility, BEFORE touching getSQL()/
-         // computeSourceEntityId() below: a free-parameter or given-referencing
-         // source fails those calls, so a refused source must be diverted into
-         // `refusedSources` (which needs neither) rather than attempted here. The
-         // tier mirrors the build path's own choice (deriveSelfInstructions /
-         // executeInstructedBuild): a declared `storage=` gets the full,
-         // unconditional storage-destination gate; a plain `#@ persist` gets the
-         // colocated gate, which — unlike the storage one — admits a proven
-         // resolved, fully-attributed gate. Using the storage
-         // gate for every source regardless of declared tier (the existing
-         // `SourceEligibility.refused`, kept for its own serve-binding purpose)
-         // would misreport a now-buildable colocated source as refused.
+         // Tier-appropriate eligibility BEFORE getSQL()/computeSourceEntityId(),
+         // which fail for a refused source. Mirrors the build path: `storage=`
+         // gets the storage-destination gate; plain `#@ persist` gets the
+         // colocated gate, which admits a resolved, fully-attributed gate. The
+         // storage gate for every source would misreport buildable colocated
+         // sources as refused.
          const declaresStorage = !!annotationFields.storage;
          const rollup = options?.preaggregatePlans?.[sourceID];
-         // A rollup's own eligibility gate refuses UNCONDITIONALLY when its base is
-         // gated (assertColocatedPersistNotAuthorizeGated's origin === "preaggregate"
-         // branch) — that refusal governs whether the rollup MATERIALIZES, enforced
-         // separately at build time (materialization_service.ts). Synthesis is
-         // unaffected by it: the plan still reports the rollup Malloy synthesized, so
-         // a gate stops materialization without also hiding the rollup from the plan.
-         // See preaggregation_seams.spec.ts's "gate stops materialization, not
-         // synthesis" test and docs/materialization.md.
+         // A rollup over a gated base is refused UNCONDITIONALLY, but that
+         // governs only whether it MATERIALIZES (enforced at build time); the plan
+         // still reports the synthesized rollup. See preaggregation_seams.spec.ts
+         // ("gate stops materialization, not synthesis") and
+         // docs/materialization.md.
          if (!rollup) {
             try {
                if (declaresStorage) {
@@ -1194,9 +997,8 @@ export function deriveBuildPlan(
                   );
                }
             } catch (err) {
-               // Only an eligibility refusal is reportable as one; an unexpected
-               // internal throw would otherwise reach the host as a SECURITY
-               // refusal it never earned.
+               // Only an eligibility refusal is reportable; anything else must not
+               // masquerade as a security refusal.
                if (!(err instanceof MaterializationEligibilityError)) throw err;
                refusedSources[sourceID] = {
                   name: source.name,
@@ -1209,28 +1011,15 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
-            // A rollup needs BOTH gates when it declares a destination, and the
-            // two answer different questions. The authorize refusal is
-            // unconditional for `origin === "preaggregate"` regardless of tier — a
-            // rollup groups ACROSS the gated column, so it can never be row-
-            // filtered afterwards — and the storage-destination gate is the same
-            // one an authored `#@ persist storage=` passes. Neither subsumes the
-            // other, so a storage rollup runs both.
-            // The two gates are recorded differently, and the difference is the
-            // `continue` below rather than the message.
+            // A storage rollup runs BOTH gates; neither subsumes the other. The
+            // authorize refusal is unconditional for rollups (they group ACROSS
+            // the gated column, so cannot be row-filtered afterwards).
             //
-            // The AUTHORIZE refusal leaves the rollup in `sources`: Malloy
-            // synthesized it, and the colocated companion may still offer it, so
-            // refused-and-present is both true at once. That is the coexistence the
-            // spec permits for this tier alone.
-            //
-            // The STORAGE refusal does not. Such a rollup cannot build anywhere —
-            // its destination is the only place it was ever going to be written —
-            // so leaving it in `sources` carrying `annotationFields.storage` states
-            // that a table is coming that never is. `Package.storageWarnings` reads
-            // that field with no refusal check and would announce a write-only
-            // rollup as materialized; the auto-run walks the same compiled sources
-            // and would try to build it.
+            // An AUTHORIZE refusal leaves the rollup in `sources` too (Malloy
+            // synthesized it) — the coexistence the spec permits for this tier
+            // alone. A STORAGE refusal removes it: the rollup can never be
+            // written, and `Package.storageWarnings` and the auto-run would
+            // otherwise treat it as materialized/buildable.
             let storageRefused = false;
             try {
                assertColocatedPersistNotAuthorizeGated(
@@ -1250,54 +1039,24 @@ export function deriveBuildPlan(
                }
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
-               // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
-               // (it will never materialize) and wireSources below (Malloy still
-               // synthesized it) — both true at once, only for the preaggregate tier.
                refusedSources[sourceID] = {
                   name: source.name,
                   sourceID: source.sourceID,
                   modelPath: sourceModelPaths?.[sourceID],
-                  // `preaggregate` whether or not the rollup declared a
-                  // destination, and the reason is a contract the other values
-                  // carry rather than a preference.
-                  //
-                  // This branch deliberately does NOT `continue`: a refused rollup
-                  // lands in BOTH `refusedSources` and `sources`, because Malloy
-                  // still synthesized it. The spec makes that legal for exactly one
-                  // tier — "a `preaggregate`-tier entry can coexist with an entry of
-                  // the same sourceID in `BuildPlan.sources` … unlike
-                  // `storage`/`colocated` where a refusal means absence from
-                  // `sources`". Reporting `storage` for a rollup would therefore
-                  // tell a consumer the entry cannot be in `sources` while it is,
-                  // which reads as a corrupt plan.
-                  //
-                  // It also loses the only provenance this collection carries. The
-                  // name is synthesized, so `preaggregate` is what says the entry
-                  // describes a rollup at all; which gate refused it is in
-                  // `reason` and the message.
+                  // Always `preaggregate`, even for a storage refusal: only this
+                  // tier may coexist with a `sources` entry, and it is the only
+                  // provenance marking the entry as a rollup. Which gate refused
+                  // is in `reason`.
                   tier: "preaggregate",
                   reason: err.reason || "authorize",
                   message: errMessage(err),
                };
-               // Present in BOTH collections only for the authorize refusal; a
-               // storage-refused rollup is absent from `sources`, like any other
-               // source whose only build path was refused.
                if (storageRefused) continue;
             }
          }
-         // EFFECTIVE per-source freshness, resolved most-specific-wins
-         // (source > model-file > package) and reported verbatim (null = unset at
-         // every level). Freshness is a dotted/nested tag key, so it comes from
-         // resolveFreshness rather than the scalar annotationFields map, and is
-         // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
-         // emitted (retired from the contract); if a source declares either it is
-         // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
-         // still ride `annotationFields` so the validator can detect them.
-         // Provenance. A synthesized rollup is an ordinary persist source in every
-         // mechanical respect, so nothing downstream can tell it apart from an
-         // authored one — which is why the plan has to say. `preaggregate` carries
-         // what the rollup covers, since a query never names it and this is the only
-         // place its grain and measure set are visible at all.
+         // `origin`/`preaggregate`: a synthesized rollup is mechanically an
+         // ordinary persist source, so the plan is the only place its provenance,
+         // grain and measures are visible.
          wireSources[sourceID] = {
             name: source.name,
             sourceID: source.sourceID,
@@ -1313,24 +1072,14 @@ export function deriveBuildPlan(
                : null,
             sourceEntityId: computeSourceEntityId(source, connectionDigests),
             sql: source.getSQL(),
-            // Reported verbatim, and no longer inert: the mode is resolved and
-            // validated alongside `watermark=`/`merge_key=` (see
-            // resolveIncrementalDeclaration, collected per source in
-            // computePackageBuildPlan). The resolution itself is deliberately NOT a
-            // wire field — the control plane reads the free-form annotationFields.
+            // Verbatim; the resolved declaration is deliberately not a wire field
+            // (see resolveIncrementalDeclaration).
             refresh: annotationFields.refresh ?? null,
             freshness: resolveFreshness(source, packageMaterialization),
-            // EFFECTIVE per-source query metadata, resolved per property across the
-            // same layer stack as freshness. A property collection rather than a
-            // scalar, so it comes from resolveQueryMetadata rather than the
-            // annotationFields map.
             queryMetadata: resolveQueryMetadata(source, packageMaterialization),
             columns: deriveColumns(source),
-            // The layout the build writes and the terms the read must put back.
-            // Both are resolved rather than passed through: `partition` is
-            // checked against the source's public projection, and the terms are
-            // classified by the position their givens sit in. A source that
-            // fails either is not here at all — it is in `refusedSources`.
+            // Resolved, not passed through; a source failing either is in
+            // `refusedSources` instead.
             ...planDynamicFields(source, annotationFields),
             annotationFields,
             modelPath: sourceModelPaths?.[sourceID],
@@ -1394,17 +1143,10 @@ export function deriveBuildPlanOutcome(
 }
 
 /**
- * Each source's resolved incremental declaration, keyed by sourceID to match the
- * wire plan (two models in one package may declare same-named sources).
- *
- * Computed HERE, next to {@link collectSourceEligibility}, for the same reason:
- * this is where the compiled sources exist. The publish gates need the output
- * schema and the query definition's field kinds, neither of which a wire
- * `PersistSourcePlan` carries — and deliberately so, since the control plane's
- * contract gains no typed fields in this phase.
- *
- * Exported for the build path, which resolves the same declarations off its own
- * compile (see MaterializationService.incrementalRunContext).
+ * Each source's resolved incremental declaration, keyed by sourceID (two models
+ * may declare same-named sources). Computed here because the gates need the
+ * compiled output schema and query definition, which the wire plan does not
+ * carry. Also used by the build path (MaterializationService.incrementalRunContext).
  */
 export function collectIncrementalDeclarations(
    sources: Record<string, PersistSource>,
@@ -1417,10 +1159,9 @@ export function collectIncrementalDeclarations(
             deriveAnnotationFields(source),
          );
       } catch (err) {
-         // One unreadable source must not cost the package its plan. The gates
-         // then see no declaration for it, which reads as "declares nothing" —
-         // conservative in the direction that matters, since the build path
-         // dispatches a delta only for a declaration it can read.
+         // One unreadable source must not cost the package its plan. "No
+         // declaration" is safe: the build path dispatches a delta only for a
+         // declaration it can read.
          logger.warn("Failed to resolve a source's incremental declaration", {
             sourceID,
             error: errMessage(err),
@@ -1431,20 +1172,14 @@ export function collectIncrementalDeclarations(
 }
 
 /**
- * Which sources may be served from a materialized table, decided HERE because
- * this is where the compiled sources exist. The serve side needs the answer
- * without them: binding a host's manifest deliberately skips the recompile, so it
- * cannot re-derive eligibility and would otherwise have to take the host's word
- * for it.
+ * Which sources may be served from a materialized table, decided here where the
+ * compiled sources exist: binding a host's manifest skips the recompile, so the
+ * serve side cannot re-derive this.
  *
- * Carries the ELIGIBLE names, not just the refusals, so the serve side can
- * require a positive result. Absence is not eligibility: Malloy admits only
- * query-shaped sources as build roots, so a `#@ persist` on a filtered
- * pass-through (`X is <table> extend { where … }`, which stays type `table`)
- * never reaches this record at all — and that is the row-level-access shape. A
- * refusal-only view would read that silence as consent.
- *
- * Keyed by source NAME because that is what a serve binding carries.
+ * Carries the ELIGIBLE names so the serve side requires a positive result.
+ * Absence is not eligibility: a `#@ persist` filtered pass-through (the
+ * row-level-access shape) never reaches this record, and a refusal-only view
+ * would read that silence as consent. Keyed by source NAME, as serve bindings are.
  */
 export type SourceEligibility = {
    /** Sources compiled, examined, and found eligible. */
@@ -1470,30 +1205,16 @@ function collectSourceEligibility(
 }
 
 /**
- * Which sources may be served from a COLOCATED (same-connection) materialized
- * table, decided HERE for the same reason as {@link SourceEligibility}: the
- * serve side (a manifest bind, whether self-produced or host-supplied) cannot
- * recompile the model to re-derive this, so it needs a positive answer to
- * check against.
+ * Which sources may be served from a COLOCATED materialized table, decided here
+ * for the same reason as {@link SourceEligibility}.
  *
- * Keyed by `sourceEntityId`, NOT source name — deliberately unlike
- * {@link SourceEligibility}, whose own doc admits the name key only because
- * that is what a `storage=` serve binding carries. A colocated binding
- * (`FreshnessManifest`) carries no name at all, only `sourceEntityId`, so a
- * name key here would either be unusable at the binding boundary or require
- * resolving a bare name back to a source — exactly the ambiguity the package
- * permits: two different models may each declare a source of the same name,
- * and a name-keyed positive check would let ONE of them being eligible
- * authorize a binding for the OTHER, ineligible one.
+ * Keyed by `sourceEntityId`, not name: a colocated binding carries only the id,
+ * and two models may declare same-named sources, so a name key would let one's
+ * eligibility authorize the other.
  *
- * A `sourceEntityId` collision between two DIFFERENT sources is real, not
- * merely theoretical: it is `makeBuildId(connectionDigest, getSQL())`, and
- * `getSQL()` deliberately excludes annotation bytes, so two persist sources on
- * the same connection with identical compiled SQL but different gates — one
- * eligible, one refused — collide on the same id. Refusal therefore MUST
- * dominate eligibility for a given id: a source is recorded eligible only if
- * every source sharing its id was, and one refusal anywhere retracts the id
- * from `eligibleEntityIds` for good, regardless of iteration order.
+ * Two DIFFERENT sources can share an id (identical SQL, different gates, since
+ * `getSQL()` excludes annotations). Refusal therefore dominates: one refusal
+ * retracts the id for good, regardless of iteration order.
  */
 export type ColocatedSourceEligibility = {
    /** sourceEntityId of colocated sources examined and found eligible. */
@@ -1520,13 +1241,8 @@ function collectColocatedSourceEligibility(
             deriveAnnotationFields(source),
          );
       } catch (err) {
-         // Gate BEFORE computeSourceEntityId, matching the build path's own
-         // convention: the colocated gate never calls getSQL(), so it still
-         // gives a clean refusal even when getSQL() would throw for an
-         // unrelated reason. If computing the id ALSO throws there is
-         // nothing to key this refusal under, so the source is dropped —
-         // same "unreadable, so silent" fallback as an incremental
-         // declaration that fails to resolve.
+         // Gated BEFORE computeSourceEntityId: the gate never calls getSQL(),
+         // so it refuses cleanly even when getSQL() would throw.
          let sourceEntityId: string;
          try {
             sourceEntityId = computeSourceEntityId(
@@ -1534,9 +1250,8 @@ function collectColocatedSourceEligibility(
                compiled.connectionDigests,
             );
          } catch (idErr) {
-            // Dropped, not refused: bindColocatedServeManifest will report this
-            // id as never examined, so the log is the only place the operator
-            // can learn it WAS examined and refused.
+            // No id to key the refusal under; the log is the only record that
+            // it was examined and refused.
             logger.warn(
                "Dropping a refused colocated source: its content address could not be computed",
                {
@@ -1549,15 +1264,12 @@ function collectColocatedSourceEligibility(
             continue;
          }
          refused[sourceEntityId] = errMessage(err);
-         // A same-id source already recorded eligible by an earlier
-         // iteration must be retracted: refusal dominates regardless of
-         // which one this loop happens to see first.
+         // Refusal dominates: retract any earlier same-id eligibility.
          eligibleEntityIds.delete(sourceEntityId);
          continue;
       }
-      // The colocated tier admits a given-referencing source, whose getSQL()
-      // (and so its content address) can throw; an escaping throw here would
-      // cost the package its whole plan, not just this source's binding.
+      // A given-referencing colocated source's getSQL() can throw; contain it
+      // to this source's binding.
       let sourceEntityId: string;
       try {
          sourceEntityId = computeSourceEntityId(
@@ -1571,8 +1283,7 @@ function collectColocatedSourceEligibility(
          );
          continue;
       }
-      // A refusal recorded for this id (from an earlier or a LATER
-      // iteration, see above) must win, so only add when none exists yet.
+      // A refusal for this id (earlier or later) must win.
       if (!(sourceEntityId in refused)) {
          eligibleEntityIds.add(sourceEntityId);
       }

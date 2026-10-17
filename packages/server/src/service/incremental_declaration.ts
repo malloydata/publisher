@@ -8,47 +8,35 @@ import type { IncrementalStrategy } from "../storage/DatabaseInterface";
 import { deriveColumns } from "./build_plan";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
-// The strategy a declaration implies is also what the ledger records, so the
-// type is shared with the store rather than restated here.
+// Shared with the store: the strategy a declaration implies is what the ledger records.
 export type { IncrementalStrategy };
 
 /**
- * Resolution of a persist source's INCREMENTAL declaration — the `refresh=`,
- * `watermark=` and `merge_key=` keys of its `#@ persist` tag — from strings into
- * a structure the publish gates and the build path can both read.
+ * Resolves a persist source's INCREMENTAL declaration — the `refresh=`,
+ * `watermark=` and `merge_key=` keys of its `#@ persist` tag — into a structure
+ * the publish gates and the build path both read: which names are real output
+ * columns, the watermark's type, the implied strategy, and every malformation.
  *
- * Discovery needs no new compiler reading: `deriveAnnotationFields` already
- * captures every scalar `key="value"` on the persist tag, the two new keys
- * included. What this module adds is MEANING: which declared names are real
- * output columns, what type the watermark is, which strategy the keys imply, and
- * every way the declaration can be malformed.
- *
- * Three compiler facts shape the whole module (each pinned in
+ * Three compiler facts shape the module (pinned in
  * incremental_compiler_contract.spec.ts):
  *
- *  1. Every rule reads the EFFECTIVE MERGED tag. A source that `extend`s a
- *     persisted parent inherits the parent's whole persist tag, so
- *     "did this source declare it locally" is not a question worth asking — and
- *     asking it would let an inherited `refresh="incremental"` through ungated.
- *  2. An array-valued key (`watermark=["a","b"]`) is ABSENT from the scalar map.
- *     So the raw tag is read alongside it: without that, a declared-but-array
- *     watermark would be diagnosed as "no watermark declared", pointing the
- *     author at a key they did declare.
- *  3. On the compiled OUTPUT schema an `aggregate:`-produced column is
- *     indistinguishable from a dimension (`isCalculation()` is false for both).
- *     The aggregate check therefore reads the QUERY DEFINITION's field kinds.
+ *  1. Rules read the EFFECTIVE MERGED tag. A source that `extend`s a persisted
+ *     parent inherits its persist tag; checking only local declarations would let
+ *     an inherited `refresh="incremental"` through ungated.
+ *  2. An array-valued key (`watermark=["a","b"]`) is ABSENT from the scalar map,
+ *     so the raw tag is read too — otherwise it is misreported as undeclared.
+ *  3. On the compiled OUTPUT schema an `aggregate:` column is indistinguishable
+ *     from a dimension, so the aggregate check reads the QUERY DEFINITION.
  */
 
 /** The `refresh=` values the publisher recognizes; unset means "full". */
 const REFRESH_MODES = ["full", "incremental"] as const;
 
 /**
- * Persist-tag keys the publisher knows about. Anything else is reported as an
- * unknown key (a load-time WARNING, never a rejection — `deriveAnnotationFields`
- * deliberately passes unknown keys through so a new directive needs no publisher
- * change). `sharing` and `schedule` are listed because they are RETIRED and
- * rejected by name in the persistence-policy gate: reporting them as "unknown"
- * on top of that would be a second, vaguer message about the same key.
+ * Persist-tag keys the publisher knows about; anything else is a load-time
+ * WARNING, never a rejection, so a new directive needs no publisher change.
+ * `sharing` and `schedule` are RETIRED and rejected by name in the
+ * persistence-policy gate; listing them avoids a second, vaguer "unknown" message.
  */
 export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
    "persist",
@@ -66,10 +54,8 @@ export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Malloy types a `<`/`>=` range can be built over. A watermark outside this set
- * has no ordering to derive a range from. Note that struct/array columns never
- * even reach the output schema (they are not atomic), so they fail NAME
- * resolution rather than landing here.
+ * Malloy types a `<`/`>=` range can be built over. Struct/array columns never
+ * reach the output schema, so they fail name resolution instead.
  */
 const ORDERABLE_TYPES: ReadonlySet<string> = new Set([
    "number",
@@ -117,23 +103,17 @@ export interface IncrementalDeclaration {
    /** `merge_key=` split on commas, in declared order, each resolved. */
    mergeKeys: ResolvedName[];
    /**
-    * The source's own columns its stripped dynamic terms constrain — the scope
-    * the artifact was widened past.
-    *
-    * A `merge_key=` is chosen against the source as WRITTEN, filtered to one
-    * caller; the stored table holds every caller's rows, so the key alone is
-    * ambiguous over it. These columns are what restore the author's intended
+    * The source's own columns its stripped dynamic terms constrain. A
+    * `merge_key=` is chosen against the source filtered to one caller, but the
+    * stored table holds every caller's rows; these columns restore the intended
     * relation inside the merge's match.
     */
    scopeColumns: string[];
    /**
-    * True when a stripped term contributes no column of this source — it reaches
-    * through a join, or its field usage could not be read.
-    *
-    * Load-bearing rather than informational: scoping by the columns of the OTHER
-    * terms would produce a match that is narrower than the key but still wider
-    * than the author's relation, which is a cross-caller match wearing a scope.
-    * A caller must refuse, never partially scope.
+    * True when a stripped term contributes no column of this source (it reaches
+    * through a join, or its field usage could not be read). A caller must refuse,
+    * never partially scope: scoping by the other terms alone still matches across
+    * callers.
     */
    scopeIncomplete: boolean;
    /** True when `merge_key=` repeats the watermark dimension. */
@@ -165,16 +145,10 @@ function safeTag(source: PersistSource): Tag | undefined {
 }
 
 /**
- * Field kinds read from the QUERY DEFINITION rather than the output schema,
- * because the output schema cannot tell an aggregate from a dimension (contract
- * fact 3).
- *
- * `aggregates` covers the FINAL pipeline segment — that is what the output
- * columns are. `analytics` covers EVERY segment: a `calculate:` in an earlier
- * stage still contributes values to the rows the delta would rewrite.
- *
- * A table-backed source (`sql_select`, `table`) has no query definition, so both
- * come back empty — correct, since it has no aggregate or window fields.
+ * Field kinds read from the QUERY DEFINITION (contract fact 3). `aggregates`
+ * covers the FINAL segment — the output columns. `analytics` covers EVERY
+ * segment: an earlier `calculate:` still feeds the rows a delta rewrites. A
+ * table-backed source has no query definition, so both are empty.
  */
 function queryDefinitionFieldKinds(source: PersistSource): {
    aggregates: Set<string>;
@@ -207,19 +181,16 @@ function queryDefinitionFieldKinds(source: PersistSource): {
          }
       });
    } catch {
-      // Fail open on an IR shape we don't recognize: the aggregate and window
-      // gates then don't fire. Everything that protects the TABLE (name
-      // resolution, the dialect allowlist, the shape check) is independent of
-      // this read, so a compiler IR change degrades these two advisory-grade
-      // gates rather than admitting a delta against an unproven table.
+      // Fail open on an unrecognized IR shape: only the aggregate and window
+      // gates are lost. The gates that protect the TABLE (name resolution,
+      // dialect allowlist, shape check) do not depend on this read.
    }
    return { aggregates, analytics };
 }
 
 /**
- * The compiled source's output columns as name -> Malloy type: the same column
- * list the wire plan reports, which is the list the seed CTAS materializes. A
- * name absent from here is a name the physical table does not have.
+ * Output columns as name -> Malloy type: the list the seed CTAS materializes, so
+ * a name absent here is absent from the physical table.
  */
 function outputColumnTypes(source: PersistSource): Map<string, string> {
    const columns = new Map<string, string>();
@@ -244,18 +215,13 @@ function resolveName(
    };
 }
 
-/**
- * Read one persist-tag key in the two shapes it can legitimately arrive in, plus
- * the two it cannot. Returns the scalar text when there is one, and otherwise
- * says why there isn't.
- */
+/** Read one persist-tag key: its scalar text, or why there is none. */
 function readKey(
    tag: Tag | undefined,
    key: "refresh" | "watermark" | "merge_key",
 ): { declared: boolean; text?: string; malformed?: MalformedValue } {
    if (!tag || !tag.has(key)) return { declared: false };
-   // The array form parses fine and vanishes from the scalar read, so it must be
-   // named explicitly or it would masquerade as an absent key.
+   // The array form vanishes from the scalar read; name it or it looks absent.
    if (tag.array(key) !== undefined) {
       return { declared: true, malformed: { key, problem: "array" } };
    }
@@ -270,10 +236,9 @@ function readKey(
 }
 
 /**
- * Turn a source's persist-tag strings into a gate-ready declaration. Pure and
- * synchronous: it reads the compiled source only, runs no query, and never
- * decides anything — every rejection message is composed by the gate from what
- * this returns (see `incrementalPolicyWarnings`).
+ * Turn a source's persist-tag strings into a gate-ready declaration. Pure: runs
+ * no query and decides nothing — the gate composes every rejection from the
+ * result (see `incrementalPolicyWarnings`).
  */
 export function resolveIncrementalDeclaration(
    source: PersistSource,
@@ -281,20 +246,13 @@ export function resolveIncrementalDeclaration(
 ): IncrementalDeclaration {
    const tag = safeTag(source);
    const columns = outputColumnTypes(source);
-   // The terms the build strips and the read puts back, read off the source's
-   // own filters rather than off the positional classification. A classification
-   // refusal yields no terms, and an empty scope is indistinguishable here from
-   // "this source is not caller-scoped" — so deriving the scope from it would
-   // emit an unscoped merge for any source a gate admitted while the classifier
-   // refused, which the colocated gate does by design.
+   // Read off the source's own filters, not the positional classification: a
+   // classifier refusal yields no terms, which would be indistinguishable from
+   // "not caller-scoped" and emit an unscoped merge.
    const dynamicTerms = readTimeDynamicTerms(source);
-   // Resolved against the STORED schema, not taken as written. A term reads a
-   // name as the author wrote it, and an extend-block `dimension:` is read-time
-   // by this module's own premise — so `where: computed_org = $ORG` names
-   // `computed_org`, which the build never materializes. Put into a merge's `ON`
-   // unresolved, that predicate references a column the table does not have and
-   // every refresh fails. `merge_key=` is resolved this way and `partition=` is
-   // checked against the public projection; the scope gets the same treatment.
+   // Resolved against the STORED schema: a term may name a read-time
+   // `dimension:` the build never materializes, and an unresolved name in the
+   // merge's `ON` would fail every refresh.
    const scopeColumns = [
       ...new Set(dynamicTerms.flatMap((term) => term.columns)),
    ].filter((name) => columns.has(name));
@@ -306,9 +264,8 @@ export function resolveIncrementalDeclaration(
    const { aggregates, analytics } = queryDefinitionFieldKinds(source);
    const malformed: MalformedValue[] = [];
 
-   // `refresh=` — the scalar map is authoritative for the value; the raw read
-   // still runs so an array-valued refresh is reported as malformed rather than
-   // as an unrecognized mode.
+   // The scalar map is authoritative; the raw read reports an array value as
+   // malformed rather than as an unrecognized mode.
    const rawRefresh = readKey(tag, "refresh");
    if (rawRefresh.malformed) malformed.push(rawRefresh.malformed);
    const refresh = annotationFields.refresh ?? rawRefresh.text;
@@ -319,7 +276,6 @@ export function resolveIncrementalDeclaration(
          ? refresh
          : undefined;
 
-   // `watermark=` — one output dimension name.
    const rawWatermark = readKey(tag, "watermark");
    if (rawWatermark.malformed) malformed.push(rawWatermark.malformed);
    const watermark =
@@ -331,7 +287,6 @@ export function resolveIncrementalDeclaration(
       watermark.kind !== "unresolved" &&
       ORDERABLE_TYPES.has(watermark.malloyType);
 
-   // `merge_key=` — comma-separated output dimension names.
    const rawMergeKey = readKey(tag, "merge_key");
    if (rawMergeKey.malformed) malformed.push(rawMergeKey.malformed);
    const mergeKeys: ResolvedName[] = [];
@@ -340,8 +295,7 @@ export function resolveIncrementalDeclaration(
       for (const piece of rawMergeKey.text.split(",")) {
          const name = piece.trim();
          if (name.length === 0) {
-            // `merge_key="id,,region"` — a typo that would otherwise silently
-            // narrow row identity to one fewer column.
+            // `merge_key="id,,region"` would otherwise silently narrow row identity.
             if (
                !malformed.some(
                   (m) => m.key === "merge_key" && m.problem === "empty-entry",
@@ -368,9 +322,7 @@ export function resolveIncrementalDeclaration(
       watermark !== undefined &&
       mergeKeys.some((k) => k.name === watermark.name);
 
-   // A strategy is derivable only from a coherent declaration; the gates reject
-   // every incoherent one, so this stays undefined for anything the build path
-   // must not act on.
+   // Undefined for anything incoherent, which the gates reject.
    const strategy: IncrementalStrategy | undefined =
       incremental && watermark !== undefined && watermark.kind === "dimension"
          ? mergeKeys.length > 0
@@ -410,9 +362,8 @@ export function resolveIncrementalDeclaration(
 }
 
 /**
- * Whether a declaration says ANYTHING about incremental refresh. Used to skip
- * every gate and every ledger read for the overwhelming majority of sources,
- * which declare none of these keys.
+ * Whether a declaration says ANYTHING about incremental refresh; lets most
+ * sources skip every gate and ledger read.
  */
 export function declaresIncremental(
    declaration: IncrementalDeclaration,
