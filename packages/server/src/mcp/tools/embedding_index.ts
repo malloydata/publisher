@@ -1827,19 +1827,8 @@ export function enqueuePackageSync(args: {
    });
 }
 
-/**
- * Semantic retrieval for tier 4 of get_context. Returns ranked
- * hits, or a reason the semantic path is unavailable. The caller turns the
- * reason into an `indexing` result or an error: there is no lexical fallback
- * while an embedding provider is configured. Never throws.
- *
- * Cold-start contract: a call whose content has no completed sync kicks one
- * off in the background and reports `indexing`, so no call ever waits on a
- * bulk embed; subsequent calls are semantic once the sync lands. "Content",
- * not "Package instance": a reload whose facet texts hash the same keeps the
- * index the replaced instance built and is semantic on its first call.
- */
-export async function trySemanticSearch(args: {
+/** What {@link trySemanticSearch} is asked. */
+export interface SemanticSearchArgs {
    db: DuckDBConnection;
    provider: EmbeddingModel;
    pkg: Package;
@@ -1900,21 +1889,96 @@ export async function trySemanticSearch(args: {
     * than falling through to the unscoped set.
     */
    scopeKeys?: Array<{ kind: string; source: string; name: string }>;
-}): Promise<SemanticSearchResult> {
-   const {
-      db,
-      provider,
-      pkg,
-      environmentName,
-      packageName,
-      queries,
-      perSourceWindow,
-      sourceName,
-      scopeKeys,
-   } = args;
+}
+
+/**
+ * Semantic retrieval for tier 4 of get_context. Returns ranked
+ * hits, or a reason the semantic path is unavailable. The caller turns the
+ * reason into an `indexing` result or an error: there is no lexical fallback
+ * while an embedding provider is configured. Never throws.
+ *
+ * Cold-start contract: a call whose content has no completed sync kicks one
+ * off in the background and reports `indexing`, so no call ever waits on a
+ * bulk embed; subsequent calls are semantic once the sync lands. "Content",
+ * not "Package instance": a reload whose facet texts hash the same keeps the
+ * index the replaced instance built and is semantic on its first call.
+ *
+ * Four steps: admit (is there a current index to search), embed the query
+ * texts, scan the vector cache, then heal stale-dimension rows before the
+ * scan's answer is trusted.
+ */
+export async function trySemanticSearch(
+   args: SemanticSearchArgs,
+): Promise<SemanticSearchResult> {
+   const { environmentName, packageName } = args;
    // Unique by the key the rows themselves use, before anything counts or
    // embeds them. See uniqueByEntityKey.
    const entities = uniqueByEntityKey(args.entities);
+
+   const admitted = await admitSearch(args, entities);
+   if (!("meta" in admitted)) return admitted;
+   const { meta, entryGeneration } = admitted;
+
+   const queryVectors = await embedQueries(args, meta);
+   if (!queryVectors) return { unavailable: "error" };
+
+   try {
+      const scanned = await scanVectorCache(args, queryVectors);
+
+      // A sync or heal holding the package mutex right now may be
+      // rewriting rows underneath the query that just ran: that snapshot
+      // is unreliable (it can be partial or empty mid-write) and must
+      // not be served as semantic. Completed writers are caught by the
+      // generation re-check below; this catches the in-flight ones.
+      // Placed after the scan so an unreliable snapshot invalidates the hits
+      // and the counts together, rather than reporting a number read
+      // mid-write.
+      if (meta.mutex.isLocked()) {
+         return { unavailable: "indexing" };
+      }
+
+      const healed = await healStaleDimensions(
+         args,
+         meta,
+         queryVectors[0].length,
+      );
+      if (healed) return healed;
+
+      // A purge moved the generation while this call was searching: the
+      // rows snapshot above is unreliable (possibly empty because a
+      // concurrent heal deleted mid-search), and an unreliable empty
+      // result must never be served as semantic "nothing relevant here".
+      // Answer as indexing; the next call is consistent.
+      if (meta.generation !== entryGeneration) {
+         return { unavailable: "indexing" };
+      }
+
+      return scanned;
+   } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("[MCP Tool getContext] Semantic search failed", {
+         environmentName,
+         packageName,
+         error: message,
+      });
+      return { unavailable: "error" };
+   }
+}
+
+/**
+ * Whether the package has a current index this call may search. Answers the
+ * call outright when it does not (over the entity cap, an empty scope,
+ * cooling down, permanently failed, or not yet synced, which kicks a sync);
+ * otherwise returns the package's meta and the generation the search began
+ * under.
+ */
+async function admitSearch(
+   args: SemanticSearchArgs,
+   entities: EmbeddableEntity[],
+): Promise<
+   SemanticSearchResult | { meta: PackageSyncMeta; entryGeneration: number }
+> {
+   const { db, provider, pkg, environmentName, packageName, scopeKeys } = args;
 
    if (entities.length > maxEmbeddedEntities) {
       const key = `${environmentName}\x00${packageName}`;
@@ -1981,13 +2045,23 @@ export async function trySemanticSearch(args: {
       });
       return { unavailable: "indexing" };
    }
+   return { meta, entryGeneration };
+}
 
-   let queryVectors: number[][];
+/**
+ * One vector per query text, or undefined when the provider failed, which
+ * starts the package's cool-down.
+ */
+async function embedQueries(
+   args: SemanticSearchArgs,
+   meta: PackageSyncMeta,
+): Promise<number[][] | undefined> {
+   const { provider, environmentName, packageName, queries } = args;
    try {
       // ONE request for every target. embedBatch already batches to 512, so N
       // targets cost one round trip rather than N -- and the round trip is
       // what sits on the latency path of every semantic call.
-      queryVectors = await provider.embedBatch(
+      return await provider.embedBatch(
          queries.map((q) => (provider.queryPrefix ?? "") + q.text),
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
@@ -2000,103 +2074,106 @@ export async function trySemanticSearch(args: {
          "[MCP Tool getContext] Query embedding failed; semantic search cooling down",
          { environmentName, packageName, error: message },
       );
-      return { unavailable: "error" };
+      return undefined;
    }
+}
 
-   try {
-      // One statement, one pass over the vectors. The hits and the two
-      // cutoff counts all derive from the same scored set, so they cannot
-      // disagree, and the cosine work is done once rather than once per
-      // query: at the cap that is 5,000 entities and up to nine facets each.
-      //
-      // An entity scores as its BEST-matching facet, not as an average over
-      // them. A weighted name/doc blend would need a doc vector for every
-      // entity, and roughly half of a real model's entities have no doc at
-      // all, so any blend either penalises them or invents a neutral fill;
-      // MAX is also the only composition that stays well-defined as a doc
-      // splits into a variable number of chunks. The floor applies to that
-      // max, so it keeps meaning "nothing here is even weakly related", and
-      // can only ever be cleared by more facets, never blocked by them.
-      //
-      // MATERIALIZED pins the single evaluation rather than leaving it to the
-      // optimiser to inline `scored` into both branches. The LEFT JOIN ON
-      // TRUE is what keeps the counts in the case that matters most: with no
-      // row above the floor, one row still comes back carrying the counts and
-      // null hit columns, where an inner join would have dropped exactly the
-      // true negative these counts exist to explain.
-      // One statement, one pass over the vectors, however many targets the
-      // caller sent. The hits and the two cutoff counts all derive from the
-      // same scored set, so they cannot disagree, and the cosine work is done
-      // once rather than once per target: at the cap that is 5,000 entities
-      // and up to nine facets each, per target.
-      //
-      // An entity scores as its BEST-matching facet, not as an average over
-      // them. A weighted name/doc blend would need a doc vector for every
-      // entity, and roughly half of a real model's entities have no doc at
-      // all, so any blend either penalises them or invents a neutral fill;
-      // MAX is also the only composition that stays well-defined as a doc
-      // splits into a variable number of chunks. The floor applies to that
-      // max, so it keeps meaning "nothing here is even weakly related", and
-      // can only ever be cleared by more facets, never blocked by them.
-      //
-      // Across TARGETS the composition is MAX as well, and that is sound for
-      // the same reason it is not sound on the lexical path: cosine is an
-      // absolute scale, so 0.7 from one target means what 0.7 from another
-      // does. An entity clears the floor if ANY target clears it.
-      //
-      // MATERIALIZED pins the single evaluation rather than leaving it to the
-      // optimiser to inline `scored` into three branches. The LEFT JOIN ON
-      // TRUE is what keeps the counts in the case that matters most: with no
-      // row above the floor, one row still comes back carrying the counts and
-      // null hit columns, where an inner join would have dropped exactly the
-      // true negative these counts exist to explain.
-      const vectorValues = queryVectors
-         .map((_, k) => `(${k}, CAST(? AS FLOAT[]))`)
-         .join(", ");
-      // One row per (target, claimable kind), so the join below is plain
-      // equality on two columns rather than a list-typed parameter.
-      const targetKinds = queries.flatMap((q, k) =>
-         q.kinds.map((kind) => ({ k, kind })),
+/** The scan's ranked hits and cutoff counts, as the search result. */
+async function scanVectorCache(
+   args: SemanticSearchArgs,
+   queryVectors: number[][],
+): Promise<SemanticSearchResult> {
+   const {
+      db,
+      provider,
+      environmentName,
+      packageName,
+      queries,
+      perSourceWindow,
+      sourceName,
+      scopeKeys,
+   } = args;
+   // One statement, one pass over the vectors. The hits and the two
+   // cutoff counts all derive from the same scored set, so they cannot
+   // disagree, and the cosine work is done once rather than once per
+   // query: at the cap that is 5,000 entities and up to nine facets each.
+   //
+   // An entity scores as its BEST-matching facet, not as an average over
+   // them. A weighted name/doc blend would need a doc vector for every
+   // entity, and roughly half of a real model's entities have no doc at
+   // all, so any blend either penalises them or invents a neutral fill;
+   // MAX is also the only composition that stays well-defined as a doc
+   // splits into a variable number of chunks. The floor applies to that
+   // max, so it keeps meaning "nothing here is even weakly related", and
+   // can only ever be cleared by more facets, never blocked by them.
+   //
+   // MATERIALIZED pins the single evaluation rather than leaving it to the
+   // optimiser to inline `scored` into both branches. The LEFT JOIN ON
+   // TRUE is what keeps the counts in the case that matters most: with no
+   // row above the floor, one row still comes back carrying the counts and
+   // null hit columns, where an inner join would have dropped exactly the
+   // true negative these counts exist to explain.
+   // One statement, one pass over the vectors, however many targets the
+   // caller sent. The hits and the two cutoff counts all derive from the
+   // same scored set, so they cannot disagree, and the cosine work is done
+   // once rather than once per target: at the cap that is 5,000 entities
+   // and up to nine facets each, per target.
+   //
+   // An entity scores as its BEST-matching facet, not as an average over
+   // them. A weighted name/doc blend would need a doc vector for every
+   // entity, and roughly half of a real model's entities have no doc at
+   // all, so any blend either penalises them or invents a neutral fill;
+   // MAX is also the only composition that stays well-defined as a doc
+   // splits into a variable number of chunks. The floor applies to that
+   // max, so it keeps meaning "nothing here is even weakly related", and
+   // can only ever be cleared by more facets, never blocked by them.
+   //
+   // Across TARGETS the composition is MAX as well, and that is sound for
+   // the same reason it is not sound on the lexical path: cosine is an
+   // absolute scale, so 0.7 from one target means what 0.7 from another
+   // does. An entity clears the floor if ANY target clears it.
+   //
+   // MATERIALIZED pins the single evaluation rather than leaving it to the
+   // optimiser to inline `scored` into three branches. The LEFT JOIN ON
+   // TRUE is what keeps the counts in the case that matters most: with no
+   // row above the floor, one row still comes back carrying the counts and
+   // null hit columns, where an inner join would have dropped exactly the
+   // true negative these counts exist to explain.
+   const vectorValues = queryVectors
+      .map((_, k) => `(${k}, CAST(? AS FLOAT[]))`)
+      .join(", ");
+   // One row per (target, claimable kind), so the join below is plain
+   // equality on two columns rather than a list-typed parameter.
+   const targetKinds = queries.flatMap((q, k) =>
+      q.kinds.map((kind) => ({ k, kind })),
+   );
+   // Empty string when the caller sent no scope, which drops the CTE and
+   // its join from the statement entirely.
+   const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
+   const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
+   // Dotted rows (joined fields the index keeps) get a window of their own
+   // when the caller sets one: ranked apart from the source's own fields, so
+   // they cannot take their slots. Without it the statement is unchanged.
+   // The window is a number the server sets, validated here, so it is written
+   // into the statement rather than bound.
+   const joinedWindow = args.perSourceJoinedWindow;
+   if (
+      joinedWindow !== undefined &&
+      (!Number.isInteger(joinedWindow) || joinedWindow < 0)
+   ) {
+      throw new Error(
+         `Invalid perSourceJoinedWindow: expected a whole number of at least 0, got ${joinedWindow}. Fix: pass 3 or omit it.`,
       );
-      // Empty string when the caller sent no scope, which drops the CTE and
-      // its join from the statement entirely.
-      const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
-      const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
-      // Dotted rows (joined fields the index keeps) get a window of their own
-      // when the caller sets one: ranked apart from the source's own fields, so
-      // they cannot take their slots. Without it the statement is unchanged.
-      // The window is a number the server sets, validated here, so it is written
-      // into the statement rather than bound.
-      const joinedWindow = args.perSourceJoinedWindow;
-      if (
-         joinedWindow !== undefined &&
-         (!Number.isInteger(joinedWindow) || joinedWindow < 0)
-      ) {
-         throw new Error(
-            `Invalid perSourceJoinedWindow: expected a whole number of at least 0, got ${joinedWindow}. Fix: pass 3 or omit it.`,
-         );
-      }
-      const dotted =
-         "(CASE WHEN strpos(entity_name, '.') > 0 THEN 1 ELSE 0 END)";
-      const joinedCol =
-         joinedWindow === undefined ? "" : `${dotted} AS dotted,`;
-      const joinedPartition = joinedWindow === undefined ? "" : `, ${dotted}`;
-      const hitWhere =
-         joinedWindow === undefined
-            ? "h.rn <= ?"
-            : `h.rn <= CASE WHEN h.dotted = 1 THEN ${joinedWindow} ELSE ? END`;
-      const scan = await db.all<{
-         total: number;
-         below: number;
-         entity_kind: string | null;
-         entity_source: string | null;
-         entity_name: string | null;
-         best: number | null;
-         target_idx: number | null;
-         score: number | null;
-         cut: number | null;
-      }>(
-         `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
+   }
+   const dotted = "(CASE WHEN strpos(entity_name, '.') > 0 THEN 1 ELSE 0 END)";
+   const joinedCol = joinedWindow === undefined ? "" : `${dotted} AS dotted,`;
+   const joinedPartition = joinedWindow === undefined ? "" : `, ${dotted}`;
+   const hitWhere =
+      joinedWindow === undefined
+         ? "h.rn <= ?"
+         : `h.rn <= CASE WHEN h.dotted = 1 THEN ${joinedWindow} ELSE ? END`;
+   const scan = await db.all<ScanRow>(
+      `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
          qk(target_idx, kind) AS (VALUES ${kindValues}),${
             scopeValues
                ? `
@@ -2211,238 +2288,229 @@ export async function trySemanticSearch(args: {
           AND s.entity_name = h.entity_name
          ORDER BY h.best DESC, h.entity_source, h.entity_name, h.entity_kind,
                   s.target_idx`,
-         [
-            ...queryVectors.map((v) => JSON.stringify(v)),
-            ...targetKinds.map(({ kind }) => kind),
-            // Positional, so these sit where the `scope` CTE does: after the
-            // kinds and before the package predicates.
-            ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
-            environmentName,
-            packageName,
-            provider.model,
-            queryVectors[0].length,
-            ...(sourceName !== undefined ? [sourceName] : []),
-            provider.minSimilarity,
-            provider.minSimilarity,
-            perSourceWindow,
-            provider.minSimilarity,
-         ],
-      );
+      [
+         ...queryVectors.map((v) => JSON.stringify(v)),
+         ...targetKinds.map(({ kind }) => kind),
+         // Positional, so these sit where the `scope` CTE does: after the
+         // kinds and before the package predicates.
+         ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
+         environmentName,
+         packageName,
+         provider.model,
+         queryVectors[0].length,
+         ...(sourceName !== undefined ? [sourceName] : []),
+         provider.minSimilarity,
+         provider.minSimilarity,
+         perSourceWindow,
+         provider.minSimilarity,
+      ],
+   );
 
-      // The scan returns one row per (hit entity, target), so fold them back
-      // into one hit carrying its per-target scores. Order is preserved from
-      // the SQL, which already sorted by best score, then source, name and kind.
-      const byEntity = new Map<
-         string,
-         {
-            entity_kind: string;
-            entity_source: string;
-            entity_name: string;
-            score: number;
-            targetScores: Map<number, number>;
-         }
-      >();
-      const cutBySource = new Map<string, number>();
-      for (const r of scan) {
-         if (r.entity_name === null) continue;
-         if (r.cut !== null && r.cut > 0) {
-            cutBySource.set(r.entity_source as string, r.cut);
-         }
-         const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
-         let hit = byEntity.get(key);
-         if (!hit) {
-            hit = {
-               entity_kind: r.entity_kind as string,
-               entity_source: r.entity_source as string,
-               entity_name: r.entity_name as string,
-               score: r.best as number,
-               targetScores: new Map<number, number>(),
-            };
-            byEntity.set(key, hit);
-         }
-         if (r.target_idx !== null && r.score !== null) {
-            // Back to the caller's own target index: the SQL numbered them by
-            // position in `queries`, which is not the caller's numbering.
-            const targetIndex = queries[r.target_idx]?.targetIndex;
-            if (targetIndex !== undefined) {
-               hit.targetScores.set(
-                  targetIndex,
-                  Math.max(hit.targetScores.get(targetIndex) ?? 0, r.score),
-               );
-            }
+   return foldScanRows(scan, queries);
+}
+
+/** One row of the vector-cache scan: one (hit entity, target) pair. */
+interface ScanRow {
+   total: number;
+   below: number;
+   entity_kind: string | null;
+   entity_source: string | null;
+   entity_name: string | null;
+   best: number | null;
+   target_idx: number | null;
+   score: number | null;
+   cut: number | null;
+}
+
+/** The scan's rows as the search result: one hit per entity, with the counts. */
+function foldScanRows(
+   scan: ScanRow[],
+   queries: SemanticSearchArgs["queries"],
+): SemanticSearchResult {
+   // The scan returns one row per (hit entity, target), so fold them back
+   // into one hit carrying its per-target scores. Order is preserved from
+   // the SQL, which already sorted by best score, then source, name and kind.
+   const byEntity = new Map<
+      string,
+      {
+         entity_kind: string;
+         entity_source: string;
+         entity_name: string;
+         score: number;
+         targetScores: Map<number, number>;
+      }
+   >();
+   const cutBySource = new Map<string, number>();
+   for (const r of scan) {
+      if (r.entity_name === null) continue;
+      if (r.cut !== null && r.cut > 0) {
+         cutBySource.set(r.entity_source as string, r.cut);
+      }
+      const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
+      let hit = byEntity.get(key);
+      if (!hit) {
+         hit = {
+            entity_kind: r.entity_kind as string,
+            entity_source: r.entity_source as string,
+            entity_name: r.entity_name as string,
+            score: r.best as number,
+            targetScores: new Map<number, number>(),
+         };
+         byEntity.set(key, hit);
+      }
+      if (r.target_idx !== null && r.score !== null) {
+         // Back to the caller's own target index: the SQL numbered them by
+         // position in `queries`, which is not the caller's numbering.
+         const targetIndex = queries[r.target_idx]?.targetIndex;
+         if (targetIndex !== undefined) {
+            hit.targetScores.set(
+               targetIndex,
+               Math.max(hit.targetScores.get(targetIndex) ?? 0, r.score),
+            );
          }
       }
-      const rows = [...byEntity.values()];
-      // How many entities were weighed, and how many fell below the floor.
-      // Without them an empty result is indistinguishable from "this package
-      // models nothing like that", and we watched analysts conclude the
-      // latter from the former.
-      //
-      // Both counts, because one alone is not interpretable. Every entity in
-      // scope is either at-or-above the floor (so it could be a hit) or below
-      // it (so it is counted here), which means `below` is only meaningful
-      // against `total`: 7-of-52 is a tight match, 47-of-52 is a stretch, and
-      // 52-of-52 is the true negative. Reporting `below` on its own invites
-      // reading a large number as "too diffuse, rephrase" at exactly the
-      // moment it means the opposite.
-      const cutoffCounts = scan[0];
+   }
+   const rows = [...byEntity.values()];
+   // How many entities were weighed, and how many fell below the floor.
+   // Without them an empty result is indistinguishable from "this package
+   // models nothing like that", and we watched analysts conclude the
+   // latter from the former.
+   //
+   // Both counts, because one alone is not interpretable. Every entity in
+   // scope is either at-or-above the floor (so it could be a hit) or below
+   // it (so it is counted here), which means `below` is only meaningful
+   // against `total`: 7-of-52 is a tight match, 47-of-52 is a stretch, and
+   // 52-of-52 is the true negative. Reporting `below` on its own invites
+   // reading a large number as "too diffuse, rephrase" at exactly the
+   // moment it means the opposite.
+   const cutoffCounts = scan[0];
+   return {
+      hits: rows.map((row) => ({
+         kind: row.entity_kind,
+         source: row.entity_source === "" ? undefined : row.entity_source,
+         name: row.entity_name,
+         score: row.score,
+         targetScores: row.targetScores,
+      })),
+      belowCutoffCount: cutoffCounts?.below ?? 0,
+      totalEntities: cutoffCounts?.total ?? 0,
+      cutBySource,
+   };
+}
 
-      // A sync or heal holding the package mutex right now may be
-      // rewriting rows underneath the query that just ran: that snapshot
-      // is unreliable (it can be partial or empty mid-write) and must
-      // not be served as semantic. Completed writers are caught by the
-      // generation re-check below; this catches the in-flight ones.
-      // Placed after the scan so an unreliable snapshot invalidates the hits
-      // and the counts together, rather than reporting a number read
-      // mid-write.
-      if (meta.mutex.isLocked()) {
-         return { unavailable: "indexing" };
-      }
-
-      // Invariant check, every call: no row may exist that does not
-      // match the provider's current (model, dims). The sync diff cannot
-      // see a dims change (row hashes still match), so stale-dims rows
-      // are detected here. Detecting STALE rows directly, rather than
-      // inferring from an empty result, also heals the mixed state where
-      // a partial sync wrote some rows at the new dimensionality and the
-      // rest are stranded at the old one (an empty-result trigger would
-      // never fire there, silently hiding the stranded entities forever).
-      const staleRows = await db.get<{ n: number }>(
-         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+/**
+ * Detect and heal cached rows that do not match the provider's current
+ * (model, dims). Returns the answer for this call when it found any, or
+ * undefined when the cache is consistent and the scan may be served.
+ */
+async function healStaleDimensions(
+   args: SemanticSearchArgs,
+   meta: PackageSyncMeta,
+   queryDims: number,
+): Promise<SemanticSearchResult | undefined> {
+   const { db, provider, environmentName, packageName } = args;
+   // Invariant check, every call: no row may exist that does not
+   // match the provider's current (model, dims). The sync diff cannot
+   // see a dims change (row hashes still match), so stale-dims rows
+   // are detected here. Detecting STALE rows directly, rather than
+   // inferring from an empty result, also heals the mixed state where
+   // a partial sync wrote some rows at the new dimensionality and the
+   // rest are stranded at the old one (an empty-result trigger would
+   // never fire there, silently hiding the stranded entities forever).
+   const staleRows = await db.get<{ n: number }>(
+      `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?
             AND NOT (embedding_model = ? AND dims = ?)`,
-         [environmentName, packageName, provider.model, queryVectors[0].length],
-      );
-      if ((staleRows?.n ?? 0) > 0) {
-         // The check-and-purge runs under the package-name mutex so it
-         // cannot interleave with a sync, and the generation bump
-         // invalidates every instance's memo, not just this caller's.
-         // Acquired WITHOUT waiting: a held mutex means a bulk embed or
-         // another heal is mid-flight, and this call must answer as
-         // indexing rather than queue minutes behind it (the docstring's
-         // no-call-waits-on-a-bulk-embed contract).
-         let outcome: "none" | "purged" | "backoff" | "busy";
-         try {
-            outcome = await tryAcquire(meta.mutex).runExclusive(async () => {
-               // Same orphaned-meta guard as the sync: never write under
-               // a meta that deletePackageEmbeddings removed.
-               if (
-                  syncMeta.get(metaKey(environmentName, packageName)) !== meta
-               ) {
-                  return "none";
-               }
-               const again = await db.get<{ n: number }>(
-                  `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+      [environmentName, packageName, provider.model, queryDims],
+   );
+   if ((staleRows?.n ?? 0) > 0) {
+      // The check-and-purge runs under the package-name mutex so it
+      // cannot interleave with a sync, and the generation bump
+      // invalidates every instance's memo, not just this caller's.
+      // Acquired WITHOUT waiting: a held mutex means a bulk embed or
+      // another heal is mid-flight, and this call must answer as
+      // indexing rather than queue minutes behind it (the docstring's
+      // no-call-waits-on-a-bulk-embed contract).
+      let outcome: "none" | "purged" | "backoff" | "busy";
+      try {
+         outcome = await tryAcquire(meta.mutex).runExclusive(async () => {
+            // Same orphaned-meta guard as the sync: never write under
+            // a meta that deletePackageEmbeddings removed.
+            if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
+               return "none";
+            }
+            const again = await db.get<{ n: number }>(
+               `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
                      AND NOT (embedding_model = ? AND dims = ?)`,
-                  [
-                     environmentName,
-                     packageName,
-                     provider.model,
-                     queryVectors[0].length,
-                  ],
+               [environmentName, packageName, provider.model, queryDims],
+            );
+            if ((again?.n ?? 0) === 0) return "none";
+            // Backoff: at most one purge per suppression window. Within
+            // it, a fresh mismatch means the endpoint is serving
+            // inconsistent dimensionalities; re-purging would re-embed
+            // the whole package, so cool down instead.
+            // lastPurgeAtMs is NOT advanced here: the window is measured
+            // from the last real PURGE, and because the suppression
+            // window is longer than the cooldown (see
+            // HEAL_PURGE_SUPPRESSION_MS), a call arriving after the
+            // cooldown clears still lands inside the suppression window
+            // and backs off, so a durably-inconsistent provider does
+            // NOT re-purge once per cooldown window.
+            const now = Date.now();
+            if (now - meta.lastPurgeAtMs < purgeSuppressionMs) {
+               markProviderFailure(
+                  meta,
+                  `The embedding endpoint returned vectors of inconsistent dimensions for model ${provider.model}`,
                );
-               if ((again?.n ?? 0) === 0) return "none";
-               // Backoff: at most one purge per suppression window. Within
-               // it, a fresh mismatch means the endpoint is serving
-               // inconsistent dimensionalities; re-purging would re-embed
-               // the whole package, so cool down instead.
-               // lastPurgeAtMs is NOT advanced here: the window is measured
-               // from the last real PURGE, and because the suppression
-               // window is longer than the cooldown (see
-               // HEAL_PURGE_SUPPRESSION_MS), a call arriving after the
-               // cooldown clears still lands inside the suppression window
-               // and backs off, so a durably-inconsistent provider does
-               // NOT re-purge once per cooldown window.
-               const now = Date.now();
-               if (now - meta.lastPurgeAtMs < purgeSuppressionMs) {
-                  markProviderFailure(
-                     meta,
-                     `The embedding endpoint returned vectors of inconsistent dimensions for model ${provider.model}`,
-                  );
-                  logger.warn(
-                     "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
-                     {
-                        environmentName,
-                        packageName,
-                        model: provider.model,
-                        queryDims: queryVectors[0].length,
-                     },
-                  );
-                  return "backoff";
-               }
                logger.warn(
-                  "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging stale rows and re-syncing",
+                  "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
                   {
                      environmentName,
                      packageName,
                      model: provider.model,
-                     queryDims: queryVectors[0].length,
-                     staleRows: again?.n,
+                     queryDims,
                   },
                );
-               // Only the stale rows: current-dims rows stay, so the
-               // follow-up sync re-embeds just what was stranded.
-               await db.run(
-                  `DELETE FROM entity_embeddings
+               return "backoff";
+            }
+            logger.warn(
+               "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging stale rows and re-syncing",
+               {
+                  environmentName,
+                  packageName,
+                  model: provider.model,
+                  queryDims,
+                  staleRows: again?.n,
+               },
+            );
+            // Only the stale rows: current-dims rows stay, so the
+            // follow-up sync re-embeds just what was stranded.
+            await db.run(
+               `DELETE FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
                      AND NOT (embedding_model = ? AND dims = ?)`,
-                  [
-                     environmentName,
-                     packageName,
-                     provider.model,
-                     queryVectors[0].length,
-                  ],
-               );
-               meta.lastPurgeAtMs = now;
-               meta.generation = ++generationCounter;
-               return "purged";
-            });
-         } catch (error) {
-            if (error !== E_ALREADY_LOCKED) throw error;
-            outcome = "busy";
-         }
-         if (outcome === "purged" || outcome === "busy") {
-            // Nothing to evict: the purge bumped the generation, which is
-            // what invalidates meta.synced, so the next call re-kicks on its
-            // own.
-            return { unavailable: "indexing" };
-         }
-         if (outcome === "backoff") {
-            return { unavailable: "cooldown" };
-         }
+               [environmentName, packageName, provider.model, queryDims],
+            );
+            meta.lastPurgeAtMs = now;
+            meta.generation = ++generationCounter;
+            return "purged";
+         });
+      } catch (error) {
+         if (error !== E_ALREADY_LOCKED) throw error;
+         outcome = "busy";
       }
-
-      // A purge moved the generation while this call was searching: the
-      // rows snapshot above is unreliable (possibly empty because a
-      // concurrent heal deleted mid-search), and an unreliable empty
-      // result must never be served as semantic "nothing relevant here".
-      // Answer as indexing; the next call is consistent.
-      if (meta.generation !== entryGeneration) {
+      if (outcome === "purged" || outcome === "busy") {
+         // Nothing to evict: the purge bumped the generation, which is
+         // what invalidates meta.synced, so the next call re-kicks on its
+         // own.
          return { unavailable: "indexing" };
       }
-
-      return {
-         hits: rows.map((row) => ({
-            kind: row.entity_kind,
-            source: row.entity_source === "" ? undefined : row.entity_source,
-            name: row.entity_name,
-            score: row.score,
-            targetScores: row.targetScores,
-         })),
-         belowCutoffCount: cutoffCounts?.below ?? 0,
-         totalEntities: cutoffCounts?.total ?? 0,
-         cutBySource,
-      };
-   } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn("[MCP Tool getContext] Semantic search failed", {
-         environmentName,
-         packageName,
-         error: message,
-      });
-      return { unavailable: "error" };
+      if (outcome === "backoff") {
+         return { unavailable: "cooldown" };
+      }
    }
+   return undefined;
 }
 
 /** What a package's semantic index is currently doing. */
