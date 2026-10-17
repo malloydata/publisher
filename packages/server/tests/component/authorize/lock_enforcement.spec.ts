@@ -66,6 +66,10 @@ function getConnections(): Map<string, Connection> {
    return connectionsFor(duckdbConnection);
 }
 
+function loadModel(file: string): Promise<Model> {
+   return Model.create("test-pkg", TEST_PKG_DIR, file, getConnections());
+}
+
 async function writeModel(filename: string, content: string): Promise<void> {
    await fs.writeFile(path.join(TEST_PKG_DIR, filename), content, "utf-8");
 }
@@ -85,12 +89,7 @@ async function runGated(
    bypassFilters?: boolean,
    bypassAuthorize?: boolean,
 ) {
-   const model = await Model.create(
-      "test-pkg",
-      TEST_PKG_DIR,
-      modelFile,
-      getConnections(),
-   );
+   const model = await loadModel(modelFile);
    return model.getQueryResults(
       undefined,
       undefined,
@@ -303,12 +302,7 @@ source: gated is duckdb.table('customers') extend {
 query: secret is gated -> { aggregate: c }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rt_namedq.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("rt_namedq.malloy");
       // Named query, no sourceName — must still resolve to `gated` and gate
       // it. The gate is a lock, so a mismatched given is a 403.
       await expect(
@@ -337,12 +331,7 @@ query: secret is gated -> { aggregate: c }
 
    it("gates an ad-hoc query even when a blank sourceName is supplied", async () => {
       await writeModel("rt_single.malloy", SINGLE_GATE);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rt_single.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("rt_single.malloy");
       // Blank sourceName must not skip the gate while the query-builder treats
       // it as absent and runs the ad-hoc query.
       await expect(
@@ -538,12 +527,7 @@ query: secret is gated -> { aggregate: c }
 run: secret
 `,
          );
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "rt_nb.malloynb",
-            getConnections(),
-         );
+         const model = await loadModel("rt_nb.malloynb");
          // Cell 1 is `run: secret` — the lock refuses a mismatched given.
          await expect(
             model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
@@ -578,12 +562,7 @@ source: mine is base_locked extend {
 run: mine -> { aggregate: cc }
 `,
          );
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "rt_nb_authorize.malloynb",
-            getConnections(),
-         );
+         const model = await loadModel("rt_nb_authorize.malloynb");
          // Not rejected as forged caller policy — the author's gate is honored, so
          // it grants on the satisfying given...
          const ok = await model.executeNotebookCell(1, undefined, false, {
@@ -610,12 +589,7 @@ query: secret_join is joiner -> { aggregate: c }
 run: secret_join
 `,
          );
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "rt_locked_join.malloynb",
-            getConnections(),
-         );
+         const model = await loadModel("rt_locked_join.malloynb");
          const ok = await model.executeNotebookCell(1, undefined, false, {});
          expect(ok.result).toBeDefined();
       });
@@ -1086,12 +1060,7 @@ source: top is duckdb.table('customers') extend {
 }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "d_entry.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("d_entry.malloy");
       // Confirms the premise: the malformed gate did NOT fail model load, and
       // `base_locked` is not even in the entry model's own discovery surface.
       expect(model.getNotebookError()).toBeUndefined();
@@ -1144,12 +1113,7 @@ source: gated_direct is duckdb.table('customers') extend { measure: c is count()
       );
       // Top-level, so this one DOES fail model load — the gate never silently
       // becomes "unrestricted".
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "d_direct.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("d_direct.malloy");
       expect(model.getNotebookError()).toBeDefined();
    });
 });
@@ -1322,12 +1286,7 @@ source: combo is compose(member_a, member_b)
 source: qs is combo -> { group_by: org_id }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "c_composite_qs_two_elements.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("c_composite_qs_two_elements.malloy");
       expect(model.getNotebookError()).toBeUndefined();
       expect(model.getAccessFilter("qs")).toEqual(["org_id in $GROUPS"]);
       expect(sourceNamed(model, "qs")?.accessFilter).toEqual([
@@ -1441,7 +1400,7 @@ source: cp_joiner is duckdb.table('customers') extend {
 
    async function cpModel(file: string, src: string): Promise<Model> {
       await writeModel(file, src);
-      return Model.create("test-pkg", TEST_PKG_DIR, file, getConnections());
+      return loadModel(file);
    }
 
    it("assertAuthorizedForText decides a lock up front and defers a row filter to the backstop", async () => {
@@ -1562,12 +1521,7 @@ source: regional is duckdb.table('customers') extend {
 
    async function runComposed(givens: Record<string, GivenValue>) {
       await writeModel("compose.malloy", COMPOSED);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "compose.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("compose.malloy");
       return model.getQueryResults(
          undefined,
          undefined,
@@ -2329,12 +2283,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
 
    it("rejects a forged gate smuggled through sourceName", async () => {
       await writeModel("inj.malloy", LOCKED);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "inj.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("inj.malloy");
       await expect(
          model.getQueryResults(
             `inj_plain -> { aggregate: c }
@@ -2352,12 +2301,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
 
    it("rejects a forged gate smuggled through queryName", async () => {
       await writeModel("inj.malloy", LOCKED);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "inj.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("inj.malloy");
       await expect(
          model.getQueryResults(
             undefined,
@@ -2557,12 +2501,7 @@ source: rep_ext is rep_locked extend {}
 
    it("reports the base's gate on an extension that declares none", async () => {
       await writeModel("rep.malloy", INHERITED);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rep.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("rep.malloy");
       expect(sourceNamed(model, "rep_ext")?.accessFilter).toEqual([
          "id in $DENY",
       ]);
@@ -2608,12 +2547,7 @@ source: ro_locked is duckdb.table('customers') extend {
 source: ro_ext is ro_locked extend {}
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rep_override.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("rep_override.malloy");
       expect(model.getAccessFilter("ro_ext")).toEqual(["id = $ONE"]);
       // DENY is never supplied: had the base's gate been inherited too, this
       // would deny rather than return rows.
@@ -2651,12 +2585,7 @@ source: deep_ext is deep_locked extend {}
 `,
       );
       await writeModel("deep_entry.malloy", `import "deep_mid.malloy"\n`);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "deep_entry.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("deep_entry.malloy");
       // Loaded, not 424 — and the gate is reported rather than silently absent.
       // The legacy quoted-string form is no longer unwrapped (see
       // `parseAuthorizeAnnotation`'s doc), so the reported expression carries
@@ -2708,12 +2637,7 @@ describe("a rejected caller-declared gate is counted", () => {
          "gm.malloy",
          "source: gm_base is duckdb.table('customers')\n",
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "gm.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("gm.malloy");
       await expect(
          model.getQueryResults(
             "#(authorize) true\nsource: sneaky is gm_base extend {}\nrun: sneaky",
@@ -2961,12 +2885,7 @@ source: locked_src is duckdb.table('customers') extend {
 source: laundered is locked_src -> { group_by: region }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "oracle_derived.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("oracle_derived.malloy");
       // A carried-in struct-level note (declared on the base, inherited by
       // reference onto `laundered`) reports the AUTHORED expression text
       // directly — MEASURED: unlike the DIMENSION form's carried-in FIELD,
@@ -3153,12 +3072,7 @@ source:
   }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block.malloy");
       expect(sourceNamed(model, "bf_locked")?.accessFilter).toEqual([
          "id in $DENY",
       ]);
@@ -3192,12 +3106,7 @@ source:
   }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_mixed.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_mixed.malloy");
       expect(model.getAccessFilter("bf_above")).toEqual(["id in $DENY"]);
       expect(model.getAccessFilter("bf_block")).toEqual(["id in $DENY"]);
    });
@@ -3221,12 +3130,7 @@ source:
   }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_sibling.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_sibling.malloy");
       expect(sourceNamed(model, "bf_open")?.accessFilter).toBeUndefined();
       expect(model.getAccessFilter("bf_open")).toEqual([]);
       // Positive half of the control: the gate has to have landed on the item
@@ -3263,12 +3167,7 @@ source:
       // `Model.create` itself does not reject here — a compile-time failure is
       // caught inside it and stashed on `compilationError`, surfaced only when
       // something asks the model for its compiled shape (`getModel()`).
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_field_level.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_field_level.malloy");
       await expect(model.getModel()).rejects.toBeInstanceOf(
          ModelCompilationError,
       );
@@ -3298,12 +3197,7 @@ source:
 source: bf_ext is bf_base extend {}
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_inherit.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_inherit.malloy");
       expect(model.getAccessFilter("bf_ext")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block_inherit.malloy",
@@ -3368,12 +3262,7 @@ source:
   }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_given.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_given.malloy");
       expect(model.getAuthorize("bf_given")).toEqual(["'analyst' = $ROLE"]);
       const { result } = await runGated(
          "block_given.malloy",
@@ -3406,12 +3295,7 @@ source: bf_afteris is
   }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_afteris.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_afteris.malloy");
       expect(model.getAccessFilter("bf_afteris")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block_afteris.malloy",
@@ -3441,12 +3325,7 @@ source:
   }
 `,
       );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "block_validate.malloy",
-         getConnections(),
-      );
+      const model = await loadModel("block_validate.malloy");
       const err = model.getNotebookError();
       expect(err).toBeDefined();
       // Surfaces Malloy's own compile error for the unresolvable given, the
