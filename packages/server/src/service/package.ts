@@ -141,7 +141,6 @@ import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
    buildReportManifest,
    COMPONENT_FILE_SUFFIXES,
-   definitionKey,
    dropGridTileLayoutFindings,
    factsReportTag,
    matchesDocumentedReportName,
@@ -151,6 +150,7 @@ import {
    lintSelfDrills,
    lintUndiscoveredReport,
    queryTiles,
+   tileTarget,
    type ServedReportManifest,
    type ReportModelFacts,
 } from "./report_manifest";
@@ -2680,22 +2680,28 @@ export class Package {
    private surfacedRenderTagWarnings(
       raw: ApiPackageWarning[],
    ): ApiPackageWarning[] {
+      // Keyed by where each tile's view or query is declared, as the
+      // package-wide export map is ({@link Model.definitionIdentity}).
+      const identity = (modelPath: string, expression: string) => {
+         const target = tileTarget(expression);
+         return target
+            ? this.models
+                 .get(modelPath)
+                 ?.definitionIdentity(target.name, target.view)
+            : undefined;
+      };
       const tileDefinitions = new Set<string>();
       for (const report of this.reports.values()) {
          if (report.layout !== "grid") continue;
-         const modelDef = this.models.get(report.path)?.getModelDef();
          for (const tile of queryTiles(report.manifest?.tiles)) {
-            const key = definitionKey(modelDef, tile.query);
+            const key = identity(report.path, tile.query);
             if (key) tileDefinitions.add(key);
          }
       }
       const kept = dropGridTileLayoutFindings(raw, (finding) => {
          if (finding.model === undefined || finding.subject === undefined)
             return false;
-         const key = definitionKey(
-            this.models.get(finding.model)?.getModelDef(),
-            finding.subject,
-         );
+         const key = identity(finding.model, finding.subject);
          return key !== undefined && tileDefinitions.has(key);
       });
       // One line per checked view, as the check logged them before. A finding

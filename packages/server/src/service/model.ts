@@ -4363,22 +4363,40 @@ export class Model {
     * union safe: keyed on bare names, model A's exported `customers` would
     * admit model B's DIFFERENT, hidden `customers`.
     *
+    * With `view`, the identity of that view on the source `name` resolves to,
+    * so a view inherited by an extending source has its declaration's
+    * identity in every model that can see it.
+    *
     * Undefined when Malloy attached no location; callers then fall back to
     * this model's own export closure (fail closed).
     */
-   public definitionIdentity(name: string | undefined): string | undefined {
+   public definitionIdentity(
+      name: string | undefined,
+      view?: string,
+   ): string | undefined {
       if (!name) return undefined;
-      const def = this.modelDef?.contents?.[name] as
-         | {
-              location?: {
-                 url?: string;
-                 range?: { start?: { line?: number; character?: number } };
-              };
-           }
-         | undefined;
-      const url = def?.location?.url;
+      const named = this.modelDef?.contents?.[name];
+      const def =
+         view === undefined
+            ? named
+            : named && isSourceDef(named)
+              ? named.fields.find(
+                   (field) => field.type === "turtle" && field.name === view,
+                )
+              : undefined;
+      const location = (
+         def as
+            | {
+                 location?: {
+                    url?: string;
+                    range?: { start?: { line?: number; character?: number } };
+                 };
+              }
+            | undefined
+      )?.location;
+      const url = location?.url;
       if (!url) return undefined;
-      const start = def?.location?.range?.start;
+      const start = location?.range?.start;
       return `${url}#${start?.line ?? -1}:${start?.character ?? -1}`;
    }
 

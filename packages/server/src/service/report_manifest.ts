@@ -249,28 +249,19 @@ function isTileLayoutTagOnRoot(message: string | undefined): boolean {
 }
 
 /**
- * Where the view or query a run expression names is defined (`source -> view`,
- * or a query's name, resolved in `modelDef`), as a key: one definition has
- * one key in every model that can see it, an inherited copy of a view
- * included. Undefined when the expression names nothing with a location.
+ * What a run expression names, for `Model.definitionIdentity`: a query's
+ * name, or a source and one of its views. Undefined for anything else (a
+ * refinement, source arguments, a further stage), which names no single
+ * declaration a tile's layout is read from (`tileAnnotations` keys on the
+ * same two forms).
  */
-export function definitionKey(
-   modelDef: ModelDef | undefined,
+export function tileTarget(
    expression: string,
-): string | undefined {
+): { name: string; view?: string } | undefined {
    const parts = normalizeTileExpression(expression).split(" -> ");
-   const named = modelDef?.contents[parts[0]];
-   let location;
-   if (parts.length === 1 && named?.type === "query") {
-      location = named.location;
-   } else if (parts.length === 2 && named && isSourceDef(named)) {
-      location = named.fields.find(
-         (field) => field.type === "turtle" && field.name === parts[1],
-      )?.location;
-   }
-   if (!location) return undefined;
-   const { line, character } = location.range.start;
-   return `${location.url}:${line}:${character}`;
+   if (parts.length === 1) return { name: parts[0] };
+   if (parts.length === 2) return { name: parts[0], view: parts[1] };
+   return undefined;
 }
 
 /**
@@ -286,8 +277,9 @@ export function definitionKey(
  * report file and a tile of a linear report, which is one column.
  *
  * `isGridTile` says whether a finding's subject is defined where a grid tile
- * is ({@link definitionKey}), so a view a report imports from another file
- * counts, and so does a copy of it inherited by an extending source.
+ * is (`Model.definitionIdentity` over {@link tileTarget}), so a view a report
+ * imports from another file counts, and so does a copy of it inherited by an
+ * extending source.
  */
 export function dropGridTileLayoutFindings<T extends { message?: string }>(
    warnings: T[],
