@@ -269,7 +269,8 @@ function num(value: unknown): number | null {
    return Number.isFinite(n) ? n : null;
 }
 
-function str(value: unknown): string | null {
+/** A non-empty string value, or null for anything else. */
+export function str(value: unknown): string | null {
    return typeof value === "string" && value.length > 0 ? value : null;
 }
 

@@ -46,7 +46,7 @@ import type { IncrementalDeclaration } from "./incremental_declaration";
  * accessor here takes the same {@link LedgerTableIdentity} the lineage already
  * carries, and none of them needs a source address to find a row.
  */
-export interface IncrementalLedgerStore {
+interface IncrementalLedgerStore {
    getIncrementalLedgerEntry(
       environmentId: string,
       table: LedgerTableIdentity,
@@ -353,7 +353,7 @@ export async function planSourceRefresh(params: {
  * stored), and the local store is left untouched so it cannot later contradict
  * the caller.
  */
-export async function advanceLedger(params: {
+async function advanceLedger(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
    coveredThrough: WatermarkBound;
@@ -584,7 +584,7 @@ export function reportIncrementalStep(params: {
  * so every step is reported exactly once, and a `step="delta"` count always means
  * a table that actually received one.
  */
-export function reportDeltaApplied(params: {
+function reportDeltaApplied(params: {
    sourceName: string;
    packageName: string;
    physicalTableName: string;

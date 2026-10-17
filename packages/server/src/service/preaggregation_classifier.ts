@@ -121,7 +121,7 @@ export type NonAdditiveReason =
    | "requires_group_by"
    | "analytic";
 
-export type AdditivityResult =
+type AdditivityResult =
    | {
         additive: true;
         /** The aggregate the measure computes; stored as the partial column. */

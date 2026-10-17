@@ -40,8 +40,7 @@ export type { IncrementalStrategy };
  */
 
 /** The `refresh=` values the publisher recognizes; unset means "full". */
-export const REFRESH_MODES = ["full", "incremental"] as const;
-export type RefreshMode = (typeof REFRESH_MODES)[number];
+const REFRESH_MODES = ["full", "incremental"] as const;
 
 /**
  * Persist-tag keys the publisher knows about. Anything else is reported as an
@@ -90,7 +89,7 @@ export type ResolvedName =
    | { name: string; kind: "unresolved" };
 
 /** A key whose VALUE is unusable, as opposed to absent. */
-export interface MalformedValue {
+interface MalformedValue {
    key: "refresh" | "watermark" | "merge_key";
    problem:
       | "array" // tag-array form: watermark=["a","b"]

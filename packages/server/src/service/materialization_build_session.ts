@@ -39,6 +39,7 @@ import {
    pickSnowflakeReadRow,
    snowflakeCostSQL,
    snowflakeReadCost,
+   str,
    type BuildReadCost,
 } from "./build_read_cost";
 import { recordAttributionSkipped } from "../materialization_metrics";
@@ -332,7 +333,7 @@ async function withBigQueryLookupRetry<T>(
  * matching recorded query text, so it is carried out of here even though the
  * build itself does not need it.
  */
-export interface PassthroughRead {
+interface PassthroughRead {
    /** The SELECT the CTAS wraps. */
    selectSQL: string;
    /** The warehouse's id for the read, null when this shape does not produce one. */
@@ -536,10 +537,6 @@ function resultRows(result: unknown): Record<string, unknown>[] {
 function firstColumn(result: unknown, column: string): string | null {
    const rows = resultRows(result);
    return rows.length > 0 ? str(rows[0][column]) : null;
-}
-
-function str(value: unknown): string | null {
-   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /**
@@ -753,7 +750,7 @@ export interface StorageBuildResult {
 }
 
 /** What an in-place refresh did, for the manifest entry to report. */
-export interface StorageRefreshOutcome {
+interface StorageRefreshOutcome {
    /** Absent for a refresh that applied nothing (the watermark had not moved). */
    durationMs?: number;
    /** The boundary now in force — where the next refresh starts. */
@@ -1490,7 +1487,7 @@ export async function listStorageTables(params: {
 }
 
 /** What one storage file cleanup reclaimed. */
-export interface StorageFileCleanupResult {
+interface StorageFileCleanupResult {
    expiredSnapshots: number;
    deletedFiles: number;
 }
@@ -1867,7 +1864,7 @@ async function dropStranded(
    }
 }
 
-export async function describeTable(
+async function describeTable(
    session: DuckDBConnection,
    quotedTablePath: string,
 ): Promise<WireColumn[]> {

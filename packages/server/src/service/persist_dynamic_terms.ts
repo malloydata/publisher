@@ -37,7 +37,7 @@ import { collectGivenRefs } from "./given";
  * position. Each gets its own reason so the refusal names the position rather
  * than the mechanism.
  */
-export type DynamicTermRefusal =
+type DynamicTermRefusal =
    | "given_in_persisted_query"
    | "dynamic_projection"
    | "dynamic_join"
@@ -79,13 +79,13 @@ export interface DynamicTerm {
  * `alias` is dotted for a join reached through another admitted join
  * (`grant.team`), since the same rule holds one level further down.
  */
-export interface JoinedDynamicTerms {
+interface JoinedDynamicTerms {
    alias: string;
    source: string;
    terms: DynamicTerm[];
 }
 
-export type DynamicTermClassification =
+type DynamicTermClassification =
    | { ok: true; terms: DynamicTerm[]; joinedTerms?: JoinedDynamicTerms[] }
    | { ok: false; reason: DynamicTermRefusal; detail: string };
 

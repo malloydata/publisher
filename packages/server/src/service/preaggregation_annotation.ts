@@ -84,7 +84,7 @@ import { isSpliceableNamespace } from "./preaggregation_synthesis";
 import type { LogMessage } from "@malloydata/malloy";
 
 /** One grain a measure is declared at — one rollup. */
-export interface PreaggregateGrain {
+interface PreaggregateGrain {
    /**
     * The grain's dimensions, canonically sorted and de-duplicated.
     *
@@ -130,7 +130,7 @@ export interface PreaggregateGrain {
 }
 
 /** A `#@ preaggregate` line that is present but unusable. */
-export interface PreaggregateDeclarationError {
+interface PreaggregateDeclarationError {
    kind:
       | "missing_grain"
       | "empty_grain"
@@ -142,7 +142,7 @@ export interface PreaggregateDeclarationError {
 }
 
 /** What `#@ preaggregate` says about one measure. */
-export interface PreaggregateDeclaration {
+interface PreaggregateDeclaration {
    /**
     * True when at least one `#@ preaggregate` line is in effect for this measure,
     * with negation applied.

@@ -48,7 +48,7 @@ import { errMessage } from "../utils";
  * codes — is the shared planner's, which is the point of expressing this as a
  * target rather than as a second refresh path.
  */
-export interface StorageDeltaTarget {
+interface StorageDeltaTarget {
    target: DeltaTarget;
    /**
     * What the warehouse charged for the delta's read, once one has been issued.

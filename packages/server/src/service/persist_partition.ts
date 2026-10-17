@@ -23,12 +23,12 @@ import type { PersistSource } from "@malloydata/malloy";
  * decides what is built and where, and partitioning is a property of that
  * build.
  */
-export type PartitionRefusal =
+type PartitionRefusal =
    | "partition_without_storage"
    | "partition_column_unknown"
    | "partition_column_not_public";
 
-export type PartitionResolution =
+type PartitionResolution =
    | { ok: true; columns: string[] }
    | { ok: false; reason: PartitionRefusal; detail: string };
 

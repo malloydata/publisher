@@ -31,7 +31,7 @@ import { quoteManifestTablePath } from "./quoting";
  * serve time from the stored columns rather than forcing a live fallback.
  * `code` is the original Malloy expression text.
  */
-export interface FieldRefinement {
+interface FieldRefinement {
    kind: "dimension" | "measure";
    name: string;
    code: string;
@@ -52,7 +52,7 @@ export interface FieldRefinement {
  * arbitrary expression, so lifting text carries any condition for free, whereas
  * reconstructing it from the compiled expression tree would not.
  */
-export interface JoinRefinement {
+interface JoinRefinement {
    kind: "join";
    /** The join alias (`join_one: <alias> is ...`); used for logging/ordering. */
    name: string;
@@ -78,7 +78,7 @@ export interface JoinRefinement {
  * view category and falls back for those queries (see the shape-compile
  * escalation in the model's serve path).
  */
-export interface ViewRefinement {
+interface ViewRefinement {
    kind: "view";
    /** The view name (`view: <name> is { ... }`); used for logging/ordering. */
    name: string;
@@ -102,7 +102,7 @@ export interface ViewRefinement {
  * each entry and ANDs them, so joining two entries' `code` with `and` would
  * reassociate a top-level `or`.
  */
-export interface FilterRefinement {
+interface FilterRefinement {
    kind: "filter";
    /** Verbatim author expression, e.g. `not is_deleted`. */
    code: string;
@@ -629,7 +629,7 @@ function derivedSourceFragment(lift: DerivedSourceLift): string {
 }
 
 /** The compiled-model facts {@link liftDerivedSources} reads. */
-export interface DerivedLiftContext {
+interface DerivedLiftContext {
    /** The model's `contents`, by source name. */
    contents: Record<string, DerivedSourceDef>;
    /** sourceID -> author source name. */
@@ -1174,7 +1174,7 @@ export async function buildOverTiers<T>(
  * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
  * and whether pre-aggregation groups are carried.
  */
-export interface ServeShapeTier {
+interface ServeShapeTier {
    keep: ReadonlySet<string>;
    groups: RollupShapeGroup[];
 }
@@ -1346,7 +1346,7 @@ export function buildChainedStorageBuildModel(params: {
 }
 
 /** What {@link reachedPersistedSources} found on the paths out of a source. */
-export interface ReachedSources {
+interface ReachedSources {
    /**
     * The persist sources the walk stopped at — the stored tables the source
     * depends on, whether it reads them directly or through intermediates — as
@@ -1680,7 +1680,7 @@ export function documentFlagLines(text: string): string[] {
  * and the chained build (the intermediates it carries), so both read ONE view
  * of the model.
  */
-export type AuthorModelLiftContext = {
+type AuthorModelLiftContext = {
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
    sourceNameById: Map<string, string>;
    liftText: (location: SourceLocation) => string | undefined;
@@ -2039,7 +2039,7 @@ export function extractRefinements(
 }
 
 /** A zero-based Malloy source range (as carried on a compiled field's `location`). */
-export interface SourceRange {
+interface SourceRange {
    start: { line: number; character: number };
    end: { line: number; character: number };
 }
@@ -2077,7 +2077,7 @@ export function sliceSourceRange(
 }
 
 /** What {@link extractJoins} needs beyond the compiled field list. */
-export interface JoinExtractionContext {
+interface JoinExtractionContext {
    /**
     * The joined source's author name, keyed by the compiled join field's
     * `sourceID` (which equals the joined source's own `sourceID`). Only a join

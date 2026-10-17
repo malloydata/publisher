@@ -37,7 +37,7 @@ import {
  *
  * `fail` collapses to `serve_live` in v1 (see module note).
  */
-export type FreshnessDecision = "serve_table" | "serve_live";
+type FreshnessDecision = "serve_table" | "serve_live";
 
 /**
  * Evaluate one entry against `now`. An entry with no `freshnessWindowSeconds`

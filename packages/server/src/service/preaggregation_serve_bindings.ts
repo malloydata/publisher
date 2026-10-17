@@ -54,7 +54,7 @@ import {
 } from "./preaggregation_synthesis";
 
 /** One base source's rollups, in the order they should be offered. */
-export interface RollupServeGroup {
+interface RollupServeGroup {
    /**
     * The AUTHOR's source name — what a query names, and what the emitted shape
     * must re-expose. Never a rollup's own name: nothing queries that.
@@ -71,7 +71,7 @@ export interface RollupServeGroup {
 }
 
 /** A base whose rollups cannot be served, and why. */
-export interface RollupServeConflict {
+interface RollupServeConflict {
    baseSourceName: string;
    reason: string;
 }

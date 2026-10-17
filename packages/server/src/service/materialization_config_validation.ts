@@ -34,7 +34,7 @@ import {
 } from "./query_metadata";
 
 /** Where a `queryMetadata` bag was declared, which is what an author edits. */
-export type QueryMetadataLevel = "package" | "model" | "source";
+type QueryMetadataLevel = "package" | "model" | "source";
 
 /** One author's declaration, as declared — not as resolved. */
 export interface QueryMetadataDeclaration {
@@ -52,7 +52,7 @@ export interface QueryMetadataDeclaration {
    queryMetadata: QueryMetadata;
 }
 
-export interface MaterializationConfigInput {
+interface MaterializationConfigInput {
    /**
     * Every `queryMetadata` bag an author declared, at whatever level.
     *
@@ -115,7 +115,7 @@ const DECLARATION_LABELS: Record<QueryMetadataLevel, string> = {
  * finding entirely, and rendered `marts.malloy` where a reader expects a source
  * name.
  */
-export interface MaterializationConfigWarning {
+interface MaterializationConfigWarning {
    /** The model file the finding is in, absent for a package-level one. */
    model?: string;
    /** The source the finding belongs to, absent for package and model levels. */

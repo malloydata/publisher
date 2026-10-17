@@ -66,13 +66,13 @@ import {
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** The alias the base is imported under, and the last compose() member. */
-export const BASE_ALIAS_SUFFIX = "__preagg_base";
+const BASE_ALIAS_SUFFIX = "__preagg_base";
 
 /** Suffix on the stored partial-aggregate column for a measure. */
-export const PARTIAL_SUFFIX = "__partial";
+const PARTIAL_SUFFIX = "__partial";
 
 /** One measure served by a rollup, with the merge to apply to its partial. */
-export interface RollupMeasure {
+interface RollupMeasure {
    /** The measure's name on the base, and on the rollup member. */
    name: string;
    /** The stored column holding the partial aggregate. */

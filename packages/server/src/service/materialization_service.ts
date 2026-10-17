@@ -133,7 +133,7 @@ import {
  * content address, and every name whose SQL hashes to it is that table —
  * which is what `aliasesBySourceName` records.
  */
-export interface ChainedPlanFacts {
+interface ChainedPlanFacts {
    /**
     * Every persist source's `sourceID`, inheritors and renames included. By id,
     * not name: a name is not unique across a package's models (two files may
@@ -838,7 +838,7 @@ function refusalRecord(
  * are joined so the run names every source it could not build, not only the
  * first in plan order.
  */
-export function allSourcesRefusedError(
+function allSourcesRefusedError(
    errors: MaterializationEligibilityError[],
 ): MaterializationEligibilityError {
    if (errors.length === 1) return errors[0];

@@ -25,7 +25,7 @@ import { resolvePartitionColumns } from "./persist_partition";
  * where it sits, and a partition column is only usable because the gate
  * resolved it against the relation that same build will write.
  */
-export interface PersistDynamicPlan {
+interface PersistDynamicPlan {
    /** Terms absent from the build, re-applied per caller at read. */
    terms: DynamicTerm[];
    /** Declared `partition=` columns, resolved and ordered. Empty for none. */

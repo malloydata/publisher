@@ -559,7 +559,7 @@ export async function probeTargetColumns(
  * Whether the target holds at least one row. Cheap by construction (`LIMIT 1`,
  * never a `count(*)`) because the question is existence, not size.
  */
-export async function probeTargetNonEmpty(
+async function probeTargetNonEmpty(
    runner: SqlRunner,
    dialect: string,
    quotedTablePath: string,
@@ -628,7 +628,7 @@ export async function probePostgresVersion(
 }
 
 /** The first Postgres release with `MERGE`. */
-export const POSTGRES_MERGE_MIN_VERSION_NUM = 150000;
+const POSTGRES_MERGE_MIN_VERSION_NUM = 150000;
 
 /**
  * Compare two bounds of the same type. Text comparison is deliberate and works

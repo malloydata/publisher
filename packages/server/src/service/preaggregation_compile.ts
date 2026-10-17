@@ -60,10 +60,7 @@ export interface SynthesizedPreaggregation {
 }
 
 /** Where the synthesized companion for `modelPath` lives, as an absolute URL. */
-export function synthesizedModelURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function synthesizedModelURL(packagePath: string, modelPath: string): URL {
    return new URL(
       `file://${path.join(packagePath, modelPath)}${SYNTHESIZED_SUFFIX}`,
    );
@@ -81,7 +78,7 @@ export function synthesizedModelURL(
  * skipped by the planner rather than reported here, so this never becomes a
  * second, quieter opinion about what is legal.
  */
-export async function compileSynthesizedPreaggregation(args: {
+async function compileSynthesizedPreaggregation(args: {
    packagePath: string;
    modelPath: string;
    contents: Record<string, unknown>;

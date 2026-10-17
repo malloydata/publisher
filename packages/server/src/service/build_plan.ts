@@ -158,7 +158,7 @@ export interface CompiledBuildPlan {
  *  BUILT, and the lock is decided per request at serve time, where
  *  `Model.queryEntryPointHasRowLevelGate` blocks routing to frozen rows on ANY
  *  collected gate regardless of route. */
-export type PersistSourceGateClassification = "row_level" | "rejected";
+type PersistSourceGateClassification = "row_level" | "rejected";
 
 /**
  * `classification` is whether the entry point's gates resolved to something
