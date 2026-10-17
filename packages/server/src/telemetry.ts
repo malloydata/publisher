@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { metrics, type Meter } from "@opentelemetry/api";
+import {
+   metrics,
+   type Counter,
+   type Histogram,
+   type Meter,
+   type UpDownCounter,
+} from "@opentelemetry/api";
 
 /**
  * Single source of truth for the OpenTelemetry meter name. Every
@@ -26,3 +32,53 @@ export function publisherMeter(): Meter {
 export const REQUEST_DURATION_BUCKETS_MS = [
    5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 60000,
 ];
+
+const instrumentResets: (() => void)[] = [];
+
+/**
+ * An instrument created from the publisher meter on first use and then
+ * memoized. Lazy because one created before the SDK installs its
+ * MeterProvider binds to a no-op meter
+ * (https://github.com/open-telemetry/opentelemetry-js/issues/3505); tests
+ * swap providers and call {@link resetInstrumentsForTesting}.
+ */
+function lazyInstrument<T>(create: () => T): () => T {
+   let instrument: T | null = null;
+   instrumentResets.push(() => (instrument = null));
+   return () => (instrument ??= create());
+}
+
+export function lazyCounter(name: string, description: string): () => Counter {
+   return lazyInstrument(() =>
+      publisherMeter().createCounter(name, { description }),
+   );
+}
+
+export function lazyUpDownCounter(
+   name: string,
+   description: string,
+): () => UpDownCounter {
+   return lazyInstrument(() =>
+      publisherMeter().createUpDownCounter(name, { description }),
+   );
+}
+
+export function lazyHistogram(
+   name: string,
+   description: string,
+   { unit = "ms", buckets }: { unit?: string; buckets?: number[] } = {},
+): () => Histogram {
+   return lazyInstrument(() =>
+      publisherMeter().createHistogram(name, {
+         description,
+         // "" means a dimensionless histogram (a count), created with no unit.
+         ...(unit ? { unit } : {}),
+         ...(buckets ? { advice: { explicitBucketBoundaries: buckets } } : {}),
+      }),
+   );
+}
+
+/** Drop every lazily created instrument so the next use binds to the current provider. */
+export function resetInstrumentsForTesting(): void {
+   for (const reset of instrumentResets) reset();
+}

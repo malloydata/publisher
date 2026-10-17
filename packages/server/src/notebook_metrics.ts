@@ -16,33 +16,12 @@
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Counter, type Histogram } from "@opentelemetry/api";
-import { publisherMeter, REQUEST_DURATION_BUCKETS_MS } from "./telemetry";
-
-const resetHooks: (() => void)[] = [];
-
-function lazyCounter(name: string, description: string): () => Counter {
-   let instrument: Counter | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createCounter(name, { description }));
-}
-
-function lazyHistogram(
-   name: string,
-   description: string,
-   unit: string,
-   buckets: number[],
-): () => Histogram {
-   let instrument: Histogram | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createHistogram(name, {
-         description,
-         unit,
-         advice: { explicitBucketBoundaries: buckets },
-      }));
-}
+import {
+   lazyCounter,
+   lazyHistogram,
+   REQUEST_DURATION_BUCKETS_MS,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 /** `malloynb` is the legacy cell format; `malloy` is a linear `.malloy` report the route also runs. */
 export type NotebookFormat = "malloynb" | "malloy";
@@ -80,9 +59,8 @@ const cellExecutionCounter = lazyCounter(
 const cellExecutionDuration = lazyHistogram(
    "publisher_notebook_cell_execution_duration_ms",
    "Wall-clock duration of a notebook cell run. Labels: format, outcome.",
-   "ms",
    // The HTTP request histogram's set, since a cell run is one request.
-   REQUEST_DURATION_BUCKETS_MS,
+   { buckets: REQUEST_DURATION_BUCKETS_MS },
 );
 
 /** One cell run finished, however it finished. */
@@ -98,5 +76,5 @@ export function recordNotebookCellExecution(
 
 /** Drop memoized instruments so a test can install a fresh MeterProvider. */
 export function resetNotebookMetricsForTest(): void {
-   for (const reset of resetHooks) reset();
+   resetInstrumentsForTesting();
 }

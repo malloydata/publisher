@@ -25,34 +25,14 @@
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Counter, type Histogram } from "@opentelemetry/api";
 import type express from "express";
 import { LOAD_DURATION_BUCKETS_MS } from "./package_load_metrics";
-import { publisherMeter, REQUEST_DURATION_BUCKETS_MS } from "./telemetry";
-
-const resetHooks: (() => void)[] = [];
-
-function lazyCounter(name: string, description: string): () => Counter {
-   let instrument: Counter | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createCounter(name, { description }));
-}
-
-function lazyHistogram(
-   name: string,
-   description: string,
-   buckets?: number[],
-): () => Histogram {
-   let instrument: Histogram | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createHistogram(name, {
-         description,
-         unit: "ms",
-         ...(buckets ? { advice: { explicitBucketBoundaries: buckets } } : {}),
-      }));
-}
+import {
+   lazyCounter,
+   lazyHistogram,
+   REQUEST_DURATION_BUCKETS_MS,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 /** A report's layout: the `layout` label wherever one is recorded. */
 export type ReportLayout = "grid" | "linear";
@@ -117,7 +97,7 @@ export function summarizeReportDiscovery(
 const discoveryDuration = lazyHistogram(
    "publisher_report_discovery_duration_ms",
    "Wall-clock duration of reading a package's reports and linting them. Labels: during ('load'|'reload'|'compile').",
-   LOAD_DURATION_BUCKETS_MS,
+   { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 
 const reportsDiscovered = lazyCounter(
@@ -171,7 +151,7 @@ export type ReportReadRoute = "list" | "get";
 const readDuration = lazyHistogram(
    "publisher_report_read_duration_ms",
    "Wall-clock duration of a report read route. Labels: route ('list'|'get'), status_class ('2xx'|'4xx'|'5xx').",
-   REQUEST_DURATION_BUCKETS_MS,
+   { buckets: REQUEST_DURATION_BUCKETS_MS },
 );
 
 /** `200` → `2xx`. */
@@ -262,7 +242,7 @@ const writeCounter = lazyCounter(
 const writeDuration = lazyHistogram(
    "publisher_report_write_duration_ms",
    "Wall-clock duration of a report write, compile and package reload included. Labels: outcome, layout.",
-   LOAD_DURATION_BUCKETS_MS,
+   { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 
 /** One write attempt finished, however it finished. */
@@ -278,5 +258,5 @@ export function recordReportWrite(
 
 /** Drop memoized instruments so a test can install a fresh MeterProvider. */
 export function resetReportMetricsForTest(): void {
-   for (const reset of resetHooks) reset();
+   resetInstrumentsForTesting();
 }

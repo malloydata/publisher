@@ -15,8 +15,11 @@
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Counter, type Histogram } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
 /**
@@ -94,34 +97,6 @@ export type ChainedStorageBuildOutcome =
    // fails rather than recomputing from raw against the same destination.
    | "infra_failure";
 
-const resetHooks: (() => void)[] = [];
-
-/**
- * A lazily-created instrument: built from the global meter on first use (so it
- * binds to the real MeterProvider, not the NoOp default) and memoized. Each
- * registers a reset hook so a test can swap in a fresh MeterProvider.
- */
-function lazyCounter(name: string, description: string): () => Counter {
-   let instrument: Counter | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createCounter(name, { description }));
-}
-
-function lazyHistogram(
-   name: string,
-   description: string,
-   unit: string,
-): () => Histogram {
-   let instrument: Histogram | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createHistogram(name, {
-         description,
-         unit,
-      }));
-}
-
 const runCounter = lazyCounter(
    "publisher_materialization_runs_total",
    "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
@@ -129,7 +104,6 @@ const runCounter = lazyCounter(
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
    "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
-   "ms",
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
@@ -146,7 +120,6 @@ const incrementalStepCounter = lazyCounter(
 const buildPlanComputeDuration = lazyHistogram(
    "publisher_materialization_build_plan_compute_duration_ms",
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
-   "ms",
 );
 const buildPlanComputeFailedCounter = lazyCounter(
    "publisher_materialization_build_plan_compute_failed_total",
@@ -204,7 +177,6 @@ const tableCollisionCounter = lazyCounter(
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
-   "ms",
 );
 const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
@@ -647,5 +619,5 @@ export function recordColocatedBindDropped(
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */
 export function resetMaterializationTelemetryForTesting(): void {
-   for (const reset of resetHooks) reset();
+   resetInstrumentsForTesting();
 }
