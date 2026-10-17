@@ -434,15 +434,15 @@ function checkShape(
 /** The tag keys of a tile's layout, which a view declared here carries until the builder moves them to its entry. */
 const LAYOUT_TAG_KEYS: ReadonlySet<string> = new Set(["colspan", "break"]);
 
-/** Whether a tile's place on the grid changed: its width, its row break or its height. */
+/** Whether a tile's place on the grid changed: its width, its row break or its rowspan. */
 const layoutChanged = (was: DashboardTile, now: DashboardTile) =>
    was.colspan !== now.colspan ||
    Boolean(was.break) !== Boolean(now.break) ||
-   was.height !== now.height;
+   was.rowspan !== now.rowspan;
 
 /** A tile with its layout taken off, for asking whether anything ELSE about it changed. */
 const withoutLayout = <T extends DashboardTile>(tile: T): T => {
-   const { colspan: _c, break: _b, height: _h, ...rest } = tile;
+   const { colspan: _c, break: _b, rowspan: _r, ...rest } = tile;
    return rest as T;
 };
 
@@ -450,7 +450,7 @@ const withoutLayout = <T extends DashboardTile>(tile: T): T => {
 const layoutProperties = (tile: DashboardTile): string[] => [
    ...(tile.colspan === undefined ? [] : [`colspan=${tile.colspan}`]),
    ...(tile.break ? ["break"] : []),
-   ...(tile.height === undefined ? [] : [`height=${tile.height}`]),
+   ...(tile.rowspan === undefined ? [] : [`rowspan=${tile.rowspan}`]),
 ];
 
 /** `text` with every quoted string blanked to `x`s of the same length, so a scan for syntax cannot land inside one. */
@@ -500,7 +500,7 @@ function tileEntryText(tile: DashboardTile, written?: string): string {
    };
    drop(/\s*\bcolspan\s*=\s*[^\s}]+/);
    drop(/\s*\bbreak\b(?:\s*=\s*[^\s}]+)?/);
-   drop(/\s*\bheight\s*=\s*[^\s}]+/);
+   drop(/\s*\browspan\s*=\s*[^\s}]+/);
    const props = [inner.trim(), ...layout].filter(Boolean);
    // A query entry left with nothing in its braces is its expression alone.
    if (props.length === 0) return written.slice(0, open).trimEnd();

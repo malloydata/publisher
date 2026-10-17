@@ -259,17 +259,17 @@ Revenue first, then the seasonal split.
   a malformed-route warning and `##| markdown` reads the prose as tags. `##|(text) name` is also
   read as a text tile; write `(markdown)`.
 - **The body is markdown**: headings, emphasis, lists, links and inline code.
-- **On a grid the entry reads `colspan`, `break` and `height`** and nothing else, as every tile's entry
+- **On a grid the entry reads `colspan`, `break` and `rowspan`** and nothing else, as every tile's entry
   does (see [Placing a tile on its entry](#placing-a-tile-on-its-entry)). On a linear report all three
   are ignored.
-- **The lint reports** an entry with no block, a block written twice, a `colspan` or `height` that is not
+- **The lint reports** an entry with no block, a block written twice, a `colspan` or `rowspan` that is not
   a positive integer, any other property on the entry, and a named `(markdown)` block no entry lists. Delete an
   unlisted block rather than leave it.
 
 The report's own description is separate: the unnamed `"` notes above `## artifact`
 (`##" One line saying what this report is for.`), which render as markdown under the title.
 
-In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break?, height? }` with no `query`, and a
+In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break?, rowspan? }` with no `query`, and a
 query tile is `{ kind: "query", query, … }`. Anything that runs a report's tiles skips the text ones.
 
 ### File order
@@ -335,17 +335,19 @@ A report can also place a tile with its own entry in `tiles=[…]`, and the entr
 tags, property by property:
 
 ```malloy
-## artifact { layout=grid tiles=["overview -> kpis" { colspan=12 height=2 }, "overview -> revenue_trend" { colspan=8 break height=5 }, "overview -> revenue_by_state" { colspan=4 }] } dashboard { columns=12 }
+## artifact { layout=grid tiles=["overview -> kpis" { colspan=12 rowspan=2 }, "overview -> revenue_trend" { colspan=8 break rowspan=5 }, "overview -> revenue_by_state" { colspan=4 }] } dashboard { columns=12 }
 ```
 
 - **`colspan=N` and `break`** mean what the view's tags mean. `break=false` turns off a view's `# break`.
   Because the entry belongs to the report, one view can sit at a different width on each report that
   names it, and a tile on a view the report imports can be laid out at all.
-- **`height=N`** is the tile's height in grid rows, and only the entry sets it. A row is 80px, and a tile
-  N rows tall also spans the N-1 gaps between them (16px each), so `height=5` is 464px. A chart fills the
+- **`rowspan=N`** is the tile's height in grid rows, and only the entry sets it. A row is 80px, and a tile
+  N rows tall also spans the N-1 gaps between them (16px each), so `rowspan=5` is 464px. A chart fills the
   height, a table scrolls inside it, and a text tile scrolls its prose. Without it a tile is as tall as
   its result, up to 400px, and a row is as tall as its tallest tile; a tile with a height keeps it beside
   a taller neighbour. A map draws at its own size, so give it the height it needs.
+  It is named to pair with `colspan`: today tiles still flow, so it sets a height, and it is the
+  count of rows a tile will span once tiles are placed on explicit rows.
 - **An entry reads only these three.** A label, subtitle, chart or card still goes on the view, and the
   lint names any other property on an entry.
 - **The Console builder writes here.** Resizing or moving a tile puts its layout on its entry and takes
@@ -462,7 +464,7 @@ source: category_tiles is order_items extend {
 ```
 
 - **`layout=linear` is required here**, because the tag lists tiles (see [Which layout](#which-layout)).
-- `dashboard { columns }` has no effect on a linear report, and a `colspan`, `break` or `height` on a tile
+- `dashboard { columns }` has no effect on a linear report, and a `colspan`, `break` or `rowspan` on a tile
   entry is ignored with a warning (`notebook-tile-layout-ignored`).
 - **Write prose that frames questions, not findings about today's data.** "Revenue spiked 23% in March"
   is stale the next time the data refreshes; "How is revenue trending?" is not.
@@ -812,12 +814,12 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
   `suggest` in a form that cannot fetch options at all.
 - **Tiles and layout.** A tile that does not resolve to a real view; on a grid, a non-positive `columns`, a
   `# colspan` or entry `colspan` that is not a positive integer or is wider than the grid, an entry
-  `height` that is not a positive integer, a property on an entry other than its layout, a
+  `rowspan` that is not a positive integer, a property on an entry other than its layout, a
   `dashboard_columns=` alias (an error when it disagrees with `columns`); on a linear report, a `colspan`,
-  `break` or `height`
+  `break` or `rowspan`
   (`notebook-tile-layout-ignored`) and a `run:` beside `tiles` (`notebook-layout-run`); any property inside
   the artifact tag that Publisher does not read.
-- **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan` or `height`, an
+- **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan` or `rowspan`, an
   unknown property on the entry, and a named block no entry lists.
 - **The tag and the prose.** An artifact tag that does not parse (`notebook-artifact-unparsed`, error);
   a `#(markdown)` note with no statement to take it (`notebook-markdown-attached-nowhere`, error); a

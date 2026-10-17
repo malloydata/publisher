@@ -1537,13 +1537,13 @@ describe("spliceDashboardDocument: what it refuses", () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const out = await spliced(source, (d) => {
          d.tiles[0].colspan = 6;
-         d.tiles[0].height = 4;
+         d.tiles[0].rowspan = 4;
       });
       expect(out).toBe(
-         `## artifact { title="T" tiles=["orders -> by_brand" { colspan=6 height=4 }] }\nimport { orders } from '../orders.malloy'`,
+         `## artifact { title="T" tiles=["orders -> by_brand" { colspan=6 rowspan=4 }] }\nimport { orders } from '../orders.malloy'`,
       );
       const back = await openDocument(out);
-      expect(back.tiles[0]).toMatchObject({ colspan: 6, height: 4 });
+      expect(back.tiles[0]).toMatchObject({ colspan: 6, rowspan: 4 });
    });
 
    it("refuses a new tile that is not a reference to a view", async () => {

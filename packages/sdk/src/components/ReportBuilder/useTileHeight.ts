@@ -22,7 +22,7 @@ const dragChrome = (on: boolean) => {
 };
 
 /**
- * Dragging a tile's bottom edge to set its `height`, in whole grid rows. The
+ * Dragging a tile's bottom edge to set its `rowspan`, in whole grid rows. The
  * rows are previewed by the caller from `height.rows` and written ONCE, on
  * release, so one gesture is one undo step.
  *
@@ -63,7 +63,7 @@ export function useTileHeight({
       event.currentTarget.setPointerCapture(event.pointerId);
       dragChrome(true);
       onStart(index);
-      const from = tiles[index]?.height ?? rowsForHeight(tile.height);
+      const from = tiles[index]?.rowspan ?? rowsForHeight(tile.height);
       setHeight({ index, rows: from, from, top: tile.top });
    };
 

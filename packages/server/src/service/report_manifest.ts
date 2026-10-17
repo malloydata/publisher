@@ -128,11 +128,11 @@ export interface ReportQueryTileSpec extends ReportTileLayout {
     */
    givenNames?: string[];
    /**
-    * `height=N` on the tile's entry in `tiles=[…]`: its height in grid rows.
+    * `rowspan=N` on the tile's entry in `tiles=[…]`: the grid rows it is tall.
     * Absent, the tile is as tall as its result. Only the entry sets it; a
     * view's own tags never do.
     */
-   height?: number;
+   rowspan?: number;
    /**
     * The caller may not read this tile's source. Set only by a compile of
     * caller-submitted text; carries nothing else of the tile, so the answer
@@ -149,8 +149,8 @@ export interface ReportTextTileSpec {
    markdown: string;
    colspan?: number;
    break?: boolean;
-   /** `height=N` on its entry: the tile's height in grid rows. */
-   height?: number;
+   /** `rowspan=N` on its entry: the grid rows it is tall. */
+   rowspan?: number;
 }
 
 export type ReportTileSpec = ReportQueryTileSpec | ReportTextTileSpec;
@@ -354,11 +354,11 @@ const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
 interface EntryLayout {
    colspan?: number;
    break?: boolean;
-   height?: number;
+   rowspan?: number;
 }
 
 /** The properties an entry's layout is written with, and so the only ones the lint lets an entry carry. */
-const ENTRY_LAYOUT_PROPERTIES = ["colspan", "break", "height"];
+const ENTRY_LAYOUT_PROPERTIES = ["colspan", "break", "rowspan"];
 
 /** One entry of `tiles=[…]`: a run expression or a named text block, each with its own layout. */
 type ArtifactTileEntry =
@@ -367,11 +367,11 @@ type ArtifactTileEntry =
 
 function readEntryLayout(entry: Tag): EntryLayout {
    const colspan = positiveInteger(tagNumeric(entry, "colspan"));
-   const height = positiveInteger(tagNumeric(entry, "height"));
+   const rowspan = positiveInteger(tagNumeric(entry, "rowspan"));
    return {
       ...(colspan !== undefined && { colspan }),
       ...(entry.has("break") && { break: tagText(entry, "break") !== "false" }),
-      ...(height !== undefined && { height }),
+      ...(rowspan !== undefined && { rowspan }),
    };
 }
 
@@ -379,12 +379,12 @@ function readEntryLayout(entry: Tag): EntryLayout {
 function entryLayoutFields(layout: EntryLayout): {
    colspan?: number;
    break?: true;
-   height?: number;
+   rowspan?: number;
 } {
    return {
       ...(layout.colspan !== undefined && { colspan: layout.colspan }),
       ...(layout.break === true && { break: true as const }),
-      ...(layout.height !== undefined && { height: layout.height }),
+      ...(layout.rowspan !== undefined && { rowspan: layout.rowspan }),
    };
 }
 
@@ -1236,7 +1236,7 @@ export function lintReport(
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
             `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
-               `a tile's entry reads only \`colspan\`, \`break\` and \`height\`.` +
+               `a tile's entry reads only \`colspan\`, \`break\` and \`rowspan\`.` +
                (kind === "text"
                   ? ""
                   : ` The rest of its presentation goes on the view the tile names ` +
@@ -1244,7 +1244,7 @@ export function lintReport(
          );
       }
       const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
-      for (const property of ["colspan", "height"]) {
+      for (const property of ["colspan", "rowspan"]) {
          if (
             entry.has(property) &&
             positiveInteger(tagNumeric(entry, property)) === undefined

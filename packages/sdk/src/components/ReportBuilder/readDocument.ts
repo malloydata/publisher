@@ -303,26 +303,26 @@ function entryLayout(
            has(key: string): boolean;
         }
       | undefined,
-): { colspan?: number; break?: boolean; height?: number } {
+): { colspan?: number; break?: boolean; rowspan?: number } {
    const colspan = gridWidth(tag, "colspan");
-   const height = gridWidth(tag, "height");
+   const rowspan = gridWidth(tag, "rowspan");
    return {
       ...(colspan === undefined ? {} : { colspan }),
       ...(tag?.has("break") ? { break: tag.text("break") !== "false" } : {}),
-      ...(height === undefined ? {} : { height }),
+      ...(rowspan === undefined ? {} : { rowspan }),
    };
 }
 
 /** An entry's layout over a view's own: each property the entry sets wins, and a `break` that ends up off is no field. */
 function placed(
    view: { colspan?: number; break?: boolean },
-   entry: { colspan?: number; break?: boolean; height?: number },
-): { colspan?: number; break?: true; height?: number } {
+   entry: { colspan?: number; break?: boolean; rowspan?: number },
+): { colspan?: number; break?: true; rowspan?: number } {
    const colspan = entry.colspan ?? view.colspan;
    return {
       ...(colspan === undefined ? {} : { colspan }),
       ...((entry.break ?? view.break) ? { break: true as const } : {}),
-      ...(entry.height === undefined ? {} : { height: entry.height }),
+      ...(entry.rowspan === undefined ? {} : { rowspan: entry.rowspan }),
    };
 }
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;

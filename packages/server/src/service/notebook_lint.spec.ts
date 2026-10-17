@@ -680,13 +680,13 @@ describe("notebook lint", () => {
          ]);
       });
 
-      it("warns that a height means nothing on a query entry of a notebook", () => {
+      it("warns that a rowspan means nothing on a query entry of a notebook", () => {
          expect(
             lint(
-               `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v" { height=3 }] }\n${SOURCE}${BLOCK}`,
+               `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v" { rowspan=3 }] }\n${SOURCE}${BLOCK}`,
             ).map((finding) => finding.message),
          ).toEqual([
-            "Line 1: `height` on the `a -> v` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove it.",
+            "Line 1: `rowspan` on the `a -> v` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove it.",
          ]);
       });
 

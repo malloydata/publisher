@@ -98,7 +98,7 @@ export function BuilderGrid({
            )
          : tall !== undefined
            ? editor.document.tiles.map((each, index) =>
-                index === tall.index ? { ...each, height: tall.rows } : each,
+                index === tall.index ? { ...each, rowspan: tall.rows } : each,
              )
            : (preview ?? editor.document.tiles)
    ).map(drawn);
@@ -181,7 +181,7 @@ export function BuilderGrid({
                            {...(rules.widths && sizing
                               ? {
                                    heightEdge: {
-                                      rows: each.height,
+                                      rows: each.rowspan,
                                       dragging: tall?.index === index,
                                       onStart: (event) =>
                                          sizing.startHeight(event, index),
@@ -192,8 +192,8 @@ export function BuilderGrid({
                                             const tile = draft.tiles[index];
                                             if (!tile) return;
                                             if (to === undefined)
-                                               delete tile.height;
-                                            else tile.height = to;
+                                               delete tile.rowspan;
+                                            else tile.rowspan = to;
                                          }),
                                    },
                                 }

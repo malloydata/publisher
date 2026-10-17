@@ -52,7 +52,7 @@ export function tileGridColumn(
    return tile.break ? `1 / span ${span}` : `span ${span}`;
 }
 
-/** One grid row, in px: the unit `height=N` on a tile's entry counts in. */
+/** One grid row, in px: the unit `rowspan=N` on a tile's entry counts in. */
 export const TILE_ROW_PX = 80;
 
 /** Fewest and most rows the builder offers for a tile's height; a hand-written file may go outside them. */
@@ -128,8 +128,8 @@ export function defaultTileSpan(
 export interface GridTile {
    colspan?: number;
    break?: boolean;
-   /** `height=N` on its entry: rows tall. Absent, the tile is as tall as its row. */
-   height?: number;
+   /** `rowspan=N` on its entry: the grid rows it is tall. Absent, the tile is as tall as its row. */
+   rowspan?: number;
 }
 
 /**
@@ -236,8 +236,8 @@ export function DashboardGrid<T extends GridTile>({
                   // stretching to it, and the card inside fills it.
                   // A grid item's row is as tall as its content's minimum, so
                   // the row is held to the box: the result shrinks to fit it.
-                  ...(tile.height !== undefined && {
-                     height: tileHeightPx(tile.height),
+                  ...(tile.rowspan !== undefined && {
+                     height: tileHeightPx(tile.rowspan),
                      alignSelf: "start",
                      gridTemplateRows: "minmax(0, 1fr)",
                   }),

@@ -24,14 +24,14 @@ source: a is one extend {
 }`;
 
 describe("entry layout: reading", () => {
-   it("takes the entry's colspan, break and height over the view's tags", async () => {
+   it("takes the entry's colspan, break and rowspan over the view's tags", async () => {
       const d = await openDocument(
          TAGGED.replace(
             '"a -> kpis", "a -> trend"',
-            '"a -> kpis" { colspan=4 break=false height=3 }, "a -> trend" { break }',
+            '"a -> kpis" { colspan=4 break=false rowspan=3 }, "a -> trend" { break }',
          ),
       );
-      expect(queryTile(d, 0)).toMatchObject({ colspan: 4, height: 3 });
+      expect(queryTile(d, 0)).toMatchObject({ colspan: 4, rowspan: 3 });
       expect(queryTile(d, 0).break).toBeUndefined();
       expect(queryTile(d, 1)).toMatchObject({ break: true });
    });
@@ -39,15 +39,15 @@ describe("entry layout: reading", () => {
    it("still reads a view's own tags when the entry carries none", async () => {
       const d = await openDocument(TAGGED);
       expect(queryTile(d, 0)).toMatchObject({ colspan: 6, break: true });
-      expect(queryTile(d, 0).height).toBeUndefined();
+      expect(queryTile(d, 0).rowspan).toBeUndefined();
    });
 
-   it("reads a text tile's height", async () => {
+   it("reads a text tile's rowspan", async () => {
       const d = await openDocument(
-         `## artifact { layout=grid title="T" tiles=[intro { kind=text height=2 }] }\n##|(markdown) intro\nHi\n|##\n`,
+         `## artifact { layout=grid title="T" tiles=[intro { kind=text rowspan=2 }] }\n##|(markdown) intro\nHi\n|##\n`,
       );
       const tile = d.tiles[0];
-      expect(isTextTile(tile) && tile.height).toBe(2);
+      expect(isTextTile(tile) && tile.rowspan).toBe(2);
    });
 });
 
@@ -76,27 +76,27 @@ describe("entry layout: writing", () => {
       );
    });
 
-   it("writes a height on a query tile and a text tile", async () => {
+   it("writes a rowspan on a query tile and a text tile", async () => {
       const source = TAGGED.replace(
          '"a -> kpis", "a -> trend"',
          'intro { kind=text }, "a -> kpis", "a -> trend"',
       ).replace("import", "##|(markdown) intro\nHi\n|##\nimport");
       const out = await spliced(source, (d) => {
-         d.tiles[0].height = 2;
-         d.tiles[2].height = 5;
+         d.tiles[0].rowspan = 2;
+         d.tiles[2].rowspan = 5;
       });
       expect(out).toContain(
-         'tiles=[intro { kind=text height=2 }, "a -> kpis", "a -> trend" { height=5 }]',
+         'tiles=[intro { kind=text rowspan=2 }, "a -> kpis", "a -> trend" { rowspan=5 }]',
       );
    });
 
    it("drops the braces when an entry's last layout property goes", async () => {
       const source = TAGGED.replace(
          '"a -> trend"',
-         '"a -> trend" { height=4 }',
+         '"a -> trend" { rowspan=4 }',
       );
       const out = await spliced(source, (d) => {
-         delete d.tiles[1].height;
+         delete d.tiles[1].rowspan;
       });
       expect(out).toContain('tiles=["a -> kpis", "a -> trend"]');
    });
@@ -104,18 +104,18 @@ describe("entry layout: writing", () => {
    it("keeps an entry's spelling and other properties when its layout changes", async () => {
       const source = TAGGED.replace(
          '"a -> trend"',
-         '"a->trend" { height=4 kind=query }',
+         '"a->trend" { rowspan=4 kind=query }',
       );
       const out = await spliced(source, (d) => {
-         d.tiles[1].height = 6;
+         d.tiles[1].rowspan = 6;
       });
-      expect(out).toContain('"a->trend" { kind=query height=6 }');
+      expect(out).toContain('"a->trend" { kind=query rowspan=6 }');
    });
 
    it("rewrites an entry that carries layout as written when only the order changes", async () => {
       const source = TAGGED.replace(
          '"a -> trend"',
-         '"a -> trend" { height=4 }',
+         '"a -> trend" { rowspan=4 }',
       );
       const out = await spliced(source, (d) => {
          d.tiles = [d.tiles[1], d.tiles[0]];
@@ -123,6 +123,6 @@ describe("entry layout: writing", () => {
          delete d.tiles[1].break;
          d.tiles[0].break = undefined;
       });
-      expect(out).toContain('tiles=["a -> trend" { height=4 }, "a -> kpis"');
+      expect(out).toContain('tiles=["a -> trend" { rowspan=4 }, "a -> kpis"');
    });
 });

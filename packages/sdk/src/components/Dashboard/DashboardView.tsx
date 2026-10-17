@@ -331,7 +331,7 @@ export function DashboardView({
                      // the tile below it.
                      <Box
                         sx={
-                           tile.height !== undefined
+                           tile.rowspan !== undefined
                               ? { minHeight: 0, overflow: "auto" }
                               : undefined
                         }
@@ -357,8 +357,8 @@ export function DashboardView({
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={
-                           tile.height !== undefined
-                              ? tileHeightPx(tile.height)
+                           tile.rowspan !== undefined
+                              ? tileHeightPx(tile.rowspan)
                               : (height ?? TILE_MAX_HEIGHT)
                         }
                         maxResultSize={maxResultSize}

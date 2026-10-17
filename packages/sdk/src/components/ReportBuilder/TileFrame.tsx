@@ -155,7 +155,7 @@ export function TileFrame({
                   // A set height holds the row too, so the tile
                   // shrinks to it rather than the row growing to
                   // the tile's content.
-                  ...(tile.height !== undefined && {
+                  ...(tile.rowspan !== undefined && {
                      gridTemplateRows: "minmax(0, 1fr)",
                      minHeight: 0,
                   }),

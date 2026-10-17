@@ -5330,10 +5330,10 @@ components:
             and `break` this is the whole per-child tag set `@malloydata/render`
             resolves for a `# dashboard` nest child, read the same way here so one
             view presents identically as a tile and as a nest.
-        height:
+        rowspan:
           type: integer
           description: >-
-            The tile's height in grid rows, from `height=N` on its entry in
+            The tile's height in grid rows, from `rowspan=N` on its entry in
             `tiles=[…]`; only the entry sets it. A row is 80px, and a tile N rows
             tall also spans the N-1 row gaps between them. Absent, the tile is
             as tall as its result, up to the viewer's cap. A grid report only.

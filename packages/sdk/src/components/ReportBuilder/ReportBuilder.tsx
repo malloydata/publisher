@@ -335,7 +335,7 @@ export function ReportBuilder({
       commit: (index, rows) =>
          editor.update((draft) => {
             const tile = draft.tiles[index];
-            if (tile) tile.height = rows;
+            if (tile) tile.rowspan = rows;
          }),
    });
    const tiles = useTileEditing({

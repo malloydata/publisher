@@ -174,8 +174,8 @@ export interface QueryTile {
     */
    colspan?: number;
    break?: boolean;
-   /** `height=N` on its entry: rows tall. Only the entry carries it. */
-   height?: number;
+   /** `rowspan=N` on its entry: the grid rows it is tall. Only the entry carries it. */
+   rowspan?: number;
    borderless?: boolean;
 }
 
@@ -191,7 +191,7 @@ export interface TextTile {
    markdown: string;
    colspan?: number;
    break?: boolean;
-   height?: number;
+   rowspan?: number;
 }
 
 export type DashboardTile = QueryTile | TextTile;

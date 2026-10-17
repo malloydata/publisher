@@ -1028,10 +1028,10 @@ describe("service/report_manifest entry layout", () => {
       return lintReport(f, manifest).map((x) => x.message);
    };
 
-   it("puts the entry's colspan, break and height over the view's tags", () => {
+   it("puts the entry's colspan, break and rowspan over the view's tags", () => {
       const manifest = build(
          withViews(
-            '## artifact { layout=grid tiles=["orders -> kpi" { colspan=4 height=3 }, "orders -> by_month" { break=false }] } dashboard { columns=12 }\n',
+            '## artifact { layout=grid tiles=["orders -> kpi" { colspan=4 rowspan=3 }, "orders -> by_month" { break=false }] } dashboard { columns=12 }\n',
             {
                "orders -> kpi": ["# colspan=6\n", '# label="Revenue"\n'],
                "orders -> by_month": ["# colspan=8\n", "# break\n"],
@@ -1045,7 +1045,7 @@ describe("service/report_manifest entry layout", () => {
             givenNames: [],
             colspan: 4,
             label: "Revenue",
-            height: 3,
+            rowspan: 3,
          },
          {
             kind: "query",
@@ -1066,23 +1066,23 @@ describe("service/report_manifest entry layout", () => {
       expect(manifest?.tiles?.[1]).toMatchObject({ break: true });
    });
 
-   it("gives a text tile its height", () => {
+   it("gives a text tile its rowspan", () => {
       const manifest = build(
          facts({
             modelAnnotations: [
-               "## artifact { layout=grid tiles=[note { kind=text height=2 }] }\n",
+               "## artifact { layout=grid tiles=[note { kind=text rowspan=2 }] }\n",
                "##|(markdown) note\nhi",
             ],
          }),
       );
       expect(manifest?.tiles).toEqual([
-         { kind: "text", name: "note", markdown: "hi", height: 2 },
+         { kind: "text", name: "note", markdown: "hi", rowspan: 2 },
       ]);
    });
 
    it("keeps a restricted tile's place on the grid", () => {
       const f = withViews(
-         '## artifact { layout=grid tiles=["orders -> kpi" { colspan=6 height=2 }] } dashboard { columns=12 }\n',
+         '## artifact { layout=grid tiles=["orders -> kpi" { colspan=6 rowspan=2 }] } dashboard { columns=12 }\n',
          { "orders -> kpi": ['# label="Secret"\n'] },
       );
       const manifest = buildReportManifest(f, {
@@ -1093,15 +1093,15 @@ describe("service/report_manifest entry layout", () => {
             kind: "query",
             query: "orders -> kpi",
             colspan: 6,
-            height: 2,
+            rowspan: 2,
             restricted: true,
          },
       ]);
    });
 
-   it("drops and reports a colspan or height that is not a positive integer", () => {
+   it("drops and reports a colspan or rowspan that is not a positive integer", () => {
       const f = withViews(
-         '## artifact { layout=grid tiles=["orders -> kpi" { colspan=0 height="tall" }] } dashboard { columns=12 }\n',
+         '## artifact { layout=grid tiles=["orders -> kpi" { colspan=0 rowspan="tall" }] } dashboard { columns=12 }\n',
          { "orders -> kpi": [] },
       );
       expect(build(f)?.tiles).toEqual([
@@ -1109,7 +1109,7 @@ describe("service/report_manifest entry layout", () => {
       ]);
       expect(lint(f)).toEqual([
          expect.stringContaining("colspan on `orders -> kpi`"),
-         expect.stringContaining("height on `orders -> kpi`"),
+         expect.stringContaining("rowspan on `orders -> kpi`"),
       ]);
    });
 
@@ -2176,7 +2176,7 @@ describe("service/report_manifest grid width and hostile literals", () => {
          finding.includes("carries `label`"),
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
-      expect(carried).toContain("reads only `colspan`, `break` and `height`");
+      expect(carried).toContain("reads only `colspan`, `break` and `rowspan`");
       expect(carried).toContain("# label");
       // Alongside, not instead of: `intro` is also a tile expression that does
       // not resolve, and the author needs both halves. Saying only that the

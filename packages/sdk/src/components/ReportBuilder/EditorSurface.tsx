@@ -504,8 +504,8 @@ export function EditorSurface({
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
                   height={
-                     tile.height !== undefined
-                        ? tileHeightPx(tile.height)
+                     tile.rowspan !== undefined
+                        ? tileHeightPx(tile.rowspan)
                         : TILE_MAX_HEIGHT
                   }
                />
@@ -665,7 +665,7 @@ function sameTile(
 
 /**
  * A tile less what only frames its result: its title, subtitle, width, row,
- * height and card are drawn by the tile around the result, not sent with the query.
+ * rowspan and card are drawn by the tile around the result, not sent with the query.
  * Retitling a tile re-ran it before, and its chart blinked as the same rows
  * were drawn again.
  */
@@ -675,7 +675,7 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle: _subtitle,
       colspan: _colspan,
       break: _break,
-      height: _height,
+      rowspan: _rowspan,
       borderless: _borderless,
       ...runs
    } = tile as DocumentTile & {
@@ -683,7 +683,7 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle?: unknown;
       colspan?: unknown;
       break?: unknown;
-      height?: unknown;
+      rowspan?: unknown;
       borderless?: unknown;
    };
    return runs as DocumentTile;
