@@ -25,6 +25,7 @@ import {
    type PickerGroup,
 } from "./ViewPicker";
 import type { ChartPick } from "./chartLine";
+import { writtenSpan } from "../Report/layoutRules";
 import type { DashboardDocument } from "./document";
 
 /**
@@ -55,7 +56,8 @@ export interface NewTile {
    chart?: ChartPick | "none";
    /** The chart tags the view carries, so the chart line negates only those. */
    chartCarried?: string[];
-   colspan: number;
+   /** Columns the tile spans; absent writes none, where that draws the same (`writtenSpan`). */
+   colspan?: number;
 }
 
 /** A view the picker shows a preview of, as the tile it would add. */
@@ -96,6 +98,7 @@ const DECLARED: Record<string, string> = {
    bar_chart: "a bar chart",
    line_chart: "a line chart",
    scatter_chart: "a scatter chart",
+   combo_chart: "a bar and line chart",
    shape_map: "a shape map",
    segment_map: "a segment map",
    big_value: "a big value",
@@ -213,6 +216,8 @@ export function AddTileDialog({
       if (!entry) return;
       if (![entry.source.name, entry.view.name].every(isBareName)) return;
       const same = entry.key === picked?.key;
+      // Half the grid; none written where that is what no width draws.
+      const colspan = writtenSpan(Math.ceil(columns / 2), columns);
       onAdd({
          base: entry.source.name,
          modelPath: entry.source.modelPath,
@@ -222,7 +227,7 @@ export function AddTileDialog({
          view: entry.view.name,
          ...(same && label.trim() ? { label: label.trim() } : {}),
          ...(same ? chartPart : {}),
-         colspan: Math.ceil(columns / 2),
+         ...(colspan !== undefined ? { colspan } : {}),
       });
    };
    // Only the charts this view can take: a choice that cannot apply is not a

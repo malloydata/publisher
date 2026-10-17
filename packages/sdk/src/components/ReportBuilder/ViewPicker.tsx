@@ -54,6 +54,7 @@ export function ChartGlyph({ chart }: { chart: string | undefined }) {
    const sx = { fontSize: 16 };
    switch (chart) {
       case "bar_chart":
+      case "combo_chart":
          return <BarChartIcon sx={sx} />;
       case "line_chart":
       case "sparkline":

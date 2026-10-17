@@ -34,6 +34,14 @@ import { STUCK_TOP_PX, useStuck } from "../Dashboard/useStuck";
  */
 export const STICKY_CONTROLS_Z = 4;
 
+/**
+ * The CSS custom property a host sets, on any ancestor of a report, to the
+ * height of what it pins above the report in the same scroller. The control
+ * row pins that far down instead of at the scroller's edge, so the two stack
+ * rather than overlap. Unset, it is 0.
+ */
+export const STICKY_TOP_VAR = "--publisher-sticky-top";
+
 /** The space between the page's parts and between its tiles' rows, in theme units. */
 const PAGE_GAP = 2;
 
@@ -141,7 +149,11 @@ export function StickyControls({ children }: { children: ReactNode }) {
          data-stuck={stuck || undefined}
          sx={{
             position: "sticky",
-            top: `${STUCK_TOP_PX}px`,
+            // Under whatever the host pins above the report (its own toolbar,
+            // say), which it says by setting `--publisher-sticky-top` on an
+            // ancestor. `useStuck` measures against this line, so the fill
+            // and edge still come on when the bar pins below the host's.
+            top: `calc(var(${STICKY_TOP_VAR}, 0px) + ${STUCK_TOP_PX}px)`,
             zIndex: STICKY_CONTROLS_Z,
             // Filled only while pinned, when the tiles pass under it. Unpinned
             // nothing does, and the fill, reaching up over the gap by the room

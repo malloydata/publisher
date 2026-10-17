@@ -7,9 +7,10 @@ import { Box, Button } from "@mui/material";
 import type { ReactNode, RefObject } from "react";
 import { DashboardGrid, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
-import type { LayoutRules } from "../Report/layoutRules";
+import { withSpan, type LayoutRules } from "../Report/layoutRules";
 import {
    isQueryTile,
+   isReadOnlyTile,
    isTextTile,
    tileKey,
    type DashboardTile,
@@ -159,7 +160,13 @@ export function BuilderGrid({
                                          if (to === (each.colspan ?? 1)) return;
                                          editor.update((draft) => {
                                             const tile = draft.tiles[index];
-                                            if (tile) tile.colspan = to;
+                                            if (tile)
+                                               draft.tiles[index] = withSpan(
+                                                  tile,
+                                                  to,
+                                                  columns,
+                                                  defaultSpan,
+                                               );
                                          });
                                       },
                                    },
@@ -219,7 +226,7 @@ const headingOf = (
    fallback: string,
    editTile: (key: string, change: (tile: DashboardTile) => void) => void,
 ): TileHeadingSlots | undefined => {
-   if (tile.declaration.kind === "inherited") return undefined;
+   if (isReadOnlyTile(tile)) return undefined;
    const key = tileKey(tile);
    const set = (field: "label" | "subtitle") => (next: string) =>
       editTile(key, (each) => {
@@ -250,8 +257,8 @@ const headingOf = (
 
 /**
  * Whether dragging this tile's edge can be saved: its width is a tag this file
- * owns. An inherited tile's tags live on the model's view, which the builder
- * does not write.
+ * owns. An inherited tile's tags live on the model's view, and a named query's
+ * on its `query:` statement; the builder writes neither.
  */
 const resizable = (tile: DashboardTile): boolean =>
-   isTextTile(tile) || tile.declaration.kind !== "inherited";
+   isTextTile(tile) || !isReadOnlyTile(tile);

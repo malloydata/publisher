@@ -255,10 +255,10 @@ describe("previewTileQuery", () => {
             runnable,
          ).annotation;
       expect(withChart("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -viz bar_chart",
+         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
       );
       expect(withChart("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz",
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
       );
       expect(withChart("custom")).toBe("# bar_chart { size=spark }");
       expect(withChart("default")).toBeUndefined();
@@ -266,17 +266,29 @@ describe("previewTileQuery", () => {
    });
 
    it("clears the saved view's own chart line for an inline or opaque tile on Default", () => {
+      // Every chart tag off and `viz` left alone: not Table's line, so a view
+      // of totals still draws as big numbers, as it does with no line at all.
       const NONE =
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz";
+         "# -line_chart -bar_chart -scatter_chart -shape_map -segment_map -combo_chart";
+      // A colour is set so this reads the chart line alone; Theme's line is pinned below.
       const annotationOf = (
          declaration: QueryTile["declaration"],
          chart: QueryTile["chart"],
       ) =>
          previewTileQuery(
             document,
-            { name: "x", source: "overview", declaration, chart },
+            {
+               name: "x",
+               source: "overview",
+               declaration,
+               chart,
+               color: "#123456",
+            },
             runnable,
-         ).annotation;
+         )
+            .annotation?.split("\n")
+            .filter((line) => line !== '# theme.palette.series=["#123456"]')
+            .join("\n") || undefined;
       expect(annotationOf({ kind: "inline" }, "default")).toBe(NONE);
       for (const why of [
          "a `{ … } + { … }` compound refinement",
@@ -296,6 +308,42 @@ describe("previewTileQuery", () => {
       expect(
          annotationOf({ kind: "reference", from: "v" }, "default"),
       ).toBeUndefined();
+   });
+
+   it("takes the saved view's colour off an inline or opaque tile set to Theme", () => {
+      // An inline tile runs its own saved view, which still carries the colour
+      // it was saved with: without this line, picking Theme kept drawing that
+      // colour while the menu showed the theme's. A reference tile runs its
+      // base view, which never had the wrapper's colour, so it needs none.
+      const RESET = "# -theme.palette.series";
+      const annotationOf = (
+         declaration: QueryTile["declaration"],
+         color?: string,
+      ) =>
+         previewTileQuery(
+            document,
+            {
+               name: "x",
+               source: "overview",
+               declaration,
+               chart: "combo_chart",
+               ...(color ? { color } : {}),
+            },
+            runnable,
+         ).annotation?.split("\n");
+      expect(annotationOf({ kind: "inline" })).toEqual([
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz combo_chart",
+         RESET,
+      ]);
+      expect(
+         annotationOf({ kind: "opaque", why: "a chained refinement" })?.at(-1),
+      ).toBe(RESET);
+      expect(
+         annotationOf({ kind: "reference", from: "v" })?.includes(RESET),
+      ).toBe(false);
+      expect(annotationOf({ kind: "inline" }, "#7f9862")?.at(-1)).toBe(
+         '# theme.palette.series=["#7f9862"]',
+      );
    });
 
    it("sends a tile only the givens it binds", () => {
@@ -361,6 +409,18 @@ describe("previewTileQuery", () => {
          "overview -> kpis + { where: category ~ $CATEGORY }",
       );
       expect(q.givenNames).toEqual(["CATEGORY"]);
+   });
+
+   it("runs a named-query tile by its name, sending the whole row", () => {
+      const named: QueryTile = {
+         name: "by_carrier",
+         declaration: { kind: "query" },
+      };
+      expect(previewTileQuery(document, named, runnable)).toEqual({
+         expression: "by_carrier",
+         givenNames: undefined,
+         reads: undefined,
+      });
    });
 
    it("runs an inherited tile as the model has it, sending the whole row", () => {

@@ -1,9 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Tag } from "@malloydata/malloy-tag";
 import {
    chartLinesOf,
    chartStateOfTagLines,
+   seriesColorOf,
    type ChartState,
 } from "./chartLine";
 import type {
@@ -151,13 +153,35 @@ const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 function chartField(tags: Array<{ text: string }>): {
    chart?: ChartState;
    chartLines?: string[];
+   color?: string;
 } {
    const lines = tagText(tags);
    const chart = chartStateOfTagLines(lines);
-   if (chart === undefined) return {};
+   // The last colour line wins, as it does in the renderer's tag merge.
+   const color = lines.map(seriesColorOf).filter(Boolean).at(-1);
+   const colored = color ? { color } : {};
+   if (chart === undefined) return colored;
    return chart === "custom"
-      ? { chart, chartLines: chartLinesOf(lines) }
-      : { chart };
+      ? { chart, chartLines: chartLinesOf(lines), ...colored }
+      : { chart, ...colored };
+}
+
+/**
+ * Whether a tile's own tags set the series palette in a line the builder did
+ * not write; see {@link QueryTile.ownPalette}. Each line is parsed on its own,
+ * so `# theme { palette.series=[…] }` counts as well as the dotted spelling.
+ */
+function ownPaletteField(
+   tags: Array<{ text: string }>,
+   parse: ParseTags,
+): { ownPalette?: true } {
+   const own = tagText(tags).some(
+      (line) =>
+         seriesColorOf(line) === undefined &&
+         parse([line]).tag?.tag("theme")?.tag("palette")?.tag("series") !==
+            undefined,
+   );
+   return own ? { ownPalette: true } : {};
 }
 
 /**
@@ -280,6 +304,50 @@ function gridWidth(
 
 const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
+/** An entry that is one plain name, quoted or bare: a query, as the server's reader takes it. */
+const NAMED_QUERY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The `#` lines above `query: <name> is …` in this file, or none when the
+ * query is declared in the model. `name` is a plain name ({@link NAMED_QUERY}).
+ */
+function queryTags(
+   parsed: ParsedMalloy,
+   lines: string[],
+   name: string,
+): Array<{ line: number; text: string }> {
+   const declares = new RegExp(`^\\s*query\\s*:\\s*${name}\\s+is\\b`);
+   for (let i = 0; i < lines.length; i++) {
+      if (parsed.commentLine(i) || parsed.proseLine(i)) continue;
+      if (declares.test(lines[i])) return blockAbove(parsed, lines, i).tags;
+   }
+   return [];
+}
+
+/**
+ * What the reader takes off a tile's own tags for its frame: label, subtitle,
+ * width, a row break, no border. For a tile the builder draws but does not
+ * rewrite, so it is drawn as the reader draws it.
+ */
+function readOnlyFrame(t: Tag | undefined): {
+   label?: string;
+   subtitle?: string;
+   colspan?: number;
+   break?: true;
+   borderless?: true;
+} {
+   return {
+      ...(t?.text("label") ? { label: t.text("label") as string } : {}),
+      ...(t?.text("subtitle")
+         ? { subtitle: t.text("subtitle") as string }
+         : {}),
+      ...(t?.numeric("colspan") !== undefined
+         ? { colspan: t.numeric("colspan") as number }
+         : {}),
+      ...(t?.has("break") ? { break: true as const } : {}),
+      ...(t?.has("borderless") ? { borderless: true as const } : {}),
+   };
+}
 
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
@@ -451,13 +519,29 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
          continue;
       }
       const entry = quoted?.[1] ?? entryText;
+      // A plain name, quoted or bare, is a named query,
+      // `query: by_carrier is flights -> { … }`, here or in the model: the
+      // server's reader runs it as `run: by_carrier`. Shown and movable, never
+      // rewritten (see the `query` declaration), and framed by the query's own
+      // tags when this file declares it, as the reader frames it.
+      if (NAMED_QUERY.test(entry.trim())) {
+         const name = entry.trim();
+         tiles.push({
+            name,
+            declaration: { kind: "query" },
+            ...readOnlyFrame(
+               parseAnnotation(tagText(queryTags(parsed, lines, name))).tag,
+            ),
+         });
+         continue;
+      }
       const steps = quoted ? tileSteps(entry) : undefined;
       if (!steps) {
          return {
             ok: false,
             reason:
-               `The tile \`${entry}\` is not a \`source -> view\` expression, ` +
-               `which is the only form the builder can lay out.`,
+               `The tile \`${entry}\` is neither a \`source -> view\` expression ` +
+               `nor the name of a query, which are the forms the builder can lay out.`,
          };
       }
       const { source: sourceName, view: viewName } = steps;
@@ -501,16 +585,9 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
                      ? view.body.why
                      : "unreadable",
             },
-            ...(t?.text("label") ? { label: t.text("label") as string } : {}),
-            ...(t?.text("subtitle")
-               ? { subtitle: t.text("subtitle") as string }
-               : {}),
-            ...(t?.numeric("colspan") !== undefined
-               ? { colspan: t.numeric("colspan") as number }
-               : {}),
+            ...readOnlyFrame(t),
             ...chartField(view.tags),
-            ...(t?.has("break") ? { break: true } : {}),
-            ...(t?.has("borderless") ? { borderless: true } : {}),
+            ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
          });
          continue;
       }
@@ -536,6 +613,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             ? { colspan: t.numeric("colspan") as number }
             : {}),
          ...chartField(view.tags),
+         ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
          ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });
