@@ -1220,6 +1220,69 @@ function isAzureSingleFileUrl(fileUri: string): boolean {
    return isDataFile(lastSegment);
 }
 
+/**
+ * The storage account and container an Azure URL names, as a comparable key,
+ * or undefined when it names none. Hosts under `core.windows.net` compare by
+ * account name, so a blob URL and a dfs URL for the same account match; any
+ * other host compares in full. A short `abfss://container/path` takes its
+ * account from `accountName`.
+ */
+function azureLocationKey(
+   url: string,
+   accountName?: string,
+): string | undefined {
+   const base = url.split("?")[0];
+   const scheme = base.slice(0, base.indexOf("://"));
+   const rest = base
+      .slice(scheme.length + 3)
+      .split("/")
+      .filter(Boolean);
+   if (rest.length < 2 && !(rest.length === 1 && accountName)) return undefined;
+   let host: string;
+   let container: string;
+   if (scheme !== "https" && !rest[0].includes(".")) {
+      if (!accountName) return undefined;
+      host = `${accountName}.blob.core.windows.net`;
+      container = rest[0];
+   } else {
+      host = rest[0];
+      container = rest[1];
+   }
+   if (!container) return undefined;
+   host = host.toLowerCase();
+   const account = host.endsWith(".core.windows.net")
+      ? host.split(".")[0]
+      : host;
+   return `${account}/${container}`;
+}
+
+/** Does `url` fall inside the account and container `attachment` is configured for? */
+function azureAttachmentCovers(
+   attachment: ApiAzureConnection,
+   url: string,
+): boolean {
+   const configured =
+      attachment.authType === "sas_token"
+         ? attachment.sasUrl
+         : attachment.fileUrl;
+   if (!configured) return false;
+   const want = azureLocationKey(url, attachment.accountName);
+   return (
+      want !== undefined &&
+      want === azureLocationKey(configured, attachment.accountName)
+   );
+}
+
+/** A SAS attachment's token, appended to a URL in its container that carries none. */
+function withAttachmentSasToken(
+   url: string,
+   attachment: ApiAzureConnection,
+): string {
+   if (attachment.authType !== "sas_token" || url.includes("?")) return url;
+   const token = attachment.sasUrl?.split("?")[1];
+   return token ? `${url}?${token}` : url;
+}
+
 async function describeAzureFile(
    malloyConnection: Connection,
    fileUri: string,
@@ -1601,13 +1664,30 @@ async function listTablesForDuckDB(
       }
    }
 
-   // Azure ADLS file path (abfss://, https://, az://)
+   // Azure ADLS file path (abfss://, https://, az://). Read only inside an
+   // attachment's account and container, with that attachment's credentials:
+   // otherwise this would fetch any URL a caller names.
    if (
       schemaName.startsWith("abfss://") ||
       schemaName.startsWith("https://") ||
       schemaName.startsWith("az://")
    ) {
-      return describeAzureFile(malloyConnection, schemaName);
+      const covering = attachedDbs.find(
+         (db) =>
+            db.type === "azure" &&
+            db.azureConnection &&
+            azureAttachmentCovers(db.azureConnection, schemaName),
+      )?.azureConnection;
+      if (!covering) {
+         throw new BadRequestError(
+            `"${schemaName}" is not inside an Azure attachment of connection "${connection.name}". Browse an attached Azure database by its name.`,
+         );
+      }
+      return describeAzureFile(
+         malloyConnection,
+         withAttachmentSasToken(schemaName, covering),
+         covering,
+      );
    }
 
    // Cloud storage (GCS/S3)
