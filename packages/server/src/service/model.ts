@@ -3166,7 +3166,7 @@ export class Model {
           * struct the materializer executes must be the one grafted, so a
           * `_loadQueryFromQueryDef` that copies its argument denies. A NAME
           * run target defers to {@link assertGateLanded}. SQL-level honoring
-          * is pinned by `authorize_import_hop.integration.spec.ts`.
+          * is pinned by `tests/component/authorize/import_hop.spec.ts`.
           */
          prove: async (recompiled) => {
             if (!graftedStruct) {
