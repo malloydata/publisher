@@ -238,14 +238,24 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for Key figures"));
-      expect(enabledCharts()).toEqual(["Default", "Table", "Big value"]);
+      expect(enabledCharts()).toEqual([
+         "Default",
+         "Table",
+         "Big value",
+         "Scatter",
+      ]);
       const line = chartItems().find((o) => primary(o) === "Line");
       expect(line?.textContent).toContain(
          "This view has no field for the x-axis",
       );
       pickChart("Table");
       pickChart("Default");
-      expect(enabledCharts()).toEqual(["Default", "Table", "Big value"]);
+      expect(enabledCharts()).toEqual([
+         "Default",
+         "Table",
+         "Big value",
+         "Scatter",
+      ]);
    });
 
    it("says the shape is unknown, rather than what the view lacks, when no model reported it", async () => {

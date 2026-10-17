@@ -13,8 +13,9 @@
  * its columns are group-bys and totals, so the panel can say what is missing
  * before the renderer is asked.
  *
- * Conservative by design: anything it cannot read (a channel tagged by hand,
- * a result that does not parse) is left to the renderer.
+ * Conservative by design: anything it cannot read (a channel placed by hand,
+ * on a field or on the chart tag, a `viz=` it does not know, a result that
+ * does not parse) is left to the renderer.
  */
 
 import { blankQuoted } from "../../utils/blankQuoted";
@@ -36,7 +37,8 @@ const VIZ_NAMES: Record<string, string> = {
 /** A field tag that names a chart channel: the author placed fields by hand. */
 const CHANNEL_TAGS = new Set(["x", "y", "y2", "series"]);
 
-interface ResultField {
+/** An output column as a result's schema, or a view's in the catalog, describes it. */
+export interface ResultField {
    kind?: string;
    type?: { kind?: string };
    annotations?: Array<{ value?: string }>;
@@ -57,7 +59,15 @@ function tagWords(line: string): string[] {
       .filter(Boolean);
 }
 
-/** The chart the result's lines ask for, read in order: a later line overrides, `-tag` takes one off. */
+/**
+ * The chart the result's lines ask for, read in order: a later line overrides,
+ * `-tag` takes one off.
+ *
+ * A `viz=` wins over every chart tag, as it does in the renderer, whatever its
+ * value. One this does not know (`viz=table`, or a quoted value, blanked to
+ * `""`) comes back as written, which is no chart that plots rows, so the
+ * result is left to the renderer rather than read as an inherited chart tag.
+ */
 export function requestedChart(lines: readonly string[]): string | undefined {
    const on: string[] = [];
    let viz: string | undefined;
@@ -69,9 +79,7 @@ export function requestedChart(lines: readonly string[]): string | undefined {
             const at = on.indexOf(name);
             if (at >= 0) on.splice(at, 1);
          } else if (word.startsWith("viz=")) {
-            // A quoted value was blanked to `""`, so `viz="bar"` reads as no
-            // chart and is left to the renderer.
-            viz = VIZ_NAMES[word.slice(4)];
+            viz = VIZ_NAMES[word.slice(4)] ?? word;
          } else if (ROW_CHARTS[word] !== undefined || word === "big_value") {
             const at = on.indexOf(word);
             if (at >= 0) on.splice(at, 1);
@@ -99,18 +107,21 @@ export type ChartShapeGap = "no_x_axis" | "no_y_axis" | "combo_totals";
 /**
  * What keeps `chart` from drawing columns of this shape, or undefined when
  * nothing does or `chart` does not plot rows. The one rule both the builder's
- * chart picker and the result panel apply. A scatter chart may plot two
- * group-bys against each other, so it is not held to having a total.
+ * chart picker and the result panel apply. A scatter chart plots its first
+ * two columns against each other, whatever they are, so two group-bys draw,
+ * and so do two totals with no group-by.
  */
 export function chartShapeGap(
    chart: string,
    { groupBys, totals }: ColumnCounts,
 ): ChartShapeGap | undefined {
    if (ROW_CHARTS[chart] === undefined) return undefined;
+   if (chart === "scatter_chart")
+      return groupBys === 0 && totals < 2 ? "no_x_axis" : undefined;
    if (groupBys === 0) return "no_x_axis";
    if (chart === "combo_chart")
       return totals === 2 ? undefined : "combo_totals";
-   if (totals === 0 && chart !== "scatter_chart") return "no_y_axis";
+   if (totals === 0) return "no_y_axis";
    return undefined;
 }
 
@@ -138,11 +149,32 @@ export function marksCalculation(note: string): boolean {
    );
 }
 
-const isTotal = (field: ResultField) =>
-   field.kind === "measure" ||
-   (field.annotations ?? []).some((note) => marksCalculation(note.value ?? ""));
-const isNest = (field: ResultField) =>
+/**
+ * Whether an output column is a total. The one definition: the result panel,
+ * the builder's catalog and the KPI promotion all read a column's role here.
+ */
+export const isTotalColumn = (field: ResultField | undefined): boolean =>
+   field !== undefined &&
+   (field.kind === "measure" ||
+      (field.annotations ?? []).some((note) =>
+         marksCalculation(note?.value ?? ""),
+      ));
+
+/** Whether an output column is a nest, which no chart axis takes. */
+export const isNestColumn = (field: ResultField): boolean =>
    field.kind === "join" || field.type?.kind === "array_type";
+
+/** Output columns by role: a group-by is neither a total nor a nest. */
+export function columnCounts(fields: readonly ResultField[]): ColumnCounts {
+   const totals = fields.filter(isTotalColumn).length;
+   const groupBys = fields.filter(
+      (field) => !isTotalColumn(field) && !isNestColumn(field),
+   ).length;
+   return { groupBys, totals };
+}
+
+/** A tag word that places a field on a chart channel: `y=revenue` on the chart tag, or a bare `y` on a field. */
+const placesChannel = (word: string) => CHANNEL_TAGS.has(word.split("=")[0]);
 
 export function chartShapeProblem(
    result: string | undefined,
@@ -162,16 +194,18 @@ export function chartShapeProblem(
    const chart = requestedChart(lines);
    const name = chart && ROW_CHARTS[chart];
    if (!chart || !name) return undefined;
-   const handPlaced = fields.some((field) =>
-      (field.annotations ?? []).some((note) =>
-         tagWords(note.value ?? "").some((word) =>
-            CHANNEL_TAGS.has(word.split("=")[0]),
+   // Placed by hand, on a field (`# y`) or on the chart tag itself
+   // (`# combo_chart { y=revenue y2=orders }`): the renderer then reads those
+   // channels rather than counting columns, so a count says nothing.
+   const handPlaced =
+      lines.some((line) => tagWords(line).some(placesChannel)) ||
+      fields.some((field) =>
+         (field.annotations ?? []).some((note) =>
+            tagWords(note.value ?? "").some(placesChannel),
          ),
-      ),
-   );
+      );
    if (handPlaced) return undefined;
-   const totals = fields.filter(isTotal).length;
-   const groupBys = fields.filter((f) => !isTotal(f) && !isNest(f)).length;
+   const { groupBys, totals } = columnCounts(fields);
    switch (chartShapeGap(chart, { groupBys, totals })) {
       case "no_x_axis":
          return `This chart has no field for the x-axis. ${name} needs a group by, such as a date or a category. Show it as big numbers or a table instead, or add a group by to its query.`;

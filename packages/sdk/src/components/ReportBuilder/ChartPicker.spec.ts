@@ -107,15 +107,24 @@ describe("chartChoices on a view whose shape the model reported", () => {
    } as const;
 
    it("greys out every chart that plots rows on a view of totals only, saying what is missing", () => {
+      // A scatter chart plots the first two columns, so two totals draw.
       expect(enabled(totalsOnly, "default")).toEqual([
          "default",
          "none",
          "big_value",
+         "scatter_chart",
       ]);
-      for (const pick of ["line_chart", "bar_chart", "scatter_chart"])
+      for (const pick of ["line_chart", "bar_chart"])
          expect(choice(pick, totalsOnly, "default").reason).toMatch(
             /^This view has no field for the x-axis: a .* chart needs a group by, such as a date or a category$/,
          );
+      const oneTotal = {
+         aggregateOnly: true,
+         shape: { groupBys: 0, totals: 1 },
+      };
+      expect(choice("scatter_chart", oneTotal, "default").reason).toBe(
+         "This view has no field for the x-axis: a scatter chart needs a group by, such as a date or a category",
+      );
       expect(choice("combo_chart", totalsOnly, "default").reason).toBe(
          "This view has no field for the x-axis: a bar and line chart needs a group by, such as a date or a category",
       );
