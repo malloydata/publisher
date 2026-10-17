@@ -35,9 +35,8 @@ import {
    mock,
 } from "bun:test";
 import fs from "fs";
-import os from "os";
 import path from "path";
-import { simpleGit } from "simple-git";
+import { simpleGit, type SimpleGitOptions } from "simple-git";
 
 const FIXTURES = path.resolve(__dirname, "../../fixtures/publish-locations");
 const FIXTURE_FOLDERS = [
@@ -60,8 +59,8 @@ function copyFixture(folder: string, target: string): void {
 const realSimpleGit = simpleGit;
 let clones = 0;
 mock.module("simple-git", () => ({
-   simpleGit: (options?: Parameters<typeof simpleGit>[0]) => {
-      const real = realSimpleGit(options);
+   simpleGit: (options?: Partial<SimpleGitOptions>) => {
+      const real = realSimpleGit(options ?? {});
       return {
          clone: (
             repoUrl: string,
