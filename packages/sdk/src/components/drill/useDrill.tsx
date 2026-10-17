@@ -145,12 +145,20 @@ export function useDrill({
 
    // The rows behind this click, when the surface shows rows and the click is
    // on a grouped value. A header names the field and has no value; a measure
-   // has no rows of its own; an empty cell is more likely a misclick.
+   // has no rows of its own. Without the row's clauses the clicked value is
+   // the whole filter, so an empty cell is refused as a likely misclick; with
+   // them the click goes through, and the dialog says why a row holding a
+   // null cannot be drilled (`RowsDialog`'s `rowsRefusal`).
    const rowsBehind = useCallback(
       (payload: DrillClickPayload): DrillRowsRequest | undefined => {
          if (!onRows || payload.isHeader || !payload.field) return undefined;
          if (!(payload.field.wasDimension?.() ?? false)) return undefined;
-         if (drillValueToFilter(payload.value) === undefined) return undefined;
+         const clauses = payload.drillClauses;
+         if (
+            clauses === undefined &&
+            drillValueToFilter(payload.value) === undefined
+         )
+            return undefined;
          return {
             field: payload.field.name,
             rawValue: payload.value,
@@ -158,6 +166,10 @@ export function useDrill({
             ...(payload.context === undefined
                ? {}
                : { context: payload.context }),
+            ...(clauses === undefined ? {} : { drillClauses: clauses }),
+            ...(payload.timezone === undefined
+               ? {}
+               : { timezone: payload.timezone }),
          };
       },
       [onRows],

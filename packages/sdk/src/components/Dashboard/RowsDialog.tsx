@@ -12,9 +12,18 @@ import {
    IconButton,
    Typography,
 } from "@mui/material";
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { useQueryResult } from "../../hooks/useQueryResult";
+import {
+   drillClauseLabels,
+   drillClausesText,
+   nullDimensions,
+   type DrillClause,
+   type DrillClauseLabel,
+} from "../drill/drillClauses";
+import type { DrillRowsRequest } from "../drill/resolveDrill";
 import { malloyLiteral } from "../../utils/malloyLiteral";
+import { escapeMalloyString } from "../../utils/malloyString";
 import { isIdentifier, tileSteps } from "../../utils/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
@@ -30,6 +39,12 @@ import { now } from "../../utils/clock";
  * Measured: `where: name = …` alone failed on a view that spelled the column
  * `name is products.name`, because the output name is not a source field;
  * `drill:` resolves it through the view, which is where the name lives.
+ *
+ * `drill:` refuses a clause list that leaves out any of the view's
+ * dimensions, so the clicked row's every dimension goes in, from the
+ * renderer's own drill data. The clicked value alone is the fallback for a
+ * click that came with no row, which is right only for a view grouped by one
+ * dimension.
  */
 export const ROW_LIMIT = 200;
 
@@ -41,13 +56,67 @@ export interface RowsRequest {
    field: string;
    rawValue: unknown;
    label: string;
+   /** The clicked row's dimensions, paths relative to the source. */
+   drillClauses?: readonly DrillClause[];
+   timezone?: string;
+}
+
+/** The dialog's request for a click on `request.context`'s tile, if it names one view. */
+export function rowsRequestFor(
+   request: DrillRowsRequest,
+): RowsRequest | undefined {
+   const steps = stepsOf(request.context);
+   if (steps === undefined) return undefined;
+   return {
+      ...steps,
+      field: request.field,
+      rawValue: request.rawValue,
+      label: request.label,
+      ...(request.drillClauses === undefined
+         ? {}
+         : { drillClauses: request.drillClauses }),
+      ...(request.timezone === undefined ? {} : { timezone: request.timezone }),
+   };
 }
 
 /** The query the dialog runs, or undefined when the value cannot be spelled. */
 export function rowsQuery(request: RowsRequest): string | undefined {
+   const drill = request.drillClauses
+      ? drillClausesText(request.drillClauses, request.timezone)
+      : singleClause(request);
+   if (drill === undefined) return undefined;
+   // `drill:` recomputes the view's dimensions in this query's zone, so a
+   // tile with its own `timezone:` drills in that zone or matches nothing.
+   const zone =
+      request.drillClauses && request.timezone
+         ? `timezone: '${escapeMalloyString(request.timezone)}'; `
+         : "";
+   return `run: ${request.source} -> { ${zone}drill: ${drill}; select: *; limit: ${ROW_LIMIT} }`;
+}
+
+/** Why a request has no query, for the dialog to say. */
+export function rowsRefusal(request: RowsRequest): string {
+   const missing = request.drillClauses
+      ? nullDimensions(request.drillClauses)
+      : [];
+   return missing.length > 0
+      ? `This row has no value for ${missing.join(" or ")}, and Malloy cannot drill to rows by a missing value, so its rows cannot be fetched.`
+      : "This value cannot be written as a filter, so its rows cannot be fetched.";
+}
+
+function singleClause(request: RowsRequest): string | undefined {
    const literal = malloyLiteral(request.rawValue);
-   if (literal === undefined) return undefined;
-   return `run: ${request.source} -> { drill: ${request.view}.${request.field} = ${literal}; select: *; limit: ${ROW_LIMIT} }`;
+   return literal && `${request.view}.${request.field} = ${literal}`;
+}
+
+/** What the title names: every value of the row, or the clicked one alone. */
+export function rowsTitleParts(request: RowsRequest): DrillClauseLabel[] {
+   const parts = request.drillClauses
+      ? drillClauseLabels(request.drillClauses, request.timezone)
+      : [];
+   return parts.length > 0
+      ? parts
+      : [{ field: request.field, label: request.label }];
 }
 
 /**
@@ -117,10 +186,15 @@ export function RowsDialog({
                {request ? (
                   <>
                      Rows where{" "}
-                     <Box component="code" sx={{ fontSize: "0.9em" }}>
-                        {request.field}
-                     </Box>{" "}
-                     is {request.label}
+                     {rowsTitleParts(request).map((part, index) => (
+                        <Fragment key={index}>
+                           {index > 0 && " and "}
+                           <Box component="code" sx={{ fontSize: "0.9em" }}>
+                              {part.field}
+                           </Box>{" "}
+                           is {part.label}
+                        </Fragment>
+                     ))}
                   </>
                ) : (
                   "Rows"
@@ -147,8 +221,7 @@ export function RowsDialog({
          <DialogContent dividers sx={{ p: 0, minHeight: 240 }}>
             {query === undefined && request && (
                <Typography variant="body2" sx={{ p: 2 }}>
-                  This value cannot be written as a filter, so its rows cannot
-                  be fetched.
+                  {rowsRefusal(request)}
                </Typography>
             )}
             {query !== undefined && (
