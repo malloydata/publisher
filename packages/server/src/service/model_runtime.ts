@@ -33,12 +33,10 @@ export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 /**
  * `overlay` maps an absolute `file://` URL to text served INSTEAD of reading
- * that path from disk; anything not in the map reads from disk as usual. It
- * exists for pre-aggregation, whose synthesized model is generated per load
- * and never written to disk, and which must resolve its `import` of the
- * author's model relative to the real package directory — so the synthesized
- * text needs a URL inside that directory without a file behind it. `modelPath`
- * still has to exist: it is what anchors `importBaseURL`.
+ * that path from disk. It lets pre-aggregation's synthesized (never written)
+ * model live at a URL inside the package directory, so its `import` of the
+ * author's model resolves. `modelPath` must still exist: it anchors
+ * `importBaseURL`.
  */
 export async function createModelRuntime(
    packagePath: string,
@@ -223,9 +221,8 @@ async function getNotebookModelMaterializer(
    let mm: ModelMaterializer | undefined = undefined;
    const oldImports: string[] = [];
    const oldSources: Record<string, Malloy.SourceInfo> = {};
-   // First generate the sequence of ModelMaterializers.
-   // This has to happen sync, since mm.getModel() is async and
-   // may execute out-of-order.
+   // Build the materializer chain synchronously: mm.getModel() is async and
+   // may resolve out of order.
    const mms = parse.statements.map((stmt) => {
       if (stmt.type === MalloySQLStatementType.MALLOY) {
          if (!mm) {
@@ -240,15 +237,12 @@ async function getNotebookModelMaterializer(
       await Promise.all(
          parse.statements.map(async (stmt, index) => {
             if (stmt.type === MalloySQLStatementType.MALLOY) {
-               // Get the Materializer for the current cell/statement.
                const localMM = mms[index];
                if (!localMM) {
-                  // This can't happen because the to be in this branch there stmt must be
-                  // MalloySQLStatementType.MALLOY and we must have a model materializer.
+                  // Unreachable: a MALLOY statement always set `mm` above.
                   throw new Error("Model materializer is undefined");
                }
-               // Pull available sources from the current model.
-               // Add any of then that are new into newSources and then add them to oldSources.
+               // newSources: sources first visible at this cell.
                const currentModelDef = (await localMM.getModel())._modelDef;
                let newSources: Malloy.SourceInfo[] = [];
                const newImports = currentModelDef.imports?.slice(
@@ -292,7 +286,6 @@ async function getNotebookModelMaterializer(
 
                const runnable = localMM.loadFinalQuery();
 
-               // Extract QueryInfo from the runnable
                let queryInfo: Malloy.QueryInfo | undefined = undefined;
                try {
                   const preparedQuery = await runnable.getPreparedQuery();
@@ -352,10 +345,8 @@ async function getNotebookModelMaterializer(
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal subset of `Runtime` we use here. The `_` methods are
- * marked `@internal` in Malloy but are the only API for constructing
- * a materializer / query materializer from an existing `modelDef` /
- * queryDef — the public `loadModel(url)` path always recompiles.
+ * The `_` methods are `@internal` in Malloy but are the only way to build a
+ * materializer from an existing modelDef/queryDef without recompiling.
  */
 export type HydrationRuntime = Runtime & {
    _loadModelFromModelDef(modelDef: ModelDef): ModelMaterializer;
@@ -370,12 +361,10 @@ export function makeHydrationRuntime(
 ): HydrationRuntime {
    const urlReader = new HackyDataStylesAccumulator(URL_READER);
    const config = toMalloyConfig(malloyConfig);
-   // Thread the package's bound build manifest into the *serve* runtime. Malloy
-   // substitutes a persisted source for its materialized table at query
-   // (getSQL) time, gated on `prepareResultOptions.buildManifest`; without this
-   // the hydrated model always recomputes from the base tables even though the
-   // manifest was bound at load. `strict: false` keeps serving live for any
-   // source whose sourceEntityId is absent from the manifest.
+   // Malloy substitutes a persisted source for its materialized table at
+   // getSQL time only when the runtime carries the manifest; without it the
+   // hydrated model recomputes from base tables. `strict: false` serves live
+   // any source absent from the manifest.
    return new Runtime({
       urlReader,
       config,
@@ -385,13 +374,7 @@ export function makeHydrationRuntime(
    }) as HydrationRuntime;
 }
 
-/**
- * Build the live `RunnableNotebookCell[]` from worker-emitted
- * per-cell data. Each MALLOY cell is hydrated via
- * `Runtime._loadModelFromModelDef` (for the cell's scope) and
- * `ModelMaterializer._loadQueryFromQueryDef` (for the cell's
- * runnable) — no recompile.
- */
+/** Build live `RunnableNotebookCell[]` from worker-emitted cell data, without recompiling. */
 export function hydrateNotebookCells(
    runtime: HydrationRuntime,
    notebookCells: SerializedNotebookCell[] | undefined,
@@ -412,10 +395,8 @@ export function hydrateNotebookCells(
                   modelMaterializer as HydrationMaterializer
                )._loadQueryFromQueryDef(sc.cellQueryDef);
             } catch (error) {
-               // Hydration shouldn't fail for a queryDef the worker
-               // already prepared, but if Malloy's internal shape
-               // drifts we'd rather drop the runnable than crash the
-               // whole notebook. The cell remains markdown-runnable.
+               // Only possible if Malloy's internal shape drifts; drop the
+               // runnable rather than fail the whole notebook.
                logger.warn("Failed to hydrate notebook cell queryDef", {
                   error,
                });
@@ -435,11 +416,8 @@ export function hydrateNotebookCells(
 }
 
 /**
- * For an all-markdown notebook (no MALLOY statements → no
- * `modelDef`), we still want to preserve the cell list so
- * `getNotebook()` can serve raw text. This skips materializer
- * hydration (there's nothing to hydrate) and returns markdown-only
- * cells.
+ * Cells for a notebook with no `modelDef` (all markdown), so `getNotebook()`
+ * can still serve the raw text.
  */
 export function hydrateMarkdownOnlyCells(
    notebookCells: SerializedNotebookCell[] | undefined,
@@ -447,7 +425,6 @@ export function hydrateMarkdownOnlyCells(
    if (!notebookCells) return undefined;
    return notebookCells.map((sc): RunnableNotebookCell => {
       if (sc.type === "markdown") return { type: "markdown", text: sc.text };
-      // A code cell without a hydratable scope — surface text only.
       return { type: "code", text: sc.text };
    });
 }

@@ -52,10 +52,9 @@ function describeProblems(problems: LogMessage[], error: MalloyError): string {
 
 /**
  * The compile failure of a runnable, or undefined when it compiles or fails for
- * a reason that is not a compile error (a connection failure while fetching a
- * schema, say, which keeps surfacing wherever it did before). Malloy memoizes
- * the compile per runnable, so this costs nothing when the same runnable is
- * compiled again later.
+ * a non-compile reason (e.g. a connection failure fetching a schema, left to
+ * surface at run). Malloy memoizes the compile per runnable, so a later compile
+ * of the same runnable is free.
  */
 export async function compileErrorOf(runnable: {
    getPreparedQuery(): Promise<unknown>;

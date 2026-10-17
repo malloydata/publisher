@@ -155,12 +155,10 @@ export function mapRunError(
 ): never;
 export function mapRunError(err: unknown, ctx: RunErrorContext): void;
 export function mapRunError(err: unknown, ctx: RunErrorContext): void {
-   // Duck-type on `.code` (MalloyCompileError extends Error, not MalloyError,
-   // and isn't root-exported). The `runtime-given-` prefix is a pinned coupling
-   // to Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
-   // if they're renamed upstream, update it here (and in environment.ts) —
-   // otherwise these fall through to the generic 400 below with a worse
-   // message, and the /compile path silently omits `sql`.
+   // Duck-type on `.code`: MalloyCompileError is not a MalloyError and is not
+   // root-exported. `runtime-given-` is pinned to Malloy's error codes
+   // (given_binding.ts / runtime.ts); keep it in step with environment.ts, or
+   // these degrade to the generic 400 and /compile silently omits `sql`.
    const givenCode = (err as { code?: string })?.code;
    if (
       typeof givenCode === "string" &&
@@ -182,9 +180,8 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    }
 
    const errorMessage = err instanceof Error ? err.message : String(err);
-   // The database could not be reached (502) or rejected the connection's
-   // credentials (424), so the query never ran. Not the 400 below, which would
-   // tell the caller to fix a query that is fine.
+   // Unreachable database (502) or rejected credentials (424): the query never
+   // ran, so a 400 would wrongly tell the caller to fix it.
    const accessFailure = databaseAccessFailure(err);
    if (accessFailure) throw accessFailure;
 
