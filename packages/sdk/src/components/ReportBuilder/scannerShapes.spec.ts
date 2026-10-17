@@ -243,7 +243,7 @@ source: a is scoped_orders extend {
   view: other is { aggregate: m is count() }
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[1].label = "W";
+         queryTile(d, 1).label = "W";
       });
       expect(out).toContain(
          '  # label="W"\n  view: other is { aggregate: m is count() }',
@@ -260,7 +260,7 @@ source: a is one extend {
   view: y is vy
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[1].label = "W";
+         queryTile(d, 1).label = "W";
       });
       expect(out).toContain('  # label="W"\n  view: y is vy');
       expect(out).not.toContain('label="W"\n  view: x');
@@ -280,7 +280,7 @@ source: a is one extend {
   view: other is { aggregate: m is count() }
 }`;
          const out = await spliced(source, (d) => {
-            d.tiles[1].label = "W";
+            queryTile(d, 1).label = "W";
          });
          expect(out).toContain(
             '  # label="W"\n  view: other is { aggregate: m is count() }',
@@ -300,7 +300,7 @@ source: a is one extend {
   view: other is { aggregate: m is count() }
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[1].label = "W";
+         queryTile(d, 1).label = "W";
       });
       expect(out).toContain(
          '  # label="W"\n  view: other is { aggregate: m is count() }',
