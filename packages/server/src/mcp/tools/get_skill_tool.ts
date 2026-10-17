@@ -70,17 +70,12 @@ function summarize(skills: ResolvedSkill[]) {
  * package ships under `skills/`, with the package's copy shadowing a bundled
  * one of the same name.
  *
- * Why a tool and not more MCP prompts. The bundled guides are already
- * registered as prompts, once, at server start. A package's guides cannot be:
- * packages load, reload, and are added at runtime, so a per-package prompt
- * would need prompt-list-changed notifications for a set that every client
- * would then have to disambiguate by name across packages. A tool takes the
- * package as an argument, which is what the question actually has in it.
+ * A tool rather than more prompts: prompts are registered once at start, while
+ * packages load and reload at runtime, and a tool takes the package as an
+ * argument instead of disambiguating prompt names across packages.
  *
- * SECURITY: returns author-written guidance from the package's own tree, the
- * same trust level as the `#(doc)` annotations already returned by get_context,
- * and no row data. `origin` is on every entry so a caller can see when a
- * package has replaced a built-in guide rather than inferring it.
+ * SECURITY: returns author-written guidance from the package's own tree (the
+ * trust level of `#(doc)` in get_context), never row data.
  */
 export function registerGetSkillTool(
    mcpServer: McpServer,

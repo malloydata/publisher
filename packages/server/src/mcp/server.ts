@@ -28,17 +28,13 @@ export const testServerInfo = {
    description: "Provides access to Malloy models and query execution via MCP.",
 };
 
-// Orientation delivered to any connecting MCP client via the initialize
-// response (the on-the-wire analog of AGENTS.md), so an agent that reached the
-// server over npx without cloning the repo still knows how to work. Kept
-// workflow-focused rather than a tool catalog, which the client already gets
-// from listTools, so it does not drift as the tool set changes.
-// SECURITY: this is delivered pre-authorization to any connecting client, so it
-// must stay STATIC. It may interpolate module-scope string LITERALS (see
-// RELOAD_FAILURE_IS_SAFE, shared with the tool description so the two cannot
-// drift). Not "constants": `const x = process.env.FOO` is a module-scope
-// constant and would put deployment config into an unauthenticated string. It
-// must never interpolate environment, package, connection, or request data.
+// Orientation sent in the initialize response (the on-the-wire AGENTS.md).
+// Workflow-focused, not a tool catalog (listTools covers that), so it does not
+// drift as tools change.
+// SECURITY: delivered pre-authorization, so it must stay STATIC. It may
+// interpolate module-scope string LITERALS (e.g. RELOAD_FAILURE_IS_SAFE), never
+// a constant read from process.env, nor environment, package, connection, or
+// request data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
 Start with list_packages, which takes no arguments and names every environment and the packages in each. Those names are what get_context needs, and it is also the only place a package that failed to load is visible rather than simply absent. Then call get_context, which takes search_targets -- one per concept your question needs, each {target_type, search_text} -- plus scopes, which is required and takes exactly one entry naming an environment and a package. One call answers: the response is a sources array with the entities that matched nested inside each source, so there is no drill-down call afterwards. Omit a target's search_text to enumerate that type instead of ranking it. There is no no-argument and no environment-only get_context call: both are validation errors, because retrieval is indexed per package. Use the names it returns verbatim and do not guess. Then run a query with execute_query. To change a model: validate the edit with compile_model, save it, then call reload_package so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE} After every model edit, call reload_package before querying: the server serves the model compiled at the last load, not your files, and a watch-mode save that fails to compile is otherwise silent. An empty get_context result does not mean the package is empty; check get_status for load errors and stale packages before concluding there is no data.

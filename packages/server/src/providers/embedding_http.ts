@@ -22,16 +22,10 @@ export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
 export const MAX_EMBED_INPUT_CHARS = 1_024;
 
 /**
- * Collapse whitespace (newlines confuse some embedding models) and cap
- * the input length, mirroring the hosted indexing pipeline's input
- * preparation. Never returns an empty string: providers reject empty
- * input items with a 400, which would fail a whole package's batch, so
- * text that collapses to nothing (a whitespace-only backtick identifier)
- * becomes a placeholder token instead. This is the single choke point
- * for that invariant; the index hashes this same function's output, so
- * hash and sent text cannot drift. Exported for tests and for
- * content-hashing: the hash must cover the text actually sent, so a
- * truncation-boundary edit re-embeds.
+ * Collapse whitespace (newlines confuse some embedding models) and cap the
+ * length, as the hosted indexing pipeline does. Never returns an empty string:
+ * providers 400 on an empty item, failing a whole package's batch. The index
+ * hashes this function's output, so the hash covers exactly the text sent.
  */
 export function prepareEmbeddingInput(text: string): string {
    const cleaned = text.replace(/\s+/g, " ").trim();
@@ -83,9 +77,9 @@ export function checkVectors(
 }
 
 /**
- * The shared half of every embedding model: input
- * preparation, splitting into requests of `maxBatch`, retry and metrics. The
- * vendor supplies only {@link EmbedChunkFn}.
+ * The shared half of every embedding model: input preparation, splitting into
+ * requests of `maxBatch`, retry and metrics. The vendor supplies only
+ * {@link EmbedChunkFn}.
  */
 export class BatchEmbeddingModel implements EmbeddingModel {
    constructor(

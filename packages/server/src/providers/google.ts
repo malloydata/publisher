@@ -10,8 +10,8 @@ import type { ChatResult, FetchFn } from "./types";
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 export const GEMINI_API_VERSION = "v1beta";
 /**
- * Texts per `batchEmbedContents` request. To verify against current vendor
- * docs: the Gemini API has documented a limit of 100 requests per batch.
+ * Texts per `batchEmbedContents` request: the Gemini API's documented limit
+ * of 100 requests per batch.
  */
 export const GEMINI_EMBED_MAX_BATCH = 100;
 

@@ -29,16 +29,12 @@ An environment carries \`error\` on the same terms: its packages could not be li
 Takes no arguments.`;
 
 /**
- * The environment and package catalog, which `get_context` deliberately does
- * not carry: its `search_targets` are required and its `scopes` name a package,
- * so something has to answer "which packages are there" first. The hosted
- * surface splits the same way, for the same reason -- its scope parameters are
- * required and a sibling tool supplies them.
+ * The environment and package catalog, which supplies the names `get_context`'s
+ * required `scopes` need.
  *
- * This also inherits the job the flat tool's environment listing did: a package
- * that failed to load is ABSENT from a plain listing, which reads as "does not
- * exist" rather than "is broken". Reporting it with its error is the only place
- * that distinction is visible outside get_status.
+ * A package that failed to load is absent from a plain listing, which reads as
+ * "does not exist"; reporting it with its error is the only place outside
+ * get_status that shows it is broken.
  */
 export function registerListPackagesTool(
    mcpServer: McpServer,
@@ -83,13 +79,9 @@ export function registerListPackagesTool(
                      packages.push({ name: failed, error: message });
                   }
                } catch (error) {
-                  // One unreachable environment must not hide the others: the
-                  // point of this tool is to say what IS there. But an empty
-                  // list is what a genuinely empty environment looks like, so
-                  // the failure has to be reported as well as survived --
-                  // otherwise an unreachable store reads as "models nothing",
-                  // which is the same wrong conclusion `error` exists to stop
-                  // a failed PACKAGE from producing.
+                  // One unreachable environment must not hide the others, but
+                  // must be reported too: an empty list would read as a
+                  // genuinely empty environment.
                   environmentError =
                      error instanceof Error ? error.message : String(error);
                   logger.warn(
