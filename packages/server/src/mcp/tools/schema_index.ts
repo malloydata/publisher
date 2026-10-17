@@ -9,8 +9,8 @@ import {
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
 } from "../../service/embedding_provider";
-// humanizeName and the similarity floor are shared with the package index on
-// purpose: a query is humanized the same way whichever index answers it.
+// Shared with the package index so a query is humanized the same way
+// whichever index answers it.
 import { humanizeName } from "./embedding_index";
 import {
    PROVIDER_FAILURE_COOLDOWN_MS,
@@ -19,31 +19,23 @@ import {
 } from "./retrieval_shared";
 
 /**
- * Ranking layer for `search_database_schema`.
+ * Ranking layer for `search_database_schema`: rank a schema's introspected
+ * tables against a plain-English query, lexically by default and semantically
+ * when the operator has opted in.
  *
- * Publisher already introspects ten dialects (db_utils.getSchemasForConnection /
- * listTablesForSchema) and already serves that over REST. What was missing is the
- * layer between introspection and an agent's plain-English question, which is all
- * this module is: rank a schema's tables against a query, lexically by default and
- * semantically when the operator has explicitly opted in.
+ * Two deliberate limits:
  *
- * Two deliberate limits, both recorded in the feature's design notes:
- *
- * - **One entity per table, never per column.** A table's index text carries its
- *   column names, so "customer email" still finds `sales.customers`, but a
- *   warehouse with thousands of tables and tens of columns each would blow any
- *   per-column budget. This is the same trade the hosted pipeline avoids by
- *   having a vector database; we do not have one in-process.
+ * - **One entity per table, never per column.** A table's index text carries
+ *   its column names, so "customer email" still finds `sales.customers`, but
+ *   a per-column index would not fit a large warehouse without a vector
+ *   database, which we do not have in-process.
  * - **Identifiers only, never values.** No row value is returned, logged or
- *   embedded. (Type inference over a CSV or JSON file does read the head of
- *   that file, inside the warehouse; only the inferred names and types leave.)
- *   The analogous
- *   non-goal to `get_context`'s "no dimensional_value indexing": an agent that
- *   needs real values runs `execute_query` with a `group_by` over the column,
- *   against a model that shares the connection.
+ *   embedded (type inference over a CSV or JSON file reads its head inside
+ *   the warehouse; only names and types leave). An agent that needs values
+ *   runs `execute_query` against a model sharing the connection.
  *
- * The second limit is also what makes the egress story defensible: in every mode,
- * the only thing that can leave the process is names and types.
+ * So in every mode the only thing that can leave the process is names and
+ * types.
  */
 
 /** A column as introspection returns it. `type` is absent on some dialects. */
@@ -60,9 +52,8 @@ export interface SchemaTableEntity {
    tableName: string;
    /**
     * Fully-qualified dotted path exactly as introspection produced it
-    * (`schema.table`, or `catalog.schema.table` on Snowflake/Trino). This is
-    * what goes inside a Malloy `table('...')` call, so it is passed through
-    * verbatim and never re-derived.
+    * (`schema.table`, or `catalog.schema.table` on Snowflake/Trino). It goes
+    * inside a Malloy `table('...')` call, so it is never re-derived.
     */
    resource: string;
    columns: SchemaColumn[];
@@ -76,61 +67,44 @@ export interface RankedTable extends SchemaTableEntity {
 export type RankingMode = "lexical" | "semantic";
 
 /**
- * Ranked hits, plus how many tables matched BEFORE the limit was applied.
- *
- * `matched` is separate from the caller's `totalAvailable` (every table in the
- * schema) on purpose. Without it, a search over a 500-table schema that matched
- * 60 and returned 20 is indistinguishable from one that matched exactly 20, and
- * the agent stops having never seen the other 40.
+ * Ranked hits, plus how many tables matched BEFORE the limit was applied, so
+ * an agent can tell "matched 60, returned 20" from "matched exactly 20".
  */
 export interface RankedResult {
    hits: RankedTable[];
    matched: number;
    /**
     * True when the query carried no searchable content (empty, whitespace, or
-    * only lunr operators). Distinguishes "nothing matched" from "nothing was
-    * asked", which otherwise look identical to the caller and send an agent off
-    * to broaden a query that was never run.
+    * only lunr operators), so an agent does not broaden a query that never ran.
     */
    emptyQuery?: boolean;
 }
 
 /**
  * Tables above this cap are not embedded; the schema stays lexical. Mirrors
- * the package index's entity cap (`retrieval.indexing.maxEntities`, also 5,000
- * by default) for the same reason: the first embed of a schema that large is
+ * the package index's entity cap: the first embed of a schema that large is
  * minutes of provider calls.
  */
 export const MAX_INDEXED_TABLES = 5_000;
 
 /**
- * Column names folded into a table's index text. A wide fact table can carry
- * hundreds; past a few dozen they stop discriminating between tables and just
- * dilute the vector (and the provider caps input at 1024 chars anyway).
+ * Column names folded into a table's index text. Past a few dozen they stop
+ * discriminating between tables and just dilute the vector.
  */
 export const MAX_COLUMNS_IN_INDEX_TEXT = 60;
 
 /**
- * Schemas whose vectors are kept. Evicted least-recently-used past this.
- *
- * Without a bound this map is retained for the process lifetime: an operator
- * with 40 searchable schemas of ~3,000 tables at 1536 dims holds on the order
- * of a gigabyte of float arrays that nothing ever frees, in a process that
- * ships OOM guards. A schema searched once and never again would be pinned
- * forever.
+ * Schemas whose vectors are kept, evicted least-recently-used past this.
+ * Unbounded, a handful of large schemas would pin around a gigabyte of float
+ * arrays for the process lifetime.
  */
 export const MAX_CACHED_SCHEMAS = 8;
 
 /**
- * The text indexed for one table: its humanized schema and table name, then its
- * humanized column names. `orders_line_item` becomes "orders line item", so a
- * query for "order line items" matches where a raw-identifier match could not.
- *
- * Types are included but last: they are weak signal individually and would
- * otherwise crowd out column names under the provider's input cap.
- *
- * Exported for the eval harness and specs, which pin the recipe rather than
- * merely its presence.
+ * The text indexed for one table: its humanized schema and table name, then
+ * its humanized column names (`orders_line_item` -> "orders line item"), then
+ * types last, since they are weak signal and would crowd out column names
+ * under the provider's input cap.
  */
 export function tableIndexText(entity: SchemaTableEntity): string {
    const name = humanizeName(entity.tableName) || entity.tableName;
@@ -149,10 +123,10 @@ export function tableIndexText(entity: SchemaTableEntity): string {
 }
 
 /**
- * A content fingerprint over the tables' identity and shape. Any table added,
- * dropped, renamed, or re-columned changes it, which is what invalidates the
- * embedding cache. Column ORDER is deliberately included: a reordered table is
- * cheap to re-embed and pretending otherwise needs a sort on every call.
+ * A content fingerprint over the tables' identity and shape; any table added,
+ * dropped, renamed, or re-columned invalidates the embedding cache. Column
+ * order is included: a reordered table is cheap to re-embed, and ignoring
+ * order would need a sort on every call.
  */
 export function schemaFingerprint(tables: SchemaTableEntity[]): string {
    const canonical = tables
@@ -167,9 +141,8 @@ export function schemaFingerprint(tables: SchemaTableEntity[]): string {
 
 /**
  * Rank `tables` against `query` with lunr/BM25 over the same text the semantic
- * path embeds, so the two modes see one recipe. Returns [] for an empty or
- * operator-only query, and never throws: a lunr failure is logged and degrades
- * to no hits rather than failing the tool call.
+ * path embeds. Returns [] for an empty or operator-only query, and never
+ * throws: a lunr failure is logged and degrades to no hits.
  */
 export function rankLexically(
    tables: SchemaTableEntity[],
@@ -255,13 +228,9 @@ interface VectorCacheEntry {
 }
 
 /**
- * Embedded schema vectors, in memory only.
- *
- * Deliberately NOT persisted to the DuckDB store the package index uses. A
- * schema index is cheap to rebuild (one batch call per schema, not per package
- * entity), and persisting a customer's warehouse identifiers to disk is a
- * second, separate disclosure decision that this slice does not take. The cost
- * is one re-embed per process start, per schema actually searched.
+ * Embedded schema vectors, in memory only. Deliberately NOT persisted:
+ * rebuilding is one batch call per schema, and writing a customer's warehouse
+ * identifiers to disk is a separate disclosure decision.
  */
 const vectorCache = new Map<string, VectorCacheEntry>();
 
@@ -272,25 +241,15 @@ interface LexicalCacheEntry {
 }
 
 /**
- * Built lunr indexes, keyed and bounded exactly like the vector cache.
- *
- * This is the DEFAULT path, not a fallback: semantic ranking needs two opt-in
- * environment variables, and a schema above MAX_INDEXED_TABLES is deliberately
- * routed here, so the largest schemas are the ones that land on it. Rebuilding
- * the index per call is synchronous and blocks the event loop for the process
- * that also serves REST: measured on this repo's lunr, roughly 170-190ms for
- * 5,000 tables and ~350ms for 10,000, growing about linearly, repaid on every
- * search. (Two independent measurements agreed at those sizes and diverged at
- * 20,000, so the shape is stated rather than a third point.) Keyed by
- * fingerprint so a changed schema rebuilds rather than serving a stale index.
+ * Built lunr indexes, keyed and bounded like the vector cache. This is the
+ * DEFAULT path, and the largest schemas (above MAX_INDEXED_TABLES) land on it.
+ * Rebuilding per call blocks the event loop (roughly 180ms for 5,000 tables,
+ * growing linearly). Keyed by fingerprint so a changed schema rebuilds.
  */
 const lexicalCache = new Map<string, LexicalCacheEntry>();
 const cooldownUntilMs = new Map<string, number>();
 
-/**
- * Read an entry and mark it most-recently-used. A Map iterates in insertion
- * order, so deleting and re-setting is the whole LRU.
- */
+/** Read an entry and mark it most-recently-used (Map insertion order is the LRU). */
 function touchCacheEntry(key: string): VectorCacheEntry | undefined {
    const entry = vectorCache.get(key);
    if (entry) {
@@ -312,13 +271,9 @@ function storeCacheEntry(key: string, entry: VectorCacheEntry): void {
 }
 
 /**
- * Drop expired cooldowns.
- *
- * Called when a cooldown is SET, which is the only regime that grows this map:
- * a provider that is down never reaches the success path. Pruning here instead
- * of alongside the cache eviction is the whole point, since a persistently
- * failing provider would otherwise add an entry per distinct schema searched
- * and never remove one.
+ * Drop expired cooldowns. Called when a cooldown is SET, the only regime that
+ * grows this map: a persistently failing provider never reaches the success
+ * path, so pruning there would let it add an entry per schema forever.
  */
 function pruneCooldowns(): void {
    if (cooldownUntilMs.size <= MAX_CACHED_SCHEMAS * 4) return;
@@ -336,11 +291,8 @@ export function _resetSchemaIndexStateForTests(): void {
 }
 
 /**
- * Rank semantically, or return null to mean "use lexical". Never throws.
- *
- * Returning null rather than an empty list is load-bearing: an empty semantic
- * result is a real answer ("nothing in this schema is about that"), while null
- * means the semantic path could not run at all.
+ * Rank semantically, or return null to mean "use lexical". Never throws. An
+ * empty result is a real semantic answer; null means the path could not run.
  */
 async function tryRankSemantically(args: {
    tables: SchemaTableEntity[];
@@ -352,15 +304,10 @@ async function tryRankSemantically(args: {
    const { tables, query, limit, provider, cacheKey } = args;
 
    if (tables.length === 0) {
-      // Nothing to embed. Without this an unknown-but-well-formed schema name
-      // (which several dialects answer with [] rather than an error) still
-      // stored a cache entry, taking one of the few LRU slots from a real
-      // schema, and still spent a billable round trip embedding the query.
-      //
-      // null, not an empty result: returning a result here labelled the call
-      // `ranking: "semantic"` when no embedding ran, which is exactly the
-      // configuration-not-behaviour claim this file forbids a few lines below.
-      // Falling through to lexical over zero tables is both honest and correct.
+      // Nothing to embed. An unknown schema name (several dialects answer
+      // [] rather than an error) must not take an LRU slot or spend a
+      // billable query embed. null, not an empty result, so `ranking` does
+      // not claim "semantic" when no embedding ran.
       return null;
    }
 
@@ -418,8 +365,8 @@ async function tryRankSemantically(args: {
          const vector = entry.vectors.get(table.resource);
          if (!vector) continue;
          const score = cosineSimilarity(queryVector, vector);
-         // Below the floor is dropped rather than returned as a weak hit, so
-         // "nothing here matches" stays a distinguishable answer.
+         // Below the floor is dropped, so "nothing here matches" stays a
+         // distinguishable answer.
          if (score >= provider.minSimilarity) scored.push({ ...table, score });
       }
       scored.sort((a, b) => b.score - a.score);
@@ -428,7 +375,7 @@ async function tryRankSemantically(args: {
       cooldownUntilMs.set(cacheKey, Date.now() + PROVIDER_FAILURE_COOLDOWN_MS);
       pruneCooldowns();
       // The message can carry a provider body excerpt but never the API key,
-      // which EmbeddingModel keeps to the Authorization header.
+      // which stays in the Authorization header.
       logger.warn(
          "[MCP Tool searchDatabaseSchema] Embedding failed; ranking lexically",
          {
@@ -441,12 +388,10 @@ async function tryRankSemantically(args: {
 }
 
 /**
- * Rank a schema's tables against a plain-English query.
- *
- * Semantic when a provider is supplied (the caller has already checked both the
- * API key and the explicit schema opt-in) and the provider answers; lexical in
- * every other case, including provider failure. The returned mode is reported
- * to the agent so a weak result set is interpretable.
+ * Rank a schema's tables against a plain-English query: semantic when a
+ * provider is supplied (the caller checked the key and the schema opt-in) and
+ * answers, lexical otherwise. The mode is reported so a weak result set is
+ * interpretable.
  */
 export async function rankTables(args: {
    tables: SchemaTableEntity[];
@@ -457,19 +402,11 @@ export async function rankTables(args: {
 }): Promise<RankedResult & { ranking: RankingMode }> {
    const { tables, query, limit, provider, cacheKey } = args;
 
-   // A query with no searchable content is answered the same way in both
-   // modes. Checked HERE rather than only inside rankLexically: the embedding
-   // provider substitutes a placeholder token for empty input, so a
-   // whitespace-only query would otherwise be embedded as "-" and every table
-   // scored against it, returning arbitrary tables presented as ranked matches
-   // for a query that has none. Same input, same schema, two different answers
-   // depending on an operator's env var.
+   // Checked here, not only in rankLexically: the embedding provider
+   // substitutes a placeholder for empty input, so a whitespace-only query
+   // would be embedded and return arbitrary tables as ranked matches.
    if (!sanitizeLunrQuery(query)) {
-      // "lexical", not "semantic": no embedding call was made, and `ranking`
-      // reports what actually happened everywhere else in this file (it
-      // degrades to lexical on cooldown, above the table cap, and on provider
-      // failure). Claiming "semantic" here would be the one place the field
-      // describes configuration rather than behaviour.
+      // "lexical": `ranking` reports what happened, and no embedding ran.
       return { hits: [], matched: 0, ranking: "lexical", emptyQuery: true };
    }
 

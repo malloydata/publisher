@@ -25,10 +25,9 @@ import type {
 } from "./get_context_types";
 
 /**
- * Caps on doc text carried as CONTEXT rather than as a result. A source's own
- * doc arrives in full when the source is itself a hit; these caps apply only
- * to the copy that rides along with a field hit, where the point is to deliver
- * the grain caveat, not to reproduce the model file.
+ * Caps on doc text carried as CONTEXT alongside a field hit, where the point
+ * is the grain caveat, not the model file. A source that is itself a hit
+ * carries its doc in full.
  */
 export const SOURCE_DOC_MAX_CHARS = 500;
 export const JOIN_DOC_MAX_CHARS = 200;
@@ -41,16 +40,10 @@ function truncateDoc(doc: string, max: number): string {
 }
 
 /**
- * Pull #(doc) text from annotation lines, falling back to the raw lines.
- * SourceInfo sources/fields carry Annotation objects ({ value }); named queries
- * carry raw strings, so accept both.
- */
-/**
- * Extract ONLY `#(doc)` annotation text, empty when there is none. This is
- * the safe input for embedding: unlike docText it never falls back to the
- * raw annotation lines, so predicate-bearing annotations (`#(access_filter)`
- * row-level-security rules, tenant lists, `#(malloy)` internals) are never
- * sent to an external embedding provider.
+ * Extract ONLY `#(doc)` annotation text, empty when there is none. The safe
+ * input for embedding: unlike docText it never falls back to raw annotation
+ * lines, so `#(access_filter)` rules, tenant lists and `#(malloy)` internals
+ * never reach an external embedding provider.
  */
 export function docOnlyText(
    annotations?: Array<string | { value: string }>,
@@ -64,10 +57,9 @@ export function docOnlyText(
 }
 
 /**
- * Human-facing doc text for the response `doc` field. Prefers `#(doc)`
- * text and falls back to the raw annotation lines when there is none.
- * Pre-existing lexical behaviour; NOT used as embedding input (see
- * docOnlyText and Entity.embedDoc).
+ * Human-facing doc text for the response `doc` field: `#(doc)` text, falling
+ * back to the raw annotation lines. Never embedding input (see docOnlyText).
+ * Accepts Annotation objects (sources, fields) and raw strings (queries).
  */
 export function docText(
    annotations?: Array<string | { value: string }>,
@@ -80,20 +72,16 @@ export function docText(
 }
 
 /**
- * How many joins deep a field path is indexed. Depth 1 reaches
- * `orders.amount`; depth 2 reaches `order_items.inventory_items.cost`, the
- * depth the published shape's own `join_path` example uses. Deeper paths
- * exist and stay unindexed: each level multiplies the entity count by the
- * joined source's field count, against the entity cap
- * (`retrieval.indexing.maxEntities`).
+ * How many joins deep a field path is indexed: depth 2 reaches
+ * `order_items.inventory_items.cost`. Each level multiplies the entity count
+ * by the joined source's field count, against the entity cap.
  */
 const MAX_JOIN_PATH_DEPTH = 2;
 
 /**
- * What the compiled model knows about a field that the stable SourceInfo does
- * not: the expression it was defined by. `code` is the authored text
- * ("sale_price.sum()"); `aliasOf` is set only when the whole definition is a
- * reference to a sibling field of the same source.
+ * What the compiled model knows about a field that SourceInfo does not: `code`
+ * is the authored expression ("sale_price.sum()"); `aliasOf` is set only when
+ * the whole definition references a sibling field of the same source.
  */
 interface FieldProvenance {
    code?: string;
@@ -101,28 +89,10 @@ interface FieldProvenance {
 }
 
 /**
- * Read per-field provenance for one source out of the compiled model IR.
- *
- * Keyed by field name so the caller can join it onto the curated
- * `SourceInfo.schema.fields` it already walks. The IR is deliberately
- * uncurated (see Model.getModelDef), so it is used as a LOOKUP for fields the
- * curated list already admitted, never as a field list of its own.
- *
- * The alias rule is `e.node === "field"` with a SINGLE-segment path, and that
- * restriction carries the whole correctness argument. It is not theoretical:
- * in the bundled storefront model `order_items.category`, `.brand` and
- * `.region` are all bare field references -- to `["products","category"]`,
- * `["products","brand"]` and `["regions","region"]`. Those traverse a join to
- * reach a DIFFERENT column, and folding them into their target is exactly the
- * error this guard exists to prevent. Only a single-segment path names a
- * sibling field of the same source.
- */
-/**
  * The ACTIVE name of a compiled entry: `as` when a rename set one, else
- * `name`. This is what `to_stable` puts in SourceInfo, so it is what a caller
- * joining IR onto SourceInfo has to match on. Keying the raw `name` gave every
- * renamed field no provenance at all -- `include { rename: b is a }` compiles
- * to `{name: "a", as: "b"}`, so the map said "a" while the lookup asked "b".
+ * `name`. This is what `to_stable` puts in SourceInfo, so it is what joining
+ * IR onto SourceInfo must match on (`rename: b is a` compiles to
+ * `{name: "a", as: "b"}`).
  */
 function activeName(v: { name?: string; as?: string }): string | undefined {
    return v.as ?? v.name;
@@ -156,43 +126,29 @@ export function sliceRange(
 
 /**
  * The text each compiled model was built FROM, looked up by the file URL its
- * IR reports, and remembered for the life of one index build.
+ * IR reports, and remembered for one index build.
  *
- * A view's definition is not in the IR (see readFieldProvenance), so it is
- * sliced out of the model file at the range the IR gives. Those two have to
- * come from one revision of the file, which is why this reads the snapshot the
- * compile kept (`Model.getCompiledSourceText`) and deliberately does NOT fall
- * back to reading the file now.
- *
- * Reading it now is wrong whenever disk is ahead of the compiled model, and
- * that is a state Publisher serves on purpose: a package whose most recent
- * reload failed to compile keeps answering from the model compiled before that
- * save (`get_status` reports it as `stale: true`), and the index is cached per
- * Package object, so a failed reload leaves the cache intact and a first
- * `get_context` inside that window would cut post-edit bytes at pre-edit
- * coordinates. The result is not a missing field, it is confident text that is
- * not the view -- mid-token, or another field's definition -- beside an
- * `execute_query` that still runs the old one. An edit that is never reloaded
- * at all produces the same disagreement without ever being marked stale.
- *
- * A model with no snapshot (a `.malloynb`, a compile failure) yields no view
- * code. Nothing else on the card changes.
+ * A view's definition is sliced out of the model file at the IR's range, so
+ * both must come from one revision. This reads the compile's snapshot
+ * (`Model.getCompiledSourceText`) and deliberately never the file on disk: a
+ * package whose last reload failed (`stale: true`), or an unreloaded edit,
+ * has disk ahead of the model, and slicing post-edit bytes at pre-edit
+ * coordinates yields confident text that is not the view. A model with no
+ * snapshot (a `.malloynb`, a compile failure) yields no view code.
  */
 function makeSourceTextReader(
    pkg: Package,
 ): (url: string) => string | undefined {
    const cache = new Map<string, string | undefined>();
-   // Optional-chained like the model accessors in collectEntities: a spec's
-   // package stand-in implements only what it needs.
+   // Optional-chained: a spec's package stand-in implements only what it needs.
    const packagePath = pkg.getPackagePath?.();
    return (url: string) => {
       if (cache.has(url)) return cache.get(url);
       let text: string | undefined;
       try {
          if (url.startsWith("file:") && packagePath) {
-            // The IR's URL was built as packagePath + modelPath by the loader,
-            // so the same join inverts it. A path outside the package is not a
-            // model this package compiled and has no snapshot.
+            // The loader built the IR's URL as packagePath + modelPath, so the
+            // same join inverts it. A path outside the package has no snapshot.
             const relative = path
                .relative(packagePath, fileURLToPath(url))
                .split(path.sep)
@@ -224,28 +180,17 @@ function findSourceDef(
 }
 
 /**
- * A source's OWN documentation, excluding anything it inherited by extending
+ * A source's OWN documentation, excluding anything inherited by extending
  * another source. Undefined when the compiled model is unavailable, so the
- * caller can fall back rather than silently reporting no doc.
+ * caller can fall back.
  *
- * `extend` exists to CHANGE a source -- a filter, a join, a narrowed grain --
- * so the parent's description is not a description of the child. Malloy keeps
- * the two apart in the IR:
+ * `extend` exists to CHANGE a source, so the parent's description is not the
+ * child's. The IR keeps them apart (`annotations.blockNotes` vs
+ * `annotations.inherits.blockNotes`), while `to_stable` flattens them with the
+ * inherited notes first. A source that extends without documenting itself
+ * reports no doc, which is true and fixable.
  *
- *   annotations: {
- *     blockNotes: [ ...the source's own #(doc) lines ],
- *     inherits: { blockNotes: [ ...the parent's ] },
- *   }
- *
- * `to_stable` flattens that to one array with the INHERITED notes first, and
- * reading the flattened form is what made `scoped_orders` -- an `order_items
- * extend { where: ... }` -- report order_items' description, and made its
- * one_line_summary (a first sentence) identical to its parent's. A source that
- * extends without documenting itself now reports no doc, which is true and
- * fixable, rather than a confident description of a different source.
- *
- * Field-level docs are deliberately untouched: an inherited dimension or
- * measure IS the parent's field, so the doc it carries is its own and correct.
+ * Field docs are untouched: an inherited field IS the parent's field.
  */
 function readSourceOwnDoc(
    modelDef: ModelDef | undefined,
@@ -260,6 +205,15 @@ function readSourceOwnDoc(
       .filter(Boolean);
 }
 
+/**
+ * Read per-field provenance for one source out of the compiled model IR, keyed
+ * by active field name. The IR is uncurated (see Model.getModelDef), so it is
+ * only a LOOKUP for fields the curated SourceInfo already admitted.
+ *
+ * An alias is `e.node === "field"` with a SINGLE-segment path. A multi-segment
+ * reference (storefront's `order_items.category` -> `["products","category"]`)
+ * traverses a join to a DIFFERENT column and must not be folded into it.
+ */
 function readFieldProvenance(
    modelDef: ModelDef | undefined,
    sourceName: string,
@@ -289,12 +243,10 @@ function readFieldProvenance(
          field.e?.node === "field" && field.e.path?.length === 1
             ? field.e.path[0]
             : undefined;
-      // Malloy fills `code` for a scalar expression only, so a view -- whose
-      // definition is a query pipeline -- arrives with none, exactly like a
-      // physical column. Its `location` does cover the definition though, so
-      // the text comes off the file instead. Restricted to turtles because a
-      // physical column's location points at the source's table() expression,
-      // which would slice to something that is not the field at all.
+      // Malloy fills `code` for scalar expressions only, so a view arrives
+      // with none; its text is sliced from the file at its `location`.
+      // Turtles only: a physical column's location points at the source's
+      // table() expression.
       const viewCode =
          field.type === "turtle" && field.location?.url && field.location.range
             ? sliceRange(
@@ -308,8 +260,8 @@ function readFieldProvenance(
             : viewCode
               ? { code: viewCode }
               : {}),
-         // A self-reference cannot occur in valid Malloy; guarded anyway,
-         // because recording one would make a field its own alias and drop it.
+         // A self-reference cannot occur in valid Malloy; guarded because
+         // recording one would make a field its own alias and drop it.
          ...(referent && referent !== fieldName ? { aliasOf: referent } : {}),
       });
    }
@@ -328,10 +280,8 @@ interface JoinSchemaField {
 
 /**
  * Step into a nested join: the dotted path so far and the widest relationship
- * on it. `collectJoinedFields` (index-time copies) and `buildJoinReaches` (the
- * topology) both walk joins with this, so a path or fan-out is computed one
- * way. A `one` hop keeps the parent's fan-out; any other relationship
- * replaces it.
+ * on it, shared by collectJoinedFields and buildJoinReaches so both compute it
+ * one way. A `one` hop keeps the parent's fan-out; any other replaces it.
  */
 export function enterJoin(
    join: { name: string; relationship?: Relationship },
@@ -347,10 +297,9 @@ export function enterJoin(
 }
 
 /**
- * The deepest join chain the topology records. Assembly reads it through
- * `settings.joinMaxDepth`, which may be lower. It is separate from
- * MAX_JOIN_PATH_DEPTH because the topology holds paths, not one entity per
- * path, so a deep chain costs nothing against the embedded entity cap.
+ * The deepest join chain the topology records (assembly may read less via
+ * `settings.joinMaxDepth`). Deeper than MAX_JOIN_PATH_DEPTH because the
+ * topology holds paths, not entities, so it costs nothing against the cap.
  */
 export const JOIN_TOPOLOGY_MAX_DEPTH = 10;
 
@@ -365,11 +314,9 @@ interface CompiledJoin {
 }
 
 /**
- * The name of the source a compiled join points at, and the URL of the file
- * that defines it. The IR join entry's own `name` is the underlying table or
- * SQL, not the source; the source is in `sourceID`, written
- * "sourceName@modelURL". Undefined for a join with no such id (an inline
- * table), which has no source to reach.
+ * The source a compiled join points at, and the URL of its defining file. The
+ * IR join's own `name` is the table or SQL; the source is in `sourceID`,
+ * "sourceName@modelURL". Undefined for an inline table.
  */
 function joinTargetSource(
    join: CompiledJoin,
@@ -411,13 +358,11 @@ export function modelPathOfUrl(
 /**
  * Every source reachable from one source by joins, up to
  * JOIN_TOPOLOGY_MAX_DEPTH deep. Aliases, relationships and nesting come from
- * the same SourceInfo join tree `collectJoinedFields` walks; the target
- * source's name is not in that tree (#1100), so it is read from the compiled
- * join entry with the same alias (`compiled`). A join with no readable target
- * records nothing, and its nested joins are still followed. A target is
- * recorded with the package-relative path of the file that defines it, so two
- * files that each define a source of the same name stay two targets; a target
- * whose file is not one of the package's models records nothing.
+ * the SourceInfo join tree; the target source's name is not in that tree, so
+ * it is read from the compiled join entry with the same alias. A join with no
+ * readable target records nothing but its nested joins are still followed.
+ * Targets carry their package-relative model path, so same-named sources in
+ * two files stay distinct; a target outside the package's models is skipped.
  */
 function buildJoinReaches(args: {
    fields: JoinSchemaField[];
@@ -470,20 +415,14 @@ function buildJoinReaches(args: {
 /**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
- * Indexing the join alone is not enough, even though the target source is
- * already indexed on its own: the caller needs the PATH, and the path cannot
- * be derived from anything else the response carries. The stable `JoinInfo`
- * inlines the target's schema without naming the target source (#1100), so an
- * agent holding only a join entity knows a relationship exists with no way to
- * learn what it reaches -- while the tool description tells it to "traverse a
- * join as joinName.fieldName". So each reachable field is indexed as an entity
- * in its own right, reporting its traversal as `join_path`.
+ * The target source is indexed on its own, but the caller needs the PATH,
+ * which nothing else in the response carries (the stable JoinInfo does not
+ * name the target source). So each reachable field is its own entity,
+ * reporting its traversal as `join_path`.
  *
- * `fanout` is the widest relationship on the path, not the last one: a single
- * `many` hop anywhere means aggregating through this field fans out, which is
- * the fact that decides whether a measure reached this way can be trusted.
- * Views are deliberately not collected: a joined view is not referenceable as
- * `joinName.viewName` the way a dimension or measure is.
+ * `fanout` is the widest relationship on the path: one `many` hop anywhere
+ * means aggregating through the field fans out. Views are not collected: a
+ * joined view is not referenceable as `joinName.viewName`.
  */
 function collectJoinedFields(args: {
    fields: JoinSchemaField[];
@@ -521,8 +460,7 @@ function collectJoinedFields(args: {
          id: nextId(),
          kind: field.kind,
          name: `${joinPath}.${field.name}`,
-         // The source that DECLARES the traversal, so the field nests under
-         // the card a caller would actually query from.
+         // The source that DECLARES the traversal, the card a caller queries.
          source: sourceName,
          modelPath,
          doc: docText(field.annotations),
@@ -537,15 +475,11 @@ function collectJoinedFields(args: {
 }
 
 /**
- * Whether `apiSource` is denied unconditionally — on EITHER route, since the
- * two routes AND together and one bare-`false` conjunct denies every caller
- * regardless of the other route or any given supplied. Only `#(authorize)`
- * accepts a `false` an author wrote; the filter route can still carry one as
- * the fail-closed placeholder for an unattributable gate, which denies just
- * as absolutely, so this keys on the deny rather than the route. Case- and
- * whitespace-insensitive: the grammar parser lowercases `FALSE` only for its
- * own comparison, so the wire payload can still carry it uppercase
- * (`authorize_grammar.ts`).
+ * Whether `apiSource` is denied unconditionally: a bare `false` conjunct on
+ * EITHER route (the routes AND together) denies every caller whatever givens
+ * are supplied. The filter route can carry one as the fail-closed placeholder
+ * for an unattributable gate, so this keys on the deny, not the route.
+ * Case-insensitive, because the wire payload can carry `FALSE` uppercase.
  */
 function isUnconditionalDenyAuthorize(apiSource: {
    accessFilter?: string[];
@@ -559,23 +493,14 @@ function isUnconditionalDenyAuthorize(apiSource: {
 }
 
 /**
- * Walk every model in the package and collect sources, their views,
- * dimension/measure fields and declared joins, and named queries. Returns the
- * full set; the optional source-level drill-down is applied by the caller
- * after retrieval.
+ * Walk every model in the package and collect sources, their views, fields
+ * and joins, and named queries. Source drill-down is applied by the caller.
  */
 async function collectEntities(pkg: Package): Promise<CollectedModel> {
-   // listModels() already returns only .malloy model files (notebooks are listed separately).
-   // Sorted by path so the walk is deterministic. Which paths a source reports
-   // no longer depends on it — every resolving path is its own card, see the
-   // dedupe below — but the order sources are first seen in still decides the
-   // order equally-ranked cards come back in, and `first wins` still settles
-   // the odd genuine within-a-file duplicate. Filesystem order would make both
-   // differ between two machines serving the same package.
-   // Codepoint order, not localeCompare: with no locale argument that
-   // follows the runtime's collation, which moves with LANG/LC_ALL -- so two
-   // servers on identical bytes could walk the same package in different
-   // orders, which is the one thing this sort exists to prevent.
+   // Sorted by path, codepoint order (localeCompare follows LANG/LC_ALL), so
+   // two servers on identical bytes walk the package the same way: walk order
+   // decides the order of equally-ranked cards and which within-file
+   // duplicate wins.
    const models = [...(await pkg.listModels())].sort((a, b) =>
       compareText(a.path ?? "", b.path ?? ""),
    );
@@ -583,10 +508,9 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    const modelPaths = models.flatMap((m) => (m.path ? [m.path] : []));
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
-   // Names of every source dropped for an unconditional deny-all gate, package-
-   // wide. Computed once per model, before either the source or the query loop
-   // runs, so both can skip the same names and neither can resurrect a card for
-   // one the other dropped (see the query loop and cardFor below).
+   // Every source dropped for an unconditional deny-all gate, package-wide.
+   // Filled before the source and query loops so neither can resurrect a card
+   // the other dropped.
    const droppedSources = new Set<string>();
    // Which sources each source reaches by joins; see buildJoinReaches.
    const topology = new Map<string, JoinReach[]>();
@@ -594,25 +518,17 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
    for (const apiModel of models) {
-      // path is optional in the generated API types; skip models without one.
       const modelPath = apiModel.path;
       if (!modelPath) continue;
       const model = pkg.getModel(modelPath);
       if (!model) continue;
-      // SourceInfo carries the full schema (views plus dimension/measure fields);
-      // named queries come from getQueries().
       const sourceInfos = model.getSourceInfos() ?? [];
       const queries = model.getQueries() ?? [];
-      // The compiled ApiSource carries what SourceInfo does not: the givens in
-      // scope and the gates in force. Keyed by name so the card can
-      // pick up its own, and read defensively because a spec's model stand-in
-      // implements only the two accessors above.
+      // The compiled ApiSource carries the givens in scope and the gates in
+      // force. Read defensively: a spec's stand-in may not implement it.
       const apiSources = model.getSources?.() ?? [];
-      // The compiled IR, for the one thing SourceInfo cannot carry: a field's
-      // expression. Optional-chained on the same grounds as getSources above
-      // -- a spec's model stand-in implements only the accessors it needs --
-      // and a model that failed to compile has none. Either way the fields
-      // still index, just without provenance.
+      // The compiled IR, for a field's expression. Absent for a spec stand-in
+      // or a failed compile; fields then index without provenance.
       const modelDef = model.getModelDef?.();
 
       for (const apiSource of apiSources) {
@@ -623,14 +539,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
-         // An unconditional `false` on either route (any case/whitespace —
-         // see isUnconditionalDenyAuthorize)
-         // denies every caller with no given able to change that, so there is
-         // nothing this card can offer an agent that queries it. Drop the
-         // source entirely rather than list it and let the agent learn only
-         // from the 403; every OTHER gate stays reported, because a caller's
-         // givens are untrusted here and evaluating a real rule would be
-         // forgeable (see execute_query_tool.ts).
+         // An unconditional `false` denies every caller, so the card offers
+         // nothing: drop the source rather than let the agent learn from the
+         // 403. Every OTHER gate stays reported, because a caller's givens are
+         // untrusted here and evaluating a real rule would be forgeable (see
+         // execute_query_tool.ts).
          const governanceKey = sourceContextKey(modelPath, sourceName);
          if (droppedSources.has(governanceKey)) {
             continue;
@@ -640,9 +553,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             sourceName,
             sourceTextFor,
          );
-         // Keyed per (model path, source) like the card it decorates, so a
-         // card can never show one file's givens/gates beside another file's
-         // model_path.
+         // Keyed per (model path, source) like the card, so a card never shows
+         // another file's givens or gates.
          if (!governance.has(governanceKey)) {
             const apiSource = apiSources.find((c) => c.name === sourceName);
             if (apiSource) {
@@ -690,11 +602,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                });
             }
          }
-         // A source's own doc, never the one it inherited by extending
-         // another source (see readSourceOwnDoc). Falls back to the flattened
-         // SourceInfo annotations when there is no compiled model to read --
-         // a spec stand-in, or a model that failed to compile -- which is the
-         // pre-existing behaviour rather than a silent loss of the doc.
+         // The source's own doc, not an inherited one (see readSourceOwnDoc),
+         // falling back to the flattened annotations with no compiled model.
          const ownDoc = readSourceOwnDoc(modelDef, sourceName);
          const sourceAnnotations = ownDoc ?? sourceInfo.annotations;
          entities.push({
@@ -717,21 +626,18 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             if (reaches.length > 0) topology.set(governanceKey, reaches);
          }
          for (const field of sourceInfo.schema.fields ?? []) {
-            // Joins are indexed as entities in their own right: an agent that
-            // cannot see a declared join concludes the model has none and
-            // burns queries guessing one. The join's own #(doc) is a common
-            // home for the rule that governs the relationship, so it has to
-            // be retrievable. `calculate` (window) fields stay unindexed:
-            // they are not referenceable outside the view that defines them.
+            // Joins are entities: an agent that cannot see a declared join
+            // concludes there is none and burns queries guessing, and the
+            // join's #(doc) often holds the rule for the relationship.
+            // `calculate` (window) fields are not referenceable outside their
+            // view, so they stay unindexed.
             if (field.kind === "join") {
                entities.push({
                   id: String(n++),
                   kind: "join",
                   name: field.name,
-                  // The source that DECLARES the join, so a drill-down on
-                  // that source sees it. The stable JoinInfo inlines the
-                  // target's schema without naming the target source, so
-                  // there is no targetSource to report.
+                  // The source that DECLARES the join, so a drill-down on it
+                  // sees the join.
                   source: sourceName,
                   modelPath,
                   doc: docText(field.annotations),
@@ -739,9 +645,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   relationship: field.relationship,
                   ...joinTargetOf(topology.get(governanceKey), field.name),
                });
-               // The join's own entity above says a relationship exists; the
-               // fields below say what it reaches and under what path. Both
-               // are needed, and neither substitutes for the other.
+               // The join entity says a relationship exists; the fields below
+               // say what it reaches and under what path.
                collectJoinedFields({
                   fields: (field.schema?.fields ?? []) as JoinSchemaField[],
                   sourceName,
@@ -761,9 +666,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ) {
                continue;
             }
-            // A view carries `code` (sliced from the model file) but neither
-            // an `aliasOf` -- a view is not a respelling of another field --
-            // nor a scalar `dataType`.
+            // A view carries `code` but no `aliasOf` and no scalar `dataType`.
             const fieldProvenance = provenance.get(field.name);
             const isView = field.kind === "view";
             entities.push({
@@ -787,16 +690,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const query of queries) {
          if (!query.name) continue;
-         // A model-level query over an inline source (`query: q is orders
-         // extend {...} -> ...`) has no source name. The response nests every
-         // entity under a source card, so such a query has nowhere to be
-         // returned; indexing it would let it match a `view` target, spend a
-         // slot in the per-source window, and count in total_available while
-         // never appearing in `returned`. Exclude it here, before it can be
-         // counted anywhere, rather than at serialization.
+         // A model-level query over an inline source has no source name and
+         // so no card to nest under; indexed, it would spend window slots and
+         // count in total_available without ever being returned.
          if (!query.sourceName) continue;
-         // Same deny-all drop as the source loop above: a query over a locked
-         // source is still a route to learn the source's name and shape exist.
+         // Same deny-all drop as above: a query over a locked source would
+         // reveal the source exists.
          if (
             droppedSources.has(sourceContextKey(modelPath, query.sourceName))
          ) {
@@ -814,10 +713,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       }
    }
 
-   // One model surfacing the same entity twice (a re-export, say) is a
-   // duplicate. Two DIFFERENT models surfacing it is not: a source is queryable
-   // at every path that resolves it, and each of those is its own card — so the
-   // model path is part of the key.
+   // A duplicate within one model is dropped; the same entity from two
+   // models is two cards (a source is queryable at every resolving path).
    const seen = new Set<string>();
    const deduped = entities.filter((e) => {
       const key = entityCardKey(e);
@@ -825,12 +722,10 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   // A join to a source that is not in the index (dropped for a deny-all gate,
-   // or never listed because the package does not export it) keeps its alias,
-   // which is a field of the visible source, but not the target's real name:
-   // that name would reach the LLM in the source summary prompt and the source
-   // match prompt. Done once every model has been walked, because a join can
-   // name a source from a later model file.
+   // A join whose target is not indexed (deny-all, or not exported) keeps
+   // its alias but drops the target's real name, which would otherwise reach
+   // the LLM prompts. After the full walk, since a join can name a source
+   // from a later file.
    const indexedSources = new Set(
       deduped
          .filter((e) => e.kind === "source")
@@ -848,9 +743,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          delete e.joinTargetModelPath;
       }
    }
-   // A join is only a route to a source's fields when that source is itself
-   // indexed: a target that was dropped (a deny-all gate) or never listed has
-   // no direct fields to copy, so the join reaches nothing.
+   // A join reaches nothing unless its target source is itself indexed.
    for (const [root, reaches] of topology) {
       const kept = reaches.filter((reach) =>
          indexedSources.has(
@@ -912,20 +805,16 @@ interface CollectedModel {
    /** Joins each source reaches, keyed by sourceContextKey. */
    topology: Map<string, JoinReach[]>;
    /**
-    * Fields the index folded into another spelling of the same column (see
+    * Fields folded into another spelling of the same column (see
     * collapseAliases), as modelPath, source, kind and name joined on
-    * KEY_SEPARATOR. A joined copy of one is a copy of a spelling nobody
-    * searches for.
+    * KEY_SEPARATOR.
     */
    aliasedAway: Set<string>;
 }
 
 /**
- * A field's Malloy type as a plain name: "string", "number", "date".
- *
- * The interface spells these `string_type`, `number_type` and so on, which is
- * an encoding rather than a name an agent would write, so the suffix comes off.
- * Absent when the interface reports no type, which a model stand-in does.
+ * A field's Malloy type as a plain name ("string", not the interface's
+ * `string_type`). Absent when the interface reports no type.
  */
 function malloyType(field: { type?: { kind?: string } }): string | undefined {
    const kind = field.type?.kind;
@@ -936,46 +825,24 @@ function malloyType(field: { type?: { kind?: string } }): string | undefined {
  * Collapse a field that is DEFINED AS another field of the same source into
  * it, keeping the documented spelling and reporting the rest in `aliases`.
  *
- * A model that renames a physical column without hiding the original leaves
- * both in the schema: `dimension: site is SITE` puts `site` beside `SITE` --
- * one column indexed twice, both competing for the same scarce slots.
+ * A model that renames a column without hiding the original
+ * (`dimension: site is SITE`) indexes one column twice, both competing for
+ * the same slots. Detection is EXACT: `aliasOf` is read off the compiled
+ * model (see readFieldProvenance), so two spellings are proven to be one
+ * column, and two docs on them is a modelling mistake, not a second concept.
  *
- * Detection is EXACT, read off the compiled model: `aliasOf` is set only when
- * a field's entire definition is a reference to a single-segment sibling name
- * (see readFieldProvenance). This replaces a heuristic that matched humanized
- * names, which could not tell `site is SITE` from a derivation that happened
- * to humanize the same way. The comment here used to justify that heuristic by
- * saying the expression was unavailable. It is available: the stable
- * `Malloy.DimensionInfo` does not carry it, but the compiled `ModelDef` does,
- * and Publisher holds one (see Model.getModelDef).
- *
- * Because a reference is proof rather than a guess, the differing-doc escape
- * hatch is gone. The old rule kept two spellings apart when each carried its
- * own `#(doc)`, since a doc was the only evidence they might be two concepts.
- * A proven reference settles it: they ARE one column, and two docs on one
- * column is a modelling mistake, not a second concept. The documented
- * spelling still wins, so the doc a modeller wrote is the one returned.
- *
- * The better fix remains in the model: `include { internal: ... }` hides the
- * raw column outright and the indexer honours it already, because the compiler
- * drops non-public fields before this code sees them (see the access-modifier
- * spec). This is what the tool can do for models that have not done that.
+ * The better fix is in the model: `include { internal: ... }` hides the raw
+ * column, and the compiler drops non-public fields before this code runs.
  */
 function collapseAliases(entities: Entity[]): Entity[] {
-   // Every same-source field a reference could name. Dimensions and measures
-   // only: a source is its own namespace, a join names a relationship rather
-   // than a column, and a view is a pipeline. A joined field is indexed under
-   // its dotted path and belongs to the source it is reached FROM, so it can
-   // never be a same-source sibling -- and its own expression may reference a
-   // leaf name that collides with one of that source's own fields, which is
-   // exactly the fold that must not happen.
+   // Dimensions and measures only: a source is its own namespace, a join
+   // names a relationship, and a view is a pipeline. A joined field belongs to
+   // the source it is reached FROM, and its leaf name may collide with one of
+   // that source's own fields, which is exactly the fold that must not happen.
    const foldable = (e: Entity) =>
       (e.kind === "dimension" || e.kind === "measure") && !e.joinPath;
-   // Scoped to the model path as well as the source: one source resolvable
-   // from several files is several cards, each with its own copy of the same
-   // fields, and a fold is a statement about ONE card. Keyed on the name
-   // alone, the last file walked became every card's representative and a
-   // fold computed against it dropped the folded name from all of them.
+   // Scoped to the model path too: a source resolvable from several files is
+   // several cards, and a fold is a statement about ONE card.
    const key = (e: Entity) =>
       `${e.modelPath}\x00${e.source ?? ""}\x00${e.name}`;
    const byName = new Map<string, Entity>();
@@ -987,20 +854,16 @@ function collapseAliases(entities: Entity[]): Entity[] {
       const target = byName.get(
          `${e.modelPath}\x00${e.source ?? ""}\x00${e.aliasOf}`,
       );
-      // The referent has to be a field this index actually holds, and it may
-      // not be: `include { internal: SITE }` hides the raw column from the
-      // public schema while `site` still references it. That is the model
-      // doing the right thing -- `site` is then the only spelling and there
-      // is nothing to fold. A rename moves a field's active name without
-      // rewriting its siblings' expressions, which lands here the same way.
+      // The referent may not be indexed: `include { internal: SITE }` hides
+      // it while `site` still references it, and then there is nothing to
+      // fold. A rename lands here the same way.
       if (!target || target === e) return undefined;
       // A measure defined over a dimension is not another spelling of it.
       return target.kind === e.kind ? target : undefined;
    };
 
-   // Walk each chain to its root, so `a is b` and `b is c` land in ONE group
-   // rather than making `b` both a survivor and a dropped row -- which would
-   // leave `a` reporting an alias of a field no longer in the index.
+   // Walk each chain to its root, so `a is b` and `b is c` form ONE group;
+   // otherwise `a` could report an alias of a field no longer in the index.
    const rootOf = new Map<Entity, Entity>();
    const groups = new Map<Entity, Entity[]>();
    for (const e of entities) {
@@ -1009,8 +872,8 @@ function collapseAliases(entities: Entity[]): Entity[] {
       let node = e;
       for (;;) {
          const next = referentOf(node);
-         // A cycle cannot occur in valid Malloy; the guard costs nothing and
-         // turns a malformed model into "no fold" instead of a hang.
+         // A cycle cannot occur in valid Malloy; guarded so a malformed model
+         // means "no fold", not a hang.
          if (!next || seen.has(next)) break;
          seen.add(next);
          node = next;
@@ -1022,35 +885,26 @@ function collapseAliases(entities: Entity[]): Entity[] {
       else groups.set(node, [e]);
    }
 
-   // Model-path scoped for the same reason `key` is: the row being removed is
-   // one card's row, not the name everywhere it appears.
+   // Model-path scoped, like `key`: the removed row is one card's.
    const droppedKey = (e: Entity) => entityCardKey(e);
    const dropped = new Map<string, Entity>();
    for (const [root, refs] of groups) {
       const members = [root, ...refs];
-      // The NAME that survives is an authored alias, never the raw column it
-      // points at: `dimension: site is SITE` says the modeller wants `site`
-      // used, and it is the spelling that still works once they hide the raw
-      // one with `include { internal: SITE }`. Direction is the thing the old
-      // name-matching rule could not know, so it had to guess from casing.
-      // Among several authored names (a chain, or two names for one column)
-      // prefer a documented one, then be deterministic.
+      // The NAME that survives is an authored alias, never the raw column:
+      // `site is SITE` says the modeller wants `site`, and it still works once
+      // the raw column is hidden. Among several authored names prefer a
+      // documented one, then be deterministic.
       const candidates = refs.length > 0 ? refs : members;
       const keep = [...candidates].sort((a, b) => {
          if (Boolean(b.embedDoc) !== Boolean(a.embedDoc)) {
             return b.embedDoc ? 1 : -1;
          }
-         // Codepoint, for the same reason the model walk uses it: this
-         // picks WHICH name survives a collapse, so a locale-dependent
-         // comparison would let two servers answer with different spellings
-         // of the same field.
+         // Codepoint, not locale: two servers must keep the same spelling.
          return compareText(a.name, b.name);
       })[0];
-      // The DOC survives independently of the name. A raw column that carries
-      // the only `#(doc)` in the group would otherwise lose it, and `aliases`
-      // carries names, not text. Two members documented DIFFERENTLY is a
-      // modelling mistake rather than two concepts -- the reference proves one
-      // column -- so the survivor's own doc wins and the other is dropped.
+      // The DOC survives independently of the name, so a raw column holding
+      // the group's only `#(doc)` does not lose it. With differing docs the
+      // survivor's own wins.
       if (!keep.embedDoc) {
          const donor = members.find((e) => e !== keep && e.embedDoc);
          if (donor) {
@@ -1069,16 +923,9 @@ function collapseAliases(entities: Entity[]): Entity[] {
 }
 
 /**
- * Per-source state is keyed by (model path, source name), not source name
- * alone. A source is resolvable — and queryable — from its own file AND from
- * every file that imports it, so the same name legitimately carries different
- * paths, and each pairing is its own card. Keying on the name alone collapsed
- * them to whichever model was walked first.
- *
- * Joined on KEY_SEPARATOR, not `|`, for the reason its own docblock gives: a
- * Malloy identifier may be backtick-quoted and a `|` is legal inside one, so
- * joining on it is not injective — ("a|b", "c") and ("a", "b|c") produce one
- * key. A control character cannot appear in an identifier, nor in a path.
+ * Per-source state is keyed by (model path, source name): a source is
+ * queryable from its own file AND every file importing it, and each pairing
+ * is its own card. Joined on KEY_SEPARATOR, not `|` (see its docblock).
  */
 export function sourceContextKey(modelPath: string, source: string): string {
    return [modelPath, source].join(KEY_SEPARATOR);
@@ -1086,9 +933,6 @@ export function sourceContextKey(modelPath: string, source: string): string {
 
 /**
  * The key of one CARD: an entity under one of the model paths it resolves in.
- * `entityRowKey` identifies the entity, and the model path is what makes two
- * cards for one entity distinct. Same separator, same injectivity argument as
- * {@link sourceContextKey}.
  */
 export function entityCardKey(e: {
    modelPath: string;
@@ -1105,11 +949,8 @@ export function entityCardKey(e: {
 const ONE_LINE_SUMMARY_MAX_CHARS = 120;
 
 /**
- * A source's doc reduced to one line: its first sentence or line, capped.
- *
- * A catalog view wants a label, not a paragraph, and the full text is still
- * on the card as `docs`. Undocumented sources get nothing rather than a
- * fabricated summary, which is what an absent field means on both sides.
+ * A source's doc reduced to a catalog label: its first sentence or line,
+ * capped. Undocumented sources get nothing rather than a fabricated summary.
  */
 function oneLineSummary(doc: string): string | undefined {
    const firstLine = doc.split("\n")[0]?.trim();
@@ -1123,9 +964,9 @@ function oneLineSummary(doc: string): string | undefined {
 }
 
 /**
- * Derive per-source context from the collected entities: the source's own doc,
- * every join declared on it, and the givens and gates that govern querying it. Built once per package alongside the index,
- * so attaching it to a response costs a lookup rather than a model walk.
+ * Per-source context: the source's own doc, every join declared on it, and
+ * the givens and gates that govern querying it. Built once per package, so a
+ * response attaches it with a lookup.
  */
 function buildSourceContext(
    collected: CollectedModel,
@@ -1152,8 +993,7 @@ function buildSourceContext(
    }
    for (const e of entities) {
       if (e.kind !== "join" || !e.relationship) continue;
-      // A join declared on a source the collector never emitted (defensive:
-      // every join reaches us through its source) has nowhere to hang.
+      // Defensive: every join reaches us through its source.
       const parent = e.source
          ? context.get(sourceContextKey(e.modelPath, e.source))
          : undefined;
@@ -1167,17 +1007,15 @@ function buildSourceContext(
    return context;
 }
 
-// Cache the built entity index per Package instance. environment.getPackage()
-// serves a cached Package, and a reload swaps in a new instance, so a stale entry
-// is dropped automatically (WeakMap) and the next call rebuilds.
+// Per Package instance: a reload swaps in a new instance, so a stale entry
+// drops out of the WeakMap on its own.
 const indexCache = new WeakMap<Package, PackageIndex>();
 
 /**
  * The entities the semantic index embeds and searches. With joins made at
  * assembly that is the direct fields only: a joined copy would be embedded
- * again under a longer name, take a window slot from the field it copies and
- * never be damped. The lexical path is not affected; it ranks
- * `retrievalEntities`.
+ * again under a longer name and take a window slot from the field it copies.
+ * The lexical path ranks `retrievalEntities` regardless.
  */
 export function embeddedEntitiesOf(
    pkgIndex: PackageIndex,
@@ -1189,18 +1027,12 @@ export function embeddedEntitiesOf(
 }
 
 /**
- * What the semantic index embeds when joined copies are made at assembly: every
- * entity except a joined copy that assembly will rebuild from the topology.
- *
- * Assembly rebuilds a joined copy from a direct field of the join's target
- * source, so a copy is left out only when the topology reaches a target source
- * of that file and the target has a direct field of that name, or folded that
- * name into another spelling of the same column (`aliasedAway`). A joined
- * field assembly cannot rebuild stays in, so it stays searchable. Two cases:
- *  - the join has no source to copy from (an inline table or SQL), or its
- *    target is not indexed;
- *  - the join adds the field to its target (`join_one: c is cust extend {...}`),
- *    so the target has no such field of its own.
+ * Every entity except a joined copy that assembly will rebuild from the
+ * topology: one whose join reaches an indexed target source holding a direct
+ * field of that name (or one folded away, `aliasedAway`). A joined field
+ * assembly cannot rebuild stays searchable: an inline-table or SQL join, an
+ * unindexed target, or a field the join itself adds
+ * (`join_one: c is cust extend {...}`).
  */
 function directEntitiesOf(
    retrievalEntities: readonly Entity[],

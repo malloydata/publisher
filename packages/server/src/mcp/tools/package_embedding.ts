@@ -21,16 +21,11 @@ import {
 } from "./package_entities";
 
 /**
- * The semantic index state for one package. With no embedding provider the
- * status is `lexical`: the server ranks by words only, by design, and there is
- * no index to describe.
+ * The semantic index state for one package; `lexical`, by design, when no
+ * embedding provider is configured.
  *
- * Composed here rather than in the controller because `totalEntities` means
- * "entities this package exposes to retrieval", which is exactly what
- * collectEntities decides — including the joins it now indexes and the
- * aliases it collapses. Reusing the same cached index keeps the number
- * honest instead of letting a second definition of "entity" drift from the
- * one retrieval actually uses.
+ * Composed from the same cached package index retrieval uses, so
+ * `totalEntities` cannot drift from what collectEntities decides is an entity.
  */
 export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
