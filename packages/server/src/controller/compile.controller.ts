@@ -4,12 +4,27 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
+import {
+   lazyCounter,
+   lazyHistogram,
+   REQUEST_DURATION_BUCKETS_MS,
+} from "../telemetry";
 import type { CompiledDocument } from "../service/compile_document";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
 import {
    withLegacyDocumentKind,
    type LegacyKind,
 } from "../service/legacy_report_views";
+
+const compiles = lazyCounter(
+   "publisher_compiles_total",
+   "Compile requests (REST and MCP). Labels: scope ('append'|'file'|'package'), outcome ('success' compiled clean, 'error' answered with error problems, 'refused' threw).",
+);
+const compileDuration = lazyHistogram(
+   "publisher_compile_duration_ms",
+   "Wall-clock duration of a compile request. Labels: scope, outcome.",
+   { buckets: REQUEST_DURATION_BUCKETS_MS },
+);
 
 export class CompileController {
    private environmentStore: EnvironmentStore;
@@ -26,6 +41,47 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
+   ): Promise<{
+      status: string;
+      problems: TaggedLogMessage[];
+      sql?: string;
+      document?: CompiledDocument & { kind: LegacyKind };
+   }> {
+      const start = performance.now();
+      let outcome = "refused";
+      try {
+         const result = await this.compileText(
+            environmentName,
+            packageName,
+            modelName,
+            source,
+            includeSql,
+            givens,
+            scope,
+         );
+         outcome = result.status;
+         return result;
+      } finally {
+         // An unknown scope is the caller's typo, not a label value.
+         const label = ["append", "file", "package"].includes(scope)
+            ? scope
+            : "invalid";
+         compiles().add(1, { scope: label, outcome });
+         compileDuration().record(performance.now() - start, {
+            scope: label,
+            outcome,
+         });
+      }
+   }
+
+   private async compileText(
+      environmentName: string,
+      packageName: string,
+      modelName: string,
+      source: unknown,
+      includeSql: boolean,
+      givens: Record<string, GivenValue> | undefined,
+      scope: CompileScope,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -50,7 +106,6 @@ export class CompileController {
          scope,
       );
 
-      // Determine overall status based on presence of errors
       const hasErrors = problems.some((p) => p.severity === "error");
 
       return {

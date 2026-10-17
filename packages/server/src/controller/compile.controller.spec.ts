@@ -76,3 +76,38 @@ describe("CompileController.compile", () => {
       });
    });
 });
+
+describe("CompileController metrics", () => {
+   it("counts each compile by scope and outcome", async () => {
+      const { startMetricsHarness } = await import(
+         "../test_helpers/metrics_harness"
+      );
+      const { resetInstrumentsForTesting } = await import("../telemetry");
+      const harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+      try {
+         const clean = controllerWith({ problems: [] }).controller;
+         const broken = controllerWith({
+            problems: [{ severity: "error", message: "m" }],
+         }).controller;
+         await clean.compile("env", "pkg", "m.malloy", "x", false, {}, "file");
+         await broken.compile("env", "pkg", "m.malloy", "x");
+         await clean.compile("env", "pkg", "m.malloy", 42).catch(() => {});
+         const count = (scope: string, outcome: string) =>
+            harness.collectCounter("publisher_compiles_total", {
+               scope,
+               outcome,
+            });
+         expect(await count("file", "success")).toBe(1);
+         expect(await count("append", "error")).toBe(1);
+         expect(await count("append", "refused")).toBe(1);
+         expect(
+            (await harness.collectHistogram("publisher_compile_duration_ms"))
+               .count,
+         ).toBe(3);
+      } finally {
+         await harness.shutdown();
+         resetInstrumentsForTesting();
+      }
+   });
+});
