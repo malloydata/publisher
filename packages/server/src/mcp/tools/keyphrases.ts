@@ -39,7 +39,11 @@ import type { EgressPreset } from "../../retrieval_config";
 import type { KeyphraseMode } from "../../service/package_retrieval";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { EmbeddableEntity } from "./embedding_index";
-import { SyncBudgetReached, SyncRequestBudget } from "./get_context_llm";
+import {
+   runPooled,
+   SyncBudgetReached,
+   SyncRequestBudget,
+} from "./get_context_llm";
 
 /** Entities per LLM call. */
 export const KEYPHRASE_BATCH_SIZE = 10;
@@ -473,61 +477,56 @@ export async function resolveKeyphrases(args: {
    }
 
    let failure: unknown;
-   let next = 0;
-   const worker = async () => {
-      while (failure === undefined) {
-         if (args.shouldStop?.()) return;
-         const index = next++;
-         if (index >= batches.length) return;
-         const batch = batches[index];
-         const ids = batch.map((_, i) => String(i + 1));
-         try {
-            const reply = await budget.spend((onRequest) =>
-               settings.chat.completeJson({
-                  system: settings.instructions,
-                  prompt: renderKeyphraseUserPrompt(
-                     batch.map((b, i) =>
-                        promptEntityOf(b.entity, settings.egress, ids[i]),
-                     ),
+   let budgetReached = false;
+   const runBatch = async (batch: (typeof batches)[number]) => {
+      if (budgetReached || args.shouldStop?.()) return;
+      const ids = batch.map((_, i) => String(i + 1));
+      try {
+         const reply = await budget.spend((onRequest) =>
+            settings.chat.completeJson({
+               system: settings.instructions,
+               prompt: renderKeyphraseUserPrompt(
+                  batch.map((b, i) =>
+                     promptEntityOf(b.entity, settings.egress, ids[i]),
                   ),
-                  maxTokens: 80 * batch.length + 100,
-                  validate: validateReply(ids),
-                  onRequest,
-               }),
-            );
-            await saveBatch(
-               db,
-               environmentName,
-               packageName,
-               batch.map((b, i) => ({
-                  key: b.key,
-                  inputHash: b.inputHash,
-                  keyphrase: reply.value.get(ids[i]) as string,
-               })),
-               settings.promptHash,
-               settings.modelId,
-            );
-            batch.forEach((b, i) =>
-               keyphrases.set(b.key, reply.value.get(ids[i]) as string),
-            );
-            progress.done += batch.length;
-            onProgress?.({ ...progress });
-         } catch (error) {
-            // Out of budget: this batch and the rest are left for the next
-            // sync, which resumes from what is stored. Not a failure.
-            if (error instanceof SyncBudgetReached) return;
-            failure ??= error;
+               ),
+               maxTokens: 80 * batch.length + 100,
+               validate: validateReply(ids),
+               onRequest,
+            }),
+         );
+         await saveBatch(
+            db,
+            environmentName,
+            packageName,
+            batch.map((b, i) => ({
+               key: b.key,
+               inputHash: b.inputHash,
+               keyphrase: reply.value.get(ids[i]) as string,
+            })),
+            settings.promptHash,
+            settings.modelId,
+         );
+         batch.forEach((b, i) =>
+            keyphrases.set(b.key, reply.value.get(ids[i]) as string),
+         );
+         progress.done += batch.length;
+         onProgress?.({ ...progress });
+      } catch (error) {
+         // Out of budget: this batch and the rest are left for the next
+         // sync, which resumes from what is stored. Not a failure.
+         if (error instanceof SyncBudgetReached) {
+            budgetReached = true;
+            return;
          }
+         throw error;
       }
    };
-   await Promise.all(
-      Array.from(
-         {
-            length: Math.min(Math.max(1, settings.concurrency), batches.length),
-         },
-         worker,
-      ),
-   );
+   try {
+      await runPooled(batches, settings.concurrency, runBatch);
+   } catch (error) {
+      failure = error;
+   }
    if (
       failure === undefined &&
       progress.done < progress.total &&
