@@ -12,18 +12,10 @@
  * but were registered without it, so a flood of either bypassed the cap its
  * sibling query routes enforce.
  *
- * Asserting that the characters `queryConcurrency()` appear between two other
- * strings in `server.ts` would prove the token is present, not that a request is
- * admission-controlled: a refactor that keeps the token and breaks the gate --
- * the middleware registered but short-circuited, the cap read from the wrong
- * place, the handler responding before the chain runs -- would stay green. So
- * this stands up a real Express app with the same wiring `server.ts` registers,
- * with only the controller stubbed, and asserts the behaviour: with the cap at 1,
- * a second request that arrives while the first is still in flight is refused
- * with 503.
- *
- * The harness follows `authorize_bypass_wiring.integration.spec.ts`, which made
- * the same call for this same middleware.
+ * This mounts the real route table with only the controllers stubbed and
+ * asserts the behaviour: with the cap at 1, a second request that arrives while
+ * the first is still in flight is refused with 503. It then pins exactly which
+ * routes carry the gate, read from the registered route table.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -32,13 +24,8 @@ import { join } from "path";
 import express from "express";
 import request from "supertest";
 
-import type { CompileController } from "./controller/compile.controller";
-import type { ConnectionController } from "./controller/connection.controller";
-import { internalErrorToHttpError } from "./errors";
-import {
-   queryConcurrency,
-   resetActiveQueryCountForTesting,
-} from "./query_concurrency";
+import { resetActiveQueryCountForTesting } from "./query_concurrency";
+import { buildRouteApp, registeredRoutes } from "./test_helpers/route_app";
 
 /** Restored after each case so a cap set here cannot leak into another file. */
 const ORIGINAL_CAP = process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
@@ -65,98 +52,28 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
    return { promise, resolve };
 }
 
-/**
- * The error-handling middleware `server.ts` installs. `queryConcurrency()`
- * surfaces its refusal through `next(error)` rather than throwing into the route
- * handler, so without this an app returns Express's default 500 and the 503 the
- * gate actually produced never appears.
- */
-function installErrorHandler(app: express.Express): void {
-   app.use(
-      (
-         err: Error,
-         _req: express.Request,
-         res: express.Response,
-         _next: express.NextFunction,
-      ) => {
-         const { json, status } = internalErrorToHttpError(err);
-         res.status(status).json(json);
-      },
-   );
-}
-
-/**
- * The compile route as `server.ts` registers it: the gate, then the handler.
- * `hold` lets a request park inside the controller so a second one arrives while
- * the first still occupies its slot.
- */
+/** The real routes, with the compile controller parked until `hold` settles. */
 function compileApp(hold: Promise<unknown>): express.Express {
-   const compileController = {
-      compile: async () => {
-         await hold;
-         return { problems: [] };
+   return buildRouteApp({
+      compileController: {
+         compile: async () => {
+            await hold;
+            return { problems: [] } as never;
+         },
       },
-   } as unknown as CompileController;
-
-   const app = express();
-   app.use(express.json());
-   app.post(
-      "/api/v0/environments/:environmentName/packages/:packageName/models/*?/compile",
-      queryConcurrency(),
-      async (req, res) => {
-         try {
-            // Real arguments, the way server.ts passes them: the stub ignores
-            // them, but the cast keeps the call typed against the controller,
-            // so a signature change surfaces here rather than at runtime.
-            res.status(200).json(
-               await compileController.compile(
-                  req.params.environmentName,
-                  req.params.packageName,
-                  (req.params as Record<string, string>)["0"] ?? "",
-                  undefined,
-               ),
-            );
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-   installErrorHandler(app);
-   return app;
+   });
 }
 
-/** The sqlSource route as `server.ts` registers it, same shape. */
+/** The real routes, with sqlSource parked until `hold` settles. */
 function sqlSourceApp(hold: Promise<unknown>): express.Express {
-   const connectionController = {
-      getConnectionSqlSource: async () => {
-         await hold;
-         return { source: "{}" };
+   return buildRouteApp({
+      connectionController: {
+         getConnectionSqlSource: async () => {
+            await hold;
+            return { source: "{}" } as never;
+         },
       },
-   } as unknown as ConnectionController;
-
-   const app = express();
-   app.use(express.json());
-   app.post(
-      "/api/v0/environments/:environmentName/connections/:connectionName/sqlSource",
-      queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionSqlSource(
-                  req.params.environmentName,
-                  req.params.connectionName,
-                  "SELECT 1",
-               ),
-            );
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-   installErrorHandler(app);
-   return app;
+   });
 }
 
 const COMPILE_PATH =
@@ -245,135 +162,54 @@ describe("compile and sqlSource are admission-controlled", () => {
 });
 
 /**
- * The behavioural cases above build their own apps, so they pin the middleware
- * rather than the routes: reverting `queryConcurrency()` out of `server.ts`
- * leaves every one of them green. This block closes that gap by reading the
- * registrations themselves, the way `data_apps_route_parity.spec.ts` pins a
- * route -- one targeted match per route literal rather than the window
- * extraction that made the source-scan spec this replaced a maintenance
- * liability. Line comments ARE stripped from the matched span: a comment
- * naming `queryConcurrency()` in place of the call is the shape someone
- * removing a gate would plausibly leave behind, and it would otherwise satisfy
- * the assertion on its own.
+ * Which routes carry the gate, read from the route table itself: every route
+ * that compiles, runs SQL, or runs a query, on both the current and the legacy
+ * prefix, and nothing else.
  */
-/**
- * Reads a source file with line endings normalised to LF.
- *
- * The assertions below match a verb and a route literal as an adjacent pair, so
- * they are sensitive to what separates them. A Windows checkout has no
- * `.gitattributes` forcing LF here, so the working tree carries CRLF and a
- * pattern written with `\n` finds nothing -- green on the platforms that
- * develop this file and red only on Windows CI.
- */
-function readSourceLf(filePath: string): string {
-   return readFileSync(filePath, "utf8").replace(/\r\n/gu, "\n");
-}
-
-/**
- * Line comments removed, so a comment naming `queryConcurrency()` cannot stand
- * in for the call.
- *
- * Someone removing a gate would plausibly document why, naming the thing they
- * removed -- which is exactly the text these assertions search for, so without
- * this the scan passes on the comment alone. Line comments only: the block form
- * `/\*[\s\S]*?\*\//` is unsound on `server.ts`, where the `/*` inside a route
- * literal such as `public/*` opens a comment that swallows most of the file.
- */
-function withoutLineComments(source: string): string {
-   return source.replace(/^\s*\/\/.*$/gmu, "");
-}
-
-describe("every compile and sqlSource route registers the concurrency gate", () => {
-   const gatedRoutes: Array<{
-      file: string;
-      literal: string;
-      /** Anchor for a path registered on more than one verb. */
-      verb?: string;
-   }> = [
-      {
-         file: "server.ts",
-         literal:
-            "${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource",
-      },
-      {
-         file: "server.ts",
-         literal:
-            "${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource",
-      },
-      {
-         file: "server.ts",
-         literal:
-            "${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile",
-      },
-      {
-         // The dashboard save: compiles the submitted text, then writes it under
-         // the package lock across a full reload. The same path is also
-         // registered as a GET, which reads and is correctly ungated, so this
-         // entry anchors on the verb.
-         file: "server.ts",
-         verb: "app.put(",
-         literal:
-            "${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`",
-      },
-      {
-         file: "server-old.ts",
-         literal:
-            "${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource",
-      },
-      {
-         file: "server-old.ts",
-         literal:
-            "${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource",
-      },
-      {
-         file: "server-old.ts",
-         literal:
-            "${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile",
-      },
-   ];
+describe("the concurrency gate guards exactly the routes that do database work", () => {
+   it("gates every query, compile, and SQL route and no other", () => {
+      const gated = registeredRoutes(buildRouteApp())
+         .filter((route) => route.gated)
+         .map((route) => `${route.method} ${route.path}`)
+         .sort();
+      const env = "/api/v0/environments/:environmentName";
+      const pkg = `${env}/packages/:packageName`;
+      const project = "/api/v0/projects/:projectName";
+      const projectPkg = `${project}/packages/:packageName`;
+      const sql = ["sqlSource", "sqlQuery", "sqlTemporaryTable"];
+      expect(gated).toEqual(
+         [
+            ...sql.flatMap((op) => [
+               `POST ${env}/connections/:connectionName/${op}`,
+               `POST ${pkg}/connections/:connectionName/${op}`,
+               `POST ${project}/connections/:connectionName/${op}`,
+               `POST ${projectPkg}/connections/:connectionName/${op}`,
+            ]),
+            // The report save compiles, then writes under the package lock
+            // across a full reload. Its GET twin reads and is ungated.
+            `PUT ${pkg}/models/*?`,
+            `POST ${pkg}/models/*?/query`,
+            `POST ${pkg}/models/*?/compile`,
+            `GET ${pkg}/notebooks/*/cells/:cellIndex`,
+            `GET ${project}/connections/:connectionName/queryData`,
+            `GET ${projectPkg}/connections/:connectionName/queryData`,
+            `POST ${projectPkg}/models/*?/query`,
+            `POST ${projectPkg}/models/:modelName/compile`,
+            `GET ${projectPkg}/notebooks/*/cells/:cellIndex`,
+         ].sort(),
+      );
+   });
 
    it("gates the MCP compile tool", () => {
       // The MCP surface takes a slot directly rather than through Express
-      // middleware, so it needs its own assertion: the HTTP twin being gated
-      // while malloy_compile is not would leave the same flood open one surface
-      // over, which is the argument this change makes about the legacy routes.
-      const source = readSourceLf(
+      // middleware, so the HTTP twin being gated proves nothing about it.
+      const source = readFileSync(
          join(import.meta.dir, "mcp/tools/compile_tool.ts"),
+         "utf8",
       );
       expect(
          source,
          "compile_tool.ts acquires no query slot, so MCP compile bypasses the cap",
       ).toContain('tryAcquireQuerySlot("mcp:compile")');
    });
-
-   for (const { file, literal, verb } of gatedRoutes) {
-      it(`gates ${verb ?? ""}${literal} in ${file}`, () => {
-         const source = readSourceLf(join(import.meta.dir, file));
-         // A path registered on more than one verb needs the pair matched, not
-         // the verb or the path alone: the first app.put( in the file is a
-         // different route, and the path also appears on a GET that is correctly
-         // ungated.
-         // Assert the ANCHOR resolved, not just that some index came back: a
-         // missed verb anchor returns -1, and `indexOf(literal, -1)` restarts at
-         // 0 and silently matches a different registration of the same path --
-         // reporting the wrong route as ungated rather than reporting a broken
-         // matcher.
-         const anchorAt = verb
-            ? source.indexOf(`${verb}\n   \`${literal}`)
-            : source.indexOf(literal);
-         expect(
-            anchorAt,
-            `route literal not found in ${file}; if it was renamed, update this list`,
-         ).toBeGreaterThan(-1);
-         const start = verb ? source.indexOf(literal, anchorAt) : anchorAt;
-         // From the literal to the handler that follows it. The gate is an
-         // argument between the two, so a registration that drops it fails here.
-         const handlerAt = source.indexOf("async (req, res)", start);
-         expect(handlerAt).toBeGreaterThan(start);
-         expect(
-            withoutLineComments(source.slice(start, handlerAt)),
-            `${literal} in ${file} registers no queryConcurrency() before its handler`,
-         ).toContain("queryConcurrency()");
-      });
-   }
 });

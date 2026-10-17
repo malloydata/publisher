@@ -11,70 +11,26 @@
  * so a body-settable flag would be a gate-disabling control any external caller
  * could set.
  *
- * Unit tests on `readBypassAuthorize` cover the reader, and a source assertion in
- * `authorize_bypass_header.spec.ts` pins that the route derives the value from it.
- * Neither sends a request. This does: a real Express app, `express.json()`, the
- * same middleware and the same `getQuery` call shape `server.ts` registers, with
- * only the controller method stubbed so the test can read what the route actually
- * passed. A regression that made the body work again would leave every other test
- * in the suite green.
+ * Unit tests on `readBypassAuthorize` cover the reader. This sends requests
+ * through the real route table with only `QueryController.getQuery` stubbed, so
+ * the test reads what the route actually passed. A regression that made the
+ * body work again would leave every other test in the suite green.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import express from "express";
-import { readFileSync } from "fs";
 import { request as httpRequest } from "http";
-import { resolve } from "path";
 import sinon from "sinon";
 import request from "supertest";
 
-import {
-   BYPASS_AUTHORIZE_SECRET_ENV,
-   readBypassAuthorize,
-} from "./authorize_bypass_header";
-import type { QueryController } from "./controller/query.controller";
-import { queryConcurrency } from "./query_concurrency";
+import { BYPASS_AUTHORIZE_SECRET_ENV } from "./authorize_bypass_header";
+import { buildRouteApp } from "./test_helpers/route_app";
 
 /** Positional index of `bypassAuthorize` in `QueryController.getQuery`. */
 const BYPASS_ARGUMENT = 11;
 
-function buildApp(): { app: express.Express; getQuery: sinon.SinonStub } {
+function buildApp() {
    const getQuery = sinon.stub().resolves({ result: "{}", resource: "r" });
-   const queryController = { getQuery } as unknown as QueryController;
-
-   const app = express();
-   app.use(express.json());
-
-   // Same wiring as server.ts's `execute-query-model` route: middleware, then the
-   // controller call with `readBypassAuthorize(req)` in the last position.
-   app.post(
-      "/api/v0/environments/:environmentName/packages/:packageName/models/*?/query",
-      queryConcurrency(),
-      async (req, res) => {
-         const modelPath = (req.params as Record<string, string>)["0"];
-         const result = await queryController.getQuery(
-            req.params.environmentName,
-            req.params.packageName,
-            modelPath,
-            req.body.sourceName as string,
-            req.body.queryName as string,
-            req.body.query as string,
-            req.body.compactJson === true,
-            req.body.filterParams ?? req.body.sourceFilters,
-            req.body.bypassFilters === true ? true : undefined,
-            req.body.givens,
-            {
-               queryMetadata: req.body?.queryMetadata,
-               queryClass: req.body?.queryClass,
-               versionId: req.body?.versionId as string | undefined,
-            },
-            readBypassAuthorize(req),
-         );
-         res.status(200).json(result);
-      },
-   );
-
-   return { app, getQuery };
+   return { app: buildRouteApp({ queryController: { getQuery } }), getQuery };
 }
 
 const post = (headers: Record<string, string>, body: object) => {
@@ -258,25 +214,31 @@ describe("authorize bypass with no secret configured, over HTTP", () => {
 });
 
 /**
- * The legacy `/projects/…` alias is a live query route — `server.ts` imports
- * `registerLegacyRoutes` from `server-old.ts` — and it does NOT honour the
- * bypass. That asymmetry is deliberate (the alias exists for pre-rename SDK
+ * The legacy `/projects/…` alias is a live query route and it does NOT honour
+ * the bypass. That asymmetry is deliberate (the alias exists for pre-rename SDK
  * compatibility and passes no `givens` either, so it cannot satisfy a gate at
- * all), but "deliberate" and "nobody noticed" look identical in a diff. Pinned
- * from the source so a future edit has to choose: wire it and update this test,
- * or leave it alone.
+ * all), but "deliberate" and "nobody noticed" look identical in a diff, so a
+ * request presenting the secret must still reach the controller with none.
  */
 describe("the legacy /projects alias accepts no bypass", () => {
-   const legacySource = readFileSync(
-      resolve(import.meta.dir, "server-old.ts"),
-      "utf8",
-   );
-
-   it("passes no bypass argument to getQuery", () => {
-      const withoutComments = legacySource
-         .replace(/\/\*[\s\S]*?\*\//g, "")
-         .replace(/^\s*\/\/.*$/gm, "");
-      expect(withoutComments).not.toContain("readBypassAuthorize");
-      expect(withoutComments).not.toContain("bypassAuthorize");
+   it("passes no bypass argument to getQuery, even with the secret header", async () => {
+      const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+      process.env[BYPASS_AUTHORIZE_SECRET_ENV] = SECRET;
+      try {
+         const { app, getQuery } = buildApp();
+         const response = await request(app)
+            .post("/api/v0/projects/env/packages/pkg/models/m.malloy/query")
+            .set("x-publisher-bypass-authorize", SECRET)
+            .send({ query: "run: orders -> { aggregate: c is count() }" });
+         expect(response.status).toBe(200);
+         expect(getQuery.calledOnce).toBe(true);
+         expect(getQuery.firstCall.args.length).toBeLessThanOrEqual(
+            BYPASS_ARGUMENT,
+         );
+      } finally {
+         if (saved === undefined)
+            delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+         else process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
+      }
    });
 });
