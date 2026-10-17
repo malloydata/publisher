@@ -94,7 +94,7 @@ export class CompileController {
       sql?: string;
       document?: CompiledDocument & { kind: LegacyKind };
    }> {
-      // A JSON body can send an object with its own `length`, which the text readers would loop to.
+      // A JSON object with its own `length` would make the text readers loop to it.
       let text: string | undefined;
       if (typeof source === "string") text = source;
       else if (source !== undefined)

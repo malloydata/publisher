@@ -21,20 +21,15 @@ export {
 } from "../providers/embedding_http";
 
 /**
- * Timeout for the single per-request query embedding. Much shorter than
- * the bulk timeout: this call sits on the latency path of every semantic
- * `get_context` call, and a slow endpoint must degrade to lexical
- * quickly rather than stall the tool.
+ * Timeout for the per-request query embedding. Shorter than the bulk timeout
+ * because it is on every semantic `get_context` call's latency path; a slow
+ * endpoint must degrade to lexical quickly.
  */
 export const EMBEDDING_QUERY_TIMEOUT_MS = 5_000;
 /** Inputs per HTTP request; large packages embed in several requests. */
 export const MAX_EMBED_BATCH_SIZE = 512;
 
-/**
- * The retry machinery lives in ./http_retry so the chat adapters share it.
- * The embedding names stay as aliases: callers and tests import them from
- * here.
- */
+/** Embedding-named aliases of the shared ./http_retry machinery. */
 export const EmbeddingRequestError = HttpRequestError;
 export type EmbeddingRequestError = HttpRequestError;
 export type EmbeddingRetryPolicy = RetryPolicy;
@@ -51,8 +46,6 @@ export function withEmbeddingRetry<T>(
 /**
  * The OpenAI-compatible `/embeddings` client: {@link openAiEmbedChunk} under
  * the shared batching, retry and metrics of {@link BatchEmbeddingModel}.
- * Constructed from an {@link EmbeddingConfig}, which is what the registry and
- * the specs hold.
  */
 export class EmbeddingProvider extends BatchEmbeddingModel {
    constructor(config: EmbeddingConfig, fetchFn: FetchFn = fetch) {
@@ -78,18 +71,16 @@ export class EmbeddingProvider extends BatchEmbeddingModel {
    }
 }
 
-// Cached on a settings fingerprint, never on null: a call after the env
-// changes (tests, operator restarts with new vars are moot, but the
-// integration suite runs many specs in one process) always sees the
-// current configuration instead of a stale provider or a sticky "off".
+// Cached on a settings fingerprint, never on null, so a call after the env
+// changes (many specs share one process) sees the current configuration
+// rather than a stale provider or a sticky "off".
 let cached: { fingerprint: string; provider: EmbeddingModel } | null = null;
 let testOverride: { provider: EmbeddingModel | null } | null = null;
 
 /**
- * Whether the operator has turned the embedding feature on at all.
- * Malformed companion vars still count as configured: the operator
- * clearly intends the feature, so the retrieval marker and a warning
- * must surface rather than silently reporting plain lexical.
+ * Whether the operator has turned the embedding feature on. Malformed
+ * companion vars still count, so the retrieval marker and a warning surface
+ * rather than silently reporting plain lexical.
  */
 export function embeddingConfigured(): boolean {
    if (testOverride) {

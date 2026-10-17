@@ -4,18 +4,12 @@
 /**
  * Cooperative yielding for long main-thread loops.
  *
- * A package load's main-thread work (hydrating models, render-tag validation,
- * the persist build plan) is a loop of steps that each `await`, but nothing in
- * a step does real I/O, so the whole loop ran as one macrotask: a large model's
- * validation was a single ~1 s stall in which no other request was served. A
- * loop that calls {@link EventLoopYielder.maybeYield} between steps hands the
- * event loop a turn (timers, I/O, other requests) once the budget has passed
- * since it last yielded, and otherwise continues at once. The budget is
- * wall-clock time, not time the loop held the event loop: a step that awaits
- * real I/O already gives the loop a turn but does not restart the budget, so
- * the next call may yield once more than it needed to, which costs one
- * macrotask. The steps, their order and their results are unchanged; only
- * what else may run between them.
+ * A package load's main-thread steps each `await` but do no real I/O, so
+ * without yielding the whole loop runs as one macrotask and a large model
+ * stalls every other request for ~1 s. {@link EventLoopYielder.maybeYield}
+ * hands the event loop a turn once the wall-clock budget has passed since the
+ * last yield. A step that awaits real I/O does not restart the budget, so the
+ * next call may yield once more than needed; that costs one macrotask.
  */
 
 /** Wall-clock time since a loop last yielded before it yields again, in ms. */

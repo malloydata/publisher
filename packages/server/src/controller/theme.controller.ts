@@ -24,23 +24,15 @@ export class ThemeController {
 
    getTheme = async (): Promise<ApiTheme> => {
       const theme = await this.themeStore.get();
-      // Always return an object so the client never has to deal with the
-      // null/undefined ambiguity. An empty object means "no overrides yet,
-      // use SDK defaults."
+      // `{}` means "no overrides, use SDK defaults".
       return theme ?? {};
    };
 
    /**
-    * PUT persists the supplied theme verbatim, including a literal `{}`.
-    * An empty `{}` is an intentional "clear all overrides" save: it writes
-    * an (empty) row so the boot seed from publisher.config.json's `theme`
-    * block is suppressed on subsequent loads. This deliberately differs
-    * from DELETE (resetTheme), which drops the row and lets that config
-    * seed re-apply. Note the persisted `"{}"` sanitizes back to `undefined`
-    * on reload (sanitizeTheme returns undefined for `{}`), but the row
-    * still exists, so the seed stays suppressed. This PUT-`{}` path is not
-    * reachable from the Theme Editor UI today (its clear affordance is the
-    * Reset button, which calls DELETE); it exists only via the API.
+    * Persists the theme verbatim. A literal `{}` is an intentional "clear all
+    * overrides": it writes an empty row, which keeps the config's `theme`
+    * seed suppressed (unlike DELETE, which drops the row so the seed
+    * re-applies).
     */
    putTheme = async (body: unknown): Promise<ApiTheme> => {
       if (isPublisherConfigFrozen(this.serverRoot)) {
@@ -48,10 +40,7 @@ export class ThemeController {
             'Cannot edit theme: publisher.config.json has "frozenConfig": true.',
          );
       }
-      // Treat a literal `{}` as an intentional "clear all overrides" PUT
-      // (the only other clear path is DELETE, which re-seeds from the
-      // config file). sanitizeTheme returns undefined for both `{}` and
-      // garbage, so we have to disambiguate here.
+      // sanitizeTheme returns undefined for both `{}` and garbage.
       const isEmptyObject =
          typeof body === "object" &&
          body !== null &&
@@ -67,13 +56,7 @@ export class ThemeController {
       return saved;
    };
 
-   /**
-    * DELETE drops the persisted row so the next load re-seeds from
-    * publisher.config.json's `theme` block (or ends up unthemed if the
-    * config defines none). Contrast with PUT `{}`, which persists an empty
-    * row and thereby suppresses that seed instead of restoring it. See
-    * putTheme for the full divergence.
-    */
+   /** Drops the persisted row so the config's `theme` seed re-applies. */
    resetTheme = async (): Promise<ApiTheme> => {
       if (isPublisherConfigFrozen(this.serverRoot)) {
          throw new FrozenConfigError(

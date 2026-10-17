@@ -39,11 +39,7 @@ export class QueryController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
-      /**
-       * The request's per-query metadata fields, unvalidated — this controller is
-       * the boundary that turns a bad bag into a 400 rather than letting the
-       * connector refuse the statement at dispatch.
-       */
+      /** Unvalidated: a bad bag becomes a 400 here, not a connector refusal. */
       metadata?: {
          queryMetadata?: unknown;
          queryClass?: unknown;
@@ -73,21 +69,16 @@ export class QueryController {
          environmentName,
          false,
       );
-      // Shed load before any disk / DB work so the publisher returns 503
-      // immediately under memory pressure instead of starting a query and
-      // crashing partway through. Already-loaded packages bypass the
-      // package-load admission gate, so this is the only thing protecting
-      // query traffic on a hot pod.
+      // Shed load (503) before any disk / DB work rather than crash partway
+      // through a query. Loaded packages bypass the package-load admission
+      // gate, so this is the only guard for query traffic on a hot pod.
       environment.assertCanAdmitQuery();
       const p = await environment.getPackage(packageName, false);
       const model = p.getModel(modelPath);
 
       if (!model) {
-         // Worded exactly as the generic refusal for a model that exists but is
-         // off the package's surface (Model.assertQueryBoundaryEarly). Where
-         // the hidden model is gated that refusal is generic, so a 404 cannot
-         // tell a hidden file from a missing one; where it is not, the hidden
-         // file's 404 says why and this one stays plain.
+         // Worded exactly as Model.assertQueryBoundaryEarly's generic refusal,
+         // so a 404 cannot tell a gated hidden file from a missing one.
          throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
       } else {
          const {
@@ -115,17 +106,13 @@ export class QueryController {
                      pkg: p,
                      request: requestMetadata,
                      queryClass,
-                     // Always undefined today: the route 501s any versionId
-                     // before this runs. Wired so that lifting that rejection
-                     // is the whole change.
+                     // Always undefined: the route 501s any versionId first.
                      version: metadata?.versionId,
                      noLayersLogMessage:
                         "No query-metadata layers for connection",
                   }),
-                  // Tell the model which shape this request sends, so exactly
-                  // that one is serialized and measured. Sending `compactJson`
-                  // while the model built and capped the full result was how a
-                  // request came to be refused on bytes it would never receive.
+                  // Serialize and byte-cap exactly the shape this request
+                  // receives, not the other one.
                   compactJson ? "compact" : "full",
                   bypassAuthorize,
                   includeHiddenFilesAndSources,
@@ -138,40 +125,21 @@ export class QueryController {
             p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
          return {
-            // Already serialized by the model, which was told which shape this
-            // request sends. Stringifying here instead would build a second copy
-            // of the same payload, and a payload too large to serialize would
-            // escape this expression as a bare 500 rather than the 413 the byte
-            // cap produces.
+            // Serialized by the model: re-stringifying here would copy the
+            // payload, and an oversized one would surface as a bare 500 rather
+            // than the byte cap's 413.
             result: serializedResult,
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
-            // The cap the database applied. A caller counting the rows it got
-            // back cannot otherwise tell a complete result from one the limit
-            // cut off: a query with no LIMIT of its own silently gets the
-            // server default, which is well under the hard ceiling, so nothing
-            // raises. Deriving it client-side is not possible, since it depends
-            // on server config and on the query's own LIMIT.
+            // The row cap the database applied and whether it was the query's
+            // own or the server default, so a caller can tell a complete result
+            // from a truncated one (it depends on server config).
             queryRowLimit: rowLimit,
-            // Which of the two that cap was. Without it a caller cannot tell a
-            // deliberate `limit:`/`top:` from the silently-applied default, and
-            // so cannot reproduce the MCP envelope's _limit_hit.
             queryRowLimitSource: rowLimitSource,
             queryCorrelationId,
-            // How the answer was produced, and how long producing it took. A
-            // storage-served answer is byte-identical to a live one, so without
-            // `servedFrom` a caller cannot tell that the `storage=` tier answered
-            // a query, or show a user which of their sources it is serving.
-            //
-            // Scoped to that tier deliberately, and it does NOT generalise to
-            // "did materialization do anything": a colocated `#@ persist` hit
-            // substitutes its table into the model and never reaches the routing
-            // decision this records, so it reports the same `null` a fully live
-            // query does. `null` also covers a query the transform declined,
-            // which is a storage-tier MISS wearing the same value as "no
-            // materialization anywhere". See the field's own description in
-            // `api-doc.yaml` for all three, and for why this enum's
-            // `live_fallback` is not the metric label of the same name.
+            // Reports only the `storage=` tier: a colocated `#@ persist` hit and
+            // a declined transform both read `null`, like a live query. See the
+            // field's description in `api-doc.yaml`.
             servedFrom,
             executionTimeMs,
             queryCostBytes,

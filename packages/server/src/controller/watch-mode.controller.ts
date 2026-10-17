@@ -16,8 +16,7 @@ type StartWatchReq = components["schemas"]["StartWatchRequest"];
 type WatchStatusRes = components["schemas"]["WatchStatus"];
 type Handler<Req = object, Res = void> = RequestHandler<object, Res, Req>;
 
-// File extensions that should trigger a live-reload event but NOT a Malloy
-// environment reload (these are package assets, not semantic-model sources).
+// Package assets: they trigger a live-reload event but no recompile.
 const ASSET_EXTS = new Set([
    ".html",
    ".htm",
@@ -41,41 +40,34 @@ export class WatchModeController {
    watchingPath: string | null;
    watchingEnvironmentName: string | null;
    watcher: FSWatcher | null = null;
-   // Serializes ensureWatching so concurrent callers can't both close and
-   // recreate the watcher and orphan one (each chokidar watcher holds OS
-   // handles). See ensureWatching.
+   // Serializes ensureWatching: concurrent callers that both close and
+   // recreate the watcher would orphan one and leak its OS file handles.
    private setupChain: Promise<void> | null = null;
    /**
-    * Per-package change bus. Event name is `<environmentName>/<packageName>`.
-    * Used by the SSE live-reload endpoint to push refreshes to embedded HTML
-    * dashboards. Each emit carries `{ path, kind }` for diagnostics; the SSE
-    * handler currently ignores the payload and just sends "changed".
+    * Per-package change bus, event name `<environmentName>/<packageName>`,
+    * feeding the SSE live-reload endpoint. Emits `{ path, kind }`.
     */
    public events = new EventEmitter();
 
    constructor(private environmentStore: EnvironmentStore) {
       this.watchingPath = null;
       this.watchingEnvironmentName = null;
-      // Live-reload subscribers can be many (one per open browser tab);
-      // bump the default cap so Node doesn't warn under normal use.
+      // One live-reload listener per open browser tab.
       this.events.setMaxListeners(100);
    }
 
    /**
     * Idempotent: starts watching `environmentName` if not already.
     *
-    * Throws if the environment can't be resolved — never falls back to a
-    * `<serverRoot>/<envName>` path that an attacker could control via
-    * URL-encoded path traversal. Callers (the SSE handler in particular)
-    * must validate the env name before calling this.
+    * Throws if the environment can't be resolved; never falls back to a
+    * `<serverRoot>/<envName>` path, which URL-encoded traversal could
+    * control. Callers must validate the env name first.
     */
    public async ensureWatching(environmentName: string): Promise<void> {
       if (this.watchingEnvironmentName === environmentName && this.watcher) {
          return;
       }
-      // Serialize setup behind any in-flight one, then re-check the guard, so
-      // concurrent callers don't both close + recreate the watcher (which would
-      // orphan a chokidar instance and leak its OS file handles).
+      // Re-check the guard once any in-flight setup has finished.
       const run = (this.setupChain ?? Promise.resolve())
          .catch(() => {})
          .then(async () => {
@@ -116,19 +108,10 @@ export class WatchModeController {
          },
          ignoreInitial: true,
       });
-      // Reload just the package a changed file belongs to: this recompiles
-      // that package's models from disk (Package.create) and replaces the
-      // cached entry, so the next query sees the edit. Scoped to watch mode by
-      // construction — it only runs from this watcher, which is started only
-      // when watch mode is active.
-      //
-      // The previous env-level reload (getEnvironment(reload) + addEnvironment)
-      // was a no-op for compilation: addEnvironment on an existing env calls
-      // Environment.update(), which refreshes metadata/connections only and
-      // never touches this.packages, so edits never took effect.
-      // Returns true if the package recompiled cleanly. A transient compile
-      // error (e.g. a half-typed model saved mid-edit) returns false so we can
-      // avoid bouncing open browser tabs into a compile-error/404 — see onEvent.
+      // Recompile just the changed file's package. An env-level reload would
+      // not do: Environment.update() refreshes metadata and connections but
+      // never recompiles packages. Returns false on a compile error (e.g. a
+      // half-typed model saved mid-edit).
       const reloadPackage = async (pkgName: string): Promise<boolean> => {
          try {
             const environment = await this.environmentStore.getEnvironment(
@@ -153,10 +136,7 @@ export class WatchModeController {
       const onEvent =
          (kind: "add" | "change" | "unlink") => async (filePath: string) => {
             logger.info(`Watch ${kind}: ${filePath}; environment=${watchName}`);
-            // Resolve which package the file belongs to. Packages are
-            // subdirectories of the environment (env/<pkg>/...), so a file must
-            // be nested at least one level to belong to a package; files at the
-            // environment root belong to no package and are ignored.
+            // Packages are env/<pkg>/...; files at the env root are ignored.
             const rel = path.relative(this.watchingPath ?? "", filePath);
             const segments = rel.split(path.sep);
             const pkgName =
@@ -167,17 +147,14 @@ export class WatchModeController {
                   : null;
             if (!pkgName) return;
 
-            // Recompile Malloy state only for model files. Asset edits
-            // (HTML/CSS/JS) skip recompile — they just need the live-reload
-            // fanout below. For model edits, only signal a reload once the
-            // recompile succeeds: a transient syntax error shouldn't bounce
-            // open pages into a compile error or 404.
+            // Assets need only the live-reload fanout. A model edit signals
+            // only once it recompiles, so a transient syntax error doesn't
+            // bounce open pages into a compile error or 404.
             const ext = path.extname(filePath).toLowerCase();
             if (MODEL_EXTS.has(ext)) {
                const recompiled = await reloadPackage(pkgName);
                if (!recompiled) return;
             }
-            // Fan out to SSE clients embedded in the affected package.
             this.events.emit(`${watchName}/${pkgName}`, {
                path: filePath,
                kind,
@@ -205,10 +182,6 @@ export class WatchModeController {
          assertSafePackageName(watchName);
       } catch (error) {
          logger.error(error);
-         // Take the mapper's message, not error.message: an unclassified
-         // failure here (a watch-path EACCES/ENOSPC) carries an internal
-         // filesystem path, and taking only the status would return verbatim
-         // what the mapper exists to withhold.
          const { status, json } = internalErrorToHttpError(error as Error);
          res.status(status).json({ error: json.message });
          return;
@@ -234,10 +207,8 @@ export class WatchModeController {
          await this.ensureWatching(watchName);
       } catch (error) {
          logger.error(error);
-         // Take the mapper's message, not error.message: an unclassified
-         // failure here (a watch-path EACCES/ENOSPC) carries an internal
-         // filesystem path, and taking only the status would return verbatim
-         // what the mapper exists to withhold.
+         // Take the mapper's message, not error.message: a watch-path
+         // EACCES/ENOSPC carries an internal filesystem path.
          const { status, json } = internalErrorToHttpError(error as Error);
          res.status(status).json({ error: json.message });
          return;

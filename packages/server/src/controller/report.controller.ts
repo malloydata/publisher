@@ -39,11 +39,9 @@ type ApiModelSourceWriteResult =
    components["schemas"]["ModelSourceWriteResult"];
 
 /**
- * Whether the write path may replace the file now at `modelPath`: its on-disk
- * text (which may postdate the load) carries a model-level artifact tag, and
- * the loaded package reads it as a report — served, tileless, or tagged but
- * invalid, since saving the fix is how an invalid one gets served again. A
- * model or an untagged file never qualifies.
+ * Whether the write path may replace the file at `modelPath`: its on-disk text
+ * carries an artifact tag and the loaded package reads it as a report (served,
+ * tileless, or invalid, since saving the fix is how an invalid one recovers).
  */
 function currentIsAReport(
    current: string,
@@ -56,10 +54,7 @@ function currentIsAReport(
    );
 }
 
-/**
- * A 400 the write path raises itself, carrying the `reason` it is counted
- * under. Still a BadRequestError, so the status and the body are unchanged.
- */
+/** A 400 raised by the write path, carrying the `reason` it is counted under. */
 class ReportWriteRefusedError extends BadRequestError {
    constructor(
       readonly reason: ReportWriteReason,
@@ -70,13 +65,9 @@ class ReportWriteRefusedError extends BadRequestError {
 }
 
 /**
- * Which outcome, and why, an error from the write path represents.
- *
- * Read from the error's TYPE rather than decided at each throw site, so a
- * branch added later is classified by what it raises instead of being silently
- * counted as something else — or forgotten. Every refusal shares the outcome
- * `refused`, the only fact an alert needs (nothing was written); `reason`
- * tells them apart for whoever follows it up.
+ * The outcome and reason a write-path error is counted under. Read from the
+ * error's type rather than set at each throw site, so a new branch cannot be
+ * forgotten. Every refusal shares outcome `refused` (nothing was written).
  */
 function outcomeOf(error: Error): {
    outcome: ReportWriteOutcome;
@@ -111,15 +102,10 @@ export const contentHashOf = (text: string): string =>
    createHash("sha256").update(text, "utf8").digest("hex");
 
 /**
- * A package's reports: the two read routes serve state the package computed
- * at load, so neither compiles or queries anything, and the write route is the
- * builder's save.
- *
- * There is deliberately no run endpoint: a report's tiles, cells and a
- * control's suggest query all run through the ordinary
- * `POST …/models/{path}/query` with `givens` — the same governed path every
- * other query takes, so row caps, byte caps, authorize gates, and render-tag
- * validation apply for free.
+ * A package's reports: two read routes over load-time state, and the builder's
+ * save. There is deliberately no run endpoint: tiles run through the ordinary
+ * `POST …/models/{path}/query` with `givens`, so every query governance check
+ * applies.
  */
 export class ReportController {
    private environmentStore: EnvironmentStore;
@@ -166,29 +152,15 @@ export class ReportController {
 
    /**
     * Write a report file into the package and serve it: the builder's save
-    * (`docs/reports-design.md` §7).
+    * (docs/reports.md, "The write path"). Compiles the text as the file and
+    * refuses without writing if it fails; then, under one hold of the package
+    * lock, checks the precondition, writes atomically and reloads, restoring
+    * the previous text if the reload does not serve the file as a report, so
+    * a save never leaves the package serving less than it did.
     *
-    * In order — refuse under `frozenConfig`; accept a safe `.malloy` path
-    * outside `public/` and other than the root `index.malloy`, whose text
-    * carries an artifact tag; compile the text AS the file and refuse with the
-    * problems when it does not compile, writing nothing; then, under one hold
-    * of the package lock, check the caller's precondition (a create needs no
-    * file there; a replace needs a file the package reads as a report) and
-    * write atomically, creating missing directories inside the package root
-    * only; reload the package in place; and if the reloaded package does not
-    * serve this file as a report, put the previous text back (or remove a new
-    * file) and reload again, so a save never leaves the package serving less
-    * than it did.
-    *
-    * The precondition is `expectedHash`: the hash of the text the caller
-    * opened, refused with 409 when the file has changed since, and nothing
-    * merged. Omitting it means "create": a file that already exists is refused
-    * the same way, so an unconditional overwrite is not something a caller can
-    * ask for by leaving a field out.
-    *
-    * Compiling happens BEFORE the lock because the lock is not reentrant and
-    * compiling reads the package; it does not read the file being replaced, so
-    * nothing about the check depends on it.
+    * `expectedHash` is the hash of the text the caller opened (409 if it
+    * changed). Omitting it means "create", which also 409s on an existing
+    * file, so no caller gets an unconditional overwrite by leaving it out.
     */
    public async putReportSource(
       environmentName: string,
@@ -196,13 +168,10 @@ export class ReportController {
       modelPath: string,
       body: ApiModelSourceWrite,
    ): Promise<ApiModelSourceWriteResult> {
-      // One record per attempt, whichever way it leaves — including the throws,
-      // which are most of what is worth knowing here. Classified from the error
-      // rather than at each throw site, so a branch added later cannot forget.
+      // One record per attempt, including the throws.
       const startedAt = Date.now();
-      // Tolerates a non-string path or source: the 400 for either comes from
-      // writeReportSource. A body the cheap refusals turn away is never
-      // scanned, and counts as a grid write, as does text that is no report.
+      // Tolerates a non-string path or source (writeReportSource 400s). A body
+      // the cheap refusals turn away is not scanned and counts as grid.
       const tag =
          typeof modelPath === "string" &&
          typeof body?.source === "string" &&
@@ -276,8 +245,7 @@ export class ReportController {
          environmentName,
          false,
       );
-      // Loads the package if it is not yet, and is the 404 for one that does
-      // not exist.
+      // Loads the package, or 404s.
       await environment.getPackage(packageName, false);
 
       const { problems } = await environment.compileSource(
@@ -296,10 +264,8 @@ export class ReportController {
          );
       }
 
-      // One hold of the package lock covers the precondition, the write, the
-      // reload and the restore. Compiling above stays outside it: the lock is
-      // not reentrant, and the proposed text compiles the same whatever is on
-      // disk.
+      // Compiling stays outside the package lock: the lock is not reentrant,
+      // and the proposed text compiles the same whatever is on disk.
       const { previous } = await environment.writeModelFileTransactional(
          packageName,
          modelPath,
@@ -316,9 +282,7 @@ export class ReportController {
                   );
                return;
             }
-            // The incoming text's tag is not enough: a tagged write must not
-            // turn an existing model into a report. Only a file the package
-            // reads as a report is replaced, wherever it lives.
+            // A tagged write must not turn an existing model into a report.
             if (
                current !== undefined &&
                !currentIsAReport(current, loaded, modelPath)
