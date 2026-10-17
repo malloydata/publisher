@@ -16,7 +16,7 @@ import {
 } from "../../test_helpers/get_context_join_fixture";
 import { buildSourceSummaryInputs } from "./source_summaries";
 import { sourceDescription } from "./get_context_source_match";
-import { getPackageIndex } from "./get_context_tool";
+import { getPackageIndex } from "./package_entities";
 import type { PipelineContext } from "./get_context_pipeline";
 
 const HIDDEN = "payroll_vault_tbl";

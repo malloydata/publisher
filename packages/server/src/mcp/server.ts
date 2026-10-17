@@ -8,10 +8,8 @@ import { formatDuration, logger } from "../logger";
 import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
-import {
-   registerGetContextTool,
-   registerListPackagesTool,
-} from "./tools/get_context_tool";
+import { registerGetContextTool } from "./tools/get_context_tool";
+import { registerListPackagesTool } from "./tools/list_packages_tool";
 import {
    registerReloadPackageTool,
    RELOAD_FAILURE_IS_SAFE,

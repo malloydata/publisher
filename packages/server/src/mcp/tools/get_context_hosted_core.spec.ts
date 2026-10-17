@@ -35,7 +35,8 @@ import {
 } from "../../test_helpers/get_context_join_fixture";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
-import { getPackageIndex, registerGetContextTool } from "./get_context_tool";
+import { registerGetContextTool } from "./get_context_tool";
+import { getPackageIndex } from "./package_entities";
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    content: Array<{ resource?: { text: string } }>;

@@ -40,11 +40,8 @@ import { compareRanked } from "./get_context_assembly";
 import { StageError, replyArray, runPooled } from "./get_context_llm";
 import type { RankStage, RankedState } from "./get_context_pipeline";
 import { LEVEL_VALUE, mapRawScore, type Level } from "./get_context_scoring";
-import {
-   bestTargetOf,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "./get_context_tool";
+import { bestTargetOf } from "./get_context_response";
+import type { ResolvedRequest, ResultEntity } from "./get_context_types";
 import { scrubForEgress } from "./keyphrases";
 
 /**

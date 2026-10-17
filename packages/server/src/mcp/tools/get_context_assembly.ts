@@ -16,16 +16,15 @@ import type {
 } from "./get_context_pipeline";
 import { KEY_SEPARATOR, entityRowKey } from "./embedding_index";
 import { mapRawScore } from "./get_context_scoring";
-import {
-   enterJoin,
-   matchesScope,
-   sourceContextKey,
-   type Entity,
-   type JoinReach,
-   type JoinTopology,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "./get_context_tool";
+import { matchesScope } from "./get_context_request";
+import type {
+   Entity,
+   JoinReach,
+   JoinTopology,
+   ResolvedRequest,
+   ResultEntity,
+} from "./get_context_types";
+import { enterJoin, sourceContextKey } from "./package_entities";
 
 /**
  * Whether a source row carries a real verdict: a model rated it (source match

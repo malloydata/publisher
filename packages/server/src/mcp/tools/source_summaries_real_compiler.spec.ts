@@ -53,7 +53,7 @@ import {
    trySemanticSearch,
 } from "./embedding_index";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
-import { getPackageIndex } from "./get_context_tool";
+import { getPackageIndex } from "./package_entities";
 import { indexSettingsOf } from "./index_settings";
 import {
    currentSummaryHashes,

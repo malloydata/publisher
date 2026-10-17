@@ -21,12 +21,17 @@ import type { EmbeddingIndexStatus } from "./embedding_index";
 import type { LlmMeter } from "./get_context_llm";
 import type { LlmStageSettings } from "./get_context_stage_settings";
 import type { StoredSourceSummary } from "./source_summaries";
+import {
+   MAX_ENTITIES_PER_SOURCE_TARGET,
+   MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+} from "./get_context_response";
+import { JOIN_TOPOLOGY_MAX_DEPTH } from "./package_entities";
 import type {
    PackageIndex,
    ResolvedRequest,
    ResultEntity,
    RetrievalReason,
-} from "./get_context_tool";
+} from "./get_context_types";
 
 /** Every switch the pipeline reads, in one place. */
 export interface PipelineSettings {
@@ -73,6 +78,24 @@ export interface PipelineSettings {
    /** Characters held back from maxChars for the envelope. */
    reserveChars: number;
 }
+
+/**
+ * The values the server runs with; changing one changes responses. Joins are
+ * made at assembly on the semantic path only: the lexical path always ranks
+ * the index's own joined copies.
+ */
+export const PIPELINE_SETTINGS: PipelineSettings = {
+   joins: "assembly",
+   entityWindow: {
+      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+      joinedPerSourcePerTarget: MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+   },
+   joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
+   joinDamping: 0.9,
+   scoring: "cosine",
+   maxChars: 35_000,
+   reserveChars: 1_000,
+};
 
 /** What every stage and retriever sees. */
 export interface PipelineContext {

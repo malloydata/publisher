@@ -14,7 +14,7 @@ import type {
    PipelineContext,
 } from "./get_context_pipeline";
 import { relevanceFromReply, rerankStage } from "./get_context_rerank";
-import type { ResolvedRequest, ResultEntity } from "./get_context_tool";
+import type { ResolvedRequest, ResultEntity } from "./get_context_types";
 
 function entity(
    name: string,

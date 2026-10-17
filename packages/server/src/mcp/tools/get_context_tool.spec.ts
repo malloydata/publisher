@@ -13,14 +13,11 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import {
-   docOnlyText,
-   docText,
-   entityId,
-   sanitize,
-   registerGetContextTool,
-   registerListPackagesTool,
-} from "./get_context_tool";
+import { sanitize } from "./get_context_request";
+import { entityId } from "./get_context_response";
+import { registerGetContextTool } from "./get_context_tool";
+import { registerListPackagesTool } from "./list_packages_tool";
+import { docOnlyText, docText } from "./package_entities";
 import { embeddingText } from "./embedding_index";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";

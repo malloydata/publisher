@@ -42,7 +42,7 @@ import type {
    PipelineContext,
 } from "./get_context_pipeline";
 import { mapRawScore } from "./get_context_scoring";
-import { sourceContextKey } from "./get_context_tool";
+import { sourceContextKey } from "./package_entities";
 import { scrubForEgress } from "./keyphrases";
 
 /** Entities listed under each source in the prompt. */

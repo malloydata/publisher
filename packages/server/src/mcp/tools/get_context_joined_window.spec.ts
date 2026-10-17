@@ -34,10 +34,8 @@ import {
 } from "./embedding_index";
 import { assembleCards } from "./get_context_assembly";
 import type { PipelineContext, PipelineSettings } from "./get_context_pipeline";
-import {
-   MAX_JOINED_ROWS_PER_SOURCE_TARGET,
-   type ResultEntity,
-} from "./get_context_tool";
+import { MAX_JOINED_ROWS_PER_SOURCE_TARGET } from "./get_context_response";
+import type { ResultEntity } from "./get_context_types";
 
 // One source with four direct dimensions and four dotted ones. The dotted ones
 // score HIGHER than every direct field, the way a date dimension's `year`

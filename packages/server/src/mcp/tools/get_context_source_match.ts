@@ -49,14 +49,14 @@ import type {
    RankedState,
 } from "./get_context_pipeline";
 import { LEVEL_VALUE, mapRawScore } from "./get_context_scoring";
-import {
-   matchesScope,
-   projectEntity,
-   sourceContextKey,
-   type Entity,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "./get_context_tool";
+import { matchesScope } from "./get_context_request";
+import { projectEntity } from "./get_context_response";
+import type {
+   Entity,
+   ResolvedRequest,
+   ResultEntity,
+} from "./get_context_types";
+import { sourceContextKey } from "./package_entities";
 import { scrubForEgress } from "./keyphrases";
 
 /** Candidates per model call. */

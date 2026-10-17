@@ -23,19 +23,18 @@ import {
 } from "./embedding_index";
 import { compareRanked, scopeKeysWithJoins } from "./get_context_assembly";
 import type { PipelineContext, Retriever } from "./get_context_pipeline";
+import { matchesScope, sanitize, scopeKeysFor } from "./get_context_request";
 import {
    REASON_BY_UNAVAILABLE,
    bestTargetOf,
-   embeddedEntitiesOf,
-   entityCardKey,
-   matchesScope,
    projectEntity,
-   sanitize,
-   scopeKeysFor,
-   type Entity,
-   type ResultEntity,
-   type RetrievalReason,
-} from "./get_context_tool";
+} from "./get_context_response";
+import type {
+   Entity,
+   ResultEntity,
+   RetrievalReason,
+} from "./get_context_types";
+import { embeddedEntitiesOf, entityCardKey } from "./package_entities";
 
 /**
  * The package's index state, read to explain why a search could not be

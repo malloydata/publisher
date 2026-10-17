@@ -47,7 +47,7 @@ import { SerialQueue, embeddingSyncQueue } from "./embedding_sync_queue";
 import {
    getPackageEmbeddingStatus,
    startPackageEmbeddingSync,
-} from "./get_context_tool";
+} from "./package_embedding";
 
 let tempDir: string;
 let db: DuckDBConnection;
