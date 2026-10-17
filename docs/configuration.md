@@ -778,6 +778,29 @@ raising it is an option, while `unserializable` means the response could not be 
 at all and no cap raise fixes it. `unserializable` is never emitted for `source: connection_sql`,
 which has no such guard on its own path.
 
+## Core operation metrics, logs and traces
+
+Under the same `publisher` meter, with bounded labels.
+
+| Metric                                                                                  | Type               | What it counts                                                                                                                                         |
+| --------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `malloy_model_query_duration{malloy.model.query.status,…}`                              | Histogram          | Every model query. `status` is `success`, `error` (it compiled and failed), or `rejected` (malformed before anything compiled).                        |
+| `publisher_mcp_tool_calls_total{tool,outcome}`, `publisher_mcp_tool_duration_ms`        | Counter, histogram | Every MCP tool call: `ok`, `error` (answered with `isError`), or `exception` (threw).                                                                  |
+| `publisher_compiles_total{scope,outcome}`, `publisher_compile_duration_ms`              | Counter, histogram | Compile requests from REST and MCP alike: `success`, `error` (answered with error problems), or `refused` (threw).                                     |
+| `publisher_packages{state}`                                                             | Gauge              | Packages `serving`, `failed` to load, or `stale` (serving the model from before a reload that failed), summed over environments.                       |
+| `publisher_package_reloads_total{trigger,outcome}`                                      | Counter            | Reloads by `rest`, `mcp` or `watch`, and whether they compiled. A failed one leaves the previous model serving.                                        |
+| `publisher_connection_operations_total{operation,type,outcome}`                         | Counter            | Connection `create`, `update`, `delete` and `test`. A test that runs and cannot connect is `failed`; anything that threw is `refused`.                 |
+| `publisher_mcp_row_limit_hits_total`                                                    | Counter            | `execute_query` answers that landed on the server's default row limit, so the agent saw a sample.                                                     |
+| `publisher_storage_bindings_withheld_total`                                             | Counter            | Storage bindings the freshness gate withheld from a routed query, which was then read live.                                                            |
+
+Every REST error is logged once: a 4xx at `warn` (`Request refused`, with the path and status), a 5xx
+at `error`. Each MCP tool call logs one `MCP tool call` line at `info` with the tool, outcome and
+duration; per-request transport detail is at `debug`.
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
+model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
+`publisher.compile`. They nest under the HTTP spans auto-instrumentation creates.
+
 ## Report and deprecation metrics
 
 Under the same `publisher` meter. Labels are bounded enumerations; none is a package name or a path.
