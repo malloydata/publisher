@@ -24,8 +24,6 @@ import {
    recordDuplicateTargetSkipped,
    recordManifestBindDegraded,
    recordMaterializationRun,
-   recordSharedAddressInstructions,
-   recordTableCollision,
    recordSourceBuildDuration,
    recordSourcesOutcome,
    recordStorageBuildFailure,
@@ -72,7 +70,7 @@ import {
 } from "./incremental_build";
 import { mergeQueryMetadata, type QueryMetadata } from "./query_metadata";
 import type { components } from "../api";
-import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
+import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -143,6 +141,15 @@ import {
    isReclaimableStorageTable,
    physicalTargetKey,
 } from "./materialization_run_support";
+import {
+   assertInstructedDestinationWritable,
+   assertNoTableCollisions,
+   indexInstructions,
+   recordInstructedBuildFailure,
+   resolveInstruction,
+   type InstructedRun,
+   type ResolvedInstruction,
+} from "./materialization_instructed_run";
 
 /**
  * Orchestrates single-call materialization builds.
@@ -1376,66 +1383,103 @@ export class MaterializationService {
       sourcesRefused: number;
    }> {
       const { graphs, sources, connectionDigests, connections } = compiled;
-      // Computed once for the run: a chained build asks it for every source it
-      // reaches, and the answer is the plan's, not the run's.
-      const planFacts = chainedPlanFacts(sources, connectionDigests);
+      const index = indexInstructions(instructions);
+      const run: InstructedRun = {
+         compiled,
+         environment,
+         owner,
+         buildMetadata,
+         incremental,
+         index,
+         // Computed once for the run: a chained build asks it for every source it
+         // reaches, and the answer is the plan's, not the run's.
+         planFacts: chainedPlanFacts(sources, connectionDigests),
+         ...this.seedInstructedRun(seedEntries, connections, strict),
+         builtThisRun: [],
+         retainedThisRun: [],
+         failures: {},
+         failedReasons: [],
+         refusals: [],
+         builtSources: [],
+         writtenTargets: new Map(),
+      };
+      assertNoTableCollisions(graphs, sources, connectionDigests, index);
 
-      // Index instructions by sourceID (the stable per-source handle) so the
-      // build no longer recomputes the sourceEntityId to find an instruction.
-      // Recomputing it here forced a caller's sourceEntityId to equal the publisher's
-      // content hash, so a caller that derives sourceEntityIds by any other scheme
-      // would have its sources silently skipped (the recomputed sourceEntityId would
-      // not match the instruction). sourceEntityId is treated as opaque, caller-assigned
-      // identity. A sourceEntityId index is kept as a fallback for instructions without
-      // a sourceID (e.g. standalone auto-run).
-      const bySourceID = new Map<string, BuildInstruction>();
-      const bySourceEntityId = new Map<string, BuildInstruction>();
-      for (const instruction of instructions) {
-         if (instruction.sourceID) {
-            bySourceID.set(instruction.sourceID, instruction);
+      try {
+         for (const graph of graphs) {
+            const connection = connections.get(graph.connectionName);
+            if (!connection) {
+               throw new BadRequestError(
+                  `Connection '${graph.connectionName}' not found`,
+               );
+            }
+            for (const persistSource of iterGraphSources(graph, sources)) {
+               if (signal.aborted) throw new Error("Build cancelled");
+               await this.buildInstructedSource(
+                  run,
+                  persistSource,
+                  graph.connectionName,
+                  connection,
+               );
+            }
          }
-         // One address, several instructions naming DIFFERENT tables. A host that
-         // mints a physical name per source produces this for an ordinary package:
-         // several sources share one artifact (`#@ persist` is inherited and
-         // `extend` does not change materialization SQL), so a per-source name is a
-         // second table for content that already has one.
-         //
-         // What happens next depends on whether the instructions carry a
-         // `sourceID`, which is optional on the wire:
-         //  - WITH one, each source finds its own instruction, so every named table
-         //    is built, the last to finish is the one `entries` records, and the
-         //    rest are left unreferenced — a manifest-driven reclaim never names
-         //    them.
-         //  - WITHOUT one, this index is the only way back to an instruction and it
-         //    holds one per address, so the LAST instruction wins and the earlier
-         //    names are never built at all. Nothing can attribute them: an address
-         //    is all the publisher has, and it maps to every one of them equally.
-         //
-         // Reported, not resolved, in both shapes. Picking one would leave the host
-         // with an anchor for a table the build declined to write, which is a worse
-         // failure than the wasted one and is invisible from the host's side. The
-         // fix belongs where the names are minted; this makes the condition visible
-         // until then.
-         const clash = bySourceEntityId.get(instruction.sourceEntityId);
-         if (
-            clash &&
-            clash.physicalTableName !== instruction.physicalTableName
-         ) {
-            recordSharedAddressInstructions();
-            logger.warn(
-               "One content address was instructed to build more than one table",
-               {
-                  sourceEntityId: instruction.sourceEntityId,
-                  physicalTableNames: [
-                     clash.physicalTableName,
-                     instruction.physicalTableName,
-                  ],
-               },
+
+         // Every source this run built failed, so it produced nothing. A build
+         // with no output must not report itself as one that succeeded with
+         // errors attached; the partial path above covers the case where at least
+         // one source is usable. Thrown from inside the try so a run that wrote
+         // nothing reclaimable still takes the same cleanup path as any other
+         // total failure.
+         if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
+            throw new Error(
+               [
+                  ...run.failedReasons,
+                  ...run.refusals.map((e) => e.message),
+                  ...priorRefusals.map((r) => r.message),
+               ].join("; "),
             );
          }
-         bySourceEntityId.set(instruction.sourceEntityId, instruction);
+         // Every instructed source was refused, so there was nothing to build:
+         // the refusal is the run's answer, as it is for auto-run.
+         if (run.builtSources.length === 0 && run.refusals.length > 0) {
+            throw allSourcesRefusedError(run.refusals);
+         }
+      } catch (err) {
+         // A part-way failure returns a manifest that records the sources which
+         // built and the reason each failed one gave, so those tables stay
+         // reachable to manifest-driven GC. This path is for a build that
+         // produced nothing to record -- an orchestration failure, or every
+         // source failing -- where a table an earlier source wrote would
+         // otherwise be unreachable forever. Reclaim those before rethrowing.
+         // Best-effort and non-fatal: the build's own failure is what the caller
+         // needs to see.
+         if (owner) {
+            reportRetainedStorageTables(run.retainedThisRun, owner.packageName);
+            await this.reclaimStorageTablesFromFailedRun(
+               run.builtThisRun,
+               environment,
+               owner,
+            );
+         }
+         throw err;
       }
 
+      return {
+         entries: run.entries,
+         failures: run.failures,
+         sourcesRefused: run.refusals.length,
+      };
+   }
+
+   /**
+    * The build Manifest and entry map a run starts from: every carried-forward
+    * entry, so references to an upstream this run does not rebuild resolve.
+    */
+   private seedInstructedRun(
+      seedEntries: Record<string, ManifestEntry>,
+      connections: CompiledBuildPlan["connections"],
+      strict: boolean,
+   ): Pick<InstructedRun, "manifest" | "entries"> {
       // Accumulates physical names as sources are built so downstream sources
       // resolve their upstream references to the freshly-assigned tables. Seed
       // it with carried-forward entries so reused upstreams resolve too. In
@@ -1464,592 +1508,271 @@ export class MaterializationService {
          }
          entries[sourceEntityId] = entry;
       }
+      return { manifest, entries };
+   }
 
-      // Entries this run actually CREATED, as opposed to the seeded/carried ones
-      // above. Only these are eligible for failure-path reclaim: a carried entry
-      // names a table an earlier successful run built and a live manifest may still
-      // serve, so dropping one would be data loss rather than cleanup.
-      const builtThisRun: ManifestEntry[] = [];
-      // Stored tables this run wrote and deliberately will NOT reclaim, so a
-      // failure can name them. See reportRetainedStorageTables for why the list
-      // cannot say which of them is actually unreferenced.
-      const retainedThisRun: ManifestEntry[] = [];
-      const failures: Record<string, SourceFailure> = {};
-      const failedReasons: string[] = [];
-      const refusals: MaterializationEligibilityError[] = [];
-      const builtSources: string[] = [];
-      // What this run has already written, keyed by the physical table rather than
-      // by the content address: the address says what a table CONTAINS, the
-      // coordinate says which table it IS, and only the second answers "have I
-      // written this already". Both halves of the guard below need that
-      // distinction, in opposite directions.
-      const writtenTargets = new Map<
-         string,
-         { sourceEntityId: string; sourceName: string }
-      >();
-      // Two definitions on one physical table is refused BEFORE anything is
-      // written, rather than when the loop reaches the second one.
-      //
-      // A mid-loop throw leaves the pair's FIRST table already replaced, and
-      // nothing puts it back: the failure path reclaims storage tables only, so a
-      // colocated collision strands a half-written table in the customer's own
-      // warehouse, and even a reclaimed one cannot restore the rows it
-      // overwrote. The publish gate refuses this before any CTAS runs; a rebuild
-      // has to match it.
-      //
-      // It cannot be reasoned away as host-only, either. Collisions are ALWAYS
-      // warn-only at load, whatever PERSIST_COLLISION_ENFORCE says (see the note
-      // in loadPackage), so a package that was published before the flag went on
-      // stays loaded and reaches this build with a MODEL-declared collision
-      // intact.
-      const claimedBy = new Map<
-         string,
-         { sourceName: string; sourceEntityId: string }
-      >();
-      const collisions: { first: string; second: string; table: string }[] = [];
-      for (const graph of graphs) {
-         for (const persistSource of iterGraphSources(graph, sources)) {
-            let address: string;
-            try {
-               address = computeSourceEntityId(
-                  persistSource,
-                  connectionDigests,
-               );
-            } catch {
-               // getSQL() throws for a source the eligibility gate is about to
-               // refuse with a clean 422. That refusal is the build loop's to
-               // give; a source with no readable address claims no table here.
-               continue;
-            }
-            const instruction =
-               bySourceID.get(persistSource.sourceID) ??
-               bySourceEntityId.get(address);
-            if (!instruction) continue;
-            // Same key as the write guard below, and it has to be: a pre-pass that
-            // grouped by a different coordinate would report a collision the guard does
-            // not dedupe, or miss one it does.
-            const target = physicalTargetKey(instruction, graph.connectionName);
-            const claim = claimedBy.get(target);
-            if (!claim) {
-               claimedBy.set(target, {
-                  sourceName: persistSource.name,
-                  sourceEntityId: address,
-               });
-            } else if (claim.sourceEntityId !== address) {
-               collisions.push({
-                  first: claim.sourceName,
-                  second: persistSource.name,
-                  table: instruction.physicalTableName,
-               });
-            }
-         }
-      }
-      for (const c of collisions) {
-         recordTableCollision();
-         logger.warn("Two definitions are materializing into one table", {
-            physicalTableName: c.table,
-            sourceNames: [c.first, c.second],
-         });
-      }
-      if (collisions.length > 0 && getPersistCollisionEnforce()) {
-         const detail = collisions
-            .map(
-               (c) =>
-                  `'${c.first}' and '${c.second}' compile to different SQL but ` +
-                  `both materialize into table '${c.table}'`,
-            )
-            .join("; ");
-         throw new MaterializationEligibilityError({
-            message:
-               `${detail}, so each would overwrite the other's rows while both ` +
-               `resolve to it at serve time. Give them distinct definitions, or ` +
-               `distinct physical names: a model-declared collision is fixed ` +
-               `with '#@ persist name=', a host-assigned one by the caller that ` +
-               `minted the names.`,
-         });
+   /**
+    * One persist source's turn in the build loop: resolve its instruction, gate
+    * it, and build it — recording the outcome on `run`. A source that fails or is
+    * refused is recorded and returns normally; only an orchestration failure
+    * throws.
+    */
+   private async buildInstructedSource(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      graphConnectionName: string,
+      connection: MalloyConnection,
+   ): Promise<void> {
+      const { compiled } = run;
+      const resolved = resolveInstruction(
+         run.index,
+         persistSource,
+         compiled.connectionDigests,
+      );
+      if (!resolved) return;
+      const { instruction, orchestrated } = resolved;
+
+      if (this.refuseIneligibleInstructedSource(run, persistSource, resolved)) {
+         return;
       }
 
+      // The manifest is keyed by the content sourceEntityId — what Malloy
+      // recomputes to resolve upstream persist references during SQL
+      // generation — independent of the instruction's identity sourceEntityId.
+      // Already computed above when this source matched via the
+      // sourceEntityId fallback; a sourceID match skips that path, so
+      // compute it now that eligibility has cleared.
+      const sourceEntityId =
+         resolved.sourceEntityId ??
+         computeSourceEntityId(persistSource, compiled.connectionDigests);
+
+      // A caller-instructed destination that cannot be honored REFUSES; it
+      // never falls through to a colocated build. Auto-run already applies
+      // this rule, by skipping a `storage=` source while the tier is off
+      // (see deriveSelfInstructions), for the reason given there: a
+      // colocated build CTASes into the source's OWN warehouse, which the
+      // author asked this data not to be written to. An instructed build
+      // needs the rule more, not less — the caller named a destination AND
+      // a physical name, so falling through writes that name into the
+      // warehouse and answers success, and the caller can only detect it by
+      // comparing the echoed destination against the one it sent.
+      //
+      // Refused rather than skipped because the caller asked for a specific
+      // table: silence reads as "built". Stepping the mode down is a
+      // rollback, so it has to stay safe on a loaded package — declining a
+      // write is safe, redirecting one is not. Auto-run cannot reach this:
+      // resolveStorageDestination returns undefined while off, so an
+      // instruction still carrying a destination here is caller-supplied.
+
+      // Auto-run already gated pre-getSQL in deriveSelfInstructions;
+      // re-assert (idempotent) so no path into a storage build is ungated.
+      if (
+         !orchestrated &&
+         instruction.destination &&
+         getPersistStorageMode() !== "off"
+      ) {
+         assertMaterializationEligible(
+            persistSource,
+            deriveAnnotationFields(persistSource),
+         );
+      }
+
+      // One physical table, written once. Several sources routinely map
+      // onto one artifact: `#@ persist` is inherited and `extend` does not
+      // change a source's materialization SQL, so a base and its extension
+      // compile to the same address and resolve to the same instruction.
+      // Iterating per SOURCE wrote the table once per name that reached it
+      // — and once per graph that reached it, since a source declared in one
+      // model and consumed in another appears in both models' graphs.
+      //
+      // Only the same-content case is decided here. Two DIFFERENT
+      // definitions on one table was already reported, and refused under
+      // PERSIST_COLLISION_ENFORCE, by the pre-pass above — before anything
+      // was written. Reaching it here means the deployment chose to warn
+      // and carry on, so the write proceeds as it did before.
+      const target = physicalTargetKey(instruction, graphConnectionName);
+      const written = run.writtenTargets.get(target);
+      if (written && written.sourceEntityId === sourceEntityId) {
+         // The extra name is another route to one artifact. Its address
+         // already names the table it was built under, so there is nothing
+         // to build and nothing to record.
+         recordDuplicateTargetSkipped();
+         logger.debug("Skipping a source whose table this run built", {
+            sourceName: persistSource.name,
+            builtAs: written.sourceName,
+            physicalTableName: instruction.physicalTableName,
+         });
+         return;
+      }
+
+      let entry;
       try {
-         for (const graph of graphs) {
-            const connection = connections.get(graph.connectionName);
-            if (!connection) {
-               throw new BadRequestError(
-                  `Connection '${graph.connectionName}' not found`,
-               );
-            }
-            for (const persistSource of iterGraphSources(graph, sources)) {
-               if (signal.aborted) throw new Error("Build cancelled");
+         assertInstructedDestinationWritable(
+            persistSource,
+            instruction,
+            compiled,
+         );
 
-               // Prefer sourceID matching (so the caller's sourceEntityId scheme
-               // stays opaque to the build); the sourceEntityId lookup below is the
-               // fallback for instructions without a sourceID (auto-run, or an
-               // orchestrated instruction that omits the optional `sourceID`).
-               const orchestratedInstruction = bySourceID.get(
-                  persistSource.sourceID,
-               );
-
-               // Resolve which instruction (if any) applies to this source
-               // BEFORE any eligibility assert runs. A source with NO
-               // instruction — a refused sibling the caller never asked to
-               // build, alongside others this run does build — must be
-               // skipped here rather than examined: the asserts below throw a
-               // 422, and unconditionally running them on every persist
-               // source in the graph (regardless of whether it had a build to
-               // do at all) meant one refused, uninstructed sibling aborted
-               // the whole run instead of just the sources actually
-               // instructed.
-               let sourceEntityId: string | undefined;
-               let instruction = orchestratedInstruction;
-               if (!instruction) {
-                  // computeSourceEntityId calls getSQL(), which throws
-                  // opaquely for a free-parameter or given source —
-                  // precisely the sources a caller can never legitimately
-                  // hold a sourceEntityId for in the first place (the wire
-                  // build plan omits such a source's entry entirely), so
-                  // they can never match here regardless. Treat that throw
-                  // the same as "no match" rather than letting it escape and
-                  // abort every other instructed source.
-                  try {
-                     sourceEntityId = computeSourceEntityId(
-                        persistSource,
-                        connectionDigests,
-                     );
-                     instruction = bySourceEntityId.get(sourceEntityId);
-                  } catch {
-                     instruction = undefined;
-                  }
-               }
-               if (!instruction) continue;
-
-               // A refusal here fails THIS source, not the run, for the same
-               // reason auto-run skips one (deriveSelfInstructions): the run
-               // throws only when every instructed source was refused. It is
-               // reported in `failures`, not skipped silently, because the caller
-               // asked for this table and an absent entry reads as "built". A
-               // host that builds from the build plan never instructs a source the
-               // plan refused, so reaching the catch means the plan and this gate
-               // disagreed; the warning and the orchestrated `refused` source
-               // count are how that shows up.
-               try {
-                  // Enforce the eligibility gate for any storage-targeted build,
-                  // including orchestrated (host-supplied) instructions — the publisher
-                  // refuses an ineligible source into the tier itself, not on trust.
-                  // Skipped when the mode is off: the refusal below owns that case.
-                  if (
-                     orchestratedInstruction?.destination &&
-                     getPersistStorageMode() !== "off"
-                  ) {
-                     assertMaterializationEligible(
-                        persistSource,
-                        deriveAnnotationFields(persistSource),
-                     );
-                  } else {
-                     // The gate refusal above only fires for a STORAGE-targeted
-                     // build, so on its own it leaves every other instruction —
-                     // the colocated one with no destination, and any build while
-                     // the mode is off — unexamined. An orchestrated host chooses
-                     // the destination, so this path reaches that case with no
-                     // `#@ persist`-vs-`storage=` distinction to lean on; refuse
-                     // a gated source however it was instructed, unless its
-                     // compile-time gate outcome proves the colocated relaxation
-                     // applies (see `assertColocatedPersistNotAuthorizeGated`'s
-                     // doc). `else` rather than an unconditional call:
-                     // `assertMaterializationEligible` already runs the identical
-                     // `referencesAuthorize` IR walk, so calling both on the
-                     // storage path would walk every persist source's whole
-                     // `SourceDef` twice per build for an answer the first call
-                     // has already acted on.
-                     assertColocatedPersistNotAuthorizeGated(
-                        persistSource,
-                        persistSource.name,
-                        compiled.preaggregatePlans?.[persistSource.sourceID]
-                           ? "preaggregate"
-                           : "persist",
-                        compiled.sourceGateOutcomes?.[persistSource.sourceID],
-                        deriveAnnotationFields(persistSource),
-                     );
-                  }
-               } catch (err) {
-                  if (!(err instanceof MaterializationEligibilityError))
-                     throw err;
-                  // Keyed by the address the caller dispatched: a refused source
-                  // may have no content address of its own (getSQL throws for a
-                  // given or a free parameter), and the instruction's is the one
-                  // the caller staked a claim for and resolves failures by.
-                  const failedKey =
-                     sourceEntityId ?? instruction.sourceEntityId;
-                  if (!failures[failedKey]) {
-                     const reason = errMessage(err);
-                     refusals.push(err);
-                     logger.warn(
-                        "Instructed source refused by the eligibility gate",
-                        {
-                           packageName: owner?.packageName,
-                           sourceName: persistSource.name,
-                           physicalTableName: instruction.physicalTableName,
-                           reason,
-                        },
-                     );
-                     failures[failedKey] = {
-                        sourceEntityId: failedKey,
-                        sourceName: persistSource.name,
-                        materializedTableId: instruction.materializedTableId,
-                        physicalTableName: instruction.physicalTableName,
-                        reason,
-                        // Marks the failure permanent, so a caller that retries
-                        // failures can tell it from one that may clear.
-                        refused: true,
-                        connectionName: persistSource.connectionName,
-                        ...(instruction.destination
-                           ? { storageDestinationName: instruction.destination }
-                           : {}),
-                     };
-                     // Mirrored into `entries` for the `ManifestEntry.error`
-                     // deprecation window, as the build-failure path below does.
-                     entries[failedKey] = {
-                        sourceEntityId: failedKey,
-                        sourceName: persistSource.name,
-                        physicalTableName: instruction.physicalTableName,
-                        materializedTableId: instruction.materializedTableId,
-                        error: reason,
-                     } as ManifestEntry;
-                  }
-                  continue;
-               }
-
-               // The manifest is keyed by the content sourceEntityId — what Malloy
-               // recomputes to resolve upstream persist references during SQL
-               // generation — independent of the instruction's identity sourceEntityId.
-               // Already computed above when this source matched via the
-               // sourceEntityId fallback; a sourceID match skips that path, so
-               // compute it now that eligibility has cleared.
-               sourceEntityId ??= computeSourceEntityId(
-                  persistSource,
-                  connectionDigests,
-               );
-
-               // A caller-instructed destination that cannot be honored REFUSES; it
-               // never falls through to a colocated build. Auto-run already applies
-               // this rule, by skipping a `storage=` source while the tier is off
-               // (see deriveSelfInstructions), for the reason given there: a
-               // colocated build CTASes into the source's OWN warehouse, which the
-               // author asked this data not to be written to. An instructed build
-               // needs the rule more, not less — the caller named a destination AND
-               // a physical name, so falling through writes that name into the
-               // warehouse and answers success, and the caller can only detect it by
-               // comparing the echoed destination against the one it sent.
-               //
-               // Refused rather than skipped because the caller asked for a specific
-               // table: silence reads as "built". Stepping the mode down is a
-               // rollback, so it has to stay safe on a loaded package — declining a
-               // write is safe, redirecting one is not. Auto-run cannot reach this:
-               // resolveStorageDestination returns undefined while off, so an
-               // instruction still carrying a destination here is caller-supplied.
-
-               // Auto-run already gated pre-getSQL in deriveSelfInstructions;
-               // re-assert (idempotent) so no path into a storage build is ungated.
-               if (
-                  !orchestratedInstruction &&
-                  instruction.destination &&
-                  getPersistStorageMode() !== "off"
-               ) {
-                  assertMaterializationEligible(
-                     persistSource,
-                     deriveAnnotationFields(persistSource),
-                  );
-               }
-
-               // One physical table, written once. Several sources routinely map
-               // onto one artifact: `#@ persist` is inherited and `extend` does not
-               // change a source's materialization SQL, so a base and its extension
-               // compile to the same address and resolve to the same instruction.
-               // Iterating per SOURCE wrote the table once per name that reached it
-               // — and once per graph that reached it, since a source declared in one
-               // model and consumed in another appears in both models' graphs.
-               //
-               // Only the same-content case is decided here. Two DIFFERENT
-               // definitions on one table was already reported, and refused under
-               // PERSIST_COLLISION_ENFORCE, by the pre-pass above — before anything
-               // was written. Reaching it here means the deployment chose to warn
-               // and carry on, so the write proceeds as it did before.
-               const target = physicalTargetKey(
-                  instruction,
-                  graph.connectionName,
-               );
-               const written = writtenTargets.get(target);
-               if (written && written.sourceEntityId === sourceEntityId) {
-                  // The extra name is another route to one artifact. Its address
-                  // already names the table it was built under, so there is nothing
-                  // to build and nothing to record.
-                  recordDuplicateTargetSkipped();
-                  logger.debug("Skipping a source whose table this run built", {
-                     sourceName: persistSource.name,
-                     builtAs: written.sourceName,
-                     physicalTableName: instruction.physicalTableName,
-                  });
-                  continue;
-               }
-
-               let entry;
-               try {
-                  if (
-                     instruction.destination &&
-                     getPersistStorageMode() === "off"
-                  ) {
-                     throw new BadRequestError(
-                        `Source '${persistSource.name}' was instructed to build into ` +
-                           `storage destination '${instruction.destination}', but ` +
-                           `PERSIST_STORAGE_MODE is off, so no destination can be ` +
-                           `written. Refusing rather than building the table into the ` +
-                           `source warehouse instead.`,
-                     );
-                  }
-
-                  // Inside the per-source try, deliberately: a host that resolved
-                  // no destination for ONE source has partly-resolved its
-                  // instruction list, and the reasons named below — the org not
-                  // enabled, the field omitted — are exactly the ones that hit some
-                  // sources and not others. Failing the whole run would take down
-                  // the package's colocated persist sources too, which have no
-                  // destination to resolve and nothing to do with the refusal. The
-                  // catch below records it as this source's own build failure, per
-                  // "one source failing does not end the build".
-                  //
-                  // The mirror case, and the one that actually reaches a warehouse
-                  // write: the SOURCE declares `storage=` and the instruction carries
-                  // NO destination.
-                  //
-                  // Every guard above tests `instruction.destination`, which is what
-                  // the caller asked for. None tests what the source DECLARED, so a
-                  // host that resolved no destination — because the org is not
-                  // enabled for one, because resolution failed, because it simply
-                  // omitted the field — leaves `isStorageBuild` false in
-                  // buildOneSource and the source is CTAS'd into its own warehouse.
-                  //
-                  // Declaring `storage=` is a statement about where this data may be
-                  // written, and it is the only one the author made. It is not
-                  // consent to a warehouse write, and in production the read-only
-                  // credential this server is given usually cannot perform one
-                  // anyway, so the observable outcome is a permission error whose
-                  // cause names neither the destination nor the annotation. Refusing
-                  // is both the author's instruction and the better diagnosis.
-                  //
-                  // Deliberately independent of the mode: "no destination could be
-                  // resolved" is the same fact whether the tier is off, the org is
-                  // not enabled, or the host had some other reason. There is no
-                  // reading of `storage=` under which the source warehouse is the
-                  // right answer.
-                  const declared = declaredStorage(persistSource);
-                  if (declared && !instruction.destination) {
-                     // The grain renders as a SET rather than quoted text: the wire
-                     // plan carries only canonically sorted, de-duplicated dimensions,
-                     // so quoting would misrepresent any grain the author did not
-                     // write alphabetically.
-                     //
-                     // A ROLLUP names neither of the things this message otherwise
-                     // reaches for: its source name is synthesized and its
-                     // `#@ persist storage=` line was written by the publisher, so
-                     // quoting both would send an author looking for a line nobody
-                     // typed. Named by the base and grain instead, which are what
-                     // they wrote.
-                     //
-                     // Worth branching even though a host that always resolves a
-                     // destination makes this unreachable. This message is only ever
-                     // READ when that invariant does not hold, so writing it as
-                     // though the invariant were reliable is writing it for the one
-                     // case it cannot occur in. This branch has twice been the shape
-                     // of a real defect here — an enforcement held by an accident of
-                     // an import boundary, and an eligibility filter held by an
-                     // accident of what a walk collected.
-                     const rollup =
-                        compiled.preaggregatePlans?.[persistSource.sourceID];
-                     throw new BadRequestError(
-                        (rollup
-                           ? `Measures of \`${rollup.baseSourceName}\` ` +
-                             `pre-aggregated at grain ` +
-                             `(${rollup.grainDimensions.join(", ")}) declare ` +
-                             `\`storage=${declared}\``
-                           : `Source '${persistSource.name}' declares ` +
-                             `\`#@ persist storage=${declared}\``) +
-                           `, but the build was instructed with no storage ` +
-                           `destination, so there is nowhere it may be written. ` +
-                           `Refusing rather than building the table into the source ` +
-                           `warehouse, which the annotation asked it not to be ` +
-                           `written to.`,
-                     );
-                  }
-
-                  entry = await this.buildOneSource(
-                     persistSource,
-                     instruction,
-                     connection,
-                     connectionDigests,
-                     manifest,
-                     environment,
-                     entries,
-                     buildMetadata,
-                     incremental,
-                     // The CONTENT address, distinct from the instruction's
-                     // caller-assigned identity: the ledger is keyed by it so a
-                     // boundary can never be read against different SQL.
-                     sourceEntityId,
-                     planFacts,
-                  );
-                  // Stamp what this table was built FOR, here rather than inside
-                  // buildOneSource, because this is the scope that holds the
-                  // compiled plan the answer comes from.
-                  //
-                  // Not decorative. A manifest travels without its build plan, so
-                  // this is the only thing that tells a consumer a table belongs to
-                  // a source appearing in no model file — and the serve path needs
-                  // it: a rollup handled as an ordinary binding is looked up by
-                  // name in the author's model, finds nothing, and is silently
-                  // dropped rather than served (see preaggregation_serve_bindings).
-                  if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
-                     entry = { ...entry, origin: "preaggregate" as const };
-                  }
-               } catch (buildErr) {
-                  // One source failing does not end the build: the sources that
-                  // did materialize stay usable, and this one records the reason
-                  // it gave so a consumer can attribute the failure to the unit it
-                  // belongs to rather than to the whole command. A build that
-                  // loses every source still fails, below.
-                  //
-                  // Redacted against this source's connection CONFIG, not the
-                  // live connection: a warehouse error can echo the credentials it
-                  // was handed, and this value is persisted. The config is where
-                  // the declared secrets are, and it is what every other redaction
-                  // site passes. Walking a live connection instead is both
-                  // unnecessary and unsound -- an enumerable accessor that throws
-                  // once its resource is gone (the state a build failure runs in)
-                  // escapes the walk and fails the whole run, taking the sources
-                  // that did materialize with it, and state held in a Map is not
-                  // walked at all, so a secret there passes through in the clear.
-                  //
-                  // A connection missing from the environment is not a reason to
-                  // leak: getApiConnection throws, so fall back to the
-                  // connection-free string redactor that redactConnectionSecrets
-                  // applies anyway.
-                  let reason: string;
-                  try {
-                     reason = redactConnectionSecrets(
-                        errMessage(buildErr),
-                        environment.getApiConnection(
-                           persistSource.connectionName,
-                        ),
-                     );
-                  } catch {
-                     reason = redactPgSecrets(errMessage(buildErr));
-                  }
-                  // The manifest carries this reason to the control plane, but a
-                  // build that lost a source no longer throws -- so without a log
-                  // here the failure is invisible to anyone reading the server's
-                  // own output.
-                  logger.warn("Source failed to materialize", {
-                     packageName: owner?.packageName,
-                     sourceName: persistSource.name,
-                     physicalTableName: instruction.physicalTableName,
-                     reason,
-                  });
-                  failedReasons.push(`${persistSource.name}: ${reason}`);
-                  failures[sourceEntityId] = {
-                     sourceEntityId,
-                     sourceName: persistSource.name,
-                     materializedTableId: instruction.materializedTableId,
-                     physicalTableName: instruction.physicalTableName,
-                     reason,
-                     // The destination discriminator: without it, a consumer
-                     // holding only this failure cannot tell a colocated
-                     // failure from a `storage=` one and, computing
-                     // `storageDestinationName ?? connectionName` the same
-                     // way a successful build's ManifestEntry does, would
-                     // resolve the wrong key.
-                     connectionName: persistSource.connectionName,
-                     ...(instruction.destination
-                        ? { storageDestinationName: instruction.destination }
-                        : {}),
-                  };
-                  // Mirrored into `entries` for the deprecation window, because
-                  // consumers built against 0.0.245-0.0.246 read the failure from
-                  // `ManifestEntry.error` and would otherwise see this source as
-                  // merely ABSENT -- which reads as "nothing to report" rather
-                  // than "this failed", the fail-dangerous direction. Written
-                  // unconditionally rather than merged onto whatever is already
-                  // here: a source can be BOTH seeded (from a reference manifest
-                  // or bound manifest, which apply no exclusion keyed on this
-                  // run's content address) and instructed-and-failed, and the
-                  // seed names the PRIOR generation's table -- a real table,
-                  // which a serve binding would resolve and serve as fresh.
-                  // Overwriting is what makes `error` present on the entry any
-                  // such consumer reads. Remove this whole block with the field.
-                  entries[sourceEntityId] = {
-                     sourceEntityId,
-                     sourceName: persistSource.name,
-                     physicalTableName: instruction.physicalTableName,
-                     materializedTableId: instruction.materializedTableId,
-                     error: reason,
-                  } as ManifestEntry;
-                  continue;
-               }
-               builtSources.push(persistSource.name);
-               entries[sourceEntityId] = entry;
-               writtenTargets.set(target, {
-                  sourceEntityId,
-                  sourceName: persistSource.name,
-               });
-               if (isReclaimableStorageTable(entry)) {
-                  builtThisRun.push(entry);
-               } else if (entry.storageDestinationName) {
-                  // Kept so a failed run can SAY what it left behind. Recorded
-                  // here rather than logged here because a run that goes on to
-                  // succeed leaves nothing behind at all — its manifest names
-                  // every one of these.
-                  retainedThisRun.push(entry);
-               }
-            }
+         entry = await this.buildOneSource(
+            persistSource,
+            instruction,
+            connection,
+            compiled.connectionDigests,
+            run.manifest,
+            run.environment,
+            run.entries,
+            run.buildMetadata,
+            run.incremental,
+            // The CONTENT address, distinct from the instruction's
+            // caller-assigned identity: the ledger is keyed by it so a
+            // boundary can never be read against different SQL.
+            sourceEntityId,
+            run.planFacts,
+         );
+         // Stamp what this table was built FOR, here rather than inside
+         // buildOneSource, because this is the scope that holds the
+         // compiled plan the answer comes from.
+         //
+         // Not decorative. A manifest travels without its build plan, so
+         // this is the only thing that tells a consumer a table belongs to
+         // a source appearing in no model file — and the serve path needs
+         // it: a rollup handled as an ordinary binding is looked up by
+         // name in the author's model, finds nothing, and is silently
+         // dropped rather than served (see preaggregation_serve_bindings).
+         if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
+            entry = { ...entry, origin: "preaggregate" as const };
          }
+      } catch (buildErr) {
+         recordInstructedBuildFailure(
+            run,
+            persistSource,
+            instruction,
+            sourceEntityId,
+            buildErr,
+         );
+         return;
+      }
+      run.builtSources.push(persistSource.name);
+      run.entries[sourceEntityId] = entry;
+      run.writtenTargets.set(target, {
+         sourceEntityId,
+         sourceName: persistSource.name,
+      });
+      if (isReclaimableStorageTable(entry)) {
+         run.builtThisRun.push(entry);
+      } else if (entry.storageDestinationName) {
+         // Kept so a failed run can SAY what it left behind. Recorded
+         // here rather than logged here because a run that goes on to
+         // succeed leaves nothing behind at all — its manifest names
+         // every one of these.
+         run.retainedThisRun.push(entry);
+      }
+   }
 
-         // Every source this run built failed, so it produced nothing. A build
-         // with no output must not report itself as one that succeeded with
-         // errors attached; the partial path above covers the case where at least
-         // one source is usable. Thrown from inside the try so a run that wrote
-         // nothing reclaimable still takes the same cleanup path as any other
-         // total failure.
-         if (builtSources.length === 0 && failedReasons.length > 0) {
-            throw new Error(
-               [
-                  ...failedReasons,
-                  ...refusals.map((e) => e.message),
-                  ...priorRefusals.map((r) => r.message),
-               ].join("; "),
+   /**
+    * Gate one instructed source, recording a refusal as that source's failure.
+    * Returns true when the source was refused and must not be built.
+    */
+   private refuseIneligibleInstructedSource(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      resolved: ResolvedInstruction,
+   ): boolean {
+      const { compiled } = run;
+      const { instruction, orchestrated } = resolved;
+      // A refusal here fails THIS source, not the run, for the same
+      // reason auto-run skips one (deriveSelfInstructions): the run
+      // throws only when every instructed source was refused. It is
+      // reported in `failures`, not skipped silently, because the caller
+      // asked for this table and an absent entry reads as "built". A
+      // host that builds from the build plan never instructs a source the
+      // plan refused, so reaching the catch means the plan and this gate
+      // disagreed; the warning and the orchestrated `refused` source
+      // count are how that shows up.
+      try {
+         // Enforce the eligibility gate for any storage-targeted build,
+         // including orchestrated (host-supplied) instructions — the publisher
+         // refuses an ineligible source into the tier itself, not on trust.
+         // Skipped when the mode is off: the refusal below owns that case.
+         if (
+            orchestrated &&
+            instruction.destination &&
+            getPersistStorageMode() !== "off"
+         ) {
+            assertMaterializationEligible(
+               persistSource,
+               deriveAnnotationFields(persistSource),
             );
-         }
-         // Every instructed source was refused, so there was nothing to build:
-         // the refusal is the run's answer, as it is for auto-run.
-         if (builtSources.length === 0 && refusals.length > 0) {
-            throw allSourcesRefusedError(refusals);
+         } else {
+            // The gate refusal above only fires for a STORAGE-targeted
+            // build, so on its own it leaves every other instruction —
+            // the colocated one with no destination, and any build while
+            // the mode is off — unexamined. An orchestrated host chooses
+            // the destination, so this path reaches that case with no
+            // `#@ persist`-vs-`storage=` distinction to lean on; refuse
+            // a gated source however it was instructed, unless its
+            // compile-time gate outcome proves the colocated relaxation
+            // applies (see `assertColocatedPersistNotAuthorizeGated`'s
+            // doc). `else` rather than an unconditional call:
+            // `assertMaterializationEligible` already runs the identical
+            // `referencesAuthorize` IR walk, so calling both on the
+            // storage path would walk every persist source's whole
+            // `SourceDef` twice per build for an answer the first call
+            // has already acted on.
+            assertColocatedPersistNotAuthorizeGated(
+               persistSource,
+               persistSource.name,
+               compiled.preaggregatePlans?.[persistSource.sourceID]
+                  ? "preaggregate"
+                  : "persist",
+               compiled.sourceGateOutcomes?.[persistSource.sourceID],
+               deriveAnnotationFields(persistSource),
+            );
          }
       } catch (err) {
-         // A part-way failure returns a manifest that records the sources which
-         // built and the reason each failed one gave, so those tables stay
-         // reachable to manifest-driven GC. This path is for a build that
-         // produced nothing to record -- an orchestration failure, or every
-         // source failing -- where a table an earlier source wrote would
-         // otherwise be unreachable forever. Reclaim those before rethrowing.
-         // Best-effort and non-fatal: the build's own failure is what the caller
-         // needs to see.
-         if (owner) {
-            reportRetainedStorageTables(retainedThisRun, owner.packageName);
-            await this.reclaimStorageTablesFromFailedRun(
-               builtThisRun,
-               environment,
-               owner,
-            );
+         if (!(err instanceof MaterializationEligibilityError)) throw err;
+         // Keyed by the address the caller dispatched: a refused source
+         // may have no content address of its own (getSQL throws for a
+         // given or a free parameter), and the instruction's is the one
+         // the caller staked a claim for and resolves failures by.
+         const failedKey =
+            resolved.sourceEntityId ?? instruction.sourceEntityId;
+         if (!run.failures[failedKey]) {
+            const reason = errMessage(err);
+            run.refusals.push(err);
+            logger.warn("Instructed source refused by the eligibility gate", {
+               packageName: run.owner?.packageName,
+               sourceName: persistSource.name,
+               physicalTableName: instruction.physicalTableName,
+               reason,
+            });
+            run.failures[failedKey] = {
+               sourceEntityId: failedKey,
+               sourceName: persistSource.name,
+               materializedTableId: instruction.materializedTableId,
+               physicalTableName: instruction.physicalTableName,
+               reason,
+               // Marks the failure permanent, so a caller that retries
+               // failures can tell it from one that may clear.
+               refused: true,
+               connectionName: persistSource.connectionName,
+               ...(instruction.destination
+                  ? { storageDestinationName: instruction.destination }
+                  : {}),
+            };
+            // Mirrored into `entries` for the `ManifestEntry.error`
+            // deprecation window, as the build-failure path below does.
+            run.entries[failedKey] = {
+               sourceEntityId: failedKey,
+               sourceName: persistSource.name,
+               physicalTableName: instruction.physicalTableName,
+               materializedTableId: instruction.materializedTableId,
+               error: reason,
+            } as ManifestEntry;
          }
-         throw err;
+         return true;
       }
-
-      return { entries, failures, sourcesRefused: refusals.length };
+      return false;
    }
 
    /**
