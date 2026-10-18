@@ -9,6 +9,7 @@ import {
    PLACED_DEFAULT_ROWSPAN,
    TILE_ROW_PX,
 } from "../Dashboard/DashboardGrid";
+import { isChartPick } from "./chartLine";
 import { isTextTile, type DashboardTile } from "./document";
 
 /**
@@ -228,19 +229,20 @@ export function placeWhereDrawn(
             1,
             Math.round((box.width + GRID_GAP_PX) / (track + GRID_GAP_PX)),
          );
+      const cell = cellAt(box.left, box.top, colspan, columns, track);
+      // Its top and bottom are each taken to the nearest row line, rather
+      // than its height rounded on its own: tiles that touched still touch,
+      // so a whole page's rounding never adds up and pushes rows down. No
+      // edge moves more than half a row.
+      const lastRow = Math.round(
+         (box.top + box.height + GRID_GAP_PX) / ROW_STEP,
+      );
       return {
          ...rest,
-         ...cellAt(box.left, box.top, colspan, columns, track),
+         ...cell,
          colspan,
          rowspan:
-            tile.rowspan ??
-            Math.max(
-               minRowsOf(tile),
-               // Up, never down: a tile is never placed shorter than it is
-               // drawn, so nothing it shows is cut or starts to scroll. A
-               // hair of slack keeps a tile already on whole rows where it is.
-               Math.ceil((box.height + GRID_GAP_PX) / ROW_STEP - 0.02),
-            ),
+            tile.rowspan ?? Math.max(minRowsOf(tile), lastRow - cell.row + 1),
       };
    });
    return settle(placed, columns);
@@ -304,7 +306,10 @@ export function pack(
 
 /** Whether packing would move anything: the action is offered only then. */
 export const hasGaps = (tiles: readonly DashboardTile[], columns: number) =>
-   pack(tiles, columns).some((tile, index) => tile.row !== tiles[index].row);
+   pack(tiles, columns).some(
+      (tile, index) =>
+         tile.row !== tiles[index].row || tile.col !== tiles[index].col,
+   );
 
 /**
  * The tiles with their places taken off, so the report flows again in the
@@ -336,3 +341,17 @@ export const widestFrom = (
    columns: number,
 ): number =>
    tile?.col === undefined ? columns : Math.max(1, columns - tile.col + 1);
+
+/**
+ * A tile given a chart that plots (anything but value cards or a table) at
+ * fewer rows than a chart draws in, raised to that floor. A tile set to two
+ * rows as a table and then switched to a line chart in its menu would
+ * otherwise keep two rows, where the plot has no room and the renderer fails.
+ */
+export function holdChartRows(tile: DashboardTile): DashboardTile {
+   if (isTextTile(tile) || tile.rowspan === undefined) return tile;
+   const plots = isChartPick(tile.chart) && tile.chart !== "big_value";
+   return plots && tile.rowspan < MIN_TILE_ROWS
+      ? { ...tile, rowspan: MIN_TILE_ROWS }
+      : tile;
+}

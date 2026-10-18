@@ -291,7 +291,9 @@ export function TileFrame({
                         borderRadius: ui.radius.control,
                         width: 28,
                         height: 28,
-                        zIndex: 2,
+                        // Over the edge and corner zones (z 1 and 2), so the corner
+                        // zone around it never takes a click meant for the menu.
+                        zIndex: 3,
                         color: "text.secondary",
                         bgcolor: "action.hover",
                         opacity: selected || menuOpen ? 1 : 0,

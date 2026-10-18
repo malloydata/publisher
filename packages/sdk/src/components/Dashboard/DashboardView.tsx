@@ -389,6 +389,7 @@ export function DashboardView({
                                 : tileMaxHeight
                         }
                         tableMaxHeight={tableMaxHeight}
+                        fixedHeight={tile.rowspan !== undefined || placed}
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         ignoredFilters={tileIgnoredFilterLabels(

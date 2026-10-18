@@ -24,9 +24,11 @@ export interface BuilderShortcutHandlers {
    nudge?: (delta: 1 | -1) => void;
    /**
     * Move the selected tile one cell with Option/Alt and an arrow key, on a
-    * report whose tiles are placed. Absent, those keys are left alone.
+    * report whose tiles are placed. Answers whether it moved one: when it did
+    * not (nothing placed is selected), the key is left to the browser, which
+    * uses Alt with an arrow for Back and Forward.
     */
-   move?: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => void;
+   move?: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => boolean;
    /** A modal owns the keyboard: no shortcut fires, so none can open a second dialog over it. */
    paused?: boolean;
 }
@@ -124,9 +126,8 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
                       : event.key === "ArrowDown"
                         ? ([1, 0] as const)
                         : undefined;
-            if (step) {
+            if (step && current.move(step[0], step[1])) {
                event.preventDefault();
-               current.move(step[0], step[1]);
                return;
             }
          }

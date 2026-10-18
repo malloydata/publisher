@@ -8,6 +8,7 @@ import {
    dropAt,
    flowTiles,
    hasGaps,
+   holdChartRows,
    minRowsOf,
    pack,
    placeAtEnd,
@@ -118,8 +119,8 @@ describe("placeWhereDrawn", () => {
       ];
       expect(where(placeWhereDrawn(tiles, boxes, 12, track))).toEqual([
          { name: "kpis", row: 1, col: 1, colspan: 12, rowspan: 3 },
-         { name: "trend", row: 4, col: 1, colspan: 6, rowspan: 6 },
-         { name: "map", row: 4, col: 7, colspan: 6, rowspan: 6 },
+         { name: "trend", row: 4, col: 1, colspan: 6, rowspan: 5 },
+         { name: "map", row: 4, col: 7, colspan: 6, rowspan: 5 },
       ]);
       // A row break means nothing once tiles are placed.
       expect(placeWhereDrawn(tiles, boxes, 12, track)[0].break).toBeUndefined();
@@ -234,24 +235,32 @@ describe("flowTiles", () => {
    });
 });
 
-describe("placeWhereDrawn rounds heights up", () => {
-   it("never places a tile shorter than it is drawn", () => {
+describe("placeWhereDrawn keeps rows where they are drawn", () => {
+   it("takes each edge to its nearest row line, so stacked tiles still touch and nothing is pushed", () => {
       const track = trackWidth(1200, 12);
-      const [placed] = placeWhereDrawn(
-         [tile("t", { colspan: 6 })],
-         [{ top: 0, left: 0, width: 6 * (track + 16) - 16, height: 492 }],
-         12,
-         track,
+      const half = 6 * (track + 16) - 16;
+      // Four rows of two auto tiles, each 300px tall with a 16px gap: drawn
+      // tops at 0, 316, 632, 948.
+      const tiles = Array.from({ length: 8 }, (_, i) =>
+         tile(`t${i}`, { colspan: 6 }),
       );
-      // 492px is between 5 rows (464) and 6 (560): 6, so nothing is cut.
-      expect(placed.rowspan).toBe(6);
-      const [exact] = placeWhereDrawn(
-         [tile("t", { colspan: 6 })],
-         [{ top: 0, left: 0, width: 100, height: 464.4 }],
-         12,
-         track,
-      );
-      expect(exact.rowspan).toBe(5);
+      const boxes = tiles.map((_, i) => ({
+         top: Math.floor(i / 2) * 316,
+         left: i % 2 === 0 ? 0 : half + 16,
+         width: half,
+         height: 300,
+      }));
+      const placed = placeWhereDrawn(tiles, boxes, 12, track);
+      // Every row's top stays within half a row (48px) of where it was drawn.
+      for (const [i, each] of placed.entries())
+         expect(
+            Math.abs((each.row! - 1) * 96 - boxes[i].top),
+         ).toBeLessThanOrEqual(48);
+      // And each row starts right where the one above ends: no row was pushed.
+      for (let r = 2; r < 8; r += 2)
+         expect(placed[r].row).toBe(
+            placed[r - 2].row! + placed[r - 2].rowspan!,
+         );
    });
 });
 
@@ -278,5 +287,24 @@ describe("minRowsOf", () => {
 
    it("takes a query tile for a chart until it has drawn", () => {
       expect(minRowsOf(tile("t"))).toBe(3);
+   });
+});
+
+describe("holdChartRows", () => {
+   it("raises a tile switched to a plotted chart to a chart's rows", () => {
+      expect(
+         holdChartRows(tile("t", { rowspan: 2, chart: "line_chart" })).rowspan,
+      ).toBe(3);
+   });
+   it("leaves value cards, a table, and a tile on auto height alone", () => {
+      expect(
+         holdChartRows(tile("t", { rowspan: 2, chart: "big_value" })).rowspan,
+      ).toBe(2);
+      expect(
+         holdChartRows(tile("t", { rowspan: 2, chart: "none" })).rowspan,
+      ).toBe(2);
+      expect(
+         holdChartRows(tile("t", { chart: "bar_chart" })).rowspan,
+      ).toBeUndefined();
    });
 });

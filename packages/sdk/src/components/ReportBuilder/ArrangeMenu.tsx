@@ -14,13 +14,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { edgeColor } from "../controlTokens";
 import { iconControlSx } from "./BuilderToolbar";
 
-/** What can be done to a placed report's layout as a whole. */
-export interface ArrangeActions {
-   /** Slide every tile up into the gaps above it. Absent when there are none. */
-   pack?: () => void;
-   /** Take every tile's place off, so the report flows again. */
-   flow: () => void;
-}
+import type { ArrangeActions } from "./builderControls";
 
 /**
  * The layout of a placed grid report as a whole: closing its gaps, or letting

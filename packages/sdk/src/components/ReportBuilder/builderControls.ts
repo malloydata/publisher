@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ArrangeActions } from "./ArrangeMenu";
 import { useEffect, useMemo, useRef } from "react";
 import type { RestoredDraft } from "./useReportDraft";
 
@@ -67,6 +66,21 @@ export interface BuilderControls {
    restore?: () => void;
    /** The author has seen the restored edits: `restored` goes. Present while `restored` is, and not pending. */
    dismissRestored?: () => void;
+}
+
+/**
+ * What can be done to a placed report's layout as a whole, as
+ * {@link BuilderControls.arrange} offers it.
+ */
+export interface ArrangeActions {
+   /**
+    * Slide every tile up into the empty space above it. Present only when
+    * there is such a gap: absent means there is nothing to close, and a host
+    * draws the action disabled (or not at all).
+    */
+   pack?: () => void;
+   /** Take every tile's place off, so the report flows again; sizes are kept. */
+   flow: () => void;
 }
 
 /** What a host passes to take over the builder's page-level controls. */

@@ -569,6 +569,9 @@ export function EditorSurface({
                         : rules.tileMaxHeight
                   }
                   tableMaxHeight={rules.tableMaxHeight}
+                  fixedHeight={
+                     tile.rowspan !== undefined || tile.row !== undefined
+                  }
                />
             );
          },

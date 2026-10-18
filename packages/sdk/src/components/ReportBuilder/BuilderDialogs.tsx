@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isPlaced } from "../Dashboard/DashboardGrid";
+import { holdChartRows, settle } from "./placement";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
@@ -111,8 +113,13 @@ export function BuilderDialogs({
             onCommit={(next) => {
                const at = menu?.index;
                if (at === undefined) return;
+               // A chart picked on a tile too short to plot it raises the
+               // tile to a chart's rows, pushing down what it now covers.
+               const held = holdChartRows(next);
                editor.update((draft) => {
-                  draft.tiles[at] = next;
+                  draft.tiles[at] = held;
+                  if (held !== next && isPlaced(draft.tiles))
+                     draft.tiles = settle(draft.tiles, columns, at);
                });
             }}
             view={menuView}

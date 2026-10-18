@@ -1096,6 +1096,36 @@ source: a is one extend {
       expect(itemStyleOf("x")).toContain("grid-column: 7/span 6");
    });
 
+   it("keeps the selection on the same tile when packing re-sorts the tiles", async () => {
+      // y sits at row 9 beside nothing; packing moves it to row 4, and on a
+      // report where it reads first after the move the order changes.
+      await mountPlaced(
+         PLACED.replace(
+            '"a -> x" { row=1 col=1 colspan=6 rowspan=3 }',
+            '"a -> x" { row=5 col=7 colspan=6 rowspan=3 }',
+         ),
+      );
+      fireEvent.click(tile("y"));
+      expect(tile("y").getAttribute("aria-current")).toBe("true");
+      fireEvent.click(button("Arrange tiles"));
+      fireEvent.click(
+         screen.getByRole("menuitem", { name: /Pack tiles upward/ }),
+      );
+      expect(tile("y").getAttribute("aria-current")).toBe("true");
+      expect(tile("x").getAttribute("aria-current")).toBe("false");
+   });
+
+   it("leaves Option and an arrow to the browser when no placed tile is selected", async () => {
+      await mountPlaced();
+      const event = new KeyboardEvent("keydown", {
+         key: "ArrowLeft",
+         altKey: true,
+         cancelable: true,
+      });
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+   });
+
    it("offers no Arrange menu on a report that flows", async () => {
       await mount();
       expect(

@@ -73,6 +73,8 @@ export interface DashboardTileProps {
    height: number | undefined;
    /** A further cap when the result is a table, past which it scrolls under its pinned header. */
    tableMaxHeight?: number;
+   /** The tile has a set height (rows of its own): a result taller than it is drawn compact. */
+   fixedHeight?: boolean;
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;
@@ -146,6 +148,7 @@ export function DashboardTile({
    givenNames,
    height,
    tableMaxHeight,
+   fixedHeight,
    maxResultSize,
    drill,
    onExplore,
@@ -272,6 +275,7 @@ export function DashboardTile({
                context={tile ?? queryName ?? modelPath}
                maxHeight={height}
                tableMaxHeight={tableMaxHeight}
+               compactToFit={fixedHeight}
                // Uncapped in a linear report, a tile would first paint at the
                // 2000px default and collapse once measured. A grid tile's cap
                // is a sound first guess for every tile.
