@@ -618,7 +618,7 @@ test.describe("package-dashboards", () => {
       });
    }
 
-   test("a single-destination drill navigates with the clicked value seeded", async ({
+   test("a single-destination drill says where it goes, and navigates with the clicked value seeded", async ({
       page,
    }) => {
       await openDashboard(page, "combined");
@@ -632,8 +632,21 @@ test.describe("package-dashboards", () => {
       // no dashboard declares: the tile is clickable because it groups by it.
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
 
-      // One destination acts immediately: the slug becomes the route and the
-      // clicked value becomes the given.
+      // Even one destination is a menu: a click says what it will do before
+      // doing it, each item naming the value, and the rows behind the value
+      // are offered beside it. No header row: every entry is an action.
+      await expect(
+         page.getByRole("menuitem", { name: "Open Overview for Nike" }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+         page.getByRole("menuitem", { name: /^Show rows for Nike/ }),
+      ).toBeVisible();
+      await expect(page.getByText("Nike →")).toHaveCount(0);
+      await page
+         .getByRole("menuitem", { name: "Open Overview for Nike" })
+         .click();
+
+      // The slug becomes the route and the clicked value becomes the given.
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/overview\\?BRAND=Nike$`),
       );
@@ -746,6 +759,7 @@ test.describe("package-dashboards", () => {
          .getByText("Nike", { exact: true })
          .first()
          .click({ timeout: 60_000 });
+      await page.getByRole("menuitem", { name: "Open Overview" }).click();
 
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${LINEAR_PKG}/dashboards/overview\\?BRAND=Nike$`),
@@ -934,8 +948,15 @@ test.describe("package-dashboards", () => {
 
       await target.focus();
       await page.keyboard.press("Enter");
-      // Two honorable destinations, so Enter opens the menu rather than acting.
-      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      // Enter opens the same menu a click does: the two destinations, then the
+      // rows behind the value.
+      await expect(page.getByRole("menuitem")).toHaveCount(3);
+      await expect(page.getByRole("menuitem").nth(0)).toHaveText(
+         /^Filter this report to /,
+      );
+      await expect(page.getByRole("menuitem").nth(2)).toHaveText(
+         /^Show rows for /,
+      );
    });
 
    test("arrow keys move within a drillable column and the stop follows", async ({
@@ -975,7 +996,8 @@ test.describe("package-dashboards", () => {
       await page.keyboard.press("End");
       await expect(drillCells.nth(total - 1)).toBeFocused();
       await page.keyboard.press("Enter");
-      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      // Filter this report, Open Regions, Show rows.
+      await expect(page.getByRole("menuitem")).toHaveCount(3);
    });
 
    test("clicking a cell moves the tab stop to it", async ({ page }) => {
@@ -1016,7 +1038,7 @@ test.describe("package-dashboards", () => {
       const before = page.url();
       await target.focus();
       await page.keyboard.press("Space");
-      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      await expect(page.getByRole("menuitem")).toHaveCount(3);
       expect(page.url()).toBe(before);
    });
 
