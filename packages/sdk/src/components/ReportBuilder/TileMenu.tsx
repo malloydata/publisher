@@ -55,10 +55,9 @@ export interface TileMenuProps {
    /** Apply the edited tile. Called once, on close, only when something changed. */
    onCommit: (next: DashboardTile) => void;
    /**
-    * Open the clickable-cells window for this tile's source. Absent when the
-    * source declares no dimension in this file, so there is nothing a drill
-    * could go on: the menu then offers no Drill, rather than a window that
-    * explains why its own Apply is off.
+    * Open "What clicking a value does" for this tile: the choices a click on
+    * one of its values offers, written on its own entry in `tiles=[…]`. Absent
+    * when the builder cannot open it, and the item is then greyed with why.
     */
    onDrills?: () => void;
    /** Copy the tile, right after it. Absent, the menu offers no Duplicate. */
@@ -172,15 +171,17 @@ export function TileMenu({
          else delete t.chartReset;
       });
 
-   const drillBlocked = !editable
-      ? undefined
-      : onDrills
-        ? undefined
-        : "Its source declares no dimension a click could filter by.";
+   // Every query tile has an entry to write on, so this needs no edit rights
+   // over the view: only a value to click.
+   const drillBlocked = !onDrills
+      ? "This tile can't be set up here."
+      : view?.shape?.groupBys === 0
+        ? "This tile shows totals only, so it has no value to click."
+        : undefined;
 
    // The renderer reports a click on a table cell only, so on a tile drawn as
-   // a chart the setting does nothing there. Said, not blocked: the tag is on
-   // the dimension, and a table tile over the same source does use it.
+   // a chart the setting does nothing there. Said, not blocked: switching the
+   // tile back to a table makes it count.
    const drawn = chartState === "default" ? view?.chart : chartState;
    const drillNote =
       drawn !== undefined && CLICKLESS_CHARTS.has(drawn)
@@ -329,7 +330,7 @@ export function TileMenu({
                   />
                </MenuItem>
             )}
-            {editable && (
+            {query && (
                <MenuItem
                   aria-haspopup="dialog"
                   disabled={drillBlocked !== undefined}
@@ -339,7 +340,7 @@ export function TileMenu({
                   }}
                >
                   {label(
-                     "Clickable cells…",
+                     "What clicking a value does…",
                      undefined,
                      drillBlocked ?? drillNote,
                   )}

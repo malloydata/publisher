@@ -88,6 +88,8 @@ describe("a tile entry's drill", () => {
       const out = await edited(source, (d) => {
          d.tiles[1].colspan = 4;
       });
-      expect(out).toContain(`"orders -> by_brand" { drill { brand { to=self } } }`);
+      expect(out).toContain(
+         `"orders -> by_brand" { drill { brand { to=self } } }`,
+      );
    });
 });

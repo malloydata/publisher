@@ -237,3 +237,105 @@ export function clickMenuPreview(
    }
    return items;
 }
+
+/** A report a click can open: its path without `.malloy`, its title, and the filters it shows. */
+export interface LinkTarget {
+   path: string;
+   title: string;
+   /** Absent when the host did not say: such a report is offered, its filter unchecked. */
+   givenNames?: readonly string[];
+}
+
+/** What the dialog's two checkboxes say for one dimension. */
+export interface ClickChoice {
+   /** "Filter this report by …" is ticked. */
+   self: boolean;
+   /** "Link to another report:" is ticked, and to which. */
+   link?: string;
+   /** Destinations the dialog does not show (a second linked report), kept as written. */
+   extra: string[];
+}
+
+const fold = (name: string) => name.toLowerCase();
+
+/**
+ * The filter a click on `dimension` sets, among `names`: the one its model tag
+ * names, else one named like the dimension. Matched without case, as the
+ * reader matches a drill's given.
+ */
+export function filterFor(
+   dimension: ClickDimension,
+   names: readonly string[],
+): string | undefined {
+   const wanted = [dimension.modelDrill?.given, dimension.name].filter(
+      (name): name is string => name !== undefined,
+   );
+   for (const want of wanted) {
+      const hit = names.find((name) => fold(name) === fold(want));
+      if (hit) return hit;
+   }
+   return undefined;
+}
+
+/** The other reports a click on `dimension` can open with its value set: those with a filter it sets. */
+export function linkTargetsFor(
+   dimension: ClickDimension,
+   reports: readonly LinkTarget[],
+): LinkTarget[] {
+   return reports.filter(
+      (report) =>
+         report.givenNames === undefined ||
+         filterFor(dimension, report.givenNames) !== undefined,
+   );
+}
+
+/** What the tile does now for `dimension`: its entry's drill, else the model's tag. */
+export function currentChoice(
+   dimension: ClickDimension,
+   entry: EntryDrill | undefined,
+): ClickChoice {
+   const to = (entry ?? dimension.modelDrill)?.to ?? [];
+   const reports = to.filter((destination) => destination !== DRILL_SELF);
+   return {
+      self: to.includes(DRILL_SELF),
+      ...(reports[0] !== undefined ? { link: reports[0] } : {}),
+      extra: reports.slice(1),
+   };
+}
+
+/**
+ * The entry drill that makes `choice` true for `dimension`, or undefined when
+ * the model's tag already says it (nothing to write). Turning every choice off
+ * over a model tag writes `to=[]`. The given is the filter it sets: this
+ * report's when it filters itself, else the linked report's.
+ */
+export function entryFor(
+   dimension: ClickDimension,
+   choice: ClickChoice,
+   controls: readonly string[],
+   reports: readonly LinkTarget[],
+): EntryDrill | undefined {
+   const to = [
+      ...(choice.self ? [DRILL_SELF] : []),
+      ...(choice.link !== undefined ? [choice.link] : []),
+      ...choice.extra,
+   ];
+   const linked = reports.find((report) => report.path === choice.link);
+   const given =
+      (choice.self ? filterFor(dimension, controls) : undefined) ??
+      (linked?.givenNames
+         ? filterFor(dimension, linked.givenNames)
+         : dimension.modelDrill?.given);
+   // A drill turned off sets nothing, so it names no filter.
+   const next: EntryDrill =
+      to.length > 0 && given !== undefined && given !== dimension.name
+         ? { to, given }
+         : { to };
+   const model = dimension.modelDrill;
+   // Order does not matter to the reader, which puts `self` first anyway.
+   const key = (drill: EntryDrill) =>
+      `${[...new Set(drill.to)].sort().join("|")}#${fold(drill.given ?? dimension.name)}`;
+   const same = (a: EntryDrill, b: EntryDrill) => key(a) === key(b);
+   if (model ? same(next, model) : to.length === 0) return undefined;
+   return next;
+}

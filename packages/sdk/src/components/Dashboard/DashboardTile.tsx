@@ -104,6 +104,8 @@ export interface DashboardTileProps {
    waitingFor?: string;
    /** Its position in the report, for the `report.query_failed` it reports. */
    index?: number;
+   /** Each result the tile's query lands, as `QueryResult.result`. */
+   onResult?: (result: string) => void;
 }
 
 /**
@@ -158,6 +160,7 @@ export function DashboardTile({
    restricted,
    waitingFor,
    index,
+   onResult,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
    // A tile far below the fold waits to be scrolled near before it runs: its
@@ -196,6 +199,12 @@ export function DashboardTile({
    // hears of it when one is listening.
    const { emit } = useReportEvents();
    const failure = state.isError ? state.error : undefined;
+   // The result as it landed, for a host that reads it (the builder's click
+   // settings read a tile's dimensions and first row off it).
+   const landed = (state.data as { result?: string } | undefined)?.result;
+   useEffect(() => {
+      if (landed !== undefined) onResult?.(landed);
+   }, [landed, onResult]);
    useEffect(() => {
       if (failure === undefined) return;
       emit({

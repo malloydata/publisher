@@ -228,6 +228,31 @@ export function EditorSurface({
       packageName,
       queryVersionId,
    );
+   // The same reports, each with the filters it shows: where a click can open
+   // one with its value set.
+   const linkTargets = useMemo(
+      () =>
+         reportList.flatMap((r) =>
+            r.path && r.path !== modelPath && r.path.endsWith(".malloy")
+               ? [
+                    {
+                       path: r.path.replace(/\.malloy$/, ""),
+                       title: r.title ?? r.name ?? r.path,
+                       ...(r.givenNames ? { givenNames: r.givenNames } : {}),
+                    },
+                 ]
+               : [],
+         ),
+      [reportList, modelPath],
+   );
+   // Each tile's last result, by tile key, for "What clicking a value does".
+   // A ref, not state: the canvas writes it as results land, and only the
+   // dialog reads it, when it opens.
+   const tileResults = useRef(new Map<string, string>());
+   const tileResult = useCallback(
+      (key: string) => tileResults.current.get(key),
+      [],
+   );
    const otherDashboards = useMemo(
       () =>
          reportList
@@ -551,6 +576,9 @@ export function EditorSurface({
                      ? { restricted: true }
                      : {})}
                   tile={query.expression}
+                  onResult={(result) =>
+                     tileResults.current.set(tileKey(tile), result)
+                  }
                   {...(query.annotation
                      ? { annotation: query.annotation }
                      : {})}
@@ -713,6 +741,8 @@ export function EditorSurface({
             {...(draftKey !== undefined ? { draftKey } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
+            linkTargets={linkTargets}
+            tileResult={tileResult}
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (

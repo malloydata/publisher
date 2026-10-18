@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { LinkTarget } from "./clickActions";
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography, useMediaQuery } from "@mui/material";
@@ -229,6 +230,17 @@ export interface ReportBuilderProps {
     */
    takenGivenNames?: readonly string[];
    /**
+    * The package's other reports, each with the filters it shows: what a
+    * click on a value can open with that value set ("What clicking a value
+    * does"). Absent, `dashboards` is offered, with its filters unchecked.
+    */
+   linkTargets?: readonly LinkTarget[];
+   /**
+    * A tile's last result as the host's canvas ran it, by tile key: where
+    * "What clicking a value does" reads the tile's dimensions and first row.
+    */
+   tileResult?: (tile: string) => string | undefined;
+   /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
     */
@@ -280,6 +292,8 @@ export function ReportBuilder({
    fixedFilters,
    onOpenModel,
    takenGivenNames,
+   linkTargets,
+   tileResult,
    onControlsChange,
    draftKey,
 }: ReportBuilderProps) {
@@ -404,7 +418,7 @@ export function ReportBuilder({
       catalog,
    });
    const { filterDialog, setFilterDialog } = bindings;
-   // The clickable-cells window, for one tile's source.
+   // "What clicking a value does", for one tile, by its key.
    const [drillSource, setDrillSource] = useState<string | undefined>(
       undefined,
    );
@@ -792,6 +806,8 @@ export function ReportBuilder({
                   bindings={bindings}
                   tiles={tiles}
                   drillSource={drillSource}
+                  {...(linkTargets ? { linkTargets } : {})}
+                  {...(tileResult ? { tileResult } : {})}
                   setDrillSource={setDrillSource}
                   exitDialog={session.exitGuard.dialog}
                   {...(renderViewPreview ? { renderViewPreview } : {})}

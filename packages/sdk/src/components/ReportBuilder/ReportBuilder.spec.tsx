@@ -784,126 +784,190 @@ describe("ReportBuilder: widths and the page's own settings", () => {
    });
 });
 
-describe("ReportBuilder: clickable cells", () => {
-   const WITH_DIMENSION = `## artifact { title="T" tiles=["a -> x"] } dashboard { columns=12 }
+describe("ReportBuilder: what clicking a value does", () => {
+   const SOURCE_X = `## artifact { title="T" tiles=["a -> x"] } dashboard { columns=12 }
 import "../data_app.malloy"
 
 source: a is scoped_orders extend {
-  # label="Category"
-  dimension: cat is products.category
-
   # colspan=6
   view: x is { group_by: cat aggregate: total_revenue }
 }`;
+   /** The tile's result as the canvas ran it: one dimension with a `# label`, one total. */
+   const RESULT = (drill = "") =>
+      JSON.stringify({
+         connection_name: "duckdb",
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "cat",
+                  type: { kind: "string_type" },
+                  annotations: [
+                     { value: '# label="Category"\n' },
+                     ...(drill ? [{ value: `${drill}\n` }] : []),
+                  ],
+               },
+               {
+                  kind: "dimension",
+                  name: "total_revenue",
+                  type: { kind: "number_type" },
+                  annotations: [{ value: "#(malloy) calculation\n" }],
+               },
+            ],
+         },
+         data: {
+            kind: "array_cell",
+            array_value: [
+               {
+                  kind: "record_cell",
+                  record_value: [
+                     { kind: "string_cell", string_value: "Jeans" },
+                     { kind: "number_cell", number_value: 5 },
+                  ],
+               },
+            ],
+         },
+      });
 
-   it("puts a drill on a dimension this file declares, and writes the tag", async () => {
-      let saved = "";
-      const doc = await openDocument(WITH_DIMENSION);
+   const open = async (options: {
+      givens?: Array<{ name: string }>;
+      drill?: string;
+      reports?: Array<{ path: string; title: string; givenNames?: string[] }>;
+      onSave?: (source: string) => void;
+   }) => {
+      const doc = await openDocument(SOURCE_X);
       render(
          <ReportBuilder
-            source={WITH_DIMENSION}
+            source={SOURCE_X}
             document={doc}
-            dashboards={["regions"]}
-            givens={[{ name: "CATEGORY" }]}
-            onSave={(source) => {
-               saved = source;
-            }}
+            givens={options.givens ?? []}
+            linkTargets={options.reports ?? []}
+            tileResult={() => RESULT(options.drill)}
+            {...(options.onSave ? { onSave: options.onSave } : {})}
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for x"));
       fireEvent.click(
          screen.getByRole("menuitem", {
-            name: /^Clickable cells/,
+            name: /^What clicking a value does/,
             hidden: true,
          }),
       );
+      // The tag parser loads on open.
+      await waitFor(() =>
+         expect(
+            screen.getByRole("listitem", { name: "Category", hidden: true }),
+         ).toBeDefined(),
+      );
+      return screen.getByRole("dialog", { hidden: true });
+   };
 
-      // Switched on, a cell opens this report; another is one more pick.
-      fireEvent.click(screen.getByLabelText("cat is clickable"));
-      fireEvent.mouseDown(
-         screen.getByRole("combobox", { name: "Where cat goes", hidden: true }),
+   it("says what it sets, names the dimension by its label, and previews the menu", async () => {
+      const dialog = await open({});
+      expect(dialog.textContent).toContain("When someone clicks a value in X");
+      expect(dialog.textContent).toContain(
+         "Every value offers Show rows. Add more choices to the menu that opens.",
       );
+      expect(dialog.textContent).toContain('Clicking "Jeans" shows:');
+      expect(dialog.textContent).toContain("Show rows for Jeans");
+   });
+
+   it("asks for a filter before this report can filter by the value", async () => {
+      const dialog = await open({});
+      const self = screen.getByRole("checkbox", {
+         name: "Filter this report by Category",
+         hidden: true,
+      });
+      expect((self as HTMLInputElement).disabled).toBe(true);
+      expect(dialog.textContent).toContain(
+         "Add a Category filter to this report first",
+      );
+   });
+
+   it("links only to reports with a filter the value can set", async () => {
+      const dialog = await open({
+         reports: [{ path: "brands", title: "Brands", givenNames: ["BRAND"] }],
+      });
+      const link = screen.getByRole("checkbox", {
+         name: "Link to another report:",
+         hidden: true,
+      });
+      expect((link as HTMLInputElement).disabled).toBe(true);
+      expect(dialog.textContent).toContain(
+         "No other report has a Category filter.",
+      );
+   });
+
+   it("writes the choices on the tile's entry, and the preview follows them", async () => {
+      let saved = "";
+      const dialog = await open({
+         givens: [{ name: "CAT" }],
+         reports: [
+            { path: "regions", title: "Regions", givenNames: ["cat"] },
+            { path: "brands", title: "Brands", givenNames: ["BRAND"] },
+         ],
+         onSave: (source) => {
+            saved = source;
+         },
+      });
       fireEvent.click(
-         screen.getByRole("option", { name: /regions/, hidden: true }),
-      );
-      fireEvent.keyDown(document.body, { key: "Escape" });
-      fireEvent.mouseDown(
-         screen.getByRole("combobox", {
-            name: "Control cat sets",
+         screen.getByRole("checkbox", {
+            name: "Filter this report by Category",
             hidden: true,
          }),
       );
       fireEvent.click(
-         screen.getByRole("option", { name: "CATEGORY", hidden: true }),
+         screen.getByRole("checkbox", {
+            name: "Link to another report:",
+            hidden: true,
+         }),
       );
+      expect(dialog.textContent).toContain(
+         "Opens it with Category set to the clicked value.",
+      );
+      expect(dialog.textContent).toContain("Filter this report to Jeans");
+      expect(dialog.textContent).toContain("Open Regions for Jeans");
       fireEvent.click(button("Apply"));
-
       fireEvent.click(button("Save"));
       await waitFor(() => expect(saved).not.toBe(""));
       expect(saved).toContain(
-         `  # label="Category"
-  # drill { to=["self", "regions"] given=CATEGORY }
-  dimension: cat is products.category`,
+         `tiles=["a -> x" { colspan=6 drill { cat { to=[self, "regions"] given=CAT } } }]`,
       );
    });
 
-   const clickableItem = () =>
-      screen.getByRole("menuitem", {
-         name: /^Clickable cells/,
-         hidden: true,
+   it("starts from the model's tag, says so, and writes nothing when it is kept", async () => {
+      let saved = "";
+      const dialog = await open({
+         givens: [{ name: "CATEGORY" }],
+         drill: "# drill { to=self given=CATEGORY }",
+         onSave: (source) => {
+            saved = source;
+         },
       });
-
-   it("says which clicks it sets up, and that none act while editing", async () => {
-      // The renderer reports clicks on table cells only, never on a bar, and
-      // the builder renders tiles without click handling, because a press there
-      // selects the tile. The window says both, so the setting does not look
-      // broken when a click in the builder does nothing.
-      const doc = await openDocument(WITH_DIMENSION);
-      render(<ReportBuilder source={WITH_DIMENSION} document={doc} />);
-      fireEvent.click(screen.getByLabelText("Settings for x"));
-      fireEvent.click(clickableItem());
-      const dialog = screen.getByRole("dialog", { hidden: true });
-      expect(dialog.textContent).toContain(
-         "A click on a table cell sets a filter to its value, on this report or on the one it opens.",
-      );
-      expect(dialog.textContent).toContain(
-         "Bars, lines and points on a chart do not respond to a click.",
-      );
-      expect(dialog.textContent).toContain(
-         "Clicks work in the report, not while you edit it.",
+      expect(dialog.textContent).toContain("From the model");
+      const self = screen.getByRole("checkbox", {
+         name: "Filter this report by Category",
+         hidden: true,
+      }) as HTMLInputElement;
+      expect(self.checked).toBe(true);
+      // Turning the model's choice off is the tile's own: written as to=[].
+      fireEvent.click(self);
+      fireEvent.click(button("Apply"));
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(saved).not.toBe(""));
+      expect(saved).toContain(
+         `tiles=["a -> x" { colspan=6 drill { cat { to=[] } } }]`,
       );
    });
 
-   it("warns on a chart tile that its bars will not click", async () => {
-      const BAR = WITH_DIMENSION.replace(
-         "  # colspan=6\n  view: x",
-         "  # colspan=6\n  # bar_chart\n  view: x",
-      );
-      expect(BAR).toContain("# bar_chart");
-      const doc = await openDocument(BAR);
-      render(<ReportBuilder source={BAR} document={doc} />);
-      fireEvent.click(screen.getByLabelText("Settings for x"));
-      expect(clickableItem().textContent).toContain(
-         "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.",
-      );
-      // Still offered: the tag is on the dimension, which a table tile on the
-      // same source can use.
-      expect(clickableItem().getAttribute("aria-disabled")).not.toBe("true");
-   });
-
-   it("adds no chart warning to a table tile", async () => {
-      const doc = await openDocument(WITH_DIMENSION);
-      render(<ReportBuilder source={WITH_DIMENSION} document={doc} />);
-      fireEvent.click(screen.getByLabelText("Settings for x"));
-      expect(clickableItem().textContent).toBe("Clickable cells…");
-   });
-
-   it("offers no Drill when the source declares no dimension here", async () => {
-      // A window whose only content is why its Apply is off is a dead end;
-      // the menu leaves the entry out instead.
+   it("is offered on a tile over a model-declared dimension, with no source in this file", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      expect(screen.queryByRole("button", { name: "Drill" })).toBeNull();
+      const item = screen.getByRole("menuitem", {
+         name: /^What clicking a value does/,
+         hidden: true,
+      });
+      expect(item.getAttribute("aria-disabled")).not.toBe("true");
    });
 });
 

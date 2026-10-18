@@ -15,7 +15,8 @@ import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
 import { duplicateBlocked } from "./addTileToDocument";
 import { isQueryTile, tileKey } from "./document";
-import { DrillDialog } from "./DrillDialog";
+import { ClickActionsDialog } from "./ClickActionsDialog";
+import type { LinkTarget } from "./clickActions";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
 import { tileDisplayTitle } from "./tileDisplayTitle";
@@ -25,7 +26,7 @@ import type { useTileEditing } from "./useTileEditing";
 
 /**
  * Every window the builder opens, each driven by state its hooks hold: the
- * filter window, a tile's menu, the clickable-cells window, the
+ * filter window, a tile's menu, "What clicking a value does", the
  * unsaved-changes guard and the add-tile picker.
  */
 export function BuilderDialogs({
@@ -40,6 +41,8 @@ export function BuilderDialogs({
    exitDialog,
    renderViewPreview,
    takenGivenNames,
+   linkTargets,
+   tileResult,
 }: {
    editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
@@ -47,12 +50,16 @@ export function BuilderDialogs({
    dashboards: string[] | undefined;
    bindings: ReturnType<typeof useControlBindings>;
    tiles: ReturnType<typeof useTileEditing>;
-   /** The source whose clickable cells are being edited, if any. */
+   /** The key of the tile whose click actions are being set, if any. */
    drillSource: string | undefined;
-   setDrillSource: (source: string | undefined) => void;
+   setDrillSource: (tile: string | undefined) => void;
    exitDialog: ComponentProps<typeof UnsavedChangesDialog>;
    renderViewPreview?: (view: ViewPreview) => ReactNode;
    takenGivenNames?: readonly string[];
+   /** The package's other reports, with the filters each shows. Absent, `dashboards` is offered with its filters unchecked. */
+   linkTargets?: readonly LinkTarget[];
+   /** A tile's last result as the canvas ran it, by tile key. */
+   tileResult?: (tile: string) => string | undefined;
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
@@ -168,35 +175,39 @@ export function BuilderDialogs({
             {...(menuTile && duplicateBlocked(menuTile) !== undefined
                ? { duplicateBlocked: duplicateBlocked(menuTile) }
                : {})}
-            {...((editor.document.sources.find(
-               (s) => s.name === menuTile?.source,
-            )?.dimensions?.length ?? 0) > 0
+            {...(menuTile
                ? {
                     onDrills: () => {
-                       setDrillTile(
-                          menuTile ? tileDisplayTitle(menuTile) : undefined,
-                       );
-                       setDrillSource(menuTile?.source);
+                       setDrillTile(tileDisplayTitle(menuTile));
+                       setDrillSource(tileKey(menuTile));
                     },
                  }
                : {})}
          />
-         <DrillDialog
+         <ClickActionsDialog
             open={drillSource !== undefined}
-            document={editor.document}
-            source={editor.document.sources.find((s) => s.name === drillSource)}
-            givenNames={bindings.controlList.map((c) => c.name)}
-            dashboards={dashboards ?? []}
-            {...(drillTile ? { tileLabel: drillTile } : {})}
+            tileTitle={drillTile ?? ""}
+            result={drillSource ? tileResult?.(drillSource) : undefined}
+            drill={(() => {
+               const tile = editor.document.tiles.find(
+                  (t) => tileKey(t) === drillSource,
+               );
+               return tile && isQueryTile(tile) ? tile.drill : undefined;
+            })()}
+            controls={bindings.controlList.map((c) => c.name)}
+            reports={
+               linkTargets ??
+               (dashboards ?? []).map((path) => ({ path, title: path }))
+            }
             onClose={() => setDrillSource(undefined)}
-            onApply={(drills) =>
+            onApply={(drill) =>
                editor.update((draft) => {
-                  const kept = (draft.drills ?? []).filter(
-                     (d) => d.source !== drillSource,
+                  const tile = draft.tiles.find(
+                     (t) => tileKey(t) === drillSource,
                   );
-                  const next = [...kept, ...drills];
-                  if (next.length === 0) delete draft.drills;
-                  else draft.drills = next;
+                  if (!tile || !isQueryTile(tile)) return;
+                  if (drill) tile.drill = drill;
+                  else delete tile.drill;
                })
             }
          />
