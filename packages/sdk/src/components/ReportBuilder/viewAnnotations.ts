@@ -20,6 +20,53 @@ export function docOf(annotations: string[] | undefined): string | undefined {
 }
 
 /**
+ * A view's `# label`, as the reader titles a tile naming it: `# label="Plain"`,
+ * `# label='Plain'` or `# label=Plain`, the last one written winning, as MOTLY
+ * reads repeated properties. Undefined when none says.
+ */
+export function labelOf(annotations: string[] | undefined): string | undefined {
+   let found: string | undefined;
+   for (const raw of annotations ?? []) {
+      const line = raw.trim();
+      if (!line.startsWith("#") || line.startsWith("#(")) continue;
+      const body = line.replace(/^#+\s?/, "");
+      // Top-level properties only: skip quoted text and `{ … }` blocks, so a
+      // `label=` inside another property's value or a nested tag is not read.
+      let depth = 0;
+      for (let i = 0; i < body.length; i++) {
+         const char = body[i];
+         if (char === '"' || char === "'") {
+            const quote = char;
+            for (i++; i < body.length && body[i] !== quote; i++)
+               if (body[i] === "\\") i++;
+            continue;
+         }
+         if (char === "{") depth++;
+         else if (char === "}") depth = Math.max(0, depth - 1);
+         if (depth > 0 || (i > 0 && !/\s/.test(body[i - 1]))) continue;
+         const m = /^label\s*=\s*/.exec(body.slice(i));
+         if (!m) continue;
+         const rest = body.slice(i + m[0].length);
+         const quote = rest[0];
+         if (quote === '"' || quote === "'") {
+            let value = "";
+            let j = 1;
+            for (; j < rest.length && rest[j] !== quote; j++)
+               value +=
+                  rest[j] === "\\" && j + 1 < rest.length ? rest[++j] : rest[j];
+            if (j < rest.length) found = value;
+            i += m[0].length + j;
+         } else {
+            const bare = /^[^\s}]+/.exec(rest);
+            if (bare) found = bare[0];
+            i += m[0].length + (bare?.[0].length ?? 0) - 1;
+         }
+      }
+   }
+   return found;
+}
+
+/**
  * The chart a view's annotations draw, as the renderer picks it
  * ({@link resolvedChart}): `bar_chart`, `shape_map`, … A `viz=bar` reads as
  * `bar_chart`. Undefined for a table, or no chart.

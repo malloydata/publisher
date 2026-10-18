@@ -23,12 +23,14 @@ import {
    clickMenuPreview,
    currentChoice,
    entryFor,
-   filterFor,
+   filtersFor,
+   selfFilter,
    linkTargetsFor,
    type ClickChoice,
    type ClickDimension,
    type LinkTarget,
    type ParseTags,
+   type ReportFilter,
 } from "./clickActions";
 import { loadMalloyTag } from "./loadMalloy";
 
@@ -43,8 +45,8 @@ export interface ClickActionsDialogProps {
    result: string | undefined;
    /** The tile entry's drill as written now. */
    drill: Record<string, EntryDrill> | undefined;
-   /** This report's filters, by given name. */
-   controls: readonly string[];
+   /** This report's filters, with their declared types. */
+   controls: readonly ReportFilter[];
    /** The package's other reports. */
    reports: readonly LinkTarget[];
    onClose: () => void;
@@ -176,7 +178,12 @@ export function ClickActionsDialog({
                         self: false,
                         extra: [],
                      };
-                     const selfFilter = filterFor(d, controls);
+                     const selfOptions = filtersFor(
+                        d,
+                        controls,
+                        choice.selfGiven,
+                     );
+                     const selfSets = selfFilter(d, choice, controls);
                      const targets = linkTargetsFor(d, reports);
                      const fromModel =
                         d.modelDrill !== undefined &&
@@ -213,22 +220,87 @@ export function ClickActionsDialog({
                                  </Typography>
                               )}
                            </Box>
-                           <FormControlLabel
-                              control={
-                                 <Checkbox
+                           <Box
+                              sx={{
+                                 display: "flex",
+                                 alignItems: "center",
+                                 gap: 1,
+                                 flexWrap: "wrap",
+                              }}
+                           >
+                              <FormControlLabel
+                                 sx={{ mr: 0 }}
+                                 control={
+                                    <Checkbox
+                                       size="small"
+                                       checked={choice.self}
+                                       disabled={selfOptions.length === 0}
+                                       onChange={(event) =>
+                                          set(d.name, {
+                                             self: event.target.checked,
+                                             ...(event.target.checked &&
+                                             selfSets !== undefined
+                                                ? { selfGiven: selfSets }
+                                                : {}),
+                                          })
+                                       }
+                                    />
+                                 }
+                                 label={`Filter this report by ${d.label}`}
+                              />
+                              {(selfOptions.length > 1 ||
+                                 (selfOptions.length === 1 &&
+                                    selfSets === undefined)) && (
+                                 <TextField
+                                    select
                                     size="small"
-                                    checked={choice.self}
-                                    disabled={selfFilter === undefined}
+                                    value={selfSets ?? ""}
+                                    disabled={!choice.self}
+                                    slotProps={{
+                                       htmlInput: {
+                                          "aria-label": `Filter ${d.label} sets`,
+                                       },
+                                       select: {
+                                          displayEmpty: true,
+                                          renderValue: (value) =>
+                                             value === ""
+                                                ? "Choose a filter"
+                                                : (selfOptions.find(
+                                                     (filter) =>
+                                                        filter.name === value,
+                                                  )?.label ?? String(value)),
+                                       },
+                                    }}
                                     onChange={(event) =>
                                        set(d.name, {
-                                          self: event.target.checked,
+                                          selfGiven: event.target.value,
                                        })
                                     }
-                                 />
-                              }
-                              label={`Filter this report by ${d.label}`}
-                           />
-                           {selfFilter === undefined && (
+                                    sx={{ minWidth: 160 }}
+                                 >
+                                    {selfOptions.map((filter) => (
+                                       <MenuItem
+                                          key={filter.name}
+                                          value={filter.name}
+                                       >
+                                          {filter.label ?? filter.name}
+                                       </MenuItem>
+                                    ))}
+                                 </TextField>
+                              )}
+                           </Box>
+                           {choice.self &&
+                              selfOptions.length > 0 &&
+                              selfSets === undefined && (
+                                 <Typography
+                                    variant="caption"
+                                    component="div"
+                                    sx={{ color: "text.secondary", pl: 4 }}
+                                 >
+                                    Choose the filter a {d.label} value sets.
+                                 </Typography>
+                              )}
+                           {selfOptions.length === 0 && (
                               <Typography
                                  variant="caption"
                                  component="div"

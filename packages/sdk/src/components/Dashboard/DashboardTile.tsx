@@ -119,7 +119,10 @@ export interface DashboardTileProps {
  * tile shows a heading rather than code.
  */
 export function tileTitle(tile: string): string {
-   const lastStep = tile.split("->").at(-1)?.trim() ?? tile;
+   // A refinement (`by_carrier + { where: … }`) filters the view; the title is the view's.
+   const lastStep = (tile.split("->").at(-1)?.trim() ?? tile)
+      .replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "")
+      .trim();
    // Anything that is not a bare name (an inline `{ … }` stage, say) has no
    // sensible title to derive, so it keeps the expression as written.
    return /^[A-Za-z_][\w-]*$/.test(lastStep) ? humanizeSlug(lastStep) : tile;

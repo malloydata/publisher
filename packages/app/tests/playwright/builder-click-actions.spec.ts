@@ -56,7 +56,7 @@ test.describe("builder click actions", () => {
       return page.getByRole("dialog");
    };
 
-   test("a tile over a model dimension offers it, and says when the report has no filter for it", async ({
+   test("a tile over a model dimension offers it, and asks which filter a value sets when none is named like it", async ({
       page,
    }) => {
       await page.goto(`/${pe.env}/${pe.pkg}/overview?edit`);
@@ -65,13 +65,18 @@ test.describe("builder click actions", () => {
       await expect(dialog).toContainText(
          "When someone clicks a value in Top products",
       );
-      await expect(
-         dialog.getByRole("checkbox", {
-            name: "Filter this report by Product",
-         }),
-      ).toBeDisabled();
+      // The report has text filters but none for Product: the box is offered,
+      // and nothing is guessed until the author picks which filter it sets.
+      const self = dialog.getByRole("checkbox", {
+         name: "Filter this report by Product",
+      });
+      await expect(self).toBeEnabled();
+      await self.check();
       await expect(dialog).toContainText(
-         "Add a Product filter to this report first",
+         "Choose the filter a Product value sets.",
+      );
+      await expect(dialog.getByLabel("Preview")).not.toContainText(
+         "Filter this report to",
       );
       await expect(dialog).toContainText(/Show rows for /);
       await dialog.getByRole("button", { name: "Cancel" }).click();

@@ -8,9 +8,9 @@ import {
 } from "../RenderedResult/chartShapeProblem";
 import { exportedSources } from "../DocumentCreate/exportedSources";
 import { CHART_TAGS } from "./chartLine";
-import { authorPaletteOf, chartOf, docOf } from "./viewAnnotations";
+import { authorPaletteOf, chartOf, docOf, labelOf } from "./viewAnnotations";
 
-export { authorPaletteOf, chartOf, docOf };
+export { authorPaletteOf, chartOf, docOf, labelOf };
 
 export { CHART_TAGS };
 
@@ -37,6 +37,8 @@ export interface CatalogField {
 
 export interface CatalogView {
    name: string;
+   /** Its `# label`: what the reader titles a tile naming it. */
+   label?: string;
    /** From a `#(doc)` annotation, which is what a picker should show. */
    description?: string;
    /** `bar_chart`, `line_chart`, `shape_map`, … if the view declares one. */
@@ -192,8 +194,10 @@ function catalogViewOf(
    const description = docOf(view.annotations);
    const chart = chartOf(view.annotations);
    const authorPalette = authorPaletteOf(view.annotations);
+   const label = labelOf(view.annotations);
    return {
       name: view.name,
+      ...(label ? { label } : {}),
       ...(description ? { description } : {}),
       ...(chart ? { chart } : {}),
       ...(authorPalette ? { authorPalette } : {}),

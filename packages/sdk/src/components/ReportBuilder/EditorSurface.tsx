@@ -26,6 +26,7 @@ import {
 import { layoutRules } from "../Report/layoutRules";
 import type { CompiledModel } from "../../client";
 import { documentViewsOf } from "./catalog";
+import { catalogViewOfTile } from "./tileCatalogView";
 import { useReportListing } from "../Package/useDocumentLocation";
 import {
    BUILDER_HANDOFF_STALE_MS,
@@ -43,7 +44,6 @@ import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
    isQueryTile,
-   isReadOnlyTile,
    tileExpression,
    tileKey,
    tileViewExpression,
@@ -484,20 +484,20 @@ export function EditorSurface({
       () => unsavedImports(doc, opened.document, modelPath, !!textSource),
       [doc, opened.document, modelPath, textSource],
    );
-   // A tile with no title of its own shows its view's, as the reader does:
-   // the served label of the query or view it names, else of the view a query
-   // of the report's own reads, else one derived from the view's name.
+   // Every name the builder gives a tile, headings and aria labels alike, is
+   // the reader's title: the tile's own label, else the served label of the
+   // query or view it names, else of the view a query of the report's own
+   // reads, else that view's `# label` from the catalog (a tile the served
+   // manifest does not title yet, or a refinement it titles by its text), else
+   // one derived from the view's name.
    const titleOf = useCallback(
       (tile: QueryTile) =>
          tile.label ??
-         (isReadOnlyTile(tile) ||
-         tile.declaration.kind === "inherited" ||
-         tile.declaration.kind === "named"
-            ? (servedLabels.get(tileExpressionKey(tileExpression(tile))) ??
-              servedLabels.get(tileExpressionKey(tileViewExpression(tile))))
-            : undefined) ??
+         servedLabels.get(tileExpressionKey(tileExpression(tile))) ??
+         servedLabels.get(tileExpressionKey(tileViewExpression(tile))) ??
+         catalogViewOfTile(tile, doc, offered)?.label ??
          tileDisplayTitle(tile),
-      [servedLabels],
+      [servedLabels, doc, offered],
    );
    const renderTile = useMemo(
       () =>

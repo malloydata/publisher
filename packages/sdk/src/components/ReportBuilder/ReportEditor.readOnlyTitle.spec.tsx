@@ -80,13 +80,14 @@ describe("a read-only tile's title in the builder", () => {
          />,
          { wrapper: serverWrapper },
       );
-      const named = await screen.findByLabelText("Tile by_carrier");
+      // The tile is named as it is titled, aria label included.
+      const named = await screen.findByLabelText("Tile Flights by airline");
       expect(
          await within(named).findByText("Flights by airline"),
       ).toBeDefined();
       expect(within(named).queryByText("By carrier")).toBeNull();
       // A tile naming a view in the model is titled the same way.
-      const inherited = screen.getByLabelText("Tile by_month");
+      const inherited = screen.getByLabelText("Tile Flights each month");
       expect(within(inherited).getByText("Flights each month")).toBeDefined();
    });
 });

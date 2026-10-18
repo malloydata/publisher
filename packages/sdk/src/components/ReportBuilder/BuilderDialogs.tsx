@@ -14,11 +14,17 @@ import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
 import { duplicateBlocked } from "./addTileToDocument";
-import { isInlineStage, isQueryTile, tileKey } from "./document";
+import {
+   isInlineStage,
+   isQueryTile,
+   tileKey,
+   type QueryTile,
+} from "./document";
 import { ClickActionsDialog } from "./ClickActionsDialog";
 import { viewOfResult, type LinkTarget } from "./clickActions";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
+import { catalogViewOfTile } from "./tileCatalogView";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { useControlBindings } from "./useControlBindings";
 import type { ReportEditorHandle } from "./useReportEditor";
@@ -43,6 +49,7 @@ export function BuilderDialogs({
    takenGivenNames,
    linkTargets,
    tileResult,
+   titleOf = tileDisplayTitle,
 }: {
    editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
@@ -58,6 +65,8 @@ export function BuilderDialogs({
    takenGivenNames?: readonly string[];
    /** The package's other reports, with the filters each shows. Absent, `dashboards` is offered with its filters unchecked. */
    linkTargets?: readonly LinkTarget[];
+   /** A tile's title as the reader shows it; see `ReportBuilderProps.titleOf`. */
+   titleOf?: (tile: QueryTile) => string;
    /** A tile's last result as the canvas ran it, by tile key. */
    tileResult?: (tile: string) => string | undefined;
 }) {
@@ -103,35 +112,8 @@ export function BuilderDialogs({
          isInlineStage(menuTile.declaration.from)
       )
          return viewOfResult(tileResult?.(tileKey(menuTile)));
-      if (!menuTile || !catalog) return undefined;
-      // A view this file declares is read off the file's own compiled model:
-      // an inline body is in no other model the catalog has.
-      const declared = catalog.documentViews
-         ?.get(menuTile.source ?? "")
-         ?.get(menuTile.name);
-      if (
-         declared &&
-         editor.document.sources.some((s) => s.name === menuTile.source)
-      )
-         return declared;
-      // An inline or opaque body is not a view of the base source, so a base
-      // view that happens to share its name says nothing about its shape.
-      if (
-         menuTile.declaration.kind === "inline" ||
-         menuTile.declaration.kind === "opaque"
-      )
-         return undefined;
-      const base =
-         editor.document.sources.find((s) => s.name === menuTile.source)
-            ?.base ?? menuTile.source;
-      const viewName =
-         menuTile.declaration.kind === "reference" ||
-         menuTile.declaration.kind === "named"
-            ? menuTile.declaration.from
-            : menuTile.name;
-      return catalog.sources
-         .find((s) => s.name === base)
-         ?.views.find((v) => v.name === viewName);
+      if (!menuTile) return undefined;
+      return catalogViewOfTile(menuTile, editor.document, catalog);
    })();
    return (
       <>
@@ -185,7 +167,7 @@ export function BuilderDialogs({
             {...(menuTile
                ? {
                     onDrills: () => {
-                       setDrillTile(tileDisplayTitle(menuTile));
+                       setDrillTile(titleOf(menuTile));
                        setDrillSource(tileKey(menuTile));
                     },
                  }
@@ -201,7 +183,11 @@ export function BuilderDialogs({
                );
                return tile && isQueryTile(tile) ? tile.drill : undefined;
             })()}
-            controls={bindings.controlList.map((c) => c.name)}
+            controls={bindings.controlList.map((c) => ({
+               name: c.name,
+               ...(c.label !== undefined ? { label: c.label } : {}),
+               ...(c.type !== undefined ? { type: c.type } : {}),
+            }))}
             reports={
                linkTargets ??
                (dashboards ?? []).map((path) => ({ path, title: path }))

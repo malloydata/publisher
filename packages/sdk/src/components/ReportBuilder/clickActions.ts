@@ -36,6 +36,17 @@ export interface ClickDimension {
    value: unknown;
    /** Whether {@link value} is a value a click acts on (not a null). */
    clickable: boolean;
+   /** Its value type (`string`, `number`, `date`, `timestamp`, `boolean`), which decides the filters it can set. */
+   type?: string;
+}
+
+/** One of this report's filters, as the dialog offers it for "Filter this report by …". */
+export interface ReportFilter {
+   /** The given's name: what a drill's `given=` names. */
+   name: string;
+   label?: string;
+   /** The declared type, as written: `filter<string>`, `string`, `date`, … Absent when the host did not say. */
+   type?: string;
 }
 
 /** A dimension column of a result. */
@@ -174,9 +185,13 @@ export function clickDimensions(
       for (const { field, cell } of grouped) {
          const tags = fieldTags(field, parse);
          const value = cellValue(cell);
+         const kind = (field.type as Malloy.AtomicType).kind;
          out.push({
             name: field.name,
             label: tags.label ?? readableName(field.name),
+            ...(kind.endsWith("_type")
+               ? { type: kind.slice(0, -"_type".length) }
+               : {}),
             ...(tags.drill ? { modelDrill: tags.drill } : {}),
             rowClauses,
             value,
@@ -252,6 +267,8 @@ export interface LinkTarget {
 export interface ClickChoice {
    /** "Filter this report by …" is ticked. */
    self: boolean;
+   /** Which of this report's filters it sets, when the author picked one or the tile already names one. */
+   selfGiven?: string;
    /** "Link to another report:" is ticked, and to which. */
    link?: string;
    /** Destinations the dialog does not show (a second linked report), kept as written. */
@@ -261,15 +278,16 @@ export interface ClickChoice {
 const fold = (name: string) => name.toLowerCase();
 
 /**
- * The filter a click on `dimension` sets, among `names`: the one its model tag
- * names, else one named like the dimension. Matched without case, as the
- * reader matches a drill's given.
+ * The filter a click on `dimension` sets, among `names`: the one the tile's
+ * entry names (`given`), else its model tag's, else one named like the
+ * dimension. Matched without case, as the reader matches a drill's given.
  */
 export function filterFor(
    dimension: ClickDimension,
    names: readonly string[],
+   given?: string,
 ): string | undefined {
-   const wanted = [dimension.modelDrill?.given, dimension.name].filter(
+   const wanted = [given, dimension.modelDrill?.given, dimension.name].filter(
       (name): name is string => name !== undefined,
    );
    for (const want of wanted) {
@@ -277,6 +295,47 @@ export function filterFor(
       if (hit) return hit;
    }
    return undefined;
+}
+
+/** `filter<string>` and `string` are both `string`; a `date` value also sets a `timestamp` filter and back. */
+function valueType(declared: string): string {
+   const inner = /^filter\s*<\s*([a-z]+)\s*>$/i.exec(declared.trim());
+   return (inner ? inner[1] : declared.trim()).toLowerCase();
+}
+
+/** Whether a value of `dimension` can set `filter`: same type, or a type either side doesn't say. */
+export function filterAccepts(
+   filter: ReportFilter,
+   dimension: ClickDimension,
+): boolean {
+   if (filter.type === undefined || dimension.type === undefined) return true;
+   const want = valueType(filter.type);
+   const have = dimension.type;
+   const time = (t: string) => t === "date" || t === "timestamp";
+   return want === have || (time(want) && time(have));
+}
+
+/**
+ * The report's filters a click on `dimension` can set, the one it would set
+ * by name first: what the dialog's filter picker lists.
+ */
+export function filtersFor(
+   dimension: ClickDimension,
+   filters: readonly ReportFilter[],
+   given?: string,
+): ReportFilter[] {
+   const fitting = filters.filter((filter) => filterAccepts(filter, dimension));
+   const first = filterFor(
+      dimension,
+      fitting.map((filter) => filter.name),
+      given,
+   );
+   return first === undefined
+      ? fitting
+      : [
+           ...fitting.filter((filter) => filter.name === first),
+           ...fitting.filter((filter) => filter.name !== first),
+        ];
 }
 
 /** The other reports a click on `dimension` can open with its value set: those with a filter it sets. */
@@ -296,13 +355,40 @@ export function currentChoice(
    dimension: ClickDimension,
    entry: EntryDrill | undefined,
 ): ClickChoice {
-   const to = (entry ?? dimension.modelDrill)?.to ?? [];
+   const drill = entry ?? dimension.modelDrill;
+   const to = drill?.to ?? [];
    const reports = to.filter((destination) => destination !== DRILL_SELF);
    return {
       self: to.includes(DRILL_SELF),
+      ...(to.includes(DRILL_SELF) && drill?.given !== undefined
+         ? { selfGiven: drill.given }
+         : {}),
       ...(reports[0] !== undefined ? { link: reports[0] } : {}),
       extra: reports.slice(1),
    };
+}
+
+/**
+ * The filter "Filter this report by …" sets for `dimension`: the one the
+ * author picked, else the one the tile already names or the dimension is
+ * named like. Undefined when neither, even if the report has filters of its
+ * type: guessing would write a value into an unrelated filter, so the author
+ * picks one.
+ */
+export function selfFilter(
+   dimension: ClickDimension,
+   choice: ClickChoice,
+   filters: readonly ReportFilter[],
+): string | undefined {
+   const offered = filtersFor(dimension, filters, choice.selfGiven);
+   const picked = offered.find(
+      (filter) => fold(filter.name) === fold(choice.selfGiven ?? ""),
+   );
+   if (picked) return picked.name;
+   return filterFor(
+      dimension,
+      offered.map((filter) => filter.name),
+   );
 }
 
 /**
@@ -314,17 +400,23 @@ export function currentChoice(
 export function entryFor(
    dimension: ClickDimension,
    choice: ClickChoice,
-   controls: readonly string[],
+   filters: readonly ReportFilter[],
    reports: readonly LinkTarget[],
 ): EntryDrill | undefined {
+   // Filtering this report needs a filter to write the value into; until one
+   // is chosen, the choice writes nothing.
+   const sets = choice.self
+      ? (selfFilter(dimension, choice, filters) ?? choice.selfGiven)
+      : undefined;
+   const self = choice.self && sets !== undefined;
    const to = [
-      ...(choice.self ? [DRILL_SELF] : []),
+      ...(self ? [DRILL_SELF] : []),
       ...(choice.link !== undefined ? [choice.link] : []),
       ...choice.extra,
    ];
    const linked = reports.find((report) => report.path === choice.link);
    const given =
-      (choice.self ? filterFor(dimension, controls) : undefined) ??
+      sets ??
       (linked?.givenNames
          ? filterFor(dimension, linked.givenNames)
          : dimension.modelDrill?.given);

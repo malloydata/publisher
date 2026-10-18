@@ -85,7 +85,7 @@ describe("ReportBuilder: charts", () => {
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       const names = enabledCharts();
       // The wrapper's view `by_category` carries a shape map, so it is
       // enabled; the rest are listed disabled. A table is enabled too: a
@@ -114,7 +114,7 @@ describe("ReportBuilder: charts", () => {
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Table");
       pickChart("Default");
       closeMenu();
@@ -155,7 +155,7 @@ describe("ReportBuilder: charts", () => {
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Bar");
       pickChart("Default");
       closeMenu();
@@ -172,7 +172,7 @@ describe("ReportBuilder: charts", () => {
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
+      fireEvent.click(screen.getByLabelText("Settings for By brand"));
       expect(chartItem().getAttribute("aria-disabled")).toBe("true");
       expect(screen.getByText(/is not one the builder models/)).toBeDefined();
       closeMenu();
@@ -198,7 +198,7 @@ describe("ReportBuilder: charts", () => {
             }}
          />,
       );
-      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
+      fireEvent.click(screen.getByLabelText("Settings for By brand"));
       expect(chartItem().getAttribute("aria-disabled")).toBeNull();
       fireEvent.click(chartItem());
       pickChart("Bar");
@@ -397,7 +397,7 @@ describe("ReportBuilder: a chart's color", () => {
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Bar");
       const choices = swatches();
       // The theme's own colors first, then any other.
@@ -420,7 +420,7 @@ describe("ReportBuilder: a chart's color", () => {
 
    it("opens the platform's picker from the keyboard, where focus is on the item and not its input", async () => {
       await mount();
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Bar");
       const other = swatches().at(-1) as HTMLElement;
       expect(primary(other)).toBe("Other color…");
@@ -454,7 +454,7 @@ describe("ReportBuilder: a chart's color", () => {
             catalog={withPalette}
          />,
       );
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Bar");
       const color = colorItem();
       expect(color.getAttribute("aria-disabled")).toBe("true");
@@ -475,7 +475,7 @@ describe("ReportBuilder: a chart's color", () => {
             catalog={catalog}
          />,
       );
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       const color = colorItem();
       expect(color.getAttribute("aria-disabled")).toBe("true");
       expect(color.textContent).toContain(
@@ -485,7 +485,7 @@ describe("ReportBuilder: a chart's color", () => {
 
    it("spaces the Color row's swatch from its value", async () => {
       await mount();
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Bar");
       const swatch = colorItem().querySelector("[data-swatch]") as HTMLElement;
       expect(swatch.dataset.swatch).toBe("trailing");
@@ -496,7 +496,7 @@ describe("ReportBuilder: a chart's color", () => {
 
    it("offers no color on a table, which draws no series", async () => {
       await mount();
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       pickChart("Table");
       expect(colorItem().getAttribute("aria-disabled")).toBe("true");
       expect(screen.getByText(/has a color to set/)).toBeDefined();

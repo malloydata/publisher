@@ -673,6 +673,14 @@ export interface ReportModelFacts {
    queries: {
       name: string;
       annotations: string[];
+      /**
+       * The tags of the view the query reads, which Malloy keeps under
+       * `annotations.inherits` once the query has tags of its own: a builder
+       * query (`by_carrier_tile is flights -> by_carrier + { … }`) with its
+       * `# viz` keeps the view's `# label`. Outermost first; the query's own
+       * lines come after, so they win.
+       */
+      inherited?: string[];
       /** Names of the givens this query references. */
       givens: string[];
       /**
@@ -839,6 +847,7 @@ export function readReportModelFacts(
             ...(query.annotations?.blockNotes ?? []),
             ...(query.annotations?.notes ?? []),
          ].map((note) => note.text),
+         inherited: inheritedNotes(query.annotations),
          givens: (query.givenUsage ?? [])
             .map((usage) => registry[usage.id]?.name)
             .filter((name): name is string => name !== undefined),
@@ -1077,15 +1086,50 @@ function resolveTileLayout(
    return annotations && readTileLayout(annotations);
 }
 
+/**
+ * The annotation texts a query inherits from what it reads, outermost first:
+ * the `inherits` chain Malloy keeps once the query carries tags of its own.
+ */
+function inheritedNotes(
+   annotation: NamedQueryDef["annotations"] | undefined,
+): string[] {
+   const chain: string[][] = [];
+   for (let at = annotation?.inherits; at; at = at.inherits)
+      chain.unshift(
+         [...(at.blockNotes ?? []), ...(at.notes ?? [])].map(
+            (note) => note.text,
+         ),
+      );
+   return chain.flat();
+}
+
+/**
+ * `orders -> by_month + { where: … }` -> `orders -> by_month`: a refinement
+ * filters the view, so the tile is presented as the view is. Undefined for
+ * any other shape. Linear: a prefix test on the last step, no backtracking.
+ */
+function refinedViewExpression(normalized: string): string | undefined {
+   const at = normalized.lastIndexOf(" -> ");
+   if (at === -1) return undefined;
+   const step = normalized.slice(at + 4);
+   const plus = step.indexOf(" + {");
+   if (plus === -1 || !/^[A-Za-z_][\w]*$/.test(step.slice(0, plus)))
+      return undefined;
+   return normalized.slice(0, at + 4) + step.slice(0, plus);
+}
+
 /** The annotations on whatever a tile expression names, for the two readers of them. */
 function tileAnnotations(
    tile: string,
    facts: ReportModelFacts,
 ): string[] | undefined {
    const normalized = normalizeTileExpression(tile);
+   const query = facts.queries.find((each) => each.name === normalized);
+   const refined = refinedViewExpression(normalized);
    return (
       facts.viewAnnotations.get(normalized) ??
-      facts.queries.find((query) => query.name === normalized)?.annotations
+      (query && [...(query.inherited ?? []), ...query.annotations]) ??
+      (refined !== undefined ? facts.viewAnnotations.get(refined) : undefined)
    );
 }
 

@@ -196,6 +196,9 @@ export function BuilderGrid({
                      return (
                         <TileFrame
                            tile={each}
+                           {...(isQueryTile(each)
+                              ? { title: titleOf(each) }
+                              : {})}
                            index={index}
                            selected={index === selected}
                            flash={tileKey(each) === flash}

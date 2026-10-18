@@ -12,6 +12,7 @@ import {
 import { describe, expect, it, mock } from "bun:test";
 import type { ReportEvent } from "../Report/telemetry";
 import { ReportBuilder } from "./ReportBuilder";
+import type { QueryTile } from "./document";
 import { openDocument } from "./testing/fixtures";
 import { closeMenu, editInline, viewOption } from "./testing/inline";
 import { dragEdge } from "./testing/resize";
@@ -45,6 +46,9 @@ const mount = async (
 };
 
 const tile = (name: string) => screen.getByLabelText(`Tile ${name}`);
+/** A tile by its key, which a retitle leaves alone (its name follows the title). */
+const keyed = (key: string) =>
+   document.querySelector(`[data-tile-key="${key}"]`) as HTMLElement;
 
 /**
  * Select a tile AND open its settings.
@@ -106,8 +110,8 @@ describe("ReportBuilder", () => {
       await mount();
       // The labelled tile shows its label; the unlabelled one falls back to the
       // view name, which is what the dashboard itself does.
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
-      expect(within(tile("by_brand")).getByText("By brand")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("By category")).toBeDefined();
+      expect(within(tile("By brand")).getByText("By brand")).toBeDefined();
       expect(screen.getByText("Storefront")).toBeDefined();
    });
 
@@ -115,7 +119,7 @@ describe("ReportBuilder", () => {
    // what you arrange is what a reader sees.
    it("lays tiles out on the dashboard's own grid rule", async () => {
       await mount();
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 6");
    });
 
    // Narrowing a tile has to narrow it. A grid item's minimum width is its
@@ -124,7 +128,7 @@ describe("ReportBuilder", () => {
    // renderer never redrew for a size change it never saw.
    it("lets a tile narrow below whatever it holds", async () => {
       await mount();
-      expect(itemStyleOf("by_cat")).toContain("min-width: 0;");
+      expect(itemStyleOf("By category")).toContain("min-width: 0;");
    });
 
    // Filters are configured in ONE place, the strip: a control's window is
@@ -135,7 +139,7 @@ describe("ReportBuilder", () => {
          written = source;
       });
       expect(
-         within(tile("by_cat")).queryByLabelText(/^Remove filter /),
+         within(keyed("a.by_cat")).queryByLabelText(/^Remove filter /),
       ).toBeNull();
 
       fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
@@ -161,7 +165,9 @@ describe("ReportBuilder", () => {
             renderTile={(each) => <article>a real {each.name}</article>}
          />,
       );
-      expect(within(tile("by_cat")).getByText(/a real by_cat/)).toBeDefined();
+      expect(
+         within(keyed("a.by_cat")).getByText(/a real by_cat/),
+      ).toBeDefined();
       // The label is the caller's to draw now, so the surface does not also
       // print it, and the placeholder is gone.
       expect(screen.queryByText("By category")).toBeNull();
@@ -179,10 +185,10 @@ describe("ReportBuilder", () => {
             renderTile={(each) => <article>a real {each.name}</article>}
          />,
       );
-      const before = itemStyleOf("by_cat");
-      selectTile("by_cat");
-      expect(tile("by_cat").getAttribute("aria-current")).toBe("true");
-      expect(itemStyleOf("by_cat")).toBe(before);
+      const before = itemStyleOf("By category");
+      selectTile("By category");
+      expect(tile("By category").getAttribute("aria-current")).toBe("true");
+      expect(itemStyleOf("By category")).toBe(before);
    });
 
    // The whole card is the drag target, so a press anywhere on it is how a
@@ -190,18 +196,18 @@ describe("ReportBuilder", () => {
    // drag itself needs geometry jsdom does not have; the press it can drive.
    it("selects a tile from a press anywhere on it, not only the grip", async () => {
       await mount();
-      fireEvent.pointerDown(tile("by_brand"), { button: 0 });
-      expect(tile("by_brand").getAttribute("aria-current")).toBe("true");
+      fireEvent.pointerDown(tile("By brand"), { button: 0 });
+      expect(tile("By brand").getAttribute("aria-current")).toBe("true");
       // Released without travelling: a click, so nothing was reordered and the
       // page is left as it was.
       fireEvent.pointerUp(window);
-      expect(tile("by_brand").getAttribute("aria-current")).toBe("true");
+      expect(tile("By brand").getAttribute("aria-current")).toBe("true");
    });
 
    it("ignores a press with any button but the primary", async () => {
       await mount();
-      fireEvent.pointerDown(tile("by_brand"), { button: 2 });
-      expect(tile("by_brand").getAttribute("aria-current")).toBe("false");
+      fireEvent.pointerDown(tile("By brand"), { button: 2 });
+      expect(tile("By brand").getAttribute("aria-current")).toBe("false");
    });
 });
 
@@ -529,7 +535,7 @@ describe("ReportBuilder: tiles added and removed", () => {
          target: { value: "Revenue by state" },
       });
       submitDialog("Add tile");
-      expect(tile("sales_by_state_tile")).toBeDefined();
+      expect(tile("Revenue by state")).toBeDefined();
 
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
@@ -552,7 +558,7 @@ describe("ReportBuilder: tiles added and removed", () => {
       fireEvent.click(screen.getByLabelText("Settings for By category"));
       expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
       fireEvent.click(screen.getByLabelText("Remove By category"));
-      expect(screen.queryByLabelText("Tile by_cat")).toBeNull();
+      expect(screen.queryByLabelText("Tile By category")).toBeNull();
 
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
@@ -572,13 +578,13 @@ describe("ReportBuilder: the last tile", () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Remove By category"));
       // The last tile's × stays focusable, says why, and does nothing.
-      const remove = screen.getByLabelText("Remove by_brand");
+      const remove = screen.getByLabelText("Remove By brand");
       expect(remove.getAttribute("aria-disabled")).toBe("true");
       expect(remove.getAttribute("aria-description")).toBe(
          "A saved report needs at least one tile.",
       );
       fireEvent.click(remove);
-      expect(screen.getByLabelText("Tile by_brand")).toBeDefined();
+      expect(screen.getByLabelText("Tile By brand")).toBeDefined();
    });
 });
 
@@ -591,19 +597,23 @@ describe("ReportBuilder: a tile's own settings", () => {
          "Tile subtitle",
          "Net of returns",
          "Enter",
-         tile("by_cat"),
+         keyed("a.by_cat"),
       );
       expect(
-         within(tile("by_cat")).getByText("Revenue by category"),
+         within(keyed("a.by_cat")).getByText("Revenue by category"),
       ).toBeDefined();
-      expect(within(tile("by_cat")).getByText("Net of returns")).toBeDefined();
-      fireEvent.click(button("Undo"));
-      expect(within(tile("by_cat")).queryByText("Net of returns")).toBeNull();
       expect(
-         within(tile("by_cat")).getByText("Revenue by category"),
+         within(keyed("a.by_cat")).getByText("Net of returns"),
       ).toBeDefined();
       fireEvent.click(button("Undo"));
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      expect(
+         within(keyed("a.by_cat")).queryByText("Net of returns"),
+      ).toBeNull();
+      expect(
+         within(keyed("a.by_cat")).getByText("Revenue by category"),
+      ).toBeDefined();
+      fireEvent.click(button("Undo"));
+      expect(within(keyed("a.by_cat")).getByText("By category")).toBeDefined();
    });
 
    // Retitling it makes it a query of the report's own, which carries the
@@ -646,7 +656,7 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -
       render(<ReportBuilder source={named} document={document} />);
       // Titled as the reader titles it, from the query's name.
       expect(
-         within(screen.getByLabelText("Tile by_carrier")).getByText(
+         within(screen.getByLabelText("Tile By carrier")).getByText(
             "By carrier",
          ),
       ).toBeDefined();
@@ -655,9 +665,9 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -
       fireEvent.click(screen.getByText("By carrier"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(
-         screen.queryByRole("separator", { name: "Width of by_carrier" }),
+         screen.queryByRole("separator", { name: "Width of By carrier" }),
       ).not.toBeNull();
-      fireEvent.click(screen.getByLabelText("Settings for by_carrier"));
+      fireEvent.click(screen.getByLabelText("Settings for By carrier"));
       expect(
          screen.getByText(
             "It names a query, so its chart is set where that query is declared.",
@@ -684,7 +694,7 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -
             }}
          />,
       );
-      fireEvent.click(screen.getByLabelText("Remove by_carrier"));
+      fireEvent.click(screen.getByLabelText("Remove By carrier"));
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
       );
@@ -703,14 +713,14 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       expect(edge.tabIndex).toBe(0);
       expect(edge.getAttribute("aria-valuetext")).toBe("6 of 12 columns");
       fireEvent.keyDown(edge, { key: "ArrowLeft" });
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 5");
       fireEvent.keyDown(
          screen.getByRole("separator", { name: "Width of By category" }),
          { key: "End" },
       );
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 12");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 12");
       fireEvent.click(button("Undo"));
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 5");
    });
 
    it("steps a tile's height from the keyboard on its bottom edge, and fits it again on Delete", async () => {
@@ -718,12 +728,12 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       const edge = () =>
          screen.getByRole("separator", { name: "Height of By category" });
       expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
-      expect(itemStyleOf("by_cat")).not.toContain("height:");
+      expect(itemStyleOf("By category")).not.toContain("height:");
       fireEvent.keyDown(edge(), { key: "ArrowDown" });
       // One row past the fewest a chart is offered (3).
       expect(edge().getAttribute("aria-valuetext")).toBe("4 rows tall");
       // Four 80px rows and the three gaps between them.
-      expect(itemStyleOf("by_cat")).toContain("height: 368px");
+      expect(itemStyleOf("By category")).toContain("height: 368px");
       fireEvent.keyDown(edge(), { key: "End" });
       expect(edge().getAttribute("aria-valuenow")).toBe("16");
       fireEvent.keyDown(edge(), { key: "Delete" });
@@ -737,10 +747,10 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       const document = await openDocument(source);
       render(<ReportBuilder source={source} document={document} />);
       expect(
-         screen.getByRole("separator", { name: "Width of by_brand" }),
+         screen.getByRole("separator", { name: "Width of By brand" }),
       ).toBeDefined();
       expect(
-         screen.getByRole("separator", { name: "Height of by_brand" }),
+         screen.getByRole("separator", { name: "Height of By brand" }),
       ).toBeDefined();
    });
 
@@ -750,8 +760,8 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       expect(screen.queryByRole("button", { name: /^Width/ })).toBeNull();
       closeMenu();
       dragEdge("By category", 4);
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 4");
-      expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 4");
+      expect(itemStyleOf("By brand")).toContain("grid-column: span 6");
    });
 
    it("edits the page's title and description, and writes them to the file", async () => {
@@ -830,23 +840,31 @@ source: a is scoped_orders extend {
       });
 
    const open = async (options: {
-      givens?: Array<{ name: string }>;
+      givens?: Array<{ name: string; type?: string; label?: string }>;
       drill?: string;
       reports?: Array<{ path: string; title: string; givenNames?: string[] }>;
       onSave?: (source: string) => void;
+      source?: string;
+      titleOf?: (tile: QueryTile) => string;
    }) => {
-      const doc = await openDocument(SOURCE_X);
+      const source = options.source ?? SOURCE_X;
+      const doc = await openDocument(source);
       render(
          <ReportBuilder
-            source={SOURCE_X}
+            source={source}
             document={doc}
+            {...(options.titleOf ? { titleOf: options.titleOf } : {})}
             givens={options.givens ?? []}
             linkTargets={options.reports ?? []}
             tileResult={() => RESULT(options.drill)}
             {...(options.onSave ? { onSave: options.onSave } : {})}
          />,
       );
-      fireEvent.click(screen.getByLabelText("Settings for x"));
+      fireEvent.click(
+         screen.getByLabelText(
+            `Settings for ${options.titleOf ? options.titleOf({} as QueryTile) : "X"}`,
+         ),
+      );
       fireEvent.click(
          screen.getByRole("menuitem", {
             name: /^What clicking a value does/,
@@ -960,6 +978,87 @@ source: a is scoped_orders extend {
       );
    });
 
+   it("names the tile as the reader titles it, in its title and in the tile's own names", async () => {
+      const dialog = await open({ titleOf: () => "Plain" });
+      expect(dialog.textContent).toContain(
+         "When someone clicks a value in Plain",
+      );
+      expect(screen.getByLabelText("Tile Plain")).toBeDefined();
+   });
+
+   it("counts the filter the tile's entry already sets, whatever it is called", async () => {
+      const dialog = await open({
+         source: SOURCE_X.replace(
+            '"a -> x"]',
+            '"a -> x" { drill { cat { to=self given=REGION } } }]',
+         ),
+         givens: [{ name: "REGION" }],
+      });
+      const self = screen.getByRole("checkbox", {
+         name: "Filter this report by Category",
+         hidden: true,
+      }) as HTMLInputElement;
+      expect(self.disabled).toBe(false);
+      expect(self.checked).toBe(true);
+      expect(dialog.textContent).not.toContain("to this report first");
+      expect(dialog.textContent).toContain("Filter this report to Jeans");
+   });
+
+   it("lets the author pick which filter a value sets, among those of its type", async () => {
+      let saved = "";
+      const dialog = await open({
+         givens: [
+            { name: "BRAND", type: "filter<string>", label: "Brand" },
+            { name: "YEAR", type: "number", label: "Year" },
+            { name: "CITY", type: "string", label: "City" },
+         ],
+         onSave: (source) => {
+            saved = source;
+         },
+      });
+      fireEvent.click(
+         screen.getByRole("checkbox", {
+            name: "Filter this report by Category",
+            hidden: true,
+         }),
+      );
+      // No filter is named like the dimension, so none is guessed: a product
+      // name must not land in an unrelated filter.
+      expect(dialog.textContent).toContain(
+         "Choose the filter a Category value sets.",
+      );
+      expect(dialog.textContent).not.toContain("Filter this report to Jeans");
+      const picker = screen.getByLabelText("Filter Category sets");
+      fireEvent.mouseDown(
+         within(picker.parentElement as HTMLElement).getByRole("combobox", {
+            hidden: true,
+         }),
+      );
+      const options = screen
+         .getAllByRole("option", { hidden: true })
+         .map((option) => option.textContent);
+      expect(options).toEqual(["Brand", "City"]);
+      fireEvent.click(
+         screen.getByRole("option", { name: "City", hidden: true }),
+      );
+      fireEvent.click(button("Apply"));
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(saved).not.toBe(""));
+      expect(saved).toContain("drill { cat { to=self given=CITY } }");
+   });
+
+   it("asks for a filter only when the report has none a value of its type can set", async () => {
+      const dialog = await open({ givens: [{ name: "YEAR", type: "number" }] });
+      const self = screen.getByRole("checkbox", {
+         name: "Filter this report by Category",
+         hidden: true,
+      }) as HTMLInputElement;
+      expect(self.disabled).toBe(true);
+      expect(dialog.textContent).toContain(
+         "Add a Category filter to this report first",
+      );
+   });
+
    it("is offered on a tile over a model-declared dimension, with no source in this file", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
@@ -975,48 +1074,48 @@ describe("ReportBuilder: keyboard", () => {
    it("undoes and redoes from the keyboard, and never from inside a text field", async () => {
       await mount();
       retitle("By category", "Renamed");
-      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Renamed")).toBeDefined();
 
       fireEvent.keyDown(window, { key: "z", ctrlKey: true, metaKey: true });
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("By category")).toBeDefined();
       fireEvent.keyDown(window, {
          key: "z",
          ctrlKey: true,
          metaKey: true,
          shiftKey: true,
       });
-      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Renamed")).toBeDefined();
 
       // Typing in a field is typing, not editing the document.
       fireEvent.click(screen.getByText("Renamed"));
       const field = screen.getByLabelText("Tile title");
       fireEvent.keyDown(field, { key: "z", ctrlKey: true, metaKey: true });
       fireEvent.keyDown(field, { key: "Escape" });
-      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Renamed")).toBeDefined();
    });
 
    it("nudges the selected tile's width with the arrow keys", async () => {
       await mount();
-      selectTile("by_cat");
+      selectTile("By category");
       fireEvent.keyDown(window, { key: "ArrowLeft" });
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 5");
       fireEvent.keyDown(window, { key: "ArrowRight" });
       fireEvent.keyDown(window, { key: "ArrowRight" });
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 7");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 7");
    });
 
    it("leaves a tile's width alone while the arrow keys move it", async () => {
       await mount();
-      selectTile("by_cat");
+      selectTile("By category");
       // happy-dom has no Web Animations; the sensor asks for them on pickup.
       Object.assign(document, { getAnimations: () => [] });
       Object.assign(Element.prototype, { getAnimations: () => [] });
-      const grip = within(tile("by_cat")).getByLabelText(/^Move /);
+      const grip = within(keyed("a.by_cat")).getByLabelText(/^Move /);
       grip.focus();
       fireEvent.keyDown(grip, { key: " ", code: "Space" });
       // The drag clone is the proof the pickup landed.
       await waitFor(() =>
-         expect(screen.getAllByLabelText("Tile by_cat")).toHaveLength(2),
+         expect(screen.getAllByLabelText("Tile By category")).toHaveLength(2),
       );
       // The drag-start state commits a frame after the clone appears.
       await act(async () => {});
@@ -1024,9 +1123,9 @@ describe("ReportBuilder: keyboard", () => {
       // A cancel, not a drop: a drop re-commits the drag-start width and would hide a nudge.
       fireEvent.keyDown(grip, { key: "Escape", code: "Escape" });
       await waitFor(() =>
-         expect(screen.getAllByLabelText("Tile by_cat")).toHaveLength(1),
+         expect(screen.getAllByLabelText("Tile By category")).toHaveLength(1),
       );
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");
+      expect(itemStyleOf("By category")).toContain("grid-column: span 6");
    });
 });
 
@@ -1041,13 +1140,13 @@ describe("ReportBuilder: history", () => {
    it("takes a change back and puts it forward again", async () => {
       await mount();
       retitle("By category", "Renamed");
-      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Renamed")).toBeDefined();
 
       fireEvent.click(button("Undo"));
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("By category")).toBeDefined();
 
       fireEvent.click(button("Redo"));
-      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Renamed")).toBeDefined();
    });
 });
 
@@ -1110,7 +1209,7 @@ describe("ReportBuilder: saving", () => {
          reason: expect.stringContaining("disk full"),
       });
       // The edit is still on screen and still unsaved.
-      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Renamed")).toBeDefined();
       expect(button("Save")).toBeDefined();
    });
 });
@@ -1131,22 +1230,22 @@ source: a is one extend {
 
    it("packs the tiles upward from the Arrange menu, as one undo step", async () => {
       await mountPlaced();
-      expect(itemStyleOf("y")).toContain("grid-row: 9/span 3");
+      expect(itemStyleOf("Y")).toContain("grid-row: 9/span 3");
       fireEvent.click(button("Arrange tiles"));
       fireEvent.click(
          screen.getByRole("menuitem", { name: /Pack tiles upward/ }),
       );
-      expect(itemStyleOf("y")).toContain("grid-row: 4/span 3");
+      expect(itemStyleOf("Y")).toContain("grid-row: 4/span 3");
       fireEvent.click(button("Undo"));
-      expect(itemStyleOf("y")).toContain("grid-row: 9/span 3");
+      expect(itemStyleOf("Y")).toContain("grid-row: 9/span 3");
    });
 
    it("lets the tiles flow again, keeping their sizes", async () => {
       await mountPlaced();
       fireEvent.click(button("Arrange tiles"));
       fireEvent.click(screen.getByRole("menuitem", { name: /Let tiles flow/ }));
-      expect(itemStyleOf("y")).not.toMatch(/grid-row: \d+\//);
-      expect(itemStyleOf("y")).toContain("height: 272px");
+      expect(itemStyleOf("Y")).not.toMatch(/grid-row: \d+\//);
+      expect(itemStyleOf("Y")).toContain("height: 272px");
       // A report that flows has nothing to arrange.
       expect(
          screen.queryByRole("button", { name: "Arrange tiles", hidden: true }),
@@ -1165,15 +1264,15 @@ source: a is one extend {
 
    it("moves the selected tile a cell at a time with Option and the arrows", async () => {
       await mountPlaced();
-      fireEvent.click(tile("x"));
+      fireEvent.click(tile("X"));
       fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
-      expect(itemStyleOf("x")).toContain("grid-column: 2/span 6");
+      expect(itemStyleOf("X")).toContain("grid-column: 2/span 6");
       fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
-      expect(itemStyleOf("x")).toContain("grid-row: 2/span 3");
+      expect(itemStyleOf("X")).toContain("grid-row: 2/span 3");
       // Held on the grid: six columns wide, it goes no further right than 7.
       for (let i = 0; i < 10; i++)
          fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
-      expect(itemStyleOf("x")).toContain("grid-column: 7/span 6");
+      expect(itemStyleOf("X")).toContain("grid-column: 7/span 6");
    });
 
    it("keeps the selection on the same tile when packing re-sorts the tiles", async () => {
@@ -1185,14 +1284,14 @@ source: a is one extend {
             '"a -> x" { row=5 col=7 colspan=6 rowspan=3 }',
          ),
       );
-      fireEvent.click(tile("y"));
-      expect(tile("y").getAttribute("aria-current")).toBe("true");
+      fireEvent.click(tile("Y"));
+      expect(tile("Y").getAttribute("aria-current")).toBe("true");
       fireEvent.click(button("Arrange tiles"));
       fireEvent.click(
          screen.getByRole("menuitem", { name: /Pack tiles upward/ }),
       );
-      expect(tile("y").getAttribute("aria-current")).toBe("true");
-      expect(tile("x").getAttribute("aria-current")).toBe("false");
+      expect(tile("Y").getAttribute("aria-current")).toBe("true");
+      expect(tile("X").getAttribute("aria-current")).toBe("false");
    });
 
    it("leaves Option and an arrow to the browser when no placed tile is selected", async () => {

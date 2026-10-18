@@ -818,6 +818,7 @@ export function ReportBuilder({
                />
                <BuilderDialogs
                   editor={editor}
+                  {...(titleOf ? { titleOf } : {})}
                   catalog={catalog}
                   columns={columns}
                   dashboards={dashboards}

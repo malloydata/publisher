@@ -194,7 +194,7 @@ describe("Duplicate, from a tile's menu", () => {
             onSave={saved}
          />,
       );
-      screen.getByLabelText("Settings for By category").click();
+      screen.getAllByLabelText("Settings for By category")[0].click();
       await waitFor(() =>
          screen.getByRole("menuitem", { name: "Duplicate", hidden: true }),
       );
@@ -221,7 +221,7 @@ describe("Duplicate, from a tile's menu", () => {
             onSave={() => {}}
          />,
       );
-      screen.getByLabelText("Settings for By category").click();
+      screen.getAllByLabelText("Settings for By category")[0].click();
       await waitFor(() =>
          screen.getByRole("menuitem", { name: "Duplicate", hidden: true }),
       );
@@ -229,7 +229,7 @@ describe("Duplicate, from a tile's menu", () => {
       await waitFor(() =>
          expect(
             document
-               .querySelector('[aria-label="Tile by_category_tile"]')
+               .querySelector('[data-tile-key="query.by_category_tile"]')
                ?.getAttribute("aria-current"),
          ).toBe("true"),
       );
@@ -656,7 +656,7 @@ describe("selection", () => {
       await waitFor(() =>
          expect(
             document
-               .querySelector('[aria-label="Tile by_cat"]')
+               .querySelector('[data-tile-key="a.by_cat"]')
                ?.getAttribute("aria-current"),
          ).toBe("true"),
       );
@@ -664,14 +664,14 @@ describe("selection", () => {
       fireEvent.pointerDown(tile);
       expect(
          document
-            .querySelector('[aria-label="Tile by_cat"]')
+            .querySelector('[data-tile-key="a.by_cat"]')
             ?.getAttribute("aria-current"),
       ).toBe("true");
       fireEvent.pointerDown(document.body);
       await waitFor(() =>
          expect(
             document
-               .querySelector('[aria-label="Tile by_cat"]')
+               .querySelector('[data-tile-key="a.by_cat"]')
                ?.getAttribute("aria-current"),
          ).toBe("false"),
       );

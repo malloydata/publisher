@@ -85,7 +85,7 @@ describe("ReportBuilder: a notebook is one column", () => {
             .querySelector("[data-chrome]")
             ?.getAttribute("data-chrome");
       expect(tile("intro")).toBe("none");
-      expect(tile("by_cat")).toBe("card");
+      expect(tile("By cat")).toBe("card");
       expect(
          screen
             .getByRole("group", { name: "Description" })
@@ -101,14 +101,14 @@ describe("ReportBuilder: a notebook is one column", () => {
       ).toBeNull();
       // A text tile has no menu; a query tile's offers no width.
       expect(screen.queryByLabelText("Settings for intro")).toBeNull();
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      fireEvent.click(screen.getByLabelText("Settings for By cat"));
       expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
    });
 
    it("does not nudge a width with the arrow keys", async () => {
       // A width left in the file by hand is not the builder's to rewrite.
       await mountText(WIDE, { onSave: () => {} });
-      fireEvent.click(screen.getByLabelText("Tile by_cat"));
+      fireEvent.click(screen.getByLabelText("Tile By cat"));
       fireEvent.keyDown(window, { key: "ArrowLeft" });
       fireEvent.keyDown(window, { key: "ArrowRight" });
       expect(button("Saved")).toBeDefined();
