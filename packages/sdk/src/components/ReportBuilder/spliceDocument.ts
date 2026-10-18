@@ -183,11 +183,12 @@ const writableChart = (
 ): ChartPick | "none" | undefined =>
    chart === "none" || isChartPick(chart) ? chart : undefined;
 
-/** The `#` tags a tile's presentation implies, in the order they are written. */
+/**
+ * The `#` tags a tile's presentation implies, in the order they are written.
+ * Never its layout: that is written on its entry in `tiles=[…]`.
+ */
 function tagsFor(tile: QueryTile, withChart = true): string[] {
    const tags: string[] = [];
-   if (tile.colspan !== undefined) tags.push(`# colspan=${tile.colspan}`);
-   if (tile.break) tags.push("# break");
    if (tile.borderless) tags.push("# borderless");
    if (tile.label !== undefined) tags.push(`# label=${quoted(tile.label)}`);
    if (tile.subtitle !== undefined)
@@ -384,9 +385,38 @@ function checkShape(
    };
 }
 
-/** A text entry's width and row break, which the list entry carries because the block has no tags. */
-const textEntryChanged = (was: TextTile, now: TextTile) =>
-   was.colspan !== now.colspan || Boolean(was.break) !== Boolean(now.break);
+/** The tag keys of a tile's layout, which a view declared here carries until the builder moves them to its entry. */
+const LAYOUT_TAG_KEYS: ReadonlySet<string> = new Set(["colspan", "break"]);
+
+/** Whether a tile's place on the grid changed: its width, row break, rowspan, row or column. */
+const layoutChanged = (was: DashboardTile, now: DashboardTile) =>
+   was.colspan !== now.colspan ||
+   Boolean(was.break) !== Boolean(now.break) ||
+   was.rowspan !== now.rowspan ||
+   was.row !== now.row ||
+   was.col !== now.col;
+
+/** A tile with its layout taken off, for asking whether anything ELSE about it changed. */
+const withoutLayout = <T extends DashboardTile>(tile: T): T => {
+   const {
+      colspan: _c,
+      break: _b,
+      rowspan: _r,
+      row: _row,
+      col: _col,
+      ...rest
+   } = tile;
+   return rest as T;
+};
+
+/** The properties a tile's layout is written as on its entry. */
+const layoutProperties = (tile: DashboardTile): string[] => [
+   ...(tile.row === undefined ? [] : [`row=${tile.row}`]),
+   ...(tile.col === undefined ? [] : [`col=${tile.col}`]),
+   ...(tile.colspan === undefined ? [] : [`colspan=${tile.colspan}`]),
+   ...(tile.break ? ["break"] : []),
+   ...(tile.rowspan === undefined ? [] : [`rowspan=${tile.rowspan}`]),
+];
 
 /** `text` with every quoted string blanked to `x`s of the same length, so a scan for syntax cannot land inside one. */
 function maskStrings(text: string): string {
@@ -403,14 +433,22 @@ function maskStrings(text: string): string {
    return out;
 }
 
-/** A `name { kind=text … }` entry with its `colspan` and `break` set as `tile` has them, every other property as written. */
-function textEntry(tile: TextTile, written?: string): string {
-   if (written === undefined)
-      return `${tile.name} { kind=text${
-         tile.colspan === undefined ? "" : ` colspan=${tile.colspan}`
-      }${tile.break ? " break" : ""} }`;
+/**
+ * A tile's entry in `tiles=[…]` with its layout set as `tile` has it, and
+ * every other property as written: `name { kind=text … }` for prose, and
+ * `"source -> view"` for a query, with a `{ … }` only when it has layout.
+ */
+function tileEntryText(tile: DashboardTile, written?: string): string {
+   const layout = layoutProperties(tile);
+   if (written === undefined) {
+      const head = isTextTile(tile) ? tile.name : `"${tileExpression(tile)}"`;
+      const props = [...(isTextTile(tile) ? ["kind=text"] : []), ...layout];
+      return props.length > 0 ? `${head} { ${props.join(" ")} }` : head;
+   }
    const masked = maskStrings(written);
    const open = masked.indexOf("{");
+   if (open === -1)
+      return layout.length > 0 ? `${written} { ${layout.join(" ")} }` : written;
    const close = masked.lastIndexOf("}");
    let inner = written.slice(open + 1, close);
    let maskedInner = masked.slice(open + 1, close);
@@ -424,12 +462,13 @@ function textEntry(tile: TextTile, written?: string): string {
          maskedInner.slice(hit.index + hit[0].length);
    };
    drop(/\s*\bcolspan\s*=\s*[^\s}]+/);
-   drop(/\s*\bbreak\b(?!\s*=)/);
-   const props = [
-      inner.trim(),
-      tile.colspan === undefined ? "" : `colspan=${tile.colspan}`,
-      tile.break ? "break" : "",
-   ].filter(Boolean);
+   drop(/\s*\bbreak\b(?:\s*=\s*[^\s}]+)?/);
+   drop(/\s*\browspan\s*=\s*[^\s}]+/);
+   drop(/\s*\brow\s*=\s*[^\s}]+/);
+   drop(/\s*\bcol\s*=\s*[^\s}]+/);
+   const props = [inner.trim(), ...layout].filter(Boolean);
+   // A query entry left with nothing in its braces is its expression alone.
+   if (props.length === 0) return written.slice(0, open).trimEnd();
    return `${written.slice(0, open)}{ ${props.join(" ")} }${written.slice(close + 1)}`;
 }
 
@@ -444,14 +483,12 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       nextKeys,
       edits,
    } = ctx;
-   const wasText = new Map(
-      current.tiles.filter(isTextTile).map((tile) => [tile.name, tile]),
-   );
-   const resized = next.tiles.filter(isTextTile).some((tile) => {
-      const was = wasText.get(tile.name);
-      return was !== undefined && textEntryChanged(was, tile);
+   const wasByKey = new Map(current.tiles.map((tile) => [tileKey(tile), tile]));
+   const resized = next.tiles.some((tile) => {
+      const was = wasByKey.get(tileKey(tile));
+      return was !== undefined && layoutChanged(was, tile);
    });
-   // A reorder, and a text tile's width, are one rewritten array on the
+   // A reorder, and any tile's layout, are one rewritten array on the
    // `## artifact` line. Each entry is re-emitted AS IT WAS WRITTEN rather than
    // rebuilt from `source` and `name`, so a file that spells a tile
    // `overview->kpis` keeps its spelling and the diff is the change and nothing else.
@@ -480,7 +517,7 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
    }
    const byKey = new Map<string, string>();
    for (const { text } of list.entries) {
-      const quoted = /^"((?:[^"\\]|\\.)+)"$/.exec(text);
+      const quoted = /^"((?:[^"\\]|\\.)+)"\s*(?:\{[\s\S]*\})?$/.exec(text);
       if (quoted) {
          const parts = quoted[1].split("->").map((part) => part.trim());
          if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, text);
@@ -493,30 +530,31 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
          byKey.set(`query.${text}`, text);
          continue;
       }
+      // `name { … }`: a text tile, or a bare named query carrying its layout.
       const name = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(text)?.[1];
-      if (name !== undefined) byKey.set(`text.${name}`, text);
+      if (name !== undefined)
+         byKey.set(
+            /\bkind\s*=\s*text\b/.test(maskStrings(text))
+               ? `text.${name}`
+               : `query.${name}`,
+            text,
+         );
    }
    // An existing tile keeps its spelling; a new one is written canonically.
    const nextEntries = next.tiles.map((tile) => {
       const isNew = !currentKeys.has(tileKey(tile));
-      if (isTextTile(tile)) {
-         const written = byKey.get(`text.${tile.name}`);
-         return written !== undefined
-            ? wasText.has(tile.name) &&
-              !textEntryChanged(wasText.get(tile.name), tile)
-               ? written
-               : textEntry(tile, written)
-            : isNew
-              ? textEntry(tile)
-              : undefined;
-      }
-      return (
-         byKey.get(
-            namesQuery(tile)
-               ? `query.${tile.name}`
-               : `${tile.source}->${tile.name}`,
-         ) ?? (isNew ? `"${tileExpression(tile)}"` : undefined)
+      const written = byKey.get(
+         isTextTile(tile)
+            ? `text.${tile.name}`
+            : namesQuery(tile)
+              ? `query.${tile.name}`
+              : `${tile.source}->${tile.name}`,
       );
+      if (written === undefined) return isNew ? tileEntryText(tile) : undefined;
+      const was = wasByKey.get(tileKey(tile));
+      return was !== undefined && !layoutChanged(was, tile)
+         ? written
+         : tileEntryText(tile, written);
    });
    if (nextEntries.some((entry) => entry === undefined)) {
       return {
@@ -564,43 +602,6 @@ function arrayBody(
          ? line.slice(first.span.end, list.entries[1].span.start)
          : `,${indent.startsWith("\n") ? indent : " "}`;
    return `${lead}${entries.join(separator)}${tail}`;
-}
-
-/**
- * `line` without one property of the artifact tag's own braces: spelled with
- * any spacing round the `=`, and never matched inside a quoted string or a
- * nested block.
- */
-function removeArtifactProperty(line: string, key: string): string {
-   let depth = 0;
-   let groups = 0;
-   for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-         i = endOfString(line, i);
-      } else if (c === "{" || c === "[") {
-         if (depth++ === 0) groups++;
-      } else if (c === "}" || c === "]") {
-         depth--;
-      } else if (
-         groups === 1 &&
-         depth === 1 &&
-         line.startsWith(key, i) &&
-         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
-      ) {
-         const eq = /^\s*=\s*/.exec(line.slice(i + key.length));
-         if (!eq) continue;
-         const valueAt = i + key.length + eq[0].length;
-         const valueEnd =
-            line[valueAt] === '"'
-               ? endOfString(line, valueAt) + 1
-               : valueAt +
-                 (/^[^\s}]*/.exec(line.slice(valueAt))?.[0].length ?? 0);
-         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
-         return line.slice(0, from) + line.slice(valueEnd);
-      }
-   }
-   return line;
 }
 
 /** `line` without its `dashboard { … }` block: outside the artifact braces and never inside a string. */
@@ -742,8 +743,6 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
       }
       if (current.columns !== next.columns) {
-         // The deprecated alias would otherwise sit beside the new width and conflict with it.
-         line = removeArtifactProperty(line, "dashboard_columns");
          line = removeDashboardBlock(line);
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
@@ -1189,7 +1188,6 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    return undefined;
 }
 
-/** `query: name is source -> view [+ { bindings }]`, with the tile's tags above it. */
 /**
  * `query: name is source -> view [+ { where: … }]`, with the tile's tags above it.
  *
@@ -1351,17 +1349,22 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       const was = currentByKey.get(tileKey(tile));
       // Written whole above, tags and all; a text tile has no declaration to retag.
       if (was === undefined || isTextTile(tile) || isTextTile(was)) continue;
-      if (
-         canonical(withoutDefaultChart(was)) ===
-         canonical(withoutDefaultChart(tile))
-      )
-         continue;
+      // A layout change is written on the entry (`planOrder`); here it only
+      // takes the view's own `# colspan` and `# break` off, so the entry is
+      // the one place the layout lives.
+      const moved = layoutChanged(was, tile);
+      const presented =
+         canonical(withoutLayout(withoutDefaultChart(was))) !==
+         canonical(withoutLayout(withoutDefaultChart(tile)));
+      if (!presented && !moved) continue;
 
       // A served view has nothing in this file to patch: a setting on one
       // makes it a query of the report's own (`normalizeTileForms`), which
       // reaches here as a new tile. Saying so beats writing a tag that would
-      // land on the wrong object.
+      // land on the wrong object. Its layout is its entry's, which is this
+      // file's.
       if (tile.declaration.kind === "inherited") {
+         if (!presented) continue;
          return {
             ok: false,
             reason:
@@ -1369,7 +1372,9 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
                `on it needs a query of the report's own.`,
          };
       }
+      // Its layout is its entry's too, which wins over the query's own tags.
       if (tile.declaration.kind === "query") {
+         if (!presented) continue;
          return {
             ok: false,
             reason:
@@ -1447,6 +1452,12 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          const key = tagKey(tag.text);
          // Not a property this document models: not ours to touch.
          if (key === undefined || !MODELLED_TAG_KEYS.has(key)) continue;
+         // The view's layout stays put until the tile's layout changes, and
+         // then it moves to the entry.
+         if (LAYOUT_TAG_KEYS.has(key)) {
+            if (moved) edits.push({ ...wholeLine(tag.line), text: "" });
+            continue;
+         }
          const want = wantedByKey.get(key);
          if (want === undefined) {
             // Removed: take the whole line, including its newline.

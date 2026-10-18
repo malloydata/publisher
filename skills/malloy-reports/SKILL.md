@@ -59,9 +59,9 @@ Tool names below are bare (`get_context`); match each against the tools you actu
 ##| artifact { layout=grid title="Storefront overview"
   tiles=[
     intro { kind=text colspan=12 },
-    "kpis_tile",
-    "revenue_trend",
-    "revenue_by_state"
+    "kpis_tile" { colspan=12 },
+    "revenue_trend" { colspan=8 break },
+    "revenue_by_state" { colspan=4 }
   ]
 } dashboard { columns=12 }
 |##
@@ -76,17 +76,13 @@ given: SINCE :: date is @2023-01-01
 Revenue and margin for the selected category.
 |##
 
-# colspan=12
 # label="Key figures"
 query: kpis_tile is order_items -> key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
-# colspan=8
-# break
 # viz=line
 # label="Revenue by month"
 query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
-# colspan=4
 # label="Revenue by state"
 query: revenue_by_state is order_items -> sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 ```
@@ -96,8 +92,9 @@ The same file with `layout=linear` and no `dashboard { … }` or `colspan` is a 
 - **The tag is model-level**, one line (`## artifact { … }`) or a `##|` … `|##` block with the same text inside, the form to use once the list is long: one tile per line, `}` on its own line, `|##` closing at the opener's column. A one-line `##` tag must stay on one line: wrapping it is a compile error, or worse, compiles clean and quietly stops being a report.
 - **The header** above the tag holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description. Keep statements and `#` tags below `## artifact`: nothing refuses one above it, but the header is where readers and the builder look.
 - **Quote every query entry.** `"order_items -> kpis"` is a string; unquoted, the tag does not parse (`notebook-artifact-unparsed`). A bare quoted name (`"kpis_tile"`) names a `query:` in the file.
-- **A report declares no source.** A tile names a served view (`"order_items -> sales_by_state"`), or a `query:` of the report's own over one (`query: t is order_items -> sales_by_state + { … }`). The view keeps its chart and label; the query's `#` tags carry what the tile changes (its `# label`, its `# colspan` on a grid, a `# viz=`, a colour), merged over the view's, and its `+ { where: … }` carries the tile's filters. Never declare a `source: x_tiles is x extend { … }` to hold tiles: it copies the served model into the report.
-- **A text tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. A bare `intro` without `{ kind=text }` is the query-tile form for a `query:`, so the block is not shown. On a grid the entry also takes `colspan` and `break`, and nothing else.
+- **A report declares no source.** A tile names a served view (`"order_items -> sales_by_state"`), or a `query:` of the report's own over one (`query: t is order_items -> sales_by_state + { … }`). The view keeps its chart and label; the query's `#` tags carry what the tile changes (its `# label`, a `# viz=`, a colour), merged over the view's, and its `+ { where: … }` carries the tile's filters. Never declare a `source: x_tiles is x extend { … }` to hold tiles: it copies the served model into the report.
+- **A tile's layout goes on its entry**, in either form: `"order_items -> kpis" { colspan=12 rowspan=2 }`, `"kpis_tile" { colspan=6 break }`. It wins over a view's `# colspan` and `# break`. `rowspan=N` is rows of 80px, and `row=N col=N` place the tile at a grid cell (a report with any `row` is placed: fixed rows, tiles where they say, empty cells allowed).
+- **A text tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. A bare `intro` without `{ kind=text }` is the query-tile form for a `query:`, so the block is not shown. On a grid the entry also takes `colspan`, `break` and `rowspan`, and nothing else.
 - **File order:** header, imports and givens, the prose blocks in tile order, then the tiles' queries. That is the order the builder writes.
 - **A `run:` in a report that lists `tiles` is never shown** (`notebook-layout-run`). Define a view, list it, delete the `run:`.
 - **A tile expression is a string, so the compiler never checks it.** Rename a view and the file still compiles; the tile fails at package load, where the lint names it.
@@ -169,7 +166,7 @@ After: the model declares no givens and `recalls` has no `where:`; the report de
 ```malloy
 ##! experimental.givens
 ##| artifact { layout=grid title="Recalls"
-  tiles=["recalls_by_year", "recalls_by_manufacturer"]
+  tiles=["recalls_by_year" { colspan=6 }, "recalls_by_manufacturer" { colspan=6 }]
 } dashboard { columns=12 }
 |##
 import { recalls } from "auto_recalls.malloy"
@@ -183,7 +180,6 @@ given: major_recall_filter :: filter<boolean> is f''
 # label="Filed"
 given: recall_date_filter :: filter<date> is f''
 
-# colspan=6
 query: recalls_by_year is recalls -> by_year + {
   where:
     Manufacturer ~ $manufacturer_filter,
@@ -192,7 +188,6 @@ query: recalls_by_year is recalls -> by_year + {
     `Report Received Date` ~ $recall_date_filter
 }
 
-# colspan=6
 query: recalls_by_manufacturer is recalls -> by_manufacturer + {
   where:
     Subject ~ $subject_filter,
@@ -273,7 +268,7 @@ import { main_source } from "model.malloy"
 query: drill_tile is main_source -> [drill view]
 ```
 
-For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's closing `}`, and give a tile that should not take the default width a `query:` with a `# colspan` (`reference/grid.md`).
+For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's closing `}`, and give a tile that should not take the default width a `colspan` on its entry (`reference/grid.md`).
 
 ## Editing in the Console
 

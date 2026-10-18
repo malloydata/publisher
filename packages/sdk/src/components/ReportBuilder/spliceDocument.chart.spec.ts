@@ -186,7 +186,7 @@ describe("a tile's chart line", () => {
       const z = queryTile(await openDocument(out), 2);
       expect(z.chart).toBe("scatter_chart");
       expect(out).toContain(
-         "# colspan=6\n# scatter_chart\nquery: z_tile is a -> vz\n",
+         "# scatter_chart\nquery: z_tile is a -> vz\n",
       );
    });
 

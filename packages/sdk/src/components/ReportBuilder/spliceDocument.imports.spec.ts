@@ -64,6 +64,7 @@ describe("spliceDashboardDocument: imports", () => {
                modelPath: "dashboards/_shared.malloy",
                exporters: ["dashboards/_shared.malloy"],
                view: "totals",
+               label: "Totals",
                colspan: 6,
             },
             {

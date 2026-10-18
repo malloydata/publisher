@@ -18,6 +18,11 @@ import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
+import {
+   isPlaced,
+   PLACED_DEFAULT_ROWSPAN,
+   tileHeightPx,
+} from "../Dashboard/DashboardGrid";
 import { layoutRules } from "../Report/layoutRules";
 import type { CompiledModel } from "../../client";
 import { documentViewsOf } from "./catalog";
@@ -568,8 +573,22 @@ export function EditorSurface({
                         : {};
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
-                  height={rules.tileMaxHeight}
+                  // Its own rows when it has them (a rowspan, or a placed
+                  // report's fixed rows, placed yet or not); otherwise the
+                  // layout's cap.
+                  height={
+                     tile.rowspan !== undefined || isPlaced(doc.tiles)
+                        ? tileHeightPx(
+                             tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
+                          )
+                        : rules.tileMaxHeight
+                  }
                   tableMaxHeight={rules.tableMaxHeight}
+                  // As the reader does: every tile of a placed report sits
+                  // in fixed rows, placed yet or not.
+                  fixedHeight={
+                     tile.rowspan !== undefined || isPlaced(doc.tiles)
+                  }
                />
             );
          },
@@ -729,8 +748,8 @@ function sameTile(
 }
 
 /**
- * A tile less what only frames its result: its title, subtitle, width, row
- * and card are drawn by the tile around the result, not sent with the query.
+ * A tile less what only frames its result: its title, subtitle, width, row,
+ * rowspan and card are drawn by the tile around the result, not sent with the query.
  * Retitling a tile re-ran it before, and its chart blinked as the same rows
  * were drawn again.
  */
@@ -740,6 +759,9 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle: _subtitle,
       colspan: _colspan,
       break: _break,
+      rowspan: _rowspan,
+      row: _row,
+      col: _col,
       borderless: _borderless,
       ...runs
    } = tile as DocumentTile & {
@@ -747,6 +769,9 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle?: unknown;
       colspan?: unknown;
       break?: unknown;
+      rowspan?: unknown;
+      row?: unknown;
+      col?: unknown;
       borderless?: unknown;
    };
    return runs as DocumentTile;

@@ -75,6 +75,7 @@ async function addOn(served: string, base: string) {
          modelPath: "storefront.malloy",
          exporters: ["storefront.malloy"],
          view: "by_category",
+         label: "Categories",
          colspan: 6,
       },
       { modelPath: DOCUMENT, textHeld: false, widths: true },
@@ -106,11 +107,12 @@ describe("a new tile, previewed before the file is saved", () => {
                served,
                "order_items",
             );
-            // Half of a 12-column grid: a width of its own, so a query.
+            // A title of its own, so a query; its width is on its entry.
             expect(tile).toMatchObject({
                name: "by_category_tile",
                source: "order_items",
                declaration: { kind: "named", from: "by_category" },
+               label: "Categories",
                colspan: 6,
             });
             expect(saved).not.toContain("source:");

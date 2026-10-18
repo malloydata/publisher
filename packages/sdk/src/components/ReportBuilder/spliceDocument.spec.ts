@@ -52,9 +52,11 @@ describe("spliceDashboardDocument: what it preserves", () => {
       expect(out).toContain(
          "  // Why this tile leads: revenue is the number people ask about first.",
       );
-      expect(out).toContain("  # colspan=4");
-      expect(out).not.toContain(
-         '# colspan=6\n  # break\n  # label="By category"\n  view: by_cat',
+      // The width moves to the entry, and the break with it, so the tile's
+      // layout has one home; the comment stays where it was.
+      expect(out).toContain('"a -> by_cat" { colspan=4 break }');
+      expect(out).toContain(
+         '  // Why this tile leads: revenue is the number people ask about first.\n  # label="By category"\n  view: by_cat',
       );
    });
 
@@ -115,11 +117,11 @@ source: a is scoped_orders extend {
 
    it("writes both when the tile had no tags at all", async () => {
       const out = await spliced(UNTAGGED, (d) => {
-         d.tiles[0].colspan = 4;
+         queryTile(d, 0).label = "Cat";
          queryTile(d, 0).filters = [{ field: "category", given: "CATEGORY" }];
       });
       expect(out).toContain(
-         "  # colspan=4\n  view: by_cat is by_category + { where: category ~ $CATEGORY }",
+         '  # label="Cat"\n  view: by_cat is by_category + { where: category ~ $CATEGORY }',
       );
    });
 
@@ -1097,24 +1099,6 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       expect(flowed).not.toContain("dashboard {");
    });
 
-   it("replaces the dashboard_columns alias when a width is set, and the result lints clean", async () => {
-      const aliased = SOURCE.replace(
-         '"a -> by_brand"] } dashboard { columns=12 }',
-         '"a -> by_brand"] dashboard_columns=8 }',
-      );
-      expect(aliased).toContain("dashboard_columns=8");
-      const out = await spliced(aliased, (d) => {
-         d.columns = 12;
-      });
-      expect(out).not.toContain("dashboard_columns");
-      expect(out).toContain("dashboard { columns=12 }");
-      const removed = await spliced(aliased, (d) => {
-         delete d.columns;
-      });
-      expect(removed).not.toContain("dashboard_columns");
-      expect(removed).not.toContain("dashboard {");
-   });
-
    it("adds and removes autorun and starting values inside the tag", async () => {
       const out = await spliced(SOURCE, (d) => {
          d.autorun = false;
@@ -1202,28 +1186,6 @@ describe("spliceDashboardDocument: the page's own settings", () => {
    const lintCodes = (source: string) =>
       lintNotebookText("dashboards/d.malloy", source).map((f) => f.code);
    const TAIL = `import "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
-
-   describe("a width change against the deprecated alias", () => {
-      it("removes the alias whatever spacing surrounds its =", async () => {
-         const source = `## artifact { title="T" tiles=["a -> x"] dashboard_columns = 3 }\n${TAIL}`;
-         const out = await spliced(source, (d) => {
-            d.columns = 6;
-         });
-         expect(out).not.toContain("dashboard_columns");
-         expect(out).toContain("dashboard { columns=6 }");
-         expect(lintCodes(out)).toEqual([]);
-      });
-
-      it("removes the alias, not the same words inside a quoted title", async () => {
-         const source = `## artifact { title="a dashboard_columns=2 b" tiles=["a -> x"] dashboard_columns=3 }\n${TAIL}`;
-         const out = await spliced(source, (d) => {
-            d.columns = 6;
-         });
-         expect(out).toContain('title="a dashboard_columns=2 b"');
-         expect(out.match(/dashboard_columns/g)).toHaveLength(1);
-         expect(lintCodes(out)).toEqual([]);
-      });
-   });
 
    it("reorders a list holding a text tile, keeping its entry as written", async () => {
       const source = fs
@@ -1445,13 +1407,12 @@ source: a is one extend {
          });
       });
       expect(out).toContain(
-         'tiles=["a -> by_cat", "a -> by_brand", "sales_by_state_tile"]',
+         'tiles=["a -> by_cat", "a -> by_brand", "sales_by_state_tile" { colspan=6 }]',
       );
       expect(out).toContain(`  # colspan=6
   view: by_brand is by_brand_view
 }
 
-# colspan=6
 # label="By state"
 query: sales_by_state_tile is a -> sales_by_state + { where: category ~ $CATEGORY }
 `);
@@ -1524,19 +1485,41 @@ describe("spliceDashboardDocument: what it refuses", () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       expect(
          await edited(source, (d) => {
-            d.tiles[0].colspan = 6;
+            queryTile(d, 0).label = "Brands";
          }),
       ).toBe(`## artifact { title="T" tiles=["by_brand_tile"] }
 import { orders } from '../orders.malloy'
 
-# colspan=6
+# label="Brands"
 query: by_brand_tile is orders -> by_brand
 `);
       const r = await splice(source, (d) => {
-         d.tiles[0].colspan = 6;
+         queryTile(d, 0).label = "Brands";
       });
       expect(r.ok).toBe(false);
       if (spliceFailed(r)) expect(r.reason).toContain("names a served view");
+   });
+
+   // Its layout is not the model's, though: the entry is this report's own.
+   it("lays out a tile declared on its source by its entry", async () => {
+      const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
+      const out = await spliced(source, (d) => {
+         d.tiles[0].colspan = 6;
+         d.tiles[0].rowspan = 4;
+      });
+      expect(out).toBe(
+         `## artifact { title="T" tiles=["orders -> by_brand" { colspan=6 rowspan=4 }] }\nimport { orders } from '../orders.malloy'`,
+      );
+      const back = await openDocument(out);
+      expect(back.tiles[0]).toMatchObject({ colspan: 6, rowspan: 4 });
+      // A layout alone never makes a query: the tile still names the view.
+      expect(
+         await edited(source, (d) => {
+            d.tiles[0].colspan = 6;
+         }),
+      ).toBe(
+         `## artifact { title="T" tiles=["orders -> by_brand" { colspan=6 }] }\nimport { orders } from '../orders.malloy'`,
+      );
    });
 
    // A named query stays a named query: the entry is moved or dropped as
@@ -1580,9 +1563,33 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
       it("refuses to restyle it", async () => {
          expect(
             await refused(NAMED, (d) => {
-               d.tiles[0].colspan = 6;
+               queryTile(d, 0).label = "Carriers";
             }),
          ).toContain("names a query");
+      });
+
+      // Its layout is the report's, on its entry, like any other tile's.
+      it("lays it out on its entry, quoted or bare", async () => {
+         const out = await spliced(NAMED, (d) => {
+            d.tiles[0].colspan = 6;
+            d.tiles[0].rowspan = 4;
+         });
+         expect(out).toContain('tiles=["by_carrier" { colspan=6 rowspan=4 }, ');
+         const bare = await spliced(
+            NAMED.replace('"by_carrier"', "by_carrier"),
+            (d) => {
+               d.tiles[0].row = 1;
+               d.tiles[0].col = 7;
+            },
+         );
+         expect(bare).toContain("tiles=[by_carrier { row=1 col=7 }, ");
+         const back = await openDocument(bare);
+         expect(back.tiles[0]).toMatchObject({
+            name: "by_carrier",
+            declaration: { kind: "query" },
+            row: 1,
+            col: 7,
+         });
       });
    });
 
@@ -2111,14 +2118,15 @@ ${comment}
          "  /* it was\n     # colspan=12\n     until the map stopped fitting */",
       ],
    ] as const) {
-      it(`patches the tag above ${kind} rather than writing a second one`, async () => {
+      it(`moves the width off the tag above ${kind} rather than leaving it there`, async () => {
          const out = await spliced(dashed(comment), (d) => {
             d.tiles[0].colspan = 3;
          });
-         // The comment survives to the byte, the one real tag is rewritten in
-         // place, and no second one appears under the comment.
+         // The comment survives to the byte, the one real tag is taken off,
+         // and the width lands on the entry.
+         expect(out).toContain('"a -> revenue" { colspan=3 }');
          expect(out).toContain(
-            `  # colspan=3\n${comment}\n  view: revenue is sales`,
+            `source: a is one extend {\n${comment}\n  view: revenue is sales`,
          );
          expect(out).not.toContain("# colspan=6");
       });
@@ -2364,9 +2372,11 @@ source: regional is duckdb.sql("""
    // WITHIN the source's own extent, which used to be just the `source:` line.
    it("finds and retags a view declared inside the source, not just its own line", async () => {
       const out = await spliced(MULTILINE, (d) => {
-         d.tiles[0].colspan = 6;
+         queryTile(d, 0).label = "Regions";
       });
-      expect(out).toContain("  # colspan=6\n  view: by_region is region_view");
+      expect(out).toContain(
+         '  # label="Regions"\n  view: by_region is region_view',
+      );
    });
 
    // planRemovedTiles: the LAST view before the extend's own closing brace.
@@ -2518,8 +2528,9 @@ source: a is one extend {
       expect(out).toContain(
          "##|(markdown) intro\n## How to read this page\n|##\n",
       );
+      expect(out).toContain('"a -> x" { colspan=4 }');
       expect(out).toContain(
-         "  #|(markdown)\n  # Lead tile\n  |#\n  # colspan=4\n",
+         "  #|(markdown)\n  # Lead tile\n  |#\n  view: x is vx",
       );
    });
 
@@ -2570,7 +2581,10 @@ source: a is one extend {
       const out = await spliced(WITH_COMMENTED_CLOSER, (d) => {
          d.tiles.find((t) => t.name === "x")!.colspan = 4;
       });
-      expect(out).toContain("  # colspan=4\n  /*\n  |# looks like a closer\n");
+      expect(out).toContain('"a -> x" { colspan=4 }');
+      expect(out).toContain(
+         "  view: u is vu\n\n  /*\n  |# looks like a closer\n",
+      );
       expect(out).not.toContain("colspan=6");
       expect(out).toContain(
          "  #|(markdown)\n  # Prev\n  |#\n  view: u is vu\n",

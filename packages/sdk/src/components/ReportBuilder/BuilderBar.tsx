@@ -27,6 +27,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import type { BuilderControls } from "./builderControls";
 import { controlSx, dividerSx, iconControlSx } from "./BuilderToolbar";
+import { ArrangeMenu } from "./ArrangeMenu";
 import { SaveStatus } from "./SaveStatus";
 import { MOD } from "./useBuilderShortcuts";
 
@@ -118,6 +119,9 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                            </IconButton>
                         </span>
                      </Tooltip>
+                     {controls.arrange && (
+                        <ArrangeMenu arrange={controls.arrange} />
+                     )}
                      {canAdd && (
                         <Divider orientation="vertical" sx={dividerSx} />
                      )}

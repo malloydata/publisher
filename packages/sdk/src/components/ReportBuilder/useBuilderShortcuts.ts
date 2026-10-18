@@ -8,7 +8,8 @@ import { useEffect, useRef, useState } from "react";
  *
  * Undo and redo on the platform's usual keys, save on ⌘S / Ctrl+S (which the
  * browser would otherwise take), Escape to drop the selection, and the arrow
- * keys to nudge the selected tile's width a column at a time.
+ * keys to nudge the selected tile's width a column at a time; with Option/Alt
+ * held, they move a placed tile one cell.
  *
  * Nothing but Escape and save fires while a text field has focus, so typing
  * into a title never undoes a layout. Save leaves the field first, so its
@@ -21,6 +22,13 @@ export interface BuilderShortcutHandlers {
    escape: () => void;
    /** Nudge the selected tile's width by ±1 column. Absent, the arrow keys are left alone. */
    nudge?: (delta: 1 | -1) => void;
+   /**
+    * Move the selected tile one cell with Option/Alt and an arrow key, on a
+    * report whose tiles are placed. Answers whether it moved one: when it did
+    * not (nothing placed is selected), the key is left to the browser, which
+    * uses Alt with an arrow for Back and Forward.
+    */
+   move?: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => boolean;
    /** A modal owns the keyboard: no shortcut fires, so none can open a second dialog over it. */
    paused?: boolean;
 }
@@ -106,6 +114,22 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
             event.preventDefault();
             current.save?.();
             return;
+         }
+         if (current.move && event.altKey && !mod && !event.shiftKey) {
+            const step =
+               event.key === "ArrowLeft"
+                  ? ([0, -1] as const)
+                  : event.key === "ArrowRight"
+                    ? ([0, 1] as const)
+                    : event.key === "ArrowUp"
+                      ? ([-1, 0] as const)
+                      : event.key === "ArrowDown"
+                        ? ([1, 0] as const)
+                        : undefined;
+            if (step && current.move(step[0], step[1])) {
+               event.preventDefault();
+               return;
+            }
          }
          if (
             current.nudge &&

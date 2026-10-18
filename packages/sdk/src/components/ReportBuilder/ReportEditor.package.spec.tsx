@@ -224,7 +224,7 @@ describe("ReportEditor writes the report file and nothing else", () => {
          '# label="Categories"\n  view: by_cat is by_category',
       );
       expect(written).toContain(
-         '\n\n# colspan=6\n# label="Categories"\nquery: by_category_tile is a -> by_category\n',
+         '\n\n# label="Categories"\nquery: by_category_tile is a -> by_category\n',
       );
    });
 });

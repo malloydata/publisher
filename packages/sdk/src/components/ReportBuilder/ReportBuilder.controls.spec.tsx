@@ -205,9 +205,11 @@ describe("Duplicate, from a tile's menu", () => {
       screen.getByRole("button", { name: "Save", hidden: true }).click();
       await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
       const text = saved.mock.calls[0]?.[0] ?? "";
-      expect(text).toContain('tiles=["a -> by_cat", "by_category_tile"]');
       expect(text).toContain(
-         '\n\n# colspan=6\n# label="By category"\nquery: by_category_tile is a -> by_category\n',
+         'tiles=["a -> by_cat", "by_category_tile" { colspan=6 }]',
+      );
+      expect(text).toContain(
+         '\n\n# label="By category"\nquery: by_category_tile is a -> by_category\n',
       );
    });
 

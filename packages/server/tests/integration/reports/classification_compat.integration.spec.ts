@@ -90,13 +90,25 @@ const MALLOYYO_CELL_FILES = [
  * `rewritten` files were moved off the cell format onto tiles, so they are
  * still linear reports but their cells, listing and findings are new: they
  * are left out of every comparison but their layout.
+ *
+ * `removed` files were deleted with the form they tested: the
+ * `dashboard_columns` alias, and a custom-component `.jsx` that was only
+ * there to be warned about. They are left out of every comparison.
  */
 const DELIBERATE: Record<
    string,
-   { becameModels: string[]; rewritten?: string[] }
+   { becameModels: string[]; rewritten?: string[]; removed?: string[] }
 > = {
    "dashboards-curated": { becameModels: ["dashboards/listed.malloy"] },
+   "dashboards-lint": {
+      becameModels: [],
+      removed: ["dashboards/orphan.jsx"],
+   },
    "notebooks-lint": {
+      removed: [
+         "dashboards/columns_alias.malloy",
+         "dashboards/columns_conflict.malloy",
+      ],
       becameModels: [
          "dashboards/wrong_kind.malloy",
          "notebooks/header_statement.malloy",
@@ -116,13 +128,16 @@ const rewrittenIn = (pkg: string) => new Set(DELIBERATE[pkg]?.rewritten ?? []);
 
 /** The baseline with the {@link DELIBERATE} changes applied. */
 function expectedFor(pkg: string, was: Baseline[string]): Baseline[string] {
+   const removed = new Set(DELIBERATE[pkg]?.removed ?? []);
    const moved = new Set([
       ...(DELIBERATE[pkg]?.becameModels ?? []),
       ...rewrittenIn(pkg),
+      ...removed,
    ]);
    if (moved.size === 0) return was;
    return {
       ...was,
+      models: was.models.filter((m) => !removed.has(m.path as string)),
       dashboards: was.dashboards.filter((d) => !moved.has(d.path as string)),
       manifests: Object.fromEntries(
          Object.entries(was.manifests).filter(

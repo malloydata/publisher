@@ -135,6 +135,8 @@ export interface BuilderToolbarProps {
    actions?: ReactNode;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
+   /** The arrange menu, on a report whose tiles are placed; drawn before Tile. */
+   arrange?: ReactNode;
    /**
     * Leave the builder: draws Close after Save, for a host that opts in. The
     * Console leaves from its own header and passes nothing.
@@ -161,6 +163,7 @@ export function BuilderToolbar({
    saveButton,
    actions,
    onAddTile,
+   arrange,
    onExit,
    saveStatus,
 }: BuilderToolbarProps) {
@@ -180,6 +183,7 @@ export function BuilderToolbar({
             "& .MuiButton-root": { whiteSpace: "nowrap" },
          }}
       >
+         {arrange}
          {/* What the page is made of. */}
          {onAddTile && (
             <Button

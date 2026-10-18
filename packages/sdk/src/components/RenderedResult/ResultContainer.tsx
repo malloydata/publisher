@@ -22,6 +22,7 @@ import {
    resolveResultHeight,
    resultCap,
    type ResultSizing,
+   TIGHT_ATTR,
 } from "./resultSizing";
 
 /** The box a dashboard tile's result scrolls in when it is taller than its cap. */
@@ -64,6 +65,13 @@ interface ResultContainerProps {
     * tile's card is. Leave it off wherever the result sets the surface's height.
     */
    fill?: boolean;
+   /**
+    * The cell's height is set (a tile given rows), not its content's: only
+    * then is a result taller than it drawn compact to fit. A cell that grows
+    * with its content is briefly shorter than a result that just grew, and
+    * compact there would be a mistake that never undoes itself.
+    */
+   compactToFit?: boolean;
 }
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
@@ -79,6 +87,7 @@ export default function ResultContainer({
    renderLogs,
    drill,
    fill = false,
+   compactToFit = false,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
    // A result is here: start the renderer download if no panel already has.
@@ -107,12 +116,36 @@ export default function ResultContainer({
    useEffect(() => {
       const box = containerRef.current;
       if (!fill || !box) return;
-      const observer = new ResizeObserver(([entry]) =>
-         setCellHeight(Math.round(entry.contentRect.height)),
-      );
+      const observer = new ResizeObserver(([entry]) => {
+         setCellHeight(Math.round(entry.contentRect.height));
+         setCellWidth(Math.round(entry.contentRect.width));
+      });
       observer.observe(box);
       return () => observer.disconnect();
    }, [fill, hasResult, userAcknowledged]);
+
+   // Tight: a content-sized result taller than the cell it fills (value cards
+   // in a tile set shorter than they are), drawn compact so it fits rather
+   // than scrolls. Held at the height it needed at full size, and let go only
+   // once the cell is that tall again: let go as soon as the compact result
+   // fit, it would grow back past the cell and the two would flicker.
+   const [tightFrom, setTightFrom] = useState<number | undefined>(undefined);
+   const [cellWidth, setCellWidth] = useState<number | undefined>(undefined);
+   const mayTighten = fill && compactToFit && sizing === "content";
+   // A new result, or a cell of another width, may fit at full size where the
+   // last one did not: let go and measure again, rather than stay compact on
+   // the strength of a height measured for something else.
+   useEffect(() => {
+      setTightFrom(undefined);
+   }, [result, cellWidth, mayTighten]);
+   useEffect(() => {
+      if (!mayTighten) return;
+      if (cellHeight === undefined || contentHeight === undefined) return;
+      if (tightFrom === undefined && contentHeight > cellHeight + 1)
+         setTightFrom(contentHeight);
+      else if (tightFrom !== undefined && cellHeight >= tightFrom)
+         setTightFrom(undefined);
+   }, [mayTighten, cellHeight, contentHeight, tightFrom]);
 
    if (!result) {
       return null;
@@ -205,6 +238,9 @@ export default function ResultContainer({
             // scrolls inside itself, under its own pinned header.
             <Box
                className={RESULT_SCROLLER_CLASS}
+               {...(mayTighten && tightFrom !== undefined
+                  ? { [TIGHT_ATTR]: "" }
+                  : {})}
                sx={{
                   position: "absolute",
                   inset: 0,

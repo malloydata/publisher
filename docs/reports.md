@@ -55,10 +55,10 @@ query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CAT
 The [`storefront`](../examples/storefront) example package ships reports of both layouts over the same
 model.
 
-The format comes from [Malloyyo](https://github.com/malloydata/malloyyo)'s dashboards, and a Malloyyo
-repository's `dashboards/` directory largely works unchanged here. Publisher has since diverged: a
-report outside `dashboards/`, a path drill target, and `layout=` work in Publisher and not in Malloyyo.
-The dated list is [Where Publisher diverges](malloyyo-dashboards-design.md#where-publisher-diverges).
+The format began as [Malloyyo](https://github.com/malloydata/malloyyo)'s dashboards and is now
+Publisher's own: it reads no Malloyyo-only spelling (`kind=`, a query-level `# artifact`,
+`dashboard_columns=`), and Malloyyo reads none of Publisher's additions (reports outside `dashboards/`,
+path drill targets, `layout=`, entry layout and placement).
 
 ## Where the pieces live
 
@@ -109,18 +109,18 @@ is the thing being compiled.
 ## artifact { layout=grid title="…" tiles=[…] givens { CATEGORY=f'Outerwear' } autorun=false } dashboard { columns=12 }
 ```
 
-| Construct                                                         | What it does                                                                                                                                                  |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `## artifact { … }`                                               | Makes the file a report. Model-level; the header above it holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description   |
-| `layout=grid` / `layout=linear`                                   | The layout. **Always write it**: see [Which layout](#which-layout)                                                                                            |
-| `kind=…`                                                          | No longer read. A tag that sets it is not a report, and the package says so (`report-kind-removed`, error) with the `layout=` to write                        |
-| `title="…"`                                                       | The report's title. Without one, the title falls back to the description, then to an opening markdown heading, then to the basename                           |
-| `tiles=[…]`                                                       | The tiles, in order. A query tile is a quoted `"source -> view"`; a text tile is `name { kind=text }`. See [Tiles](#tiles)                                    |
-| `givens { NAME=value }`                                           | Starting control values, not a redeclaration. See [Apply, starting values, and the URL](#apply)                                                               |
-| `autorun=false`                                                   | Batches control changes behind an Apply button                                                                                                                |
-| `dashboard { columns=N }` beside the tag                          | The grid width, read on a grid report. `dashboard_columns=N` inside the tag is a deprecated alias: read when `columns` is absent, an error when they disagree |
-| `# colspan=K`, `# break`, `# label`, `# subtitle`, `# borderless` | Per-tile presentation, on the view a tile names. See [Laying out the grid](#laying-out-the-grid)                                                              |
-| `# drill { to=[…] given=… }` on a source `dimension:`             | Makes cells that group by it clickable. See [Drill](#drill)                                                                                                   |
+| Construct                                                         | What it does                                                                                                                                                |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { … }`                                               | Makes the file a report. Model-level; the header above it holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description |
+| `layout=grid` / `layout=linear`                                   | The layout. **Always write it**: see [Which layout](#which-layout)                                                                                          |
+| `kind=…`                                                          | No longer read. A tag that sets it is not a report, and the package says so (`report-kind-removed`, error) with the `layout=` to write                      |
+| `title="…"`                                                       | The report's title. Without one, the title falls back to the description, then to an opening markdown heading, then to the basename                         |
+| `tiles=[…]`                                                       | The tiles, in order. A query tile is a quoted `"source -> view"`; a text tile is `name { kind=text }`. See [Tiles](#tiles)                                  |
+| `givens { NAME=value }`                                           | Starting control values, not a redeclaration. See [Apply, starting values, and the URL](#apply)                                                             |
+| `autorun=false`                                                   | Batches control changes behind an Apply button                                                                                                              |
+| `dashboard { columns=N }` beside the tag                          | The grid width, read on a grid report. `dashboard_columns=N` inside the tag is not read, and is reported with the fix                                       |
+| `# colspan=K`, `# break`, `# label`, `# subtitle`, `# borderless` | Per-tile presentation, on the view a tile names. See [Laying out the grid](#laying-out-the-grid)                                                            |
+| `# drill { to=[…] given=… }` on a source `dimension:`             | Makes cells that group by it clickable. See [Drill](#drill)                                                                                                 |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -267,16 +267,17 @@ Revenue first, then the seasonal split.
   a malformed-route warning and `##| markdown` reads the prose as tags. `##|(text) name` is also
   read as a text tile; write `(markdown)`.
 - **The body is markdown**: headings, emphasis, lists, links and inline code.
-- **On a grid the entry reads `colspan` and `break`** and nothing else, the same two layout tags a query
-  tile takes from its view. On a linear report both are ignored.
-- **The lint reports** an entry with no block, a block written twice, a `colspan` that is not a positive
-  integer, any other property on the entry, and a named `(markdown)` block no entry lists. Delete an
+- **On a grid the entry reads `colspan`, `break` and `rowspan`** and nothing else, as every tile's entry
+  does (see [Placing a tile on its entry](#placing-a-tile-on-its-entry)). On a linear report all three
+  are ignored.
+- **The lint reports** an entry with no block, a block written twice, a `colspan` or `rowspan` that is not
+  a positive integer, any other property on the entry, and a named `(markdown)` block no entry lists. Delete an
   unlisted block rather than leave it.
 
 The report's own description is separate: the unnamed `"` notes above `## artifact`
 (`##" One line saying what this report is for.`), which render as markdown under the title.
 
-In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break? }` with no `query`, and a
+In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break?, rowspan? }` with no `query`, and a
 query tile is `{ kind: "query", query, … }`. Anything that runs a report's tiles skips the text ones.
 
 ### File order
@@ -333,6 +334,48 @@ report's own `dashboard { columns=N }`; a `# dashboard { columns=N }` tag is onl
 single `# dashboard` query.
 One view therefore presents identically whether it is named as a tile here or nested under a
 `# dashboard` query, and there is no second grammar to learn.
+
+<a id="placing-a-tile-on-its-entry"></a>
+
+### Placing a tile on its entry
+
+A report can also place a tile with its own entry in `tiles=[…]`, and the entry wins over the view's
+tags, property by property:
+
+```malloy
+## artifact { layout=grid tiles=["overview -> kpis" { colspan=12 rowspan=2 }, "overview -> revenue_trend" { colspan=8 break rowspan=5 }, "overview -> revenue_by_state" { colspan=4 }] } dashboard { columns=12 }
+```
+
+- **`colspan=N` and `break`** mean what the view's tags mean. `break=false` turns off a view's `# break`.
+  Because the entry belongs to the report, one view can sit at a different width on each report that
+  names it, and a tile on a view the report imports can be laid out at all.
+- **`rowspan=N`** is the tile's height in grid rows, and only the entry sets it. A row is 80px, and a tile
+  N rows tall also spans the N-1 gaps between them (16px each), so `rowspan=5` is 464px. A chart fills the
+  height, a table scrolls inside it, and a text tile scrolls its prose. Without it a tile is as tall as
+  its result, up to 400px, and a row is as tall as its tallest tile; a tile with a height keeps it beside
+  a taller neighbour. A map draws at its own size, so give it the height it needs.
+  On a placed report (below) it is the rows the tile spans.
+- **`row=N` and `col=N`** place the tile: its top left corner sits in that grid row and column, counted
+  from 1. A report where any tile has a `row` is **placed**. Its rows are then fixed 80px tracks, each
+  tile sits where it says instead of flowing, and empty cells stay empty, which is how a tile can sit
+  under a short neighbour beside a tall one. A placed tile with no `rowspan` is 5 rows (a text tile 2);
+  one with no `row` or `col` fills the first free cell; `break` means nothing. On a narrow screen the
+  tiles stack in one column, top to bottom and then left to right. The lint names a placed tile that
+  runs past the grid's right edge, and two that cover each other.
+- **An entry reads only these five.** A label, subtitle, chart or card still goes on the view, and the
+  lint names any other property on an entry.
+- **The Console builder writes here.** Resizing or moving a tile puts its layout on its entry and takes
+  the view's `# colspan` and `# break` off, so the layout has one home. A view's tags are left alone
+  until its tile's layout changes. On a grid a move is free placement: the first move places every tile
+  where it is drawn, each edge snapped to the nearest row line so tiles that touched still touch, and the file lists
+  placed tiles in reading order. **Arrange tiles** in the builder's bar then packs every tile upward to
+  close the gaps, or lets the tiles flow again (their places cleared, their sizes kept).
+
+```malloy
+## artifact { layout=grid tiles=["overview -> kpis" { row=1 col=1 colspan=12 rowspan=3 }, "overview -> revenue_trend" { row=4 col=1 colspan=6 rowspan=3 }, "overview -> revenue_by_state" { row=4 col=7 colspan=6 rowspan=6 }, "overview -> revenue_by_category" { row=7 col=1 colspan=6 rowspan=3 }] } dashboard { columns=12 }
+```
+
+Here the trend and the category chart stack in the left half beside one tall map.
 
 <a id="laying-out-the-grid"></a>
 
@@ -446,8 +489,8 @@ query: brand_ranking is order_items -> top_brands + { where: category ~ $CATEGOR
 ```
 
 - **`layout=linear` is required here**, because the tag lists tiles (see [Which layout](#which-layout)).
-- `dashboard { columns }` has no effect on a linear report, and a `colspan` or `break` on a tile entry is
-  ignored with a warning (`notebook-tile-layout-ignored`).
+- `dashboard { columns }` has no effect on a linear report, and a `colspan`, `break` or `rowspan` on a tile
+  entry is ignored with a warning (`notebook-tile-layout-ignored`).
 - **Write prose that frames questions, not findings about today's data.** "Revenue spiked 23% in March"
   is stale the next time the data refreshes; "How is revenue trending?" is not.
 - **A linear report is the natural home for a cross-model analysis.** The file compiles with all its
@@ -800,12 +843,14 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **Controls.** A given whose `suggest` names a source, query or dimension the file cannot see, or a
   `suggest` in a form that cannot fetch options at all.
 - **Tiles and layout.** A tile that does not resolve to a real view; on a grid, a non-positive `columns`, a
-  `# colspan` that is not a positive integer or is wider than the grid, a `dashboard_columns=` alias (an
-  error when it disagrees with `columns`); on a linear report, a `colspan` or `break`
+  `# colspan` or entry `colspan` that is not a positive integer or is wider than the grid, an entry
+  `rowspan` that is not a positive integer, a property on an entry other than its layout, a
+  `dashboard_columns=` inside the tag (not read; the width goes in `dashboard { columns }`); on a linear report, a `colspan`,
+  `break` or `rowspan`
   (`notebook-tile-layout-ignored`) and a `run:` beside `tiles` (`notebook-layout-run`); any property inside
   the artifact tag that Publisher does not read.
-- **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan`, an unknown
-  property on the entry, and a named block no entry lists.
+- **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan` or `rowspan`, an
+  unknown property on the entry, and a named block no entry lists.
 - **The tag and the prose.** An artifact tag that does not parse (`notebook-artifact-unparsed`, error);
   a `#(markdown)` note with no statement to take it (`notebook-markdown-attached-nowhere`, error); a
   floating or unnamed `(markdown)` note that no text tile shows (`notebook-markdown-block-unnamed`); each
@@ -908,16 +953,35 @@ in the builder. No directory is ever created for you.
 
 From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
 status, undo and redo, an **Add** menu (a tile, text or a filter) and **Done**. The page
-under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to move it,
-drag the grip on its right edge to set its width, pick its chart and clickable cells from its ⋯
+under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to place it in any cell, empty space included,
+drag any edge or corner to resize it, pick its chart and clickable cells from its ⋯
 menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
-table or chart) is the result's, never a move. The width snaps to whole columns, with the columns drawn
-behind the tiles and a label saying the width during the drag; the edge is also a keyboard control (Tab to
-it, Left and Right step one column, Home and End go to one column and full width).
+table or chart) is the result's, never a move. A tile draws no handles: over an edge the cursor becomes a
+two-headed arrow, and over a corner a diagonal one. The right and bottom edges set the width and height;
+the left and top edges move that edge and keep the opposite one where it is (on a report that flows, the
+first such drag places every tile where it is drawn, as a move does); a corner moves its two edges at
+once. The width snaps to whole columns, with the columns drawn
+behind the tiles and a label saying the size during the drag; the right edge is also a keyboard control (Tab to
+it, Left and Right step one column, Home and End go to one column and full width). The height snaps to whole
+rows the same way; on the bottom edge Up and Down step one row, Home and End go to the shortest and tallest, and
+Delete, or a double-click on the edge, puts the tile back to auto height. The drag also snaps to auto
+when that is nearer than a whole row: a row of auto tiles is as tall as its tallest result, which is
+rarely a whole number of rows, so this is how a tile is dragged level with an auto neighbour. Both are written on the
+tile's entry in `tiles=[…]`, so a tile on a view the report imports resizes like any other. A move
+snaps to rows and columns, with both drawn behind the tiles, and pushes any tile it lands on straight
+down; so does a resize. Nothing is pulled up to fill a gap until you ask: **Arrange tiles** in the bar
+holds **Pack tiles upward**, which slides every tile up into the space above it, and **Let tiles flow**,
+which clears every tile's place and keeps its size. While a tile of a placed report is selected, the
+rows and columns show faintly behind the tiles, so empty space reads as somewhere to put one; with
+Option/Alt held, the arrow keys move the selected tile one cell; a step into the tile beside it swaps the two, and anything else it lands on is pushed down. The
+fewest rows offered are 3 for a chart (it needs room to draw its plot), 2 for value cards or a table, and 1
+for a text tile; which a query tile is comes from what it draws. A row of
+value cards in a tile set shorter than it needs is drawn compact (smaller figures, tighter cards, more
+to a row) so it fits instead of scrolling; a map draws at its own size, so give it the height it needs.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a query of its own; a tile's width is set by dragging its
-right edge (or focusing that edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
+The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a query of its own; a tile's size is set by dragging its
+edges and corners (or focusing its right or bottom edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
 keeps it, Escape drops it, and Cmd/Ctrl+S saves from inside the field.

@@ -61,7 +61,7 @@ describe("a report the builder writes", () => {
       expect(back).toBe(PLAIN);
    });
 
-   it("writes a width, a colour and a filter on the one query, and drops it when all are gone", async () => {
+   it("writes a chart, a colour and a filter on the one query, its width on the entry, and drops the query when all are gone", async () => {
       const set = await edited(file('"flights -> by_carrier"', ""), (d) => {
          const tile = queryTile(d, 0);
          tile.chart = "line_chart";
@@ -71,8 +71,8 @@ describe("a report the builder writes", () => {
       });
       expect(set).toBe(
          file(
-            '"by_carrier_tile"',
-            "\n# colspan=2\n# viz=line\n" +
+            '"by_carrier_tile" { colspan=2 }',
+            "\n# viz=line\n" +
                '# theme.palette.series=["#7f9862"]\n' +
                "query: by_carrier_tile is flights -> by_carrier + { where: carrier_code ~ $CARRIER }\n",
          ),
@@ -176,15 +176,17 @@ describe("a report the builder writes", () => {
       );
       const wide = await edited(authored, (d) => {
          queryTile(d, 0).colspan = 2;
+         queryTile(d, 0).label = "Carriers";
       });
       expect(wide).toBe(
          file(
-            '"by_carrier"',
-            "\n# colspan=2\nquery: by_carrier is flights -> by_carrier\n",
+            '"by_carrier" { colspan=2 }',
+            '\n# label="Carriers"\nquery: by_carrier is flights -> by_carrier\n',
          ),
       );
       const back = await edited(wide, (d) => {
          delete queryTile(d, 0).colspan;
+         delete queryTile(d, 0).label;
       });
       expect(back).toBe(authored);
    });

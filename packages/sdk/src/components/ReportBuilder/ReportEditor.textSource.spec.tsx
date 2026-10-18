@@ -355,7 +355,7 @@ describe("ReportEditor in text-source mode", () => {
          await waitFor(() =>
             expect(
                storage.documents.get("env/pkg/dashboards/ops.malloy"),
-            ).toContain("by_x_tile"),
+            ).toContain('"orders -> by_x" { colspan=6 }'),
          );
          const saved = storage.documents.get("env/pkg/dashboards/ops.malloy")!;
          expect(saved).not.toMatch(/^import /m);

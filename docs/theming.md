@@ -143,7 +143,7 @@ global stylesheet or a styled wrapper:
 | `publisher-builder-bar`             | The builder's controls as one bar (`BuilderBar`)                                                                        |
 | `publisher-save-status`             | The bar's save status                                                                                                   |
 | `publisher-builder-tile`            | A tile in the builder: its selection, handle and menu                                                                   |
-| `publisher-width-handle`            | The grip that sets a tile's width                                                                                       |
+| `publisher-width-handle`            | The invisible strip on a tile's right edge that sets its width; only its focus ring is drawn                            |
 | `publisher-menu`                    | The builder's menus                                                                                                     |
 | `publisher-dialog`                  | Every builder window, with `publisher-add-tile-dialog`, `publisher-filter-dialog` or `publisher-clickable-cells-dialog` |
 

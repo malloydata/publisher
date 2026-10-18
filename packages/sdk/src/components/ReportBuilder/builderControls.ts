@@ -36,6 +36,11 @@ export interface BuilderControls {
       /** Why a filter cannot be added here, when it cannot; `filter` is then absent. */
       filterUnavailable?: string;
    };
+   /**
+    * The layout as a whole, on a grid report whose tiles are placed: close
+    * its gaps, or let its tiles flow again. Absent on a report that flows.
+    */
+   arrange?: ArrangeActions;
    /** Leave the builder: asks first when edits are unsaved. Absent unless the host passed `onExit`. */
    exit?: () => void;
    /**
@@ -61,6 +66,21 @@ export interface BuilderControls {
    restore?: () => void;
    /** The author has seen the restored edits: `restored` goes. Present while `restored` is, and not pending. */
    dismissRestored?: () => void;
+}
+
+/**
+ * What can be done to a placed report's layout as a whole, as
+ * {@link BuilderControls.arrange} offers it.
+ */
+export interface ArrangeActions {
+   /**
+    * Slide every tile up into the empty space above it. Present only when
+    * there is such a gap: absent means there is nothing to close, and a host
+    * draws the action disabled (or not at all).
+    */
+   pack?: () => void;
+   /** Take every tile's place off, so the report flows again; sizes are kept. */
+   flow: () => void;
 }
 
 /** What a host passes to take over the builder's page-level controls. */
@@ -97,6 +117,8 @@ export function useReportControls(
          discard: () => latest.current.discard?.(),
          restore: () => latest.current.restore?.(),
          dismissRestored: () => latest.current.dismissRestored?.(),
+         pack: () => latest.current.arrange?.pack?.(),
+         flow: () => latest.current.arrange?.flow(),
       }),
       [],
    );
@@ -121,6 +143,8 @@ export function useReportControls(
    const restoredPending = controls.restored?.pending ?? false;
    const hasRestore = controls.restore !== undefined;
    const hasDismissRestored = controls.dismissRestored !== undefined;
+   const hasArrange = controls.arrange !== undefined;
+   const canPack = controls.arrange?.pack !== undefined;
 
    const shown = useMemo<BuilderControls>(
       () => ({
@@ -154,6 +178,14 @@ export function useReportControls(
          ...(hasDismissRestored
             ? { dismissRestored: actions.dismissRestored }
             : {}),
+         ...(hasArrange
+            ? {
+                 arrange: {
+                    ...(canPack ? { pack: actions.pack } : {}),
+                    flow: actions.flow,
+                 },
+              }
+            : {}),
       }),
       [
          actions,
@@ -175,6 +207,8 @@ export function useReportControls(
          restoredPending,
          hasRestore,
          hasDismissRestored,
+         hasArrange,
+         canPack,
       ],
    );
 

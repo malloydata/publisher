@@ -13,13 +13,15 @@ import {
  *
  * A report the builder writes declares no source. A tile names a served view
  * directly, `"flights -> by_carrier"` (`inherited`), until it needs something
- * the view does not have: a chart, a width, a colour, a title or subtitle, a
- * row break, no border, or a filter. Then it is a query of the report's own
- * (`named`), whose `#` tags carry those settings over the view's:
+ * the view does not have: a chart, a colour, a title or subtitle, no border,
+ * or a filter. Then it is a query of the report's own (`named`), whose `#`
+ * tags carry those settings over the view's:
  *
  *     # viz=line
- *     # colspan=2
  *     query: by_carrier_tile is flights -> by_carrier + { where: origin_code ~ $ORIGIN }
+ *
+ * A tile's layout (width, row break, height, place) is on its entry in
+ * `tiles=[…]` in either form, so a resize or a move never makes a query.
  *
  * When every setting is the view's again, it goes back to naming the view, and
  * the writer removes the query. Applied after every edit (the editor's
@@ -32,8 +34,6 @@ export function needsQuery(tile: QueryTile): boolean {
    return (
       tile.label !== undefined ||
       tile.subtitle !== undefined ||
-      tile.colspan !== undefined ||
-      tile.break === true ||
       tile.borderless === true ||
       (tile.chart !== undefined && tile.chart !== "default") ||
       tile.color !== undefined ||
@@ -71,12 +71,17 @@ const namedByBuilder = (name: string, view: string) =>
    (name.startsWith(`${view}_tile_`) &&
       /^\d+$/.test(name.slice(`${view}_tile_`.length)));
 
-/** The `inherited` form of a `named` tile: the view it reads, with no setting of its own. */
+/** The `inherited` form of a `named` tile: the view it reads, with no setting of its own, laid out where the tile was. */
 const viewTile = (tile: QueryTile & { source: string }, from: string) =>
    ({
       name: from,
       source: tile.source,
       declaration: { kind: "inherited" },
+      ...(tile.colspan === undefined ? {} : { colspan: tile.colspan }),
+      ...(tile.break ? { break: true } : {}),
+      ...(tile.rowspan === undefined ? {} : { rowspan: tile.rowspan }),
+      ...(tile.row === undefined ? {} : { row: tile.row }),
+      ...(tile.col === undefined ? {} : { col: tile.col }),
    }) satisfies QueryTile;
 
 /**

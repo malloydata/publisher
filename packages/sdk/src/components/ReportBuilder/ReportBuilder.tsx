@@ -3,9 +3,13 @@
 
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
-import { Alert, Button, Stack, Typography } from "@mui/material";
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { nudgedSpan, useDefaultTileSpan } from "../Dashboard/DashboardGrid";
+import { Alert, Button, Stack, Typography, useMediaQuery } from "@mui/material";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+   isPlaced,
+   nudgedSpan,
+   useDefaultTileSpan,
+} from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { SavesTo } from "./documentSession";
 import type { ReportEventHandler } from "../Report/telemetry";
@@ -22,12 +26,7 @@ import {
 } from "./builderControls";
 import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
-import {
-   isQueryTile,
-   isReadOnlyTile,
-   type DashboardDocument,
-   type QueryTile,
-} from "./document";
+import { tileKey, type DashboardDocument, type QueryTile } from "./document";
 import { FilterStrip, type FixedFilter } from "./FilterStrip";
 import { clockTime, type SaveStatusProps } from "./SaveStatus";
 import { SELECTION_RING_PX } from "./TileFrame";
@@ -40,7 +39,18 @@ import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
-import { useTileResize } from "./useTileResize";
+import { ArrangeMenu } from "./ArrangeMenu";
+import type { ArrangeActions } from "./builderControls";
+import {
+   flowTiles,
+   hasGaps,
+   inReadingOrder,
+   pack,
+   settle,
+   stepPlaced,
+   widestFrom,
+} from "./placement";
+import { useEdgeResize, withShape } from "./useEdgeResize";
 import { layoutRules, withSpan } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
 
@@ -62,7 +72,7 @@ export type { BuilderGiven } from "./controls";
  * draws its own card AND its own heading. Nesting one inside a card of ours
  * would show a card in a card under two titles — which is precisely not what a
  * reader sees. So every affordance is drawn AROUND whatever the caller renders:
- * an outline for selection, a grip and a menu in the corners.
+ * an outline for selection, a menu in the corner, and edges that resize.
  *
  * **Everything here is on the thing it changes.** Set a tile's width from its menu, and drag
  * the tile itself to reorder — into the empty end of a row
@@ -300,6 +310,17 @@ export function ReportBuilder({
       ?.split("/")
       .at(-1)
       ?.replace(/\.malloy$/, "");
+   // Below `md` the grid is drawn as one column, as a phone shows it, so a
+   // tile's width and place do not show: moving and widening are off there.
+   // Assumed wide where the width cannot be asked (tests, server render).
+   // 900px is `md` in the default breakpoints, which the grid's own `sx`
+   // resolves against; written out so a host with no MUI theme still works.
+   const wide = useMediaQuery("(min-width:900px)", {
+      defaultMatches: true,
+      noSsr: true,
+   });
+   const arrange = !rules.widths || wide;
+   // On a grid a move is free placement; on a linear report it reorders.
    const reorder = useTileReorder({
       tiles: editor.document.tiles,
       commit: (next) =>
@@ -307,11 +328,31 @@ export function ReportBuilder({
             draft.tiles = next;
          }),
       onLanded: selectTile,
+      ...(rules.widths && wide ? { placement: { columns, gridBox } } : {}),
    });
+   // After a tile on a placed report changes size, whatever it now covers
+   // is pushed down; a report that flows has nothing to settle.
+   // Write a new tile list as one edit, keeping the selection on the tile it
+   // was on: a placed report is written in reading order, so a resize, a
+   // pack or a flow can move the selected tile to another index.
+   const writeTiles = (next: DashboardDocument["tiles"], key?: string) => {
+      editor.update((draft) => {
+         draft.tiles = next;
+      });
+      if (key === undefined) return;
+      const landed = next.findIndex((each) => tileKey(each) === key);
+      if (landed >= 0) selectTile(landed);
+   };
+   const placesTiles = rules.widths;
+   const place = useCallback(
+      (tiles: DashboardDocument["tiles"], index: number) =>
+         placesTiles && isPlaced(tiles) ? settle(tiles, columns, index) : tiles,
+      [placesTiles, columns],
+   );
    const { dragging } = reorder;
    // Dragging a tile's right edge sets its width, written once on release.
    // A tile with no `# colspan` is drawn as the reader draws it, at least
-   // MIN_TILE_PX wide, rather than one column: the width handle and the row
+   // MIN_TILE_PX wide, rather than one column: the right edge and the row
    // arithmetic start from that span. Only drawn; nothing is written until
    // the author sets a width.
    const defaultSpan = useDefaultTileSpan(gridBox, columns);
@@ -324,17 +365,28 @@ export function ReportBuilder({
          ),
       [editor.document.tiles, defaultSpan],
    );
-   const resizing = useTileResize({
+   // Dragging any edge or corner of a tile resizes it: the right and bottom
+   // edges set width and height, the left and top move those edges (placing a
+   // report that flows, as a move does), a corner both at once. Written once,
+   // on release, and on a placed report whatever it now covers moves down.
+   const edging = useEdgeResize({
       tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
-      commit: (index, span) =>
-         editor.update((draft) => {
-            const tile = draft.tiles[index];
-            if (tile)
-               draft.tiles[index] = withSpan(tile, span, columns, defaultSpan);
-         }),
+      commit: ({ index, edges, shape, placed, placedAll }) => {
+         const all = placedAll ?? editor.document.tiles;
+         const tile = all[index];
+         if (!tile) return;
+         let next = withShape(tile, shape, edges, placed);
+         if (edges.e || edges.w)
+            next = withSpan(next, shape.colspan, columns, defaultSpan);
+         const resized = all.map((each, i) => (i === index ? next : each));
+         writeTiles(
+            placed ? inReadingOrder(settle(resized, columns, index)) : resized,
+            tileKey(tile),
+         );
+      },
    });
    const tiles = useTileEditing({
       editor,
@@ -360,8 +412,12 @@ export function ReportBuilder({
       editorDirty: editor.dirty,
    });
 
+   const edgeDragging = edging.drag !== undefined;
    const shortcuts = useMemo(
       () => ({
+         // While an edge is dragged: its release writes the layout the drag
+         // began from, so an undo or a move made mid-drag would be lost.
+         paused: edgeDragging,
          // Escape drops the selection — unless the menu or the filter window is open, in which case the key is theirs and they close on it themselves.
          escape: () => {
             // Not while a menu or a window is open: the key is theirs, and
@@ -374,15 +430,50 @@ export function ReportBuilder({
             )
                clearSelection();
          },
+         // Option/Alt and an arrow: a placed tile moves exactly one cell. A
+         // step into the tile beside it swaps the two; otherwise whatever it
+         // lands on is pushed down. Unlike a drop it never slides under a
+         // taller tile, so a key press moves it where the arrow points.
+         move: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => {
+            if (dragging || selected === undefined || !rules.widths || !arrange)
+               return false;
+            const tile = editor.document.tiles[selected];
+            if (!tile || tile.row === undefined || tile.col === undefined)
+               return false;
+            const next = stepPlaced(
+               editor.document.tiles,
+               selected,
+               rows,
+               cols,
+               columns,
+            );
+            // At the grid's edge: the key is still the builder's, so it does
+            // not fall through to the browser's Back or Forward.
+            if (next.every((each, i) => each === editor.document.tiles[i]))
+               return true;
+            const key = tileKey(tile);
+            editor.update((draft) => {
+               draft.tiles = inReadingOrder(
+                  stepPlaced(draft.tiles, selected, rows, cols, columns),
+               );
+            });
+            const landed = inReadingOrder(next).findIndex(
+               (each) => tileKey(each) === key,
+            );
+            if (landed >= 0) selectTile(landed);
+            return true;
+         },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
-            if (dragging || selected === undefined || !rules.widths) return;
+            if (dragging || selected === undefined || !rules.widths || !arrange)
+               return;
+            // Any tile, an inherited one too: its width is on its entry.
             const tile = editor.document.tiles[selected];
-            if (!tile || (isQueryTile(tile) && isReadOnlyTile(tile))) return;
+            if (!tile) return;
             const span = nudgedSpan(
                tile.colspan ?? defaultSpan,
                delta,
-               columns,
+               widestFrom(tile, columns),
             );
             if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
@@ -392,11 +483,16 @@ export function ReportBuilder({
                   columns,
                   defaultSpan,
                );
+               draft.tiles = place(draft.tiles, selected);
             });
          },
       }),
       [
+         edgeDragging,
          defaultSpan,
+         arrange,
+         place,
+         selectTile,
          editor,
          menu,
          filterDialog,
@@ -454,6 +550,28 @@ export function ReportBuilder({
          ? { dismissRestored: draft.dismissRestored }
          : {}),
    };
+   // The layout as a whole, once a grid report's tiles are placed: close its
+   // gaps, or let it flow again. Each is one undoable edit.
+   const tilesNow = editor.document.tiles;
+   const selectedKey =
+      selected !== undefined && tilesNow[selected]
+         ? tileKey(tilesNow[selected])
+         : undefined;
+   const arrangeActions: ArrangeActions | undefined =
+      rules.widths && arrange && isPlaced(tilesNow)
+         ? {
+              ...(hasGaps(tilesNow, columns)
+                 ? {
+                      pack: () =>
+                         writeTiles(
+                            inReadingOrder(pack(tilesNow, columns)),
+                            selectedKey,
+                         ),
+                   }
+                 : {}),
+              flow: () => writeTiles(flowTiles(tilesNow), selectedKey),
+           }
+         : undefined;
    useReportControls(onControlsChange, {
       ...saveStatus,
       ...(toolbarProps.onSave ? { save: toolbarProps.onSave } : {}),
@@ -474,6 +592,7 @@ export function ReportBuilder({
       ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
       ...(session.done ? { done: session.done } : {}),
       ...(restored?.pending ? { restore: draft.restoreOffered } : {}),
+      ...(arrangeActions ? { arrange: arrangeActions } : {}),
    });
    // The builder's actions: on the title's line, at the right, above the
    // description.
@@ -482,6 +601,9 @@ export function ReportBuilder({
          {...session.toolbarProps}
          {...(toolbar ? { actions: toolbar } : {})}
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
+         {...(arrangeActions
+            ? { arrange: <ArrangeMenu arrange={arrangeActions} /> }
+            : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
          {...(draftKey !== undefined && toolbarProps.onSave
@@ -624,10 +746,19 @@ export function ReportBuilder({
                   <Alert severity="warning">{editor.error}</Alert>
                )}
 
+               {!arrange && (
+                  <Alert severity="info">
+                     This window is too narrow for the grid, so tiles stack in
+                     one column, as on a phone. Widen it to move tiles or change
+                     their width.
+                  </Alert>
+               )}
                <BuilderGrid
                   editor={editor}
+                  arrange={arrange}
                   reorder={reorder}
-                  resizing={resizing}
+                  edging={edging}
+                  place={place}
                   gridBox={gridBox}
                   defaultSpan={defaultSpan}
                   rules={rules}

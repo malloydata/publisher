@@ -211,13 +211,10 @@ describe("report discovery: what it does with a report it cannot read", () => {
             },
          ),
       );
-      const proto = Package.prototype as unknown as {
-         unsupportedComponentWarnings: () => Promise<ApiPackageWarning[]>;
-      };
       spies.push(
-         spyOn(proto, "unsupportedComponentWarnings").mockRejectedValue(
-            new Error("simulated lint failure"),
-         ),
+         spyOn(reportManifest, "lintGivenTags").mockImplementation(() => {
+            throw new Error("simulated lint failure");
+         }),
       );
       const pkg = await install();
       const warnings = warningsOf(pkg);
@@ -230,8 +227,8 @@ describe("report discovery: what it does with a report it cannot read", () => {
          {
             message:
                "Report lint stopped early, so this list is incomplete: an " +
-               "unknown subset of the tile, report, drill, given, curation " +
-               "and unsupported-component checks did not run. Treat a missing " +
+               "unknown subset of the tile, report, drill, given and curation " +
+               "checks did not run. Treat a missing " +
                "finding of any of those kinds as unknown rather than clean. " +
                "Reload the package to run the lint again. The reports " +
                "themselves are unaffected, because they are discovered " +

@@ -243,7 +243,7 @@ query: by_brand_tile is orders -> by_brand
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `\n\n# colspan=6\n${chartLineText("big_value")}\nquery: kpis_tile is scoped_orders -> kpis\n`,
+         `\n\n${chartLineText("big_value")}\nquery: kpis_tile is scoped_orders -> kpis\n`,
       );
       expect(written).not.toContain("view: kpis_tile");
    });

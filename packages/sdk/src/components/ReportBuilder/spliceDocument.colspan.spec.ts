@@ -22,8 +22,14 @@ ${tags}  view: x is vx
   view: y is vy
 }`;
 
-const colspanLines = (text: string) =>
-   text.split("\n").filter((line) => /#\s*colspan/.test(line));
+/** Every width the file writes: a view's `# colspan` line, or `colspan=N` on a tile's entry. */
+const colspanLines = (text: string) => [
+   ...text.split("\n").filter((line) => /#\s*colspan/.test(line)),
+   ...(text
+      .split("\n")
+      .find((line) => line.startsWith("## artifact"))
+      ?.match(/\bcolspan=\d+/g) ?? []),
+];
 
 describe("a tile's width, as the builder writes it", () => {
    it("takes the colspan line away when a width is set back to one column of two", async () => {
@@ -38,14 +44,15 @@ describe("a tile's width, as the builder writes it", () => {
       const out = await spliced(FILE(4, "  # colspan=2\n"), (d) => {
          d.tiles[0] = withSpan(queryTile(d, 0), 1, 4);
       });
-      expect(colspanLines(out)).toEqual(["  # colspan=1"]);
+      // Written on the tile's entry, and taken off the view.
+      expect(colspanLines(out)).toEqual(["colspan=1"]);
    });
 
    it("adds a tile to a two-column grid with no colspan line, and to a wider grid with half of it", async () => {
       for (const [columns, want] of [
          [undefined, []],
          [2, []],
-         [4, ["# colspan=2"]],
+         [4, ["colspan=2"]],
       ] as const) {
          const grid = columns ?? 2;
          const colspan = writtenSpan(Math.ceil(grid / 2), grid);
