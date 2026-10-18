@@ -131,16 +131,13 @@ test.describe("dashboard-create", () => {
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
       ).toBeVisible({ timeout: 60_000 });
-      // The one tile the new dashboard was created with, headed by the
-      // `# label` New report wrote for it (the view's title, not the
-      // extension's `by_brand_tile` humanized) and carrying the run
-      // expression as its tooltip, the way every report heads a panel.
+      // The one tile the new dashboard was created with: an entry naming the
+      // served view, headed by the view's title and carrying the run
+      // expression as its tooltip, the way every report heads a panel. New
+      // report declares no source of its own.
       const tile = page.getByText("By brand", { exact: true });
       await expect(tile).toBeVisible({ timeout: 30_000 });
-      await expect(tile).toHaveAttribute(
-         "title",
-         "orders_tiles -> by_brand_tile",
-      );
+      await expect(tile).toHaveAttribute("title", "orders -> by_brand");
 
       // And the package page lists it.
       await page.goto(`/${env}/${PKG}`);
