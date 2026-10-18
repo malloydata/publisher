@@ -399,7 +399,9 @@ describe("which tile shapes open the rows behind a value", () => {
    // with its filters in a `+ { where: … }` after the stage, here on fields the
    // stage does not output (the #723 shapes).
    it("an inline-stage query whose refinement filters a field its stage drops", async () => {
-      const filtered = (await run("run: inline_online")).data.toObject() as Row[];
+      const filtered = (
+         await run("run: inline_online")
+      ).data.toObject() as Row[];
       const direct = (
          await run(
             "run: sales_tiles -> { where: is_online = true; group_by: region; aggregate: sale_count }",
@@ -409,7 +411,9 @@ describe("which tile shapes open the rows behind a value", () => {
          Object.fromEntries(rows.map((r) => [String(r.region), r.sale_count]));
       expect(byRegion(filtered)).toEqual(byRegion(direct));
       const { outcomes } = await expectEveryRowMatches("inline_online");
-      expect(queriesOf(outcomes)).toContain("where: is_online = true, region = ");
+      expect(queriesOf(outcomes)).toContain(
+         "where: is_online = true, region = ",
+      );
       await expectEveryRowMatches("inline_products");
    });
 
