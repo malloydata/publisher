@@ -748,6 +748,22 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 `overview.malloy`, never a report called `overview` elsewhere. Write `to="sales/overview"` for
 `sales/overview.malloy`.
 
+**A tile's own click actions.** A report can set what a click on a tile's value offers on its own entry
+in `tiles=[…]`, beside its layout, without touching the model:
+
+```malloy
+## artifact { layout=grid tiles=["overview -> best_sellers" { colspan=6 drill { product { to=self given=PRODUCT } brand { to="brands/detail" given=BRAND } } }, "overview -> by_state"] } dashboard { columns=12 }
+```
+
+`drill { <dimension> { to=… given=… } }` reads like the tag, one block per dimension the tile groups by.
+For a dimension it names, the entry **replaces** the model's `# drill` on that tile only; a dimension it
+does not name keeps the model's tag, and every other tile keeps it too. `to=[]` turns the model's tag off
+on this tile, leaving the value with Show rows alone. This is what the builder's **What clicking a value
+does…** writes, so a report the builder edits never needs a source of its own to make a value clickable.
+The lint checks an entry like a tag: a target that is not a report, a `to=self` whose given no model
+declares, an entry with no `to`, and, on a plain one-stage `"source -> view"` tile, a dimension the view
+does not output.
+
 **The rows behind a value.** On a tile layout a grouped value in a table offers **Show rows** in its menu,
 whether or not its dimension carries a `# drill`. Picking it opens the rows behind the value: the tile's
 source filtered by everything the value was filtered by, read from the result itself
@@ -995,7 +1011,7 @@ value cards in a tile set shorter than it needs is drawn compact (smaller figure
 to a row) so it fits instead of scrolling; a map draws at its own size, so give it the height it needs.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a query of its own; a tile's size is set by dragging its
+The ⋯ menu holds **Chart** and **Color**, two submenus, **What clicking a value does…** and **Duplicate**, which puts a copy right after the tile as a query of its own; a tile's size is set by dragging its
 edges and corners (or focusing its right or bottom edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
