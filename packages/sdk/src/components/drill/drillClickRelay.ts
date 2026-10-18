@@ -65,3 +65,42 @@ function timezoneOf(payload: DrillClickPayload): { timezone?: string } {
       return {};
    }
 }
+
+/** A renderer result field, as much of it as {@link reportRowsWithoutFilters} reads. */
+interface ResultLevel {
+   fields?: ResultLevel[];
+   isArray?: () => boolean;
+}
+
+/**
+ * Lets the renderer report a clicked row's dimensions even where a level's
+ * filter has no stable form.
+ *
+ * The renderer builds a row's clauses (`stableDrillClauses`) from each level's
+ * filters and then its dimensions, and gives up on the whole row when one
+ * filter has no stable form, which is any filter that reads a given
+ * (`where: region ~ $REGION`, what a report's filter control writes). The rows
+ * query takes every filter from the result's metadata as code instead
+ * (`rowsTarget.ts`), so the filters are not wanted from the clauses at all.
+ * Reporting none per level leaves the clauses as the row's dimensions alone,
+ * which never depend on a filter's form.
+ *
+ * Per result, on its own field objects; the renderer's classes are untouched.
+ */
+export function reportRowsWithoutFilters(root: object | undefined): void {
+   const visit = (level: ResultLevel) => {
+      let isArray = false;
+      try {
+         isArray = level.isArray?.() === true;
+      } catch {
+         isArray = false;
+      }
+      if (isArray && "stableDrillFilters" in level)
+         Object.defineProperty(level, "stableDrillFilters", {
+            configurable: true,
+            get: () => [],
+         });
+      for (const child of level.fields ?? []) visit(child);
+   };
+   if (root) visit(root as ResultLevel);
+}

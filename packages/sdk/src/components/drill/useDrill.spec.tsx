@@ -22,6 +22,40 @@ const dimension = (
    name: string,
    drill?: { to: string[]; given?: string },
 ): DrillField => ({ name, tag: tag(drill), wasDimension: () => true });
+/**
+ * A grouped field as the renderer's metadata reports it: its expression as
+ * code, under a root that names its source. What a rows query is built from.
+ */
+const reported = (name: string, code: string): DrillField => {
+   const root = {
+      name: "root",
+      isArray: () => true,
+      metadataTag: {
+         text: (...at: string[]) =>
+            at.join(".") === "source.name"
+               ? "overview"
+               : at[0] === "query_name"
+                 ? "by_cat"
+                 : undefined,
+         array: () => undefined,
+      },
+      fields: [] as unknown[],
+   };
+   const field = {
+      name,
+      tag: tag(),
+      parent: root,
+      isBasic: () => true,
+      wasDimension: () => true,
+      metadataTag: {
+         text: (...at: string[]) =>
+            at.join(".") === "drill_expression.code" ? code : undefined,
+         array: () => undefined,
+      },
+   };
+   root.fields.push(field);
+   return field;
+};
 const measure = (name: string): DrillField => ({
    name,
    tag: tag(),
@@ -32,11 +66,12 @@ describe("useDrill: the rows behind a value", () => {
    it("opens the rows for a grouped value that has no drill, and marks it clickable", () => {
       const onRows = mock(() => {});
       const { result } = renderHook(() => useDrill({ onRows }));
-      expect(result.current.drill.canDrill(dimension("cat"))).toBe(true);
+      const cat = reported("cat", "products.category");
+      expect(result.current.drill.canDrill(cat)).toBe(true);
       expect(result.current.drill.canDrill(measure("revenue"))).toBe(false);
       act(() =>
          result.current.drill.onClick({
-            field: dimension("cat"),
+            field: cat,
             value: "Jeans",
             context: "overview -> by_cat",
          }),
@@ -45,8 +80,24 @@ describe("useDrill: the rows behind a value", () => {
          field: "cat",
          rawValue: "Jeans",
          label: "Jeans",
+         target: { source: "overview", filters: [], queryName: "by_cat" },
+         code: "products.category",
          context: "overview -> by_cat",
       });
+   });
+
+   it("marks no dimension the result names no rows for, so no cell is a dead click", () => {
+      const onRows = mock(() => {});
+      const { result } = renderHook(() => useDrill({ onRows }));
+      // No source or code in its metadata: nothing to build a query from.
+      expect(result.current.drill.canDrill(dimension("cat"))).toBe(false);
+      act(() =>
+         result.current.drill.onClick({
+            field: dimension("cat"),
+            value: "Jeans",
+         }),
+      );
+      expect(onRows).not.toHaveBeenCalled();
    });
 
    it("does nothing for a header, a measure, or an empty cell", () => {

@@ -28,6 +28,7 @@ import {
    isFilterType,
 } from "../given/filterValue";
 import type { DrillClause } from "./drillClauses";
+import type { RowsDimension, RowsTarget } from "./rowsTarget";
 
 /**
  * The parsed-tag surface this module reads, structurally typed.
@@ -88,6 +89,11 @@ export interface DrillClickPayload {
    drillClauses?: readonly DrillClause[];
    /** The query timezone, which a truncated timestamp in a clause is read in. */
    timezone?: string;
+   /**
+    * Set by a host that shows no rows for this click's tile (a restricted
+    * one, or one whose shape cannot name its rows). Tag drills still apply.
+    */
+   noRows?: boolean;
 }
 
 /**
@@ -106,6 +112,12 @@ export interface DrillRowsRequest {
    drillClauses?: readonly DrillClause[];
    /** {@link DrillClickPayload.timezone}. */
    timezone?: string;
+   /** The source and filters the rows run with, from the result's metadata. */
+   target?: RowsTarget;
+   /** The row's dimensions as code with their values, from `drillClauses`. */
+   dimensions?: readonly RowsDimension[];
+   /** The clicked field's code, for a click that came with no row. */
+   code?: string;
 }
 
 /** The literal `to=self`: filter the current view instead of leaving it. */

@@ -9,7 +9,6 @@ import { useDocumentControls } from "../../hooks/useDocumentControls";
 import {
    useDrill,
    type DrillBinding,
-   type DrillClickPayload,
    type DrillNavigation,
    type DrillRowsRequest,
 } from "../drill";
@@ -32,7 +31,12 @@ import {
    tileHeightPx,
 } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
-import { RowsDialog, rowsRequestFor, type RowsRequest } from "./RowsDialog";
+import {
+   RowsDialog,
+   rowsGateFor,
+   rowsRequestFor,
+   type RowsRequest,
+} from "./RowsDialog";
 import { useReportEvents } from "../Report/telemetry";
 import type { TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
@@ -82,8 +86,8 @@ export interface DashboardViewProps {
    controlsLayout?: GivensLayout;
    /**
     * Text-source mode: the document's definitions (see `documentPreamble`),
-    * sent ahead of each tile's `run:` so every query runs as the viewer's own
-    * text. Rows, which reopens a tile by name, is off in this mode.
+    * sent ahead of each tile's `run:`, and of a rows query, so every query
+    * runs as the viewer's own text.
     */
    preamble?: string;
    /** Text-source mode: the model the text runs on top of, in place of `manifest.path`. */
@@ -220,8 +224,8 @@ export function DashboardView({
       );
    }, [manifest, givens, declaredTypes]);
 
-   // The rows behind a clicked value: the way past a number. Composite tiles
-   // only: each names its source, which is what the rows are of.
+   // The rows behind a clicked value: the way past a number. What they are
+   // rows of, and filtered by, comes from the clicked result's own metadata.
    const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
    const onRows = useCallback((request: DrillRowsRequest) => {
       const next = rowsRequestFor(request);
@@ -239,22 +243,20 @@ export function DashboardView({
       [applied, declaredTypes, tileHostGivens],
    );
 
-   const { drill, drillMenu } = useDrill({
+   const { bindingFor, drillMenu } = useDrill({
       onNavigate,
       onSelf,
       canSelf,
       selfLabel: "Filter this report",
-      ...(preamble === undefined ? { onRows } : {}),
+      onRows,
    });
-   // Each tile's clicks carry the tile they came from, so the rows behind a
-   // value know which source to run against.
+   // Each tile's clicks carry the tile they came from. A restricted tile
+   // never ran, so it offers no rows; otherwise the tile's shape may rule a
+   // field out (`rowsGateFor`).
    const drillFor = useCallback(
-      (tile: string): DrillBinding => ({
-         canDrill: drill.canDrill,
-         onClick: (payload: DrillClickPayload) =>
-            drill.onClick({ ...payload, context: tile }),
-      }),
-      [drill],
+      (tile: string, restricted: boolean | undefined): DrillBinding =>
+         bindingFor(tile, restricted === true ? false : rowsGateFor(tile)),
+      [bindingFor],
    );
 
    // The layout decides the arrangement only, as it does in the builder.
@@ -385,7 +387,7 @@ export function DashboardView({
                         tableMaxHeight={tableMaxHeight}
                         fixedHeight={tile.rowspan !== undefined || placed}
                         maxResultSize={maxResultSize}
-                        drill={drillFor(tile.query)}
+                        drill={drillFor(tile.query, tile.restricted)}
                         ignoredFilters={tileIgnoredFilterLabels(
                            tile.givenNames &&
                               (tile.query && literalReads?.[tile.query]
@@ -423,14 +425,15 @@ export function DashboardView({
                packageName={packageName}
                {...(versionId === undefined ? {} : { versionId })}
                modelPath={modelPath}
+               {...(preamble === undefined ? {} : { preamble })}
                givens={rowsGivens}
                onClose={() => setRows(undefined)}
                onDone={(ok, durationMs) => {
                   if (rows)
                      events.emit({
                         type: "report.rows_shown",
-                        source: rows.source,
-                        view: rows.view,
+                        source: rows.target.source,
+                        view: rows.target.queryName ?? "",
                         field: rows.field,
                         ok,
                         durationMs,

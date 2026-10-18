@@ -5,21 +5,18 @@ import type * as Malloy from "@malloydata/malloy-interfaces";
 import { escapeMalloyString } from "../../utils/malloyString";
 
 /**
- * The clicked row of a table, as `drill:` clauses.
+ * The clicked row of a table, as the renderer reports it (its `onDrill`
+ * `DrillData.stableDrillClauses`): each dimension's expression and value,
+ * enclosing rows included. The click itself carries the clicked field alone.
  *
- * Malloy's `drill:` needs a value for EVERY dimension of the view it drills
- * through, and for every dimension of each enclosing row when the click is
- * inside a nest. Only the renderer knows which row a cell belongs to, so the
- * clauses come from its `onDrill` (`DrillData.stableDrillClauses`); the click
- * itself carries the clicked field alone.
- *
- * Spelled here rather than taken from the renderer's `DrillData.query`, which
- * Malloy 0.0.435 cannot run as written: it puts a string between double
- * quotes without escaping it, it reads every hour as `00`, and `drill:`
- * refuses the quarter, week and minute literals it writes (`@2026-Q1` fails
- * with "cannot contain"). What `drill:` does accept for every truncation is
- * the truncated value itself at full precision, so that is what is written:
- * a date as its day, a timestamp to the second.
+ * The rows query reads each dimension's value from here and writes it itself
+ * (`literalText`), rather than taking the renderer's own `DrillData.query`,
+ * which Malloy 0.0.435 cannot run as written: it puts a string between double
+ * quotes without escaping it, it reads every hour as `00`, and it writes
+ * quarter, week and minute literals (`@2026-Q1`) a filter refuses. What a
+ * filter does accept for every truncation is the truncated value itself at
+ * full precision, so that is what is written: a date as its day, a timestamp
+ * to the second.
  */
 export type DrillClause = Malloy.DrillOperation;
 
@@ -27,45 +24,6 @@ export type DrillClause = Malloy.DrillOperation;
 export interface DrillClauseLabel {
    field: string;
    label: string;
-}
-
-/**
- * The clauses as `drill:` text, or undefined when any of them cannot be
- * written. Never a subset: dropping a clause is the error this exists to fix.
- *
- * `timezone` is the tile's query timezone. The rows query declares it too,
- * because `drill:` recomputes the view's dimensions in the drilling query's
- * zone, so a timestamp's digits here are its wall clock there.
- */
-export function drillClausesText(
-   clauses: readonly DrillClause[],
-   timezone?: string,
-): string | undefined {
-   if (clauses.length === 0) return undefined;
-   const parts: string[] = [];
-   for (const { filter } of clauses) {
-      if (filter.kind !== "literal_equality") return undefined;
-      const field = fieldText(filter.expression);
-      const value = literalText(filter.value, timezone);
-      if (field === undefined || value === undefined) return undefined;
-      parts.push(`${field} = ${value}`);
-   }
-   return parts.join(", ");
-}
-
-/**
- * The dimensions whose value in this row is null. `drill:` has no spelling
- * for one in Malloy 0.0.435: `= null` asks for `is null`, which it then
- * refuses, as it does a filter.
- */
-export function nullDimensions(clauses: readonly DrillClause[]): string[] {
-   return clauses.flatMap(({ filter }) =>
-      filter.kind === "literal_equality" &&
-      filter.value.kind === "null_literal" &&
-      filter.expression.kind === "field_reference"
-         ? [filter.expression.name]
-         : [],
-   );
 }
 
 /** The clauses as the dialog title names them, each value as the table showed it. */
@@ -86,20 +44,10 @@ export function drillClauseLabels(
    });
 }
 
-function fieldText(expression: Malloy.Expression): string | undefined {
-   if (expression.kind !== "field_reference") return undefined;
-   return [...(expression.path ?? []), expression.name]
-      .map(identifier)
-      .join(".");
-}
-
-function identifier(name: string): string {
-   return /^[A-Za-z_][A-Za-z_0-9]*$/.test(name)
-      ? name
-      : `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
-}
-
-/** A literal as `drill:` accepts it. Undefined for a null, which it does not. */
+/**
+ * A literal as a filter's right-hand side, a timestamp as its wall clock in
+ * `timezone`. Undefined for a null, which is written `is null` instead.
+ */
 export function literalText(
    value: Malloy.LiteralValue,
    timezone?: string,

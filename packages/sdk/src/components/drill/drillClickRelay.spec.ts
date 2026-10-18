@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { drillClausesText, type DrillClause } from "./drillClauses";
-import { drillClickRelay } from "./drillClickRelay";
+import type { DrillClause } from "./drillClauses";
+import { drillClickRelay, reportRowsWithoutFilters } from "./drillClickRelay";
 import type { DrillClickPayload } from "./resolveDrill";
 
 const REGION: DrillClause = {
@@ -11,13 +11,6 @@ const REGION: DrillClause = {
       kind: "literal_equality",
       expression: { kind: "field_reference", name: "region", path: ["v"] },
       value: { kind: "string_literal", string_value: "West" },
-   },
-};
-const NO_PRODUCT: DrillClause = {
-   filter: {
-      kind: "literal_equality",
-      expression: { kind: "field_reference", name: "product", path: ["v"] },
-      value: { kind: "null_literal" },
    },
 };
 
@@ -96,11 +89,34 @@ describe("drillClickRelay", () => {
    });
 });
 
-describe("drillClausesText", () => {
-   it("writes every clause, or none when any one cannot be written", () => {
-      expect(drillClausesText([REGION])).toBe("v.region = 'West'");
-      // A subset would drill to a different set of rows than the one clicked.
-      expect(drillClausesText([REGION, NO_PRODUCT])).toBeUndefined();
-      expect(drillClausesText([])).toBeUndefined();
+describe("reportRowsWithoutFilters", () => {
+   it("has every repeated level, nested ones included, report no stable filters", () => {
+      const level = (fields: object[]) => ({
+         fields,
+         isArray: () => true,
+         get stableDrillFilters(): unknown {
+            return undefined;
+         },
+      });
+      const nested = level([{ name: "hour", isArray: () => false }]);
+      const root = level([{ name: "region", isArray: () => false }, nested]);
+      reportRowsWithoutFilters(root);
+      expect(root.stableDrillFilters).toEqual([]);
+      expect(nested.stableDrillFilters).toEqual([]);
+   });
+
+   it("leaves alone a field that is not a repeated level, and one that throws", () => {
+      const basic = { name: "region", isArray: () => false };
+      const broken = {
+         isArray: () => {
+            throw new Error("no type");
+         },
+      };
+      reportRowsWithoutFilters({
+         fields: [basic, broken],
+         isArray: () => true,
+      });
+      expect("stableDrillFilters" in basic).toBe(false);
+      expect("stableDrillFilters" in broken).toBe(false);
    });
 });

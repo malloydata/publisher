@@ -38,7 +38,11 @@ import {
    markDrillableCells,
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
-import { drillClickRelay, type RendererDrill } from "../drill/drillClickRelay";
+import {
+   drillClickRelay,
+   reportRowsWithoutFilters,
+   type RendererDrill,
+} from "../drill/drillClickRelay";
 import { loadMalloyTag } from "../ReportBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
@@ -709,6 +713,9 @@ function RenderedResultInner({
             try {
                const metadata = viz.getMetadata();
                const root = metadata?.getRootField();
+               // A row's clauses are wanted only for its dimensions; see
+               // `reportRowsWithoutFilters`.
+               if (drillable) reportRowsWithoutFilters(root);
                renderAs = root?.renderAs();
                // The plugin's own `sizingStrategy`, which decides this outright
                // where there is one. Read from the PLUGIN; the field entry's

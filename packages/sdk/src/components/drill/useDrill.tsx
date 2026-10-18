@@ -5,6 +5,15 @@ import { ListSubheader, Menu, MenuItem } from "@mui/material";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DrillField } from "./resolveDrill";
 import {
+   canShowRows,
+   dimensionCode,
+   rowDimensionsOf,
+   rowsDimensions,
+   rowsTargetOf,
+   type RowsDimension,
+   type RowsField,
+} from "./rowsTarget";
+import {
    DRILL_SELF,
    drillDestinations,
    drillGivenName,
@@ -47,7 +56,8 @@ export interface UseDrillOptions {
     */
    selfLabel?: string;
    /**
-    * Show the rows behind a grouped value. With it, EVERY dimension cell is
+    * Show the rows behind a grouped value. With it, a dimension cell whose
+    * result names everything its rows query needs (`canShowRows`) is
     * clickable: one with no `# drill` this surface can honour opens the rows;
     * one with a drill behaves exactly as it does without this option, since a
     * drill is the author's own instruction for that value. Omitted on a
@@ -77,6 +87,16 @@ export interface DrillBinding {
 export interface UseDrillResult {
    /** Hand to `ResultContainer`'s (or `RenderedResult`'s) `drill` prop. */
    drill: DrillBinding;
+   /**
+    * The binding for one result on a surface with several, such as a
+    * dashboard's tiles: its clicks carry `context`, and a field opens rows
+    * only where `rowsGate` also says so. `rowsGate: false` turns rows off for
+    * that result, leaving its tag drills.
+    */
+   bindingFor: (
+      context: string | undefined,
+      rowsGate: ((field: DrillField) => boolean) | false,
+   ) => DrillBinding;
    /** Render anywhere in the subtree: the menu a multi-destination drill opens. */
    drillMenu: ReactNode;
 }
@@ -143,26 +163,44 @@ export function useDrill({
       [onNavigate, onSelf],
    );
 
-   // The rows behind this click, when the surface shows rows and the click is
-   // on a grouped value. A header names the field and has no value; a measure
-   // has no rows of its own. Without the row's clauses the clicked value is
-   // the whole filter, so an empty cell is refused as a likely misclick; with
-   // them the click goes through, and the dialog says why a row holding a
-   // null cannot be drilled (`RowsDialog`'s `rowsRefusal`).
+   // The rows behind this click, when the surface shows rows and the result
+   // names everything the query needs (`canShowRows`). A header names the
+   // field and has no value; a measure has no rows of its own. Without the
+   // row's clauses the clicked value is the whole filter, so an empty cell is
+   // refused as a likely misclick.
    const rowsBehind = useCallback(
       (payload: DrillClickPayload): DrillRowsRequest | undefined => {
-         if (!onRows || payload.isHeader || !payload.field) return undefined;
-         if (!(payload.field.wasDimension?.() ?? false)) return undefined;
-         const clauses = payload.drillClauses;
-         if (
-            clauses === undefined &&
-            drillValueToFilter(payload.value) === undefined
-         )
+         if (!onRows || payload.noRows || payload.isHeader || !payload.field)
             return undefined;
+         const field = payload.field as RowsField;
+         if (!canShowRows(field)) return undefined;
+         const target = rowsTargetOf(field);
+         if (target === undefined) return undefined;
+         const clauses = payload.drillClauses;
+         // With the row: every dimension of it. Without one (a click the
+         // renderer reports no row for), the clicked value alone, which names
+         // the rows only when it is the row's one dimension.
+         let rows: { dimensions: RowsDimension[] } | { code: string };
+         if (clauses !== undefined) {
+            const dimensions = rowsDimensions(field, clauses);
+            if (dimensions === undefined) return undefined;
+            rows = { dimensions };
+         } else {
+            const code = dimensionCode(field);
+            if (
+               code === undefined ||
+               rowDimensionsOf(field).length !== 1 ||
+               drillValueToFilter(payload.value) === undefined
+            )
+               return undefined;
+            rows = { code };
+         }
          return {
             field: payload.field.name,
             rawValue: payload.value,
             label: drillValueLabel(payload.value),
+            target,
+            ...rows,
             ...(payload.context === undefined
                ? {}
                : { context: payload.context }),
@@ -203,23 +241,51 @@ export function useDrill({
       [go, honorable, onRows, rowsBehind],
    );
 
-   const canDrill = useCallback(
+   const canDrillTag = useCallback(
       (field: DrillField) =>
-         honorable(drillDestinations(field), drillGivenName(field)).length >
-            0 ||
-         (onRows !== undefined && (field.wasDimension?.() ?? false)),
-      [honorable, onRows],
+         honorable(drillDestinations(field), drillGivenName(field)).length > 0,
+      [honorable],
+   );
+   const canDrillRows = useCallback(
+      (field: DrillField) =>
+         onRows !== undefined && canShowRows(field as RowsField),
+      [onRows],
    );
 
    const drill = useMemo<DrillBinding>(
-      () => ({ onClick, canDrill }),
-      [onClick, canDrill],
+      () => ({
+         onClick,
+         canDrill: (field) => canDrillTag(field) || canDrillRows(field),
+      }),
+      [onClick, canDrillTag, canDrillRows],
+   );
+
+   const bindingFor = useCallback(
+      (
+         context: string | undefined,
+         rowsGate: ((field: DrillField) => boolean) | false,
+      ): DrillBinding => ({
+         canDrill: (field) =>
+            canDrillTag(field) ||
+            (rowsGate !== false && rowsGate(field) && canDrillRows(field)),
+         onClick: (payload) =>
+            onClick({
+               ...payload,
+               ...(context === undefined ? {} : { context }),
+               ...(rowsGate === false ||
+               (payload.field !== undefined && !rowsGate(payload.field))
+                  ? { noRows: true }
+                  : {}),
+            }),
+      }),
+      [onClick, canDrillTag, canDrillRows],
    );
 
    const close = useCallback(() => setMenu(null), []);
 
    return {
       drill,
+      bindingFor,
       drillMenu: (
          <Menu
             open={menu !== null}

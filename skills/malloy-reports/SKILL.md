@@ -225,6 +225,7 @@ dimension: region is regions.region
 - **Always write `given=`.** Without it the given is the dimension name verbatim, so `dimension: category` seeds `category`, not `CATEGORY`. `to=self` survives that (it folds case); `to=<path>` does not, and lands on an unfiltered page with nothing erroring.
 - **The destination needs a control for the given**, declared as `filter<T>`. No lint checks that half, so click it and look.
 - **Only table cells are marked drillable.** A report meant to be drilled wants at least one untagged (table) tile, grouped by the tagged dimension. A column whose rendered header another, non-drillable tile also shows loses its marking: give the two different `# label=`s.
+- **A value with no `# drill` opens the rows behind it**, with no tag at all: the tile's source, filtered by the tile's own `where:` (its control bindings included) and every dimension of the clicked row. That works for every one-stage tile: `"source -> view"`, a refined view, a tile naming a `query:`, an inline query, a view grouped by a joined field, a null value. **A view of more than one stage (`{ … } -> { … }`) opens no rows**, and its cells are not marked: a later stage's dimension is an earlier output the source cannot be filtered by. Keep a table tile meant to show its rows to one stage, and put the second stage in its own tile. A source with parameters opens no rows either.
 
 ## Read the lint
 
