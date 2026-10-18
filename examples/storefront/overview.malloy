@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // A report with grid layout: `## artifact { layout=grid tiles=[…] }` at model
-// level, one tile per named view, laid out by Publisher into the grid
+// level, one tile per query of the report's own, laid out by Publisher into the grid
 // `dashboard { columns=N }` names. The tag makes this file a report and
 // `layout=` decides how it is laid out; where the file lives decides nothing,
 // so it sits at the package root beside the model it reads. The same tiles
@@ -52,7 +52,7 @@
 ##" Every tile re-runs when a control changes, so narrowing to a single
 ##" `Category` or `Region` reframes the whole page rather than filtering one
 ##" list in it.
-## artifact { layout=grid title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
+## artifact { layout=grid title="Storefront overview" tiles=["kpis" { colspan=12 }, "revenue_trend" { colspan=6 break }, "revenue_by_state" { colspan=6 }, "revenue_by_category" { colspan=6 break }, "best_sellers" { colspan=6 }] } dashboard { columns=12 }
 // What this page reads from the model, by name. `order_items` is what every
 // tile runs over. `products`, `regions` and `brand_suggest` are what the
 // controls' pickers read their options from, and a `suggest { source= }` or
@@ -99,58 +99,43 @@ given: SINCE :: date is @2023-01-01
 # label="Minimum line total" range_min=0 range_max=250
 given: MIN_SALE :: filter<number> is f''
 
-// Layout lives on the view, which is what lets one view lay out the same way
-// whether it is named as a tile here or nested under a `# dashboard` query. The
-// reusable views keep their own chart tags in storefront.malloy; this extension
-// adds how wide each one sits, what it is called, and what it is filtered by.
+// The tiles. Each is a query of this report's own over a view the model serves:
+// the view keeps its chart and shape in storefront.malloy, and the query adds
+// what this page says about it, its title as a `#` tag above it and its control
+// bindings as a `+ { where: … }`. The report declares no source of its own, so
+// nothing that lists the package's sources sees a second copy of order_items.
 //
-// `# colspan` and `# break` are @malloydata/render's own per-child dashboard
-// tags, read the same way and clamped to `columns` the same way, so the two
-// forms cannot drift.
+// Where each tile sits is on its entry in `tiles=[…]` above (`colspan`, `break`),
+// not on the query, so moving or resizing a tile changes the list and nothing
+// else. This is the form the Console builder writes.
 //
 // Each tile's `+ { where: … }` is its bindings: one clause per control it
 // answers to. Every tile here answers to all five, which is what makes a
 // control move the whole page; a tile that left one out would simply not move
-// when that control did. The builder writes these lines; the spelling is its.
-#(doc) The overview report's tiles, each over the order lines its controls select
-source: overview is order_items extend {
-  // A full-width KPI strip. `# big_value` renders each aggregate as a figure
-  // rather than a table row. The figures are `key_figures` in storefront.malloy;
-  // this names them, sizes the strip and binds the controls.
-  # colspan=12
-  # label="Key figures"
-  # big_value
-  view: kpis is key_figures + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+// when that control did.
 
-  // `# break` starts a fresh row, so the trend leads the second row however the
-  // strip above it wraps.
-  //
-  // Six and six rather than eight and four, and the map is why. A root
-  // `# shape_map` is drawn at a size of its own — @malloydata/render builds its
-  // spec from a hardcoded 500x350 (512px wide with the legend moved below it, as
-  // the SDK's vega override does), and no tag reads those numbers — so it does
-  // not shrink into a narrower tile, it is clipped by one. At four of twelve the tile was ~401px and the east coast
-  // and the whole legend were cut off; six is ~631px here and fits.
-  //
-  // Sized to the constant, not eyeballed: the map fits whenever its tile is at
-  // least 512px, which at six of twelve means a grid of about 1070px. Narrower
-  // than that and it clips again, and no colspan available here avoids it —
-  // that is the renderer's fixed size, not this report's layout.
-  # colspan=6
-  # break
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+// A full-width KPI strip. `# big_value` renders each aggregate as a figure
+// rather than a table row. The figures are `key_figures` in storefront.malloy.
+# label="Key figures"
+# big_value
+query: kpis is order_items -> key_figures + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
-  # colspan=6
-  # label="Revenue by state"
-  view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+// `break` on its entry starts a fresh row, so the trend leads the second row
+// however the strip above it wraps.
+//
+// Six and six rather than eight and four, and the map is why. A root
+// `# shape_map` is drawn at a size of its own (@malloydata/render builds its
+// spec from a hardcoded 500x350, 512px wide with the legend below it), so it
+// does not shrink into a narrower tile, it is clipped by one. Six of twelve is
+// about 631px here and fits; the map clips again in a grid under about 1070px.
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
-  # colspan=6
-  # break
-  # label="Revenue by category"
-  view: revenue_by_category is by_category + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+# label="Revenue by state"
+query: revenue_by_state is order_items -> sales_by_state + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
 
-  # colspan=6
-  # label="Top products"
-  view: best_sellers is top_products + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
-}
+# label="Revenue by category"
+query: revenue_by_category is order_items -> by_category + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+
+# label="Top products"
+query: best_sellers is order_items -> top_products + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }

@@ -33,17 +33,12 @@ describe("a new dashboard", () => {
       expect(text).toContain("} dashboard { columns=12 }");
       const document = await openDocument(text);
       expect(document.title).toBe('Sales "West"');
-      expect(document.sources).toEqual([
-         { name: "order_items_tiles", base: "order_items" },
-      ]);
+      expect(document.sources).toEqual([]);
       expect(document.layout).toBe("grid");
       expect(document.columns).toBe(12);
-      expect(document.tiles.map((tile) => tile.name)).toEqual([
-         "by_category_tile",
-      ]);
+      expect(document.tiles.map((tile) => tile.name)).toEqual(["by_category"]);
       expect(queryTile(document, 0).declaration).toEqual({
-         kind: "reference",
-         from: "by_category",
+         kind: "inherited",
       });
    });
 
