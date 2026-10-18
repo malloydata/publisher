@@ -221,7 +221,10 @@ export function placeWhereDrawn(
             tile.rowspan ??
             Math.max(
                minRowsOf(tile),
-               Math.round((box.height + GRID_GAP_PX) / ROW_STEP),
+               // Up, never down: a tile is never placed shorter than it is
+               // drawn, so nothing it shows is cut or starts to scroll. A
+               // hair of slack keeps a tile already on whole rows where it is.
+               Math.ceil((box.height + GRID_GAP_PX) / ROW_STEP - 0.02),
             ),
       };
    });
@@ -248,3 +251,62 @@ export function placeAtEnd(
       i === index ? { ...tile, row: bottom, col: 1 } : tile,
    );
 }
+
+/**
+ * The tiles slid up as far as each will go, top to bottom and then left to
+ * right, so every gap above a tile closes; nothing moves sideways. A tile
+ * with no place is left for the grid to place.
+ */
+export function pack(
+   tiles: readonly DashboardTile[],
+   columns: number,
+): DashboardTile[] {
+   const out = tiles.map((tile) => ({ ...tile }));
+   const held: Cell[] = [];
+   const order = out
+      .map((tile, index) => ({ tile, index }))
+      .filter(({ tile }) => tile.row !== undefined && tile.col !== undefined)
+      .sort(
+         (a, b) =>
+            (a.tile.row ?? 0) - (b.tile.row ?? 0) ||
+            (a.tile.col ?? 0) - (b.tile.col ?? 0) ||
+            a.index - b.index,
+      );
+   for (const { index } of order) {
+      const cell = cellOf(out[index], columns);
+      if (!cell) continue;
+      while (
+         cell.row > 1 &&
+         !held.some((other) => overlaps({ ...cell, row: cell.row - 1 }, other))
+      )
+         cell.row -= 1;
+      out[index].row = cell.row;
+      out[index].col = cell.col;
+      held.push(cell);
+   }
+   return out;
+}
+
+/** Whether packing would move anything: the action is offered only then. */
+export const hasGaps = (tiles: readonly DashboardTile[], columns: number) =>
+   pack(tiles, columns).some((tile, index) => tile.row !== tiles[index].row);
+
+/**
+ * The tiles with their places taken off, so the report flows again in the
+ * order it is read. Widths and heights stay; a row break means nothing to a
+ * placed report, so none is set.
+ */
+export function flowTiles(tiles: readonly DashboardTile[]): DashboardTile[] {
+   return inReadingOrder(tiles).map((tile) => {
+      const { row: _row, col: _col, ...rest } = tile;
+      return rest as DashboardTile;
+   });
+}
+
+/** The tiles with the one at `index` set to `at`, nothing else changed: a keyboard step, before it settles. */
+export const stepTo = (
+   tiles: readonly DashboardTile[],
+   index: number,
+   at: { row: number; col: number },
+): DashboardTile[] =>
+   tiles.map((tile, i) => (i === index ? { ...tile, ...at } : tile));

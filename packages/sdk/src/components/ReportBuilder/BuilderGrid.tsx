@@ -138,6 +138,10 @@ export function BuilderGrid({
    ).map(drawn);
    // Placed, every cell is somewhere to drop, so there are no row ends to offer.
    const placed = isPlaced(shown);
+   const gesture = dragging || resize !== undefined || tall !== undefined;
+   // Faintly, while a tile of a placed report is selected and nothing is
+   // dragged: the empty cells read as places a tile can go before any drag.
+   const resting = !gesture && placed && arrange && selected !== undefined;
    // And, while a drag is live, the empty end of every row as a drop target.
    // While an edge is dragged too: narrowing a tile frees columns its row-mate
    // does not take, and an undrawn hole there read as a broken layout rather
@@ -159,15 +163,15 @@ export function BuilderGrid({
             onDragEnd={onDragEnd}
          >
             <Box ref={gridBox} sx={{ position: "relative" }}>
-               {rules.widths && (dragging || resize !== undefined) && (
-                  <GridGuides columns={columns} />
+               {rules.widths && (gesture || resting) && (
+                  <GridGuides columns={columns} faint={!gesture} />
                )}
                {tall !== undefined ? (
                   <RowGuides top={tall.guideTop} />
                ) : (
                   // Placed, a move snaps to rows as well as columns.
                   placed &&
-                  (dragging || resize !== undefined) && <RowGuides top={0} />
+                  (gesture || resting) && <RowGuides top={0} faint={!gesture} />
                )}
 
                <DashboardGrid

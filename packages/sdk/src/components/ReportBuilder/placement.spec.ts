@@ -6,6 +6,9 @@ import type { DashboardTile, QueryTile } from "./document";
 import {
    cellAt,
    dropAt,
+   flowTiles,
+   hasGaps,
+   pack,
    placeAtEnd,
    inReadingOrder,
    placeWhereDrawn,
@@ -114,8 +117,8 @@ describe("placeWhereDrawn", () => {
       ];
       expect(where(placeWhereDrawn(tiles, boxes, 12, track))).toEqual([
          { name: "kpis", row: 1, col: 1, colspan: 12, rowspan: 3 },
-         { name: "trend", row: 4, col: 1, colspan: 6, rowspan: 5 },
-         { name: "map", row: 4, col: 7, colspan: 6, rowspan: 5 },
+         { name: "trend", row: 4, col: 1, colspan: 6, rowspan: 6 },
+         { name: "map", row: 4, col: 7, colspan: 6, rowspan: 6 },
       ]);
       // A row break means nothing once tiles are placed.
       expect(placeWhereDrawn(tiles, boxes, 12, track)[0].break).toBeUndefined();
@@ -189,5 +192,64 @@ describe("dropAt, far below", () => {
          tile("b", { row: 1, col: 7, colspan: 6, rowspan: 3 }),
       ];
       expect(dropAt(tiles, 1, { row: 40, col: 7 }, 12)[1].row).toBe(4);
+   });
+});
+
+describe("pack", () => {
+   it("slides every tile up into the gaps above it, never sideways", () => {
+      const tiles = [
+         tile("a", { row: 1, col: 1, colspan: 6, rowspan: 3 }),
+         tile("b", { row: 7, col: 1, colspan: 6, rowspan: 2 }),
+         tile("c", { row: 5, col: 7, colspan: 6, rowspan: 4 }),
+      ];
+      expect(hasGaps(tiles, 12)).toBe(true);
+      expect(where(pack(tiles, 12))).toEqual([
+         { name: "a", row: 1, col: 1, colspan: 6, rowspan: 3 },
+         { name: "b", row: 4, col: 1, colspan: 6, rowspan: 2 },
+         { name: "c", row: 1, col: 7, colspan: 6, rowspan: 4 },
+      ]);
+      expect(hasGaps(pack(tiles, 12), 12)).toBe(false);
+   });
+
+   it("stops a tile under the lowest tile it would pass through", () => {
+      const tiles = [
+         tile("wide", { row: 1, col: 1, colspan: 12, rowspan: 2 }),
+         tile("low", { row: 9, col: 4, colspan: 4, rowspan: 2 }),
+      ];
+      expect(pack(tiles, 12)[1].row).toBe(3);
+   });
+});
+
+describe("flowTiles", () => {
+   it("takes every place off and keeps sizes, in reading order", () => {
+      const tiles = [
+         tile("b", { row: 4, col: 1, colspan: 6, rowspan: 3 }),
+         tile("a", { row: 1, col: 7, colspan: 6, rowspan: 2 }),
+      ];
+      expect(where(flowTiles(tiles))).toEqual([
+         { name: "a", row: undefined, col: undefined, colspan: 6, rowspan: 2 },
+         { name: "b", row: undefined, col: undefined, colspan: 6, rowspan: 3 },
+      ]);
+   });
+});
+
+describe("placeWhereDrawn rounds heights up", () => {
+   it("never places a tile shorter than it is drawn", () => {
+      const track = trackWidth(1200, 12);
+      const [placed] = placeWhereDrawn(
+         [tile("t", { colspan: 6 })],
+         [{ top: 0, left: 0, width: 6 * (track + 16) - 16, height: 492 }],
+         12,
+         track,
+      );
+      // 492px is between 5 rows (464) and 6 (560): 6, so nothing is cut.
+      expect(placed.rowspan).toBe(6);
+      const [exact] = placeWhereDrawn(
+         [tile("t", { colspan: 6 })],
+         [{ top: 0, left: 0, width: 100, height: 464.4 }],
+         12,
+         track,
+      );
+      expect(exact.rowspan).toBe(5);
    });
 });

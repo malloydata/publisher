@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { ArrangeActions } from "./ArrangeMenu";
 import { useEffect, useMemo, useRef } from "react";
 import type { RestoredDraft } from "./useReportDraft";
 
@@ -36,6 +37,11 @@ export interface BuilderControls {
       /** Why a filter cannot be added here, when it cannot; `filter` is then absent. */
       filterUnavailable?: string;
    };
+   /**
+    * The layout as a whole, on a grid report whose tiles are placed: close
+    * its gaps, or let its tiles flow again. Absent on a report that flows.
+    */
+   arrange?: ArrangeActions;
    /** Leave the builder: asks first when edits are unsaved. Absent unless the host passed `onExit`. */
    exit?: () => void;
    /**
@@ -97,6 +103,8 @@ export function useReportControls(
          discard: () => latest.current.discard?.(),
          restore: () => latest.current.restore?.(),
          dismissRestored: () => latest.current.dismissRestored?.(),
+         pack: () => latest.current.arrange?.pack?.(),
+         flow: () => latest.current.arrange?.flow(),
       }),
       [],
    );
@@ -121,6 +129,8 @@ export function useReportControls(
    const restoredPending = controls.restored?.pending ?? false;
    const hasRestore = controls.restore !== undefined;
    const hasDismissRestored = controls.dismissRestored !== undefined;
+   const hasArrange = controls.arrange !== undefined;
+   const canPack = controls.arrange?.pack !== undefined;
 
    const shown = useMemo<BuilderControls>(
       () => ({
@@ -154,6 +164,14 @@ export function useReportControls(
          ...(hasDismissRestored
             ? { dismissRestored: actions.dismissRestored }
             : {}),
+         ...(hasArrange
+            ? {
+                 arrange: {
+                    ...(canPack ? { pack: actions.pack } : {}),
+                    flow: actions.flow,
+                 },
+              }
+            : {}),
       }),
       [
          actions,
@@ -175,6 +193,8 @@ export function useReportControls(
          restoredPending,
          hasRestore,
          hasDismissRestored,
+         hasArrange,
+         canPack,
       ],
    );
 

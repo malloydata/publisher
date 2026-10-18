@@ -26,7 +26,7 @@ import {
 } from "./builderControls";
 import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
-import type { DashboardDocument, QueryTile } from "./document";
+import { tileKey, type DashboardDocument, type QueryTile } from "./document";
 import { FilterStrip, type FixedFilter } from "./FilterStrip";
 import { clockTime, type SaveStatusProps } from "./SaveStatus";
 import { SELECTION_RING_PX } from "./TileFrame";
@@ -39,7 +39,15 @@ import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
-import { settle } from "./placement";
+import { ArrangeMenu, type ArrangeActions } from "./ArrangeMenu";
+import {
+   flowTiles,
+   hasGaps,
+   inReadingOrder,
+   pack,
+   settle,
+   stepTo,
+} from "./placement";
 import { useTileHeight } from "./useTileHeight";
 import { useTileResize, widestFrom } from "./useTileResize";
 import { layoutRules, withSpan } from "../Report/layoutRules";
@@ -407,6 +415,39 @@ export function ReportBuilder({
             )
                clearSelection();
          },
+         // Option/Alt and an arrow: a placed tile moves exactly one cell, and
+         // whatever it lands on is pushed down. Unlike a drop it never slides
+         // under a taller tile, so a key press moves it where the arrow points.
+         move: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => {
+            if (dragging || selected === undefined || !rules.widths || !arrange)
+               return;
+            const tile = editor.document.tiles[selected];
+            if (!tile || tile.row === undefined || tile.col === undefined)
+               return;
+            const to = {
+               row: Math.max(1, tile.row + rows),
+               // Held so the tile's right edge stays on the grid.
+               col: Math.min(
+                  Math.max(1, tile.col + cols),
+                  columns - Math.min(tile.colspan ?? 1, columns) + 1,
+               ),
+            };
+            if (to.row === tile.row && to.col === tile.col) return;
+            const key = tileKey(tile);
+            editor.update((draft) => {
+               draft.tiles = inReadingOrder(
+                  settle(stepTo(draft.tiles, selected, to), columns, selected),
+               );
+            });
+            const landed = inReadingOrder(
+               settle(
+                  stepTo(editor.document.tiles, selected, to),
+                  columns,
+                  selected,
+               ),
+            ).findIndex((each) => tileKey(each) === key);
+            if (landed >= 0) selectTile(landed);
+         },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
             if (dragging || selected === undefined || !rules.widths || !arrange)
@@ -435,6 +476,7 @@ export function ReportBuilder({
          defaultSpan,
          arrange,
          place,
+         selectTile,
          editor,
          menu,
          filterDialog,
@@ -492,6 +534,28 @@ export function ReportBuilder({
          ? { dismissRestored: draft.dismissRestored }
          : {}),
    };
+   // The layout as a whole, once a grid report's tiles are placed: close its
+   // gaps, or let it flow again. Each is one undoable edit.
+   const tilesNow = editor.document.tiles;
+   const arrangeActions: ArrangeActions | undefined =
+      rules.widths && arrange && isPlaced(tilesNow)
+         ? {
+              ...(hasGaps(tilesNow, columns)
+                 ? {
+                      pack: () =>
+                         editor.update((draft) => {
+                            draft.tiles = inReadingOrder(
+                               pack(draft.tiles, columns),
+                            );
+                         }),
+                   }
+                 : {}),
+              flow: () =>
+                 editor.update((draft) => {
+                    draft.tiles = flowTiles(draft.tiles);
+                 }),
+           }
+         : undefined;
    useReportControls(onControlsChange, {
       ...saveStatus,
       ...(toolbarProps.onSave ? { save: toolbarProps.onSave } : {}),
@@ -512,6 +576,7 @@ export function ReportBuilder({
       ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
       ...(session.done ? { done: session.done } : {}),
       ...(restored?.pending ? { restore: draft.restoreOffered } : {}),
+      ...(arrangeActions ? { arrange: arrangeActions } : {}),
    });
    // The builder's actions: on the title's line, at the right, above the
    // description.
@@ -520,6 +585,9 @@ export function ReportBuilder({
          {...session.toolbarProps}
          {...(toolbar ? { actions: toolbar } : {})}
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
+         {...(arrangeActions
+            ? { arrange: <ArrangeMenu arrange={arrangeActions} /> }
+            : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
          {...(draftKey !== undefined && toolbarProps.onSave

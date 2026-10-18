@@ -676,7 +676,14 @@ export function GapTarget({ after }: { after: string }) {
  * Column guides, drawn only during a gesture: a flow grid is invisible until
  * you are trying to land on it.
  */
-export function GridGuides({ columns }: { columns: number }) {
+export function GridGuides({
+   columns,
+   faint = false,
+}: {
+   columns: number;
+   /** Drawn fainter, as a hint while nothing is dragged. */
+   faint?: boolean;
+}) {
    const { theme } = usePublisherTheme();
    return (
       <Box
@@ -699,7 +706,7 @@ export function GridGuides({ columns }: { columns: number }) {
                sx={{
                   // A faint band per column: the tracks a width snaps to.
                   bgcolor: theme.accent,
-                  opacity: 0.06,
+                  opacity: faint ? 0.03 : 0.06,
                   borderRadius: "3px",
                }}
             />
@@ -715,7 +722,14 @@ export function GridGuides({ columns }: { columns: number }) {
  * tile's top, since tiles flow and the grid has no row lines of its own.
  * Behind the tiles and held inside the grid.
  */
-export function RowGuides({ top }: { top: number }) {
+export function RowGuides({
+   top,
+   faint = false,
+}: {
+   top: number;
+   /** Drawn fainter, as a hint while nothing is dragged. */
+   faint?: boolean;
+}) {
    const { theme } = usePublisherTheme();
    const step = TILE_ROW_PX + GRID_GAP_PX;
    // From the first whole row above the canvas's top edge to well past its
@@ -742,7 +756,7 @@ export function RowGuides({ top }: { top: number }) {
                   right: 0,
                   height: TILE_ROW_PX,
                   bgcolor: theme.accent,
-                  opacity: 0.06,
+                  opacity: faint ? 0.03 : 0.06,
                   borderRadius: "3px",
                }}
             />
