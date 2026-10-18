@@ -56,8 +56,10 @@ The Console's builder (`<ReportEditor>` in the SDK) edits the page as it reads:
 - **New report** from the package page: a model, source, view, title and layout, written at the package
   root or a path you choose.
 - **Placement on a grid.** Drag a tile to any cell, empty space included; the first move places every
-  tile where it is drawn, and anything it lands on is pushed down. Row and column guides show while
-  dragging. On a linear report tiles reorder, and **+** inserts between two.
+  tile where it is drawn (heights round up, so nothing is cut), and anything a tile lands on is pushed
+  down. Row and column guides show while dragging, and faintly while a tile is selected. Option/Alt with
+  an arrow moves the selected tile one cell. **Arrange tiles** packs every tile upward or lets the
+  tiles flow again. On a linear report tiles reorder, and **+** inserts between two.
 - **Size.** The right edge sets width in columns and the bottom edge height in rows, by drag or keyboard.
   The bottom edge also snaps to auto height, so a tile can be made level with an auto neighbour. A resize
   pushes covered tiles down. The fewest rows offered are 3 for a query tile and 1 for text.
@@ -119,7 +121,7 @@ Console's edit page.
 
 | Area            | State of the art                                                   | Publisher today                                                      | Next (§4) |
 | --------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- | --------- |
-| Placement       | Free grid placement with width and height per tile                 | Free placement, widths, heights, push-down                           | 10        |
+| Placement       | Free grid placement with width and height per tile                 | Free placement, widths, heights, push-down, pack, keyboard moves     | 10        |
 | Editing         | Explicit edit mode and save                                        | In-place edit, drafts, undo and redo, saves into a reviewable file   | Ahead     |
 | Governance      | Access rules wired through embedding                               | Givens, row-level access and `#(authorize)` apply with no wiring     | Ahead     |
 | Cross-filtering | Click any mark to filter every tile                                | Drill from table cells only                                          | 1         |
@@ -154,14 +156,14 @@ state) lives in Credible, with Publisher keeping the hooks and the file format.
 
 ### Authors: staying in the builder
 
-| #   | Improvement                  | What it means                                                                                                            | Where                                    | Size |
-| --- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ---- |
-| 5   | Edit a tile's query in place | Fields, filters and sort chosen in a panel inside the tile, written as the tile's own view, not as an edit to the model. | Publisher: builder and splice writer     | L    |
-| 6   | Tabs                         | `tab=` on each entry, the open tab in the URL, and adding, renaming and reordering tabs in the builder.                  | Publisher: entry layout, reader, builder | M    |
-| 7   | Richer value tiles           | Change against the previous period, a trend line, and a target with conditional colour on a big value.                   | Renderer, or Publisher's value cards     | M    |
-| 8   | Text that reads the data     | Titles and text tiles that show current values and filters ("Revenue for {Region}: $2.1M").                              | Publisher: text tiles and headings       | M    |
-| 9   | More tile kinds              | Image, link button, divider or section header, and an embedded page from the package's `public/` folder.                 | Publisher: `kind=` on the entry          | M    |
-| 10  | Finish placement             | Arrow keys move a placed tile one cell at a time; "pack upward" to close gaps; heights of their own on a phone.          | Publisher: builder and reader            | S    |
+| #   | Improvement                  | What it means                                                                                                                           | Where                                    | Size |
+| --- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ---- |
+| 5   | Edit a tile's query in place | Fields, filters and sort chosen in a panel inside the tile, written as the tile's own view, not as an edit to the model.                | Publisher: builder and splice writer     | L    |
+| 6   | Tabs                         | `tab=` on each entry, the open tab in the URL, and adding, renaming and reordering tabs in the builder.                                 | Publisher: entry layout, reader, builder | M    |
+| 7   | Richer value tiles           | Change against the previous period, a trend line, and a target with conditional colour on a big value.                                  | Renderer, or Publisher's value cards     | M    |
+| 8   | Text that reads the data     | Titles and text tiles that show current values and filters ("Revenue for {Region}: $2.1M").                                             | Publisher: text tiles and headings       | M    |
+| 9   | More tile kinds              | Image, link button, divider or section header, and an embedded page from the package's `public/` folder.                                | Publisher: `kind=` on the entry          | M    |
+| 10  | Finish placement             | Heights of their own on a phone, and maps that size from their box (with the renderer). Pack, flow and one-cell keyboard moves shipped. | Publisher: reader; renderer for maps     | S    |
 
 ### Reliability and delivery
 
