@@ -33,7 +33,7 @@ The Console builder's tiles no longer draw grips on their right and bottom edges
 
 On a grid report whose tiles are placed, the Console builder's bar has **Arrange tiles**: **Pack tiles upward** slides every tile up into the space above it, and **Let tiles flow** clears every tile's place and keeps its size, each one undoable edit. While a tile is selected the grid's rows and columns show faintly, so empty space reads as somewhere a tile can go, and Option/Alt with an arrow key moves the selected tile one cell, swapping it with the tile beside it in that direction (so Down past a tile mirrors Up past it) and pushing down anything else it lands on. Placing a report that flowed snaps each tile's edges to the nearest row line, so tiles that touched still touch and none drifts more than half a row. A row of value cards in a tile shorter than it needs is drawn compact (smaller figures, more cards to a row) so it fits instead of scrolling. A host drawing the builder's controls itself gets the same actions as `BuilderControls.arrange`.
 
-## [Unreleased] — Tiles can be placed anywhere on the grid, have heights, and are laid out on their own entries
+## [0.9.15] — Tiles can be placed anywhere on the grid, have heights, and are laid out on their own entries
 
 A tile's entry in `tiles=[…]` can now carry its layout: `"overview -> kpis" { colspan=12 rowspan=2 }`. `colspan` and `break` there win over the view's `# colspan` and `# break` (and `break=false` turns a view's break off), so one view can sit at a different width on each report, and a tile on a view the report imports can be resized at all. `rowspan=N` is new: the tile's height in grid rows of 80px, plus the 16px gaps between them. A chart fills it, a table scrolls in it, and a tile keeps its height beside a taller neighbour instead of stretching to it. Without one a tile is as tall as its result, as before. The manifest's tiles carry `rowspan`, and the lint now reads an entry's `colspan`, `break` and `rowspan` instead of calling them unread.
 
@@ -41,7 +41,7 @@ Tiles can now be placed: `row=N col=N` on an entry put its top left corner at th
 
 In the Console builder each tile has a second grip, on its bottom edge, that sets its height in whole rows (arrow keys step it; Delete or a double-click fits the result again). Resizing or moving a tile now writes its layout on its entry and takes the view's `# colspan` and `# break` off, so the layout has one home; an untouched tile's tags are left as written.
 
-## [Unreleased] — Server telemetry: errors logged once by status, new core metrics and trace spans
+## [0.9.15] — Server telemetry: errors logged once by status, new core metrics and trace spans
 
 Operators who alert on Publisher's logs or metrics should read this; nothing in the REST or MCP contract changed.
 
@@ -53,11 +53,11 @@ Operators who alert on Publisher's logs or metrics should read this; nothing in 
 
 **Embedding provider errors.** Three failure paths of the default OpenAI-compatible embedding client now behave like the other providers: a non-auth HTTP error reports the vendor's parsed message rather than a raw 200-character body excerpt, a non-JSON reply fails without retrying, and a connection dropped while reading the body is retried.
 
-## [Unreleased] — The builder's filter row is in the same order as the reader's
+## [0.9.15] — The builder's filter row is in the same order as the reader's
 
 The report builder drew its filter row in a different order from the report it edits. It put the file's own filters first and the model's after them. The reader lists a filter when a tile first reads it, going through the tiles in order, and within each tile it lists what the tile's source reads before the tile's own `where:` bindings. So a report whose model filters every tile by Manufacturer read "Manufacturer, Subject, Recall date" in the view and "Subject, Recall date, Manufacturer" in the builder. The builder now uses the reader's rule, so both show the same row. A filter you add lands where the saved report will put it: after the filters its tile already has. A host that draws its own row for a report should take the manifest's `givens` in the order given, not regroup them by where each given is declared.
 
-## [Unreleased] — The builder says "model" and "tile", not "view"
+## [0.9.15] — The builder says "model" and "tile", not "view"
 
 The builder's text no longer assumes the reader knows tiles run Malloy views. In the chart menu, "From the view" is now **Default**, with "As set in the model" under it. The reasons on greyed-out charts no longer say "view" either, and nor does the text for adding a tile or the New report dialog's. A host's tests that look up these labels or roles by name need the new strings: `Default`, `Search the model`, and the `From the model` listbox.
 
