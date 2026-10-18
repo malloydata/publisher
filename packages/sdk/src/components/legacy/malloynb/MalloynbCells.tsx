@@ -80,7 +80,10 @@ export function MalloynbCells(props: CellReportProps) {
    return (
       <CellRunnerView
          {...props}
-         notebook={query.isSuccess ? query.data : undefined}
+         // The cached cells, even when a background refetch failed: the view
+         // shows `error` only when nothing has loaded, so a reader keeps the
+         // notebook they were looking at.
+         notebook={query.data}
          error={query.isError ? query.error : undefined}
          runCell={runCell}
       />

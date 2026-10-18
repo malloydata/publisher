@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - SDK views keep what they showed when a refresh fails, and a failed request says why
+
+A background refetch that failed used to replace a view the reader was already looking at with an error card, even though the last good data was still cached. A report (`Report`), the deprecated `Dashboard` and `Notebook`, a model, the package page and its report listing, the environment list, connection list, result panel and materializations list now keep showing what they had. Only a view with nothing to show yet shows the error. `Report`, `Dashboard` and the materializations list add a small warning that the refresh failed, and `Report` sends `report.load_failed` only for a report that never loaded.
+
+`ApiErrorDisplay` used to say "Unknown error" for any failure without a server response body: a network error, a timeout, an aborted request, an empty 502, a token the host could not fetch. It now shows the error's own message and the HTTP status when there is one. A server's message still comes first.
+
+The SDK's query client no longer refetches on reconnect (`refetchOnReconnect: false`), matching `refetchOnWindowFocus: false`. A laptop waking from sleep fires the browser's "online" event before the network is usable, so every query on the page refetched into a network error at once. A host that wants fresh data after a reconnect can still invalidate queries itself.
+
 ## [Unreleased] — Breaking: the `dashboard_columns` alias is no longer read
 
 Report files no longer carry compatibility with Malloyyo's dashboard format. `dashboard_columns=N` inside the `## artifact` tag no longer sets the grid width; the package warnings name it and say to write `dashboard { columns=N }` beside the tag instead, and the `notebook-columns-alias` and `notebook-columns-conflict` findings are gone. The package-load warning about a `.jsx` or `.tsx` component in `dashboards/` is gone too: Publisher never ran those, and the folder means nothing to it. `kind=`, the query-level `# artifact` and bare-name drill targets were already not read. To migrate, move any `dashboard_columns=N` out of the tag as `dashboard { columns=N }`.

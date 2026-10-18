@@ -331,7 +331,8 @@ export default function Package({
    // one parallel request's latency.
    const isLoading = !reportListing.settled;
 
-   if (pkgQuery.isError) {
+   // A failed refetch keeps the package already on screen.
+   if (pkgQuery.isLoadingError) {
       return (
          <ApiErrorDisplay
             error={pkgQuery.error}
@@ -384,7 +385,7 @@ export default function Package({
                         !reportPaths.has(path),
                   )}
                modelsLoading={modelsQuery.isPending}
-               {...(modelsQuery.isError
+               {...(modelsQuery.isLoadingError
                   ? { modelsError: modelsQuery.error }
                   : {})}
                onRetryModels={() => void modelsQuery.refetch()}
@@ -411,13 +412,13 @@ export default function Package({
 
          {!isLoading && (
             <>
-               {/* A listing that FAILED renders identically to a package with
+               {/* A listing that never loaded renders identically to a package with
                    none: the list falls back to `[]` and the section hides
                    itself. Only `pkgQuery` reaches the error page, so nothing
                    else here would say a word, and one failed list hides only
                    half the artifacts. The 404 swallowed in each query is an
                    older Publisher with no route, which genuinely has none. */}
-               {reportListing.isError && (
+               {reportListing.isLoadingError && (
                   <Box sx={{ mb: 4 }}>
                      <Alert
                         severity="warning"

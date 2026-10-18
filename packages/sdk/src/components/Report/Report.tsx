@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { now } from "../../utils/clock";
 import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { ApiErrorDisplay, apiErrorMessage } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
 import { DashboardView } from "../Dashboard/DashboardView";
 import type { TileChrome } from "../Dashboard/TileCard";
@@ -122,8 +122,8 @@ export function Report({
 
    const {
       data: manifest,
-      isSuccess,
-      isError,
+      isLoadingError,
+      isRefetchError,
       error,
    } = useQueryWithApiError({
       ...reportQueryOptions(
@@ -159,7 +159,8 @@ export function Report({
             surface: "view",
             category: "invalid",
          });
-      } else if (isError) {
+      } else if (isLoadingError) {
+         // A failed refetch keeps the report on screen, so it is not a failed load.
          reported.current = reportKey;
          events.emit({
             type: "report.load_failed",
@@ -174,7 +175,7 @@ export function Report({
             surface: "view",
             category: "unsupported",
          });
-      } else if (isSuccess && manifest) {
+      } else if (manifest) {
          reported.current = reportKey;
          events.emit({
             type: "report.opened",
@@ -184,7 +185,7 @@ export function Report({
             durationMs: now() - started.current.at,
          });
       }
-   }, [reportKey, uriNamesBoth, isError, error, isSuccess, manifest, events]);
+   }, [reportKey, uriNamesBoth, isLoadingError, error, manifest, events]);
    // The host resolves a drill to another report; it says what that came to.
    const navigate = useCallback(
       (target: DrillNavigation, event?: MouseEvent) => {
@@ -204,7 +205,10 @@ export function Report({
          </Alert>
       );
    }
-   if (isError) {
+   // Only a failure with nothing to show replaces the report. A failed
+   // background refetch leaves the last manifest in the cache, and swapping a
+   // report the reader is looking at for an error card throws that away.
+   if (isLoadingError) {
       return (
          <ApiErrorDisplay
             context={`${environmentName} > ${packageName} > ${path}`}
@@ -212,7 +216,7 @@ export function Report({
          />
       );
    }
-   if (!isSuccess || !manifest) {
+   if (!manifest) {
       return <Loading text={LOADING_COPY.opening("report")} />;
    }
 
@@ -244,6 +248,12 @@ export function Report({
    );
    return (
       <ReportEventsContext.Provider value={events}>
+         {isRefetchError && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+               Could not refresh this report ({apiErrorMessage(error)}). Showing
+               the version loaded earlier.
+            </Alert>
+         )}
          {body}
       </ReportEventsContext.Provider>
    );

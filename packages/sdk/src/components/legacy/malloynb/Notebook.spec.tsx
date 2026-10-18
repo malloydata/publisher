@@ -11,7 +11,13 @@
  * test noticing, so it is asserted here rather than only on the hook.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import {
    cacheKeys,
@@ -21,6 +27,7 @@ import {
    serverWrapper,
 } from "../../../../test/serverProvider";
 import type { RawNotebook } from "../../../client";
+import { globalQueryClient } from "../../../utils/queryClient";
 
 const NOTEBOOK: RawNotebook = {
    notebookCells: [
@@ -186,4 +193,28 @@ describe("deprecated: .malloynb notebooks", () => {
          screen.queryByRole("button", { name: /^(run|source|import)/ }),
       ).toBeNull();
    });
+});
+
+it("keeps a rendered notebook when a refetch fails", async () => {
+   // The cells stay in the cache when a background refetch fails, and the
+   // reader was looking at them. Swapping them for an error card threw the
+   // notebook away over a request the reader never made.
+   current = {
+      notebookCells: [{ type: "markdown", text: "Prose" }],
+   } as RawNotebook;
+   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+   expect(await screen.findByText("Prose")).toBeTruthy();
+
+   getNotebook.mockImplementation(() =>
+      Promise.reject(new Error("Network Error")),
+   );
+   try {
+      await act(() => globalQueryClient.refetchQueries({ queryKey: [URI] }));
+
+      await waitFor(() => expect(getNotebook).toHaveBeenCalledTimes(2));
+      expect(screen.getByText("Prose")).toBeTruthy();
+      expect(screen.queryByText(/Network Error/)).toBeNull();
+   } finally {
+      getNotebook.mockImplementation(() => Promise.resolve({ data: current }));
+   }
 });
