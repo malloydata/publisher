@@ -44,6 +44,63 @@ export interface DrillTagReader {
    textArray(...at: string[]): string[] | undefined;
 }
 
+/**
+ * One dimension's click actions from a tile's entry in `tiles=[…]`
+ * (`drill { <dimension> { to=… given=… } }`): the manifest tile's `drill`.
+ * `to` empty turns the model's tag off on that tile.
+ */
+export interface EntryDrill {
+   to: string[];
+   given?: string;
+}
+
+/**
+ * `field` as a tile reads it: the tile entry's drill for this dimension in
+ * place of the field's own `# drill` tag, or the field unchanged when the entry
+ * names none. Built once per tile and field, so {@link drillDestinations} and
+ * {@link drillGivenName} need no notion of entries: the entry simply is the
+ * tag. The entry wins for the dimension it names; every other tag the field
+ * carries still reads through.
+ */
+export function withEntryDrill(
+   field: DrillField,
+   entries: Readonly<Record<string, EntryDrill>> | undefined,
+): DrillField {
+   const entry = entries?.[field.name];
+   if (!entry) return field;
+   const own = field.tag;
+   const drill: DrillTagReader = {
+      tag: () => undefined,
+      text: (...at) =>
+         at[0] === "to"
+            ? entry.to[0]
+            : at[0] === "given"
+              ? entry.given
+              : undefined,
+      textArray: (...at) => (at[0] === "to" ? [...entry.to] : undefined),
+   };
+   const tag: DrillTagReader = {
+      tag: (...at) =>
+         at[0] === "drill"
+            ? at.length === 1
+               ? drill
+               : undefined
+            : own?.tag(...at),
+      text: (...at) => (at[0] === "drill" ? undefined : own?.text(...at)),
+      textArray: (...at) =>
+         at[0] === "drill" ? undefined : own?.textArray(...at),
+   };
+   // A proxy, not a copy: the renderer's field is a class whose methods read
+   // its own private state, so they must still run against the original.
+   return new Proxy(field, {
+      get(target, property) {
+         if (property === "tag") return tag;
+         const value = Reflect.get(target, property, target) as unknown;
+         return typeof value === "function" ? value.bind(target) : value;
+      },
+   });
+}
+
 /** The clicked field, as much of it as drill reads. */
 export interface DrillField {
    name: string;

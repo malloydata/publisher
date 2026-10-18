@@ -397,12 +397,16 @@ interface EntryLayout {
    rowspan?: number;
    row?: number;
    col?: number;
-   drill?: Record<string, TileDrill>;
+   drill?: Record<string, TileDrill & { missingTo?: true }>;
 }
 
 /** One dimension's click actions on a tile's entry: `<dimension> { to=… given=… }` under `drill`. */
 export interface TileDrill {
-   /** Destinations: a report path each, or the literal `self`. */
+   /**
+    * Destinations: a report path each, or the literal `self`. Empty when the
+    * entry writes `to=[]`, which turns the model's tag off on this tile: the
+    * value then offers its rows alone.
+    */
    to: string[];
    /** The given a click seeds; absent means the dimension's own name. */
    given?: string;
@@ -445,20 +449,28 @@ function readEntryLayout(entry: Tag): EntryLayout {
 /**
  * `drill { region { to=self given=REGION } product { to="sales/detail" } }` on
  * an entry, by dimension. Read like a model's `# drill` tag ({@link readDrillTag}):
- * one destination may be written unbracketed. A dimension with no `to` is kept
- * with an empty one, so the lint can tell a broken entry from none.
+ * one destination may be written unbracketed, and `to=[]` turns the model's tag
+ * off on this tile. A dimension with no `to` at all is marked `missingTo`, so
+ * the lint can report it and the manifest can leave it out.
  */
-function readEntryDrill(entry: Tag): Record<string, TileDrill> | undefined {
+function readEntryDrill(
+   entry: Tag,
+): Record<string, TileDrill & { missingTo?: true }> | undefined {
    const drill = entry.tag("drill");
    if (!drill) return undefined;
-   const out: Record<string, TileDrill> = {};
+   const out: Record<string, TileDrill & { missingTo?: true }> = {};
    for (const dimension of Object.keys(drill.dict ?? {})) {
       const spec = drill.tag(dimension);
       if (!spec) continue;
+      const missingTo = !spec.has("to");
       const to =
          tagTextArray(spec, "to") ?? [tagText(spec, "to")].filter(isString);
       const given = tagText(spec, "given");
-      out[dimension] = given === undefined ? { to } : { to, given };
+      out[dimension] = {
+         to,
+         ...(given !== undefined && { given }),
+         ...(missingTo && { missingTo: true as const }),
+      };
    }
    return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -480,12 +492,13 @@ function entryLayoutFields(layout: EntryLayout): {
    };
 }
 
-/** A query tile's click actions from its entry; a dimension whose `to` is empty does nothing and is left off. */
+/** A query tile's click actions from its entry; a dimension written with no `to` is the lint's and left off. */
 function entryDrillField(layout: EntryLayout): {
    drill?: Record<string, TileDrill>;
 } {
-   const usable = Object.entries(layout.drill ?? {}).filter(
-      ([, spec]) => spec.to.length > 0,
+   const usable = Object.entries(layout.drill ?? {}).flatMap(
+      ([dimension, { missingTo, ...spec }]) =>
+         missingTo ? [] : [[dimension, spec] as const],
    );
    return usable.length > 0 ? { drill: Object.fromEntries(usable) } : {};
 }
@@ -844,7 +857,12 @@ export function readReportModelFacts(
    );
    for (const entry of ownArtifact ? (readTileEntries(ownArtifact) ?? []) : []) {
       if (entry.kind !== "query") continue;
-      for (const [dimension, spec] of Object.entries(entry.layout.drill ?? {})) {
+      for (const [dimension, { missingTo, ...spec }] of Object.entries(
+         entry.layout.drill ?? {},
+      )) {
+         // `to=[]` turns the model's tag off: nothing to check. No `to` at all
+         // is a broken entry, which the target lint reports as one.
+         if (spec.to.length === 0 && !missingTo) continue;
          drills.push({
             ...spec,
             source: entry.expression,

@@ -253,10 +253,34 @@ export function DashboardView({
    // Each tile's clicks carry the tile they came from. A restricted tile
    // never ran, so it offers no rows; otherwise the tile's shape may rule a
    // field out (`rowsGateFor`).
+   // A tile entry's `drill { … }` is its own click actions, read once per tile.
+   const tileBindings = useMemo(
+      () =>
+         new Map(
+            (manifest.tiles ?? []).flatMap((tile) =>
+               tile.kind === "text" || tile.query === undefined
+                  ? []
+                  : [
+                       [
+                          tile.query,
+                          bindingFor(
+                             tile.query,
+                             tile.restricted === true
+                                ? false
+                                : rowsGateFor(tile.query),
+                             tile.drill,
+                          ),
+                       ] as const,
+                    ],
+            ),
+         ),
+      [manifest.tiles, bindingFor],
+   );
    const drillFor = useCallback(
       (tile: string, restricted: boolean | undefined): DrillBinding =>
+         tileBindings.get(tile) ??
          bindingFor(tile, restricted === true ? false : rowsGateFor(tile)),
-      [bindingFor],
+      [tileBindings, bindingFor],
    );
 
    // The layout decides the arrangement only, as it does in the builder.

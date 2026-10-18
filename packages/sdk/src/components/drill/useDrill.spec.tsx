@@ -348,3 +348,55 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
       expect(menuItems()).toEqual([]);
    });
 });
+
+describe("useDrill: a tile entry's drill is that tile's click actions", () => {
+   const entries = {
+      cat: { to: ["regions"], given: "CATEGORY" },
+      brand: { to: [] },
+   };
+
+   it("replaces the model's tag for the dimension it names, on that tile only", () => {
+      const onSelf = mock(() => {});
+      const onNavigate = mock(() => {});
+      const result = mountDrill({
+         onSelf,
+         onNavigate,
+         selfLabel: "Filter this report",
+      });
+      const cat = dimension("cat", { to: ["self"], given: "CATEGORY" });
+      act(() =>
+         result.current
+            .bindingFor("overview -> by_cat", false, entries)
+            .onClick({ field: cat, value: "Jeans" }),
+      );
+      expect(menuItems()).toEqual(["Open Regions for Jeans"]);
+      pick("Open Regions for Jeans");
+      expect(onNavigate).toHaveBeenCalledTimes(1);
+      expect(onSelf).not.toHaveBeenCalled();
+      // The same field on a tile whose entry says nothing keeps the model's tag.
+      act(() =>
+         result.current
+            .bindingFor("overview -> other", false)
+            .onClick({ field: cat, value: "Jeans" }),
+      );
+      expect(menuItems()).toEqual(["Filter this report to Jeans"]);
+   });
+
+   it("keeps the model's tag on a dimension the entry does not name", () => {
+      const result = mountDrill({
+         onSelf: mock(() => {}),
+         selfLabel: "Filter this report",
+      });
+      const binding = result.current.bindingFor("t", false, entries);
+      const region = dimension("region", { to: ["self"] });
+      expect(binding.canDrill(region)).toBe(true);
+      act(() => binding.onClick({ field: region, value: "West" }));
+      expect(menuItems()).toEqual(["Filter this report to West"]);
+   });
+
+   it("turns the model's tag off where the entry writes to=[]", () => {
+      const result = mountDrill({ onSelf: mock(() => {}) });
+      const binding = result.current.bindingFor("t", false, entries);
+      expect(binding.canDrill(dimension("brand", { to: ["self"] }))).toBe(false);
+   });
+});

@@ -5386,7 +5386,8 @@ components:
             type: string
           description: >-
             Destinations: `self` filters this report, anything else is a report
-            path from the package root to open.
+            path from the package root to open. Empty when the entry writes
+            `to=[]`, which turns the model's `# drill` tag off on this tile.
         given:
           type: string
           description: >-

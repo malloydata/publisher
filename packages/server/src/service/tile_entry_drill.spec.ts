@@ -148,3 +148,27 @@ describe("a tile entry's drill", () => {
       );
    });
 });
+
+describe("a tile entry's drill turned off", () => {
+   it("serves to=[] so the model's tag is off on that tile, and the lints say nothing", async () => {
+      const facts = await factsOf(
+         `"orders -> by_region" { drill { region_name { to=[] } } }`,
+      );
+      expect(buildReportManifest(facts)?.tiles?.[0]).toMatchObject({
+         drill: { region_name: { to: [] } },
+      });
+      expect(facts.drills.filter((d) => d.tile)).toEqual([]);
+   });
+
+   it("leaves an entry with no to off the tile, and reports it", async () => {
+      const facts = await factsOf(
+         `"orders -> by_region" { drill { brand { given=REGION } } }`,
+      );
+      expect(buildReportManifest(facts)?.tiles?.[0]).not.toHaveProperty("drill");
+      expect(
+         lintDrillTargets([facts], new Set()).map((f) => f.message),
+      ).toContain(
+         "The `drill` for `brand` on tile `orders -> by_region` names no destination (to=…).",
+      );
+   });
+});
