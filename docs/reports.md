@@ -343,7 +343,7 @@ A report can also place a tile with its own entry in `tiles=[…]`, and the entr
 tags, property by property:
 
 ```malloy
-## artifact { layout=grid tiles=["overview -> kpis" { colspan=12 rowspan=2 }, "overview -> revenue_trend" { colspan=8 break rowspan=5 }, "overview -> revenue_by_state" { colspan=4 }] } dashboard { columns=12 }
+## artifact { layout=grid tiles=["order_items -> key_figures" { colspan=12 rowspan=2 }, "order_items -> sales_by_month" { colspan=8 break rowspan=5 }, "order_items -> sales_by_state" { colspan=4 }] } dashboard { columns=12 }
 ```
 
 - **`colspan=N` and `break`** mean what the view's tags mean. `break=false` turns off a view's `# break`.
@@ -372,7 +372,7 @@ tags, property by property:
   close the gaps, or lets the tiles flow again (their places cleared, their sizes kept).
 
 ```malloy
-## artifact { layout=grid tiles=["overview -> kpis" { row=1 col=1 colspan=12 rowspan=3 }, "overview -> revenue_trend" { row=4 col=1 colspan=6 rowspan=3 }, "overview -> revenue_by_state" { row=4 col=7 colspan=6 rowspan=6 }, "overview -> revenue_by_category" { row=7 col=1 colspan=6 rowspan=3 }] } dashboard { columns=12 }
+## artifact { layout=grid tiles=["order_items -> key_figures" { row=1 col=1 colspan=12 rowspan=3 }, "order_items -> sales_by_month" { row=4 col=1 colspan=6 rowspan=3 }, "order_items -> sales_by_state" { row=4 col=7 colspan=6 rowspan=6 }, "order_items -> by_category" { row=7 col=1 colspan=6 rowspan=3 }] } dashboard { columns=12 }
 ```
 
 Here the trend and the category chart stack in the left half beside one tall map.
@@ -752,7 +752,7 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 in `tiles=[…]`, beside its layout, without touching the model:
 
 ```malloy
-## artifact { layout=grid tiles=["overview -> best_sellers" { colspan=6 drill { product { to=self given=PRODUCT } brand { to="brands/detail" given=BRAND } } }, "overview -> by_state"] } dashboard { columns=12 }
+## artifact { layout=grid tiles=["order_items -> by_category" { colspan=6 drill { category { to=self given=CATEGORY } } }, "order_items -> top_brands" { colspan=6 drill { brand { to="brands/detail" given=BRAND } } }] } dashboard { columns=12 }
 ```
 
 `drill { <dimension> { to=… given=… } }` reads like the tag, one block per dimension the tile groups by.

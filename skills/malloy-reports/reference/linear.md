@@ -88,6 +88,38 @@ One query per tile, and remember a chart renders only the **first** aggregate in
 
 A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format, served read-only as a linear report. **Do not create one.** When maintaining one: its compile errors show only when cells run, so test queries in the model first; imports belong in a setup cell at the top, never inside a `run:` cell; and it reads `## autorun=false` and `## givens { … }` as file-level lines, where a `.malloy` report takes them inside its artifact tag.
 
+### Converting a `.malloynb` to a `.malloy` report
+
+The builder cannot edit a `.malloynb` (`?edit` on one says so), so convert it to edit it. Write a new `.malloy` file beside it, check it loads, then delete the `.malloynb`.
+
+1. **The setup cell** (its `import`s, and any `given:` it declares) goes to the top of the new file, under `##! experimental.givens`. File-level `## autorun=false` and `## givens { … }` move inside the artifact tag: `##| artifact { layout=linear autorun=false givens { … } tiles=[…] }`.
+2. **Each `>>>markdown` cell** becomes a named text tile, `##|(markdown) <name>` … `|##`, listed as `<name> { kind=text }`. Keep the text as written.
+3. **Each `>>>malloy` cell with `run: <source> -> <view>`** becomes the entry `"<source> -> <view>"`. If the cell is `run: <source> -> <view> + { … }`, it becomes `query: <name> is <source> -> <view> + { … }`, listed as `"<name>"`.
+4. **Each `run: <source> -> { … }` cell** (an inline stage, the common case) becomes `query: <name> is <source> -> { … }`, listed as `"<name>"`. Copy the stage exactly as written. The builder edits this form fully: chart, colour, title and filters go above or after the stage, which it never rewrites. A filter the cell applied with a given becomes `+ { where: field ~ $GIVEN }` after the stage.
+5. **A cell's `#` tags** (a chart, `# label`) go on the `query:` line above it. A `# chart` tag becomes the builder's `# viz=bar|line`.
+6. **A `run:` that pipes to a second stage** (`-> { … } -> { … }`) becomes a `query:` too, but the builder only shows it, and a click on its values opens no rows. To make it editable, keep only the first stage, or move the pipeline into the model as a view.
+7. **List the tiles in the cells' order** in `tiles=[…]`, then reload and read the lint. Any finding is a conversion mistake.
+
+```malloy
+##! experimental.givens
+##| artifact { layout=linear title="Q3 review"
+  tiles=[intro { kind=text }, "by_carrier"]
+}
+|##
+import { flights } from "flights.malloy"
+
+##|(markdown) intro
+How each carrier did this quarter.
+|##
+
+# viz=bar
+# label="Flights by carrier"
+query: by_carrier is flights -> {
+  group_by: carrier
+  aggregate: flight_count
+}
+```
+
 ## Common mistakes
 
 | Mistake                                                                    | Fix                                                                                             |
