@@ -40,11 +40,52 @@ export function authorPaletteOf(
    annotations: string[] | undefined,
 ): true | undefined {
    for (const raw of annotations ?? []) {
-      if (!/\btheme\b/.test(raw) || !/palette\.series/.test(raw)) continue;
-      for (const match of raw.matchAll(/palette\.series\s*=\s*\[([^\]]*)\]/g)) {
-         const quoted = match[1].match(/["'](?:[^"'\\]|\\.)*["']/g) ?? [];
-         if (quoted.length >= 2) return true;
-      }
+      if (!/\btheme\b/.test(raw)) continue;
+      if (paletteLists(raw).some((list) => quotedCount(list) >= 2)) return true;
    }
    return undefined;
+}
+
+/**
+ * What each `palette.series=[…]` in an annotation lists, between its brackets.
+ * Scanned by hand, once, rather than with a regex: an annotation is author
+ * text, and a backtracking pattern is quadratic on one that repeats an
+ * unclosed `palette.series=[`.
+ */
+function paletteLists(raw: string): string[] {
+   const lists: string[] = [];
+   const key = "palette.series";
+   const skipSpace = (i: number) => {
+      while (i < raw.length && /\s/.test(raw[i])) i++;
+      return i;
+   };
+   for (let from = 0; ; ) {
+      const at = raw.indexOf(key, from);
+      if (at < 0) return lists;
+      from = at + key.length;
+      let i = skipSpace(from);
+      if (raw[i] !== "=") continue;
+      i = skipSpace(i + 1);
+      if (raw[i] !== "[") continue;
+      const close = raw.indexOf("]", i + 1);
+      // No `]` after this one, so none after any later key either.
+      if (close < 0) return lists;
+      lists.push(raw.slice(i + 1, close));
+      from = close + 1;
+   }
+}
+
+/** How many quoted strings a list holds, `"#a", '#b'` -> 2, a backslash escaping the character after it. */
+function quotedCount(list: string): number {
+   let count = 0;
+   for (let i = 0; i < list.length; i++) {
+      if (list[i] !== '"' && list[i] !== "'") continue;
+      let j = i + 1;
+      while (j < list.length && list[j] !== '"' && list[j] !== "'")
+         j += list[j] === "\\" ? 2 : 1;
+      if (j >= list.length) return count;
+      count++;
+      i = j;
+   }
+   return count;
 }

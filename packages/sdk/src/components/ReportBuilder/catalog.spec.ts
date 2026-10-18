@@ -101,6 +101,32 @@ describe("reading raw annotations", () => {
       ).toBeUndefined();
       expect(authorPaletteOf(["# bar_chart\n"])).toBeUndefined();
    });
+
+   it("reads an escaped quote inside a colour, and a palette after an unrelated one", () => {
+      expect(
+         authorPaletteOf(['# theme.palette.series=["a\\"b", \'c\']\n']),
+      ).toBe(true);
+      expect(
+         authorPaletteOf([
+            '# theme.palette.series=["#1f6aa8"] theme.palette.series = [ "#a", "#b" ]\n',
+         ]),
+      ).toBe(true);
+      expect(
+         authorPaletteOf(['# theme.palette.series=["#a", "#b"\n']),
+      ).toBeUndefined();
+   });
+
+   // Author text: the shapes a backtracking pattern takes quadratic time on.
+   it("reads a long malformed palette in linear time", () => {
+      const started = performance.now();
+      expect(
+         authorPaletteOf([`# theme ${"palette.series=[\\".repeat(50_000)}`]),
+      ).toBeUndefined();
+      expect(
+         authorPaletteOf([`# theme.palette.series=[${'\\"'.repeat(50_000)}]`]),
+      ).toBeUndefined();
+      expect(performance.now() - started).toBeLessThan(1_000);
+   });
 });
 
 describe("buildCatalog", () => {
