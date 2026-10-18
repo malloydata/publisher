@@ -132,16 +132,18 @@ describe("a tile entry's drill", () => {
          `"orders -> by_brand" { drill { region_name { to=self given=REGION } } }`,
       );
       const manifest = buildReportManifest(facts);
-      expect(manifest?.tiles?.[0]).toMatchObject({ query: "orders -> by_brand" });
-      expect(
-         lintReport(facts, manifest!).map((f) => f.message),
-      ).toContain(
+      expect(manifest?.tiles?.[0]).toMatchObject({
+         query: "orders -> by_brand",
+      });
+      expect(lintReport(facts, manifest!).map((f) => f.message)).toContain(
          "`drill` on `orders -> by_brand` names `region_name`, which that view does not output, so no click offers it. Fix: name one of its fields (brand, total).",
       );
    });
 
    it("is read on a query tile only: a text tile's entry carrying one is reported", async () => {
-      const facts = await factsOf(`note { kind=text drill { brand { to=self } } }`);
+      const facts = await factsOf(
+         `note { kind=text drill { brand { to=self } } }`,
+      );
       const manifest = buildReportManifest(facts);
       expect(lintReport(facts, manifest!).map((f) => f.message)).toContain(
          "`note` in `tiles=[…]` carries `drill`, which Publisher does not read: a text tile's entry reads only `row`, `col`, `colspan`, `rowspan` and `break`.",
@@ -164,11 +166,51 @@ describe("a tile entry's drill turned off", () => {
       const facts = await factsOf(
          `"orders -> by_region" { drill { brand { given=REGION } } }`,
       );
-      expect(buildReportManifest(facts)?.tiles?.[0]).not.toHaveProperty("drill");
+      expect(buildReportManifest(facts)?.tiles?.[0]).not.toHaveProperty(
+         "drill",
+      );
       expect(
          lintDrillTargets([facts], new Set()).map((f) => f.message),
       ).toContain(
          "The `drill` for `brand` on tile `orders -> by_region` names no destination (to=…).",
       );
+   });
+});
+
+import { dropGridTileLayoutFindings } from "./report_manifest";
+
+describe("a tile's presentation tags in either layout", () => {
+   const finding = (tag: string) => ({
+      message: `Unknown render tag '${tag}' on field 'root'`,
+   });
+   it("drops subtitle and borderless on a linear report's tile, and keeps its colspan and break", () => {
+      const linearTile = () => false;
+      const anyTile = () => true;
+      expect(
+         dropGridTileLayoutFindings(
+            [
+               finding("subtitle"),
+               finding("borderless"),
+               finding("colspan"),
+               finding("break"),
+            ],
+            linearTile,
+            anyTile,
+         ).map((f) => f.message),
+      ).toEqual([
+         "Unknown render tag 'colspan' on field 'root'",
+         "Unknown render tag 'break' on field 'root'",
+      ]);
+   });
+
+   it("keeps all four on a view no report names", () => {
+      const none = () => false;
+      expect(
+         dropGridTileLayoutFindings(
+            [finding("subtitle"), finding("colspan")],
+            none,
+            none,
+         ),
+      ).toHaveLength(2);
    });
 });

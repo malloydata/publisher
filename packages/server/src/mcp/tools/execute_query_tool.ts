@@ -233,6 +233,7 @@ export function registerExecuteQueryTool(
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
                pkg.getModel(modelPath)?.carriesReportTag() ?? false,
+               result,
             );
 
             const resultUri = buildMalloyUri(

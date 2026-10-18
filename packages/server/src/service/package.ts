@@ -2684,19 +2684,26 @@ export class Package {
             : undefined;
       };
       const tileDefinitions = new Set<string>();
+      const anyTileDefinitions = new Set<string>();
       for (const report of this.reports.values()) {
-         if (report.layout !== "grid") continue;
          for (const tile of queryTiles(report.manifest?.tiles)) {
             const key = identity(report.path, tile.query);
-            if (key) tileDefinitions.add(key);
+            if (!key) continue;
+            anyTileDefinitions.add(key);
+            if (report.layout === "grid") tileDefinitions.add(key);
          }
       }
-      const kept = dropGridTileLayoutFindings(raw, (finding) => {
+      const isIn = (keys: Set<string>) => (finding: ApiPackageWarning) => {
          if (finding.model === undefined || finding.subject === undefined)
             return false;
          const key = identity(finding.model, finding.subject);
-         return key !== undefined && tileDefinitions.has(key);
-      });
+         return key !== undefined && keys.has(key);
+      };
+      const kept = dropGridTileLayoutFindings(
+         raw,
+         isIn(tileDefinitions),
+         isIn(anyTileDefinitions),
+      );
       // One line per checked view, as the check logged them before. A finding
       // with no subject is the check itself not finishing, which
       // hydrateWorkerModels already logged with its cause.

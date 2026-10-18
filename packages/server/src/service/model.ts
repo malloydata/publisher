@@ -5057,6 +5057,7 @@ export class Model {
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
             false,
+            result,
          );
          // Not logged here: the package logs what survives its tile filter,
          // so a tile's layout tag does not log a warning on every load.

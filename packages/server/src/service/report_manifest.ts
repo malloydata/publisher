@@ -316,12 +316,26 @@ export function tileTarget(
 export function dropGridTileLayoutFindings<T extends { message?: string }>(
    warnings: T[],
    isGridTile: (warning: T) => boolean,
+   /**
+    * Whether a finding's subject is a tile of any report, linear included: a
+    * linear report's tile reads `# subtitle` and `# borderless` as a grid's
+    * does, so those two are dropped there too. Absent, grid tiles only.
+    */
+   isAnyTile: (warning: T) => boolean = isGridTile,
 ): T[] {
-   return warnings.filter(
-      (warning) =>
-         !(isTileLayoutTagOnRoot(warning.message) && isGridTile(warning)),
-   );
+   return warnings.filter((warning) => {
+      if (!isTileLayoutTagOnRoot(warning.message)) return true;
+      const tag = UNKNOWN_RENDER_TAG.exec(warning.message ?? "")?.[1] ?? "";
+      return !(
+         isGridTile(warning) ||
+         (TILE_PRESENTATION_TAGS.includes(tag.split(".")[0]) &&
+            isAnyTile(warning))
+      );
+   });
 }
+
+/** The per-tile tags read in either layout; `colspan` and `break` are a grid's only. */
+const TILE_PRESENTATION_TAGS = ["subtitle", "borderless"];
 
 /**
  * Drop "unknown render tag" complaints about tags Publisher owns, leaving every
@@ -335,13 +349,53 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
     * (`Model.carriesReportTag`). Required so a new call site cannot silently
     * widen the suppression to every query. */
    couldBeATile: boolean,
+   /** The Malloy result the logs are about, whose own tags say what a bare `theme` finding refers to. */
+   result: unknown,
 ): T[] {
+   const themeOwned = themeIsPublisherOwned(result);
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
       if (isPublisherOwnedTag(match[1])) return false;
+      // The renderer names only the root of a path it does not read, so the
+      // colour line Publisher writes (`# theme.palette.series=[…]`) comes back
+      // as `theme`. It is Publisher's when every `theme.` path in the result's
+      // own tags is that one; a typo beside it (`theme.palete.series`) keeps
+      // the finding.
+      if (match[1] === "theme" && themeOwned) return false;
       return !(couldBeATile && isTileLayoutTagOnRoot(log.message));
    });
+}
+
+/**
+ * Whether every `theme.` path in a result's own tags is the one Publisher
+ * reads (`theme.palette.series`), and there is at least one.
+ */
+function themeIsPublisherOwned(result: unknown): boolean {
+   const notes = (
+      (result as { annotations?: Array<{ value?: string }> } | undefined)
+         ?.annotations ?? []
+   ).map((note) => note.value ?? "");
+   const paths: string[] = [];
+   for (const note of notes) {
+      if (
+         !note.trimStart().startsWith("#") ||
+         note.trimStart().startsWith("#(")
+      )
+         continue;
+      for (const hit of note.matchAll(
+         /(?<![\w.])theme((?:\.[A-Za-z_][\w]*)*)/g,
+      ))
+         paths.push(`theme${hit[1]}`);
+   }
+   return (
+      paths.length > 0 &&
+      paths.every((path) =>
+         PUBLISHER_OWNED_PATHS.some(
+            (owned) => path === owned || path.startsWith(`${owned}.`),
+         ),
+      )
+   );
 }
 
 /**
@@ -855,7 +909,9 @@ export function readReportModelFacts(
    const ownArtifact = motlyTag(modelNotes.map((note) => note.text))?.tag(
       "artifact",
    );
-   for (const entry of ownArtifact ? (readTileEntries(ownArtifact) ?? []) : []) {
+   for (const entry of ownArtifact
+      ? (readTileEntries(ownArtifact) ?? [])
+      : []) {
       if (entry.kind !== "query") continue;
       for (const [dimension, { missingTo, ...spec }] of Object.entries(
          entry.layout.drill ?? {},
