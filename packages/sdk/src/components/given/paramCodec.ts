@@ -295,7 +295,7 @@ function zoneOffsetMinutes(zone: string | undefined): number | undefined {
  * back as unset. Naming the types that cannot hold an empty value keeps the two
  * in step as new types arrive.
  */
-function isEmptyStringMeaningful(type: string | undefined): boolean {
+export function isEmptyStringMeaningful(type: string | undefined): boolean {
    return !EMPTY_MEANS_UNSET.has(type ?? "");
 }
 

@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { Box } from "@mui/material";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+   useEffect,
+   useRef,
+   useState,
+   type ReactNode,
+   type RefObject,
+} from "react";
 
 /** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
 export const DEFAULT_COLUMNS = 2;
@@ -24,22 +30,10 @@ export const nudgedSpan = (current: number, delta: 1 | -1, columns: number) =>
 export const GRID_GAP_PX = 16;
 
 /**
- * The space between a notebook's tiles, which stack in one column with no card
- * around them: wider than a dashboard's gap so the reading flow breathes, and
- * so the builder's selection ring, drawn {@link BARE_RING_OFFSET_PX} clear of
- * a bare tile, never meets the next tile's.
+ * How far a bare (uncarded) tile's selection ring sits from its prose: half the
+ * {@link GRID_GAP_PX} between tiles, so a ring never reaches into the next tile.
  */
-export const NOTEBOOK_GAP_PX = 40;
-
-/** How far a bare (uncarded) tile's selection ring sits from its content. */
-export const BARE_RING_OFFSET_PX = 12;
-
-/**
- * The space above and below a notebook's description, in both modes: a bare
- * description's ring in the builder is {@link BARE_RING_OFFSET_PX} clear of
- * its text, and needs the room to stay clear of the title and the filters.
- */
-export const BARE_DESCRIPTION_MARGIN_PX = BARE_RING_OFFSET_PX + 8;
+export const BARE_RING_OFFSET_PX = GRID_GAP_PX / 2;
 
 /**
  * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
@@ -56,6 +50,66 @@ export function tileGridColumn(
 ): string {
    const span = Math.min(tile.colspan ?? 1, columns);
    return tile.break ? `1 / span ${span}` : `span ${span}`;
+}
+
+/** One grid row, in px: the unit `rowspan=N` on a tile's entry counts in. */
+export const TILE_ROW_PX = 80;
+
+/**
+ * Fewest and most rows the builder offers for a tile's height; a hand-written
+ * file may go outside them. A query tile's floor is the shortest a chart still
+ * draws its plot in: at 2 rows a line chart had no plot area left under its
+ * heading and axes, and the renderer failed on it. Prose fits in one.
+ */
+export const MIN_TILE_ROWS = 3;
+/** A query tile that draws no chart (value cards, a table) goes down to two rows. */
+export const MIN_VALUE_TILE_ROWS = 2;
+export const MIN_TEXT_TILE_ROWS = 1;
+export const MAX_TILE_ROWS = 16;
+
+/**
+ * A tile `rows` grid rows tall, in px: the rows and the gaps between them, so
+ * a tile placed on explicit rows later lands on exactly this height.
+ */
+export const tileHeightPx = (rows: number) =>
+   rows * TILE_ROW_PX + (rows - 1) * GRID_GAP_PX;
+
+/** The rows a tile `px` tall is closest to, held to what the builder offers. */
+export const rowsForHeight = (px: number, min: number = MIN_TILE_ROWS) =>
+   Math.min(
+      Math.max(
+         Math.round((px + GRID_GAP_PX) / (TILE_ROW_PX + GRID_GAP_PX)),
+         min,
+      ),
+      MAX_TILE_ROWS,
+   );
+
+/** Narrowest a tile that sets no `colspan` is drawn, by the reader and the builder alike. */
+export const MIN_TILE_PX = 240;
+
+/**
+ * The span a tile with no `# colspan` is drawn at in the grid inside `box`:
+ * {@link defaultTileSpan} on its measured width. For a surface that lays the
+ * grid out itself (the builder, whose width handle and row arithmetic need
+ * the span a tile is drawn at, not the one it writes).
+ */
+export function useDefaultTileSpan(
+   box: RefObject<HTMLElement | null>,
+   columns: number,
+   minTilePx: number = MIN_TILE_PX,
+): number {
+   const [width, setWidth] = useState(0);
+   useEffect(() => {
+      const node = box.current;
+      if (!node || typeof ResizeObserver === "undefined") return;
+      setWidth(node.getBoundingClientRect().width);
+      const observer = new ResizeObserver(([entry]) =>
+         setWidth(entry?.contentRect.width ?? 0),
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+   }, [box]);
+   return defaultTileSpan(columns, width, minTilePx);
 }
 
 /**
@@ -82,7 +136,50 @@ export function defaultTileSpan(
 export interface GridTile {
    colspan?: number;
    break?: boolean;
+   /** `rowspan=N` on its entry: the grid rows it is tall. Absent, the tile is as tall as its row. */
+   rowspan?: number;
+   /** `row=N` and `col=N` on its entry: where it sits, which makes the report placed. */
+   row?: number;
+   col?: number;
 }
+
+/**
+ * Rows a tile with no `rowspan` takes on a placed report, whose rows are
+ * fixed tracks: about the height it is drawn at unplaced. Kept equal to the
+ * server's `PLACED_DEFAULT_ROWSPAN`, whose overlap lint counts these rows.
+ */
+export const PLACED_DEFAULT_ROWSPAN = { query: 5, text: 2 } as const;
+
+/** Whether a report is placed: any tile says which row it sits in. */
+export const isPlaced = (tiles: readonly GridTile[]) =>
+   tiles.some((tile) => tile.row !== undefined);
+
+/**
+ * Where one tile sits on a placed report. A tile with no `row` or `col` is
+ * left to the grid's own auto-placement, which puts it in the first free cell
+ * after the placed ones; a `col` too far right for its span is pulled in so
+ * the tile stays on the grid, as a colspan wider than the grid is clamped.
+ */
+export function placedArea(
+   tile: GridTile,
+   columns: number,
+   rows: number,
+): { gridRow: string; gridColumn: string } {
+   const span = Math.min(tile.colspan ?? 1, columns);
+   const col =
+      tile.col === undefined
+         ? undefined
+         : Math.min(tile.col, columns - span + 1);
+   return {
+      gridRow:
+         tile.row === undefined ? `span ${rows}` : `${tile.row} / span ${rows}`,
+      gridColumn: col === undefined ? `span ${span}` : `${col} / span ${span}`,
+   };
+}
+
+/** A placed tile's place in reading order, top to bottom and then left to right: its order when the grid is one column. */
+export const readingOrder = (tile: GridTile) =>
+   tile.row === undefined ? 1_000_000 : tile.row * 1000 + (tile.col ?? 0);
 
 /**
  * The composite dashboard's grid: the column track, and each tile's place on
@@ -114,6 +211,10 @@ export function DashboardGrid<T extends GridTile>({
    renderTile,
    minTilePx,
    rowGapPx = GRID_GAP_PX,
+   defaultRowspan = (tile) =>
+      PLACED_DEFAULT_ROWSPAN[
+         (tile as { kind?: string }).kind === "text" ? "text" : "query"
+      ],
 }: {
    tiles: readonly T[];
    /** Track count — `# dashboard { columns=N }`, or {@link DEFAULT_COLUMNS}. */
@@ -131,9 +232,12 @@ export function DashboardGrid<T extends GridTile>({
     * builder assumes an unset colspan is one column.
     */
    minTilePx?: number;
-   /** The space between rows; a notebook's is {@link NOTEBOOK_GAP_PX}. */
+   /** The space between rows. */
    rowGapPx?: number;
+   /** Rows a tile with no `rowspan` takes on a placed report; by default its kind's {@link PLACED_DEFAULT_ROWSPAN}. */
+   defaultRowspan?: (tile: T) => number;
 }) {
+   const placed = isPlaced(tiles);
    const ref = useRef<HTMLDivElement>(null);
    const [width, setWidth] = useState(0);
    useEffect(() => {
@@ -163,6 +267,9 @@ export function DashboardGrid<T extends GridTile>({
             },
             columnGap: `${GRID_GAP_PX}px`,
             rowGap: `${rowGapPx}px`,
+            // Placed, the rows are fixed tracks a tile spans, so a rowspan is
+            // a span and empty cells stay empty rather than closing up.
+            ...(placed && { gridAutoRows: `${TILE_ROW_PX}px` }),
          }}
       >
          {tiles.map((tile, index) => (
@@ -183,16 +290,50 @@ export function DashboardGrid<T extends GridTile>({
                   // width, the chart's box shrinks with it, and the renderer
                   // redraws to fit — the same way it already did on growth.
                   minWidth: 0,
-                  // Only above `md`: the narrow breakpoint is one column, where
-                  // a span would overflow the grid rather than widen anything.
-                  gridColumn: {
-                     md: tileGridColumn(
-                        tile.colspan === undefined && floor > 1
-                           ? { ...tile, colspan: floor }
-                           : tile,
-                        columns,
-                     ),
-                  },
+                  // A set height is the tile's own, not its row's: it holds
+                  // that height beside a taller neighbour rather than
+                  // stretching to it, and the card inside fills it.
+                  // A grid item's row is as tall as its content's minimum, so
+                  // the row is held to the box: the result shrinks to fit it.
+                  ...(!placed &&
+                     tile.rowspan !== undefined && {
+                        height: tileHeightPx(tile.rowspan),
+                        alignSelf: "start",
+                     }),
+                  ...((placed || tile.rowspan !== undefined) && {
+                     gridTemplateRows: "minmax(0, 1fr)",
+                  }),
+                  ...(placed
+                     ? (() => {
+                          const rows = tile.rowspan ?? defaultRowspan(tile);
+                          const area = placedArea(
+                             tile.colspan === undefined && floor > 1
+                                ? { ...tile, colspan: floor }
+                                : tile,
+                             columns,
+                             rows,
+                          );
+                          // One column below `md`: the tiles stack in reading
+                          // order, each keeping its rows.
+                          return {
+                             gridRow: { xs: `span ${rows}`, md: area.gridRow },
+                             gridColumn: { md: area.gridColumn },
+                             order: { xs: readingOrder(tile), md: 0 },
+                          };
+                       })()
+                     : {
+                          // Only above `md`: the narrow breakpoint is one
+                          // column, where a span would overflow the grid rather
+                          // than widen anything.
+                          gridColumn: {
+                             md: tileGridColumn(
+                                tile.colspan === undefined && floor > 1
+                                   ? { ...tile, colspan: floor }
+                                   : tile,
+                                columns,
+                             ),
+                          },
+                       }),
                }}
             >
                {renderTile(tile, index)}

@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import * as net from "net";
 import {
    AccessDeniedError,
+   AgentNotFoundError,
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
@@ -16,6 +17,7 @@ import {
    databaseAccessFailure,
    isConnectionFailure,
    isCredentialRejection,
+   statementRejection,
    UnconfiguredConnectionError,
    TableNotFoundError,
    internalErrorToHttpError,
@@ -27,6 +29,7 @@ import {
    ResponseUnserializableError,
    QueryTimeoutError,
    ServiceUnavailableError,
+   SkillNotFoundError,
 } from "./errors";
 
 describe("internalErrorToHttpError", () => {
@@ -43,6 +46,17 @@ describe("internalErrorToHttpError", () => {
             "The database rejected the connection's credentials. Check the connection's user, password, key or token.",
          reason: "CONNECTION_AUTH_FAILED",
       });
+   });
+
+   it("maps SkillNotFoundError and AgentNotFoundError to 404", () => {
+      for (const error of [
+         new SkillNotFoundError("no skill"),
+         new AgentNotFoundError("no agent"),
+      ]) {
+         const { status, json } = internalErrorToHttpError(error);
+         expect(status).toBe(404);
+         expect(json).toEqual({ code: 404, message: error.message });
+      }
    });
 
    it("maps BadRequestError to 400", () => {
@@ -352,6 +366,120 @@ describe("isConnectionFailure", () => {
       expect(isConnectionFailure(wrapped)).toBe(true);
    });
 
+   it("recognizes tedious's unreachable-server codes, as mssql rewraps them", () => {
+      // tedious raises a refused or cut TCP connect as ESOCKET, a connect
+      // timeout as ETIMEOUT and a failed SQL Browser lookup as EINSTLOOKUP;
+      // the mssql pool copies the code onto its own ConnectionError.
+      for (const code of ["ESOCKET", "ETIMEOUT", "EINSTLOOKUP"]) {
+         const error = Object.assign(
+            new Error("Failed to connect to db.example:1433 in 15000ms"),
+            { code, name: "ConnectionError" },
+         );
+         expect(isConnectionFailure(error)).toBe(true);
+         expect(isCredentialRejection(error)).toBe(false);
+      }
+      // A connection cut while a query ran reaches the caller as mssql's
+      // RequestError, still carrying ESOCKET.
+      expect(
+         isConnectionFailure(
+            Object.assign(new Error("Connection lost - read ECONNRESET"), {
+               code: "ESOCKET",
+               name: "RequestError",
+            }),
+         ),
+      ).toBe(true);
+   });
+
+   it("does not read a SQL Server request timeout as a server that is down", () => {
+      // tedious's ETIMEOUT on a RequestError is a query that outran
+      // requestTimeoutMs; the server was reached and ran it. Answering it as
+      // unreachable would tell the caller to retry the slow query.
+      const error = Object.assign(
+         new Error("Timeout: Request failed to complete in 600000ms"),
+         { code: "ETIMEOUT", name: "RequestError" },
+      );
+      expect(isConnectionFailure(error)).toBe(false);
+      expect(databaseAccessFailure(error)).toBeUndefined();
+   });
+
+   /**
+    * The chain the driver produces, as measured under Bun against a SQL
+    * Server with a self-signed certificate: mssql's ConnectionError carries
+    * tedious's code and keeps tedious's error on `originalError`, not
+    * `cause`; tedious's error carries Node's TLS error on `cause`.
+    */
+   function mssqlWrapped(
+      code: string,
+      message: string,
+      inner?: Error,
+      name = "ConnectionError",
+   ): Error {
+      const tedious = Object.assign(new Error(message, { cause: inner }), {
+         code,
+      });
+      const mssql = Object.assign(new Error(message), { code, name });
+      Object.defineProperty(mssql, "originalError", {
+         enumerable: true,
+         value: tedious,
+      });
+      return mssql;
+   }
+
+   it("does not read a SQL Server certificate the client cannot verify as a server that is down", () => {
+      // With encrypt on and trustServerCertificate off, a self-signed
+      // certificate fails the TLS handshake; tedious words it as an ESOCKET
+      // whose cause is Node's TLS error. A retry cannot fix it.
+      const tls = Object.assign(new Error("self signed certificate"), {
+         code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+      });
+      const error = mssqlWrapped(
+         "ESOCKET",
+         "Failed to connect to db.example:1433 - self signed certificate",
+         tls,
+      );
+      // The outer error has no `cause`: the walk has to follow originalError
+      // to find the certificate, which is what this pins.
+      expect(error.cause).toBeUndefined();
+      expect(isConnectionFailure(error)).toBe(false);
+      expect(databaseAccessFailure(error)).toBeUndefined();
+   });
+
+   it("still reads an mssql-wrapped refused connect as unreachable", () => {
+      const refused = Object.assign(
+         new Error("connect ECONNREFUSED 127.0.0.1:1"),
+         { code: "ECONNREFUSED" },
+      );
+      expect(
+         isConnectionFailure(
+            mssqlWrapped(
+               "ESOCKET",
+               "Failed to connect to 127.0.0.1:1 - Could not connect (sequence)",
+               refused,
+            ),
+         ),
+      ).toBe(true);
+   });
+
+   it("recognizes tedious's unreachable wording when only the text survives", () => {
+      // The SQL Server connector's table lookup returns a failure as text with
+      // the code dropped.
+      for (const message of [
+         "Failed to connect to 127.0.0.1:1 - Could not connect (sequence)",
+         "Failed to connect to db.example:1433 in 15000ms",
+         "Failed to connect to db.example:1433 (redirected from gw.example:1433) - connect ECONNRESET",
+      ]) {
+         expect(isConnectionFailure(new Error(message))).toBe(true);
+      }
+      // A certificate failure in the same wording is config, not unreachable.
+      for (const message of [
+         "Failed to connect to db.example:1433 - self signed certificate",
+         "Failed to connect to db.example:1433 - unable to verify the first certificate",
+         "Failed to connect to db.example:1433 - Hostname/IP does not match certificate's altnames: IP: 10.0.0.5 is not in the cert's list: ",
+      ]) {
+         expect(isConnectionFailure(new Error(message))).toBe(false);
+      }
+   });
+
    it("recognizes a Postgres connection SQLSTATE and a server shutdown", () => {
       // node-pg puts the SQLSTATE in `code`.
       for (const code of ["08006", "08001", "57P01"]) {
@@ -496,9 +624,29 @@ describe("isCredentialRejection", () => {
       { code: "ER_ACCESS_DENIED_ERROR", fatal: true },
    );
 
-   it("recognizes a rejected login from Postgres, MySQL, Snowflake and BigQuery", () => {
+   // tedious: every login the server refuses is an ELOGIN carrying the
+   // server's own message; a wrong password is its 18456.
+   // As the driver produces it: mssql's ConnectionError copies the code and
+   // keeps tedious's error on originalError.
+   const sqlserver = Object.assign(new Error("Login failed for user 'sa'."), {
+      code: "ELOGIN",
+      name: "ConnectionError",
+   });
+   Object.defineProperty(sqlserver, "originalError", {
+      enumerable: true,
+      value: Object.assign(new Error("Login failed for user 'sa'."), {
+         code: "ELOGIN",
+      }),
+   });
+
+   it("recognizes a rejected login from Postgres, MySQL, SQL Server, Snowflake and BigQuery", () => {
       expect(isCredentialRejection(postgres)).toBe(true);
       expect(isCredentialRejection(mysql)).toBe(true);
+      expect(isCredentialRejection(sqlserver)).toBe(true);
+      expect(isConnectionFailure(sqlserver)).toBe(false);
+      expect(databaseAccessFailure(sqlserver)).toBeInstanceOf(
+         ConnectionAuthError,
+      );
       // Snowflake's key-pair failure, as staging logged it, with its code.
       expect(
          isCredentialRejection(
@@ -543,5 +691,146 @@ describe("isCredentialRejection", () => {
       });
       expect(isCredentialRejection(denied)).toBe(false);
       expect(databaseAccessFailure(denied)).toBeUndefined();
+   });
+});
+
+describe("statementRejection", () => {
+   // The shape node-pg raises: a DatabaseError whose `code` is the SQLSTATE.
+   // Message verbatim from prod 2026-10-13, when a customer dropped a column
+   // their model's sql source still selected and the recompile loop answered
+   // 502 once a minute until the router paged.
+   const column = Object.assign(
+      new Error('column "sundance_name" does not exist'),
+      { code: "42703" },
+   );
+
+   it("answers a statement Postgres rejected as a 400 carrying the driver's message", () => {
+      const classified = statementRejection(column);
+      expect(classified).toBeInstanceOf(InvalidArgumentError);
+      expect(internalErrorToHttpError(classified!)).toEqual({
+         status: 400,
+         json: { code: 400, message: 'column "sundance_name" does not exist' },
+      });
+   });
+
+   it("covers the codes a SELECT the caller wrote can produce, not one code", () => {
+      for (const [code, message] of [
+         ["42601", 'syntax error at or near "FORM"'],
+         ["42883", "function nope(integer) does not exist"],
+         ["42702", 'column reference "id" is ambiguous'],
+         ["42804", "argument of WHERE must be type boolean, not type integer"],
+         ["42846", "cannot cast type bytea to integer"],
+         ["42803", 'column "s.kind" must appear in the GROUP BY clause'],
+         ["42704", 'type "intger" does not exist'],
+         ["42701", 'column "a" specified more than once'],
+      ]) {
+         expect(
+            statementRejection(Object.assign(new Error(message), { code })),
+         ).toBeInstanceOf(InvalidArgumentError);
+      }
+   });
+
+   it("leaves 42501 insufficient_privilege where it was: the grants are the connection's, not the statement's", () => {
+      // A role without CONNECT fails session startup with 42501 before any
+      // caller SQL runs, and a table the connection's user may not read is
+      // fixed by a GRANT the caller cannot issue. Both answered 502 before
+      // and still do, so a connection that stopped working keeps paging.
+      for (const error of [
+         Object.assign(new Error('permission denied for database "pw"'), {
+            code: "42501",
+            severity: "FATAL",
+         }),
+         Object.assign(new Error("permission denied for table spaces"), {
+            code: "42501",
+            severity: "ERROR",
+         }),
+      ]) {
+         expect(statementRejection(error)).toBeUndefined();
+      }
+   });
+
+   it("skips anything Postgres marks FATAL, whatever the code", () => {
+      // FATAL ends the session; it is raised at startup or by the server,
+      // never by the caller's SELECT, so the code on it is not the
+      // statement's.
+      expect(
+         statementRejection(
+            Object.assign(new Error("terminating connection"), {
+               code: "42601",
+               severity: "FATAL",
+            }),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("leaves the class-42 codes a SELECT cannot produce alone", () => {
+      // DDL rejections (a duplicate table, an invalid definition) and the
+      // generic 42000: an admin's setupSQL could raise these on the same
+      // client before the caller's statement, so they stay a fault.
+      for (const code of ["42000", "42P07", "42710", "42P16"]) {
+         expect(
+            statementRejection(
+               Object.assign(new Error("some DDL rejection"), { code }),
+            ),
+         ).toBeUndefined();
+      }
+   });
+
+   it("answers a table the statement names but the database lacks as TABLE_NOT_FOUND", () => {
+      // The router retries a plain 404 on another worker; the reason stops it.
+      const missing = Object.assign(
+         new Error('relation "public.spaces" does not exist'),
+         { code: "42P01" },
+      );
+      const classified = statementRejection(missing);
+      expect(classified).toBeInstanceOf(TableNotFoundError);
+      expect(internalErrorToHttpError(classified!).status).toBe(404);
+   });
+
+   it("answers a 42P01 whose relation exists -- a missing FROM-clause alias -- as a 400, not a missing table", () => {
+      // Postgres raises undefined_table for `SELECT x.id FROM spaces AS s`
+      // too. A 404 with TABLE_NOT_FOUND would tell the router a physical
+      // table is absent; only the "relation ... does not exist" wording
+      // means that.
+      const alias = Object.assign(
+         new Error('missing FROM-clause entry for table "x"'),
+         { code: "42P01" },
+      );
+      const classified = statementRejection(alias);
+      expect(classified).toBeInstanceOf(InvalidArgumentError);
+      expect(classified).not.toBeInstanceOf(TableNotFoundError);
+      expect(internalErrorToHttpError(classified!).status).toBe(400);
+   });
+
+   it("follows the cause chain a wrapper puts it behind, and keeps Postgres's sentence", () => {
+      // The 400 carries the message of the error that carried the SQLSTATE,
+      // not the wrapper's: "Failed to run SQL" tells the caller nothing, and
+      // the wrapper's text was never vetted to name nothing internal.
+      const wrapped = new Error("Failed to run SQL", { cause: column });
+      expect(statementRejection(wrapped)).toBeInstanceOf(InvalidArgumentError);
+      expect(statementRejection(wrapped)!.message).toBe(
+         'column "sundance_name" does not exist',
+      );
+   });
+
+   it("leaves the connection's failures, and anything without a SQLSTATE, alone", () => {
+      // Login (class 28) and transport (class 08) are the connection's, and
+      // are answered by databaseAccessFailure. A codeless error and a code that
+      // is not a SQLSTATE at all say nothing about the statement.
+      for (const error of [
+         Object.assign(new Error("password authentication failed"), {
+            code: "28P01",
+         }),
+         Object.assign(new Error("terminating connection"), {
+            code: "08006",
+         }),
+         Object.assign(new Error("connect ECONNREFUSED"), {
+            code: "ECONNREFUSED",
+         }),
+         new Error('column "x" does not exist'),
+         "a thrown string",
+      ]) {
+         expect(statementRejection(error)).toBeUndefined();
+      }
    });
 });

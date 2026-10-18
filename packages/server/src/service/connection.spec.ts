@@ -18,6 +18,7 @@ import path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import {
+   attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
    buildEnvironmentMalloyConfig,
@@ -35,9 +36,12 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
+import { listStorageTables } from "./materialization_build_session";
 import {
    ConnectionPoolExhaustedError,
+   internalErrorToHttpError,
    PayloadTooLargeError,
+   StorageCatalogNotFoundError,
    UnconfiguredConnectionError,
    UnsupportedCatalogFormatError,
 } from "../errors";
@@ -1704,6 +1708,119 @@ describe("connection integration tests", () => {
                   { timeout: 60000 },
                );
 
+               // A fresh session, so what it has attached is only what the call
+               // under test attached.
+               const freshSession = async (label: string) => {
+                  const workDir = await fs.mkdtemp(
+                     path.join(os.tmpdir(), `dl-${label}-`),
+                  );
+                  const conn = new DuckDBConnection(label, ":memory:", workDir);
+                  createdConnections.push(conn);
+                  return conn;
+               };
+
+               const schemaExists = async (
+                  conn: DuckDBConnection,
+                  schema: string,
+               ) => {
+                  await conn.runSQL(
+                     `ATTACH '${pgConnString()}' AS insp_s (TYPE postgres, READ_ONLY);`,
+                  );
+                  const r = await conn.runSQL(
+                     `SELECT count(*) AS n FROM duckdb_schemas() ` +
+                        `WHERE database_name = 'insp_s' AND schema_name = '${schema}';`,
+                  );
+                  return firstValue(r.rows) > 0;
+               };
+
+               it(
+                  "finds a catalog that was never created absent, and attaches nothing",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("absent");
+                     const cfg = await duckLakeConfig("dl_absent", schema);
+                     const conn = await freshSession("dl_absent_probe");
+
+                     expect(
+                        await attachDuckLakeReadOnlyIfPresent(
+                           conn,
+                           "dl_absent",
+                           cfg,
+                        ),
+                     ).toBe(false);
+                     const attached = await conn.runSQL(
+                        `SELECT count(*) AS n FROM duckdb_databases() WHERE database_name = 'dl_absent';`,
+                     );
+                     expect(firstValue(attached.rows)).toBe(0);
+                     // Looking must not create the catalog, or its schema.
+                     expect(await schemaExists(conn, schema)).toBe(false);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "attaches a catalog that exists",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("present");
+                     const cfg = await duckLakeConfig("dl_present", schema);
+                     const boot = await bootstrapCatalog("dl_present", cfg);
+                     await boot.runSQL(
+                        `CREATE OR REPLACE TABLE dl_present.t AS SELECT 3 AS x`,
+                     );
+
+                     const conn = await freshSession("dl_present_probe");
+                     expect(
+                        await attachDuckLakeReadOnlyIfPresent(
+                           conn,
+                           "dl_present",
+                           cfg,
+                        ),
+                     ).toBe(true);
+                     const r = await conn.runSQL(`SELECT x FROM dl_present.t;`);
+                     expect(firstValue(r.rows)).toBe(3);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "lists a storage destination that was never built as a 404, not a failed attach",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("list_absent");
+                     const cfg = await duckLakeConfig("dl_list", schema);
+                     let err: unknown;
+                     try {
+                        await listStorageTables({
+                           destinationName: "dl_list",
+                           destinationConnection: {
+                              name: "dl_list",
+                              type: "ducklake",
+                              ducklakeConnection: cfg,
+                           } as ApiConnection,
+                           schemaName: "main",
+                           environmentPath: testEnvironmentPath,
+                        });
+                     } catch (e) {
+                        err = e;
+                     }
+                     expect(err).toBeInstanceOf(StorageCatalogNotFoundError);
+                     expect(internalErrorToHttpError(err as Error).status).toBe(
+                        404,
+                     );
+                  },
+                  { timeout: 60000 },
+               );
+
                it(
                   "attaches without a metadataSchema exactly as before",
                   async () => {
@@ -2966,6 +3083,37 @@ describe("connection integration tests", () => {
             expect(attach).toContain('AS "evil-db"');
          });
 
+         it("hands libpq require, not no-verify, in an attached database's raw connectionString", async () => {
+            const sql: string[] = [];
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .callsFake(async (query: string) => {
+                  sql.push(query);
+                  return { rows: [], totalRows: 0, runStats: {} } as never;
+               });
+
+            await testConnectionConfig({
+               name: "probe_noverify",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "pg_nv",
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString:
+                              "postgres://u:p@127.0.0.1:1/db?sslmode=no-verify",
+                        },
+                     },
+                  ],
+               },
+            });
+
+            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            expect(attach).toContain("sslmode=require");
+            expect(attach).not.toContain("no-verify");
+         });
+
          // An absent alias must fail before the ATTACH is built: emitting
          // `AS ""` runs a statement carrying the DSN and fails at the alias,
          // which is the truncation that defeats redaction.
@@ -3900,6 +4048,202 @@ describe("buildPgConnectionString", () => {
          }
       },
    );
+
+   describe("sslmode=no-verify in a raw connectionString", () => {
+      const build = (connectionString: string) =>
+         buildPgConnectionString(
+            { connectionString },
+            { name: "pg_att", applyConnectionOptions: true },
+         );
+
+      it("rewrites a URI's no-verify to require, which libpq understands", () => {
+         expect(
+            build("postgresql://u:p@db.example.com/lake?sslmode=no-verify"),
+         ).toBe("postgresql://u:p@db.example.com/lake?sslmode=require");
+         expect(
+            build(
+               "postgres://u:p@db/lake?application_name=a&sslmode=no-verify&x=y",
+            ),
+         ).toBe(
+            "postgres://u:p@db/lake?application_name=a&sslmode=require&x=y",
+         );
+      });
+
+      it("rewrites a keyword/value string's no-verify, quoted or not, and leaves the rest alone", () => {
+         expect(
+            build("host=db.example.com dbname=lake sslmode=no-verify user=u"),
+         ).toBe("host=db.example.com dbname=lake sslmode=require user=u");
+         expect(build("host=db sslmode = 'no-verify'")).toBe(
+            "host=db sslmode=require",
+         );
+      });
+
+      it("does not treat a Unicode space as a pair separator, as libpq does not", () => {
+         const raw =
+            "host=db password=a\u2003sslmode=no-verify sslmode=disable";
+         expect(build(raw)).toBe(raw);
+      });
+
+      it("rewrites no-verify alongside adding the statement timeout", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "host=db sslmode=no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "pg_att", applyConnectionOptions: true },
+            ),
+         ).toBe("host=db sslmode=require options='-c statement_timeout=5000'");
+      });
+
+      it("leaves every other sslmode, and a string without one, unchanged", () => {
+         for (const mode of [
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full",
+         ]) {
+            expect(build(`postgresql://u:p@db/lake?sslmode=${mode}`)).toBe(
+               `postgresql://u:p@db/lake?sslmode=${mode}`,
+            );
+            expect(build(`host=db sslmode=${mode}`)).toBe(
+               `host=db sslmode=${mode}`,
+            );
+         }
+         expect(build("postgresql://u:p@db/lake")).toBe(
+            "postgresql://u:p@db/lake",
+         );
+         expect(build("postgresql://u:p@db/no-verify?sslmode=require")).toBe(
+            "postgresql://u:p@db/no-verify?sslmode=require",
+         );
+      });
+
+      it("rewrites no-verify in a DuckLake catalog's string too, without the connection's own options", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "host=db sslmode=no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe("host=db sslmode=require");
+      });
+
+      describe("node-pg-only URI params libpq rejects", () => {
+         const u = "postgresql://u:p@db/lake";
+
+         it("drops uselibpqcompat", () => {
+            expect(build(`${u}?uselibpqcompat=true&sslmode=require`)).toBe(
+               `${u}?sslmode=require`,
+            );
+         });
+
+         it("drops ssl beside an sslmode, in either order, so it cannot downgrade verify-full", () => {
+            for (const ssl of ["ssl=1", "ssl=true"]) {
+               expect(build(`${u}?sslmode=verify-full&${ssl}`)).toBe(
+                  `${u}?sslmode=verify-full`,
+               );
+               expect(build(`${u}?${ssl}&sslmode=verify-full`)).toBe(
+                  `${u}?sslmode=verify-full`,
+               );
+            }
+         });
+
+         it("respells ssl when there is no sslmode", () => {
+            expect(build(`${u}?ssl=no-verify`)).toBe(`${u}?sslmode=require`);
+            expect(build(`${u}?ssl=1`)).toBe(`${u}?ssl=true`);
+            expect(build(`${u}?ssl=true`)).toBe(`${u}?ssl=true`);
+            expect(build(`${u}?ssl=0`)).toBe(`${u}?sslmode=disable`);
+         });
+
+         it("drops ssl=0 rather than disabling TLS when a cert param is present", () => {
+            expect(build(`${u}?ssl=0&sslrootcert=x`)).toBe(
+               `${u}?sslrootcert=x`,
+            );
+         });
+
+         it("leaves a keyword/value string's ssl alone", () => {
+            expect(build("host=db ssl=1")).toBe("host=db ssl=1");
+         });
+      });
+
+      describe("with PGSSLMODE=no-verify in the deployment", () => {
+         beforeEach(() => {
+            process.env.PGSSLMODE = "no-verify";
+         });
+
+         it("adds sslmode=require to a string that sets none, URI or keyword/value", () => {
+            for (const applyConnectionOptions of [true, false]) {
+               const build2 = (connectionString: string) =>
+                  buildPgConnectionString(
+                     { connectionString },
+                     { name: "pg_att", applyConnectionOptions },
+                  );
+               expect(build2("postgresql://u:p@db/lake")).toBe(
+                  "postgresql://u:p@db/lake?sslmode=require",
+               );
+               expect(build2("postgresql://u:p@db/lake?x=y")).toBe(
+                  "postgresql://u:p@db/lake?x=y&sslmode=require",
+               );
+               expect(build2("host=db dbname=lake")).toBe(
+                  "host=db dbname=lake sslmode=require",
+               );
+            }
+         });
+
+         it("leaves a string that names a libpq service alone", () => {
+            expect(build("postgresql://db/lake?service=prod")).toBe(
+               "postgresql://db/lake?service=prod",
+            );
+            expect(build("service=prod dbname=lake")).toBe(
+               "service=prod dbname=lake",
+            );
+         });
+
+         it("adds exactly one sslmode when ssl=0 is respelled", () => {
+            expect(build("postgresql://u:p@db/lake?ssl=0")).toBe(
+               "postgresql://u:p@db/lake?sslmode=disable",
+            );
+         });
+
+         it("leaves a string alone when the deployment sets PGSERVICE", () => {
+            const previous = process.env.PGSERVICE;
+            process.env.PGSERVICE = "prod";
+            try {
+               expect(build("postgresql://u:p@db/lake")).toBe(
+                  "postgresql://u:p@db/lake",
+               );
+            } finally {
+               if (previous === undefined) delete process.env.PGSERVICE;
+               else process.env.PGSERVICE = previous;
+            }
+         });
+
+         it("leaves a string that sets its own sslmode to that sslmode", () => {
+            expect(build("postgresql://u:p@db/lake?sslmode=verify-full")).toBe(
+               "postgresql://u:p@db/lake?sslmode=verify-full",
+            );
+            expect(build("host=db sslmode=disable")).toBe(
+               "host=db sslmode=disable",
+            );
+         });
+      });
+   });
+
+   it("maps the PGSSLMODE fallback no-verify to require, not plaintext", () => {
+      process.env.PGSSLMODE = "no-verify";
+      expect(
+         buildPgConnectionString(fields, {
+            name: "pg_att",
+            applyConnectionOptions: true,
+         }),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
 
    it("leaves a connectionString's sslmode alone and warns that the field was ignored", () => {
       const warn = sinon.stub(logger, "warn");

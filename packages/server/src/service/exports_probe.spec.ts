@@ -5,7 +5,7 @@
 // package is curated (a root index.malloy): `ModelDef.exports`. The within-file curation in
 // service/model.ts lists only the names in `exports`, so if a Malloy upgrade
 // changes this behavior the curation silently breaks — pin it here against
-// the real compiler (not a re-implementation). See explore_visibility.spec.ts
+// the real compiler (not a re-implementation). See tests/component/explore_visibility.component.spec.ts
 // for the end-to-end wiring through Package/Model.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {

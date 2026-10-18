@@ -62,9 +62,13 @@ test.describe("dashboard text tile", () => {
          page.getByRole("heading", { name: "Heading here" }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(page.locator("strong", { hasText: "bold" })).toBeVisible();
-      // A grid report keeps its cards: each text tile sits in one (the template's
-      // intro and the one added here), beside the query tile's.
-      await expect(page.locator('[data-chrome="card"]')).toHaveCount(3);
+      // A query tile sits in a card and a text tile is bare prose, in either
+      // layout. A new report starts with no intro text tile, so there is one of
+      // each.
+      await expect(page.locator('[data-chrome="card"]')).toHaveCount(1);
+      await expect(
+         page.locator('[data-chrome="none"]', { hasText: "Heading here" }),
+      ).toHaveCount(1);
       await expect(page.locator("[data-malloy-render-as]").first()).toBeVisible(
          { timeout: 60_000 },
       );

@@ -10,23 +10,14 @@ import { ServiceUnavailableError } from "./errors";
 import { logger } from "./logger";
 
 /**
- * Process-wide query gauge — the only state owned by this module.
- * Incremented when a gated handler accepts a request; decremented
- * exactly once when the response finishes (whether the handler
- * succeeded, errored, or the client disconnected mid-flight).
- *
- * Module-scoped so all gated routes share one slot pool: the
- * concurrency cap bounds aggregate query load, not per-route load.
+ * In-flight query slots. Module-scoped so all gated routes share one pool:
+ * the cap bounds aggregate query load, not per-route load.
  */
 let active = 0;
 
 /**
- * OpenTelemetry instruments. Lazy-initialized on first use so unit
- * tests that install a real MeterProvider AFTER the module is
- * imported still receive their data — OTel JS's `ProxyMeter`
- * binds counters created before `setGlobalMeterProvider` to NoOp
- * instruments. Module-scoped state so all gated routes share one
- * counter / one slot pool.
+ * Lazily created so a MeterProvider installed after import (as tests do)
+ * still receives data: OTel's `ProxyMeter` binds earlier instruments to NoOp.
  */
 let queryConcurrencyRejectionsCounter: Counter | null = null;
 let concurrencyTelemetryInitialized = false;
@@ -43,9 +34,6 @@ function ensureConcurrencyTelemetry(): Counter {
       },
    );
    if (!concurrencyTelemetryInitialized) {
-      // Live count of in-flight queries holding a slot. Observable
-      // gauge so a scrape always sees the current value, not the
-      // value at the last admission/release event.
       meter
          .createObservableGauge("publisher_query_active_slots", {
             description:
@@ -53,12 +41,8 @@ function ensureConcurrencyTelemetry(): Counter {
          })
          .addCallback((observation) => observation.observe(active));
 
-      // Configured cap, exposed so dashboards can render
-      // utilization (`active / max`) without needing a separate
-      // config feed. Read on every scrape so a runtime env-var
-      // change is reflected immediately; the parse is cheap. A
-      // `0` cap means "opt-out" (the middleware is a pass-through)
-      // and is reported verbatim.
+      // Exposed so dashboards can render utilization (`active / max`). Read
+      // per scrape so an env-var change shows immediately.
       meter
          .createObservableGauge("publisher_query_max_slots", {
             description:
@@ -68,9 +52,8 @@ function ensureConcurrencyTelemetry(): Counter {
             try {
                observation.observe(getMaxConcurrentQueries());
             } catch {
-               // A misconfigured env var should fail the next
-               // request that observes it, not the metric scrape.
-               // Surface as -1 so the misconfig is visible.
+               // A misconfigured env var fails the next request, not the
+               // scrape; -1 makes it visible.
                observation.observe(-1);
             }
          });
@@ -79,115 +62,44 @@ function ensureConcurrencyTelemetry(): Counter {
    return queryConcurrencyRejectionsCounter;
 }
 
-/**
- * Visible for tests. Drops the cached instruments so a fresh
- * MeterProvider can capture them on the next request. Do NOT
- * call from production code.
- */
+/** Test-only: drop cached instruments so a fresh MeterProvider captures them. */
 export function resetQueryConcurrencyTelemetryForTesting(): void {
    queryConcurrencyRejectionsCounter = null;
    concurrencyTelemetryInitialized = false;
 }
 
-/**
- * Visible for tests / metrics. Don't mutate from outside.
- */
 export function getActiveQueryCount(): number {
    return active;
 }
 
-/**
- * Visible for tests so a unit test that crashes mid-handler can
- * reset between cases without spinning a fresh module loader.
- */
+/** Test-only: reset after a test that crashed mid-handler. */
 export function resetActiveQueryCountForTesting(): void {
    active = 0;
 }
 
 /**
- * Express middleware that bounds the number of concurrently
- * in-flight query requests per pod.
- *
- * Defense-in-depth on top of the per-request caps from Steps 1–5:
- *   - Row/byte caps bound a single response.
- *   - Memory governor (Step 4) sheds load when RSS crosses the
- *     high-water mark.
- *   - Query timeout (Step 5) prevents one QUERY from monopolising a
- *     slot indefinitely. It does not reach every slot holder: compile
- *     and both sqlSource routes run through `compileSource` and
- *     `fetchSelectSchema`, and upstream exposes an `abortSignal` only
- *     on `RunSQLOptions` -- the query-execution path -- so there is
- *     nothing for the timeout to cancel. Wrapping them anyway would
- *     answer the caller and release the slot while the work carried
- *     on, leaving the pod holding more than it had slots outstanding.
- *     Their bound is the HTTP server timeout, whose `res.on("close")`
- *     returns the slot when the socket is destroyed; the MCP compile
- *     tool has no equivalent, releasing in a `finally` on the awaited
- *     promise, so a client that disconnects mid-compile holds its slot
- *     until the compile finishes. Cancellable compilation is upstream
- *     work.
- * This middleware caps the *number of slots in flight* at any one
- * moment so a burst of well-behaved but expensive queries can't all
- * land simultaneously and stampede aggregate memory.
- *
- * Behavior:
- *   - When `active >= limit`, the request is rejected with HTTP 503
- *     and the response body identifies the cap so an operator's
- *     grep finds the rationale immediately.
- *   - When admitted, a single-shot decrement is registered on both
- *     `finish` (normal completion) and `close` (client disconnect).
- *     The handler must release exactly once even if both events
- *     fire.
- *   - `limit === 0` opts out (the middleware becomes a pass-through);
- *     `getMaxConcurrentQueries()` is read per-request so config
- *     changes propagate without a server restart. The per-request
- *     read is a single env-var parse — cheap.
- *
- * Failure-mode notes:
- *   - If the response never emits `finish`/`close` for some reason
- *     (e.g. a runtime crash that bypasses Express' normal
- *     teardown), the slot leaks until process restart. This is the
- *     same failure mode as any active-request counter; in practice
- *     `close` always fires on socket teardown.
- *   - We do NOT queue. A backed-up queue would hide load and inflate
- *     p99 latency; failing fast lets the upstream LB retry against
- *     a less-loaded pod.
- */
-/**
- * Handle on an acquired concurrency slot. The caller MUST invoke
- * `release()` exactly once when the work is done (success, error,
- * or cancellation). `release()` is idempotent — calling it twice
- * is a no-op rather than a double-decrement, so wrappers that
- * register both `finish` and `close` listeners stay safe.
+ * Handle on an acquired concurrency slot. The caller MUST call `release()`
+ * when the work is done; it is idempotent, so registering it on both
+ * `finish` and `close` is safe.
  */
 export interface QuerySlotHandle {
    release: () => void;
 }
 
 /**
- * Synchronous slot acquisition shared by the HTTP middleware and
- * the MCP `executeQuery` tool. Throws {@link ServiceUnavailableError}
- * (which controllers map to HTTP 503) when the pod is at its cap;
- * returns a {@link QuerySlotHandle} on success. The `routeLabel`
- * argument is used only for the rejection counter
- * (`publisher_query_concurrency_rejections_total`) so dashboards
- * can identify the hottest surface — keep its cardinality bounded
- * (Express route patterns, fixed strings like `mcp:executeQuery`).
- *
- * Production callers should prefer {@link queryConcurrencyMiddleware}
- * on HTTP routes (it wires the release to `res.finish`/`close`
- * automatically). Direct callers (MCP) take responsibility for
- * release in their own try/finally.
+ * Synchronous slot acquisition shared by the HTTP middleware and MCP tools.
+ * Throws {@link ServiceUnavailableError} (503) at the cap. `routeLabel` only
+ * labels the rejection counter, so keep its cardinality bounded (route
+ * patterns, fixed strings like `mcp:executeQuery`). Direct callers release
+ * in their own try/finally.
  */
 export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
-   // Lazy-init runs on every call so the active/max gauges show up
-   // even on pods where the cap is never reached.
+   // On every call so the gauges exist even on pods that never hit the cap.
    ensureConcurrencyTelemetry();
 
    const limit = getMaxConcurrentQueries();
    if (limit <= 0) {
-      // Opt-out: no slot bookkeeping. Useful for OSS deployments
-      // that already have an upstream concurrency bound.
+      // Opt-out: for deployments with an upstream concurrency bound.
       return { release: () => undefined };
    }
 
@@ -216,6 +128,23 @@ export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
    };
 }
 
+/**
+ * Express middleware bounding concurrently in-flight query requests per pod,
+ * so a burst of expensive queries cannot land at once and stampede aggregate
+ * memory. Complements the per-response row/byte caps, the memory governor,
+ * and the query timeout.
+ *
+ * The timeout does not reach every slot holder: compile and the sqlSource
+ * routes have no `abortSignal` upstream, so there is nothing to cancel, and
+ * releasing their slot early would let the pod run more work than it has
+ * slots. They are bounded by the HTTP server timeout (`close` releases the
+ * slot); the MCP compile tool releases in a `finally`, so a client that
+ * disconnects mid-compile holds its slot until the compile finishes.
+ *
+ * It does NOT queue: a queue hides load and inflates p99, while failing fast
+ * lets the load balancer retry on a less-loaded pod. A response that never
+ * emits `finish`/`close` leaks its slot until restart.
+ */
 export function queryConcurrencyMiddleware(
    req: Request,
    res: Response,
@@ -223,30 +152,21 @@ export function queryConcurrencyMiddleware(
 ): void {
    let handle: QuerySlotHandle;
    try {
-      // `req.route?.path` gives the Express-registered pattern
-      // (e.g. `/api/v0/environments/:environmentName/.../sqlQuery`)
-      // rather than the concrete URL, keeping label cardinality
-      // bounded.
+      // The registered route pattern, not the concrete URL, keeps label
+      // cardinality bounded.
       handle = tryAcquireQuerySlot(req.route?.path ?? req.path);
    } catch (error) {
       next(error);
       return;
    }
-   // Both events fire on different code paths; we want to release
-   // on whichever comes first and ignore the second:
-   //   - `finish`: normal completion (response fully flushed).
-   //   - `close`: client disconnected before completion (or after,
-   //     in some Express/Node versions; hence the idempotency).
+   // `close` fires on client disconnect (and sometimes after `finish`); the
+   // release is idempotent.
    res.on("finish", handle.release);
    res.on("close", handle.release);
    next();
 }
 
-/**
- * Convenience for the route-registration call site: produces a
- * single middleware reference so registrations stay readable.
- * Returning a typed `RequestHandler` keeps Express' overloads happy.
- */
+/** Typed `RequestHandler` for route registration. */
 export function queryConcurrency(): RequestHandler {
    return queryConcurrencyMiddleware;
 }

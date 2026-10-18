@@ -77,6 +77,7 @@ function twoFilePackage() {
       "uses.malloy": ["shared", "mine"],
    };
    return {
+      listSkills: () => [],
       listModels: async () => Object.keys(models).map((path) => ({ path })),
       getModel: (path: string) =>
          models[path]
@@ -151,6 +152,7 @@ describe("get_context source attribution", () => {
       const forward = twoFilePackage();
       const reversed = {
          ...twoFilePackage(),
+         listSkills: () => [],
          listModels: async () => [
             { path: "uses.malloy" },
             { path: "defs.malloy" },
@@ -217,6 +219,7 @@ describe("get_context source attribution", () => {
     */
    it("narrows a lexical drill-down to the pinned entity", async () => {
       const oneFile = {
+         listSkills: () => [],
          listModels: async () => [{ path: "defs.malloy" }],
          getModel: () => ({
             getSourceInfos: () => [source("shared", ["state", "city"])],

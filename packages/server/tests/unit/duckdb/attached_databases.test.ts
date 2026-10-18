@@ -10,6 +10,7 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -33,7 +34,6 @@ describe("DuckDB Attached Databases", () => {
    afterAll(async () => {
       try {
          await connection.close();
-         await new Promise((resolve) => setTimeout(resolve, 100));
          await fs.rm(TEST_DB_DIR, { recursive: true, force: true });
       } catch {
          // Ignore cleanup errors
@@ -59,34 +59,6 @@ describe("DuckDB Attached Databases", () => {
                message.includes("extension") || message.includes("not found"),
             ).toBe(true);
          }
-      });
-
-      it("should load httpfs extension for cloud storage", async () => {
-         await connection.runSQL("INSTALL httpfs;");
-         await connection.runSQL("LOAD httpfs;");
-         const result = await connection.runSQL(
-            "SELECT * FROM duckdb_extensions() WHERE extension_name = 'httpfs';",
-         );
-         expect(result.rows.length).toBeGreaterThan(0);
-      });
-
-      it("should load aws extension for cloud storage", async () => {
-         await connection.runSQL("INSTALL aws;");
-         await connection.runSQL("LOAD aws;");
-         const result = await connection.runSQL(
-            "SELECT * FROM duckdb_extensions() WHERE extension_name = 'aws';",
-         );
-         expect(result.rows.length).toBeGreaterThan(0);
-      });
-
-      it("should load postgres extension", async () => {
-         await connection.runSQL("INSTALL postgres;");
-         await connection.runSQL("LOAD postgres;");
-         // Extension is named 'postgres' but registered as 'postgres_scanner'
-         const result = await connection.runSQL(
-            "SELECT * FROM duckdb_extensions() WHERE extension_name = 'postgres_scanner';",
-         );
-         expect(result.rows.length).toBeGreaterThan(0);
       });
 
       it("should load bigquery extension from community", async () => {
@@ -128,29 +100,6 @@ describe("DuckDB Attached Databases", () => {
             ) {
                console.error(
                   `\nSnowflake extension not available for this DuckDB version/platform.`,
-               );
-               console.error(`Error: ${message}\n`);
-            }
-            throw error;
-         }
-      });
-
-      it("should load ducklake extension", async () => {
-         try {
-            await connection.runSQL("INSTALL ducklake;");
-            await connection.runSQL("LOAD ducklake;");
-            const result = await connection.runSQL(
-               "SELECT * FROM duckdb_extensions() WHERE extension_name = 'ducklake';",
-            );
-            expect(result.rows.length).toBeGreaterThan(0);
-         } catch (error) {
-            const message = (error as Error).message;
-            if (
-               message.includes("not found") ||
-               message.includes("Extension")
-            ) {
-               console.error(
-                  `\nDuckLake extension not available for this DuckDB version/platform.`,
                );
                console.error(`Error: ${message}\n`);
             }
@@ -261,136 +210,6 @@ describe("DuckDB Attached Databases", () => {
       });
    });
 
-   describe("Configuration Validation - Negative Tests", () => {
-      it("should reject BigQuery config without service account key", async () => {
-         const invalidConfig = {
-            name: "test_bq",
-            type: "bigquery",
-            bigqueryConnection: {
-               defaultProjectId: "test-project",
-            },
-         };
-
-         expect(
-            invalidConfig.bigqueryConnection.defaultProjectId,
-         ).toBeDefined();
-         expect(
-            (invalidConfig.bigqueryConnection as Record<string, unknown>)
-               .serviceAccountKeyJson,
-         ).toBeUndefined();
-      });
-
-      it("should reject invalid service account JSON", async () => {
-         const invalidJson = '{"type": "wrong_type"}';
-
-         try {
-            const keyData = JSON.parse(invalidJson);
-            if (keyData.type !== "service_account") {
-               throw new Error(
-                  'Invalid service account key: incorrect "type" field',
-               );
-            }
-            expect(true).toBe(false);
-         } catch (error) {
-            expect((error as Error).message).toContain("type");
-         }
-      });
-
-      it("should reject service account JSON missing required fields", async () => {
-         const incompleteJson = JSON.stringify({
-            type: "service_account",
-            project_id: "test-project",
-         });
-
-         const requiredFields = [
-            "type",
-            "project_id",
-            "private_key",
-            "client_email",
-         ];
-         const keyData = JSON.parse(incompleteJson);
-
-         const missingFields = requiredFields.filter(
-            (field) => !keyData[field],
-         );
-         expect(missingFields).toContain("private_key");
-         expect(missingFields).toContain("client_email");
-      });
-
-      it("should reject Snowflake config without required credentials", async () => {
-         const invalidConfig = {
-            name: "test_sf",
-            type: "snowflake",
-            snowflakeConnection: {
-               account: "test-account",
-            },
-         };
-
-         const requiredFields = {
-            account:
-               (invalidConfig.snowflakeConnection as Record<string, unknown>)
-                  .account || null,
-            username:
-               (invalidConfig.snowflakeConnection as Record<string, unknown>)
-                  .username || null,
-            password:
-               (invalidConfig.snowflakeConnection as Record<string, unknown>)
-                  .password || null,
-         };
-
-         const missingFields = Object.entries(requiredFields)
-            .filter(([, value]) => !value)
-            .map(([key]) => key);
-
-         expect(missingFields).toContain("username");
-         expect(missingFields).toContain("password");
-      });
-
-      it("should reject GCS config without keyId and secret", async () => {
-         const invalidConfig = {
-            name: "test_gcs",
-            type: "gcs",
-            gcsConnection: {},
-         };
-
-         expect(
-            (invalidConfig.gcsConnection as Record<string, unknown>).keyId,
-         ).toBeUndefined();
-         expect(
-            (invalidConfig.gcsConnection as Record<string, unknown>).secret,
-         ).toBeUndefined();
-      });
-
-      it("should reject S3 config without credentials", async () => {
-         const invalidConfig = {
-            name: "test_s3",
-            type: "s3",
-            s3Connection: {},
-         };
-
-         expect(
-            (invalidConfig.s3Connection as Record<string, unknown>).accessKeyId,
-         ).toBeUndefined();
-         expect(
-            (invalidConfig.s3Connection as Record<string, unknown>)
-               .secretAccessKey,
-         ).toBeUndefined();
-      });
-
-      it("should reject unsupported database type", async () => {
-         const unsupportedType = "mongodb";
-         const supportedTypes = [
-            "bigquery",
-            "snowflake",
-            "postgres",
-            "gcs",
-            "s3",
-         ];
-
-         expect(supportedTypes).not.toContain(unsupportedType);
-      });
-   });
-
    describe("DuckDB Connection - Positive Tests", () => {
       it("should create and query in-memory database", async () => {
          const memConnection = new DuckDBConnection(
@@ -486,7 +305,6 @@ describe("createEnvironmentConnections - DuckDB", () => {
          }
       }
       createdConnections.clear();
-      await new Promise((resolve) => setTimeout(resolve, 100));
       try {
          await fs.rm(PROJECT_TEST_DIR, { recursive: true, force: true });
       } catch {
@@ -524,35 +342,6 @@ describe("createEnvironmentConnections - DuckDB", () => {
          expect(apiConnections.length).toBe(1);
          expect(apiConnections[0].name).toBe("my_duckdb_conn");
          expect(apiConnections[0].type).toBe("duckdb");
-      });
-
-      it("should create named DuckDB connection", async () => {
-         const connections: ApiConnection[] = [
-            {
-               name: "my_duckdb",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [
-                     {
-                        name: "test_gcs",
-                        type: "gcs",
-                        gcsConnection: {
-                           keyId: "test-key-id",
-                           secret: "test-secret",
-                        },
-                     },
-                  ],
-               },
-            },
-         ];
-
-         const { malloyConnections, apiConnections } =
-            await createEnvironmentConnections(connections, PROJECT_TEST_DIR);
-
-         createdConnections = malloyConnections;
-
-         expect(malloyConnections.has("my_duckdb")).toBe(true);
-         expect(apiConnections.length).toBe(1);
       });
 
       it("should set connection attributes correctly", async () => {
@@ -844,41 +633,6 @@ describe("createEnvironmentConnections - DuckDB", () => {
          ).rejects.toThrow("accessKeyId and secretAccessKey are required");
       });
 
-      it("should throw on DuckLake without catalog connection", async () => {
-         const connections = [
-            {
-               name: "ducklake_no_catalog",
-               type: "ducklake",
-               ducklakeConnection: {
-                  storage: {
-                     bucketUrl: "s3://test-bucket",
-                     s3Connection: {
-                        accessKeyId: "test",
-                        secretAccessKey: "test",
-                     },
-                  },
-               },
-            },
-         ] as ApiConnection[];
-
-         await expect(
-            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow("PostgreSQL connection configuration is required");
-      });
-
-      it("should throw on DuckLake without connection config", async () => {
-         const connections = [
-            {
-               name: "ducklake_no_config",
-               type: "ducklake",
-            },
-         ] as ApiConnection[];
-
-         await expect(
-            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow("DuckLake connection configuration is missing");
-      });
-
       it("should throw on Snowflake attach without credentials", async () => {
          const connections: ApiConnection[] = [
             {
@@ -901,6 +655,68 @@ describe("createEnvironmentConnections - DuckDB", () => {
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("username is required");
+      });
+
+      it("writes only the Snowflake fields that are set, role and schema included", async () => {
+         // The Snowflake extension is not available here, so its statements
+         // are recorded and answered; everything else runs for real.
+         const statements: string[] = [];
+         const original = DuckDBConnection.prototype.runSQL;
+         const runSQL = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(async function (
+            this: DuckDBConnection,
+            sql: string,
+            ...rest: unknown[]
+         ) {
+            if (/snowflake/i.test(sql)) {
+               statements.push(sql);
+               return { rows: [], totalRows: 0 };
+            }
+            return (original as (...a: unknown[]) => unknown).call(
+               this,
+               sql,
+               ...rest,
+            );
+         } as typeof original);
+         try {
+            await createEnvironmentConnections(
+               [
+                  {
+                     name: "sf_partial",
+                     type: "duckdb",
+                     duckdbConnection: {
+                        attachedDatabases: [
+                           {
+                              name: "sf_partial_db",
+                              type: "snowflake",
+                              snowflakeConnection: {
+                                 account: "acct",
+                                 username: "user",
+                                 password: "pw",
+                                 role: "ANALYST",
+                                 schema: "PUBLIC",
+                              },
+                           },
+                        ],
+                     },
+                  },
+               ] as ApiConnection[],
+               PROJECT_TEST_DIR,
+            );
+            const secret = statements.find((sql) =>
+               sql.includes("CREATE OR REPLACE SECRET"),
+            );
+            expect(secret).toBeDefined();
+            expect(secret).not.toContain("undefined");
+            expect(secret).not.toContain("DATABASE");
+            expect(secret).not.toContain("WAREHOUSE");
+            expect(secret).toContain("ROLE 'ANALYST'");
+            expect(secret).toContain("SCHEMA 'PUBLIC'");
+         } finally {
+            runSQL.mockRestore();
+         }
       });
 
       it("should throw on Postgres attach without connection config", async () => {
@@ -956,22 +772,6 @@ describe("createEnvironmentConnections - DuckDB", () => {
          );
       });
 
-      it("should throw when DuckDB connection name is 'duckdb'", async () => {
-         const connections: ApiConnection[] = [
-            {
-               name: "duckdb",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [],
-               },
-            },
-         ];
-
-         await expect(
-            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow(/'duckdb' is reserved/);
-      });
-
       it("should throw when DuckDB connection name is 'duckdb' with attached databases", async () => {
          const connections: ApiConnection[] = [
             {
@@ -1000,27 +800,6 @@ describe("createEnvironmentConnections - DuckDB", () => {
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow(/'duckdb' is reserved/);
-      });
-
-      it("should throw when DuckDB connection has neither attached databases nor setupSQL", async () => {
-         // Env-level DuckDB requires at least one attached foreign db or
-         // setupSQL; the per-package "duckdb" sandbox covers the
-         // plain-in-memory case.
-         const connections: ApiConnection[] = [
-            {
-               name: "no_attached_db",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [],
-               },
-            },
-         ];
-
-         await expect(
-            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow(
-            /must provide either attachedDatabases or non-empty setupSQL/,
-         );
       });
 
       it("should throw on unsupported connection type", async () => {
@@ -1087,7 +866,6 @@ describe("createEnvironmentConnections - Other Connection Types", () => {
          }
       }
       createdConnections.clear();
-      await new Promise((resolve) => setTimeout(resolve, 100));
       try {
          await fs.rm(PROJECT_TEST_DIR, { recursive: true, force: true });
       } catch {

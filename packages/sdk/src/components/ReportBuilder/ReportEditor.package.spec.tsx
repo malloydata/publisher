@@ -118,8 +118,12 @@ describe("ReportEditor, when the server takes writes", () => {
       await new BrowserDocumentStorage().saveDocument(DRAFT, "stale draft");
       await screen.findByText("Storefront");
       expect(
-         screen.getByText("Save writes the file into the package."),
-      ).toBeDefined();
+         document.querySelector('[data-saves-to="package"]'),
+      ).not.toBeNull();
+      // The ordinary case is not a line on the page; the status says it.
+      expect(
+         screen.queryByText("Save writes the file into the package."),
+      ).toBeNull();
 
       editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save"));
@@ -193,41 +197,5 @@ describe("ReportEditor, when the server takes writes", () => {
          globalQueryClient.getQueryState(key("dashboards/other.malloy"))
             ?.isInvalidated,
       ).toBe(false);
-   });
-});
-
-describe("ReportEditor's layout switch", () => {
-   const mountWith = (allowLayoutChange?: boolean) =>
-      render(
-         <DocumentStorageProvider
-            documentStorage={new BrowserDocumentStorage()}
-         >
-            <ReportEditor
-               environmentName="env"
-               packageName="pkg"
-               dashboardName="overview"
-               {...(allowLayoutChange !== undefined
-                  ? { allowLayoutChange }
-                  : {})}
-            />
-         </DocumentStorageProvider>,
-         { wrapper: serverWrapper },
-      );
-
-   it("is offered for a file by default", async () => {
-      mountWith();
-      await screen.findByText("Storefront");
-      expect(button("Grid layout")).toBeDefined();
-   });
-
-   it("is hidden when the host passes allowLayoutChange={false}", async () => {
-      mountWith(false);
-      await screen.findByText("Storefront");
-      expect(
-         screen.queryByRole("button", { name: "Grid layout", hidden: true }),
-      ).toBeNull();
-      expect(
-         screen.queryByRole("button", { name: "Linear layout", hidden: true }),
-      ).toBeNull();
    });
 });

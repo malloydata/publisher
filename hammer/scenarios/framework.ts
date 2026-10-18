@@ -38,6 +38,8 @@ export interface ConnectionDecl {
    env?: string;
    name: string;
    kind: "postgres" | "ducklake" | "duckdb";
+   /** ducklake only: the catalog's `catalog.metadataSchema`, as a per-tenant catalog sets it. */
+   metadataSchema?: string;
 }
 
 /** Controls the server lifecycle a scenario runs against. */
@@ -118,6 +120,13 @@ export interface ScenarioContext extends ServerControl {
     * provision what it needs.
     */
    operatorSql(conn: string, sql: string): Promise<Record<string, string>[]>;
+   /**
+    * The tables that still have data files on disk in a DuckLake destination's
+    * storage, read straight from the directory the destination writes to. What
+    * the catalog says is one question; whether the bytes are actually gone is
+    * another, and only this answers it.
+    */
+   storedTables(conn: string, schema: string): string[];
    /**
     * Act as the orchestrator's manifest store: write a build manifest
     * (`{ entries }`) to a local file and return a `file://` URI the publisher can

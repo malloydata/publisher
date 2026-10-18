@@ -57,10 +57,24 @@ const PACKAGES: Record<string, string> = {
 /** Findings this change adds; any other new warning is a regression. */
 const NEW_CODES = new Set([
    "report-kind-removed",
-   "report-layout-implicit",
+   "report-cells-removed",
    "report-on-surface",
    "index-is-not-a-report",
 ]);
+
+/** The fixture notebooks written as `run:` cells, the retired format. */
+const MALLOYYO_CELL_FILES = [
+   "adjacent_blocks",
+   "attached_prose",
+   "definitions_only",
+   "imported_prose",
+   "named_runs",
+   "prose_lines",
+   "refused",
+   "revenue_review",
+   "structure",
+   "tagged_runs",
+].map((name) => `notebooks/${name}.malloy`);
 
 /**
  * Files whose classification changed on purpose, per package: each is now a
@@ -70,18 +84,60 @@ const NEW_CODES = new Set([
  *   query-level `# artifact`, which is no longer read.
  * - `notebooks-lint`: `dashboards/wrong_kind.malloy`'s tag sets `kind=`, which
  *   is no longer read; it is reported as `report-kind-removed`.
+ * - A linear `.malloy` report written as `run:` cells, the retired format, is
+ *   no report; it is reported as `report-cells-removed`.
+ *
+ * `rewritten` files were moved off the cell format onto tiles, so they are
+ * still linear reports but their cells, listing and findings are new: they
+ * are left out of every comparison but their layout.
+ *
+ * `removed` files were deleted with the form they tested: the
+ * `dashboard_columns` alias, and a custom-component `.jsx` that was only
+ * there to be warned about. They are left out of every comparison.
  */
-const DELIBERATE: Record<string, { becameModels: string[] }> = {
+const DELIBERATE: Record<
+   string,
+   { becameModels: string[]; rewritten?: string[]; removed?: string[] }
+> = {
    "dashboards-curated": { becameModels: ["dashboards/listed.malloy"] },
-   "notebooks-lint": { becameModels: ["dashboards/wrong_kind.malloy"] },
+   "dashboards-lint": {
+      becameModels: [],
+      removed: ["dashboards/orphan.jsx"],
+   },
+   "notebooks-lint": {
+      removed: [
+         "dashboards/columns_alias.malloy",
+         "dashboards/columns_conflict.malloy",
+      ],
+      becameModels: [
+         "dashboards/wrong_kind.malloy",
+         "notebooks/header_statement.malloy",
+      ],
+      rewritten: ["notebooks/clean.malloy", "notebooks/linty.malloy"],
+   },
+   "notebooks-malloyyo": { becameModels: MALLOYYO_CELL_FILES },
+   "notebooks-malloyyo-surface": {
+      becameModels: [],
+      rewritten: ["notebooks/cells.malloy", "notebooks/local.malloy"],
+   },
+   storefront: { becameModels: [], rewritten: ["category-review.malloy"] },
 };
+
+/** Files left out of the comparison of everything but their layout. */
+const rewrittenIn = (pkg: string) => new Set(DELIBERATE[pkg]?.rewritten ?? []);
 
 /** The baseline with the {@link DELIBERATE} changes applied. */
 function expectedFor(pkg: string, was: Baseline[string]): Baseline[string] {
-   const moved = new Set(DELIBERATE[pkg]?.becameModels ?? []);
+   const removed = new Set(DELIBERATE[pkg]?.removed ?? []);
+   const moved = new Set([
+      ...(DELIBERATE[pkg]?.becameModels ?? []),
+      ...rewrittenIn(pkg),
+      ...removed,
+   ]);
    if (moved.size === 0) return was;
    return {
       ...was,
+      models: was.models.filter((m) => !removed.has(m.path as string)),
       dashboards: was.dashboards.filter((d) => !moved.has(d.path as string)),
       manifests: Object.fromEntries(
          Object.entries(was.manifests).filter(
@@ -185,6 +241,7 @@ describe("Report classification compatibility (E2E)", () => {
             const before: Record<string, string> = {};
             for (const d of was.dashboards) before[d.path as string] = "grid";
             for (const n of was.notebooks) before[n.path as string] = "linear";
+            for (const p of rewrittenIn(pkg)) before[p] = "linear";
             expect(layouts).toEqual(before);
          });
 
@@ -206,8 +263,13 @@ describe("Report classification compatibility (E2E)", () => {
             const notebooks = await get<Record<string, unknown>[]>(
                api(pkg, "/notebooks"),
             );
+            const rewritten = rewrittenIn(pkg);
             expect(
-               lf(notebooks.map((n) => without(n, "environmentName"))),
+               lf(
+                  notebooks
+                     .filter((n) => !rewritten.has(n.path as string))
+                     .map((n) => without(n, "environmentName")),
+               ),
             ).toEqual(was.notebooks);
             for (const [notebookPath, body] of Object.entries(
                was.notebookBodies,
@@ -267,7 +329,10 @@ describe("Report classification compatibility (E2E)", () => {
                );
             }
             const keptKeys = new Set(kept.map(key));
-            const added = now.filter((w) => !keptKeys.has(key(w)));
+            const rewritten = rewrittenIn(pkg);
+            const added = now.filter(
+               (w) => !keptKeys.has(key(w)) && !rewritten.has(w.model ?? ""),
+            );
             for (const w of added) {
                expect(
                   NEW_CODES.has(w.code ?? "") ? "new" : `UNEXPECTED ${key(w)}`,

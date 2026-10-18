@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, useTheme } from "@mui/material";
+import { Box } from "@mui/material";
 import React, {
    Suspense,
    useCallback,
@@ -24,11 +24,13 @@ import {
    remeasuresAfterReady,
    resultSizing,
    type ResultSizing,
+   TIGHT_ATTR,
 } from "./resultSizing";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
-import { resolveTheme } from "../../theme/resolveTheme";
+import { chartThemeLayer, resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { loadMalloyRenderer } from "./loadRenderer";
+import { chartMinWidth, labelChartFields } from "./chartPresentation";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
@@ -99,9 +101,10 @@ interface RenderedResultProps {
    /**
     * Which sizing rule the rendered root follows, as soon as the renderer's
     * metadata says. Lets a caller stop treating its cap as a height for a
-    * result that will never report one.
+    * result that will never report one. `renderAs` is the root's render type,
+    * which tells a caller with a table-only cap whether it applies.
     */
-   onSizing?: (sizing: ResultSizing) => void;
+   onSizing?: (sizing: ResultSizing, renderAs: string | undefined) => void;
    /**
     * Makes `# drill` cells clickable, and makes them look it. From `useDrill`
     * on the host surface, which decides where a click may go; omitted where
@@ -313,6 +316,23 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    width: auto;
    max-width: none;
 }
+/* Compact, in a tile set shorter than its cards (ResultContainer marks it tight): smaller values,
+   tighter cards and a 190px floor, which a 22px value still fits in, so five cards share a row of
+   about a thousand pixels instead of wrapping into rows the tile has no room for. */
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+   gap: 8px;
+   padding: 8px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   padding: 9px 14px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-value {
+   font-size: 22px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-label {
+   font-size: 11px;
+}
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
 }
@@ -443,18 +463,14 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
-   // The host app's card radius, so a dashboard card reads as a card of the app
-   // it is embedded in rather than as the renderer's 8px on a 4px page. Both
-   // cards take it from here; see DashboardTile, which is the other one.
-   const cardRadius = useTheme().shape.borderRadius;
-   // Memoized because it is a dependency of the render effect below, and a fresh
-   // object each render would re-render the chart on every render.
+   // The report surfaces' tile radius, the one TileCard draws the composite
+   // tile with, so the renderer's own cards and ours are the same shape.
    const cardGeometry = useMemo<DashboardCardGeometry>(
       () => ({
-         radius: `${cardRadius}px`,
+         radius: baseTheme.ui.radius.tile,
          padding: `${DASHBOARD_CARD_PADDING_PX}px`,
       }),
-      [cardRadius],
+      [baseTheme.ui.radius.tile],
    );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
@@ -569,7 +585,7 @@ function RenderedResultInner({
 
          const perChart = await extractChartThemeOverride(parsed);
          const effectiveTheme = perChart
-            ? resolveTheme([...layers, perChart], mode)
+            ? resolveTheme([...layers, chartThemeLayer(layers, perChart)], mode)
             : baseTheme;
 
          if (!isCurrent()) return;
@@ -667,7 +683,9 @@ function RenderedResultInner({
          try {
             // The renderer accepts a Malloy Result; we don't import that type
             // in the SDK to avoid pinning to the malloy core types here.
-            viz.setResult(parsed);
+            // A chart's unlabelled fields titled the way a reader says them;
+            // see `chartPresentation`.
+            viz.setResult(labelChartFields(parsed));
             // Read the root's render type before painting, so the first
             // measurement already knows whether it is worth taking. Metadata is
             // complete as soon as the result is set; the DOM is not.
@@ -687,7 +705,7 @@ function RenderedResultInner({
                renderAs = undefined;
                strategy = undefined;
             }
-            onSizing?.(resultSizing(renderAs, strategy));
+            onSizing?.(resultSizing(renderAs, strategy), renderAs);
             // Published on the stage because every sizing decision keys off it
             // and nothing else in the DOM says what it was. A panel at an
             // unexpected height is otherwise a guessing game about which rule
@@ -695,6 +713,17 @@ function RenderedResultInner({
             // — that the rendered markup does not spell out anywhere.
             stage.dataset.malloyRenderAs = renderAs ?? "unknown";
             stage.dataset.malloySizing = resultSizing(renderAs, strategy);
+            // A plotted chart is drawn no narrower than it reads, and its
+            // panel scrolls sideways past that, rather than squeezing it until
+            // the renderer drops bars under "Showing limited results".
+            const minWidth = chartMinWidth(renderAs, parsed);
+            stage.style.minWidth =
+               minWidth === undefined ? "" : `${minWidth}px`;
+            // Only a chart scrolls here, and only sideways: anything taller
+            // than its box is the panel's to scroll, which an overflow set on
+            // this box would take over on both axes.
+            element.style.overflowX = minWidth === undefined ? "" : "auto";
+            element.style.overflowY = minWidth === undefined ? "" : "hidden";
             viz.render(stage);
 
             // Mark the cells a `# drill` makes clickable, so they read as

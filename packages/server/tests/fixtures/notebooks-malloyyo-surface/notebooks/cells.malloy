@@ -1,27 +1,23 @@
 ##! experimental.givens
-## artifact { layout=linear title="Cells" }
+##| artifact { layout=linear title="Cells"
+  tiles=[
+    "orders -> { aggregate: order_count }",
+    "hidden -> { aggregate: secret_total }",
+    "gated -> { aggregate: n }",
+    "filtered -> { aggregate: n }",
+    "orders -> { where: region ~ $REGION; aggregate: order_count }",
+    "hidden_q",
+    "locked -> { aggregate: n }"
+  ]
+}
+|##
 import "../models/orders.malloy"
 import "../models/hidden.malloy"
 import "../models/secured.malloy"
+import "../models/locked.malloy"
 
 given: REGION :: filter<string> is f''
 
 query: own_cells_query is orders -> { aggregate: order_count }
 
-run: orders -> { aggregate: order_count }
-
-run: hidden -> { aggregate: secret_total }
-
-run: gated -> { aggregate: n }
-
-run: filtered -> { aggregate: n }
-
-run: orders -> { where: region ~ $REGION; aggregate: order_count }
-
 query: hidden_q is hidden -> { aggregate: secret_total }
-
-run: hidden_q
-
-import "../models/locked.malloy"
-
-run: locked -> { aggregate: n }

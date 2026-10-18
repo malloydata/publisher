@@ -14,6 +14,7 @@ import {
    type RetryPolicy,
    withRetry,
 } from "../service/http_retry";
+import { httpFailureReason } from "./http";
 import { FailureCooldown, ProviderCooldownError } from "./cooldown";
 import { LlmJsonError, parseAndValidate } from "./json";
 import type {
@@ -46,17 +47,10 @@ const JSON_ONLY_INSTRUCTION =
 
 function failureReason(error: unknown): LlmFailureReason {
    if (error instanceof ProviderCooldownError) return "cooldown";
-   if (error instanceof HttpRequestError) {
-      if (error.status === undefined) {
-         return error.retryable ? "timeout" : "other";
-      }
-      if (error.status === 401 || error.status === 403) return "auth";
-      if (error.status === 429) return "rate_limited";
-      if (error.status === 408) return "timeout";
-      if (error.status >= 500) return "server_error";
-      return "client_error";
+   if (error instanceof HttpRequestError && error.status === 408) {
+      return "timeout";
    }
-   return "invalid_response";
+   return httpFailureReason(error);
 }
 
 function addUsage(a: ChatUsage, b: ChatUsage): ChatUsage {

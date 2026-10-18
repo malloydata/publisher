@@ -395,6 +395,15 @@ reports `refresh: delta` and an advancing `coveredThrough`, so the cadence reads
 A gated source with neither a freshness window nor a full-rebuild cadence is a source whose
 revocations have no bound at all.
 
+### Connections that cannot write
+
+A colocated build creates a table in the source warehouse, so it needs a connection that can. A
+connection whose static attributes report `canPersist: false` (SQL Server today: the connector is
+read-only) has a plain `#@ persist` refused at load with reason `read_only_dialect`; the source
+serves live and the package's warnings carry the refusal. A `storage=` destination is a different
+question — it reads from the source and writes elsewhere — and the storage build names the source
+types it can read.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:

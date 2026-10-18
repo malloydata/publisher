@@ -115,7 +115,7 @@ describe("DuckLake Connection Tests", () => {
          }
       }
 
-      if ((lastError as NodeJS.ErrnoError).code !== "EBUSY") {
+      if ((lastError as NodeJS.ErrnoException).code !== "EBUSY") {
          throw lastError;
       }
    });
@@ -913,7 +913,7 @@ describe("DuckLake Connection Tests", () => {
 
             expect(result.status).toBe("failed");
             expect(result.errorMessage).toBeDefined();
-            expect(result.errorMessage.length).toBeGreaterThan(0);
+            expect(result.errorMessage?.length).toBeGreaterThan(0);
          },
          { timeout: 30000 },
       );

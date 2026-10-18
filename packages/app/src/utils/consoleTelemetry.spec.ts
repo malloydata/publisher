@@ -50,7 +50,14 @@ describe("logReportEvent", () => {
          packageName: "pkg",
       });
       log({ ...at, type: "report.save_refused", reason: "stale" });
-      log({ ...at, type: "report.layout_changed", from: "grid", to: "linear" });
+      log({
+         ...at,
+         type: "report.opened",
+         surface: "view",
+         from: "package",
+         tiles: 3,
+         durationMs: 12,
+      });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(info).toHaveBeenCalledTimes(1);
    });

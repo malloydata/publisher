@@ -35,7 +35,7 @@ describe("newNotebookSource", () => {
       expect(lintNotebookText("notebooks/q3.malloy", text)).toEqual([]);
    });
 
-   it("reads back as a layout notebook: an intro text tile, then one query tile, and no run cell", async () => {
+   it("reads back as a layout notebook: one labelled query tile, no text tile, and no run cell", async () => {
       const text = newNotebookSource(INPUT);
       const result = await readDashboardDocument(text);
       if (readFailed(result)) throw new Error(result.reason);
@@ -43,9 +43,11 @@ describe("newNotebookSource", () => {
       expect(document.layout).toBe("linear");
       expect(
          document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
-      ).toEqual(["text", "query"]);
+      ).toEqual(["query"]);
       const query = document.tiles.find(isQueryTile);
       expect(query?.name).toBe("by_category_tile");
+      // Titled for the view it shows, not the extension's `_tile` name.
+      expect(query?.label).toBe("By category");
       expect(text).toContain(
          "source: order_items_tiles is order_items extend {",
       );
@@ -54,7 +56,7 @@ describe("newNotebookSource", () => {
 
    it("writes the artifact tag as a block with a tile on each line, named for its view", () => {
       expect(newNotebookSource(INPUT)).toContain(
-         '##| artifact { layout=linear title="Sales \\"West\\""\n  tiles=[\n    intro { kind=text },\n    "order_items_tiles -> by_category_tile"\n  ]\n}\n|##\n',
+         '##| artifact { layout=linear title="Sales \\"West\\""\n  tiles=[\n    "order_items_tiles -> by_category_tile"\n  ]\n}\n|##\n',
       );
    });
 
@@ -118,7 +120,7 @@ describe("newReportSource", () => {
       expect(grid.document.columns).toBe(12);
       expect(
          grid.document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
-      ).toEqual(["text", "query"]);
+      ).toEqual(["query"]);
       const linear = await readDashboardDocument(
          newReportSource(INPUT, "linear"),
       );
@@ -163,10 +165,10 @@ describe("newDocumentProblem", () => {
       expect(newDocumentProblem({ ...INPUT, source: "date" })).toBeUndefined();
    });
 
-   it("trims the title once, for the tag and the heading", () => {
+   it("trims the title, and writes it once: in the tag, not again as a heading", () => {
       const text = newNotebookSource({ ...INPUT, title: "  Q3  " });
       expect(text).toContain('title="Q3"');
-      expect(text).toContain("# Q3\n");
+      expect(text).not.toContain("# Q3\n");
    });
 
    it("refuses names that cannot be written", () => {

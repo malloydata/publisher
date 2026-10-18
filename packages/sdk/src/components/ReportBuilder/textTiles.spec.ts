@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { CELLS_REMOVED_REASON } from "./reportTag";
 import {
    isQueryTile,
    isTextTile,
@@ -151,29 +152,29 @@ describe("readDashboardDocument: text tiles and layout", () => {
       expect(text(await openDocument(source), "outro").markdown).toBe("");
    });
 
-   it("marks a notebook with no tiles list as the cell format", async () => {
+   it("refuses a notebook with no tiles list: the cell format is no longer read", async () => {
       const result = await readDashboardDocument(
          `## artifact { layout=linear title="Old" }\nimport { a } from "../m.malloy"\n\nrun: a -> v\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBe(true);
+      expect(result.reason).toBe(CELLS_REMOVED_REASON);
    });
 
-   it("still refuses a grid report with no tiles list, without the legacy mark", async () => {
+   it("refuses a grid report with no tiles list for a missing tile list", async () => {
       const result = await readDashboardDocument(
          `## artifact { layout=grid title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBeUndefined();
+      expect(result.reason).not.toBe(CELLS_REMOVED_REASON);
       expect(result.reason).toContain("tiles");
    });
 
-   it("reads a tag with no layout and no tiles as a linear report in the cell format", async () => {
+   it("refuses a tag with no layout and no tiles as the retired cell format", async () => {
       const result = await readDashboardDocument(
          `## artifact { title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBe(true);
+      expect(result.reason).toBe(CELLS_REMOVED_REASON);
    });
 
    it("reads an empty tiles list on a notebook as a layout notebook with no tiles", async () => {
@@ -195,9 +196,9 @@ describe("readDashboardDocument: text tiles and layout", () => {
       expect(result.reason).toContain("outro");
    });
 
-   it("refuses a quoted entry that is not source -> view", async () => {
+   it("refuses a quoted entry that is neither source -> view nor a query's name", async () => {
       const result = await readDashboardDocument(
-         NOTEBOOK.replace('"a_tiles -> cell_1"', '"a_tiles"'),
+         NOTEBOOK.replace('"a_tiles -> cell_1"', '"a_tiles -> cell_1 -> x"'),
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
       expect(result.reason).toContain("source -> view");

@@ -2219,7 +2219,7 @@
                {
                   "type": "markdown",
                   "kind": "markdown",
-                  "text": "# Category review\n\nPick a **Category** in the controls above and every chart below re-runs for it.\nLeave the control empty to read the whole catalog."
+                  "text": "Pick a **Category** in the controls above and every chart below re-runs for it.\nLeave the control empty to read the whole catalog."
                },
                {
                   "type": "code",

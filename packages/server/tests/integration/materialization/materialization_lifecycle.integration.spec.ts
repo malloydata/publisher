@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,8 +15,6 @@ const __dirname = path.dirname(__filename);
 const PROJECT_NAME = "test-project";
 const PACKAGE_NAME = "persist-test";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
-
-const TERMINAL_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
 describe("Materialization REST API: single-call (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
@@ -45,25 +44,10 @@ describe("Materialization REST API: single-call (E2E)", () => {
       }
 
       // Wait for the package to finish loading.
-      const deadline = Date.now() + 30_000;
-      let pkgReady = false;
-      while (!pkgReady && Date.now() < deadline) {
-         try {
-            const res = await fetch(
-               `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`,
-            );
-            if (res.ok) {
-               pkgReady = true;
-               break;
-            }
-         } catch {
-            // not ready yet
-         }
-         await new Promise((r) => setTimeout(r, 500));
-      }
-      if (!pkgReady) {
-         throw new Error("Test package did not become available in time");
-      }
+      await waitUntilOk(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`,
+         "Test package",
+      );
    });
 
    afterAll(async () => {
@@ -111,15 +95,12 @@ describe("Materialization REST API: single-call (E2E)", () => {
       done: (status: string) => boolean,
       timeoutMs = 30_000,
    ): Promise<Record<string, unknown>> {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-         const data = await getMaterialization(id);
-         if (done(data.status as string)) {
-            return data;
-         }
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error(`Materialization ${id} did not reach the expected state`);
+      return pollFor(
+         () => getMaterialization(id),
+         (data) => done(data.status as string),
+         `Materialization ${id} did not reach the expected state`,
+         timeoutMs,
+      );
    }
 
    const pollUntilTerminal = (id: string, timeoutMs = 90_000) =>
@@ -345,8 +326,15 @@ describe("Materialization REST API: single-call (E2E)", () => {
 
             // The payoff: the served query now scans the materialized table and
             // no longer recomputes from the base CSV, and /compile previews the
-            // same routed SQL it would execute.
-            const routedExecuted = await executedSql();
+            // same routed SQL it would execute. The run reports
+            // MANIFEST_FILE_READY before its auto-load binds the table, so wait
+            // for the routing rather than assume it.
+            const routedExecuted = await pollFor(
+               executedSql,
+               (sql) => !sql.includes("data/orders.csv"),
+               "the served query never routed to the materialized table",
+               30_000,
+            );
             const routedCompiled = await compiledSql();
             expect(routedExecuted).not.toContain("data/orders.csv");
             expect(routedCompiled).not.toContain("data/orders.csv");

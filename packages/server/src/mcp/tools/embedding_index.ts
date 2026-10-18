@@ -17,11 +17,16 @@ import {
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
 import { HttpRequestError, publicMessage } from "../../service/http_retry";
+import { yieldToEventLoop } from "../../service/event_loop_yield";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { SyncRequestBudget } from "./get_context_llm";
 import { indexSettingsOf, type IndexSettings } from "./index_settings";
+import {
+   PROVIDER_FAILURE_COOLDOWN_MS,
+   providerKeyFor,
+} from "./retrieval_shared";
 import {
    KeyphraseStageError,
    countNeedingLlm,
@@ -43,31 +48,20 @@ import {
 } from "./source_summaries";
 
 /**
- * Minimum cosine similarity for a semantic hit. Below this the entity is
- * dropped, so a query about something the package does not model returns
- * an empty result rather than the k least-unrelated entities. Agents are
- * taught to treat an empty result as "not in this package"; unfiltered
- * top-k would destroy that signal.
- *
- * The value now travels on the provider (`provider.minSimilarity`), because
- * cosine similarity is not calibrated across embedding models and the right
- * floor is a property of the model that produced the vectors. Operators set
- * it with `EMBEDDING_MIN_SIMILARITY`; the default is unchanged at 0.20, which
- * matches the hosted retrieval pipeline's min_score. Tune against
- * get_context_eval.ts.
+ * Minimum cosine similarity for a semantic hit, so a query about something the
+ * package does not model returns nothing rather than the k least-unrelated
+ * entities. It travels on the provider (`provider.minSimilarity`) because
+ * cosine similarity is not calibrated across embedding models.
  */
 export { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 
 /**
- * The most entities a package may have and still be embedded; see
- * DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES for what the number means and why it is
- * counted in entities. It is `retrieval.indexing.maxEntities` from
- * publisher.config.json, set once at startup by {@link setMaxEmbeddedEntities}
- * and read here, never from the config file on a request.
+ * The most entities a package may have and still be embedded
+ * (`retrieval.indexing.maxEntities`; see DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES).
+ * Set once at startup by {@link setMaxEmbeddedEntities}.
  */
 let maxEmbeddedEntities = DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
 
-/** The current entity cap. */
 export function getMaxEmbeddedEntities(): number {
    return maxEmbeddedEntities;
 }
@@ -77,25 +71,11 @@ export function setMaxEmbeddedEntities(cap: number): void {
    maxEmbeddedEntities = cap;
 }
 /**
- * After a provider failure the package's semantic path answers `cooldown`
- * for this long, so a down or misconfigured endpoint costs one timeout
- * per window, not one per call. get_context returns an error for it; there is
- * no lexical ranking in its place while a provider is configured.
- */
-export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
-/**
- * After a dims-mismatch purge, suppress further purges for this long. It
- * MUST exceed PROVIDER_FAILURE_COOLDOWN_MS. A dims-mismatch backoff arms
- * the cooldown, which then blocks every heal-reaching call for one
- * cooldown window; if the two windows were equal, the first call past the
- * cooldown would always find the purge guard expired too and re-purge,
- * re-embedding the whole package once per cooldown window forever. With a
- * longer window a durably dims-inconsistent provider (e.g. mid-migration
- * replicas serving different dims under one model name) is throttled to
- * at most one re-embed per this interval, answering `cooldown` between, while
- * still re-adopting a genuinely-new stable dimensionality within the
- * window. Deliberately not "never re-purge": that would strand the cache
- * on the old dims if the provider later settles on a new one.
+ * After a dims-mismatch purge, suppress further purges for this long. It MUST
+ * exceed PROVIDER_FAILURE_COOLDOWN_MS: with equal windows the first call past
+ * the cooldown would always find this guard expired and re-purge, re-embedding
+ * the package once per cooldown window forever. Not "never re-purge", which
+ * would strand the cache if the provider settles on a new dimensionality.
  */
 export const HEAL_PURGE_SUPPRESSION_MS = 10 * PROVIDER_FAILURE_COOLDOWN_MS;
 
@@ -132,11 +112,7 @@ export interface SemanticHit {
    source: string | undefined;
    /** Best score across every target, which is what the hit is ranked on. */
    score: number;
-   /**
-    * Score per caller target index. One scan scores every target, so this
-    * costs nothing to carry and is what fills the response's matched_targets:
-    * without it a caller cannot tell WHICH of its targets found the entity.
-    */
+   /** Score per caller target index; fills the response's matched_targets. */
    targetScores: Map<number, number>;
 }
 
@@ -150,38 +126,19 @@ export type SemanticSearchResult =
    | {
         hits: SemanticHit[];
         /**
-         * Entities whose best facet scored below the floor, under the same
-         * scope as `hits`: the source scope, AND the kinds some target may
-         * claim. An entity no target can return is not weighed, so it is in
-         * neither count. Always read against {@link totalEntities}: every
-         * entity in scope is either at-or-above the floor (and so eligible to
-         * be a hit) or below it (and so counted here), so the two partition
-         * the package and the count means nothing on its own.
-         *
-         * The ratio is the signal. A small fraction is a tight match. A large
-         * fraction is a weak one. `belowCutoffCount === totalEntities` is the
-         * true negative -- nothing cleared the floor -- and it necessarily
-         * comes with `hits: []`.
-         *
-         * Note what this rules out: `belowCutoffCount: 0` alongside empty
-         * hits cannot occur, because zero entities below the floor means
-         * every entity was above it, which would have produced hits. Only an
-         * empty package reaches 0-with-no-hits, so never wait on that
-         * combination as a signal.
+         * Entities in scope (source scope and claimable kinds) whose best
+         * facet scored below the floor. Read against {@link totalEntities}:
+         * the two partition the scope, so `belowCutoffCount === totalEntities`
+         * (with `hits: []`) is the true negative, and 0 with no hits only
+         * means an empty package.
          */
         belowCutoffCount: number;
-        /**
-         * Entities weighed for this query, under the same scope as `hits`
-         * (source scope and claimable kinds): the denominator that makes
-         * `belowCutoffCount` interpretable.
-         */
+        /** Entities weighed for this query, under the same scope as `hits`. */
         totalEntities: number;
         /**
-         * Per source: the entities (sources themselves excluded) that cleared
-         * the floor and were left out of `hits` by the per-source window. A
-         * source with none has no entry. The window drops these rows in SQL,
-         * so a caller that wants to say "N more matched" cannot count them
-         * from `hits`.
+         * Per source: entities (sources excluded) that cleared the floor but
+         * were cut from `hits` by the per-source window. The window drops them
+         * in SQL, so callers cannot count them from `hits`.
          */
         cutBySource: Map<string, number>;
      }
@@ -189,9 +146,7 @@ export type SemanticSearchResult =
 
 /**
  * Turn an identifier into the words a person would search with:
- * `dep_delay` -> "dep delay", `totalSales` -> "total sales". This is the
- * heart of closing the lexical token gap; the embedding model then maps
- * "departure delay" near "dep delay" where BM25 could not.
+ * `dep_delay` -> "dep delay", `totalSales` -> "total sales".
  */
 export function humanizeName(name: string): string {
    return name
@@ -203,17 +158,10 @@ export function humanizeName(name: string): string {
 }
 
 /**
- * The text embedded per entity: humanized name plus its `#(doc)` text.
- * Deliberately minimal (no kind, no parent source); the recipe is
- * eval-tunable via get_context_eval.ts. A punctuation-only identifier
- * (`_` is legal Malloy) humanizes to nothing; fall back to the raw name
- * so the embedded text stays meaningful. prepareEmbeddingInput (which
- * both the hash and the request path apply) separately guarantees that
- * even a whitespace-only name never reaches the provider as an empty
- * input.
- *
- * Retained as the definition of an entity's DOC facet text; the name facet
- * is embedded separately. See entityFacets.
+ * An entity's doc-facet text: humanized name plus its `#(doc)` text (the name
+ * facet is embedded separately; see entityFacets). A punctuation-only
+ * identifier (`_` is legal Malloy) humanizes to nothing, so it falls back to
+ * the raw name.
  */
 export function embeddingText(entity: EmbeddableEntity): string {
    const name = humanizeName(entity.name) || entity.name;
@@ -225,13 +173,9 @@ export const NAME_FACET = "name";
 
 /**
  * Target and hard ceiling for one doc chunk, in characters, and the most
- * chunks one doc may produce.
- *
- * The target is small enough that a single fact keeps a vector of its own,
- * and the cap bounds what one lavishly-documented entity can cost: at most
- * MAX_DOC_CHUNKS + 1 embeddings. A doc at or under CHUNK_MAX_CHARS stays a
- * single chunk, so short docs produce byte-identical rows to the unchunked
- * scheme and cost no re-embed when this ships.
+ * chunks one doc may produce: small enough that a single fact keeps a vector
+ * of its own, capped so one lavishly-documented entity costs at most
+ * MAX_DOC_CHUNKS + 1 embeddings.
  */
 export const CHUNK_TARGET_CHARS = 300;
 export const CHUNK_MAX_CHARS = 500;
@@ -243,13 +187,9 @@ export const MAX_DOC_CHUNKS = 8;
  */
 export const CHUNK_HARD_MAX_CHARS = 768;
 /**
- * The most doc text one entity can contribute, across every chunk.
- *
- * A fixed per-entity embedding budget and complete coverage of an unbounded
- * doc cannot both hold. This names where coverage stops, so the loss is a
- * stated bound rather than an invisible cut downstream; syncPackageEmbeddings
- * warns whenever a doc exceeds it. Six thousand characters is far past any
- * doc observed in a real model, and everything under it is embedded whole.
+ * The most doc text one entity can contribute, across every chunk. A fixed
+ * per-entity embedding budget cannot cover an unbounded doc; this makes the
+ * cut a stated bound, and syncPackageEmbeddings warns when a doc exceeds it.
  */
 export const MAX_DOC_CHARS = MAX_DOC_CHUNKS * CHUNK_HARD_MAX_CHARS;
 
@@ -260,30 +200,14 @@ export interface EntityFacet {
 }
 
 /**
- * Split doc text into chunks that each keep their own embedding.
+ * Split doc text into chunks that each keep their own embedding, so a single
+ * fact in a long source doc (a grain caveat, a population rule) stays
+ * reachable by its own wording instead of being averaged away.
  *
- * A source doc is where modellers put grain caveats, population rules and
- * reporting conventions. Averaged into one vector across everything the doc
- * mentions, no single fact in it is close to anything, so those facts were
- * unreachable by their own wording.
- *
- * It also fixes a silent loss. prepareEmbeddingInput caps input at
- * MAX_EMBED_INPUT_CHARS, so before chunking, everything past that cap was
- * dropped with no signal — the tail of a long doc was not merely diluted, it
- * was never embedded at all.
- *
- * Splits on sentence boundaries and packs greedily toward a target that grows
- * with the doc, so MAX_DOC_CHUNKS chunks cover the whole of it. A doc short
- * enough for the plain CHUNK_TARGET_CHARS keeps that target, so ordinary docs
- * chunk exactly as they did and cost no re-embed.
- *
- * Whole sentences are preserved, never cut. A chunk too long to embed once
- * prefixed is split into further facets by entityFacets, so no text is lost
- * between here and the provider. An earlier form folded an unbounded
- * remainder into the last chunk and claimed nothing was dropped; the fold was
- * then cut at MAX_EMBED_INPUT_CHARS and the tail vanished anyway. Coverage
- * now stops at exactly one place, MAX_DOC_CHARS, and syncPackageEmbeddings
- * warns when a doc reaches it.
+ * Packs whole sentences greedily toward a target that grows with the doc, so
+ * MAX_DOC_CHUNKS chunks cover all of it. A chunk too long to embed once
+ * prefixed is split further by entityFacets, so coverage stops only at
+ * MAX_DOC_CHARS.
  */
 export function chunkDoc(doc: string): string[] {
    const full = doc.replace(/\s+/g, " ").trim();
@@ -329,9 +253,7 @@ export function chunkDoc(doc: string): string[] {
    if (current) chunks.push(current);
 
    // Uneven sentence lengths can still overshoot the chunk count, so fold the
-   // tail as before. Nothing is truncated here: a chunk too long to embed
-   // with its prefix is SPLIT into further facets by entityFacets, which is
-   // the only place the prefix length is known.
+   // tail. A fold too long to embed is split by entityFacets, not truncated.
    if (chunks.length > MAX_DOC_CHUNKS) {
       return [
          ...chunks.slice(0, MAX_DOC_CHUNKS - 1),
@@ -344,30 +266,18 @@ export function chunkDoc(doc: string): string[] {
 /**
  * Split an entity into the units that get their own embedding.
  *
- * One vector per entity meant a long `#(doc)` dominated the average and the
- * entity stopped matching the plain name of the concept it describes, so
- * documenting a field well made it harder to find - backwards for a tool
- * whose quality is meant to track the model's.
- *
- * Embedding the name on its own fixes that: the name facet matches the plain
- * name at full strength no matter how much documentation the entity carries,
- * and the doc facets still contribute their own vocabulary. Scoring takes the
- * best facet (see trySemanticSearch), so more documentation can only add
- * recall, never cost precision on the entity's own name.
- *
- * A long doc splits across `doc:N` facets so individual facts stay
- * retrievable by their own content (see chunkDoc). Each chunk is prefixed
- * with the entity's name, which anchors a bare fact to the thing it is about;
- * the chunks are short, so that prefix costs little dilution.
+ * The name is embedded on its own so it matches the plain concept name at
+ * full strength however much documentation the entity carries; scoring takes
+ * the best facet (see trySemanticSearch), so more documentation can only add
+ * recall. A long doc splits across `doc:N` facets (see chunkDoc), each
+ * prefixed with the entity's name to anchor a bare fact to its subject.
  */
 export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
    const name = humanizeName(entity.name) || entity.name;
    const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
-   // The prefix is only known here, so this is the only place that can tell
-   // whether a chunk will fit the provider's input cap. A chunk that does not
-   // fit is split across facets rather than cut: prepareEmbeddingInput used
-   // to trim the overflow away with no signal, which is the loss chunking
-   // exists to remove.
+   // Only here is the prefix length known, so only here can a chunk be checked
+   // against the provider's input cap. One that does not fit is split across
+   // facets rather than cut.
    const room = MAX_EMBED_INPUT_CHARS - name.length - 2;
    let i = 0;
    for (const chunk of chunkDoc(entity.embedDoc)) {
@@ -386,18 +296,13 @@ export const KEYPHRASE_FACET = "keyphrase";
 /**
  * The rows one entity is embedded as, by representation.
  *
- * `facets`: today's rows (the name, then the doc chunks), plus one `keyphrase`
- * row when the entity has a keyphrase.
+ * `facets`: the name, then the doc chunks, plus a `keyphrase` row when the
+ * entity has one.
  *
- * `single`: ONE row whose text is the keyphrase if there is one, else the doc
- * text, else the humanized name. The name is left out when there is a doc or a
- * keyphrase: the text stands for what the entity means, and mixing the
- * identifier into it dilutes that. A doc is capped at the provider's input
- * limit (1,024 characters) when the row is prepared, so a long doc is cut, not
- * chunked. Rows are keyed by the facet name, so switching representation
- * deletes one set of rows and adds the other, and changing only a keyphrase
- * changes only that entity's `single` text, which the content-hash diff
- * re-embeds alone.
+ * `single`: ONE row whose text is the keyphrase, else the doc, else the
+ * humanized name. The name is left out when there is a doc or keyphrase,
+ * because mixing the identifier in dilutes the meaning. A long doc is cut at
+ * the provider's input limit, not chunked.
  */
 export function entityRows(
    entity: EmbeddableEntity,
@@ -445,25 +350,17 @@ function sourceColumn(source: string | undefined): string {
 }
 
 /**
- * Separator for the composite in-memory keys below.
- *
- * NUL, not `|`, and for the same reason metaKey uses it: a Malloy identifier
- * can be backtick-quoted, and the grammar's BQ_STRING excludes only quotes,
- * backslash and control characters. `|` is therefore legal inside a source or
- * field name, so joining on it let two different entities collide on one key
- * -- `{source: "a|b", name: "c"}` and `{source: "a", name: "b|c"}` -- and a
- * collision in the sync diff silently skips a delete or a re-embed. A control
- * character cannot appear in an identifier, so it cannot collide.
+ * Separator for the composite in-memory keys below. NUL, not `|`: a
+ * backtick-quoted Malloy identifier may contain `|`, so two entities could
+ * collide on one key and the sync diff would silently skip a delete or a
+ * re-embed. A control character cannot appear in an identifier.
  */
 export const KEY_SEPARATOR = "\u0000";
 
 /**
- * The stable key for one entity. Shared by the index dedup, the WeakMap-free
- * row identity, and the tool's result mapping so the format lives in exactly
- * one place. Pass "" for a sourceless entity.
- *
- * In-memory only: nothing persists this string, so its shape can change
- * without a migration. The database keys on the three columns directly.
+ * The stable key for one entity, shared by the index dedup, row identity and
+ * the tool's result mapping. Pass "" for a sourceless entity. In-memory only:
+ * the database keys on the three columns directly.
  */
 export function entityRowKey(
    kind: string,
@@ -478,25 +375,11 @@ export function entityRowKey(
  * keys on.
  *
  * A source is queryable at every model path that resolves it, so the entity
- * list handed to retrieval carries one entry PER PATH -- three dashboards
- * importing one shared include is three entries for each of its fields. That
- * is correct for the response, where each path is its own card, and wrong for
- * everything downstream of here: the embedding rows have no model_path in
- * their primary key, so the duplicates embed identical text once per path and
- * then upsert onto the same row. They also inflate the entity count that is
- * checked against the cap, and `totalEntities`, which would let a package go
- * over the cap because someone added an importing file rather than because
- * the model grew.
- *
- * Collapsed here, at the cache boundary, rather than at either call site, so
- * the guarantee holds for any caller. The response fan-out is unaffected: it
- * maps a hit back onto the live per-path entities itself (see the semantic
- * block in get_context_tool), and reads modelPath from those, never from here.
- *
- * First wins. Two entities sharing a key but carrying different doc text
- * already collide on the row's primary key, so which one is embedded was
- * decided by write order before this existed; this makes it read order
- * instead, which is at least stable.
+ * list carries one entry PER PATH. The embedding rows have no model_path in
+ * their key, so duplicates would embed identical text per path and inflate the
+ * count checked against the cap, letting a package exceed it because a file
+ * was added rather than because the model grew. The response fan-out maps hits
+ * back onto the per-path entities itself (see get_context_tool). First wins.
  */
 export function uniqueByEntityKey<
    T extends { kind: string; name: string; source: string | undefined },
@@ -511,9 +394,8 @@ export function uniqueByEntityKey<
 }
 
 /**
- * The stable key for one embedding ROW: an entity plus the facet of it that
- * row holds. Keeping the format here means the diff, the upsert and the
- * delete cannot drift apart.
+ * The stable key for one embedding ROW: an entity plus the facet it holds.
+ * One format keeps the diff, the upsert and the delete from drifting apart.
  */
 export function facetRowKey(
    kind: string,
@@ -545,16 +427,12 @@ interface DesiredFacet {
 
 /**
  * The full set of rows a package's entities SHOULD have, one per (entity,
- * facet), each with the hash of the exact text that facet embeds.
+ * facet), each with the hash of the exact text it embeds.
  *
- * The single definition of "what this package wants cached". The sync diffs
- * the table against it, and desiredFingerprint folds it into the readiness
- * test, so neither can drift from the other -- a fingerprint that disagreed
- * with the diff would either strand a package as `indexing` forever or claim
- * a warm index over rows the sync would have rewritten.
- *
- * Hashing per facet is what keeps the diff cheap under faceting: editing a
- * doc re-embeds that entity's doc rows and leaves its name row alone.
+ * The sync diffs the table against it and desiredFingerprint folds it into the
+ * readiness test, so the two cannot disagree; if they did, a package would be
+ * stranded as `indexing` or claim a warm index over stale rows. Hashing per
+ * facet means editing a doc re-embeds only that entity's doc rows.
  */
 function desiredFacets(
    entities: EmbeddableEntity[],
@@ -587,15 +465,10 @@ function withDocumentPrefix(
 }
 
 /**
- * The fingerprint's input: every desired row's key and its content hash,
- * hashed together by desiredFingerprintChunked. Two entity sets share a
- * fingerprint exactly when a sync over either
- * is a no-op for the other, which is what lets a reloaded package keep the
- * index the replaced instance built.
- *
- * Sorted before hashing so the fingerprint is a property of the SET. Entity
- * order is a detail of how the caller walked the model, and a reload that
- * merely reordered two sources must not read as a content change.
+ * The fingerprint's input: every desired row's key and content hash. Two
+ * entity sets share a fingerprint exactly when a sync over either is a no-op
+ * for the other, which lets a reloaded package keep the replaced instance's
+ * index. Sorted before hashing so entity order cannot read as a change.
  */
 function desiredRowStrings(desired: readonly DesiredFacet[]): string[] {
    return desired.map(
@@ -616,15 +489,10 @@ function fingerprintOfRows(rows: string[]): string {
    return contentHash(rows.join("\n"));
 }
 
-/** Hand the event loop back, so a large package does not stall requests. */
-const yieldToEventLoop = () =>
-   new Promise<void>((resolve) => setImmediate(resolve));
-
 /**
  * {@link desiredFacets} over a large entity list, yielding to the event loop
- * every FINGERPRINT_CHUNK_ENTITIES entities. Building facet text and hashing
- * it is synchronous work proportional to the package, and the sync runs it
- * while the server is also answering questions.
+ * every FINGERPRINT_CHUNK_ENTITIES entities: the work is synchronous and
+ * proportional to the package, and runs while the server answers questions.
  */
 async function desiredFacetsChunked(
    entities: EmbeddableEntity[],
@@ -653,10 +521,9 @@ async function desiredFingerprintChunked(
    const chunk = FINGERPRINT_CHUNK_ENTITIES * 4;
    for (let i = 0; i < desired.length; i += chunk) {
       rows.push(...desiredRowStrings(desired.slice(i, i + chunk)));
-      // Only between chunks. A small package never yields here, so a search
-      // that computes its fingerprint cannot be overtaken by a sync finishing
-      // meanwhile (which moves the generation it captured at entry and makes
-      // the call answer `indexing` once more).
+      // Only between chunks: a small package never yields, so its search
+      // cannot be overtaken by a sync finishing meanwhile (which would move
+      // the captured generation and answer `indexing` once more).
       if (i + chunk < desired.length) await yieldToEventLoop();
    }
    return fingerprintOfRows(rows);
@@ -664,50 +531,31 @@ async function desiredFingerprintChunked(
 
 // Sync state, two layers.
 //
-// Per package NAME (`syncMeta`): a mutex serializing every read-diff-write
-// section (sync AND the heal's purge) so a reload racing an in-flight sync
-// cannot tear rows; a `generation` counter bumped by every purge, so a
-// purge invalidates the recorded sync below (its rows are gone, so a
-// `synced` fact must not survive a purge over a now-empty table);
-// `lastPurgeAtMs`, which bounds how often the heal may purge (a backend
-// serving inconsistent dimensionalities otherwise causes an unbounded
-// purge / full-re-embed loop); `failureAtMs`, the per-package provider
-// cool-down; and `synced`, the last sync that completed. The cool-down is
-// scoped per package, NOT global: a query timeout or dims-mismatch on
-// one package must not force every other healthy, correctly-cached
-// package into cooldown for the window. A failure that says the PROVIDER is
-// unreachable (network, timeout, 429, 5xx, rejected credentials) is
-// different: it also opens a process-wide breaker (`providerBreaker`), so
-// the packages queued behind the failed one go into cooldown on the recorded
-// failure without each sending a request of their own. A restart over fifty
-// packages against a dead endpoint costs one failed sync, not fifty.
+// Per package NAME (`syncMeta`):
+// - `mutex` serializes every read-diff-write section (sync AND the heal's
+//   purge), so a reload racing an in-flight sync cannot tear rows.
+// - `generation` moves on every purge, so a `synced` fact cannot survive a
+//   purge over a now-empty table.
+// - `lastPurgeAtMs` bounds how often the heal may purge; a backend serving
+//   inconsistent dimensionalities would otherwise loop purge / re-embed.
+// - `failureAtMs` is the provider cool-down, per package so one package's
+//   timeout or dims-mismatch does not cool down every healthy package. A
+//   provider-wide failure (network, timeout, 429, 5xx, rejected credentials)
+//   also opens `providerBreaker`, so packages queued behind it fail fast
+//   instead of each sending a request.
+// - `synced` is keyed on CONTENT (the desired-row fingerprint), not Package
+//   identity: every reload allocates a new instance, and a reload that changed
+//   nothing must keep the warm index. `providerKey` records the model/dims
+//   config, so switching EMBEDDING_MODEL or EMBEDDING_DIMENSIONS re-syncs.
 //
-// `synced` is keyed on CONTENT, not on Package identity. An earlier form
-// memoized "this instance is synced" in a WeakMap keyed by the Package,
-// using instance identity as a proxy for "the entity set may have
-// changed". The proxy is never wrong, but it is coarse: every reload
-// allocates a new instance (reload_package, REST ?reload=true, and each
-// watch-mode recompile all reach Package.create), so a reload that changed
-// nothing threw the fact away, and the next question was answered `indexing`
-// while the diff re-discovered that every hash still matched. Recording
-// the fingerprint of the desired row set makes the test exact instead: a
-// reload whose facet texts hash the same keeps the warm index.
-// `providerKey` records which model/dims request-config the sync used, so
-// switching EMBEDDING_MODEL or EMBEDDING_DIMENSIONS re-syncs promptly.
-//
-// Per package INSTANCE (`syncState`, WeakMap): the in-flight marker only,
-// so concurrent calls on one instance kick at most one sync. It is cleared
-// when the sync settles, which is what lets a later purge re-kick; a
-// rejected sync is evicted the same way, so one transient failure is not
-// permanent.
+// Per package INSTANCE (`syncState`, WeakMap): the in-flight marker only, so
+// concurrent calls on one instance kick at most one sync. Cleared when the
+// sync settles (resolved or rejected), so a later purge or retry can re-kick.
 interface SyncedFact {
    /** {@link desiredFingerprint} of the entity set this sync covered. */
    fingerprint: string;
    providerKey: string;
-   /**
-    * The generation the sync ran under. A purge moves the package's
-    * generation, which invalidates this fact over the now-empty table.
-    */
+   /** The generation the sync ran under; a purge invalidates the fact. */
    generation: number;
 }
 /** The sync stages that can fail on their own, named in the status and the log. */
@@ -750,18 +598,15 @@ const syncState = new WeakMap<Package, SyncState>();
 /** Package instances whose load-time sync has been queued; see enqueuePackageSync. */
 const loadQueued = new WeakSet<Package>();
 const syncMeta = new Map<string, PackageSyncMeta>();
-// Every generation value ever issued is globally unique (drawn from this
-// counter, never incremented locally). That makes deleting a syncMeta
-// entry safe: a re-minted meta for the same name can never coincide with
-// a generation recorded under the old meta, which would let a `synced`
-// fact be trusted over a table the deletion just emptied.
+// Generations are drawn from one global counter, never incremented locally,
+// so deleting a syncMeta entry is safe: a re-minted meta can never coincide
+// with a generation recorded under the old one and trust a `synced` fact over
+// a table the deletion just emptied.
 let generationCounter = 0;
 const oversizeWarned = new Set<string>();
 
-// Effective timing windows. Mutable only so tests can drive real expiry
-// deterministically with small sleeps (the cooldown-vs-suppression
-// relationship is real-time and not otherwise unit-observable); production
-// always uses the exported constants.
+// Mutable only so tests can drive real expiry with small sleeps; production
+// uses the exported constants.
 let cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
 
 /**
@@ -773,9 +618,7 @@ let cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
 export const SYNC_JOB_DEADLINE_MS = 15 * 60_000;
 let syncDeadlineMs = SYNC_JOB_DEADLINE_MS;
 let purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
-// How the sync's bulk calls retry, and how many rows one call carries. Mutable
-// only so tests can inject a fake sleep and a small batch; production uses
-// the defaults.
+// Mutable only so tests can inject a fake sleep and a small batch.
 let syncRetryPolicy: EmbeddingRetryPolicy = DEFAULT_EMBEDDING_RETRY;
 let syncBatchSize = MAX_EMBED_BATCH_SIZE;
 
@@ -838,9 +681,9 @@ function markProviderFailure(
 
 /**
  * What `lastError` shows on the package status. A provider failure carries
- * its own public wording (see publicMessage), which names no endpoint. Any
- * other failure (a DuckDB error, say) gets fixed wording: its text can name
- * a file or a statement. The full error goes to the log.
+ * its own public wording (see publicMessage), which names no endpoint; any
+ * other failure gets fixed wording, since its text can name a file or a
+ * statement. The full error goes to the log.
  */
 function publicStatusMessage(error: unknown): string {
    if (
@@ -848,8 +691,8 @@ function publicStatusMessage(error: unknown): string {
       error instanceof KeyphraseStageError ||
       error instanceof SourceSummaryStageError
    ) {
-      // The stage errors' messages are written for the status: they name the
-      // step and the count, and the vendor's text comes through publicMessage.
+      // Stage error messages are written for the status; vendor text comes
+      // through publicMessage.
       return publicMessage(error);
    }
    if (error instanceof SyncDeadlineError) return error.message;
@@ -897,11 +740,10 @@ function inCooldown(meta: PackageSyncMeta): boolean {
 
 /**
  * Whether a failure is a 4xx that waiting does not fix: the vendor refused the
- * request itself (a prompt past the context window, a bad model name), not the
- * moment. 408 and 429 can clear and are not this. 401 and 403 are not this
- * either: a credential can be refreshed or rotated without the package
- * changing, so an auth failure keeps its cool-down and its retry. Looks through
- * the cause chain, because a failed LLM step wraps the HTTP failure.
+ * request itself (a prompt past the context window, a bad model name). 408 and
+ * 429 can clear; 401 and 403 can be fixed by rotating a credential without the
+ * package changing, so they keep their cool-down and retry. Looks through the
+ * cause chain, because a failed LLM step wraps the HTTP failure.
  */
 function isClientError(error: unknown): boolean {
    let cause: unknown = error;
@@ -935,21 +777,6 @@ function isPermanentlyFailed(
    );
 }
 
-/**
- * The model/dims request-config a sync ran under. Rows embedded under one
- * config are not interchangeable with another's, so both the search path and
- * the readiness test compare it; defined here so they cannot disagree.
- */
-function providerKeyFor(provider: EmbeddingModel): string {
-   return [
-      provider.model,
-      provider.dimensions ?? "",
-      // Text put before indexed text changes every vector, so it is part of
-      // what makes two syncs interchangeable.
-      provider.documentPrefix,
-   ].join(KEY_SEPARATOR);
-}
-
 /** What one pass over an entity set's desired rows yields. */
 interface DesiredSummary {
    fingerprint: string;
@@ -974,26 +801,17 @@ const FINGERPRINT_CHUNK_ENTITIES = 250;
 
 /**
  * The fingerprint of an entity set: the value the sync records as
- * `meta.synced.fingerprint` for the same set. Deduped here, as the sync's
- * input is, so the caller may pass the per-path list.
+ * `meta.synced.fingerprint`. Deduped here, as the sync's input is, so the
+ * caller may pass the per-path list.
  *
- * The cost is one pass of entityFacets plus a sha256 per facet: about 1ms
- * for 1,269 docless entities, and over 500ms for 5,000 entities carrying
- * MAX_DOC_CHARS of doc each. It is done in chunks of
- * {@link FINGERPRINT_CHUNK_ENTITIES} entities with a yield to the event loop
- * between them, so a large package's first computation does not freeze other
- * requests for its whole duration. The search path and the status endpoint
- * both need it on every call, so it is cached.
+ * It costs one entityFacets pass plus a sha256 per facet (over 500ms for a
+ * large, heavily documented package), computed in yielding chunks and cached,
+ * because the search path and the status endpoint need it on every call.
  *
- * Cached on the ARRAY, and only a frozen one. get_context's package index
- * builds one frozen array per Package and passes that same array on every
- * call, so a package pays the cost once per load. Keying on the Package
- * instance instead would be wrong: that version returned the cached value
- * whatever `entities` it was handed, so a caller passing a SUBSET (a scope
- * filter leaking into the sync's input, say) got the full set's fingerprint
- * and silently read as synced. A subset is a different array, so here it
- * misses and is computed fresh. An unfrozen array could be edited after its
- * fingerprint was cached, so it is never cached.
+ * Cached on the ARRAY, and only a frozen one: get_context passes the same
+ * frozen array per Package on every call. Keying on the Package would hand a
+ * caller passing a SUBSET the full set's fingerprint, silently reading as
+ * synced; an unfrozen array could change after caching.
  */
 function desiredSummaryFor(
    entities: readonly EmbeddableEntity[],
@@ -1032,12 +850,10 @@ async function computeDesiredSummary(
             // The fields only the keyphrase step reads (data type, code).
             keyphraseInputsDigest(unique, settings.keyphrases) +
             "\n" +
-            // What the source summary step shows the model (field types,
-            // join targets, the prompt, the model); empty when it is off.
-            // Read from the list with one entry per model file, not the
-            // deduplicated one: summaries are per file, and the sync and a
-            // request must see the same list or a stored summary fails its
-            // check on every request while the status reads ready.
+            // What the source summary step shows the model; empty when off.
+            // Read from the per-model-file list, not the deduplicated one:
+            // summaries are per file, and the sync and a request must see
+            // the same list or a stored summary fails its check every time.
             sourceSummaryInputsDigest(entities, settings.sourceSummary) +
             "\n" +
             (await desiredFingerprintChunked(desired)),
@@ -1058,12 +874,9 @@ async function fingerprintFor(
 
 /**
  * Whether a completed sync covers exactly this content under this provider
- * config, and still stands over the current rows.
- *
- * All three parts are load-bearing: the fingerprint says the entity set and
- * its text are the ones that were embedded, `providerKey` says they were
- * embedded by the model now configured, and the generation says no purge has
- * emptied the table since.
+ * config and still stands: the fingerprint says the text matches,
+ * `providerKey` that the configured model embedded it, and the generation
+ * that no purge has emptied the table since.
  */
 function isSynced(
    meta: PackageSyncMeta,
@@ -1087,9 +900,8 @@ export function _resetEmbeddingIndexStateForTests(): void {
    syncDeadlineMs = SYNC_JOB_DEADLINE_MS;
    providerBreaker = new WeakMap();
    purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
-   // Tests never wait out a backoff: a stub that answers 500 would otherwise
-   // cost the full retry ladder in real time. The retry specs install their
-   // own policy through _setSyncRetryForTests.
+   // Tests never wait out a backoff; retry specs install their own policy
+   // through _setSyncRetryForTests.
    syncRetryPolicy = { ...DEFAULT_EMBEDDING_RETRY, sleep: async () => {} };
    syncBatchSize = MAX_EMBED_BATCH_SIZE;
    maxEmbeddedEntities = DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
@@ -1149,16 +961,13 @@ interface ExistingRow {
 
 /**
  * Remove a deleted package's cached embeddings so package churn does not
- * grow publisher.db forever. Called best-effort from the deletion paths;
- * a missed cleanup is inert (every read is scoped by environment and
- * package) and `--init` reclaims it. Runs under the package mutex so it
- * cannot tear an in-flight sync, and bumps the generation so any live
- * instance memo stops trusting its rows.
+ * grow publisher.db forever. Best-effort: a missed cleanup is inert (every
+ * read is scoped by environment and package) and `--init` reclaims it. Runs
+ * under the package mutex and bumps the generation.
  *
- * Before it waits for the mutex it marks the package as being deleted. A sync
- * that is running stops at its next request or retry, so the cleanup waits for
- * the request in flight and not for a whole sync with its retries, which can
- * take minutes and would go on embedding a package nobody can query.
+ * It marks the package as deleting before waiting for the mutex, so a running
+ * sync stops at its next request instead of finishing a minutes-long sync for
+ * a package nobody can query.
  */
 export async function deletePackageEmbeddings(
    db: DuckDBConnection,
@@ -1170,8 +979,8 @@ export async function deletePackageEmbeddings(
    try {
       await deleteUnderMutex(db, environmentName, packageName, meta);
    } catch (error) {
-      // The rows are still there, so the package is not deleted. Leaving the
-      // flag set would make every later sync for it abandon itself.
+      // The rows are still there; leaving the flag set would make every
+      // later sync for the package abandon itself.
       if (syncMeta.get(metaKey(environmentName, packageName)) === meta) {
          meta.deleting = false;
       }
@@ -1186,9 +995,8 @@ async function deleteUnderMutex(
    meta: PackageSyncMeta,
 ): Promise<void> {
    await meta.mutex.runExclusive(async () => {
-      // Same orphan guard as every other mutexed writer: a second delete
-      // queued on the old meta must not run again (its map removal would
-      // hit a re-minted meta's entry and orphan a live sync).
+      // Orphan guard: a second delete queued on the old meta must not run
+      // (its map removal would hit a re-minted meta and orphan a live sync).
       if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
          return;
       }
@@ -1200,27 +1008,21 @@ async function deleteUnderMutex(
       await deletePackageKeyphrases(db, environmentName, packageName);
       await deletePackageSourceSummaries(db, environmentName, packageName);
       meta.generation = ++generationCounter;
-      // Removing the entry keeps package churn from growing the map for
-      // the process lifetime; it is safe because generations are
-      // globally unique (a re-minted meta can never match a memo issued
-      // under this one). It MUST happen inside the mutexed section: the
-      // mutex hands off to the next queued waiter the moment this
-      // callback returns, before any outer continuation runs, and a
-      // queued sync's orphan guard has to see the entry already gone or
-      // it will re-embed rows for the deleted package.
+      // Removing the entry keeps churn from growing the map; safe because
+      // generations are globally unique. It MUST happen inside the mutexed
+      // section: the mutex hands off to the next waiter as soon as this
+      // callback returns, and a queued sync's orphan guard has to see the
+      // entry gone or it will re-embed rows for the deleted package.
       syncMeta.delete(metaKey(environmentName, packageName));
    });
 }
 
 /**
- * Remove a deleted environment's cached embeddings. Packages with live
- * sync state are cleaned under their mutex; a final environment-wide
- * sweep covers packages never queried in this process. The mutex gives
- * mutual exclusion, not ordering: a getContext call already in flight at
- * deletion time can cold-kick a sync that lands after the cleanup and
- * rewrites its package's rows. Accepted: such rows are inert (the
- * package is gone from every serving path), are reconciled if the name
- * returns, and are reclaimed by --init.
+ * Remove a deleted environment's cached embeddings: packages with live sync
+ * state under their mutex, then an environment-wide sweep for the rest. The
+ * mutex gives exclusion, not ordering, so a getContext call in flight at
+ * deletion time can still write rows after the cleanup. Accepted: such rows
+ * are inert, reconciled if the name returns, and reclaimed by --init.
  */
 export async function deleteEnvironmentEmbeddings(
    db: DuckDBConnection,
@@ -1244,12 +1046,10 @@ export async function deleteEnvironmentEmbeddings(
 }
 
 /**
- * Write one batch of embedded rows with a single multi-row INSERT. One
- * statement is one transaction, so the batch lands whole or not at all; a
- * BEGIN/COMMIT around separate statements is not an option on this
- * connection, because other callers' statements would run inside it. The
- * rows are unique by key (the diff is over deduped entities), which a
- * multi-row upsert requires.
+ * Write one batch of embedded rows with a single multi-row INSERT, so the
+ * batch lands whole or not at all. BEGIN/COMMIT around separate statements is
+ * not an option on this shared connection: other callers' statements would
+ * run inside it. Rows are unique by key, which a multi-row upsert requires.
  */
 async function upsertEmbeddingRows(
    db: DuckDBConnection,
@@ -1297,21 +1097,17 @@ async function upsertEmbeddingRows(
 }
 
 /**
- * Bring the entity_embeddings rows for one package in line with the
- * current entity set: embed new/changed entities (content-hash diff, so
- * unchanged entities never re-embed, across restarts too), upsert them,
- * and delete rows for entities that no longer exist. Runs under the
- * package-name mutex. Completion is recorded on the package's meta
- * (`meta.synced`), not returned: nothing awaits this call, so that record is
- * the only channel by which the sync's result is observed. See kickSync.
- * Throws on provider or storage failure; partial writes are safe because
- * the hash diff self-heals on the next sync.
+ * Bring one package's entity_embeddings rows in line with the current entity
+ * set: embed new/changed entities (content-hash diff, so unchanged entities
+ * never re-embed, across restarts too), upsert them, and delete rows for
+ * entities that are gone. Runs under the package-name mutex. Nothing awaits
+ * this call, so completion is recorded only on `meta.synced` (see kickSync).
+ * Throws on provider or storage failure; partial writes self-heal on the next
+ * sync.
  *
- * `meta` is the package's meta as the caller saw it when it scheduled this
- * sync, not looked up here. A sync waits in the process-wide queue before it
- * runs, and a package deleted meanwhile has had its meta removed: the check
- * below must compare against the meta the work was scheduled under, or a
- * deleted package's rows would be written back under a freshly minted one.
+ * `meta` is the one the caller scheduled under, not looked up here: a package
+ * deleted while this waited in the queue has had its meta removed, and
+ * comparing against a fresh lookup would write its rows back.
  */
 async function syncPackageEmbeddings(
    db: DuckDBConnection,
@@ -1320,24 +1116,18 @@ async function syncPackageEmbeddings(
    packageName: string,
    entities: EmbeddableEntity[],
    /**
-    * Every entity, one per model file. `entities` is deduplicated by (kind,
-    * source, name) for the embedding rows, which have no model path; source
-    * summaries are per model file and read this list.
+    * Every entity, one per model file. `entities` is deduplicated for the
+    * embedding rows; source summaries are per model file and read this list.
     */
    allEntities: readonly EmbeddableEntity[],
    settings: IndexSettings,
    meta: PackageSyncMeta,
 ): Promise<void> {
    return meta.mutex.runExclusive(async () => {
-      // The meta may have been orphaned while this sync waited on the
-      // mutex (deletePackageEmbeddings removes the map entry, e.g. the
-      // package was deleted with this call already in flight). A sync
-      // under an orphaned meta is no longer serialized against syncs
-      // under a re-minted meta for the same name, so it must not write.
-      // Aborting is safe because it also records nothing: `meta.synced` is
-      // set only at the bottom of this function, so an orphaned meta never
-      // carries a `synced` fact, and the next call -- which fetches a
-      // freshly minted meta for this name -- re-syncs under that one.
+      // The meta may have been orphaned while this waited on the mutex (the
+      // package was deleted). A sync under an orphaned meta is no longer
+      // serialized against one under a re-minted meta, so it must not write.
+      // Aborting records nothing, so the next call re-syncs under the new meta.
       if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
          logger.debug(
             "[MCP Tool getContext] Skipping embedding sync for a deleted package",
@@ -1346,20 +1136,17 @@ async function syncPackageEmbeddings(
          return;
       }
 
-      // Everything here runs under the package mutex: a purge (same
-      // mutex) either finished before this sync started or starts after
-      // it ends, so the generation moves mid-sync only via the bump at
-      // the bottom of this function.
+      // Under the package mutex, a purge either finished before this sync or
+      // starts after it, so the generation moves mid-sync only via the bump
+      // at the bottom.
 
-      // Keyphrases first: they decide what text an entity embeds as. Each LLM
-      // batch is saved as it returns, so a failure keeps what was done and
-      // the sync stops here, before any embedding is written: a package whose
-      // keyphrases cannot be produced is an error, never a quiet fallback to
-      // doc-or-name vectors. Progress is on the meta for the status.
+      // Keyphrases first: they decide what text an entity embeds as. Each
+      // batch is saved as it returns; a failure stops the sync before any
+      // embedding is written, because a package whose keyphrases cannot be
+      // produced is an error, never a quiet fallback to doc-or-name vectors.
       let keyphrases: Map<string, string> | undefined;
-      // One request budget for both LLM steps, in HTTP requests: a JSON repair
-      // is a second paid request, and the summaries get what the keyphrases
-      // left. A package being deleted stops both between requests.
+      // One request budget (in HTTP requests, so a JSON repair counts) for
+      // both LLM steps; the summaries get what the keyphrases left.
       const budget = new SyncRequestBudget(
          settings.keyphrases?.maxCallsPerSync ??
             settings.sourceSummary?.maxCallsPerSync ??
@@ -1390,10 +1177,8 @@ async function syncPackageEmbeddings(
          meta.keyphraseProgress = undefined;
       }
 
-      // Source summaries next: one LLM call per source, from the same entity
-      // list. They share the sync's call limit with the keyphrases above, are
-      // saved as they return, and a failure stops the sync here with the
-      // stage named, before any embedding is written.
+      // Source summaries next, sharing the request budget. Saved as they
+      // return; a failure stops the sync before any embedding is written.
       if (settings.sourceSummary) {
          meta.sourceSummaryProgress = {
             done: 0,
@@ -1431,10 +1216,8 @@ async function syncPackageEmbeddings(
          ]),
       );
 
-      // A doc past MAX_DOC_CHARS cannot be covered inside the per-entity
-      // embedding budget, so its tail is not embedded and cannot be retrieved
-      // by its own wording. Say so once per sync, naming the entity: this is
-      // the one loss chunking does not remove, and it must not be silent.
+      // A doc past MAX_DOC_CHARS has a tail that is not embedded. This is the
+      // one loss chunking does not remove, so it must not be silent.
       for (const entity of entities) {
          const docChars = entity.embedDoc.replace(/\s+/g, " ").trim().length;
          if (docChars > MAX_DOC_CHARS) {
@@ -1474,16 +1257,13 @@ async function syncPackageEmbeddings(
          ),
       );
 
-      // A row is current when its text hash and model match; a model
-      // switch re-embeds in place (upsert) rather than colliding on the
-      // primary key. Dimensionality is deliberately NOT part of this
-      // check: `dims` stores the ACTUAL response vector length, and a
-      // provider that ignores the `dimensions` request parameter (e.g.
-      // Ollama) would otherwise mismatch the configured value forever
-      // and re-embed the whole package on every instance swap. A real
-      // dims change is caught at query time by the stale-row heal.
-      // This is the CACHED rule; the READABLE rule the scan and the heal
-      // use is the other one. Both are set out above getEmbeddingIndexStatus.
+      // A row is current when its text hash and model match; a model switch
+      // re-embeds in place. Dimensionality is deliberately NOT checked:
+      // `dims` stores the ACTUAL vector length, and a provider that ignores
+      // the `dimensions` parameter (e.g. Ollama) would mismatch forever and
+      // re-embed on every instance swap. A real dims change is caught at query
+      // time by the stale-row heal. This is the CACHED rule; the READABLE rule
+      // is set out above getEmbeddingIndexStatus.
       const toEmbed = desired.filter((d) => {
          const row = existing.get(
             facetRowKey(
@@ -1499,26 +1279,20 @@ async function syncPackageEmbeddings(
          return false;
       });
 
-      // A sync that CHANGED rows invalidates every other instance's
-      // snapshot the same way a purge does: without the bump below, a
-      // call blocked behind this sync on the mutex could return its
-      // pre-sync cosine snapshot (possibly empty) marked semantic. The
-      // bump runs in a finally: a write failure mid-loop (disk full)
-      // has already changed rows, and those torn writes must invalidate
-      // snapshots too, even though this sync rejects.
+      // A sync that CHANGED rows must bump the generation like a purge does,
+      // or a call blocked behind it on the mutex could return its pre-sync
+      // snapshot marked semantic. In a finally, because a write failure
+      // mid-loop has already changed rows.
       let rowsChanged = false;
       let deleted = 0;
       try {
-         // One request, then one write, per batch, one batch after another.
-         // Each batch is saved as soon as it returns, so a failure on batch k
-         // keeps batches 1..k-1, and a restart resumes through the hash diff
-         // above. Failing transient errors are retried inside embedBatch.
+         // One request, then one write, per batch. Each batch is saved as it
+         // returns, so a failure keeps earlier batches and the hash diff
+         // resumes from there. Transient errors are retried inside embedBatch.
          //
-         // A package being deleted stops this sync: before each request and
-         // write, and around each retry's wait. Without that, the delete's
-         // cleanup (which queues on this mutex) waited out the whole sync,
-         // retries included, while the sync kept spending the provider's
-         // calls on a package nobody can query any more.
+         // A package being deleted stops the sync before each request and
+         // write and around each retry wait, so the delete's cleanup (queued
+         // on this mutex) does not wait out a whole sync.
          const abandoned = () => meta.deleting === true;
          const deadlineAtMs = Date.now() + syncDeadlineMs;
          const pastDeadline = () => Date.now() > deadlineAtMs;
@@ -1578,16 +1352,12 @@ async function syncPackageEmbeddings(
          }
       }
 
-      // Recorded here, inside the mutex and after the generation settles, so
-      // the fact and the rows it describes are written atomically with
-      // respect to a purge. The early return above records nothing on
-      // purpose: a sync that aborted as orphaned wrote no rows, so the next
-      // call must re-sync under the fresh meta.
+      // Recorded inside the mutex after the generation settles, so the fact
+      // and its rows are atomic with respect to a purge.
       meta.synced = {
-         // Computed exactly as the readiness check computes it: over the
-         // unprefixed rows plus the settings key. The prefix is part of
-         // providerKey, not of the content fingerprint. Over the same list the
-         // readiness check reads (one entry per model file), so the two agree.
+         // Computed exactly as the readiness check computes it: unprefixed
+         // rows plus the settings key (the prefix is part of providerKey),
+         // over the same per-model-file list.
          fingerprint: await fingerprintFor(allEntities, settings),
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
@@ -1607,17 +1377,13 @@ async function syncPackageEmbeddings(
  * Queue a sync for this content unless one is already queued or running for
  * this Package instance.
  *
- * A package normally has its sync queued when it loads (see
- * {@link enqueuePackageSync}); this is the safety net behind that. It covers a
- * package whose sync was never queued or has since been invalidated: the
- * embedding model or dimensions changed after the load, a purge emptied the
- * table, or an earlier sync failed and the cooldown has now ended. A search
- * is what notices, so a search is what queues the retry. Queued work goes
- * through the same process-wide queue as a load.
+ * The safety net behind {@link enqueuePackageSync}: it covers a sync never
+ * queued or since invalidated (the embedding model changed, a purge emptied
+ * the table, a failed sync's cooldown ended). A search is what notices, so a
+ * search queues the retry, through the same process-wide queue.
  *
- * The promise is deliberately dropped: nothing may ever await it. Completion
- * is observed through `meta.synced`, which the sync records itself under the
- * mutex; only failure is handled in {@link runTrackedSync}.
+ * Nothing may ever await the promise: completion is observed through
+ * `meta.synced`, and failure is handled in {@link runTrackedSync}.
  */
 function kickSync(args: {
    db: DuckDBConnection;
@@ -1642,10 +1408,9 @@ function kickSync(args: {
    ) {
       return;
    }
-   // No await between the get above and the set below: single-threaded JS
-   // therefore guarantees concurrent calls cannot both kick a sync for the
-   // same instance. (The per-name mutex still guards the cross-instance
-   // reload race.)
+   // No await between the get above and the set below, so concurrent calls
+   // cannot both kick a sync for one instance. (The per-name mutex guards the
+   // cross-instance reload race.)
    const tracked: SyncState = { fingerprint, providerKey };
    syncState.set(pkg, tracked);
 
@@ -1682,8 +1447,7 @@ async function runTrackedSync(
    } = args;
    meta.syncStartedAtMs = Date.now();
    try {
-      // The provider is already known to be down: record that as this
-      // package's cause and send nothing.
+      // The provider is already known to be down: record that and send nothing.
       const down = openBreakerFor(provider);
       if (down) {
          markProviderFailure(meta, down.message);
@@ -1705,8 +1469,7 @@ async function runTrackedSync(
       meta.permanentFailure = undefined;
    } catch (error: unknown) {
       if (error instanceof SyncAbandonedError) {
-         // Not a provider failure: the package is going away, so there is
-         // nothing to cool down and nothing to report.
+         // Not a provider failure: nothing to cool down or report.
          logger.debug(
             "[MCP Tool getContext] Stopped an embedding sync for a deleted package",
             { environmentName, packageName },
@@ -1720,16 +1483,14 @@ async function runTrackedSync(
             : error instanceof SourceSummaryStageError
               ? "source_summary"
               : undefined;
-      // The log keeps the full message; what the status and an error result
-      // show a caller never names the endpoint.
+      // The log keeps the full message; the status never names the endpoint.
       const shown = publicStatusMessage(error);
       markProviderFailure(meta, shown, stage);
       if (isProviderWideFailure(error)) {
          openBreaker(provider, shown);
       }
-      // The same request would fail the same way, so no question after the
-      // cool-down starts this sync again. A change to the package's content or
-      // settings is a different request and does, as does a restart.
+      // The same request would fail the same way, so it is not retried after
+      // the cool-down; a change to content or settings, or a restart, does.
       if (isClientError(error)) {
          meta.permanentFailure = {
             fingerprint: tracked.fingerprint,
@@ -1746,10 +1507,9 @@ async function runTrackedSync(
       );
    } finally {
       meta.syncStartedAtMs = undefined;
-      // Cleared on success too, not just on failure: the marker means
-      // "queued or in flight", so leaving it would stop a later purge --
-      // which invalidates meta.synced without changing the content -- from
-      // ever kicking a re-sync for this same fingerprint.
+      // Cleared on success too: the marker means "queued or in flight", and
+      // leaving it would stop a later purge (which invalidates meta.synced
+      // without changing content) from ever re-kicking this fingerprint.
       if (syncState.get(pkg) === tracked) {
          syncState.delete(pkg);
       }
@@ -1757,19 +1517,16 @@ async function runTrackedSync(
 }
 
 /**
- * Queue a sync for a package that has just loaded. This is what starts the
- * index building before anyone asks a question.
+ * Queue a sync for a package that has just loaded, so the index builds before
+ * anyone asks a question.
  *
- * It only enqueues. A restart loads every package at once, and each one
- * calls this, so the work waits its turn on the process-wide queue instead
- * of every package hitting the embedding provider together. Calling it again
- * for the same Package instance does nothing; a reload makes a new instance,
- * which is queued afresh.
+ * It only enqueues: a restart loads every package at once, and the shared
+ * queue keeps them from hitting the provider together. Idempotent per Package
+ * instance; a reload makes a new instance, queued afresh.
  *
- * `prepare` runs when the job reaches the front of the queue, not when it is
- * queued: it builds the package's entity list, which is the slow part and
- * must not run on the load path. It returns undefined when there is nothing
- * to sync (no embedding provider, or the package was reloaded meanwhile).
+ * `prepare` runs when the job reaches the front of the queue, because building
+ * the entity list is slow and must not run on the load path. It returns
+ * undefined when there is nothing to sync.
  */
 export function enqueuePackageSync(args: {
    pkg: Package;
@@ -1787,10 +1544,9 @@ export function enqueuePackageSync(args: {
    const { pkg, environmentName, packageName } = args;
    if (loadQueued.has(pkg)) return;
    loadQueued.add(pkg);
-   // Take the package's sync state now, not after `prepare`. A delete that
-   // lands while `prepare` runs marks THIS object deleted and removes it from
-   // the map; looking it up afterwards would mint a fresh one that knows
-   // nothing about the delete, and the job would re-embed the deleted package.
+   // Take the meta now, not after `prepare`: a delete during `prepare` marks
+   // THIS object and removes it from the map, and a later lookup would mint a
+   // fresh one that knows nothing about the delete.
    const meta = metaFor(environmentName, packageName);
    void embeddingSyncQueue.enqueue(async () => {
       const prepared = await args.prepare();
@@ -1809,9 +1565,8 @@ export function enqueuePackageSync(args: {
          prepared.entities,
          indexSettingsOf(pkg),
       );
-      // Already current (a restart over rows that still match), cooling down
-      // from a recent failure, failed with an error a retry cannot fix, or
-      // already queued by a search: nothing to do.
+      // Already current, cooling down, failed permanently, or already queued
+      // by a search: nothing to do.
       if (
          isSynced(meta, fingerprint, providerKey) ||
          inCooldown(meta) ||
@@ -1846,94 +1601,131 @@ export function enqueuePackageSync(args: {
    });
 }
 
-/**
- * Semantic retrieval for tier 4 of get_context. Returns ranked
- * hits, or a reason the semantic path is unavailable. The caller turns the
- * reason into an `indexing` result or an error: there is no lexical fallback
- * while an embedding provider is configured. Never throws.
- *
- * Cold-start contract: a call whose content has no completed sync kicks one
- * off in the background and reports `indexing`, so no call ever waits on a
- * bulk embed; subsequent calls are semantic once the sync lands. "Content",
- * not "Package instance": a reload whose facet texts hash the same keeps the
- * index the replaced instance built and is semantic on its first call.
- */
-export async function trySemanticSearch(args: {
+/** What {@link trySemanticSearch} is asked. */
+export interface SemanticSearchArgs {
    db: DuckDBConnection;
    provider: EmbeddingModel;
    pkg: Package;
    environmentName: string;
    packageName: string;
    /**
-    * Every entity the package exposes to retrieval. Pass the same frozen
-    * array on every call for one package, so its fingerprint is computed
-    * once (see fingerprintFor).
+    * Every entity the package exposes to retrieval. Pass the same frozen array
+    * on every call, so its fingerprint is computed once (see fingerprintFor).
     */
    entities: readonly EmbeddableEntity[];
    /**
-    * One entry per search target that carries text, in the caller's order.
-    * All of them are embedded in ONE provider request and scored in ONE pass
-    * over the vector cache; see the scan below.
+    * One entry per search target that carries text, in the caller's order,
+    * all embedded in ONE provider request and scored in ONE scan.
     *
-    * `kinds` is the entity kinds the target may claim. It is applied INSIDE
-    * the scan, not to its output: a target's window is cut per target, so a
-    * kind filter run afterwards would empty a `measure` target whose nearest
-    * neighbours happened to be dimensions -- the measures that cleared the
-    * floor were simply outside the window. Filtering first fills each
-    * window with rows the target can actually return. Never empty: a target
-    * with no claimable kind is dropped before the scan.
+    * `kinds` (never empty) is the entity kinds the target may claim, applied
+    * INSIDE the scan: windows are cut per target, so filtering afterwards
+    * could empty a `measure` target whose nearest neighbours were dimensions.
     */
    queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
    /**
-    * The most rows kept per source, per target: each target's candidates are
-    * cut to this many in every source separately, never to one number across
-    * the package. A source that matches everything cannot crowd the others
-    * out of the answer, and nothing bounds how many sources are returned.
+    * The most rows kept per source, per target, never one number across the
+    * package, so a source that matches everything cannot crowd others out.
     */
    perSourceWindow: number;
    /**
-    * The most DOTTED rows (`path.leaf`: joined fields the index keeps because
-    * assembly cannot rebuild them) kept per source, per target, in a window of
-    * their own. Without it they share `perSourceWindow` with the source's own
-    * fields and, when a package joins inline tables, hundreds of them can
-    * outrank every own field and take the whole window. Omit for one shared
-    * window.
+    * The most DOTTED rows (`path.leaf` joined fields) kept per source, per
+    * target, in a window of their own, so hundreds of inline-joined fields
+    * cannot take a source's whole window. Omit for one shared window.
     */
    perSourceJoinedWindow?: number;
    sourceName?: string;
    /**
     * The (kind, source, name) triples the caller's scope admits, when it
-    * narrows by something this cache cannot express -- a `model_path`, which
-    * is not a column here, or an `entity_name`, whose rule exempts source rows.
-    * Omit when the scope is a source drill-down or nothing at all.
+    * narrows by something this cache cannot express (a `model_path`, or an
+    * `entity_name`, whose rule exempts source rows). Omit for a source
+    * drill-down or no scope.
     *
-    * Applied INSIDE the scan, with the kind filter and for the same reason:
-    * `belowCutoffCount` and `totalEntities` are computed there, and they are
-    * only interpretable when they describe the same set as `hits`. Filtered
-    * afterwards, a pin that matched nothing returned no sources beside a
-    * `belowCutoffCount` of 0 -- the combination this result's own docblock
-    * says cannot occur, read by an agent as "nothing cleared the floor" when
-    * the truth is "your pin matched nothing".
-    *
-    * An EMPTY array is a scope that admits nothing, and answers 0 of 0 rather
-    * than falling through to the unscoped set.
+    * Applied INSIDE the scan so `belowCutoffCount` and `totalEntities`
+    * describe the same set as `hits`; otherwise a pin that matched nothing
+    * would read as "nothing cleared the floor". An EMPTY array admits nothing
+    * and answers 0 of 0.
     */
    scopeKeys?: Array<{ kind: string; source: string; name: string }>;
-}): Promise<SemanticSearchResult> {
-   const {
-      db,
-      provider,
-      pkg,
-      environmentName,
-      packageName,
-      queries,
-      perSourceWindow,
-      sourceName,
-      scopeKeys,
-   } = args;
-   // Unique by the key the rows themselves use, before anything counts or
-   // embeds them. See uniqueByEntityKey.
+}
+
+/**
+ * Semantic retrieval for tier 4 of get_context: ranked hits, or a reason the
+ * semantic path is unavailable, which the caller turns into `indexing` or an
+ * error (there is no lexical fallback while a provider is configured). Never
+ * throws.
+ *
+ * Cold start: content with no completed sync kicks one in the background and
+ * reports `indexing`, so no call waits on a bulk embed. A reload whose facet
+ * texts hash the same keeps the warm index.
+ *
+ * Steps: admit, embed the query texts, scan the vector cache, then heal
+ * stale-dimension rows before the scan's answer is trusted.
+ */
+export async function trySemanticSearch(
+   args: SemanticSearchArgs,
+): Promise<SemanticSearchResult> {
+   const { environmentName, packageName } = args;
+   // Unique by the key the rows use, before anything counts or embeds them.
    const entities = uniqueByEntityKey(args.entities);
+
+   const admitted = await admitSearch(args, entities);
+   if (!("meta" in admitted)) return admitted;
+   const { meta, entryGeneration } = admitted;
+
+   const queryVectors = await embedQueries(args, meta);
+   if (!queryVectors) return { unavailable: "error" };
+
+   try {
+      const scanned = await scanVectorCache(args, queryVectors);
+
+      // A sync or heal holding the mutex may be rewriting rows under the scan
+      // just run, so the snapshot (possibly partial or empty) must not be
+      // served as semantic. The generation re-check below catches completed
+      // writers; this catches in-flight ones. After the scan, so hits and
+      // counts are invalidated together.
+      if (meta.mutex.isLocked()) {
+         return { unavailable: "indexing" };
+      }
+
+      const healed = await healStaleDimensions(
+         args,
+         meta,
+         queryVectors[0].length,
+      );
+      if (healed) return healed;
+
+      // A purge moved the generation mid-search, so the snapshot may be
+      // empty from a concurrent heal; an unreliable empty result must never
+      // be served as semantic "nothing relevant here".
+      if (meta.generation !== entryGeneration) {
+         return { unavailable: "indexing" };
+      }
+
+      return scanned;
+   } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("[MCP Tool getContext] Semantic search failed", {
+         environmentName,
+         packageName,
+         error: message,
+      });
+      return { unavailable: "error" };
+   }
+}
+
+/**
+ * Whether the package has a current index this call may search. Answers the
+ * call outright when it does not (over the entity cap, empty scope, cooling
+ * down, permanently failed, or not yet synced, which kicks a sync); otherwise
+ * returns the meta and the generation the search began under.
+ */
+async function admitSearch(
+   args: SemanticSearchArgs,
+   entities: EmbeddableEntity[],
+): Promise<
+   SemanticSearchResult | { meta: PackageSyncMeta; entryGeneration: number }
+> {
+   const { db, provider, pkg, environmentName, packageName, scopeKeys } = args;
 
    if (entities.length > maxEmbeddedEntities) {
       const key = `${environmentName}\x00${packageName}`;
@@ -1952,9 +1744,8 @@ export async function trySemanticSearch(args: {
       return { unavailable: "too-many-entities" };
    }
 
-   // A scope that admits nothing answers 0 of 0, and answers it here: with no
-   // candidate row there is nothing to rank, and embedding the query text
-   // would be a provider call whose result cannot be used.
+   // A scope that admits nothing answers 0 of 0 here, before a provider call
+   // whose result cannot be used.
    if (scopeKeys !== undefined && scopeKeys.length === 0) {
       return {
          hits: [],
@@ -1966,18 +1757,15 @@ export async function trySemanticSearch(args: {
 
    const providerKey = providerKeyFor(provider);
    const meta = metaFor(environmentName, packageName);
-   // Per-package cool-down: a recent provider failure for THIS package
-   // (sync, query embed, or a dims-mismatch backoff) makes it unavailable
-   // for the window without touching any other package.
+   // Per-package cool-down: a recent provider failure for THIS package makes
+   // it unavailable without touching any other package.
    if (inCooldown(meta)) {
       return { unavailable: "cooldown" };
    }
-   // Captured at entry: if a concurrent heal purges rows while this call
-   // is searching, the generation moves and this call must not assert
-   // anything about the (now-changed) table; see the re-check below.
+   // Captured at entry: a concurrent purge moves the generation, and this
+   // call must then not assert anything about the table.
    const entryGeneration = meta.generation;
-   // The caller's array, not the deduped copy: the copy is new every call,
-   // so only the caller's array can hit the cache.
+   // The caller's array, not the deduped copy, so the fingerprint cache hits.
    const fingerprint = await fingerprintFor(
       args.entities,
       indexSettingsOf(pkg),
@@ -2000,122 +1788,97 @@ export async function trySemanticSearch(args: {
       });
       return { unavailable: "indexing" };
    }
+   return { meta, entryGeneration };
+}
 
-   let queryVectors: number[][];
+/**
+ * One vector per query text, or undefined when the provider failed, which
+ * starts the package's cool-down.
+ */
+async function embedQueries(
+   args: SemanticSearchArgs,
+   meta: PackageSyncMeta,
+): Promise<number[][] | undefined> {
+   const { provider, environmentName, packageName, queries } = args;
    try {
-      // ONE request for every target. embedBatch already batches to 512, so N
-      // targets cost one round trip rather than N -- and the round trip is
-      // what sits on the latency path of every semantic call.
-      queryVectors = await provider.embedBatch(
+      // ONE request for every target: the round trip sits on the latency
+      // path of every semantic call.
+      return await provider.embedBatch(
          queries.map((q) => (provider.queryPrefix ?? "") + q.text),
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // The log keeps the full message; what the status and an error result
-      // show a caller never names the endpoint.
+      // The log keeps the full message; the status never names the endpoint.
       markProviderFailure(meta, publicStatusMessage(error));
       logger.warn(
          "[MCP Tool getContext] Query embedding failed; semantic search cooling down",
          { environmentName, packageName, error: message },
       );
-      return { unavailable: "error" };
+      return undefined;
    }
+}
 
-   try {
-      // One statement, one pass over the vectors. The hits and the two
-      // cutoff counts all derive from the same scored set, so they cannot
-      // disagree, and the cosine work is done once rather than once per
-      // query: at the cap that is 5,000 entities and up to nine facets each.
-      //
-      // An entity scores as its BEST-matching facet, not as an average over
-      // them. A weighted name/doc blend would need a doc vector for every
-      // entity, and roughly half of a real model's entities have no doc at
-      // all, so any blend either penalises them or invents a neutral fill;
-      // MAX is also the only composition that stays well-defined as a doc
-      // splits into a variable number of chunks. The floor applies to that
-      // max, so it keeps meaning "nothing here is even weakly related", and
-      // can only ever be cleared by more facets, never blocked by them.
-      //
-      // MATERIALIZED pins the single evaluation rather than leaving it to the
-      // optimiser to inline `scored` into both branches. The LEFT JOIN ON
-      // TRUE is what keeps the counts in the case that matters most: with no
-      // row above the floor, one row still comes back carrying the counts and
-      // null hit columns, where an inner join would have dropped exactly the
-      // true negative these counts exist to explain.
-      // One statement, one pass over the vectors, however many targets the
-      // caller sent. The hits and the two cutoff counts all derive from the
-      // same scored set, so they cannot disagree, and the cosine work is done
-      // once rather than once per target: at the cap that is 5,000 entities
-      // and up to nine facets each, per target.
-      //
-      // An entity scores as its BEST-matching facet, not as an average over
-      // them. A weighted name/doc blend would need a doc vector for every
-      // entity, and roughly half of a real model's entities have no doc at
-      // all, so any blend either penalises them or invents a neutral fill;
-      // MAX is also the only composition that stays well-defined as a doc
-      // splits into a variable number of chunks. The floor applies to that
-      // max, so it keeps meaning "nothing here is even weakly related", and
-      // can only ever be cleared by more facets, never blocked by them.
-      //
-      // Across TARGETS the composition is MAX as well, and that is sound for
-      // the same reason it is not sound on the lexical path: cosine is an
-      // absolute scale, so 0.7 from one target means what 0.7 from another
-      // does. An entity clears the floor if ANY target clears it.
-      //
-      // MATERIALIZED pins the single evaluation rather than leaving it to the
-      // optimiser to inline `scored` into three branches. The LEFT JOIN ON
-      // TRUE is what keeps the counts in the case that matters most: with no
-      // row above the floor, one row still comes back carrying the counts and
-      // null hit columns, where an inner join would have dropped exactly the
-      // true negative these counts exist to explain.
-      const vectorValues = queryVectors
-         .map((_, k) => `(${k}, CAST(? AS FLOAT[]))`)
-         .join(", ");
-      // One row per (target, claimable kind), so the join below is plain
-      // equality on two columns rather than a list-typed parameter.
-      const targetKinds = queries.flatMap((q, k) =>
-         q.kinds.map((kind) => ({ k, kind })),
+/** The scan's ranked hits and cutoff counts, as the search result. */
+async function scanVectorCache(
+   args: SemanticSearchArgs,
+   queryVectors: number[][],
+): Promise<SemanticSearchResult> {
+   const {
+      db,
+      provider,
+      environmentName,
+      packageName,
+      queries,
+      perSourceWindow,
+      sourceName,
+      scopeKeys,
+   } = args;
+   // One statement, one pass over the vectors however many targets: the hits
+   // and both cutoff counts derive from the same scored set, so they cannot
+   // disagree, and the cosine work is done once.
+   //
+   // An entity scores as its BEST-matching facet, not an average: about half
+   // of a real model's entities have no doc, so any name/doc blend would
+   // penalise them or invent a fill, and MAX stays well-defined as a doc
+   // splits into a variable number of chunks. More facets can only clear the
+   // floor, never block it. Across TARGETS it is MAX too, sound because cosine
+   // is an absolute scale.
+   //
+   // MATERIALIZED pins the single evaluation of `scored`. The LEFT JOIN ON
+   // TRUE keeps the counts when no row clears the floor, which an inner join
+   // would drop: exactly the true negative the counts exist to explain.
+   const vectorValues = queryVectors
+      .map((_, k) => `(${k}, CAST(? AS FLOAT[]))`)
+      .join(", ");
+   // One row per (target, claimable kind), so the join is plain equality.
+   const targetKinds = queries.flatMap((q, k) =>
+      q.kinds.map((kind) => ({ k, kind })),
+   );
+   // Empty when the caller sent no scope, which drops the CTE and its join.
+   const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
+   const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
+   // Dotted rows get their own window when the caller sets one. The window is
+   // a server-set number, validated here, so it is written into the
+   // statement rather than bound.
+   const joinedWindow = args.perSourceJoinedWindow;
+   if (
+      joinedWindow !== undefined &&
+      (!Number.isInteger(joinedWindow) || joinedWindow < 0)
+   ) {
+      throw new Error(
+         `Invalid perSourceJoinedWindow: expected a whole number of at least 0, got ${joinedWindow}. Fix: pass 3 or omit it.`,
       );
-      // Empty string when the caller sent no scope, which drops the CTE and
-      // its join from the statement entirely.
-      const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
-      const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
-      // Dotted rows (joined fields the index keeps) get a window of their own
-      // when the caller sets one: ranked apart from the source's own fields, so
-      // they cannot take their slots. Without it the statement is unchanged.
-      // The window is a number the server sets, validated here, so it is written
-      // into the statement rather than bound.
-      const joinedWindow = args.perSourceJoinedWindow;
-      if (
-         joinedWindow !== undefined &&
-         (!Number.isInteger(joinedWindow) || joinedWindow < 0)
-      ) {
-         throw new Error(
-            `Invalid perSourceJoinedWindow: expected a whole number of at least 0, got ${joinedWindow}. Fix: pass 3 or omit it.`,
-         );
-      }
-      const dotted =
-         "(CASE WHEN strpos(entity_name, '.') > 0 THEN 1 ELSE 0 END)";
-      const joinedCol =
-         joinedWindow === undefined ? "" : `${dotted} AS dotted,`;
-      const joinedPartition = joinedWindow === undefined ? "" : `, ${dotted}`;
-      const hitWhere =
-         joinedWindow === undefined
-            ? "h.rn <= ?"
-            : `h.rn <= CASE WHEN h.dotted = 1 THEN ${joinedWindow} ELSE ? END`;
-      const scan = await db.all<{
-         total: number;
-         below: number;
-         entity_kind: string | null;
-         entity_source: string | null;
-         entity_name: string | null;
-         best: number | null;
-         target_idx: number | null;
-         score: number | null;
-         cut: number | null;
-      }>(
-         `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
+   }
+   const dotted = "(CASE WHEN strpos(entity_name, '.') > 0 THEN 1 ELSE 0 END)";
+   const joinedCol = joinedWindow === undefined ? "" : `${dotted} AS dotted,`;
+   const joinedPartition = joinedWindow === undefined ? "" : `, ${dotted}`;
+   const hitWhere =
+      joinedWindow === undefined
+         ? "h.rn <= ?"
+         : `h.rn <= CASE WHEN h.dotted = 1 THEN ${joinedWindow} ELSE ? END`;
+   const scan = await db.all<ScanRow>(
+      `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
          qk(target_idx, kind) AS (VALUES ${kindValues}),${
             scopeValues
                ? `
@@ -2230,238 +1993,203 @@ export async function trySemanticSearch(args: {
           AND s.entity_name = h.entity_name
          ORDER BY h.best DESC, h.entity_source, h.entity_name, h.entity_kind,
                   s.target_idx`,
-         [
-            ...queryVectors.map((v) => JSON.stringify(v)),
-            ...targetKinds.map(({ kind }) => kind),
-            // Positional, so these sit where the `scope` CTE does: after the
-            // kinds and before the package predicates.
-            ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
-            environmentName,
-            packageName,
-            provider.model,
-            queryVectors[0].length,
-            ...(sourceName !== undefined ? [sourceName] : []),
-            provider.minSimilarity,
-            provider.minSimilarity,
-            perSourceWindow,
-            provider.minSimilarity,
-         ],
-      );
+      [
+         ...queryVectors.map((v) => JSON.stringify(v)),
+         ...targetKinds.map(({ kind }) => kind),
+         // Positional: these sit where the `scope` CTE does.
+         ...(scopeKeys ?? []).flatMap((k) => [k.kind, k.source, k.name]),
+         environmentName,
+         packageName,
+         provider.model,
+         queryVectors[0].length,
+         ...(sourceName !== undefined ? [sourceName] : []),
+         provider.minSimilarity,
+         provider.minSimilarity,
+         perSourceWindow,
+         provider.minSimilarity,
+      ],
+   );
 
-      // The scan returns one row per (hit entity, target), so fold them back
-      // into one hit carrying its per-target scores. Order is preserved from
-      // the SQL, which already sorted by best score, then source, name and kind.
-      const byEntity = new Map<
-         string,
-         {
-            entity_kind: string;
-            entity_source: string;
-            entity_name: string;
-            score: number;
-            targetScores: Map<number, number>;
-         }
-      >();
-      const cutBySource = new Map<string, number>();
-      for (const r of scan) {
-         if (r.entity_name === null) continue;
-         if (r.cut !== null && r.cut > 0) {
-            cutBySource.set(r.entity_source as string, r.cut);
-         }
-         const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
-         let hit = byEntity.get(key);
-         if (!hit) {
-            hit = {
-               entity_kind: r.entity_kind as string,
-               entity_source: r.entity_source as string,
-               entity_name: r.entity_name as string,
-               score: r.best as number,
-               targetScores: new Map<number, number>(),
-            };
-            byEntity.set(key, hit);
-         }
-         if (r.target_idx !== null && r.score !== null) {
-            // Back to the caller's own target index: the SQL numbered them by
-            // position in `queries`, which is not the caller's numbering.
-            const targetIndex = queries[r.target_idx]?.targetIndex;
-            if (targetIndex !== undefined) {
-               hit.targetScores.set(
-                  targetIndex,
-                  Math.max(hit.targetScores.get(targetIndex) ?? 0, r.score),
-               );
-            }
+   return foldScanRows(scan, queries);
+}
+
+/** One row of the vector-cache scan: one (hit entity, target) pair. */
+interface ScanRow {
+   total: number;
+   below: number;
+   entity_kind: string | null;
+   entity_source: string | null;
+   entity_name: string | null;
+   best: number | null;
+   target_idx: number | null;
+   score: number | null;
+   cut: number | null;
+}
+
+/** The scan's rows as the search result: one hit per entity, with the counts. */
+function foldScanRows(
+   scan: ScanRow[],
+   queries: SemanticSearchArgs["queries"],
+): SemanticSearchResult {
+   // Fold the one-row-per-(hit, target) scan into one hit per entity,
+   // keeping the SQL's order.
+   const byEntity = new Map<
+      string,
+      {
+         entity_kind: string;
+         entity_source: string;
+         entity_name: string;
+         score: number;
+         targetScores: Map<number, number>;
+      }
+   >();
+   const cutBySource = new Map<string, number>();
+   for (const r of scan) {
+      if (r.entity_name === null) continue;
+      if (r.cut !== null && r.cut > 0) {
+         cutBySource.set(r.entity_source as string, r.cut);
+      }
+      const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
+      let hit = byEntity.get(key);
+      if (!hit) {
+         hit = {
+            entity_kind: r.entity_kind as string,
+            entity_source: r.entity_source as string,
+            entity_name: r.entity_name as string,
+            score: r.best as number,
+            targetScores: new Map<number, number>(),
+         };
+         byEntity.set(key, hit);
+      }
+      if (r.target_idx !== null && r.score !== null) {
+         // Back to the caller's target index; the SQL numbered by position.
+         const targetIndex = queries[r.target_idx]?.targetIndex;
+         if (targetIndex !== undefined) {
+            hit.targetScores.set(
+               targetIndex,
+               Math.max(hit.targetScores.get(targetIndex) ?? 0, r.score),
+            );
          }
       }
-      const rows = [...byEntity.values()];
-      // How many entities were weighed, and how many fell below the floor.
-      // Without them an empty result is indistinguishable from "this package
-      // models nothing like that", and we watched analysts conclude the
-      // latter from the former.
-      //
-      // Both counts, because one alone is not interpretable. Every entity in
-      // scope is either at-or-above the floor (so it could be a hit) or below
-      // it (so it is counted here), which means `below` is only meaningful
-      // against `total`: 7-of-52 is a tight match, 47-of-52 is a stretch, and
-      // 52-of-52 is the true negative. Reporting `below` on its own invites
-      // reading a large number as "too diffuse, rephrase" at exactly the
-      // moment it means the opposite.
-      const cutoffCounts = scan[0];
+   }
+   const rows = [...byEntity.values()];
+   // Both counts, because without them an empty result is indistinguishable
+   // from "this package models nothing like that", and `below` alone is not
+   // interpretable: 7-of-52 is a tight match, 52-of-52 the true negative.
+   const cutoffCounts = scan[0];
+   return {
+      hits: rows.map((row) => ({
+         kind: row.entity_kind,
+         source: row.entity_source === "" ? undefined : row.entity_source,
+         name: row.entity_name,
+         score: row.score,
+         targetScores: row.targetScores,
+      })),
+      belowCutoffCount: cutoffCounts?.below ?? 0,
+      totalEntities: cutoffCounts?.total ?? 0,
+      cutBySource,
+   };
+}
 
-      // A sync or heal holding the package mutex right now may be
-      // rewriting rows underneath the query that just ran: that snapshot
-      // is unreliable (it can be partial or empty mid-write) and must
-      // not be served as semantic. Completed writers are caught by the
-      // generation re-check below; this catches the in-flight ones.
-      // Placed after the scan so an unreliable snapshot invalidates the hits
-      // and the counts together, rather than reporting a number read
-      // mid-write.
-      if (meta.mutex.isLocked()) {
-         return { unavailable: "indexing" };
-      }
-
-      // Invariant check, every call: no row may exist that does not
-      // match the provider's current (model, dims). The sync diff cannot
-      // see a dims change (row hashes still match), so stale-dims rows
-      // are detected here. Detecting STALE rows directly, rather than
-      // inferring from an empty result, also heals the mixed state where
-      // a partial sync wrote some rows at the new dimensionality and the
-      // rest are stranded at the old one (an empty-result trigger would
-      // never fire there, silently hiding the stranded entities forever).
-      const staleRows = await db.get<{ n: number }>(
-         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+/**
+ * Detect and heal cached rows that do not match the provider's current
+ * (model, dims). Returns the answer for this call when it found any, or
+ * undefined when the cache is consistent and the scan may be served.
+ */
+async function healStaleDimensions(
+   args: SemanticSearchArgs,
+   meta: PackageSyncMeta,
+   queryDims: number,
+): Promise<SemanticSearchResult | undefined> {
+   const { db, provider, environmentName, packageName } = args;
+   // Invariant, every call: no row may mismatch the provider's current
+   // (model, dims). The sync diff cannot see a dims change (hashes still
+   // match). Detecting stale rows directly, rather than inferring from an
+   // empty result, also heals a partial sync that left some rows stranded at
+   // the old dimensionality.
+   const staleRows = await db.get<{ n: number }>(
+      `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?
             AND NOT (embedding_model = ? AND dims = ?)`,
-         [environmentName, packageName, provider.model, queryVectors[0].length],
-      );
-      if ((staleRows?.n ?? 0) > 0) {
-         // The check-and-purge runs under the package-name mutex so it
-         // cannot interleave with a sync, and the generation bump
-         // invalidates every instance's memo, not just this caller's.
-         // Acquired WITHOUT waiting: a held mutex means a bulk embed or
-         // another heal is mid-flight, and this call must answer as
-         // indexing rather than queue minutes behind it (the docstring's
-         // no-call-waits-on-a-bulk-embed contract).
-         let outcome: "none" | "purged" | "backoff" | "busy";
-         try {
-            outcome = await tryAcquire(meta.mutex).runExclusive(async () => {
-               // Same orphaned-meta guard as the sync: never write under
-               // a meta that deletePackageEmbeddings removed.
-               if (
-                  syncMeta.get(metaKey(environmentName, packageName)) !== meta
-               ) {
-                  return "none";
-               }
-               const again = await db.get<{ n: number }>(
-                  `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+      [environmentName, packageName, provider.model, queryDims],
+   );
+   if ((staleRows?.n ?? 0) > 0) {
+      // Under the package-name mutex so it cannot interleave with a sync; the
+      // generation bump invalidates every instance's memo. Acquired WITHOUT
+      // waiting: a held mutex means a bulk embed or heal is in flight, and no
+      // call may wait on a bulk embed.
+      let outcome: "none" | "purged" | "backoff" | "busy";
+      try {
+         outcome = await tryAcquire(meta.mutex).runExclusive(async () => {
+            // Orphaned-meta guard, as in the sync.
+            if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
+               return "none";
+            }
+            const again = await db.get<{ n: number }>(
+               `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
                      AND NOT (embedding_model = ? AND dims = ?)`,
-                  [
-                     environmentName,
-                     packageName,
-                     provider.model,
-                     queryVectors[0].length,
-                  ],
+               [environmentName, packageName, provider.model, queryDims],
+            );
+            if ((again?.n ?? 0) === 0) return "none";
+            // Backoff: at most one purge per suppression window. A fresh
+            // mismatch within it means the endpoint serves inconsistent
+            // dimensionalities, so cool down instead of re-embedding.
+            // lastPurgeAtMs is NOT advanced here, so the window stays
+            // measured from the last real purge (see
+            // HEAL_PURGE_SUPPRESSION_MS).
+            const now = Date.now();
+            if (now - meta.lastPurgeAtMs < purgeSuppressionMs) {
+               markProviderFailure(
+                  meta,
+                  `The embedding endpoint returned vectors of inconsistent dimensions for model ${provider.model}`,
                );
-               if ((again?.n ?? 0) === 0) return "none";
-               // Backoff: at most one purge per suppression window. Within
-               // it, a fresh mismatch means the endpoint is serving
-               // inconsistent dimensionalities; re-purging would re-embed
-               // the whole package, so cool down instead.
-               // lastPurgeAtMs is NOT advanced here: the window is measured
-               // from the last real PURGE, and because the suppression
-               // window is longer than the cooldown (see
-               // HEAL_PURGE_SUPPRESSION_MS), a call arriving after the
-               // cooldown clears still lands inside the suppression window
-               // and backs off, so a durably-inconsistent provider does
-               // NOT re-purge once per cooldown window.
-               const now = Date.now();
-               if (now - meta.lastPurgeAtMs < purgeSuppressionMs) {
-                  markProviderFailure(
-                     meta,
-                     `The embedding endpoint returned vectors of inconsistent dimensions for model ${provider.model}`,
-                  );
-                  logger.warn(
-                     "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
-                     {
-                        environmentName,
-                        packageName,
-                        model: provider.model,
-                        queryDims: queryVectors[0].length,
-                     },
-                  );
-                  return "backoff";
-               }
                logger.warn(
-                  "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging stale rows and re-syncing",
+                  "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
                   {
                      environmentName,
                      packageName,
                      model: provider.model,
-                     queryDims: queryVectors[0].length,
-                     staleRows: again?.n,
+                     queryDims,
                   },
                );
-               // Only the stale rows: current-dims rows stay, so the
-               // follow-up sync re-embeds just what was stranded.
-               await db.run(
-                  `DELETE FROM entity_embeddings
+               return "backoff";
+            }
+            logger.warn(
+               "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging stale rows and re-syncing",
+               {
+                  environmentName,
+                  packageName,
+                  model: provider.model,
+                  queryDims,
+                  staleRows: again?.n,
+               },
+            );
+            // Only the stale rows, so the re-sync embeds just what was stranded.
+            await db.run(
+               `DELETE FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
                      AND NOT (embedding_model = ? AND dims = ?)`,
-                  [
-                     environmentName,
-                     packageName,
-                     provider.model,
-                     queryVectors[0].length,
-                  ],
-               );
-               meta.lastPurgeAtMs = now;
-               meta.generation = ++generationCounter;
-               return "purged";
-            });
-         } catch (error) {
-            if (error !== E_ALREADY_LOCKED) throw error;
-            outcome = "busy";
-         }
-         if (outcome === "purged" || outcome === "busy") {
-            // Nothing to evict: the purge bumped the generation, which is
-            // what invalidates meta.synced, so the next call re-kicks on its
-            // own.
-            return { unavailable: "indexing" };
-         }
-         if (outcome === "backoff") {
-            return { unavailable: "cooldown" };
-         }
+               [environmentName, packageName, provider.model, queryDims],
+            );
+            meta.lastPurgeAtMs = now;
+            meta.generation = ++generationCounter;
+            return "purged";
+         });
+      } catch (error) {
+         if (error !== E_ALREADY_LOCKED) throw error;
+         outcome = "busy";
       }
-
-      // A purge moved the generation while this call was searching: the
-      // rows snapshot above is unreliable (possibly empty because a
-      // concurrent heal deleted mid-search), and an unreliable empty
-      // result must never be served as semantic "nothing relevant here".
-      // Answer as indexing; the next call is consistent.
-      if (meta.generation !== entryGeneration) {
+      if (outcome === "purged" || outcome === "busy") {
+         // The generation bump invalidated meta.synced, so the next call
+         // re-kicks on its own.
          return { unavailable: "indexing" };
       }
-
-      return {
-         hits: rows.map((row) => ({
-            kind: row.entity_kind,
-            source: row.entity_source === "" ? undefined : row.entity_source,
-            name: row.entity_name,
-            score: row.score,
-            targetScores: row.targetScores,
-         })),
-         belowCutoffCount: cutoffCounts?.below ?? 0,
-         totalEntities: cutoffCounts?.total ?? 0,
-         cutBySource,
-      };
-   } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn("[MCP Tool getContext] Semantic search failed", {
-         environmentName,
-         packageName,
-         error: message,
-      });
-      return { unavailable: "error" };
+      if (outcome === "backoff") {
+         return { unavailable: "cooldown" };
+      }
    }
+   return undefined;
 }
 
 /** What a package's semantic index is currently doing. */
@@ -2509,27 +2237,19 @@ export interface EmbeddingIndexStatus {
     */
    totalRows: number;
    /**
-    * Rows cached for this package under the provider's CURRENT model, across
-    * all entities and facets. Rows left by an earlier model are excluded.
-    *
-    * Scoped by model only, NOT by vector length, so this is not a count of
-    * rows the search path could read today: that scan also matches
-    * `dims = <query vector length>` (see trySemanticSearch), and a dims
-    * change no question has probed yet leaves rows counted here that the
-    * stale-row heal will purge on the next search. Deliberate -- the two
-    * rules are described above getEmbeddingIndexStatus. Read `status` for
-    * readiness; read this for how much of the package is cached.
+    * Rows cached under the provider's CURRENT model, across all entities and
+    * facets. Scoped by model only, NOT vector length, so after an unprobed
+    * dims change it can count rows the heal will purge on the next search
+    * (see the two row rules above getEmbeddingIndexStatus). Read `status` for
+    * readiness; this says how much is cached.
     */
    embeddedRows: number;
    /** Entities the package currently exposes to retrieval. */
    totalEntities: number;
    /**
-    * Current entities with at least one usable vector.
-    *
-    * Coverage by identity, so it can equal `totalEntities` while `status` is
-    * `indexing`: an edit that rewrote every doc without renaming anything
-    * leaves each entity holding its (stale) name vector. `status` is the
-    * readiness signal; this pair says how much of the package is touched.
+    * Current entities with at least one cached vector. Coverage by identity,
+    * so it can equal `totalEntities` while `status` is `indexing` (every doc
+    * rewritten, nothing renamed).
     */
    embeddedEntities: number;
    /** Most recent row write, absent when nothing is cached yet. */
@@ -2539,47 +2259,30 @@ export interface EmbeddingIndexStatus {
 /**
  * Report a package's embedding-index state for the REST Package resource.
  *
- * The state existed only as a debug log line ("Synced entity embeddings"),
- * so anything wanting to wait for a warm index — a harness measuring
- * retrieval, an operator checking an upgrade re-embedded — had to scrape the
- * server log. This reads the same state the search path uses.
+ * `ready` means the next question will be ranked semantically, so it is
+ * decided by the same recorded sync the search path gates on, NOT by whether
+ * rows cover the current entity names: rows survive restarts and reloads, so
+ * name coverage would read `ready` while questions were still not semantic.
  *
- * `ready` means the next question will be ranked semantically, which is the
- * only reading a caller can act on -- it is what "poll until ready before
- * measuring retrieval quality" has to mean. So it is decided by the same
- * recorded sync the search path gates on, NOT by whether rows happen to
- * cover the current entity names. Those differ exactly where it matters: the
- * rows survive a restart and a reload, so name coverage reported `ready`
- * while the next question was still answered lexically.
+ * Derived, never authoritative: it takes no mutex and writes nothing. Its CPU
+ * cost is the content fingerprint, cached per loaded package, so polling is
+ * cheap but not free.
  *
- * Derived, never authoritative: it takes no mutex and writes nothing, so it
- * cannot serialize behind a sync in flight. Its CPU cost is the content
- * fingerprint, which is cached per loaded package (see fingerprintFor): the
- * first call after a load, from here or from a search, computes it, and
- * every later call is two row counts and a lookup. Polling is cheap, but not
- * free.
+ * Two DIFFERENT row rules live in this file; do not collapse them:
  *
- * Two DIFFERENT row rules live in this file, and collapsing them is the
- * mistake to avoid -- it has been made twice already, once on the sync diff
- * and once on these counts:
+ *   CACHED (model + content hash, dims ignored): "would the sync rewrite this
+ *   row?" Used by the sync diff and the counts below. `dims` records the
+ *   length the provider RETURNED, and a provider that ignores the requested
+ *   `dimensions` (Ollama) would otherwise re-embed on every reload and pin
+ *   these counts at 0.
  *
- *   CACHED (model + content hash, dims ignored): "would the sync rewrite
- *   this row?" Used by the sync diff and by the counts below. Dims is
- *   excluded on purpose -- `dims` records the length the provider RETURNED,
- *   and a provider that ignores the requested `dimensions` (Ollama) never
- *   matches the configured value, which would re-embed every package on
- *   every reload and pin these counts at 0.
+ *   READABLE (model + dims == the query vector's length): "can the cosine scan
+ *   use this row?" Used by trySemanticSearch and the stale-row heal. Only a
+ *   real question knows that length, and this path must not embed anything.
  *
- *   READABLE (model + dims == the query vector's length): "can the cosine
- *   scan use this row?" Used by trySemanticSearch and by the stale-row heal.
- *   Only a real question knows that length, so this path cannot apply the
- *   rule without embedding something, which it must not do.
- *
- * So the counts report CACHED and `status` reports readiness from the
- * recorded sync; neither one predicts READABLE. A dims change no question
- * has probed yet is the gap that leaves: `status` is already correct there
- * (providerKeyFor carries the configured dims, so isSynced goes false), and
- * the counts keep describing rows until a search fires the heal.
+ * After an unprobed dims change, `status` is still correct (providerKeyFor
+ * carries the configured dims) while the counts describe rows until a search
+ * fires the heal.
  */
 export async function getEmbeddingIndexStatus(
    db: DuckDBConnection,
@@ -2589,21 +2292,14 @@ export async function getEmbeddingIndexStatus(
    allEntities: readonly EmbeddableEntity[],
    pkg?: Package,
 ): Promise<EmbeddingIndexStatus> {
-   // Counted per cached entity, not per card: the same reason the search
-   // path dedupes. See uniqueByEntityKey.
+   // Counted per cached entity, not per card; see uniqueByEntityKey.
    const entities = uniqueByEntityKey(allEntities);
    const entityCount = entities.length;
-   // The CACHED rule (see above): current model, any dims. Scoping these to
-   // the configured `dimensions` is what once pinned them at 0 for a provider
-   // that ignores the request parameter, reporting `ready` beside
-   // `embeddedRows: 0`.
+   // The CACHED rule: current model, any dims.
    const scope = [environmentName, packageName, provider.model];
 
-   // `totalRows` is the rows the representation makes from each entity's name
-   // and docs. A `keyphrase` row is an extra the LLM step adds on top, and is
-   // not in that count: counting it here made the numerator pass the
-   // denominator (4 of 2 for two entities with a name row and a keyphrase row
-   // each). Searches still read it.
+   // `totalRows` counts only name and doc rows; a `keyphrase` row is an LLM
+   // extra, excluded here so the numerator cannot pass the denominator.
    const row = await db.get<{ n: number; last: string | null }>(
       `SELECT CAST(COUNT(*) AS INTEGER) AS n,
               CAST(MAX(updated_at) AS VARCHAR) AS last
@@ -2615,9 +2311,8 @@ export async function getEmbeddingIndexStatus(
    const embeddedRows = row?.n ?? 0;
    const lastSyncedAt = row?.last ?? undefined;
 
-   // Which entities are covered, not just how many rows exist. A row count
-   // alone cannot see an edit that removes two entities and adds two others:
-   // the total is unchanged while the two new ones have no vector at all.
+   // Which entities are covered, not just how many rows: a count cannot see
+   // an edit that removes two entities and adds two others.
    const covered = await db.all<{
       entity_kind: string;
       entity_source: string;
@@ -2675,9 +2370,7 @@ export async function getEmbeddingIndexStatus(
          },
       };
    } else if (
-      // A sync covering exactly this content completed and still stands, and
-      // nothing is mid-write: the next question reads these rows and is
-      // ranked semantically.
+      // A sync covering exactly this content stands and nothing is mid-write.
       meta &&
       isSynced(meta, summary.fingerprint, providerKeyFor(provider)) &&
       !meta.mutex.isLocked()
@@ -2720,8 +2413,7 @@ export async function getEmbeddingIndexStatus(
 
 /**
  * Why a package over the entity cap is not embedded, with the count, the cap
- * and how to raise it. One definition, used by the status endpoint and by
- * get_context's error, so the two cannot describe the cap differently.
+ * and how to raise it. Shared by the status endpoint and get_context's error.
  */
 export function tooManyEntitiesMessage(entityCount: number): string {
    const suggested = Math.max(entityCount, maxEmbeddedEntities * 4);

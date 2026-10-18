@@ -3,25 +3,20 @@ import { components } from "../api";
 type ApiConnection = components["schemas"]["Connection"];
 
 /**
- * A connection config holds warehouse credentials, so a response built by
- * spreading one publishes every field the config happens to carry, including
- * fields that did not exist when the response was written.
+ * The public view of a connection config, which holds warehouse credentials.
  *
- * This is an ALLOWLIST, and the direction it fails in is the point. A denylist
- * of secret-looking names puts the risk on the wrong case: the next connection
- * type adds a credential field, nobody adds it to the list, and it ships
- * readable. Here an unlisted field is simply absent, so a new credential is
- * invisible until someone deliberately publishes it, and the cost of forgetting
- * a non-secret field is only that the UI does not show it yet.
+ * This is an ALLOWLIST, so it fails closed: a credential field a new connection
+ * type adds is absent until someone deliberately publishes it, whereas a
+ * denylist would ship it readable. Forgetting a non-secret field only means the
+ * UI does not show it yet.
  *
- * The OpenAPI contract cannot supply this list. `api-doc.yaml` declares
- * `password` as a property of `PostgresConnection` because one `Connection`
- * schema serves both the write path, where a caller must supply a credential,
- * and the read path, where it must never come back.
+ * The OpenAPI contract cannot supply this list: one `Connection` schema serves
+ * both the write path, where a caller supplies `password`, and the read path,
+ * where it must never come back.
  *
- * Secrets are OMITTED, never masked. A placeholder would be written into the
- * stored config as a real credential by any caller that round-trips what it
- * reads; `mergeConnectionUpdate` covers the omission instead.
+ * Secrets are OMITTED, never masked: a caller that round-trips what it reads
+ * would store a placeholder as a real credential. `mergeConnectionUpdate`
+ * covers the omission instead.
  */
 interface PublicShape {
    readonly [field: string]: PublicField;
@@ -45,7 +40,8 @@ const CONNECTION_ATTRIBUTES: PublicShape = {
 // Per-type shapes. Credential fields are absent by omission, not by exclusion:
 // postgres password/connectionString, bigquery serviceAccountKeyJson, snowflake
 // password/privateKey/privateKeyPass, trino password/peakaKey, databricks
-// token/oauthClientSecret, mysql password, motherduck and publisher accessToken.
+// token/oauthClientSecret, mysql and sqlserver password, motherduck and
+// publisher accessToken.
 const POSTGRES: PublicShape = {
    host: "scalar",
    port: "scalar",
@@ -100,15 +96,25 @@ const MYSQL: PublicShape = {
    user: "scalar",
 };
 
+const SQLSERVER: PublicShape = {
+   server: "scalar",
+   port: "scalar",
+   database: "scalar",
+   user: "scalar",
+   encrypt: "scalar",
+   trustServerCertificate: "scalar",
+   hostNameInCertificate: "scalar",
+   instanceName: "scalar",
+};
+
 const MOTHERDUCK: PublicShape = { database: "scalar" };
 
 const PUBLISHER: PublicShape = { connectionUri: "scalar" };
 
-// Object-store credentials. The key IDs are identifiers rather than secrets and
-// match what `SENSITIVE_KEY_NAMES` in logger.ts already treats as safe to log;
-// the paired secrets (secretAccessKey, sessionToken, secret) are omitted.
-// provider and chain say HOW the credential is obtained, not what it is: an
-// enum, and an ordered list of provider names. The key pair beside them stays out.
+// Object-store credentials. Key IDs are identifiers, not secrets, matching what
+// `SENSITIVE_KEY_NAMES` in logger.ts treats as safe to log; the paired secrets
+// (secretAccessKey, sessionToken, secret) are omitted. provider and chain say
+// HOW the credential is obtained (an enum and a list of provider names).
 const S3: PublicShape = {
    provider: "scalar",
    chain: "scalar",
@@ -172,10 +178,9 @@ const PUBLIC_CONNECTION: PublicShape = {
    name: "scalar",
    type: "scalar",
    fingerprint: "scalar",
-   // Opaque and writer-owned, like fingerprint beside it, but it must be
-   // RETURNED rather than withheld: a writer compares the tag each server
-   // reports against the one it would send now, so a tag this response drops is
-   // a tag that reads as divergence on every poll.
+   // Opaque and writer-owned, but it must be RETURNED: a writer compares the
+   // reported tag against the one it would send, so a dropped tag reads as
+   // divergence on every poll.
    configEtag: "scalar",
    // Free-form property bags the contract documents as non-secret and
    // round-tripped verbatim, so they cannot be enumerated field by field.
@@ -189,6 +194,7 @@ const PUBLIC_CONNECTION: PublicShape = {
    trinoConnection: TRINO,
    databricksConnection: DATABRICKS,
    mysqlConnection: MYSQL,
+   sqlserverConnection: SQLSERVER,
    duckdbConnection: DUCKDB,
    motherduckConnection: MOTHERDUCK,
    ducklakeConnection: DUCKLAKE,
@@ -196,10 +202,9 @@ const PUBLIC_CONNECTION: PublicShape = {
 };
 
 /**
- * The allowlist keyed by the OpenAPI schema each shape mirrors. Exported so the
- * spec can hold it against api-doc.yaml: a field added to the contract has to
- * be classified, here or in the spec's secret list, before the suite passes.
- * That is what stops a new credential field from shipping readable.
+ * The allowlist keyed by the OpenAPI schema each shape mirrors. The spec holds
+ * it against api-doc.yaml, so a field added to the contract must be classified
+ * (here or in the spec's secret list) before the suite passes.
  */
 export const PUBLIC_FIELDS_BY_SCHEMA: Readonly<
    Record<string, readonly string[]>
@@ -211,6 +216,7 @@ export const PUBLIC_FIELDS_BY_SCHEMA: Readonly<
    TrinoConnection: Object.keys(TRINO),
    DatabricksConnection: Object.keys(DATABRICKS),
    MysqlConnection: Object.keys(MYSQL),
+   SqlserverConnection: Object.keys(SQLSERVER),
    DuckdbConnection: Object.keys(DUCKDB),
    MotherDuckConnection: Object.keys(MOTHERDUCK),
    DucklakeConnection: Object.keys(DUCKLAKE),
@@ -288,9 +294,8 @@ function projectShape(
 }
 
 /**
- * A copy without `withheldFields`, tolerating a null or non-object input. The
- * spread it replaced accepted null, so this has to as well: a stored config can
- * be absent.
+ * A copy without `withheldFields`. Tolerates a null or non-object input,
+ * because a stored config can be absent.
  */
 function withoutWithheldFields(value: unknown): Record<string, unknown> {
    if (!isPlainObject(value)) return {};
@@ -366,11 +371,10 @@ function hiddenFields(
    const hidden: Record<string, unknown> = {};
    for (const [field, fieldValue] of Object.entries(value)) {
       if (UNSAFE_KEYS.has(field)) continue;
-      // Own-property lookup, not `shape[field]`: a stored config carrying a
-      // `__proto__` or `constructor` key would otherwise resolve to
-      // Object.prototype rather than to "unlisted", and one level deeper to
-      // null, which threw. Reachable from a POSTed config, and this runs on the
-      // read path, so the throw would have 500'd every connection read.
+      // Own-property lookup, not `shape[field]`: a `__proto__` or
+      // `constructor` key in a POSTed config would otherwise resolve to
+      // Object.prototype (and one level deeper to null, which throws), failing
+      // every connection read.
       const spec: PublicField | undefined = Object.hasOwn(shape, field)
          ? shape[field]
          : undefined;
@@ -431,14 +435,12 @@ function isNamed(value: unknown): value is { name: string } {
  * forward would silently beat the method just configured, and the caller cannot
  * clear what it cannot see.
  *
- * `selects` is deliberately narrow: only a CREDENTIAL the caller actually
- * supplied, non-empty, selects a slot. Two reasons, both learned by getting it
- * wrong. An empty string is an untouched form box, not a choice, and treating
- * it as one destroyed the stored credential of any connection described solely
- * by a field the form cannot display. And a non-secret field is echoed back on
- * every write by any client that resubmits what it read, so it says nothing
- * about intent: `oauthClientId` came back on every Databricks patch and kept
- * the OAuth slot permanently selected.
+ * `selects` is deliberately narrow: only a non-empty CREDENTIAL the caller
+ * supplied selects a slot. An empty string is an untouched form box, not a
+ * choice; treating it as one would destroy a stored credential the form cannot
+ * display. And a non-secret field is echoed back by any client that resubmits
+ * what it read, so it says nothing about intent: `oauthClientId` would keep the
+ * Databricks OAuth slot permanently selected.
  *
  * `fields` is what gets dropped when a sibling slot is selected. Only hidden
  * fields can be dropped, so listing a public field here would be a no-op.
@@ -465,11 +467,9 @@ const EXCLUSIVE_SLOTS: readonly (readonly CredentialSlot[])[] = [
       { selects: ["password"], fields: ["password"] },
    ],
    // Object store for DuckLake storage and DuckDB attached databases. Selected
-   // by the nested credential rather than by the sub-object, because the
-   // sub-objects come back on every read carrying region/endpoint/accessKeyId:
-   // selecting on their presence would keep two slots permanently selected for
-   // any client that round-trips a read, which is the oauthClientId failure
-   // mode this docstring warns about.
+   // by the nested credential, not the sub-object: sub-objects come back on
+   // every read (region/endpoint/accessKeyId), so selecting on presence would
+   // keep two slots selected for any client that round-trips a read.
    [
       {
          selects: ["s3Connection.secretAccessKey"],
@@ -523,19 +523,16 @@ function suppliedAt(patch: Record<string, unknown>, path: string): boolean {
 function exclusionsFor(patch: Record<string, unknown>): ReadonlySet<string> {
    const skip = new Set<string>();
    for (const slots of EXCLUSIVE_SLOTS) {
-      // Which sub-object the patch actually SENT, for the one group whose slots
-      // are sub-objects rather than scalars. Selecting on the credential alone
-      // is not enough there: switching store and leaving the secret box blank
-      // sends `gcsConnection: {keyId}` with no credential in any slot, which
-      // reads as "selected nothing", and the stale sibling secret is then
-      // reinstated next to the new bucketUrl. `hasS3` beats GCS at connect
-      // time, so the connection authenticates against the store the operator
-      // just moved off. That is the documented editor flow, not a hypothetical.
+      // Which sub-object the patch actually SENT, for the group whose slots
+      // are sub-objects. The credential alone is not enough there: switching
+      // store with the secret box blank sends `gcsConnection: {keyId}`, which
+      // selects nothing, so the stale S3 secret would be reinstated, and
+      // `hasS3` beats GCS at connect time, authenticating against the store
+      // the operator just moved off. This is the documented editor flow.
       //
-      // Only when exactly one is declared. A round-tripped read carries both,
-      // which is the case that made selecting on presence wrong in the first
-      // place, so that falls through to the credential check below. Flat groups
-      // are unaffected: their fields are scalars, so nothing is declared.
+      // Only when exactly one is declared: a round-tripped read carries both,
+      // so that falls through to the credential check. Flat groups have
+      // scalar fields, so nothing is declared.
       const declared = slots.filter((slot) =>
          slot.fields.some((field) => isPlainObject(patch[field])),
       );
@@ -566,11 +563,8 @@ function reinstate(patch: unknown, hidden: unknown): unknown {
    // caller sends when it has nothing to say, and erring toward keeping a
    // credential beats erring toward destroying one.
    if (patch === null) return null;
-   // A scalar where the stored value was an object is malformed, but the patch
-   // still supplied it, and the rule above is that a supplied value wins.
-   // Returning `hidden` here made the stored object win and silently dropped
-   // the fields the patch did send; validation downstream is the right place to
-   // reject it.
+   // A scalar where the stored value was an object is malformed, but a
+   // supplied value still wins; validation downstream rejects it.
    if (!isPlainObject(patch)) return patch;
    const skip = exclusionsFor(patch);
    const out: Record<string, unknown> = { ...patch };
@@ -622,20 +616,14 @@ export function mergeConnectionUpdate(
    // Read-only and server-computed, so it is not part of what gets stored.
    const incoming = withoutWithheldFields(patch);
    const current = withoutWithheldFields(stored);
-   // The top-level shallow spread is the pre-existing update semantics, kept as
-   // it was: a stored field the patch does not mention survives.
+   // Top-level shallow spread: a stored field the patch does not mention
+   // survives.
    const shallow = { ...current, ...incoming } as Record<string, unknown>;
-   // configEtag is the exception, and it has to be: it describes the
-   // configuration the writer that set it sent. An update that replaces that
-   // configuration without supplying a tag has invalidated it, so carrying the
-   // old one forward would assert that a config nobody has seen is still the one
-   // the tag names -- the one thing an entity tag must never do.
-   //
-   // It also keeps a writer that compares tags convergent when it stops sending
-   // them. A writer downgraded to a version that does not know the field pushes
-   // its own config, the stale tag is dropped, and its next comparison agrees.
-   // Inherited instead, the tag outlives every config it described and that
-   // writer re-pushes on every poll forever.
+   // Except configEtag: it describes the config the writer that set it sent.
+   // An update without a tag has replaced that config, so carrying the old tag
+   // forward would vouch for a config nobody has seen. Dropping it also keeps a
+   // writer that stops sending tags (e.g. a downgraded one) convergent;
+   // inherited, the stale tag would make it re-push on every poll forever.
    //
    // A null or non-object patch is not a write of anything, so it clears nothing.
    if (isPlainObject(patch) && !Object.hasOwn(patch, "configEtag")) {

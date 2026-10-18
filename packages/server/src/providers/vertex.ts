@@ -35,9 +35,8 @@ export function adcAccessToken(): () => Promise<string> {
          return token;
       } catch (error) {
          // Never retried: missing credentials will not appear on their own.
-         // The library's text can name a key file path from
-         // GOOGLE_APPLICATION_CREDENTIALS, so it stays in the log message and
-         // the caller sees only the fixed sentence.
+         // The library's text can name a key file path, so only the log keeps
+         // it; the caller sees the fixed sentence.
          const fix =
             "Fix: run `gcloud auth application-default login`, or run with a service account.";
          throw new HttpRequestError(

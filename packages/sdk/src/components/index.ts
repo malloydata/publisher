@@ -12,6 +12,15 @@ export { AppDialog } from "./AppDialog";
 export { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 export { BackLink } from "./BackLink";
 export { NarrowEditGate } from "./NarrowEditGate";
+// For a host that holds a report as text and resolves its own givens.
+export { localGivenSpec } from "./ReportBuilder/localGiven";
+export { malloyLiteral } from "../utils/malloyLiteral";
+export {
+   clearReportDraft,
+   draftStorageAvailable,
+   reportDraftKey,
+   type ReportDraftTarget,
+} from "./ReportBuilder/useReportDraft";
 // The Console's palette, and the two maps drawn from it. Exported so a host
 // paints its own chrome — the Publisher app's theme included — from the same
 // hues rather than picking a near-miss beside them.

@@ -4,6 +4,12 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+   closeFilter,
+   expectFilterValue,
+   filterButton,
+   openFilter,
+} from "./helpers/filters";
 import { tmpName } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
@@ -104,7 +110,7 @@ test.describe("package-dashboards", () => {
          artifacts.getByRole("button", { name: /Orders in a window/ }),
       ).toHaveCount(1);
       await expect(
-         artifacts.getByRole("button", { name: "New report", exact: true }),
+         artifacts.getByRole("button", { name: "Add report", exact: true }),
       ).toBeVisible();
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
@@ -195,21 +201,25 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page.getByText("Order health at a glance.")).toBeVisible();
 
-      // `control=select` becomes a combobox, labelled by `# label=` rather than
-      // by the given's name.
-      await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      // `range_min`/`range_max` become a two-handled range slider, and no
+      // One button per filter, named by `# label=` rather than by the given's
+      // name. `control=select` opens a combobox.
+      const brand = await openFilter(page, "Brand");
+      await expect(
+         brand.getByRole("combobox", { name: "Brand" }),
+      ).toBeVisible();
+      await closeFilter(page);
+      // `range_min`/`range_max` open a two-handled range slider, and no
       // control appears for the givens this dashboard's query does not
       // reference.
+      const amount = await openFilter(page, "Minimum amount");
       await expect(
-         page.getByRole("slider", { name: "Minimum amount from" }),
+         amount.getByRole("slider", { name: "Minimum amount from" }),
       ).toBeVisible();
       await expect(
-         page.getByRole("slider", { name: "Minimum amount to" }),
+         amount.getByRole("slider", { name: "Minimum amount to" }),
       ).toBeVisible();
-      await expect(page.getByRole("combobox", { name: "Region" })).toHaveCount(
-         0,
-      );
+      await closeFilter(page);
+      await expect(filterButton(page, "Region")).toHaveCount(0);
 
       await expect(page.locator("canvas, svg, table").first()).toBeVisible({
          timeout: 30_000,
@@ -221,9 +231,8 @@ test.describe("package-dashboards", () => {
    }) => {
       await openDashboard(page, "overview");
 
-      const brand = page.getByRole("combobox", { name: "Brand" });
-      await expect(brand).toBeVisible({ timeout: 30_000 });
-      await brand.click();
+      const filter = await openFilter(page, "Brand");
+      await filter.getByRole("combobox", { name: "Brand" }).click();
 
       // Options come from `suggest { source=orders dimension=brand }`, run
       // through the ordinary query endpoint.
@@ -237,10 +246,7 @@ test.describe("package-dashboards", () => {
 
       // And that link restores the control on a cold load.
       await page.goto(`/${env}/${PKG}/dashboards/overview?BRAND=Nike`);
-      await expect(page.getByRole("combobox", { name: "Brand" })).toHaveValue(
-         "Nike",
-         { timeout: 30_000 },
-      );
+      await expectFilterValue(page, "Brand", "Nike");
    });
 
    test("an unrelated query parameter survives load and a control change", async ({
@@ -263,8 +269,8 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
 
       // And it still survives once a control writes to the query string.
-      const brand = page.getByRole("combobox", { name: "Brand" });
-      await brand.click();
+      const filter = await openFilter(page, "Brand");
+      await filter.getByRole("combobox", { name: "Brand" }).click();
       await page.getByRole("option", { name: "Levi's" }).click({
          timeout: 30_000,
       });
@@ -288,11 +294,8 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
 
-      const brand = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Brand" }),
-      });
-      await brand.hover();
-      await brand.getByRole("button", { name: "Clear" }).click();
+      // A set filter's button carries its own clear (×).
+      await page.getByRole("button", { name: "Clear Brand" }).click();
 
       // Its own parameter goes...
       await expect(page).not.toHaveURL(/[?&]BRAND=/);
@@ -308,10 +311,11 @@ test.describe("package-dashboards", () => {
       // had no test until a mutation sweep pointed out that both select tests
       // click the control directly and would pass with the arrow gone.
       await openDashboard(page, "overview");
-      const brand = page.locator(".MuiAutocomplete-root", {
+      const filter = await openFilter(page, "Brand");
+      const brand = filter.locator(".MuiAutocomplete-root", {
          has: page.getByRole("combobox", { name: "Brand" }),
       });
-      await expect(brand).toBeVisible({ timeout: 30_000 });
+      await expect(brand).toBeVisible();
       await expect(
          brand.locator(".MuiAutocomplete-popupIndicator"),
       ).toHaveCount(1);
@@ -326,15 +330,9 @@ test.describe("package-dashboards", () => {
          page.getByRole("heading", { name: "Orders by region" }),
       ).toBeVisible({ timeout: 30_000 });
 
-      // `# artifact { givens { REGION=f'US' } }` is where the control starts.
-      // A multiselect holds its selection as chips, so the input itself stays
-      // empty and the chip is what to look for.
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("US", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      // `# artifact { givens { REGION=f'US' } }` is where the control starts,
+      // and the filter's button says so.
+      await expectFilterValue(page, "Region", "US");
 
       // Nothing to apply until something changes.
       const applyButton = page.getByRole("button", { name: "Apply" });
@@ -345,9 +343,8 @@ test.describe("package-dashboards", () => {
    test("a multiselect keeps its list open across picks", async ({ page }) => {
       await openDashboard(page, "regions");
 
-      const region = page.getByRole("combobox", { name: "Region" });
-      await expect(region).toBeVisible({ timeout: 30_000 });
-      await region.click();
+      const filter = await openFilter(page, "Region");
+      await filter.getByRole("combobox", { name: "Region" }).click();
       const options = page.getByRole("option");
       await expect(options.first()).toBeVisible({ timeout: 30_000 });
       const offered = await options.count();
@@ -370,10 +367,8 @@ test.describe("package-dashboards", () => {
 
       // The control row is the union across tiles; `orders -> totals`
       // references nothing and so contributes none.
-      await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      await expect(
-         page.getByRole("combobox", { name: "Region" }),
-      ).toBeVisible();
+      await expect(filterButton(page, "Brand")).toBeVisible();
+      await expect(filterButton(page, "Region")).toBeVisible();
 
       // One panel per tile, headed by the humanized view name rather than the
       // run expression from `tiles=[…]`, which stays as the heading's tooltip.
@@ -393,7 +388,7 @@ test.describe("package-dashboards", () => {
    }) => {
       await openDashboard(page, "tiled");
       await expect(
-         page.getByRole("heading", { name: "Tiled", level: 5 }),
+         page.getByRole("heading", { name: "Tiled", level: 1 }),
       ).toBeVisible({ timeout: 30_000 });
 
       // Cards and tiles are the same kind of grid item, which is the point: two
@@ -589,7 +584,7 @@ test.describe("package-dashboards", () => {
          open: async (page: Page) => {
             await page.goto(`/${env}/${LINEAR_PKG}/brands`);
             await expect(
-               page.getByRole("heading", { name: "Brands" }),
+               page.getByRole("heading", { name: "Brands", level: 1 }).first(),
             ).toBeVisible({ timeout: 60_000 });
          },
       },
@@ -644,10 +639,7 @@ test.describe("package-dashboards", () => {
       );
       // Arriving seeded means arriving filtered, so the destination's control
       // shows the drilled value.
-      await expect(page.getByRole("combobox", { name: "Brand" })).toHaveValue(
-         "Nike",
-         { timeout: 30_000 },
-      );
+      await expectFilterValue(page, "Brand", "Nike");
    });
 
    test("a two-destination drill offers a menu, and `self` filters in place", async ({
@@ -674,12 +666,7 @@ test.describe("package-dashboards", () => {
       // `self` never leaves the page; it sets the control instead.
       await page.getByRole("menuitem", { name: "Filter this report" }).click();
       await expect(page).toHaveURL(/[?&]REGION=EU/);
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      await expectFilterValue(page, "Region", "EU");
    });
 
    test("the other menu destination navigates to that dashboard", async ({
@@ -717,13 +704,15 @@ test.describe("package-dashboards", () => {
    }) => {
       await openDashboard(page, "combined");
 
-      const brand = page.getByRole("combobox", { name: "Brand" });
-      await expect(brand).toBeVisible({ timeout: 30_000 });
-      await brand.click();
+      const filter = await openFilter(page, "Brand");
+      await filter.getByRole("combobox", { name: "Brand" }).click();
       await page
          .getByRole("option", { name: "Nike" })
          .click({ timeout: 30_000 });
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
+      // The popover hides the page from the pointer and from the
+      // accessibility tree until it closes.
+      await closeFilter(page);
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
       await page.getByRole("menuitem", { name: "Regions" }).click();
@@ -741,12 +730,7 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page).toHaveURL(seeded);
       // The value has to reach the control too, not just survive in the URL.
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      await expectFilterValue(page, "Region", "EU");
    });
 
    test("a linear report's cell drills into a dashboard", async ({ page }) => {
@@ -754,9 +738,9 @@ test.describe("package-dashboards", () => {
       // nothing about drill, but its cell groups by `brand_name`, so the same
       // click path works with no report-specific code.
       await page.goto(`/${env}/${LINEAR_PKG}/brands`);
-      await expect(page.getByRole("heading", { name: "Brands" })).toBeVisible({
-         timeout: 60_000,
-      });
+      await expect(
+         page.getByRole("heading", { name: "Brands", level: 1 }).first(),
+      ).toBeVisible({ timeout: 60_000 });
 
       await page
          .getByText("Nike", { exact: true })
@@ -797,9 +781,11 @@ test.describe("package-dashboards", () => {
 
       // The control's label comes from the given declaration, which is where a
       // grid's comes from too.
-      await page
+      const since = await openFilter(page, "Ordered since");
+      await since
          .getByRole("textbox", { name: "Ordered since" })
          .fill("03/01/2024");
+      await closeFilter(page);
 
       // Pending, not applied: the URL is untouched and the cell has not re-run,
       // which is the whole point of batching.
@@ -816,9 +802,7 @@ test.describe("package-dashboards", () => {
 
       // And the link restores the value on a cold load.
       await page.goto(`/${env}/${LINEAR_PKG}/orders-since?SINCE=2024-03-01`);
-      await expect(
-         page.getByRole("textbox", { name: "Ordered since" }),
-      ).toHaveValue("03/01/2024", { timeout: 30_000 });
+      await expectFilterValue(page, "Ordered since", "Mar 1, 2024");
    });
 
    test("a linear report starts where its `givens { … }` say, and a URL beats it", async ({
@@ -826,21 +810,19 @@ test.describe("package-dashboards", () => {
    }) => {
       // `orders-start.malloy` carries `givens { SINCE=@2024-03-01 }` in its tag.
       await page.goto(`/${env}/${LINEAR_PKG}/orders-start`);
-      const since = page.getByRole("textbox", { name: "Ordered since" });
-      await expect(since).toHaveValue("03/01/2024", { timeout: 60_000 });
+      await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
 
       // Applied, not merely displayed: two of the six orders are in the window.
       const count = (n: string) => page.getByText(n, { exact: true });
       await expect(count("2")).toBeVisible({ timeout: 30_000 });
 
-      // And written into the URL, so what a reader copies out of the address
-      // bar is what they are looking at. A grid's starting values do the same
-      // (`dashboards/regions?REGION=US`).
-      await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
+      // A starting value is the file's, not the reader's, so it stays out of
+      // the URL, in either layout; only a value the reader sets is written there.
+      expect(page.url()).not.toContain("SINCE=");
 
       // A link overrides the file, so a shared URL shows the sender's view.
       await page.goto(`/${env}/${LINEAR_PKG}/orders-start?SINCE=2024-01-01`);
-      await expect(since).toHaveValue("01/01/2024", { timeout: 60_000 });
+      await expectFilterValue(page, "Ordered since", "Jan 1, 2024", 60_000);
       await expect(count("6")).toBeVisible({ timeout: 30_000 });
    });
 
@@ -848,9 +830,9 @@ test.describe("package-dashboards", () => {
       page,
    }) => {
       await page.goto(`/${env}/${LINEAR_PKG}/brands`);
-      await expect(page.getByRole("heading", { name: "Brands" })).toBeVisible({
-         timeout: 60_000,
-      });
+      await expect(
+         page.getByRole("heading", { name: "Brands", level: 1 }).first(),
+      ).toBeVisible({ timeout: 60_000 });
 
       // Same tag, same menu as on the `combined` dashboard: `to=["dashboards/regions",
       // "self"]`, where self means this report.
@@ -865,12 +847,7 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${LINEAR_PKG}/brands\\?REGION=EU$`),
       );
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      await expectFilterValue(page, "Region", "EU");
    });
 
    // DEPRECATED FEATURE COVERAGE — delete together with
@@ -924,9 +901,7 @@ test.describe("package-dashboards", () => {
          ).toBeVisible();
 
          await page.goto(`/${env}/${PKG}/orders-start.malloynb`);
-         await expect(
-            page.getByRole("textbox", { name: "Ordered since" }),
-         ).toHaveValue("03/01/2024", { timeout: 60_000 });
+         await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
          await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
       });
    });
@@ -1259,7 +1234,8 @@ test.describe("package-dashboards", () => {
    // asserts against: `<strong>` exists, and no literal `**` survives.
    test("a dashboard's description renders as markdown", async ({ page }) => {
       await openDashboard(page, "tiled");
-      const header = page.locator("h5", { hasText: "Tiled" }).locator("..");
+      // The title's row and the description below it.
+      const header = page.locator("h1", { hasText: "Tiled" }).locator("../..");
       await expect(header).toBeVisible({ timeout: 30_000 });
       await expect(
          header.locator("strong", { hasText: "tiles" }),

@@ -130,7 +130,7 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
          // A bare `to=` names a root file.
          "no_such_dashboard.malloy",
          [
-            '## artifact { title="Now exists" }',
+            '## artifact { layout=linear title="Now exists" tiles=[] }',
             "source: broken is nonexistent_connection.table('nope')",
             "",
          ].join("\n"),

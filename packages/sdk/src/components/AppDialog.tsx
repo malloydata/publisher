@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { usePublisherTheme } from "../theme/ThemeContext";
 import CloseIcon from "@mui/icons-material/Close";
 import {
    Dialog,
@@ -37,6 +38,8 @@ export function AppDialog({
    maxWidth = "sm",
    showClose = false,
    actions,
+   initialFocus,
+   className,
    children,
 }: {
    open: boolean;
@@ -50,9 +53,18 @@ export function AppDialog({
    showClose?: boolean;
    /** The buttons, in order. Cancel first, the thing it does last. */
    actions?: React.ReactNode;
+   /**
+    * The control to start in. Focused once the window has opened: a child's
+    * own `autoFocus` loses to the focus trap, which takes focus to the
+    * window's container as it opens, after the child has mounted.
+    */
+   initialFocus?: React.RefObject<HTMLElement | null>;
+   /** Classes on the window's root, for a host to style it by. */
+   className?: string;
    children: React.ReactNode;
 }) {
    const titleId = useId();
+   const ui = usePublisherTheme().theme.ui;
    return (
       <Dialog
          open={open}
@@ -60,6 +72,17 @@ export function AppDialog({
          maxWidth={maxWidth}
          fullWidth
          aria-labelledby={titleId}
+         {...(className ? { className } : {})}
+         // The host's dialog radius (`ui.radius.dialog`), as every other
+         // corner on a report surface takes its token.
+         PaperProps={{ sx: { borderRadius: ui.radius.dialog } }}
+         {...(initialFocus
+            ? {
+                 TransitionProps: {
+                    onEntered: () => initialFocus.current?.focus(),
+                 },
+              }
+            : {})}
       >
          <DialogTitle
             id={titleId}

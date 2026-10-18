@@ -61,6 +61,7 @@ const ENV_KEYS = [
 
 interface GetContextPayload {
    retrieval?: string;
+   retrieval_reason?: string;
    sources?: Array<{
       source_info: { resource_id: { source: string; model_path: string } };
       relevance?: number;
@@ -198,7 +199,9 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          });
          // A configured server never answers lexically: it is still
          // indexing, or the build already finished.
-         expect(["indexing", "semantic"]).toContain(first.retrieval);
+         expect(["indexing", "semantic"] as (string | undefined)[]).toContain(
+            first.retrieval,
+         );
 
          let payload = first;
          for (let i = 0; i < 60 && payload.retrieval !== "semantic"; i++) {

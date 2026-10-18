@@ -117,6 +117,7 @@ export async function compileJoinFixture(
    await duckdb.close();
    return {
       pkg: {
+         listSkills: () => [],
          listModels: async () => [{ path: modelPath }],
          getModel: (path: string) => (path === modelPath ? model : undefined),
       },
@@ -178,6 +179,7 @@ export async function compileModelFiles(
    await duckdb.close();
    return {
       pkg: {
+         listSkills: () => [],
          listModels: async () => Object.keys(files).map((path) => ({ path })),
          getModel: (path: string) => models.get(path),
       },

@@ -1,10 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { parseTag } from "@malloydata/malloy-tag";
 import type { CompiledModel } from "../../client";
+import {
+   columnCounts,
+   type ResultField,
+} from "../RenderedResult/chartShapeProblem";
 import { exportedSources } from "../DocumentCreate/exportedSources";
 import { CHART_TAGS } from "./chartLine";
+import { chartOf, docOf } from "./viewAnnotations";
+
+export { chartOf, docOf };
 
 export { CHART_TAGS };
 
@@ -37,6 +43,14 @@ export interface CatalogView {
    chart?: string;
    /** Every output column is an aggregate, which is the only shape `big_value` renders. Absent when the model did not say. */
    aggregateOnly?: boolean;
+   /** How many of its output columns are group-bys and how many are totals, when the model said: what decides which charts can draw it. */
+   shape?: ViewShape;
+}
+
+/** A view's output columns by role: a group-by is a field a chart can put on its x axis, a total one it can put on its y axis. */
+export interface ViewShape {
+   groupBys: number;
+   totals: number;
 }
 
 export interface CatalogSource {
@@ -61,25 +75,13 @@ export interface CatalogSource {
 
 export interface PackageCatalog {
    sources: CatalogSource[];
-}
-
-/** `#(doc) Revenue by product category\n` -> `Revenue by product category`. */
-export function docOf(annotations: string[] | undefined): string | undefined {
-   for (const raw of annotations ?? []) {
-      const m = /^#\(doc\)\s*(.*)$/s.exec(raw.trim());
-      if (m) return m[1].trim();
-   }
-   return undefined;
-}
-
-/** `# bar_chart\n` -> `bar_chart`. Only the renderer's own chart tags count. */
-export function chartOf(annotations: string[] | undefined): string | undefined {
-   for (const raw of annotations ?? []) {
-      // A `-name` removes a tag, so it is never the chart the view declares.
-      const name = /^#\s*(?:-[A-Za-z_]+\s+)*([a-z_]+)/.exec(raw.trim())?.[1];
-      if (name && CHART_TAGS.includes(name)) return name;
-   }
-   return undefined;
+   /**
+    * The views the report file itself declares, by source then view, from the
+    * file's own compiled model: an inline `view: kpis is { aggregate: … }` is
+    * in no other model, so without these the builder could not tell which
+    * charts such a tile can take. Absent until that model has answered.
+    */
+   documentViews?: Map<string, Map<string, CatalogView>>;
 }
 
 /**
@@ -150,35 +152,81 @@ function parsedSourceInfos(model: CompiledModel): ParsedSourceInfo[] {
    return infos;
 }
 
-/** An aggregate output column has `calculation` as a top-level property of its `#(malloy)` note; a group-by or nested one does not. */
-const isAggregateColumn = (field: Record<string, unknown>) =>
-   ((field["annotations"] as Array<{ value?: string }> | undefined) ?? []).some(
-      (note) => {
-         const text = note.value ?? "";
-         return (
-            text.startsWith("#(malloy)") &&
-            parseTag(text.slice("#(malloy)".length)).tag?.has("calculation") ===
-               true
-         );
-      },
-   );
-
-/** Per source, the views whose every output column is an aggregate. */
-function aggregateViewsOf(model: CompiledModel): Map<string, Set<string>> {
-   const bySource = new Map<string, Set<string>>();
+/** Per source, per view: the shape of its output, and whether every column is a total. Columns are read by the result panel's own rule (`columnCounts`). */
+function viewShapesOf(
+   model: CompiledModel,
+): Map<string, Map<string, Omit<CatalogView, "name">>> {
+   const bySource = new Map<string, Map<string, Omit<CatalogView, "name">>>();
    for (const info of parsedSourceInfos(model)) {
-      const names = new Set<string>();
+      const views = new Map<string, Omit<CatalogView, "name">>();
       for (const field of info.schema?.fields ?? []) {
          if (field["kind"] !== "view" || typeof field["name"] !== "string")
             continue;
          const columns = (field["schema"] as { fields?: unknown } | undefined)
-            ?.fields as Array<Record<string, unknown>> | undefined;
-         if (columns && columns.length > 0 && columns.every(isAggregateColumn))
-            names.add(field["name"]);
+            ?.fields as ResultField[] | undefined;
+         if (!columns || columns.length === 0) continue;
+         const { groupBys, totals } = columnCounts(columns);
+         views.set(field["name"], {
+            shape: { groupBys, totals },
+            ...(totals === columns.length ? { aggregateOnly: true } : {}),
+         });
       }
-      bySource.set(info.name, names);
+      bySource.set(info.name, views);
    }
    return bySource;
+}
+
+type ModelSource = NonNullable<CompiledModel["sources"]>[number];
+type ModelView = NonNullable<ModelSource["views"]>[number];
+
+/** One view of a model's source as the catalog lists it: its doc line, the chart it declares, and its shape. */
+function catalogViewOf(
+   view: ModelView & { name: string },
+   shape: Omit<CatalogView, "name"> | undefined,
+): CatalogView {
+   const description = docOf(view.annotations);
+   const chart = chartOf(view.annotations);
+   return {
+      name: view.name,
+      ...(description ? { description } : {}),
+      ...(chart ? { chart } : {}),
+      ...shape,
+   };
+}
+
+const namedViews = (source: ModelSource) =>
+   (source.views ?? []).filter(
+      (view): view is ModelView & { name: string } =>
+         typeof view.name === "string",
+   );
+
+/**
+ * The views a report file declares, from its own compiled model, keyed by
+ * source then view. The file's sources extend the package's, so its model
+ * lists their views too; only the ones under the file's own source names are
+ * the file's, and those are what a tile in it names. Each carries the chart
+ * its view declares, as a catalog view does: a pick negates that tag, and
+ * without it a `# line_chart` view picked as a bar would ask for both.
+ */
+export function documentViewsOf(
+   model: CompiledModel,
+): Map<string, Map<string, CatalogView>> {
+   const shapes = viewShapesOf(model);
+   const out = new Map<string, Map<string, CatalogView>>();
+   for (const source of model.sources ?? []) {
+      if (!source.name) continue;
+      const own = shapes.get(source.name);
+      out.set(
+         source.name,
+         new Map(
+            namedViews(source).map((view) => [
+               view.name,
+               catalogViewOf(view, own?.get(view.name)),
+            ]),
+         ),
+      );
+   }
+   return out;
 }
 
 /**
@@ -207,16 +255,16 @@ export const isReportModel = (
 ) => path !== undefined && reportPaths.has(path);
 
 /**
- * The model's own path.
+ * The model's own path: `path`, the field the API declares.
  *
- * Two spellings, and the generated client only knows one: the models LIST
- * returns `path`, while a single model returns `modelPath`. Reading `path`
- * alone yields an empty string against the real server, which silently disables
- * the report exclusion below and leaves a preview with nothing to run
- * against.
+ * A server before this release names a single model's path only as
+ * `modelPath`, which the spec never declared, so it is still read when `path`
+ * is missing. An empty path silently disables the report exclusion below and
+ * leaves a preview with nothing to run against, so `useEditorCatalog` sets
+ * `path` itself, from the path it asked for.
  */
 const pathOf = (model: CompiledModel): string =>
-   (model as { modelPath?: string }).modelPath ?? model.path ?? "";
+   model.path || (model as { modelPath?: string }).modelPath || "";
 
 export function buildCatalog(
    models: CompiledModel[],
@@ -243,7 +291,7 @@ export function buildCatalog(
       const modelPath = pathOf(model);
       if (isReportModel(modelPath, reportPaths)) continue;
       const fields = fieldsOf(model);
-      const aggregates = aggregateViewsOf(model);
+      const shapes = viewShapesOf(model);
 
       for (const source of model.sources ?? []) {
          const name = source.name;
@@ -266,20 +314,9 @@ export function buildCatalog(
             ...(docOf(source.annotations)
                ? { description: docOf(source.annotations) as string }
                : {}),
-            views: (source.views ?? [])
-               .filter((view) => typeof view.name === "string")
-               .map((view) => ({
-                  name: view.name as string,
-                  ...(docOf(view.annotations)
-                     ? { description: docOf(view.annotations) as string }
-                     : {}),
-                  ...(chartOf(view.annotations)
-                     ? { chart: chartOf(view.annotations) as string }
-                     : {}),
-                  ...(aggregates.get(name)?.has(view.name as string)
-                     ? { aggregateOnly: true }
-                     : {}),
-               })),
+            views: namedViews(source).map((view) =>
+               catalogViewOf(view, shapes.get(name)?.get(view.name)),
+            ),
             givens,
             fields: fields.get(name) ?? [],
          });

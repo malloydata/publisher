@@ -145,10 +145,10 @@ describe("useBuilderSession reports", () => {
       const onDirtyChange = mock((_dirty: boolean) => {});
       const clean = makeEditor({ dirty: false });
       const view = mount({ onDirtyChange, extraDirty: true }, clean);
-      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true, true);
       expect(view.result.current.toolbarProps.dirty).toBe(true);
       view.unmount();
-      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false, false);
    });
 
    it("reports the document on mount and when it changes", () => {

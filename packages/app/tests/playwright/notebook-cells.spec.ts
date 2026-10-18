@@ -7,6 +7,7 @@ import {
    addTextTile,
    editText,
    editorOpen,
+   readerOpen,
    tileByKey,
    tileOrder,
 } from "./helpers/builder";
@@ -22,8 +23,7 @@ import {
  * The notebook editor's tile operations against a real server: reorder by
  * pointer, add and remove a text tile, prose that mentions a gate, a file that
  * changed underneath the editor, and starting givens that live in the artifact
- * tag. The tour is a layout notebook; `autorun_off` stays in the cell format,
- * which the editor converts on open.
+ * tag.
  */
 
 const PKG = "notebooks-malloyyo";
@@ -52,15 +52,22 @@ Fourth note.
 `;
 
 const AUTORUN_OFF = `##! experimental.givens
-## artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' } }
+##| artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' }
+  tiles=[intro { kind=text }, "orders_tiles -> by_month_in_region"]
+}
+|##
 import "../models/orders.malloy"
 
 # label="Region" control=select suggest { source=orders dimension=region }
 given: REGION :: filter<string> is f''
 
-##(markdown) Pick a region, then apply.
+##|(markdown) intro
+Pick a region, then apply.
+|##
 
-run: orders -> by_month + { where: region ~ $REGION }
+source: orders_tiles is orders extend {
+  view: by_month_in_region is by_month + { where: region ~ $REGION }
+}
 `;
 
 let pe: PackageEnv;
@@ -164,10 +171,9 @@ test.describe("notebook tiles", () => {
       await open(page);
       await settled(page, 2);
 
-      await tileByKey(page, "text.second")
-         .getByLabel("Settings for second")
-         .click();
-      await page.getByRole("button", { name: "Delete" }).click();
+      const second = tileByKey(page, "text.second");
+      await second.hover();
+      await second.getByLabel("Remove second").click();
       await saveChanges(page);
       let file = await pe.readSource(TOUR);
       expect(file).not.toContain("Second note");
@@ -238,7 +244,8 @@ test.describe("notebook tiles", () => {
       expect(res.ok, await res.text()).toBe(true);
 
       await editText(tileByKey(page, "text.first"), "Mine.");
-      await page.getByRole("button", { name: "Save", exact: true }).click();
+      // Save without leaving, from the keyboard; the write is refused.
+      await page.keyboard.press("ControlOrMeta+s");
       await expect(page.getByRole("alert").first()).toBeVisible({
          timeout: 30_000,
       });
@@ -258,8 +265,13 @@ test.describe("notebook tiles", () => {
       await editorOpen(page);
       await editText(tileByKey(page, "text.first"), "Edited first.");
       await saveChanges(page);
-      await page.getByRole("button", { name: "View", exact: true }).click();
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Done", exact: true })
+         .click();
       await expect(page).toHaveURL(/\/notebooks\/browser_tour$/);
+      // The builder stays up until the reader is drawn: wait for the swap.
+      await readerOpen(page);
       await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,
       });
@@ -268,17 +280,27 @@ test.describe("notebook tiles", () => {
    test("starting givens and autorun=false in the artifact tag reach the reader and the editor", async ({
       page,
    }) => {
+      // The starting value is in the control. Reset is not offered beside it:
+      // the controls are already where Reset would put them.
+      const startsAtUS = async () => {
+         await expect(
+            page.getByRole("button", { name: "Region: US" }),
+         ).toBeVisible();
+         await expect(page.getByRole("button", { name: "Reset" })).toHaveCount(
+            0,
+         );
+      };
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/autorun_off`);
       await expect(page.getByRole("button", { name: "Apply" })).toBeVisible({
          timeout: 60_000,
       });
-      await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
+      await startsAtUS();
       await open(page, "autorun_off");
       await expect(
          page.getByRole("button", { name: "Apply", exact: true }),
       ).toBeVisible({
          timeout: 60_000,
       });
-      await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
+      await startsAtUS();
    });
 });

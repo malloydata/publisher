@@ -121,7 +121,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
-                  getModelType: () => "model",
+                  getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async () => {
@@ -169,7 +169,7 @@ function storeCapturingMetadata(
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
-                  getModelType: () => "model",
+                  getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async (..._args: unknown[]) => {
@@ -542,7 +542,7 @@ describe("execute_query includeHiddenFilesAndSources", () => {
 });
 
 /**
- * The same cases as explore_visibility.spec.ts pins for the model, through the
+ * The same cases as tests/component/explore_visibility.component.spec.ts pins for the model, through the
  * real tool handler and a real loaded Package with a root index.malloy.
  */
 describe("execute_query includeHiddenFilesAndSources on a real package", () => {

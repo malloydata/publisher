@@ -1,13 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { findViewOption } from "./testing/inline";
 import {
    cleanup,
    fireEvent,
    render,
    screen,
    waitFor,
-   within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
@@ -128,6 +128,7 @@ const mount = (
    textSource: {
       modelPath: string;
       givens?: Record<string, string | string[]>;
+      compileSource?: (text: string) => string | Promise<string>;
    } = {
       modelPath: "models/orders.malloy",
    },
@@ -335,18 +336,15 @@ describe("ReportEditor in text-source mode", () => {
          fireEvent.click(
             await screen.findByRole("button", { name: "Add tile" }),
          );
-         fireEvent.mouseDown(
-            await screen.findByRole("combobox", { name: /Source/ }),
-         );
-         const options = within(screen.getByRole("listbox")).getAllByRole(
-            "option",
-         );
-         expect(options.map((o) => o.textContent).sort()).toEqual([
-            "orders",
-            "other",
-         ]);
-         fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
-         fireEvent.click(await screen.findByLabelText("View by_x"));
+         await findViewOption("by_x");
+         expect(
+            screen
+               .getAllByRole("group", { hidden: true })
+               .map((group) => group.getAttribute("aria-label"))
+               .filter((name) => name === "orders" || name === "other")
+               .sort(),
+         ).toEqual(["orders", "other"]);
+         fireEvent.click(await findViewOption("by_x"));
          fireEvent.click(
             screen.getByRole("button", { name: "Add tile", hidden: false }),
          );
@@ -389,5 +387,87 @@ describe("ReportEditor in text-source mode", () => {
       mount(beside);
 
       expect(await screen.findByText(/authoritative/)).toBeDefined();
+   });
+});
+
+describe("a host that compiles its own text (compileSource)", () => {
+   /** A document that declares its own filter and binds it on its tile. */
+   const WITH_FILTER = `##! experimental.givens
+## artifact { title="Ops" tiles=["a -> by_cat"] } dashboard { columns=12 }
+
+# label="Category"
+given: CAT :: filter<string> is f'Outerwear'
+
+source: a is orders extend {
+  view: by_cat is by_category + { where: category ~ $CAT }
+}
+`;
+   /** What a host does with it: no flag, no declaration, the value as a literal. */
+   const resolve = (text: string) =>
+      text
+         .replace(/^##!.*\n/m, "")
+         .replace(/^# label="Category"\ngiven: CAT .*\n/m, "")
+         .replace(/\$CAT\b/g, "f'Outerwear'");
+
+   const storeOf = (text: string) => {
+      const storage = new FakeStorage();
+      storage.documents.set("env/pkg/dashboards/ops.malloy", text);
+      return storage;
+   };
+
+   it("compiles what the host makes of the text, and turns Add filter on", async () => {
+      mount(storeOf(DOCUMENT), {
+         modelPath: "models/orders.malloy",
+         compileSource: (text) => `// resolved by the host\n${text}`,
+      });
+
+      await waitFor(() => expect(compileModelSource).toHaveBeenCalled());
+      expect(compileModelSource.mock.calls[0][3]).toEqual({
+         source: `// resolved by the host\n${DOCUMENT}`,
+         scope: "append",
+      });
+      const add = await screen.findByRole("button", { name: "Add filter" });
+      expect((add as HTMLButtonElement).disabled).toBe(false);
+   });
+
+   it("runs the document's own filter as a literal, never as a given the server is sent", async () => {
+      mount(storeOf(WITH_FILTER), {
+         modelPath: "models/orders.malloy",
+         compileSource: resolve,
+      });
+
+      await waitFor(() => expect(compileModelSource).toHaveBeenCalled());
+      const sent = compileModelSource.mock.calls[0][3].source ?? "";
+      expect(sent).not.toContain("given:");
+      expect(sent).not.toContain("$CAT");
+
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      const body = JSON.stringify(executeQueryModel.mock.calls[0][3]);
+      expect(body).toContain("category ~ f'Outerwear'");
+      expect(body).not.toContain('"CAT"');
+      // The control is drawn from the document's own declaration.
+      expect(
+         await screen.findByRole("button", { name: /^Category: / }),
+      ).toBeDefined();
+   });
+
+   it("says so when the host cannot prepare the text, and compiles nothing", async () => {
+      mount(storeOf(DOCUMENT), {
+         modelPath: "models/orders.malloy",
+         compileSource: () => Promise.reject(new Error("CAT is the model's")),
+      });
+
+      expect(
+         await screen.findByText(
+            /could not be prepared to compile: CAT is the model's/,
+         ),
+      ).toBeDefined();
+      expect(compileModelSource).not.toHaveBeenCalled();
+      // Its tiles are drawn, but nothing runs them: no source is declared.
+      expect(
+         (await screen.findAllByText("Not run: this document did not compile."))
+            .length,
+      ).toBeGreaterThan(0);
+      expect(executeQueryModel).not.toHaveBeenCalled();
    });
 });

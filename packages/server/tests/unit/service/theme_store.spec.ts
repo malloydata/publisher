@@ -1,13 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Lives under `tests/unit/` (not `src/`) on purpose: a sibling spec
-// (environment_store.spec.ts) calls
-// `mock.module("../storage/StorageManager", ...)`. Bun's module mocks
-// persist process-wide across spec files, so a spec under `src/` that
-// imports the real StorageManager would silently get the mock (which
-// doesn't expose `getDuckDbConnection`). The integration runner gives
-// us a clean module cache.
+// Lives under `tests/unit/` (not `src/`) on purpose: environment_store.spec.ts
+// replaces `../config` with `mock.module` (isPublisherConfigFrozen always
+// false), and Bun's module mocks persist process-wide across spec files. Under
+// `src/`, whether this spec saw the real config depended on file order, so the
+// frozenConfig cases passed on macOS and failed on Linux. The integration
+// runner gives it a clean module cache.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";

@@ -13,6 +13,8 @@ import {
    IconButton,
    InputAdornment,
    MenuItem,
+   Paper,
+   type PaperProps,
    Slider,
    Stack,
    TextField,
@@ -25,10 +27,23 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+   createContext,
+   type FocusEvent,
+   type ReactNode,
+   useContext,
+   useEffect,
+   useState,
+} from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
+import {
+   type OptionSearch,
+   SUGGEST_OPTION_LIMIT,
+   SUGGEST_SEARCH_LIMIT,
+} from "../../hooks/useSuggestOptions";
+import { type OptionSearchState, useOptionSearch } from "./useOptionSearch";
 import {
    decodeAtLeast,
    decodeBetween,
@@ -87,6 +102,16 @@ export interface GivenInputProps {
     * Free text still works, so the control degrades rather than locking up.
     */
    optionsFailed?: boolean;
+   /**
+    * The option list was cut off: more values exist than `options` holds. The
+    * dropdown says so, since a value missing from it may still be in the data.
+    */
+   optionsTruncated?: boolean;
+   /**
+    * Search the whole dimension on the server as the reader types, for a list
+    * that was cut off. Absent, typing filters `options` in the browser.
+    */
+   optionSearch?: OptionSearch;
 }
 
 /**
@@ -147,6 +172,8 @@ export function GivenInput({
    options,
    optionsLoading,
    optionsFailed,
+   optionsTruncated,
+   optionSearch,
 }: GivenInputProps) {
    const label = given.label ?? given.name ?? "";
    const { theme: publisherTheme } = usePublisherTheme();
@@ -255,6 +282,15 @@ export function GivenInput({
           ? [value]
           : [];
 
+   // What the reader is typing into the picker, for a server search of a list
+   // that was cut off. Called for every given, as hooks must be; inert unless
+   // the picker below renders with a search to run.
+   const [typed, setTyped] = useState("");
+   const search = useOptionSearch(
+      pickerControl ? optionSearch : undefined,
+      typed,
+   );
+
    if (
       pickerControl &&
       pickableType &&
@@ -305,95 +341,133 @@ export function GivenInput({
          onChange(filtered ? (encoded as string) : next[0]);
       };
 
+      const hint = optionHint(search, optionsTruncated, optionSearch);
       return (
-         <Autocomplete
-            multiple={multiple}
-            // Picking one value out of several should not put the list away;
-            // MUI closes on select by default, which makes "and also Aurora"
-            // cost a second click to reopen.
-            disableCloseOnSelect={multiple}
-            // Free text keeps the control from being a cage: the suggest query
-            // returns the common values, not necessarily every legal one.
-            freeSolo
-            // MUI hides the dropdown arrow whenever `freeSolo` is set, which
-            // left a control that HAS a list of values looking exactly like a
-            // plain text box: nothing on it said the list existed, so the only
-            // way to find the options was to guess that clicking would reveal
-            // them. Reported independently by a reader as "the controls render
-            // as text boxes rather than dropdowns"; the options were being
-            // fetched and offered correctly the whole time, and only the
-            // affordance was missing. Same principle as `markDrillableCells`:
-            // something you can act on has to look like it.
-            forcePopupIcon
-            // Keeps text the reader typed but did not pick from the list. A
-            // `freeSolo` Autocomplete without this discards it on blur, so a
-            // value that is legal but absent from `suggest` could be typed and
-            // then silently vanish.
-            autoSelect
-            options={options ?? []}
-            loading={optionsLoading}
-            noOptionsText={
-               optionsFailed ? "Options unavailable" : "No matching values"
-            }
-            value={multiple ? selected : (selected[0] ?? null)}
-            onChange={(_event, next) =>
-               commit(
-                  next === null
-                     ? []
-                     : Array.isArray(next)
-                       ? (next as string[])
-                       : [next as string],
-               )
-            }
-            renderInput={(params) => (
-               <TextField
-                  {...params}
-                  label={label}
-                  size="small"
-                  // The model's own default when it has one, as a ghost, the
-                  // way every other unset control shows it. A hardcoded "All"
-                  // told the reader nothing would be filtered while the query
-                  // was about to run on the declared default.
-                  //
-                  // Except when an explicit `""` is in force. That is the EMPTY
-                  // filter, so the default is precisely what is NOT running,
-                  // and showing it as a ghost made the control assert one
-                  // filter while the query used another.
-                  placeholder={
-                     selected.length !== 0
-                        ? undefined
-                        : value === ""
-                          ? "All"
-                          : (defaultDisplay ?? "All")
-                  }
-                  error={optionsFailed}
-                  helperText={
-                     optionsFailed ? (
-                        <>
-                           Could not load the options for this control. Type a
-                           value to filter anyway.
-                           {helperNode ? <br /> : null}
-                           {helperNode}
-                        </>
-                     ) : (
-                        helperNode
-                     )
-                  }
-                  slotProps={{
-                     input: {
-                        ...params.InputProps,
-                        endAdornment: (
+         <OptionHint.Provider value={hint}>
+            <Autocomplete
+               multiple={multiple}
+               // Picking one value out of several should not put the list away;
+               // MUI closes on select by default, which makes "and also Aurora"
+               // cost a second click to reopen.
+               disableCloseOnSelect={multiple}
+               // Free text keeps the control from being a cage: the suggest query
+               // returns the common values, not necessarily every legal one.
+               freeSolo
+               // MUI hides the dropdown arrow whenever `freeSolo` is set, which
+               // left a control that HAS a list of values looking exactly like a
+               // plain text box: nothing on it said the list existed, so the only
+               // way to find the options was to guess that clicking would reveal
+               // them. Reported independently by a reader as "the controls render
+               // as text boxes rather than dropdowns"; the options were being
+               // fetched and offered correctly the whole time, and only the
+               // affordance was missing. Same principle as `markDrillableCells`:
+               // something you can act on has to look like it.
+               forcePopupIcon
+               // Keeps text the reader typed but did not pick from the list. A
+               // `freeSolo` Autocomplete without this discards it on blur, so a
+               // value that is legal but absent from `suggest` could be typed and
+               // then silently vanish.
+               //
+               // Single-pick only. On blur MUI's `autoSelect` also picks the
+               // HIGHLIGHTED option while the list is open, and a multi-pick
+               // keeps its list open after a pick with that option still
+               // highlighted, so clicking away picked it a second time, which in
+               // a multi-pick takes it back out: choose Aurora, click the page,
+               // and the filter was gone. A multi-pick keeps typed text itself,
+               // in the input's blur below.
+               autoSelect={!multiple}
+               // The server's matches once it has answered for exactly what is
+               // typed; until then the list in hand, filtered here as usual.
+               options={search.page?.values ?? options ?? []}
+               // Already matched on the server, case and all: filtering them
+               // again here could only hide a match.
+               {...(search.page
+                  ? { filterOptions: (found: string[]) => found }
+                  : {})}
+               onInputChange={(_event, text, reason) =>
+                  // Only typing searches. MUI also sets the text on a pick and
+                  // on a reset to the value, and searching for the value just
+                  // picked would replace the list with that one value.
+                  setTyped(reason === "input" ? text : "")
+               }
+               loading={optionsLoading || search.searching}
+               loadingText={search.searching ? "Searching…" : "Loading…"}
+               noOptionsText={
+                  optionsFailed ? "Options unavailable" : "No matching values"
+               }
+               slots={{ paper: HintPaper }}
+               value={multiple ? selected : (selected[0] ?? null)}
+               onChange={(_event, next) =>
+                  commit(
+                     next === null
+                        ? []
+                        : Array.isArray(next)
+                          ? (next as string[])
+                          : [next as string],
+                  )
+               }
+               renderInput={(params) => (
+                  <TextField
+                     {...params}
+                     label={label}
+                     size="small"
+                     // The model's own default when it has one, as a ghost, the
+                     // way every other unset control shows it. A hardcoded "All"
+                     // told the reader nothing would be filtered while the query
+                     // was about to run on the declared default.
+                     //
+                     // Except when an explicit `""` is in force. That is the EMPTY
+                     // filter, so the default is precisely what is NOT running,
+                     // and showing it as a ghost made the control assert one
+                     // filter while the query used another.
+                     placeholder={
+                        selected.length !== 0
+                           ? undefined
+                           : value === ""
+                             ? "All"
+                             : (defaultDisplay ?? "All")
+                     }
+                     error={optionsFailed}
+                     helperText={
+                        optionsFailed ? (
                            <>
-                              {optionsLoading && <CircularProgress size={16} />}
-                              {params.InputProps.endAdornment}
+                              Could not load the options for this control. Type
+                              a value to filter anyway.
+                              {helperNode ? <br /> : null}
+                              {helperNode}
                            </>
-                        ),
-                     },
-                  }}
-               />
-            )}
-            fullWidth
-         />
+                        ) : (
+                           helperNode
+                        )
+                     }
+                     slotProps={{
+                        input: {
+                           ...params.InputProps,
+                           endAdornment: (
+                              <>
+                                 {optionsLoading && (
+                                    <CircularProgress size={16} />
+                                 )}
+                                 {params.InputProps.endAdornment}
+                              </>
+                           ),
+                        },
+                        htmlInput: {
+                           ...params.inputProps,
+                           onBlur: (event: FocusEvent<HTMLInputElement>) => {
+                              params.inputProps.onBlur?.(event);
+                              if (!multiple) return;
+                              const typed = event.target.value.trim();
+                              if (typed !== "" && !selected.includes(typed))
+                                 commit([...selected, typed]);
+                           },
+                        },
+                     }}
+                  />
+               )}
+               fullWidth
+            />
+         </OptionHint.Provider>
       );
    }
 
@@ -1203,4 +1277,63 @@ function TimeRangeControl({
          )}
       </Stack>
    );
+}
+
+/** The line under a picker's options that says the list is partial, or being searched. */
+const OptionHint = createContext<string | undefined>(undefined);
+
+/**
+ * The picker's dropdown, with a line under its options when there is
+ * something to say about them. Read from context rather than props: MUI
+ * renders the slot itself and passes it only its own props.
+ */
+function HintPaper({ children, ...props }: PaperProps) {
+   const hint = useContext(OptionHint);
+   return (
+      <Paper {...props}>
+         {children}
+         {hint && (
+            <Box
+               role="note"
+               sx={{
+                  px: 2,
+                  py: 1,
+                  borderTop: 1,
+                  borderColor: "divider",
+                  color: "text.secondary",
+                  typography: "caption",
+               }}
+            >
+               {hint}
+            </Box>
+         )}
+      </Paper>
+   );
+}
+
+const count = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * What the dropdown says about its options, if anything. Only a cut-off list
+ * has something to say: a whole list needs no footnote.
+ */
+export function optionHint(
+   search: OptionSearchState,
+   truncated: boolean | undefined,
+   searchable: OptionSearch | undefined,
+): string | undefined {
+   if (search.active) {
+      if (search.searching) return "Searching all values…";
+      if (search.failed)
+         return `Could not search all values. Showing matches in the first ${count(SUGGEST_OPTION_LIMIT)}.`;
+      if (search.page?.truncated)
+         return `Showing the first ${count(SUGGEST_SEARCH_LIMIT)} matches. Keep typing to narrow them.`;
+      return undefined;
+   }
+   if (!truncated) return undefined;
+   // A named suggest query cannot be searched on the server, so the list in
+   // hand is all there is to filter; a value past it can still be typed in.
+   return searchable
+      ? `Showing the first ${count(SUGGEST_OPTION_LIMIT)} values. Type to search them all.`
+      : `Showing the first ${count(SUGGEST_OPTION_LIMIT)} values. A value not listed can still be typed.`;
 }

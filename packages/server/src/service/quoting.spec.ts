@@ -58,6 +58,7 @@ describe("dialect/connection-type quoting conformance", () => {
       { connectionType: "postgres", dialect: "postgres", quote: '"' },
       { connectionType: "snowflake", dialect: "snowflake", quote: '"' },
       { connectionType: "trino", dialect: "trino", quote: '"' },
+      { connectionType: "sqlserver", dialect: "sqlserver", quote: '"' },
       { connectionType: "duckdb", dialect: "duckdb", quote: '"' },
       { connectionType: "motherduck", dialect: "duckdb", quote: '"' },
    ] as const;

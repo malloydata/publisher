@@ -8,7 +8,7 @@ import {
    serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
-import { saveChanges } from "./helpers/save";
+import { expectUnsaved, saveChanges } from "./helpers/save";
 
 /**
  * The fixture is copied to a temp directory because saving writes the notebook
@@ -67,9 +67,7 @@ test.describe("notebook-builder", () => {
       await expect(page.getByText("Where revenue came from")).toBeVisible();
 
       await editText(tileByKey(page, "text.prose"), EDITED);
-      await expect(
-         page.getByRole("button", { name: "Save", exact: true }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
       await saveChanges(page);
 
       // On disk: the edited tile, and every byte after it untouched.

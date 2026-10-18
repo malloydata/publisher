@@ -1,39 +1,58 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
-import { Alert, Button, Stack, Typography } from "@mui/material";
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { DEFAULT_COLUMNS, nudgedSpan } from "../Dashboard/DashboardGrid";
+import { Alert, Button, Stack, Typography, useMediaQuery } from "@mui/material";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+   isPlaced,
+   nudgedSpan,
+   useDefaultTileSpan,
+} from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
-import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
-import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
+import type { ReportEventHandler } from "../Report/telemetry";
 import type { BuilderGiven } from "./controls";
 import { BuilderDialogs } from "./BuilderDialogs";
+import type { ViewPreview } from "./AddTileDialog";
 import { BuilderGrid } from "./BuilderGrid";
 import { BuilderHeader } from "./BuilderHeader";
 import { builderReport } from "./builderReport";
-import { BuilderToolbar } from "./BuilderToolbar";
+import { BuilderToolbar, SAVE_TARGET } from "./BuilderToolbar";
+import {
+   useReportControls,
+   type BuilderControlsHandler,
+} from "./builderControls";
 import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
-import {
-   isQueryTile,
-   type DashboardDocument,
-   type QueryTile,
-} from "./document";
-import { FilterStrip } from "./FilterStrip";
+import { tileKey, type DashboardDocument, type QueryTile } from "./document";
+import { FilterStrip, type FixedFilter } from "./FilterStrip";
+import { clockTime, type SaveStatusProps } from "./SaveStatus";
 import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
 import { useControlBindings } from "./useControlBindings";
-import { useConversionConfirm } from "./useConversionConfirm";
+import { useReportDraft } from "./useReportDraft";
 import { useReportEditor } from "./useReportEditor";
 import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
-import { useTileResize } from "./useTileResize";
+import { ArrangeMenu } from "./ArrangeMenu";
+import type { ArrangeActions } from "./builderControls";
+import {
+   flowTiles,
+   hasGaps,
+   inReadingOrder,
+   pack,
+   settle,
+   stepPlaced,
+   widestFrom,
+} from "./placement";
+import { useEdgeResize, withShape } from "./useEdgeResize";
+import { layoutRules, withSpan } from "../Report/layoutRules";
+import { ReportPage } from "../Report/ReportPage";
 
 export type { BuilderGiven } from "./controls";
 
@@ -53,7 +72,7 @@ export type { BuilderGiven } from "./controls";
  * draws its own card AND its own heading. Nesting one inside a card of ours
  * would show a card in a card under two titles — which is precisely not what a
  * reader sees. So every affordance is drawn AROUND whatever the caller renders:
- * an outline for selection, a grip and a menu in the corners.
+ * an outline for selection, a menu in the corner, and edges that resize.
  *
  * **Everything here is on the thing it changes.** Set a tile's width from its menu, and drag
  * the tile itself to reorder — into the empty end of a row
@@ -101,9 +120,11 @@ export interface ReportBuilderProps {
    renderTile?: (
       tile: QueryTile,
       heading?: TileHeadingSlots,
-      /** The document's tile chrome — bare on a notebook — so the live tile reads as the reader's. */
+      /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
+   /** A view picked in Add a tile, run as the tile it would add; absent, the picker says what will run. */
+   renderViewPreview?: (view: ViewPreview) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -145,17 +166,11 @@ export interface ReportBuilderProps {
     */
    dashboards?: string[];
    /**
-    * Saves, refusals and layout switches, for the host to log; see
+    * Opens, saves and refusals, for the host to log; see
     * `ReportEvent`. Each is stamped with `modelPath` (empty when the builder
     * was given none) and the document's layout as it stands.
     */
    onEvent?: ReportEventHandler;
-   /**
-    * The document is a conversion of a cell-format notebook: `from` is the text
-    * on disk, `to` the layout text it converts to. Save writes `to` with the
-    * edits spliced in, and Undo save puts `from` back.
-    */
-   conversion?: { from: string; to: string };
    /**
     * Whether the document differs from what was last saved, on every change
     * and on mount.
@@ -165,8 +180,13 @@ export interface ReportBuilderProps {
     * cannot answer that: the saved baseline lives in this hook, so a parent
     * comparing the document it is handed against the one it passed in reads
     * dirty immediately after a successful save.
+    *
+    * The second argument is whether leaving now would LOSE edits: the same,
+    * unless a draft is kept (`draftKey`), when it is only text still being
+    * typed into an open field. A leave guard reads that one; anything
+    * deciding whether to replace the document reads the first.
     */
-   onDirtyChange?: (dirty: boolean) => void;
+   onDirtyChange?: (dirty: boolean, wouldLose: boolean) => void;
    /**
     * Where `onSave` puts the file, for the event it reports. The builder
     * cannot tell — it is handed a function — and a save into the package, into
@@ -189,6 +209,24 @@ export interface ReportBuilderProps {
     */
    addFilterDisabledReason?: string;
    /**
+    * Filters in the row a tile reads other than through a binding the
+    * builder writes (the model's own `where:`, or this report's own
+    * `source:`), each with why it cannot be changed here. They can be set,
+    * as in the reader, but not removed or configured.
+    */
+   fixedFilters?: ReadonlyMap<string, FixedFilter>;
+   /**
+    * Open a model by its package path: offered as "Open the model" on a filter
+    * the model sets. Omitted, the filter only says where it is set.
+    */
+   onOpenModel?: (modelPath: string) => void;
+   /**
+    * Names a filter the builder adds must not take, beyond the givens on the
+    * page: a host that resolves held text itself passes every given the model
+    * declares, so a new filter never takes a model given's name.
+    */
+   takenGivenNames?: readonly string[];
+   /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
     */
@@ -196,12 +234,23 @@ export interface ReportBuilderProps {
    /** Leave the builder, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
    /**
-    * Whether the toolbar offers the Linear / Grid layout switch. Default
-    * true. A host that files a report by its layout passes false, so an
-    * author cannot change a layout the host files by. A document held as text
-    * never gets the switch.
+    * Take over the page-level controls (save status and Save, undo and redo,
+    * and adding a tile, text or filter): the builder hands
+    * them over as `BuilderControls` whenever they change, and draws no
+    * toolbar of its own. Draw them with `BuilderBar`, or place each in
+    * the host's own chrome. `undefined` is handed over when the builder goes.
     */
-   allowLayoutChange?: boolean;
+   onControlsChange?: BuilderControlsHandler;
+   /**
+    * Keep unsaved edits in this browser under this key, and put them back
+    * when the builder next opens on the same key: so leaving never loses work,
+    * and a host can offer one way out, `done` (write, then leave), with no
+    * "leave with unsaved changes?" on the way. `onDirtyChange`'s second
+    * argument then reports only what a draft cannot hold, text still being
+    * typed into an open field.
+    * One key per report and place it is saved to. Absent, nothing is kept.
+    */
+   draftKey?: string;
 }
 
 export function ReportBuilder({
@@ -211,30 +260,34 @@ export function ReportBuilder({
    onChange,
    onDirtyChange,
    onExit,
-   allowLayoutChange = true,
    renderTile,
+   renderViewPreview,
    controls,
    givens,
    catalog,
    toolbar,
    dashboards,
    onEvent,
-   conversion,
    savesTo = "package",
    saveLabel,
    replaces,
    modelPath,
    visibleSources,
    addFilterDisabledReason,
+   fixedFilters,
+   onOpenModel,
+   takenGivenNames,
+   onControlsChange,
+   draftKey,
 }: ReportBuilderProps) {
    const editor = useReportEditor({
       source,
       document,
       ...(onSave ? { onSave } : {}),
-      ...(conversion ? { conversion } : {}),
       ...(replaces !== undefined ? { replaces } : {}),
       ...(visibleSources ? { visibleSources } : {}),
    });
+   const draft = useReportDraft(draftKey, editor, source);
    const gridBox = useRef<HTMLDivElement>(null);
    const {
       selected,
@@ -246,18 +299,25 @@ export function ReportBuilder({
       flash,
       stepEditor,
    } = useBuilderSelection({ editor, gridBox });
-   // A linear report is one column whatever the file says, and the builder never writes its width.
-   const notebook = editor.document.layout === "linear";
-   const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
-   // The reader's tile chrome for this document: cards on a dashboard, bare
-   // flow on a notebook. Every tile, text block and the description take it,
-   // so editing a document draws it the way reading it does.
-   const chrome: TileChrome = notebook ? "none" : "card";
+   // What the layout decides: how tiles are arranged, never how they look.
+   const rules = layoutRules(editor.document.layout, editor.document.columns);
+   const { columns } = rules;
    // The name a reader's view titles an untitled document with.
    const documentSlug = modelPath
       ?.split("/")
       .at(-1)
       ?.replace(/\.malloy$/, "");
+   // Below `md` the grid is drawn as one column, as a phone shows it, so a
+   // tile's width and place do not show: moving and widening are off there.
+   // Assumed wide where the width cannot be asked (tests, server render).
+   // 900px is `md` in the default breakpoints, which the grid's own `sx`
+   // resolves against; written out so a host with no MUI theme still works.
+   const wide = useMediaQuery("(min-width:900px)", {
+      defaultMatches: true,
+      noSsr: true,
+   });
+   const arrange = !rules.widths || wide;
+   // On a grid a move is free placement; on a linear report it reorders.
    const reorder = useTileReorder({
       tiles: editor.document.tiles,
       commit: (next) =>
@@ -265,24 +325,69 @@ export function ReportBuilder({
             draft.tiles = next;
          }),
       onLanded: selectTile,
+      ...(rules.widths && wide ? { placement: { columns, gridBox } } : {}),
    });
+   // After a tile on a placed report changes size, whatever it now covers
+   // is pushed down; a report that flows has nothing to settle.
+   // Write a new tile list as one edit, keeping the selection on the tile it
+   // was on: a placed report is written in reading order, so a resize, a
+   // pack or a flow can move the selected tile to another index.
+   const writeTiles = (next: DashboardDocument["tiles"], key?: string) => {
+      editor.update((draft) => {
+         draft.tiles = next;
+      });
+      if (key === undefined) return;
+      const landed = next.findIndex((each) => tileKey(each) === key);
+      if (landed >= 0) selectTile(landed);
+   };
+   const placesTiles = rules.widths;
+   const place = useCallback(
+      (tiles: DashboardDocument["tiles"], index: number) =>
+         placesTiles && isPlaced(tiles) ? settle(tiles, columns, index) : tiles,
+      [placesTiles, columns],
+   );
    const { dragging } = reorder;
    // Dragging a tile's right edge sets its width, written once on release.
-   const resizing = useTileResize({
-      tiles: editor.document.tiles,
+   // A tile with no `# colspan` is drawn as the reader draws it, at least
+   // MIN_TILE_PX wide, rather than one column: the right edge and the row
+   // arithmetic start from that span. Only drawn; nothing is written until
+   // the author sets a width.
+   const defaultSpan = useDefaultTileSpan(gridBox, columns);
+   const laidOut = useMemo(
+      () =>
+         editor.document.tiles.map((tile) =>
+            tile.colspan === undefined
+               ? { ...tile, colspan: defaultSpan }
+               : tile,
+         ),
+      [editor.document.tiles, defaultSpan],
+   );
+   // Dragging any edge or corner of a tile resizes it: the right and bottom
+   // edges set width and height, the left and top move those edges (placing a
+   // report that flows, as a move does), a corner both at once. Written once,
+   // on release, and on a placed report whatever it now covers moves down.
+   const edging = useEdgeResize({
+      tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
-      commit: (index, span) =>
-         editor.update((draft) => {
-            const tile = draft.tiles[index];
-            if (tile) tile.colspan = span;
-         }),
+      commit: ({ index, edges, shape, placed, placedAll }) => {
+         const all = placedAll ?? editor.document.tiles;
+         const tile = all[index];
+         if (!tile) return;
+         let next = withShape(tile, shape, edges, placed);
+         if (edges.e || edges.w)
+            next = withSpan(next, shape.colspan, columns, defaultSpan);
+         const resized = all.map((each, i) => (i === index ? next : each));
+         writeTiles(
+            placed ? inReadingOrder(settle(resized, columns, index)) : resized,
+            tileKey(tile),
+         );
+      },
    });
    const tiles = useTileEditing({
       editor,
-      notebook,
-      columns,
+      rules,
       modelPath,
       textHeld: visibleSources !== undefined,
       selectTile,
@@ -303,13 +408,13 @@ export function ReportBuilder({
    const { draftDirty, openDraft, prepare } = useOpenDraftCommit({
       editorDirty: editor.dirty,
    });
-   const { confirmConversion, prepareSave } = useConversionConfirm({
-      pendingOpen: editor.pendingOpen,
-      prepare,
-   });
 
+   const edgeDragging = edging.drag !== undefined;
    const shortcuts = useMemo(
       () => ({
+         // While an edge is dragged: its release writes the layout the drag
+         // began from, so an undo or a move made mid-drag would be lost.
+         paused: edgeDragging,
          // Escape drops the selection — unless the menu or the filter window is open, in which case the key is theirs and they close on it themselves.
          escape: () => {
             // Not while a menu or a window is open: the key is theirs, and
@@ -318,45 +423,92 @@ export function ReportBuilder({
                !menu &&
                !filterDialog &&
                !addingTile &&
-               drillSource === undefined &&
-               confirmConversion === undefined
+               drillSource === undefined
             )
                clearSelection();
          },
+         // Option/Alt and an arrow: a placed tile moves exactly one cell. A
+         // step into the tile beside it swaps the two; otherwise whatever it
+         // lands on is pushed down. Unlike a drop it never slides under a
+         // taller tile, so a key press moves it where the arrow points.
+         move: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => {
+            if (dragging || selected === undefined || !rules.widths || !arrange)
+               return false;
+            const tile = editor.document.tiles[selected];
+            if (!tile || tile.row === undefined || tile.col === undefined)
+               return false;
+            const next = stepPlaced(
+               editor.document.tiles,
+               selected,
+               rows,
+               cols,
+               columns,
+            );
+            // At the grid's edge: the key is still the builder's, so it does
+            // not fall through to the browser's Back or Forward.
+            if (next.every((each, i) => each === editor.document.tiles[i]))
+               return true;
+            const key = tileKey(tile);
+            editor.update((draft) => {
+               draft.tiles = inReadingOrder(
+                  stepPlaced(draft.tiles, selected, rows, cols, columns),
+               );
+            });
+            const landed = inReadingOrder(next).findIndex(
+               (each) => tileKey(each) === key,
+            );
+            if (landed >= 0) selectTile(landed);
+            return true;
+         },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
-            if (dragging || selected === undefined || notebook) return;
-            const tile = editor.document.tiles[selected];
-            if (
-               !tile ||
-               (isQueryTile(tile) && tile.declaration.kind === "inherited")
-            )
+            if (dragging || selected === undefined || !rules.widths || !arrange)
                return;
-            const span = nudgedSpan(tile.colspan ?? 1, delta, columns);
-            if (span === (tile.colspan ?? 1)) return;
+            // Any tile, an inherited one too: its width is on its entry.
+            const tile = editor.document.tiles[selected];
+            if (!tile) return;
+            const span = nudgedSpan(
+               tile.colspan ?? defaultSpan,
+               delta,
+               widestFrom(tile, columns),
+            );
+            if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
-               draft.tiles[selected].colspan = span;
+               draft.tiles[selected] = withSpan(
+                  draft.tiles[selected],
+                  span,
+                  columns,
+                  defaultSpan,
+               );
+               draft.tiles = place(draft.tiles, selected);
             });
          },
       }),
       [
+         edgeDragging,
+         defaultSpan,
+         arrange,
+         place,
+         selectTile,
          editor,
          menu,
          filterDialog,
          addingTile,
          drillSource,
-         confirmConversion,
          clearSelection,
          selected,
          columns,
-         notebook,
+         rules,
          dragging,
       ],
    );
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
-      prepare: prepareSave,
+      // Only while the browser is actually holding them: a refused write
+      // means leaving would lose the edits, and the host's guard must ask.
+      keepsEdits: draftKey !== undefined && draft.keeping,
+      prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onDirtyChange,
@@ -373,31 +525,86 @@ export function ReportBuilder({
    });
 
    const empty = editor.document.tiles.length === 0;
+   const { toolbarProps } = session;
+   const restored = draft.restored;
+   // Where the edits stand, for the status on either surface: the host's bar
+   // or the page's own toolbar.
+   const saveStatus: SaveStatusProps = {
+      status: session.saving
+         ? "saving"
+         : toolbarProps.dirty
+           ? "unsaved"
+           : "saved",
+      saveTarget: saveLabel ?? SAVE_TARGET[savesTo],
+      ...(draft.keptAt !== undefined ? { draftKeptAt: draft.keptAt } : {}),
+      // An offered draft is discarded without being applied, so Discard is
+      // an answer before there is anything unsaved.
+      ...((toolbarProps.dirty || restored?.pending) && draftKey !== undefined
+         ? { discard: draft.discard }
+         : {}),
+      ...(restored ? { restored } : {}),
+      ...(restored && !restored.pending
+         ? { dismissRestored: draft.dismissRestored }
+         : {}),
+   };
+   // The layout as a whole, once a grid report's tiles are placed: close its
+   // gaps, or let it flow again. Each is one undoable edit.
+   const tilesNow = editor.document.tiles;
+   const selectedKey =
+      selected !== undefined && tilesNow[selected]
+         ? tileKey(tilesNow[selected])
+         : undefined;
+   const arrangeActions: ArrangeActions | undefined =
+      rules.widths && arrange && isPlaced(tilesNow)
+         ? {
+              ...(hasGaps(tilesNow, columns)
+                 ? {
+                      pack: () =>
+                         writeTiles(
+                            inReadingOrder(pack(tilesNow, columns)),
+                            selectedKey,
+                         ),
+                   }
+                 : {}),
+              flow: () => writeTiles(flowTiles(tilesNow), selectedKey),
+           }
+         : undefined;
+   useReportControls(onControlsChange, {
+      ...saveStatus,
+      ...(toolbarProps.onSave ? { save: toolbarProps.onSave } : {}),
+      canUndo: toolbarProps.canUndo,
+      undo: toolbarProps.onUndo,
+      canRedo: toolbarProps.canRedo,
+      redo: toolbarProps.onRedo,
+      add: {
+         ...(catalog ? { tile: () => tiles.openAdd() } : {}),
+         text: tiles.appendText,
+         // A filter is declared for the tiles to read, so there has to be one.
+         ...(addFilterDisabledReason !== undefined
+            ? { filterUnavailable: addFilterDisabledReason }
+            : empty
+              ? { filterUnavailable: "Add a tile before a filter." }
+              : { filter: () => setFilterDialog({}) }),
+      },
+      ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
+      ...(session.done ? { done: session.done } : {}),
+      ...(restored?.pending ? { restore: draft.restoreOffered } : {}),
+      ...(arrangeActions ? { arrange: arrangeActions } : {}),
+   });
    // The builder's actions: on the title's line, at the right, above the
    // description.
-   const actions = (
+   const actions = onControlsChange ? undefined : (
       <BuilderToolbar
          {...session.toolbarProps}
          {...(toolbar ? { actions: toolbar } : {})}
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
+         {...(arrangeActions
+            ? { arrange: <ArrangeMenu arrange={arrangeActions} /> }
+            : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
-         {...(visibleSources === undefined && allowLayoutChange
-            ? {
-                 // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
-                 layout: editor.document.layout,
-                 onLayoutChange: (next: ReportLayout) => {
-                    const from = editor.document.layout;
-                    if (next === from) return;
-                    editor.update((draft) => {
-                       draft.layout = next;
-                    });
-                    reportEmitter(
-                       { path: modelPath ?? "", layout: next },
-                       onEvent,
-                    ).emit({ type: "report.layout_changed", from, to: next });
-                 },
-              }
+         {...(draftKey !== undefined && toolbarProps.onSave
+            ? { saveStatus }
             : {})}
       />
    );
@@ -415,75 +622,119 @@ export function ReportBuilder({
          {/* Pulled out by the ring's inset, so the content inside it lands on
           the same edges as the reader's view: editing and reading are the same
           page, and the margins must not move between them. */}
-         <Stack sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}>
-            {/* The ring's inset, minus the top: nothing at the top of this stack
-             can be selected (the prose and the control row are not tiles). */}
-            <Stack
+         <Stack
+            // Where Save writes, for a host or a test to read: the words are
+            // the status's tooltip, not a line on the page.
+            className={reportClasses.builder}
+            data-saves-to={savesTo}
+            sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}
+         >
+            {/* The reader's page, with the ring's inset (minus the top:
+             nothing at the top of the page can be selected). */}
+            <ReportPage
+               layout={rules.layout}
                sx={{
-                  gap: 2,
                   px: `${SELECTION_RING_PX}px`,
                   pb: `${SELECTION_RING_PX}px`,
                }}
-            >
-               {editor.pendingOpen && (
-                  <Alert severity="info">
-                     This report is in the cell format. Saving rewrites it as a
-                     layout notebook, and a named query run once becomes that
-                     tile&apos;s view.
-                  </Alert>
-               )}
-               <BuilderHeader
-                  editor={editor}
-                  notebook={notebook}
-                  documentSlug={documentSlug}
-                  chrome={chrome}
-                  actions={actions}
-                  descriptionSelected={descriptionSelected}
-                  selectDescription={selectDescription}
-               />
-
-               {empty ? (
-                  <>
-                     <Stack
-                        sx={{
-                           alignItems: "flex-start",
-                           gap: 1,
-                           py: 3,
-                           px: 2,
-                           border: 1,
-                           borderStyle: "dashed",
-                           borderColor: "divider",
-                           borderRadius: 1,
-                        }}
+               header={
+                  <BuilderHeader
+                     editor={editor}
+                     documentSlug={documentSlug}
+                     actions={actions}
+                     descriptionSelected={descriptionSelected}
+                     selectDescription={selectDescription}
+                  />
+               }
+               controls={
+                  empty ? undefined : (
+                     <FilterStrip
+                        controls={bindings.controlList}
+                        unknownFieldsOf={bindings.unknownFieldsOf}
+                        onEdit={(control) => setFilterDialog({ control })}
+                        onAdd={() => setFilterDialog({})}
+                        {...(addFilterDisabledReason
+                           ? { addDisabledReason: addFilterDisabledReason }
+                           : {})}
+                        onRemove={bindings.dropControl}
+                        {...(fixedFilters ? { fixedFilters } : {})}
+                        {...(onOpenModel ? { onOpenModel } : {})}
+                        {...(editor.document.startingGivens
+                           ? { startingValues: editor.document.startingGivens }
+                           : {})}
+                        onStartingValue={(name, text) =>
+                           editor.update((draft) => {
+                              const next = { ...(draft.startingGivens ?? {}) };
+                              if (text === undefined) delete next[name];
+                              else next[name] = text;
+                              if (Object.keys(next).length > 0)
+                                 draft.startingGivens = next;
+                              else delete draft.startingGivens;
+                           })
+                        }
                      >
-                        <Typography variant="body2">
-                           This report is not served until it has a tile.
-                        </Typography>
-                        {catalog && (
-                           <Button
-                              size="small"
-                              startIcon={<AddIcon />}
-                              onClick={() => openAdd()}
-                           >
-                              Add tile
-                           </Button>
-                        )}
-                     </Stack>
-                  </>
-               ) : (
-                  <FilterStrip
-                     controls={bindings.controlList}
-                     tileCount={editor.document.tiles.length}
-                     unknownFieldsOf={bindings.unknownFieldsOf}
-                     onEdit={(control) => setFilterDialog({ control })}
-                     onAdd={() => setFilterDialog({})}
-                     {...(addFilterDisabledReason
-                        ? { addDisabledReason: addFilterDisabledReason }
-                        : {})}
-                     onRemove={bindings.dropControl}
+                        {controls}
+                     </FilterStrip>
+                  )
+               }
+            >
+               {empty && (
+                  <Stack
+                     sx={{
+                        alignItems: "flex-start",
+                        gap: 1,
+                        py: 3,
+                        px: 2,
+                        border: 1,
+                        borderStyle: "dashed",
+                        borderColor: "divider",
+                        borderRadius: 1,
+                     }}
                   >
-                     {controls}
-                  </FilterStrip>
+                     <Typography variant="body2">
+                        This report is not served until it has a tile.
+                     </Typography>
+                     {catalog && (
+                        <Button
+                           size="small"
+                           startIcon={<AddIcon />}
+                           onClick={() => openAdd()}
+                        >
+                           Add tile
+                        </Button>
+                     )}
+                  </Stack>
+               )}
+
+               {/* Edits put back on opening are said in the save status, so
+                the page does not move. A stale draft is a choice: put back,
+                it replaces the newer version; dropped, the edits are gone.
+                So it is asked here, with no close, until it is answered (or
+                an edit answers it). */}
+               {restored?.pending && (
+                  <Alert
+                     severity="warning"
+                     action={
+                        <>
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={draft.restoreOffered}
+                           >
+                              Restore them
+                           </Button>
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={draft.discard}
+                           >
+                              Discard
+                           </Button>
+                        </>
+                     }
+                  >
+                     {`You have unsaved edits from ${clockTime(restored.savedAt)}, made before this report changed. Restoring them replaces the current version.`}
+                  </Alert>
                )}
 
                {editor.error && (
@@ -492,14 +743,22 @@ export function ReportBuilder({
                   <Alert severity="warning">{editor.error}</Alert>
                )}
 
+               {!arrange && (
+                  <Alert severity="info">
+                     This window is too narrow for the grid, so tiles stack in
+                     one column, as on a phone. Widen it to move tiles or change
+                     their width.
+                  </Alert>
+               )}
                <BuilderGrid
                   editor={editor}
+                  arrange={arrange}
                   reorder={reorder}
-                  resizing={resizing}
+                  edging={edging}
+                  place={place}
                   gridBox={gridBox}
-                  columns={columns}
-                  notebook={notebook}
-                  chrome={chrome}
+                  defaultSpan={defaultSpan}
+                  rules={rules}
                   canAdd={!!catalog}
                   selected={selected}
                   flash={flash}
@@ -509,6 +768,14 @@ export function ReportBuilder({
                      selectTile(index);
                      tiles.setMenu({ anchor, index });
                   }}
+                  onRemove={tiles.removeTile}
+                  {...(editor.document.tiles.length === 1 &&
+                  editor.saved.tiles.length > 0
+                     ? {
+                          removeBlocked:
+                             "A saved report needs at least one tile.",
+                       }
+                     : {})}
                   openAdd={openAdd}
                   editTile={tiles.editTile}
                   {...(renderTile ? { renderTile } : {})}
@@ -522,10 +789,11 @@ export function ReportBuilder({
                   tiles={tiles}
                   drillSource={drillSource}
                   setDrillSource={setDrillSource}
-                  confirmConversion={confirmConversion}
                   exitDialog={session.exitGuard.dialog}
+                  {...(renderViewPreview ? { renderViewPreview } : {})}
+                  {...(takenGivenNames ? { takenGivenNames } : {})}
                />
-            </Stack>
+            </ReportPage>
          </Stack>
       </OpenDraftContext.Provider>
    );

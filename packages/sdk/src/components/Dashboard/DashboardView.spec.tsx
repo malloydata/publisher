@@ -125,27 +125,154 @@ describe("DashboardView tiles", () => {
    });
 });
 
-describe("DashboardView chrome", () => {
-   it("draws cards by default", async () => {
-      const { container } = render(view(), { wrapper: serverWrapper });
-      await screen.findByText("reader");
-      expect(
-         container.querySelectorAll('[data-chrome="card"]').length,
-      ).toBeGreaterThan(0);
-      expect(container.querySelector('[data-chrome="none"]')).toBeNull();
-   });
+describe("filters a host writes into the query (literalReads)", () => {
+   it("count as read for the tile, and are never sent as givens", async () => {
+      const manifest = {
+         ...base,
+         givens: [
+            { name: "REGION", type: "string", label: "Region" },
+            // The document's own filter: resolved to a literal by the host.
+            { name: "BRAND", type: "string", label: "Brand" },
+         ],
+         tiles: [
+            {
+               kind: "query",
+               query: "orders -> by_brand",
+               givenNames: ["REGION"],
+            },
+            {
+               kind: "query",
+               query: "orders -> by_region",
+               givenNames: ["REGION"],
+            },
+         ],
+      } as DashboardManifest;
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+            givens={{ REGION: "West", BRAND: "Acme" }}
+            literalReads={{ "orders -> by_brand": ["BRAND"] }}
+         />,
+         { wrapper: serverWrapper },
+      );
 
-   it("draws no cards and no title block with chrome none", async () => {
-      const { container } = render(view("none"), { wrapper: serverWrapper });
-      await screen.findByText("reader");
-      expect(container.querySelector('[data-chrome="card"]')).toBeNull();
-      expect(container.querySelectorAll('[data-chrome="none"]').length).toBe(3);
-      expect(screen.queryByText("ops")).toBeNull();
+      await waitFor(() =>
+         expect(executeQueryModel.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      // Only the tile that does not read Brand says so.
+      const tags = await screen.findAllByTestId("tile-filter-tag");
+      expect(tags.map((tag) => tag.textContent)).toEqual([
+         "Doesn't respond to Brand",
+      ]);
+      expect(tags[0].closest("[data-chrome]")?.textContent).toContain(
+         "By region",
+      );
+      // Brand's value reaches no request: the server does not know it.
+      for (const call of executeQueryModel.mock.calls)
+         expect(JSON.stringify(call[3])).not.toContain("BRAND");
    });
 });
 
+describe("a required filter with no value", () => {
+   const manifest = {
+      ...base,
+      givens: [
+         {
+            name: "RECALL_YEAR",
+            type: "number",
+            label: "Recall Year",
+            required: true,
+         },
+      ],
+      tiles: [
+         {
+            kind: "query",
+            query: "recalls -> by_year",
+            givenNames: ["RECALL_YEAR"],
+            label: "By year",
+         },
+         {
+            kind: "query",
+            query: "recalls -> everything",
+            givenNames: [],
+            label: "Everything",
+         },
+      ],
+   } as DashboardManifest;
+   const sent = () =>
+      executeQueryModel.mock.calls.map(
+         (call) => (call[3] as { query?: string }).query,
+      );
+
+   it("runs no tile that reads it, and asks for it once for the page", async () => {
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="recalls"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(
+         await screen.findByText(
+            "Pick a value for Recall Year to see this report.",
+         ),
+      ).toBeDefined();
+      expect(screen.getByText("Waiting for Recall Year.")).toBeDefined();
+      await waitFor(() =>
+         expect(sent()).toContain("run: recalls -> everything"),
+      );
+      expect(sent()).not.toContain("run: recalls -> by_year");
+      // The control says it, rather than "Any".
+      expect(
+         screen.getByRole("button", { name: "Recall Year: Required" }),
+      ).toBeDefined();
+   });
+
+   it("runs every tile once it has a value, with no prompt", async () => {
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="recalls-set"
+            givens={{ RECALL_YEAR: "2020" }}
+         />,
+         { wrapper: serverWrapper },
+      );
+      await waitFor(() => expect(sent()).toContain("run: recalls -> by_year"));
+      expect(
+         screen.queryByText("Pick a value for Recall Year to see this report."),
+      ).toBeNull();
+   });
+});
+
+describe("DashboardView chrome", () => {
+   // A linear report and a grid draw the same page: query tiles in cards, text
+   // tiles as bare prose, and the title block. `chrome` is accepted and ignored.
+   for (const chrome of [undefined, "card", "none"] as const) {
+      it(`draws query tiles as cards and text as prose, with chrome ${chrome ?? "unset"}`, async () => {
+         const { container } = render(view(chrome), {
+            wrapper: serverWrapper,
+         });
+         const strong = await screen.findByText("reader");
+         expect(
+            strong.closest("[data-chrome]")?.getAttribute("data-chrome"),
+         ).toBe("none");
+         expect(
+            container.querySelectorAll('[data-chrome="card"]'),
+         ).toHaveLength(2);
+         expect(screen.getByRole("heading", { name: "ops" })).toBeDefined();
+      });
+   }
+});
+
 describe("DashboardView header", () => {
-   it("boxes a dashboard's description as it boxes a text tile", async () => {
+   it("draws a dashboard's description as bare page prose, not a card", async () => {
       render(
          <DashboardView
             manifest={{ ...base, description: "About **this**" }}
@@ -157,8 +284,82 @@ describe("DashboardView header", () => {
       );
       const strong = await screen.findByText("this");
       expect(strong.closest("[data-chrome]")?.getAttribute("data-chrome")).toBe(
-         "card",
+         "none",
       );
+   });
+});
+
+describe("DashboardView layout marker", () => {
+   it("marks the page with its layout, and a report that failed to load too", () => {
+      const { container, unmount } = render(
+         <DashboardView
+            manifest={{ ...base, layout: "linear" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(container.querySelector('[data-layout="linear"]')).not.toBeNull();
+      unmount();
+
+      const failed = render(
+         <DashboardView
+            manifest={{ ...base, layout: "grid", error: "did not compile" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(
+         failed.container.querySelector('[data-layout="grid"]'),
+      ).not.toBeNull();
+   });
+});
+
+describe("DashboardView prose links", () => {
+   const linked = {
+      ...base,
+      tiles: [
+         { kind: "text", name: "intro", markdown: "See [the tour](tour)" },
+      ],
+   } as DashboardManifest;
+
+   it("leaves a relative link as written when the host has no router", async () => {
+      render(
+         <DashboardView
+            manifest={linked}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      const link = await screen.findByRole("link", { name: "the tour" });
+      // Its host's routes are unknown here (a version segment, another prefix), so nothing is rewritten.
+      expect(link.getAttribute("href")).toBe("tour");
+   });
+
+   it("resolves a relative link against the report and hands it to the host's router", async () => {
+      const onLinkNavigate = mock((_to: string) => undefined);
+      render(
+         <DashboardView
+            manifest={linked}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+            onLinkNavigate={onLinkNavigate}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      const link = await screen.findByRole("link", { name: "the tour" });
+      expect(link.getAttribute("href")).toBe("/env/pkg/dashboards/tour");
+      link.click();
+      expect(onLinkNavigate).toHaveBeenCalledTimes(1);
+      expect(onLinkNavigate.mock.calls[0][0]).toBe("/env/pkg/dashboards/tour");
    });
 });
 

@@ -111,6 +111,32 @@ describe("useEditorCatalog", () => {
       expect(getModel).toHaveBeenCalledTimes(2);
    });
 
+   it("knows each model's path when the body leaves it out", async () => {
+      // What a client or proxy that keeps only the spec's fields hands back:
+      // `path` null, and the server's undeclared `modelPath` dropped.
+      getModel.mockImplementation(
+         (_env: string, _pkg: string, path: string) => {
+            const { modelPath: _dropped, ...body } = MODELS[path] as {
+               modelPath: string;
+            };
+            return Promise.resolve({ data: { ...body, path: null } });
+         },
+      );
+      try {
+         const { result } = mountCatalog({
+            modelPath: "a.malloy",
+            reports: REPORTS,
+            reportsSettled: true,
+         });
+         await waitFor(() => expect(names(result.current)).toEqual(["orders"]));
+         expect(result.current?.sources[0]?.modelPath).toBe("data.malloy");
+      } finally {
+         getModel.mockImplementation((_env, _pkg, path) =>
+            Promise.resolve({ data: MODELS[path] }),
+         );
+      }
+   });
+
    it("leaves each report out of its own catalog from one shared cache", async () => {
       const first = mountCatalog({
          modelPath: "a.malloy",

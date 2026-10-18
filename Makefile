@@ -14,7 +14,7 @@ URL := http://localhost:4000
         dev dev-init dev-server dev-react \
         status environments packages \
         open \
-        test test-unit test-integration \
+        test test-unit test-component test-integration \
         lint format prettier-check typecheck \
         regen-api
 
@@ -92,11 +92,14 @@ open: ## Open the Publisher UI in the default browser (macOS)
 	@open $(URL)
 
 # ── tests / quality ───────────────────────────────────────────────────
-test: ## Run all server tests (unit + integration)
+test: ## Run all server tests (unit + component + integration)
 	bun run test
 
 test-unit: ## Run only unit tests
 	cd packages/server && bun run test:unit
+
+test-component: ## Run only component tests (in-process, parallel)
+	cd packages/server && bun run test:component
 
 test-integration: ## Run only integration tests (max-workers=1)
 	cd packages/server && bun run test:integration

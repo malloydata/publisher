@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { CompiledModel } from "../../client";
-import { buildCatalog } from "./catalog";
+import { chartShapeGap } from "../RenderedResult/chartShapeProblem";
+import { buildCatalog, documentViewsOf } from "./catalog";
 
 /**
  * `sourceInfos` as the compiler wrote it (modelDefToModelInfo on a DuckDB source with a measure `n`
@@ -46,5 +47,140 @@ describe("buildCatalog, aggregate-only views, from real compiler output", () => 
       expect(source.views.every((v) => v.aggregateOnly === undefined)).toBe(
          true,
       );
+   });
+});
+
+describe("documentViewsOf, the views a report file declares itself", () => {
+   it("gives each view its shape, from the file's own compiled model", () => {
+      const views = documentViewsOf(MODEL).get("s");
+      expect(views?.get("kpi")).toEqual({
+         name: "kpi",
+         aggregateOnly: true,
+         shape: { groupBys: 0, totals: 1 },
+      });
+      expect(views?.get("by_calc_n")?.shape).toEqual({
+         groupBys: 1,
+         totals: 1,
+      });
+      // A nest is neither an x-axis field nor a total.
+      expect(views?.get("nst")?.shape).toEqual({ groupBys: 1, totals: 0 });
+   });
+
+   // A pick negates the chart its view declares. Without it, a bar picked on
+   // a `# line_chart` view wrote `# -viz bar_chart` and the renderer was asked
+   // for both charts at once, and drew an error.
+   it("carries the chart and doc line each view declares, as the catalog does", () => {
+      const withNotes = {
+         ...MODEL,
+         sources: [
+            {
+               name: "s",
+               views: [
+                  {
+                     name: "by_calc_n",
+                     annotations: [
+                        "#(doc) Orders by month\n",
+                        "# line_chart\n",
+                     ],
+                  },
+                  { name: "kpi" },
+               ],
+            },
+         ],
+      } as unknown as CompiledModel;
+      const views = documentViewsOf(withNotes).get("s");
+      expect(views?.get("by_calc_n")).toEqual({
+         name: "by_calc_n",
+         description: "Orders by month",
+         chart: "line_chart",
+         shape: { groupBys: 1, totals: 1 },
+      });
+      expect(views?.get("kpi")?.chart).toBeUndefined();
+      expect(views?.get("by_calc_n")).toEqual(
+         buildCatalog([withNotes]).sources[0].views.find(
+            (v) => v.name === "by_calc_n",
+         ),
+      );
+   });
+});
+
+describe("buildCatalog, combo-chart views", () => {
+   // Columns as the compiler annotates them: an aggregate carries
+   // `calculation` in its `#(malloy)` note, a group-by does not.
+   const column = (name: string, aggregate: boolean, array = false) => ({
+      kind: "dimension",
+      name,
+      type: array
+         ? {
+              kind: "array_type",
+              element_type: { kind: "record_type", fields: [] },
+           }
+         : { kind: "number_type" },
+      annotations: [
+         {
+            value: `#(malloy) ${aggregate ? "calculation " : ""}drill_expression { kind = field_reference name = ${name} }\n`,
+         },
+      ],
+   });
+   const view = (name: string, columns: unknown[]) => ({
+      kind: "view",
+      name,
+      schema: { fields: columns },
+   });
+   const VIEWS = [
+      view("by_month", [
+         column("month", false),
+         column("orders", true),
+         column("revenue", true),
+      ]),
+      view("one_total", [column("month", false), column("orders", true)]),
+      view("three_totals", [
+         column("month", false),
+         column("a", true),
+         column("b", true),
+         column("c", true),
+      ]),
+      view("totals_only", [column("a", true), column("b", true)]),
+      view("nested_only", [
+         column("rows", false, true),
+         column("a", true),
+         column("b", true),
+      ]),
+   ];
+   const COMBO = {
+      ...MODEL,
+      sources: [{ name: "s", views: VIEWS.map((v) => ({ name: v.name })) }],
+      sourceInfos: [JSON.stringify({ name: "s", schema: { fields: VIEWS } })],
+   } as unknown as CompiledModel;
+
+   it("counts each view's group-bys and totals, a nest being neither", () => {
+      const [source] = buildCatalog([COMBO]).sources;
+      expect(
+         Object.fromEntries(source.views.map((v) => [v.name, v.shape])),
+      ).toEqual({
+         by_month: { groupBys: 1, totals: 2 },
+         one_total: { groupBys: 1, totals: 1 },
+         three_totals: { groupBys: 1, totals: 3 },
+         totals_only: { groupBys: 0, totals: 2 },
+         nested_only: { groupBys: 0, totals: 2 },
+      });
+   });
+
+   it("gives only a view with a group by and exactly two totals the shape a bare # combo_chart draws", () => {
+      const [source] = buildCatalog([COMBO]).sources;
+      expect(
+         Object.fromEntries(
+            source.views.map((v) => [
+               v.name,
+               v.shape && chartShapeGap("combo_chart", v.shape),
+            ]),
+         ),
+      ).toEqual({
+         by_month: undefined,
+         one_total: "combo_totals",
+         three_totals: "combo_totals",
+         totals_only: "no_x_axis",
+         nested_only: "no_x_axis",
+      });
    });
 });

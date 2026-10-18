@@ -59,25 +59,28 @@ describe("ReportBuilder: an open inline draft", () => {
       const onSave = mock(async (_source: string) => {});
       await mount({ onSave, onDirtyChange });
       type(openDescription(), "Committed");
-      fireEvent.click(button("Done"));
+      fireEvent.keyDown(screen.getByLabelText("Markdown"), {
+         key: "Enter",
+         metaKey: true,
+      });
       fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       expect(onSave).toHaveBeenCalledTimes(1);
       expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
    });
 
-   it("reports the draft through onDirtyChange, and clears it on Cancel", async () => {
+   it("reports the draft through onDirtyChange, and clears it on Escape", async () => {
       const onDirtyChange = mock((_dirty: boolean) => {});
       await mount({ onDirtyChange, onSave: async () => {} });
       expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
       type(openDescription(), "Half-typed");
       expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(true);
-      fireEvent.click(button("Cancel"));
+      fireEvent.keyDown(screen.getByLabelText("Markdown"), { key: "Escape" });
       expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
    });
 
    // Outside act and with only microtasks drained, so work React defers to a later task does not count; a host's leave guard reads this flag in the very next task.
-   it("has told the host the draft is gone by the end of the Cancel click", async () => {
+   it("has told the host the draft is gone by the end of the Escape key", async () => {
       const onDirtyChange = mock((_dirty: boolean) => {});
       await mount({ onDirtyChange, onSave: async () => {} });
       type(openDescription(), "Dropped");
@@ -86,7 +89,11 @@ describe("ReportBuilder: an open inline draft", () => {
       const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
       env.IS_REACT_ACT_ENVIRONMENT = false;
       try {
-         button("Cancel").click();
+         screen
+            .getByLabelText("Markdown")
+            .dispatchEvent(
+               new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+            );
          await new Promise<void>((resolve) => queueMicrotask(resolve));
          expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
       } finally {

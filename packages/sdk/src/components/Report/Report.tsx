@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert } from "@mui/material";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { now } from "../../utils/clock";
-import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
 import { DashboardView } from "../Dashboard/DashboardView";
@@ -13,8 +13,7 @@ import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
-import { CellReport } from "./CellReport";
-import { LinearReport } from "./LinearReport";
+import { reportQueryOptions } from "./reportQuery";
 import {
    failureCategory,
    ReportEventsContext,
@@ -74,14 +73,28 @@ export interface ReportProps {
     * shown, a drill — for the host to log or count; see `ReportEvent`.
     */
    onEvent?: ReportEventHandler;
-   /** A grid report's tile chrome: `card` (default) or `none`. */
+   /** Ignored: kept so existing callers compile. Both layouts draw the same cards. */
    chrome?: TileChrome;
+   /**
+    * How long a read of the report is reused without asking the server again,
+    * in ms. Default: the query client's staleness for the `report` key, which
+    * is 0 (every mount asks, so a change made elsewhere shows) unless the host
+    * sets one with `setQueryDefaults(["report"], …)`. A host that draws the
+    * same report twice in a row can set a few seconds, as the Console does
+    * while the builder loads over it.
+    */
+   manifestStaleTime?: number;
+   /**
+    * The host's actions for the report (a download, its own menu), drawn at
+    * the end of the title's line rather than on a row of their own above it.
+    */
+   actions?: ReactNode;
 }
 
 /**
  * A report of either layout, from `GET …/reports/{path}`: a grid drawn as a
- * dashboard, a linear report top to bottom, and a linear report written as
- * `run:` cells cell by cell, each through the governed query endpoint.
+ * dashboard, or a linear report top to bottom (a legacy `.malloynb` among
+ * them, read-only), each tile run through the governed query endpoint.
  *
  * Host-agnostic, like `Dashboard`: it takes props rather than reading a
  * router, and hands navigation and URL state back to whoever mounted it.
@@ -97,6 +110,8 @@ export function Report({
    maxResultSize,
    onEvent,
    chrome,
+   manifestStaleTime,
+   actions,
 }: ReportProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -111,28 +126,21 @@ export function Report({
       isError,
       error,
    } = useQueryWithApiError({
-      // Every value the request is built from, so two versions of one report
-      // never share a cache entry.
-      queryKey: ["report", environmentName, packageName, versionId, path],
-      queryFn: async ({ signal }) =>
-         (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               path,
-               versionId,
-               { signal },
-            )
-         ).data,
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path,
+            versionId,
+         },
+         manifestStaleTime,
+      ),
       enabled: uriNamesBoth && path !== "",
    });
 
-   // The layout once the report has said; a `run:`-cell report reads top to bottom.
-   const layout = manifest
-      ? manifest.notebook
-         ? "linear"
-         : manifest.layout
-      : undefined;
+   // The layout once the report has said.
+   const layout = manifest?.layout;
    const events = useReportEmitter({ path, layout }, onEvent);
    // One open or one failure per report shown: a refetch is not another open,
    // and the guard survives a development double-run of the effect.
@@ -172,9 +180,7 @@ export function Report({
             type: "report.opened",
             surface: "view",
             from: "package",
-            tiles: manifest.notebook
-               ? (manifest.notebook.notebookCells?.length ?? 0)
-               : (manifest.tiles?.length ?? 0),
+            tiles: manifest.tiles?.length ?? 0,
             durationMs: now() - started.current.at,
          });
       }
@@ -218,55 +224,24 @@ export function Report({
          </Alert>
       );
    }
-   let body;
-   if (manifest.notebook) {
-      body = (
-         <CellReport
-            resourceUri={encodeResourceUri({
-               environmentName,
-               packageName,
-               versionId,
-               modelPath: path,
-            })}
-            notebook={manifest.notebook}
-            maxResultSize={maxResultSize}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onNavigate={onLinkNavigate}
-            onDrillNavigate={drillNavigate}
-         />
-      );
-   } else if (manifest.layout === "linear") {
-      body = (
-         <LinearReport
-            manifest={manifest}
-            environmentName={environmentName}
-            packageName={packageName}
-            versionId={versionId}
-            documentName={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onDrillNavigate={drillNavigate}
-            maxResultSize={maxResultSize}
-         />
-      );
-   } else {
-      body = (
-         <DashboardView
-            manifest={manifest}
-            environmentName={environmentName}
-            packageName={packageName}
-            versionId={versionId}
-            documentName={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onNavigate={drillNavigate}
-            height={height}
-            maxResultSize={maxResultSize}
-            chrome={chrome}
-         />
-      );
-   }
+   // Either layout: the same view, arranged as the manifest's layout says.
+   const body = (
+      <DashboardView
+         manifest={manifest}
+         environmentName={environmentName}
+         packageName={packageName}
+         versionId={versionId}
+         documentName={path}
+         givens={givens}
+         onGivensChange={onGivensChange}
+         onNavigate={drillNavigate}
+         {...(onLinkNavigate ? { onLinkNavigate } : {})}
+         height={height}
+         maxResultSize={maxResultSize}
+         chrome={chrome}
+         {...(actions !== undefined ? { actions } : {})}
+      />
+   );
    return (
       <ReportEventsContext.Provider value={events}>
          {body}

@@ -54,11 +54,7 @@ export interface IndexSettings {
    key: string;
 }
 
-/**
- * The index settings for a package instance. A stand-in without the accessor
- * (a test double, a package from before the accessor existed) gets the
- * defaults.
- */
+/** The index settings for a package instance; a stand-in without the accessor gets the defaults. */
 export function indexSettingsOf(pkg: Package | undefined): IndexSettings {
    const retrieval =
       (pkg as Partial<Package> | undefined)?.getRetrievalSettings?.() ??
@@ -80,8 +76,8 @@ export function indexSettingsOf(pkg: Package | undefined): IndexSettings {
                  keyphrases.egress,
               ].join(":")
             : "kp:off",
-         // Added only when on, so a package without summaries keeps the key
-         // it always had.
+         // Only when on, so a package without summaries keeps its key (and
+         // its warm index).
          ...(sourceSummary
             ? [
                  ["ss", sourceSummary.promptHash, sourceSummary.modelId].join(

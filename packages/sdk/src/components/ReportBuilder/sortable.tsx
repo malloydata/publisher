@@ -3,9 +3,9 @@
 
 import { pointerIntersection } from "@dnd-kit/collision";
 import { Feedback, KeyboardSensor, PointerSensor } from "@dnd-kit/dom";
-import { useDroppable } from "@dnd-kit/react";
+import { useDragDropManager, useDroppable } from "@dnd-kit/react";
 import { useSortable, type UseSortableInput } from "@dnd-kit/react/sortable";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 /**
  * The builder's drag and drop, on `@dnd-kit/react`.
@@ -30,9 +30,10 @@ export const GAP_TYPE = "gap";
 /**
  * The sensors: the library's own, with one addition.
  *
- * `activatorElements`: the whole tile starts a pointer drag,
- * not only the grip. A 22px corner that appears on hover is not a target a
- * reader finds; the whole card is. The grip stays the `handle`, which is what
+ * `activatorElements`: the whole tile starts a pointer drag, not only the
+ * grip, except inside its rendered result (see `preventActivation`). A 22px
+ * corner that appears on hover is not a target a reader finds; the card's
+ * heading and padding are. The grip stays the `handle`, which is what
  * gives it keyboard focus and the screen-reader instructions — and, by the
  * library's own rule, a press on the handle drags at once while a press
  * anywhere else on the card waits for a short hold or a few pixels of travel,
@@ -45,12 +46,16 @@ export const builderSensors = [
    PointerSensor.configure({
       activatorElements: (source) => [source.element],
       // A press on a control of the tile's own that is not a button — the
-      // resize edge — is that control's gesture, never a move. The library's
-      // own check only knows buttons, links and inputs, and it listens on the
-      // tile natively, before any React handler on the control could stop it.
+      // resize edge — is that control's gesture, never a move. So is a press
+      // inside the result: a table scrolls and selects, a chart shows its
+      // tooltips, and a move that started there fought both. A tile moves from
+      // its heading and its padding. The library's own check only knows
+      // buttons, links and inputs, and it listens on the tile natively, before
+      // any React handler on the control could stop it.
       preventActivation: (event, source) =>
          (event.target instanceof Element &&
-            event.target.closest(`[${NO_DRAG}]`) !== null) ||
+            event.target.closest(`[${NO_DRAG}], ${RESULT_SELECTOR}`) !==
+               null) ||
          (PointerSensor.defaults.preventActivation?.(event, source) ?? false),
    }),
    KeyboardSensor,
@@ -58,6 +63,9 @@ export const builderSensors = [
 
 /** Marks an element inside a tile whose presses must never start a move. */
 export const NO_DRAG = "data-no-drag";
+
+/** A rendered result inside a tile: its table, chart or cards, where a press is the result's, not a move. */
+const RESULT_SELECTOR = ".malloy-render, .malloy-table";
 
 /**
  * What a tile looks like while it is dragged: a COPY follows the pointer, and
@@ -91,15 +99,19 @@ interface TileSortableHandles {
 export function TileSortable({
    id,
    index,
+   disabled = false,
    children,
 }: {
    id: string;
    index: number;
+   /** Not movable now: the grid is drawn as one column, where a move means nothing. */
+   disabled?: boolean;
    children: (handles: TileSortableHandles) => ReactNode;
 }) {
    const { ref, handleRef, isDragSource } = useSortable({
       id,
       index,
+      disabled,
       type: TILE_TYPE,
       accept: TILE_TYPE,
       // The same rule the gaps use: the target is what the POINTER is over.
@@ -149,4 +161,28 @@ export function GapDroppable({
       data: { after },
    });
    return <>{children({ ref, isDropTarget })}</>;
+}
+
+/**
+ * Escape cancels a drag wherever focus is. The library's pointer drag listens
+ * for Escape only on the element under the pointer, and a press on a tile's
+ * padding focuses nothing, so the key reached the page instead and the drop
+ * landed on release. Mounted inside the drag provider while a drag is live.
+ */
+export function EscapeCancelsDrag({ active }: { active: boolean }) {
+   const manager = useDragDropManager();
+   useEffect(() => {
+      if (!active || !manager) return;
+      const onKey = (event: KeyboardEvent) => {
+         if (event.key !== "Escape" || manager.dragOperation.status.idle)
+            return;
+         // The drag's, not the builder's: it must not also drop the selection.
+         event.preventDefault();
+         event.stopPropagation();
+         manager.actions.stop({ event, canceled: true });
+      };
+      window.addEventListener("keydown", onKey, true);
+      return () => window.removeEventListener("keydown", onKey, true);
+   }, [active, manager]);
+   return null;
 }

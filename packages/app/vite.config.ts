@@ -53,6 +53,22 @@ export default ({ mode }) => {
                        process.env.PUBLISHER_URL ?? "http://localhost:4000",
                     changeOrigin: true,
                  },
+                 // A data app's own files, which the Console embeds in an
+                 // iframe at the server's address. In dev that address is
+                 // this one, so without this the iframe got the Console's
+                 // "Nothing to open at this path" page. No Console route
+                 // starts with /environments.
+                 "^/environments/[^/]+/packages/[^/]+(/.*)?$": {
+                    target:
+                       process.env.PUBLISHER_URL ?? "http://localhost:4000",
+                    changeOrigin: true,
+                 },
+                 // The client script a data app loads (`<script src="/sdk/publisher.js">`).
+                 "/sdk/publisher.js": {
+                    target:
+                       process.env.PUBLISHER_URL ?? "http://localhost:4000",
+                    changeOrigin: true,
+                 },
               },
            }
          : {},

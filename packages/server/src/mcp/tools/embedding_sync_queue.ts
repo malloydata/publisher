@@ -6,13 +6,10 @@ import { logger } from "../../logger";
 /**
  * Runs jobs one at a time, in the order they were queued.
  *
- * The embedding provider and its rate limit belong to the whole process, not
- * to a package. Several packages syncing at once would split one rate limit
- * between them, and a restart loads every package at nearly the same moment.
- * So all embedding syncs go through one queue, and a package's sync starts
- * when the one before it has finished.
- *
- * A job that throws is logged and does not stop the jobs behind it.
+ * The embedding provider's rate limit belongs to the whole process, and a
+ * restart loads every package at nearly the same moment, so all embedding
+ * syncs share one queue. A job that throws is logged and does not stop the
+ * jobs behind it.
  */
 export class SerialQueue {
    private tail: Promise<void> = Promise.resolve();

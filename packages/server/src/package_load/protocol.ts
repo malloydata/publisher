@@ -5,75 +5,37 @@
  * Wire protocol between the main thread (`PackageLoadPool`) and a
  * package-load worker thread.
  *
- * Boundary
- * --------
- * The worker performs the **CPU-bound bulk of `Package.create`** off
- * the main event loop:
+ * The worker does the CPU-bound bulk of `Package.create` off the main event
+ * loop: read the manifest, compile every `.malloy` / `.malloynb`, and return
+ * a structured-clonable POJO with everything the main thread needs to
+ * reconstitute a live `Package`. The main thread builds its own
+ * `MalloyConfig` (native handles cannot cross the boundary) and hydrates each
+ * model from `modelDef` on first query, never recompiling.
  *
- *   1. Read `publisher.config.json` (cheap, but already on the worker
- *      side of the boundary so the main thread isn't blocked).
- *   2. Compile every `.malloy` / `.malloynb` (the Malloy parser,
- *      type-checker, and IR-builder — the dominant CPU cost).
- *   3. Return a structured-clonable POJO carrying every `modelDef`,
- *      `sourceInfos`, dataStyles, etc. that the main thread needs to
- *      reconstitute a live `Package`.
+ * Embedded database probing stays on the main thread: it is IO-bound, and
+ * duckdb-native cannot be loaded into more than one isolate of a process
+ * (Bun crash 0x20131).
  *
- * Embedded database probing (`.parquet` / `.csv` schema + row count)
- * stays on the main thread — it reuses the package's existing DuckDB
- * connection and the probe queries are async-IO-bound, not
- * CPU-bound. Keeping all native-DB handles on the main thread also
- * sidesteps Bun crash 0x20131 where duckdb-native cannot be loaded
- * into more than one isolate of the same process.
+ * Per-model compile failures come back in-band on
+ * `SerializedModel.compilationError`; whole-package failures come back as
+ * `LoadPackageError`, which `Package.loadViaWorker` rewraps as a 503 (there
+ * is no in-process fallback).
  *
- * The main thread reconstitutes by:
- *   - Building a fresh `MalloyConfig` against its own connection pool
- *     (live native handles can't cross the worker boundary).
- *   - Lazy-hydrating each model's `ModelMaterializer` from `modelDef`
- *     via `Runtime._loadModelFromModelDef` on first query — NO
- *     recompile, so the first query never re-runs the compiler on
- *     the main thread.
+ *   main  ──▶ worker:  LoadPackageRequest, ShutdownRequest,
+ *                      *Response (correlated by requestId)
+ *   worker ──▶ main:   LoadPackageResult | LoadPackageError, ReadyMessage,
+ *                      WorkerLogMessage, and the proxy requests
+ *                      (connection metadata, schema fetches, non-file URLs)
  *
- * Per-model compile failures are returned in-band on
- * `SerializedModel.compilationError` so a single bad model doesn't
- * abort the rest of the package load. The main thread decides
- * whether/when to surface as a fatal `Package.create` error (today
- * it throws on the first error; `Package.reloadAllModels` keeps the
- * failed models as placeholders in the package's model map).
- *
- * Whole-package failures (manifest missing, FS errors, worker
- * crashes) come back as `LoadPackageError`. The pool main-thread
- * half (`PackageLoadPool.loadPackage`) rejects with a deserialised
- * Error; `Package.loadViaWorker` then rewraps any non-compile
- * failure as `ServiceUnavailableError` so the HTTP layer responds
- * 503 (transient, retryable) — there is no in-process fallback.
- *
- * Direction summary
- * -----------------
- *   main  ──▶ worker:  LoadPackageRequest         (start)
- *   worker ──▶ main:   LoadPackageResult          (success)
- *   worker ──▶ main:   LoadPackageError           (whole-package failure)
- *
- *   worker ──▶ main:   ConnectionMetadataRequest  (proxy non-duckdb lookups)
- *   worker ──▶ main:   SchemaForTablesRequest     (proxy schema fetch)
- *   worker ──▶ main:   SchemaForSqlRequest        (proxy SQL block schema)
- *   worker ──▶ main:   ReadUrlRequest             (proxy non-file URL reads)
- *   main  ──▶ worker:  *Response                  (correlated by requestId)
- *
- *   main  ──▶ worker:  ShutdownRequest            (graceful drain)
- *   worker ──▶ main:   ReadyMessage               (post-init handshake)
- *
- * The protocol uses plain structured-clonable POJOs so the
- * `postMessage` transfer goes through V8's structured clone — much
- * cheaper than `JSON.stringify` for the multi-MB modelDef payloads.
- *
- * Structured clone also PRESERVES INTERNAL ALIASING, and `#(authorize)`
- * enforcement depends on that: a note object shared by two structs stays
- * shared across this boundary, which is what lets an inherited gate be told
- * apart from an independently authored one by reference identity. Switching
- * this transport to JSON would silently turn every such check into a
- * fail-closed deny, with no test naming the reason.
+ * Messages are structured-cloned, which is cheaper than JSON for multi-MB
+ * modelDefs and PRESERVES INTERNAL ALIASING. `#(authorize)` enforcement
+ * depends on that: an inherited gate is recognized by its note object being
+ * shared by reference, so a JSON transport would turn every such check into a
+ * fail-closed deny.
  */
 
+import type { EligibilityRefusalReason } from "../materialization_metrics";
+import type { BuildPlanOutcome } from "../service/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
@@ -87,18 +49,20 @@ import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys"
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Connection metadata the worker needs to construct a stub
- * `InfoConnection`. Resolved lazily — the worker asks the main thread
- * on the first `lookupConnection(name)` call (see
- * {@link ConnectionMetadataRequest}). We don't ship the full list
- * upfront because Malloy only references connections by name as it
- * encounters `<connection>.table('...')` / `<connection>.sql('...')`
- * inside the model.
+ * Connection metadata the worker needs to construct a stub `InfoConnection`,
+ * requested lazily on the first `lookupConnection(name)` (see
+ * {@link ConnectionMetadataRequest}).
  */
 export interface ConnectionMetadata {
    name: string;
    dialectName: string;
    digest: string;
+   /**
+    * Identifies the main thread's connection instance, so the worker's schema
+    * cache is dropped when an edit replaces it. The digest alone does not
+    * change on every edit.
+    */
+   generation: number;
 }
 
 export interface LoadPackageRequest {
@@ -109,22 +73,43 @@ export interface LoadPackageRequest {
    /** Logical package name (used in metric labels + log fields). */
    packageName: string;
    /**
-    * Default connection name (passed verbatim to the worker; today
-    * always `"duckdb"` for embedded packages, but kept configurable
-    * to mirror Malloy's own surface).
+    * The environment the package loads into. Scopes the worker's schema
+    * cache, so environments never share schemas.
     */
+   environmentName: string;
+   /** Default connection name, passed verbatim to Malloy. */
    defaultConnectionName: string | null;
    /** Optional row-build manifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
    /**
-    * Optional in-memory replacement used by a package compile dry-run. The
-    * worker still enumerates and compiles the package exactly like a reload,
-    * but reads this text instead of the named file. If the path is new it is
-    * added to the compile set without touching disk.
+    * In-memory replacement for a package compile dry-run: this text is read
+    * instead of the named file (or added, if the path is new), without
+    * touching disk.
     */
    replacement?: { modelPath: string; source: string };
    /** Include non-fatal compiler diagnostics in SerializedModel results. */
    collectProblems?: boolean;
+   /**
+    * Derive the package's persist build plan from this compile and return it
+    * as `LoadPackageResult.buildPlan`. Only meaningful without a
+    * `buildManifest`: the plan describes the canonical build, not SQL a bound
+    * manifest has rewritten.
+    */
+   computeBuildPlan?: boolean;
+   /**
+    * How long into the job the worker keeps doing optional work for the main
+    * thread (render-tag results, pre-aggregation companions, build plan).
+    * Checked before each render-tag target and each companion; past it, the
+    * remaining work (and the plan, once any model's parts are missing) is left
+    * to the main thread. The pool's jobLimitMs adds room for it.
+    */
+   mainThreadWorkBudgetMs: number;
+   /**
+    * Compile each model's pre-aggregation companion for the main thread to
+    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
+    * that serve the package; a compile preview does not serve it.
+    */
+   withPreaggregateCompanions?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -132,30 +117,16 @@ export interface LoadPackageRequest {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Wire shape for one compiled model in the package. Mirrors the
- * data a main-thread `Model` constructor needs without holding a
- * `ModelMaterializer` reference (that binds to live native
- * connection handles and can't cross the worker boundary).
- *
- * `compilationError` is set when this single model failed to
- * compile but the rest of the package is fine; the main thread
- * decides whether to abort `Package.create`.
+ * Wire shape for one compiled model: what a main-thread `Model` constructor
+ * needs, minus the `ModelMaterializer`, which binds to native handles.
  */
 export interface SerializedModel {
    /** Path relative to the package root, forward-slash normalized. */
    modelPath: string;
    modelType: "model" | "notebook";
-   /** Set when the model compiled successfully. Wire-typed as
-    *  `unknown` so the protocol module doesn't drag in the full
-    *  Malloy type surface; cast to `ModelDef` on receipt. */
+   /** Set when the model compiled. A `ModelDef`, wire-typed `unknown`. */
    modelDef?: unknown;
-   /**
-    * Precomputed `modelDefToModelInfo(modelDef)`. Shipped from the
-    * worker so the main-thread `Model` constructor doesn't pay the
-    * derivation cost on every package load and every subsequent
-    * `getModel()` / `getNotebook()` API hit can stringify a cached
-    * object instead of recomputing.
-    */
+   /** Precomputed `modelDefToModelInfo(modelDef)`, so the main thread does not derive it. */
    modelInfo?: unknown;
    sourceInfos?: unknown[];
    sources?: unknown[];
@@ -165,18 +136,10 @@ export interface SerializedModel {
    /** Notebook (.malloynb) only — per-cell pre-extracted info. */
    notebookCells?: SerializedNotebookCell[];
    /**
-    * The model file's text EXACTLY as this compile read it, captured from the
-    * URL reader the compiler used.
-    *
-    * Shipped so a consumer that needs source text can read it from the same
-    * snapshot the IR's `DocumentLocation` coordinates were computed against.
-    * `get_context` slices a view's definition out of it (a view's code is not
-    * in the IR), and reading the file again later is not equivalent: a package
-    * whose most recent reload failed to compile keeps serving the model
-    * compiled BEFORE that save, so post-edit bytes cut at pre-edit coordinates
-    * yield text that is not the view -- mid-token, or another field entirely.
-    *
-    * `.malloy` models only; notebooks do not carry it.
+    * The model file's text EXACTLY as this compile read it, so `get_context`
+    * can slice view definitions at the IR's `DocumentLocation` coordinates.
+    * Re-reading the file is not equivalent: a stale package's coordinates
+    * belong to the pre-edit text. `.malloy` models only.
     */
    modelSourceText?: string;
    /** Accumulated dataStyles from sibling `.styles.json` files. */
@@ -188,24 +151,27 @@ export interface SerializedModel {
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**
-    * Non-fatal `#(authorize)` load-time findings — two independent sources:
-    *  - `validateAuthorizeProbes`'s `onRowLevelGateUnexpressible` case: a gate
-    *    genuinely INHERITED (not declared) at some entry point that could not
-    *    be expressed THERE (renamed/excluded/projected-away field, or a
-    *    `query_source` projection). "Genuinely" is load-bearing:
-    *    `validateAuthorizeProbes` confirms it by the gate's own annotation
-    *    NOTE OBJECT being shared, by reference, with a base (or absent
-    *    entirely) — not by gate text, which two independently-authored
-    *    sources can share without being related at
-    *    all. The model still loads and serves; the affected entry point
-    *    denies every request (`Model.resolveGateShape`).
-    *
-    * The worker has no logger (see `extractSources`'s doc in
-    * `package_load_worker.ts`), so these ride over the wire as plain strings
-    * for the main thread — which does have one — to log once the model is
-    * constructed.
+    * Non-fatal `#(authorize)` load-time findings, logged by the main thread:
+    * a gate inherited (judged by shared note object, not by text) at an entry
+    * point where it cannot be expressed. The model still serves; that entry
+    * point denies every request (`Model.resolveGateShape`).
     */
    authorizeWarnings?: string[];
+   /**
+    * Prepared `Malloy.Result`s for the model's render-tag targets, for the
+    * main thread's tag validation (the renderer cannot load in the worker,
+    * and preparing is the expensive part). One entry per target reached, in
+    * order; `result` absent means it failed to prepare. The main thread
+    * prepares any targets after the last entry itself.
+    */
+   renderTagResults?: { label: string; result?: unknown }[];
+   /**
+    * The model's pre-aggregation companion, for the main thread to hydrate
+    * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
+    * there is none or it failed; absent when not attempted, and the main
+    * thread compiles it.
+    */
+   preaggregateCompanion?: { modelDef?: unknown };
 }
 
 export interface SerializedNotebookCell {
@@ -213,19 +179,11 @@ export interface SerializedNotebookCell {
    /** Raw cell text. */
    text: string;
    /**
-    * Per-cell ModelDef captured at the cell's point in the
-    * `extendModel` chain. The main thread hydrates a per-cell
-    * `ModelMaterializer` from this via
-    * `Runtime._loadModelFromModelDef`, so cell-level filter
-    * refinement can compile new queries against the correct scope
-    * without ever recompiling the .malloynb itself.
+    * The cell's ModelDef at its point in the `extendModel` chain, hydrated by
+    * the main thread so cell-level queries compile in the right scope.
     */
    cellModelDef?: unknown;
-   /**
-    * The final-query QueryDef for this cell, captured during the
-    * worker's compile. Main thread hydrates a `QueryMaterializer`
-    * via `ModelMaterializer._loadQueryFromQueryDef` — no recompile.
-    */
+   /** The cell's final QueryDef, hydrated by the main thread without recompiling. */
    cellQueryDef?: unknown;
    newSources?: unknown[];
    queryInfo?: unknown;
@@ -243,16 +201,14 @@ export interface LoadPackageResult {
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;
       scope?: PackageScope;
-      /**
-       * Manifest-shape deprecations the load tolerated (e.g. a root-level
-       * `scope`). Surfaced with the package's other policy warnings so a
-       * still-parsing-but-outdated manifest is visible without failing a load.
-       */
+      /** Manifest-shape deprecations the load tolerated (e.g. a root-level `scope`). */
       manifestWarnings?: string[];
       /** Deprecated publisher.json keys the manifest declares, at any value. */
       deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** The manifest's `retrieval` block, validated, with prompt files read. */
       retrieval?: PackageRetrievalSettings;
+      /** The manifest's `agents` value, unvalidated: the main thread validates it and warns instead of throwing. */
+      agents?: unknown;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
@@ -266,16 +222,66 @@ export interface LoadPackageResult {
     */
    timings: {
       /**
-       * Compile-region wall-clock minus time awaiting proxied schema fetches —
-       * a conservative ceiling on Malloy compile CPU.
+       * Compile-region wall-clock minus time awaiting proxied schema fetches:
+       * a ceiling on compile CPU. Includes the work prepared for the main
+       * thread, not the build plan's final derivation.
        */
       compileDurationMs: number;
       /** Wall-clock awaiting proxied connection schema fetches (union). */
       schemaFetchDurationMs: number;
       /** Number of proxied connection schema fetches the load drove. */
       schemaFetchCount: number;
+      /** Schema requests answered from the worker's own cache. */
+      schemaCacheHits?: number;
    };
+   /**
+    * Present when `computeBuildPlan` was set and every model compiled and
+    * reached its companion before `mainThreadWorkBudgetMs`; otherwise the
+    * main thread derives the plan.
+    */
+   buildPlan?: WorkerBuildPlan;
 }
+
+/**
+ * A log entry written while a job ran in the worker, forwarded as written so
+ * it reaches the main thread's OpenTelemetry pipeline even if the job later
+ * times out or crashes.
+ */
+export interface WorkerLogMessage {
+   type: "log";
+   jobId: string;
+   /** The package the job loads, added to the entry's meta. */
+   packagePath: string;
+   level: string;
+   message: string;
+   /** The entry's other fields, an error's message and stack among them. */
+   meta: Record<string, unknown>;
+}
+
+/**
+ * The package build plan derived from this compile, so the main thread need
+ * not compile again. `durationMs` is a ceiling (other compiles interleave). A
+ * failure fails the plan, not the load.
+ */
+export type WorkerBuildPlan =
+   | {
+        ok: true;
+        outcome: BuildPlanOutcome;
+        durationMs: number;
+        /** Connections whose digest could not be read (see resolveConnectionDigests). */
+        digestSkipped: string[];
+        /** Eligibility refusals counted while deriving it, by reason. */
+        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+     }
+   | {
+        ok: false;
+        error: string;
+        durationMs: number;
+        /** Connections whose digest could not be read before it failed. */
+        digestSkipped: string[];
+        /** Refusals counted before the derivation failed. */
+        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+     };
 
 export interface LoadPackageError {
    type: "load-package-error";
@@ -284,10 +290,8 @@ export interface LoadPackageError {
 }
 
 /**
- * Error wire-shape. We cannot transfer `Error` instances directly
- * across `postMessage` cleanly (Bun/Node behaviour diverges on stack
- * propagation), so we ship a structured payload and reconstitute on
- * the main thread.
+ * Error wire shape: `Error` instances do not cross `postMessage` reliably
+ * (Bun and Node differ on the stack), so a payload is reconstituted.
  */
 export interface SerializedError {
    name: string;
@@ -299,11 +303,7 @@ export interface SerializedError {
    isCompilationError?: boolean;
    /** Set when the error originated as `PackageManifestError`. */
    isManifestError?: boolean;
-   /**
-    * A Node errno error's `code`, `syscall` and `path`, which `name` and
-    * `message` do not carry. Lets the receiving side recognize a refused
-    * filesystem access (see `filesystemAccessFailure`) by its fields.
-    */
+   /** Errno fields, so the receiver can recognize a refused filesystem access. */
    errno?: SerializedErrno;
 }
 
@@ -386,11 +386,8 @@ export interface RpcErrorResponse {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Workers read most files directly via `fs` (they share the host's
- * filesystem namespace). This RPC exists for the rare case where the
- * package URL reader has host-specific behaviour (e.g. virtual files,
- * remote URLs) — we delegate back to the main thread's URL reader so
- * compile semantics stay identical to the in-process path.
+ * Workers read most files directly via `fs`; this RPC delegates non-file URLs
+ * to the main thread's URL reader so compile semantics stay identical.
  */
 export interface ReadUrlRequest {
    type: "read-url";
@@ -439,4 +436,5 @@ export type WorkerToMainMessage =
    | SchemaForTablesRequest
    | SchemaForSqlRequest
    | ReadUrlRequest
+   | WorkerLogMessage
    | ReadyMessage;

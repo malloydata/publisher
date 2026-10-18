@@ -2,50 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Package-load worker entry point.
+ * Package-load worker entry point (see protocol.ts for the boundary).
  *
- * Runs inside a worker_threads `Worker`. Owns **no native connection
- * state of any kind** — every connection lookup, schema fetch, SQL
- * block schema, and non-file URL read is proxied back to the main
- * thread via correlated RPC messages. The worker is intentionally
- * pure-CPU: only Malloy parser / type-checker / IR-builder runs here.
+ * Owns no native connection state: every connection lookup, schema fetch and
+ * non-file URL read is proxied to the main thread over RPC, so only the Malloy
+ * compiler runs here. DuckDB in particular cannot be loaded into a second
+ * isolate of one process (Bun crash 0x20131).
  *
- * Why no DuckDB in the worker?
- * ----------------------------
- * DuckDB's native bindings cannot be safely loaded into more than one
- * isolate of the same Node/Bun process (we hit Bun crash 0x20131 when
- * the worker isolate and the main isolate both `dlopen` duckdb-native).
- * Even if Bun fixes that, holding a duckdb handle in the worker
- * duplicates the in-memory DB state and adds native-module load
- * latency to every worker spawn. Database probing (`readDatabases`)
- * stays on the main thread where it can reuse the package's existing
- * DuckDB connection.
- *
- * Boundary
- * --------
- *   1. Worker: read `publisher.json` (package manifest).
- *   2. Worker: compile every `.malloy` and `.malloynb` via Malloy.
- *      All `lookupConnection(name)` / schema-fetch calls Malloy makes
- *      during compile are proxied to the main thread's live
- *      connection pool over RPC.
- *   3. Worker: for each model, capture the structured-clonable fields
- *      the main-thread `Model` constructor needs: `modelDef`,
- *      `sourceInfos`, `sources`, `queries`, `filterMap`, `givens`,
- *      dataStyles, plus per-cell `modelDef` + `queryDef` for
- *      notebooks (so per-cell materializers / runnables can be
- *      hydrated on the main thread via `Runtime._loadModelFromModelDef`
- *      / `ModelMaterializer._loadQueryFromQueryDef` — no recompile).
- *   4. Main thread: probe embedded `.parquet` / `.csv` databases
- *      against the package's existing DuckDB connection.
- *
- * Per-model compile failures are returned in-band on
- * `SerializedModel.compilationError`; the rest of the package keeps
- * loading. Whole-package failures (e.g. manifest missing) come back
- * as `LoadPackageError`.
- *
- * Bundled separately by `build.ts` as `dist/package_load_worker.mjs`
- * so `new Worker(...)` can load it without dragging in the entire
- * server module graph.
+ * Bundled separately by `build.ts` as `dist/package_load_worker.mjs` so
+ * `new Worker(...)` does not load the whole server module graph.
  */
 import {
    contextOverlay,
@@ -73,7 +38,8 @@ import {
 } from "../service/deprecated/manifest_keys";
 import * as fs from "fs";
 import * as path from "path";
-import { parentPort, threadId } from "node:worker_threads";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { parentPort, threadId, workerData } from "node:worker_threads";
 import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
@@ -113,6 +79,7 @@ import {
    type ExpandableRefSummary,
 } from "../service/gate_dimension";
 import { modelInfoOf } from "../service/model_info";
+import { boundedManifestValue } from "../service/package_revision";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -141,8 +108,32 @@ import {
    gateGivenSource,
    suggestGivenLookup,
 } from "../service/given";
-import { ignoreDotfiles } from "../utils";
+import { errMessage, ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
+import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
+import {
+   setEligibilityRefusalSink,
+   type EligibilityRefusalReason,
+} from "../materialization_metrics";
+import { logger } from "../logger";
+import {
+   tryCompileSynthesizedPreaggregation,
+   type SynthesizedPreaggregation,
+   type SynthesizedRuntimeFactory,
+} from "../service/preaggregation_compile";
+import { type InFlightAnswer, SchemaCache } from "./schema_cache";
+import { plainLogEntry } from "./worker_log";
+import { renderTagTargets } from "../service/render_tag_targets";
+import {
+   collectModelBuildPlan,
+   deriveBuildPlanOutcome,
+   emptyBuildPlanParts,
+   mergeBuildPlanParts,
+   resolveConnectionDigests,
+   resolvePackageConnections,
+   type BuildPlanParts,
+   type WirePackageMaterialization,
+} from "../service/build_plan";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
@@ -159,6 +150,8 @@ import type {
    SchemaForTablesResponse,
    SerializedModel,
    SerializedNotebookCell,
+   WorkerBuildPlan,
+   WorkerLogMessage,
 } from "./protocol";
 
 if (!parentPort) {
@@ -166,6 +159,9 @@ if (!parentPort) {
       "package_load_worker.ts must be loaded inside a worker_threads Worker",
    );
 }
+
+// This thread has its own dialect registry; see experimental_dialects.ts.
+acceptBundledExperimentalDialects();
 
 const port = parentPort;
 
@@ -195,11 +191,7 @@ function callMain<T>(send: (requestId: string) => void): Promise<T> {
    });
 }
 
-// Per-load phase timing: brackets the wall-clock spent awaiting proxied schema
-// fetches so `loadPackage` can separate connection I/O from compile CPU. The
-// pool runs one load per worker at a time, so a single module-level instance
-// is safe; it's still keyed by jobId to shrug off a straggler fetch from a
-// prior, reused-worker load. See {@link RpcWaitAccountant}.
+// Module-level is safe because the pool runs one load per worker at a time.
 const schemaWait = new RpcWaitAccountant();
 
 function dispatchMainResponse(message: MainToWorkerMessage): void {
@@ -228,17 +220,80 @@ function dispatchMainResponse(message: MainToWorkerMessage): void {
 // Proxy connection: stand-in for non-duckdb connections at compile time
 // ──────────────────────────────────────────────────────────────────────
 
+type CachedSchema = TableSourceDef | SQLSourceDef;
+
+/**
+ * Schemas fetched through the main thread, kept across loads within
+ * PACKAGE_LOAD_SCHEMA_CACHE_BYTES of serialized schema (heap use is a few
+ * times that). Without a budget from the pool, nothing is cached.
+ */
+const schemaCache = new SchemaCache<CachedSchema>(
+   (workerData as { schemaCacheBytes?: number } | null)?.schemaCacheBytes ?? 0,
+);
+
+/** What a job carries while it runs in this worker (see runJob). */
+interface JobContext {
+   jobId: string;
+   packagePath: string;
+   refusals: Partial<Record<EligibilityRefusalReason, number>>;
+}
+
+/** The running job, carried across awaits so jobs' logs and refusals never mix. */
+const jobContext = new AsyncLocalStorage<JobContext>();
+
+setEligibilityRefusalSink(() => jobContext.getStore()?.refusals);
+
+// OpenTelemetry log export exists only on the main thread, so a job's log
+// entries are intercepted at `write` (where every call arrives as winston's
+// built entry) and forwarded (see the pool's handleWorkerLog). Outside a job,
+// entries write to this thread's stdout.
+const writeEntry = logger.write.bind(logger) as (entry: unknown) => boolean;
+(logger as unknown as { write: (entry: unknown) => boolean }).write = (
+   entry: unknown,
+) => {
+   const job = jobContext.getStore();
+   if (!job) return writeEntry(entry);
+   if (logger.isLevelEnabled(String((entry as { level?: unknown }).level))) {
+      const { level, message, meta } = plainLogEntry(entry);
+      const msg: WorkerLogMessage = {
+         type: "log",
+         jobId: job.jobId,
+         packagePath: job.packagePath,
+         level,
+         message,
+         meta,
+      };
+      port.postMessage(msg);
+   }
+   return true;
+};
+
 class ProxyConnection {
    public readonly name: string;
    public readonly dialectName: string;
    private readonly digest: string;
    private readonly jobId: string;
+   /** Prefix of this connection's schema-cache keys. */
+   private readonly cacheScope: string;
 
-   constructor(metadata: ConnectionMetadata, jobId: string) {
+   constructor(
+      metadata: ConnectionMetadata,
+      jobId: string,
+      environmentScope: string,
+   ) {
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
       this.digest = metadata.digest;
       this.jobId = jobId;
+      // The environment is in the key because a digest can be a configured
+      // fingerprint, and two environments must never share what one can see.
+      // The generation retires entries when the connection is replaced.
+      this.cacheScope = [
+         environmentScope,
+         this.name,
+         this.digest,
+         metadata.generation,
+      ].join("\0");
    }
 
    getDigest(): string {
@@ -246,6 +301,86 @@ class ProxyConnection {
    }
 
    async fetchSchemaForTables(
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+   ): Promise<{
+      schemas: Record<string, TableSourceDef>;
+      errors: Record<string, string>;
+   }> {
+      // A refresh is the main thread's to decide, since only its cache knows
+      // when each schema was fetched. Its answer replaces the entries.
+      if (options.refreshTimestamp !== undefined) {
+         const refreshed = await this.fetchSchemaForTablesFromMain(
+            tables,
+            options,
+         );
+         this.cacheTableSchemas(tables, refreshed.schemas);
+         return refreshed;
+      }
+      const schemas: Record<string, TableSourceDef> = {};
+      const errors: Record<string, string> = {};
+      const joined: [string, Promise<InFlightAnswer<CachedSchema>>][] = [];
+      const missing: Record<string, string> = {};
+      for (const [key, tablePath] of Object.entries(tables)) {
+         const cacheKey = this.tableCacheKey(tablePath);
+         const hit = schemaCache.get(cacheKey);
+         const pending =
+            hit === undefined ? schemaCache.joinInFlight(cacheKey) : undefined;
+         if (hit) {
+            schemas[key] = hit as TableSourceDef;
+         } else if (pending) {
+            joined.push([key, pending]);
+         } else {
+            missing[key] = tablePath;
+         }
+      }
+      if (Object.keys(missing).length > 0) {
+         const request = this.fetchSchemaForTablesFromMain(missing, options);
+         for (const [key, tablePath] of Object.entries(missing)) {
+            schemaCache.trackInFlight(
+               this.tableCacheKey(tablePath),
+               request.then((r) => ({
+                  value: r.schemas[key],
+                  error: r.errors[key],
+               })),
+            );
+         }
+         const fetched = await request;
+         this.cacheTableSchemas(missing, fetched.schemas);
+         Object.assign(schemas, fetched.schemas);
+         Object.assign(errors, fetched.errors);
+      }
+      // A table already being fetched takes that fetch's outcome, error
+      // included (errors are per table), rather than asking again.
+      for (const [key, pending] of joined) {
+         const answer = await pending;
+         if (answer.value) {
+            schemaCache.noteJoinedHit();
+            schemas[key] = answer.value as TableSourceDef;
+         } else {
+            errors[key] = answer.error ?? "No schema returned for the table";
+         }
+      }
+      return { schemas, errors };
+   }
+
+   private cacheTableSchemas(
+      requested: Record<string, string>,
+      schemas: Record<string, TableSourceDef>,
+   ): void {
+      for (const [key, schema] of Object.entries(schemas)) {
+         const tablePath = requested[key];
+         if (tablePath !== undefined) {
+            schemaCache.set(this.tableCacheKey(tablePath), schema);
+         }
+      }
+   }
+
+   private tableCacheKey(tablePath: string): string {
+      return `${this.cacheScope}\0table\0${tablePath}`;
+   }
+
+   private async fetchSchemaForTablesFromMain(
       tables: Record<string, string>,
       options: FetchSchemaOptions,
    ): Promise<{
@@ -280,6 +415,48 @@ class ProxyConnection {
       | { structDef: SQLSourceDef; error?: undefined }
       | { error: string; structDef?: undefined }
    > {
+      const cacheKey = `${this.cacheScope}\0sql\0${sentence.connection}\0${sentence.selectStr}`;
+      // See fetchSchemaForTables: a refresh is the main thread's to decide.
+      if (options.refreshTimestamp !== undefined) {
+         const refreshed = await this.fetchSchemaForSQLStructFromMain(
+            sentence,
+            options,
+         );
+         if (refreshed.structDef !== undefined) {
+            schemaCache.set(cacheKey, refreshed.structDef);
+         }
+         return refreshed;
+      }
+      const hit = schemaCache.get(cacheKey);
+      if (hit) return { structDef: hit as SQLSourceDef };
+      const pending = schemaCache.joinInFlight(cacheKey);
+      if (pending) {
+         const answer = await pending;
+         if (answer.value) {
+            schemaCache.noteJoinedHit();
+            return { structDef: answer.value as SQLSourceDef };
+         }
+         return { error: answer.error ?? "No schema returned for the SQL" };
+      }
+      const request = this.fetchSchemaForSQLStructFromMain(sentence, options);
+      schemaCache.trackInFlight(
+         cacheKey,
+         request.then((r) => ({ value: r.structDef, error: r.error })),
+      );
+      const result = await request;
+      if (result.structDef !== undefined) {
+         schemaCache.set(cacheKey, result.structDef);
+      }
+      return result;
+   }
+
+   private async fetchSchemaForSQLStructFromMain(
+      sentence: SQLSourceRequest,
+      options: FetchSchemaOptions,
+   ): Promise<
+      | { structDef: SQLSourceDef; error?: undefined }
+      | { error: string; structDef?: undefined }
+   > {
       schemaWait.noteStart(this.jobId);
       let response: SchemaForSqlResponse;
       try {
@@ -304,9 +481,7 @@ class ProxyConnection {
       return { structDef: response.structDef };
    }
 
-   // Compile path never calls these on a non-duckdb connection (the
-   // worker doesn't execute non-duckdb SQL). We throw rather than no-op
-   // so a misrouted call surfaces loudly.
+   // Compilation never executes SQL; throw so a misrouted call surfaces loudly.
    async runSQL(): Promise<never> {
       throw new Error(
          `ProxyConnection(${this.name}): runSQL is not available in package-load workers`,
@@ -391,16 +566,10 @@ function makeWorkerUrlReader(job: LoadPackageRequest): {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Build the package's MalloyConfig inside the worker. Every
- * connection name — including `"duckdb"` — resolves to a
- * {@link ProxyConnection} that RPCs schema fetches back to the main
- * thread. The worker never holds a native connection handle, which
- * keeps it pure-CPU and avoids dlopen'ing duckdb in a second isolate.
- *
- * Concurrent `lookupConnection(name)` calls for the same name are
- * deduped via `inflight` — Malloy's compile pipeline can fan out
- * many schema fetches that all hit `lookupConnection` before any
- * resolve, and we don't want to N-multiply the metadata RPC.
+ * Build the package's MalloyConfig in the worker. Every connection name,
+ * `"duckdb"` included, resolves to a {@link ProxyConnection}. Concurrent
+ * lookups of one name share one metadata RPC, since a compile fans out many
+ * lookups before any resolves.
  */
 function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
    const proxies = new Map<string, ProxyConnection>();
@@ -433,6 +602,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                   const proxy = new ProxyConnection(
                      response.metadata,
                      job.requestId,
+                     job.environmentName,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -448,18 +618,9 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Filesystem helpers (replicated from service/package.ts so the worker
-// stays decoupled from the main-thread service module graph)
+// Filesystem helpers
 // ──────────────────────────────────────────────────────────────────────
 
-/**
- * Parse publisher.json.
- *
- * Takes `modelPaths` because the discovery surface has a second source that is
- * a fact about the tree rather than about the manifest text: a package whose
- * root holds an `index.malloy` and declares no `explores` takes its surface
- * from that file. See {@link resolveExplores}.
- */
 /** The install location the server recorded for the package, if any. */
 async function readInstallRecord(
    packagePath: string,
@@ -486,10 +647,8 @@ async function readInstallRecord(
 }
 
 /**
- * Which `explores` entries are reports, by the one report tag reader
- * (`report.ts`) over each file's text: what discovery reads off the compiled
- * file. Read here, before the compile, because the manifest is resolved
- * first. Only the declared entries are read. Never throws.
+ * Which declared `explores` entries are reports, read from each file's text
+ * before the compile because the manifest is resolved first. Never throws.
  */
 async function declaredReportPaths(
    packagePath: string,
@@ -517,6 +676,11 @@ async function declaredReportPaths(
    return reports;
 }
 
+/**
+ * Parse publisher.json. Takes `modelPaths` because a root `index.malloy`
+ * supplies the discovery surface when `explores` is absent (see
+ * {@link resolveExplores}).
+ */
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
@@ -532,6 +696,7 @@ async function readPackageMetadata(
    manifestWarnings?: string[];
    deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
+   agents?: unknown;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -546,13 +711,13 @@ async function readPackageMetadata(
       scope?: unknown;
       queryMetadata?: unknown;
       retrieval?: unknown;
+      agents?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
    } catch (error) {
-      // A syntax error is the author's to fix like any other bad manifest, so
-      // it is a PackageManifestError (424), not a bare SyntaxError the pool
-      // would report as a worker outage.
+      // A PackageManifestError (424), not a bare SyntaxError the pool would
+      // report as a worker outage.
       throw new PackageManifestError(
          `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON ` +
             `(${error instanceof Error ? error.message : String(error)}). ` +
@@ -567,20 +732,16 @@ async function readPackageMetadata(
       );
    }
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
-   // an invalid value or a conflict between the two throws and fails the load,
-   // and the deprecation rides back as a warning.
+   // an invalid value or a conflict throws.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
-   // Query metadata has two homes as well, migrating the other way (canonical
-   // root, deprecated `materialization.queryMetadata`). A conflict warns rather
-   // than throws — see resolvePackageQueryMetadata.
+   // Query metadata migrates the other way (canonical root, deprecated
+   // `materialization.queryMetadata`); a conflict only warns.
    const queryMetadata = resolvePackageQueryMetadata(
       parsed.queryMetadata,
       parsed.materialization,
    );
-   // The discovery surface has two sources as well: an explicit `explores`,
-   // and the `index.malloy` convention, which fills in only where the manifest
-   // is silent. The result is a plain path list either way -- nothing
-   // downstream can tell which source produced it, and nothing should.
+   // An explicit `explores`, or the `index.malloy` convention where the
+   // manifest is silent; downstream cannot tell which, and should not.
    const explores = resolveExplores({
       declaredExplores: parsed.explores,
       declaredQueryableSources: parsed.queryableSources,
@@ -595,9 +756,7 @@ async function readPackageMetadata(
       ...scope.warnings,
       ...queryMetadata.warnings,
       ...explores.warnings,
-      // Report what the WINNING home could not keep. Reading the envelope alone
-      // would say nothing about a malformed property declared at the root, which
-      // is the home authors are being moved to.
+      // Warn about what the WINNING home could not keep, which may be the root.
       ...queryMetadataParseWarnings(
          queryMetadata.queryMetadata,
          queryMetadata.home,
@@ -606,51 +765,39 @@ async function readPackageMetadata(
    return {
       name: parsed.name,
       description: parsed.description,
-      // Where the package was installed from, from the server's own record
-      // outside the package directory (see Environment.writePackageManifest).
-      // Nothing inside the tree is read as one, neither a `location` in
-      // publisher.json nor a record file shipped with the content: a reload
-      // re-fetches from this value, so only the server may set it.
+      // Only from the server's own record outside the package directory (see
+      // Environment.writePackageManifest), never from package content: a
+      // reload re-fetches from this value, so only the server may set it.
       location: await readInstallRecord(packagePath),
       explores: explores.explores,
-      // Default + invalid fall back to "declared" (fail-safe: queryable ==
-      // discoverable). Only an explicit "all" opts out of the query boundary.
+      // Fail-safe: anything but an explicit "all" keeps the query boundary.
       queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
-      // URI (gs://, s3://, file://, or local path) of the control-plane-computed
-      // build manifest. The main thread fetches + binds it after load.
+      // URI of the control-plane build manifest; the main thread binds it.
       manifestLocation:
          typeof parsed.manifestLocation === "string"
             ? parsed.manifestLocation
             : null,
-      // Package-level Malloy Persistence policy; surfaced to the control plane,
-      // which owns scheduling. `schedule`/`freshness` are for the control plane;
-      // `queryMetadata` is the publisher's own package-level layer.
+      // Persistence policy: `schedule`/`freshness` are for the control plane,
+      // `queryMetadata` for this server.
       materialization: materializationWithQueryMetadata(
          parsePackageMaterialization(parsed.materialization),
          queryMetadata.queryMetadata,
       ),
-      // Package-level persist scope mode; defaults to "package".
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
       deprecatedManifestKeys: declaredDeprecatedManifestKeys(parsed),
-      // How this package is searched and indexed. Validated here so a bad key
-      // or an unreadable prompt file stops the load with a message naming it,
-      // and read here so a prompt edit takes effect on reload.
+      // Validated and read here so a bad key or unreadable prompt file fails
+      // the load by name, and a prompt edit takes effect on reload.
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
+      agents: boundedManifestValue(parsed.agents),
    };
 }
 
 /**
- * Every file in the package, package-relative, sorted.
- *
- * Sorted because `recursive-readdir` pushes each path from inside its
- * `fs.stat` callback, so the order is libuv completion order — not readdir
- * order, and not stable between two servers on identical bytes or between two
- * reloads of one server. This order becomes `Package.models` insertion order
- * and therefore `listModels()`, so anything downstream keyed on "first model
- * wins" was deciding by a race. Nothing should be keyed that way, but a stable
- * listing costs one line and removes the class.
+ * Every file in the package, package-relative, sorted. `recursive-readdir`
+ * yields libuv completion order, and this order becomes `listModels()` order,
+ * so sorting keeps it stable across reloads and servers.
  */
 async function listPackageFiles(packagePath: string): Promise<string[]> {
    const files = await recursive(packagePath, [ignoreDotfiles]);
@@ -659,9 +806,7 @@ async function listPackageFiles(packagePath: string): Promise<string[]> {
          .map((full: string) =>
             path.relative(packagePath, full).replace(/\\/g, "/"),
          )
-         // Codepoint order: localeCompare with no locale follows the runtime's
-         // collation (LANG/LC_ALL), so it does not deliver the cross-server
-         // stability the comment above promises.
+         // Codepoint order: localeCompare follows LANG/LC_ALL, which varies by server.
          .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
    );
 }
@@ -672,18 +817,9 @@ function filterModelPaths(allRelative: string[]): string[] {
    );
 }
 
-// `resolveExplores` normalizes each entry through `normalizeModelPath`
-// (shared, from ../constants) at parse time, so the keys stored in
-// Package.models are already normalized, and the API publish/update path
-// normalizes its `explores` input through the same helper — so on-disk and
-// API-written manifests share one representation.
-
-// explores validation is intentionally NOT done here. The worker is the
-// shared load path (startup, reload, AND publish), but the policy differs by
-// context — strict-reject at publish, warn-and-fail-safe at load — so it lives
-// on the main thread (see Package.getInvalidExplores / loadViaWorker and the
-// publish path in package.controller). An unmatched entry simply lists nothing
-// (listModels filters by set membership), which is the fail-safe outcome.
+// `explores` is not validated here: the policy differs by context (reject at
+// publish, warn at load), so it lives on the main thread
+// (Package.getInvalidExplores). An unmatched entry simply lists nothing.
 
 // ──────────────────────────────────────────────────────────────────────
 // Model compile (mirrors service/model.ts but produces SerializedModel)
@@ -705,10 +841,8 @@ interface ApiQueryWire {
 }
 type ApiGivenWire = MalloyGivenApi;
 
-// Source / query introspection is shared with the in-process path; see
-// service/source_extraction.ts. The worker has no logger, so a filter parse
-// failure is swallowed silently (no `onParseError` callback) — matching the
-// prior worker-local behavior.
+// A filter parse failure is not logged here; the main thread logs it when it
+// builds the model's filters.
 function extractSources(
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
@@ -738,13 +872,7 @@ function extractSources(
    };
 }
 
-/**
- * Collects `validateAuthorizeProbes`'s non-fatal `onRowLevelGateUnexpressible`
- * findings as plain strings for the wire
- * (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
- * `extractSources`'s doc above), so these ride to the main thread, which does,
- * to be logged once per compiled model.
- */
+/** Collects non-fatal authorize findings for `SerializedModel.authorizeWarnings`. */
 function authorizeWarningCollector(): {
    onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
    warnings: string[];
@@ -772,15 +900,9 @@ function extractQueries(modelDef: ModelDef): {
 }
 
 /**
- * Wrap a URLReader so the text it hands the compiler is kept, keyed by URL.
- *
- * This is the only place the bytes a compile actually consumed exist. Reading
- * the same file again later can disagree with the IR built from it -- see
- * `SerializedModel.modelSourceText`, which is what this feeds -- so the text
- * has to be taken here rather than recovered afterwards.
- *
- * First read wins: the compiler reads a file once per compile, and if it ever
- * read twice the first is the one the coordinates came from.
+ * Wrap a URLReader so the text it hands the compiler is kept, keyed by URL:
+ * the only copy of the bytes the IR was built from (see
+ * `SerializedModel.modelSourceText`). First read wins.
  */
 function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    reader: { readURL: (url: URL) => Promise<string> };
@@ -800,17 +922,13 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    };
 }
 
-function buildRuntimeForModel(
+/** A Runtime for the job: its connections and its build manifest. */
+function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-): {
-   runtime: Runtime;
-   urlReader: HackyDataStylesAccumulator;
-   textFor: (url: URL) => string | undefined;
-} {
-   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
-   const urlReader = new HackyDataStylesAccumulator(reader);
-   const runtime = new Runtime({
+   urlReader: { readURL: (url: URL) => Promise<string> },
+): Runtime {
+   return new Runtime({
       urlReader,
       config: malloyConfig,
       buildManifest:
@@ -824,18 +942,60 @@ function buildRuntimeForModel(
               }
             : undefined,
    });
+}
+
+function buildRuntimeForModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+): {
+   runtime: Runtime;
+   urlReader: HackyDataStylesAccumulator;
+   textFor: (url: URL) => string | undefined;
+} {
+   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const urlReader = new HackyDataStylesAccumulator(reader);
+   const runtime = jobRuntime(job, malloyConfig, urlReader);
    return { runtime, urlReader, textFor };
+}
+
+/**
+ * Per-load state for the work done on the main thread's behalf (build plan,
+ * render-tag results, companions). Each model's share runs right after its
+ * compile, so no compiled model is held past it.
+ */
+interface LoadContext {
+   /**
+    * Past this (a `performance.now()` time) the work is left to the main
+    * thread; see LoadPackageRequest.mainThreadWorkBudgetMs.
+    */
+   softDeadline: number;
+   /** Each `.malloy` model's plan parts, when the request asked for a plan. */
+   planParts?: Map<string, BuildPlanParts>;
+   /** Each model's position in the package's model order. */
+   modelOrder: Map<string, number>;
+   /** A model failed in a load that wants a plan, which fails anyway; stop the work. */
+   failed: boolean;
+   /**
+    * The first model, in model order, whose plan parts could not be
+    * collected. Earlier models keep collecting so the reported failure is the
+    * one the main thread's model-by-model derivation would report.
+    */
+   planError?: { order: number; message: string };
+   /** When the first model's plan collection started. */
+   planStart?: number;
+   /** A model reached its plan parts past the soft deadline; the main thread derives the plan. */
+   planLeftToMainThread: boolean;
 }
 
 async function compileMalloyModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   load: LoadContext,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
-   // `pathToFileURL` produces a valid URL on every platform; the
-   // naïve `file://${fullPath}` template parses host=`D:` on Windows.
+   // Not a `file://` template, which parses host=`D:` on Windows.
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
@@ -853,10 +1013,7 @@ async function compileMalloyModel(
          ? malloyGivens.map((g) => malloyGivenToApi(g as MalloyGiven))
          : undefined;
 
-   // Every source this file can resolve, attributed to nothing but itself.
-   // See collectSourceInfos: the old import walk pulled in every source of
-   // every imported FILE, including names a selective import never brought
-   // into this namespace.
+   // Every source this file's namespace can resolve; see collectSourceInfos.
    const sourceInfos = collectSourceInfos(modelDef);
 
    const {
@@ -881,26 +1038,19 @@ async function compileMalloyModel(
    const queries = queryResult.queries;
    // See the identical check in `Model.create`.
    assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
-   // A `#(authorize)` annotation in a position nothing enforces (a top-level
-   // `query:` statement, or a field inside a `source:` rather than the
-   // `source:` line itself) fails OPEN — see
-   // `assertNoMisplacedAuthorizeAnnotations`'s doc. Checked before
-   // `validateAuthorizeProbes` below, same order as `Model.create`.
+   // The checks below run in the same order as `Model.create`. A misplaced
+   // `#(authorize)` would fail OPEN, so it is refused outright.
    assertNoMisplacedAuthorizeAnnotations([
       ...misplacedAuthorize,
       ...queryResult.misplacedAuthorize,
    ]);
-   // The string form is refused outright — see `findLegacyStringGates`'s doc.
-   // Checked before `validateAuthorizeProbes`, same order as `Model.create`.
-   // Presence-based `authorizeOwnNotes` (not the attributed map) — see
-   // `extractSourcesFromModelDef`'s doc for why this refusal must not narrow.
+   // Presence-based `authorizeOwnNotes`, not the attributed map: this refusal
+   // must not narrow (see `extractSourcesFromModelDef`).
    const legacyStringGates = findLegacyStringGates(authorizeOwnNotes);
    legacyStringGates.forEach(() =>
       recordRowLevelGateRejected("legacy_string_gate"),
    );
    assertNoLegacyStringGate(legacyStringGates);
-   // The body grammar — see `assertAuthorizeGrammarValid`'s doc, same order
-   // as `Model.create`.
    assertAuthorizeGrammarValid(
       modelDef,
       authorizeMap,
@@ -910,26 +1060,17 @@ async function compileMalloyModel(
       attributedAuthorizeOwnNotes,
    );
    const authorizeWarningCollection = authorizeWarningCollector();
-   // Validate both gate routes at compile time (shared with Model.create).
-   // Throws on an unknown given / source-field reference or a rejected
-   // row-level shape; compileOneModel's catch turns it into this model's
-   // compilationError. A gate INHERITED at an entry point that can't express
-   // it does not throw — see `validateAuthorizeProbes`'s doc comment for what
-   // it validates.
+   // Throws on a bad reference or rejected row-level shape, which becomes this
+   // model's compilationError; an unexpressible inherited gate only warns.
    await validateAuthorizeProbes(mm, {
       authorizeMap,
       authorizeOwnNotes: attributedAuthorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
-      // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry point whose
-      // probe compiled (see `validateAuthorizeProbes`'s doc on this
-      // callback) -- `sourceName` may be an inheritor, not only the
-      // DECLARING source. `modelDef.contents[sourceName]` is the same
-      // struct the probe was grafted onto, so `refSummary` is already
-      // resolved against it either way. The worker has no logger (see this
-      // function's doc), so a warning rides the same wire channel as
-      // `onRowLevelGateUnexpressible` above.
+      // Runs at EVERY entry point whose probe compiled, so `sourceName` may be
+      // an inheritor; `modelDef.contents[sourceName]` is the struct the probe
+      // was grafted onto. Warnings join the authorize warnings.
       onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;
@@ -950,6 +1091,17 @@ async function compileMalloyModel(
       },
    });
 
+   const compileDurationMs = performance.now() - compileStart;
+   const { renderTagResults, preaggregateCompanion } =
+      await prepareForMainThread(job, malloyConfig, load, {
+         modelPath,
+         materializer: mm,
+         model: compiled,
+         importBaseURL,
+         queries,
+         sources,
+      });
+
    return {
       modelPath,
       modelType: "model",
@@ -969,12 +1121,164 @@ async function compileMalloyModel(
       // coordinates were computed against. See SerializedModel.
       modelSourceText: textFor(modelURL),
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
-      compileDurationMs: performance.now() - compileStart,
+      compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       authorizeWarnings:
          authorizeWarningCollection.warnings.length > 0
             ? authorizeWarningCollection.warnings
             : undefined,
+      renderTagResults,
+      preaggregateCompanion,
+   };
+}
+
+/**
+ * Do one compiled model's share of the main thread's work: render-tag
+ * results, pre-aggregation companion, build-plan parts. Past the soft
+ * deadline (checked before each target and the companion) the rest is left to
+ * the main thread, so a slow package loads rather than hitting the job limit.
+ * Plan parts are still collected after a companion that started in time,
+ * since they need no recompile. Never throws: a failure fails at most the plan.
+ */
+async function prepareForMainThread(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   load: LoadContext,
+   model: {
+      modelPath: string;
+      materializer: ModelMaterializer;
+      model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      importBaseURL: URL;
+      queries: Parameters<typeof renderTagTargets>[0];
+      sources: Parameters<typeof renderTagTargets>[1];
+   },
+): Promise<{
+   renderTagResults?: { label: string; result?: Malloy.Result }[];
+   preaggregateCompanion?: { modelDef?: unknown };
+}> {
+   if (load.failed) return {};
+   const pastDeadline = (): boolean => performance.now() >= load.softDeadline;
+   const { modelPath, materializer, importBaseURL } = model;
+
+   // On the main thread these prepares would block the event loop (see
+   // SerializedModel.renderTagResults).
+   const renderTagResults: { label: string; result?: Malloy.Result }[] = [];
+   const targets = renderTagTargets(model.queries, model.sources);
+   // Build the shared QueryModel once, as Model.ensureSharedQueryModel does:
+   // Malloy reuses it only once it exists, otherwise each prepare builds one.
+   if (targets.length > 0 && !load.failed && !pastDeadline()) {
+      try {
+         void model.model.queryModel;
+      } catch {
+         // The prepares below build their own.
+      }
+   }
+   for (const target of targets) {
+      if (load.failed || pastDeadline()) break;
+      try {
+         const prepared = await materializer
+            .loadQuery(target.queryString)
+            .getPreparedResult();
+         // Without its SQL: the tag check never reads it, and it is about
+         // half of each result's size.
+         const { sql: _sql, ...result } = prepared.toStableResult();
+         renderTagResults.push({
+            label: target.label,
+            result: result as Malloy.Result,
+         });
+      } catch {
+         // A view or query that fails to prepare is reported by the normal
+         // compile path; the render-tag check skips it.
+         renderTagResults.push({ label: target.label });
+      }
+   }
+
+   const order = load.modelOrder.get(modelPath) ?? 0;
+   let wantsPlan =
+      load.planParts !== undefined &&
+      !load.failed &&
+      !load.planLeftToMainThread &&
+      !(load.planError && load.planError.order < order);
+   if (wantsPlan && pastDeadline()) {
+      load.planLeftToMainThread = true;
+      wantsPlan = false;
+   }
+
+   // The runtime the companion compiles in: the model's own, reading the
+   // synthesized model's text from the overlay.
+   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
+      const files = makeWorkerUrlReader(job);
+      return {
+         runtime: jobRuntime(job, malloyConfig, {
+            readURL: (url: URL) => {
+               const text = overlay.get(url.href);
+               return text !== undefined
+                  ? Promise.resolve(text)
+                  : files.readURL(url);
+            },
+         }),
+         importBaseURL,
+      };
+   };
+   // One compile serves both the main thread and the plan, since a build
+   // manifest is read only at query prepare. Undefined when not wanted or
+   // left to the main thread; null when there is no usable rollup.
+   const companion: SynthesizedPreaggregation | null | undefined =
+      (job.withPreaggregateCompanions || wantsPlan) &&
+      !load.failed &&
+      !pastDeadline()
+         ? ((await tryCompileSynthesizedPreaggregation({
+              packagePath: job.packagePath,
+              modelPath,
+              contents: model.model._modelDef.contents as Record<
+                 string,
+                 unknown
+              >,
+              getRuntime: companionRuntime,
+           })) ?? null)
+         : undefined;
+
+   // Rechecked, since another model may have left the plan to the main
+   // thread meanwhile. The deadline is not rechecked: the parts need no
+   // recompile now, and abandoning them would make the main thread compile
+   // every model.
+   if (wantsPlan && load.planLeftToMainThread) {
+      wantsPlan = false;
+   }
+   if (wantsPlan && companion !== undefined && !load.failed) {
+      load.planStart ??= performance.now();
+      try {
+         const parts = emptyBuildPlanParts();
+         await collectModelBuildPlan(parts, {
+            modelPath,
+            packagePath: job.packagePath,
+            materializer,
+            malloyModel: model.model,
+            getRuntime: companionRuntime,
+            synthesized: companion,
+         });
+         load.planParts?.set(modelPath, parts);
+      } catch (error) {
+         if (!load.planError || order < load.planError.order) {
+            load.planError = {
+               order,
+               message: `${modelPath}: ${errMessage(error)}`,
+            };
+         }
+      }
+   } else if (wantsPlan) {
+      // The deadline passed while the companion was being decided.
+      load.planLeftToMainThread = true;
+   }
+
+   return {
+      renderTagResults,
+      preaggregateCompanion:
+         !job.withPreaggregateCompanions || companion === undefined
+            ? undefined
+            : companion
+              ? { modelDef: companion.model._modelDef }
+              : {},
    };
 }
 
@@ -985,8 +1289,6 @@ async function compileNotebookModel(
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
-   // See compileMalloyModel above: `pathToFileURL` is the only
-   // cross-platform way to build a file URL from an OS path.
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
@@ -996,9 +1298,7 @@ async function compileNotebookModel(
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
    const parse = parseMalloynb(fileContents, modelPath);
 
-   // Build the extendModel chain synchronously so per-cell materializers
-   // line up with statement order. Matches the in-process flow in
-   // Model.getNotebookModelMaterializer.
+   // Sequential, so per-cell materializers line up with statement order.
    let mm: ModelMaterializer | undefined;
    const perCellMM: (ModelMaterializer | undefined)[] = parse.statements.map(
       (stmt) => {
@@ -1024,25 +1324,19 @@ async function compileNotebookModel(
 
       const localMM = perCellMM[i];
       if (!localMM) {
-         // Shouldn't happen for a MALLOY statement, but guard rather
-         // than crash a whole notebook compile on one corrupt cell.
+         // Guard rather than fail the whole notebook on one corrupt cell.
          continue;
       }
       const currentModelDef = (await localMM.getModel())._modelDef;
 
-      // Sources this cell added, imports included: the cell's namespace minus
-      // what earlier cells already surfaced. `collectSourceInfos` reads the
-      // accumulated `contents`, so an `import { … }` contributes exactly the
-      // names it selected and re-loading the imported file is unnecessary.
+      // Sources this cell added, imports included: its namespace minus what
+      // earlier cells surfaced. A selective import contributes only its names.
       const currentInfo = modelInfoOf(currentModelDef);
       const newSources = collectSourceInfos(currentModelDef).filter(
          (s) => !(s.name in oldSources),
       );
       for (const s of newSources) oldSources[s.name] = s;
 
-      // Capture the per-cell final-query queryDef so the main thread can
-      // hydrate a QueryMaterializer via
-      // `ModelMaterializer._loadQueryFromQueryDef` without a recompile.
       const runnable = localMM.loadFinalQuery();
       let cellQueryDef: Query | undefined;
       let queryInfo: Malloy.QueryInfo | undefined;
@@ -1067,7 +1361,7 @@ async function compileNotebookModel(
             } as Malloy.QueryInfo;
          }
       } catch {
-         // Some cells (source-only) have no final query; that's fine.
+         // Source-only cells have no final query.
       }
 
       notebookCells.push({
@@ -1080,10 +1374,7 @@ async function compileNotebookModel(
       });
    }
 
-   // Aggregate (notebook-level) artifacts — derived from the final mm
-   // if any MALLOY statements were present. If the notebook is all
-   // markdown, modelDef stays undefined and the main thread treats
-   // this as a notebook with no compiled content.
+   // An all-markdown notebook has no modelDef.
    let finalModelDef: ModelDef | undefined;
    let finalSources: ApiSourceWire[] | undefined;
    let finalQueries: ApiQueryWire[] | undefined;
@@ -1139,11 +1430,7 @@ async function compileNotebookModel(
          (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
          extracted.attributedAuthorizeOwnNotes,
       );
-      // Validate #(authorize) at compile time (shared with Model.create). See
-      // `validateAuthorizeProbes`'s doc comment for what it validates.
-      //
-      // `const` (not the outer `let finalModelDef`) so the narrowed
-      // non-undefined type survives into the closure below.
+      // `const` so the narrowed type survives into the closure below.
       const finalCompiledModelDef: ModelDef = finalModelDef;
       await validateAuthorizeProbes(mm, {
          authorizeMap: extracted.authorizeMap,
@@ -1200,10 +1487,11 @@ async function compileOneModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   load: LoadContext,
 ): Promise<SerializedModel> {
    try {
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-         return await compileMalloyModel(job, malloyConfig, modelPath);
+         return await compileMalloyModel(job, malloyConfig, modelPath, load);
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
          return await compileNotebookModel(job, malloyConfig, modelPath);
@@ -1217,6 +1505,8 @@ async function compileOneModel(
          },
       };
    } catch (error) {
+      // That load fails anyway; stop the remaining main-thread work.
+      if (job.computeBuildPlan) load.failed = true;
       const modelType: SerializedModel["modelType"] = modelPath.endsWith(
          NOTEBOOK_FILE_SUFFIX,
       )
@@ -1225,10 +1515,8 @@ async function compileOneModel(
       return {
          modelPath,
          modelType,
-         // Classified here, before serializing: the check reads the stack, and
-         // a plain Error crosses as a bare Error that the main thread answers
-         // as an outage. As a MalloyError it crosses as a compile problem,
-         // the same as Model.create's in-process path.
+         // Classified before serializing (the check reads the stack), so it
+         // crosses as a compile problem rather than an outage.
          compilationError: serializeError(
             translatorMalloyError(error) ?? error,
          ),
@@ -1245,17 +1533,13 @@ async function loadPackage(
 ): Promise<LoadPackageResult> {
    const loadStart = performance.now();
 
-   // The file listing runs BEFORE the manifest read: the discovery surface can
-   // be defaulted from a root index.malloy, so parsing the manifest needs to
-   // know what is on disk. Both stay in the setup region excluded from the
-   // compile timing below.
+   // Listed BEFORE the manifest read, which needs to know whether a root
+   // index.malloy exists. Both are excluded from the compile timing.
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
 
-   // Resolved against the ON-DISK tree, before the replacement fixup below. A
-   // replacement can introduce a modelPath that is not on disk, and a /compile
-   // preview proposing an index.malloy must not re-curate the whole package
-   // for the span of one request.
+   // Resolved against the ON-DISK tree, before the replacement: a /compile
+   // preview proposing an index.malloy must not re-curate the package.
    const packageMetadata = await readPackageMetadata(
       job.packagePath,
       modelPaths,
@@ -1269,24 +1553,38 @@ async function loadPackage(
       modelPaths.push(job.replacement.modelPath);
    }
 
-   // Bracket the compile region: only work from here on is compilation +
-   // proxied schema fetches. The setup above (manifest read + file listing)
-   // is excluded so it can't inflate the compile figure — it stays in the
-   // derivable remainder (loadDuration - compile - schemaFetch). Begin the
-   // schema-fetch accounting HERE, at the region boundary, not at load start:
-   // that keeps `compileDurationMs = compileRegion - schemaFetchWait` exact
-   // regardless of whether any fetch ever happens during setup (none do
-   // today, but this stops that assumption from silently mattering).
+   // The compile region starts here; schema-fetch accounting begins at the
+   // same boundary so `compileDurationMs = compileRegion - schemaFetchWait`
+   // holds exactly.
    const compileRegionStart = performance.now();
+   const schemaCacheHitsAtStart = schemaCache.hits;
    schemaWait.begin(job.requestId);
+   const load: LoadContext = {
+      softDeadline: loadStart + job.mainThreadWorkBudgetMs,
+      planParts: job.computeBuildPlan
+         ? new Map<string, BuildPlanParts>()
+         : undefined,
+      modelOrder: new Map(modelPaths.map((modelPath, i) => [modelPath, i])),
+      failed: false,
+      planLeftToMainThread: false,
+   };
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
-         compileOneModel(job, malloyConfig, modelPath),
+         compileOneModel(job, malloyConfig, modelPath, load),
       ),
    );
 
-   const loadEnd = performance.now();
+   const compileEnd = performance.now();
    const schemaFetchDurationMs = schemaWait.waitMs;
+   const schemaFetchCount = schemaWait.fetches;
+   const schemaCacheHits = schemaCache.hits - schemaCacheHitsAtStart;
+   const buildPlan = await finishWorkerBuildPlan(
+      malloyConfig,
+      modelPaths,
+      load,
+      packageMetadata.materialization ?? null,
+   );
+   const loadEnd = performance.now();
    return {
       type: "load-package-result",
       requestId: job.requestId,
@@ -1295,24 +1593,80 @@ async function loadPackage(
       replacementMatchedExisting,
       loadDurationMs: loadEnd - loadStart,
       timings: {
-         // Compile-region wall minus the schema-fetch wait it contains — a
-         // conservative ceiling on compile CPU (clamped: rounding can nudge
-         // it slightly negative).
+         // Clamped: rounding can nudge it slightly negative.
          compileDurationMs: Math.max(
             0,
-            loadEnd - compileRegionStart - schemaFetchDurationMs,
+            compileEnd - compileRegionStart - schemaFetchDurationMs,
          ),
          schemaFetchDurationMs,
-         schemaFetchCount: schemaWait.fetches,
+         schemaFetchCount,
+         schemaCacheHits,
       },
+      buildPlan,
    };
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Error serialization
-// ──────────────────────────────────────────────────────────────────────
-
-// serializeError/deserializeError: ./error_wire
+/**
+ * Merge the models' plan parts, in model order, into the package build plan,
+ * as `computePackageBuildPlan` does. Undefined when not asked for, when a
+ * model failed, or when the plan was left to the main thread.
+ */
+async function finishWorkerBuildPlan(
+   malloyConfig: MalloyConfig,
+   modelPaths: string[],
+   load: LoadContext,
+   materializationConfig: WirePackageMaterialization | null,
+): Promise<WorkerBuildPlan | undefined> {
+   if (!load.planParts || load.failed || load.planLeftToMainThread) {
+      return undefined;
+   }
+   const start = performance.now();
+   const refusals = (): Partial<Record<EligibilityRefusalReason, number>> => ({
+      ...(jobContext.getStore()?.refusals ?? {}),
+   });
+   const digestSkipped: string[] = [];
+   try {
+      if (load.planError) throw new Error(load.planError.message);
+      const parts = emptyBuildPlanParts();
+      for (const modelPath of modelPaths) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         const own = load.planParts.get(modelPath);
+         if (!own) throw new Error(`Model ${modelPath} did not compile`);
+         mergeBuildPlanParts(parts, own);
+      }
+      const connections = await resolvePackageConnections(
+         {
+            getMalloyConnection: (name: string) =>
+               malloyConfig.connections.lookupConnection(name),
+         },
+         parts.graphs.map((g) => g.connectionName),
+      );
+      const connectionDigests = await resolveConnectionDigests(
+         connections,
+         parts.graphs,
+         (name) => digestSkipped.push(name),
+      );
+      const outcome = deriveBuildPlanOutcome(
+         { ...parts, connectionDigests },
+         materializationConfig,
+      );
+      return {
+         ok: true,
+         outcome,
+         durationMs: performance.now() - (load.planStart ?? start),
+         digestSkipped,
+         eligibilityRefused: refusals(),
+      };
+   } catch (error) {
+      return {
+         ok: false,
+         error: errMessage(error),
+         durationMs: performance.now() - (load.planStart ?? start),
+         digestSkipped,
+         eligibilityRefused: refusals(),
+      };
+   }
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // Message dispatcher
@@ -1348,8 +1702,13 @@ port.on("message", (message: MainToWorkerMessage) => {
 });
 
 async function runJob(job: LoadPackageRequest): Promise<void> {
+   const context: JobContext = {
+      jobId: job.requestId,
+      packagePath: job.packagePath,
+      refusals: {},
+   };
    try {
-      const result = await loadPackage(job);
+      const result = await jobContext.run(context, () => loadPackage(job));
       port.postMessage(result);
    } catch (error) {
       const errMsg: LoadPackageError = {
@@ -1366,13 +1725,10 @@ async function runJob(job: LoadPackageRequest): Promise<void> {
 
 function maybeExit(): void {
    if (shuttingDown && inFlightJobs.size === 0 && pendingRpc.size === 0) {
-      // Give the postMessage queue a tick to flush before exit so the
-      // last result actually reaches the parent.
+      // A tick for the postMessage queue to flush before exit.
       setImmediate(() => process.exit(0));
    }
 }
 
-// Announce readiness — the pool waits for this before dispatching jobs
-// to a newly-spawned worker so we don't race the worker's module-init
-// time.
+// The pool dispatches nothing to a new worker until this arrives.
 port.postMessage({ type: "ready" });

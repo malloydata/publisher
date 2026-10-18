@@ -17,26 +17,19 @@ type WireBuildManifest = components["schemas"]["BuildManifest"];
 
 /**
  * A fetched build manifest, split by tier. A storage-materialized entry (one
- * that carries `storageDestinationName`) is served cross-connection via the
- * virtual-source transform, so it becomes a serve BINDING — it must never enter
- * the same-connection `tableName` substitution. Everything else is an
- * colocated entry the Malloy runtime resolves by substituting its
- * `tableName` at compile time.
+ * carrying `storageDestinationName`) lives on another connection and is served
+ * through the virtual-source transform, so it must never enter the
+ * same-connection `tableName` substitution.
  */
 export interface FetchedManifest {
-   /** colocated entries: same-connection `tableName` substitution. */
+   /** Colocated entries: same-connection `tableName` substitution. */
    tableNameManifest: FreshnessManifest;
-   /**
-    * `storage=` entries keyed by sourceEntityId, carried as full
-    * {@link ManifestEntry}s (with `storageDestinationName` + captured `schema` +
-    * `sourceName`) so the bind step can derive cross-connection serve bindings.
-    */
+   /** `storage=` entries by sourceEntityId, kept whole for serve bindings. */
    storageEntries: Record<string, ManifestEntry>;
 }
 
-// Lazily-created clients reused across fetches. Both use the ambient credential
-// chain (ADC for GCS; the default provider chain for S3) — the same auth the
-// package downloader already relies on.
+// Lazily created; both use the ambient credential chain, as the package
+// downloader does.
 let gcsClient: Storage | undefined;
 let s3Client: S3 | undefined;
 
@@ -74,31 +67,16 @@ async function readManifestBytes(uri: string): Promise<string> {
    if (uri.startsWith("file://")) {
       return fs.readFile(fileURLToPath(uri), "utf8");
    }
-   // Bare local path (used by tests and local/mounted deployments). The URI is
-   // operator-supplied config (publisher.json or an authenticated PATCH), not
-   // end-user input, and the file's contents are never returned to the caller —
-   // only physicalTableName strings are extracted — so the CodeQL
-   // js/path-injection alert here is a dismissed false positive.
+   // Bare local path. The URI is operator config, not end-user input, and only
+   // physicalTableName strings are extracted from the file, so CodeQL's
+   // js/path-injection alert here is a false positive.
    return fs.readFile(uri, "utf8");
 }
 
 /**
- * Fetch and parse the host-computed build manifest at `uri`, split by
- * tier into {@link FetchedManifest}. The wire manifest keys physical tables
- * under `physicalTableName`; for an colocated entry the Malloy
- * runtime consumes `tableName`, so that field is translated here and the entry
- * lands in `tableNameManifest`, carrying the freshness fields verbatim (so the
- * serve path can gate `age vs window` per query) and `connectionName` (so the
- * bind step can quote the path for that connection's dialect — see
- * Package.quoteBoundTableNames).
- *
- * A `storage=`-materialized entry (one carrying `storageDestinationName`) is
- * routed instead to `storageEntries` as its full {@link ManifestEntry}: it lives
- * on a DIFFERENT connection and is served through the virtual-source transform
- * from its captured `schema`, so it must never become a same-connection
- * `tableName` substitution. Entries missing a physical table are skipped. This
- * is a pure fetch + parse: it does **not** filter on freshness (that happens per
- * query on the serve path). Throws if the URI can't be read or parsed.
+ * Fetch and parse the host-computed build manifest at `uri`, split by tier
+ * (see {@link splitManifestEntries}). Does not filter on freshness; the serve
+ * path does that per query. Throws if the URI can't be read or parsed.
  */
 export async function fetchManifestEntries(
    uri: string,
@@ -120,14 +98,10 @@ export async function fetchManifestEntries(
 }
 
 /**
- * Split an already-in-hand manifest entry map by tier into
- * {@link FetchedManifest}, applying the same wire→runtime translation as
- * {@link fetchManifestEntries} (physicalTableName → colocated `tableName`
- * substitution carrying freshness + connectionName; a `storageDestinationName`
- * entry stays a full {@link ManifestEntry} for the virtual-source transform).
- * Pure: no I/O, no freshness filtering. Shared by the URI-fetch path (host
- * manifest) and the local-store rebind (a package's own latest persisted
- * materialization, re-applied on load). `source` is a label for the skip log.
+ * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
+ * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
+ * the freshness fields (gated per query) and `connectionName` (for
+ * dialect-specific quoting). Pure; `source` labels the skip log.
  */
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
@@ -136,10 +110,9 @@ export function splitManifestEntries(
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
-      // Legacy tolerance, removable with `ManifestEntry.error`: a manifest written
-      // by 0.0.245-0.0.246 records a failed source here, carrying the name of a
-      // table that was never created. Binding it serves the prior generation as
-      // though it were fresh, so it is dropped before either half of the split.
+      // An older manifest can record a failed source with the name of a table
+      // never created; binding it would serve the prior generation as fresh.
+      // Removable together with `ManifestEntry.error`.
       if (isLegacyFailedEntry(entry)) {
          logger.warn("Manifest entry records a failed source; skipping", {
             source,
@@ -156,9 +129,6 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         // Cross-connection storage tier: keep the full entry (schema +
-         // sourceName + storageDestinationName) for the serve-binding derivation;
-         // never enter the same-connection tableName manifest.
          storageEntries[sourceEntityId] = entry;
          continue;
       }

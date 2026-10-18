@@ -74,6 +74,8 @@ export interface MetricsHarness {
       name: string,
       attributeFilter?: Record<string, string | number | boolean>,
    ): Promise<{ count: number; sum: number; boundaries: number[] }>;
+   /** The attribute set of every data point recorded for the named metric. */
+   collectAttributes(name: string): Promise<Record<string, unknown>[]>;
    shutdown(): Promise<void>;
 }
 
@@ -142,6 +144,18 @@ export async function startMetricsHarness(): Promise<MetricsHarness> {
             }
          }
          return { count, sum, boundaries };
+      },
+      async collectAttributes(name: string) {
+         const result = await reader.collect();
+         return result.resourceMetrics.scopeMetrics.flatMap((scope) =>
+            scope.metrics
+               .filter((metric) => metric.descriptor.name === name)
+               .flatMap((metric) =>
+                  metric.dataPoints.map(
+                     (dp) => (dp.attributes ?? {}) as Record<string, unknown>,
+                  ),
+               ),
+         );
       },
       async collectGauge(name: string): Promise<number | undefined> {
          const result = await reader.collect();

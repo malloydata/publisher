@@ -1,10 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { clearReportDraft, reportDraftKey } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
-import type { Given } from "../../client";
+import type { CompiledModel } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -16,6 +17,7 @@ import {
 } from "../Report/telemetry";
 import { now } from "../../utils/clock";
 import { useOptionalDocumentStorage } from "../DocumentStorage";
+import type { ReactNode } from "react";
 import { Loading } from "../Loading";
 import { documentSlug } from "../Package/documentLocation";
 import { useServer } from "../ServerProvider";
@@ -34,6 +36,7 @@ import { EditorSurface } from "./EditorSurface";
 import { useHostCopy } from "./useHostCopy";
 import { useOpenedDocument } from "./useOpenedDocument";
 import { useSaveChannel } from "./useSaveChannel";
+import type { BuilderControlsHandler } from "./builderControls";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -93,13 +96,20 @@ export type ReportEditorProps = (
     */
    onEvent?: ReportEventHandler;
    /**
+    * What to draw while the report opens (its text read, the builder's data
+    * loaded); default a spinner. A host that just showed the report can pass
+    * the report itself, so switching to edit replaces the page in place
+    * rather than blanking it to a spinner first.
+    */
+   loading?: ReactNode;
+   /**
     * The report's layout as the host knows it before the text is read: from
     * the package's listing, or for a draft the layout its store recorded.
     * Default `grid`. It decides what is read when the editor opens (a linear
     * report's copy is read back only from an authoritative store) and is what
     * a save records until the text says otherwise; once open, the document's
     * own tag decides how it is drawn, what a save records and which events it
-    * reports, and the layout switch changes that.
+    * reports.
     */
    layout?: ReportLayout;
    /** @deprecated Pass `layout`: `dashboard` is grid, `notebook` linear. */
@@ -124,15 +134,46 @@ export type ReportEditorProps = (
     * header View) leaves it unset and guards with `onDirtyChange`.
     */
    onExit?: () => void;
+   /**
+    * Open a model by its package path (`storefront.malloy`). Offered as "Open
+    * the model" on a filter a model sets, which the builder can set but not
+    * change; omitted, the filter only says where it is set.
+    */
+   onOpenModel?: (modelPath: string) => void;
+   /**
+    * Take over the builder's page-level controls (save status and Save, undo
+    * and redo, Add): handed over as `BuilderControls`
+    * whenever they change, with no toolbar drawn on the page. Draw them with
+    * `BuilderBar` in the host's header, or place each in its own chrome.
+    */
+   onControlsChange?: BuilderControlsHandler;
+   /**
+    * Keep unsaved edits in this browser, per report, and put them back when
+    * the report is next opened for editing here: leaving never loses work, so
+    * the host's way out can be the controls' `done` (write, then leave) with
+    * no "leave with unsaved changes?" on the way.
+    */
+   keepDraft?: boolean;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
    /**
-    * Whether the toolbar offers the Linear / Grid layout switch. Default
-    * true. A host that files a report by its layout passes false, so an
-    * author cannot change a layout the host files by. A document held as text
-    * never gets the switch.
+    * The package version the builder's queries run at, apart from the
+    * document's own identity: every tile, the report's manifest, filter
+    * options and suggestions, the report listing and the field catalog.
+    *
+    * The document is still the one `resourceUri` and `path` name, so the kept
+    * draft, where a save goes, the save caption and whether a save is a pinned
+    * one all follow `resourceUri` alone. A host editing a package that is
+    * republished on every change passes an unversioned `resourceUri` and the
+    * version its reader ran at here: the builder then reuses the reader's
+    * results instead of running every tile again, and kept edits survive the
+    * next republish.
+    *
+    * Unset, queries run at the `resourceUri`'s version, as before. A text-held
+    * document's compile has no version, so it is compiled as today; its tiles
+    * do run at this version.
     */
-   allowLayoutChange?: boolean;
+   queryVersionId?: string;
 };
 
 /**
@@ -143,8 +184,9 @@ export type ReportEditorProps = (
  * sources the document may name. The manifest is that compile's `document`, and
  * every tile, cell and control option runs as the document's definitions
  * followed by one `run:`, so each viewer sees what their own identity allows.
- * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
- * and only the model's givens can be bound.
+ * The server's compile refuses an `import`, `##!` or `given:` in the text, so
+ * "Add filter" is off and only the model's givens can be bound, unless the
+ * host resolves the document's own givens itself (`compileSource`).
  */
 export interface TextSourceOptions {
    /** The model the text is compiled and run on top of. */
@@ -153,17 +195,41 @@ export interface TextSourceOptions {
    hiddenGivens?: readonly string[];
    /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
    givens?: Record<string, HostGivenValue>;
+   /**
+    * The text to compile in place of the document's own, for a host that
+    * resolves what the server's compile refuses in held text: the document's
+    * own `given:` declarations, say, written out as literal values. Called
+    * with the text as opened; the editor still edits and saves that text.
+    *
+    * A host that passes it owns how its text compiles, so "Add filter" is
+    * on: it writes a `given:` into the text like any report, and the builder
+    * runs each tile with that filter's value written in as a literal, since
+    * the server does not know the given. Without it, "Add filter" is off,
+    * because the server refuses a `given:` in held text.
+    */
+   compileSource?: (text: string) => string | Promise<string>;
+   /**
+    * Names a filter added here must not take: with `compileSource`, every
+    * given the model declares, including one only a gate reads, which the
+    * page never shows. A document given of the same name would collide with
+    * the model's once the report is published.
+    */
+   takenGivenNames?: readonly string[];
 }
 
 export function ReportEditor(props: ReportEditorProps) {
    const {
       onEvent,
+      loading,
       onDirtyChange,
       onExit,
+      onOpenModel,
+      onControlsChange,
+      keepDraft,
       kind,
       path,
       textSource,
-      allowLayoutChange,
+      queryVersionId,
    } = props;
    const layout: ReportLayout =
       props.layout ?? (kind ? layoutOfKind(kind) : "grid");
@@ -181,7 +247,7 @@ export function ReportEditor(props: ReportEditorProps) {
    const dashboardName = named ?? documentSlug(path) ?? "";
    const noun = "report";
 
-   const { apiClients, mutable, isLoadingStatus } = useServer();
+   const { apiClients, mutable, isLoadingStatus, server } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
@@ -328,14 +394,41 @@ export function ReportEditor(props: ReportEditorProps) {
       });
    }, [fetchFailed, modelQuery.error, modelPath, layout]);
    // Stable: the builder fires this from an effect that depends on it.
+   // The editor's own record is every unsaved edit: it decides whether a
+   // newer version of the file may replace what is open, and with a draft
+   // kept, reporting only what leaving would lose let the other author's
+   // version replace the author's edits. The host's leave guard gets what
+   // leaving would lose.
    const reportDirty = useCallback(
-      (value: boolean) => {
+      (value: boolean, wouldLose: boolean) => {
          setDirty(value);
-         onDirtyChangeRef.current?.(value);
+         onDirtyChangeRef.current?.(wouldLose);
       },
       [setDirty],
    );
 
+   // One per report, version and server: a draft is never restored onto a
+   // file it was not made on.
+   // The file's compiled model, only while the builder is on the text it
+   // compiled. A kept draft, the host's record or a version held back is other
+   // text, whose views can differ under the same names.
+   const fileModel =
+      !textSource &&
+      modelQuery.data?.data &&
+      packageText !== undefined &&
+      opened?.source === packageText
+         ? (modelQuery.data.data as CompiledModel)
+         : undefined;
+
+   const draftKey = keepDraft
+      ? reportDraftKey({
+           server,
+           environmentName,
+           packageName,
+           versionId,
+           path: path ?? dashboardName,
+        })
+      : undefined;
    const saveLabel =
       savesTo === "host" && workspace?.description
          ? workspace.description
@@ -353,8 +446,17 @@ export function ReportEditor(props: ReportEditorProps) {
               ...(readFailure !== undefined ? { readFailure } : {}),
               ...(versionId !== undefined ? { versionId } : {}),
            });
-   // The description is already the Save caption, so the note does not repeat it.
-   const note = caption === saveLabel ? "" : caption;
+   // Only what is out of the ordinary: Save off, a pinned version, a copy
+   // that could not be read. Where an ordinary save goes is the bar's status
+   // to say (its tooltip), and a line under every report repeating it was
+   // noise. The description is already the Save caption, so it is not
+   // repeated either.
+   const ordinary =
+      savesTo === "package" &&
+      takesWrites === true &&
+      !pinnedPackageSave &&
+      readFailure === undefined;
+   const note = ordinary || caption === saveLabel ? "" : caption;
 
    // After every hook, so the hook order does not depend on the URI. Same
    // reasoning as `Dashboard`'s own check.
@@ -380,7 +482,7 @@ export function ReportEditor(props: ReportEditorProps) {
          />
       );
    if (!opened && (!(textHeld || packageText) || !draftChecked))
-      return <Loading text={`Opening the ${noun}…`} />;
+      return loading ?? <Loading text={`Opening the ${noun}…`} />;
    // Where the host's copy IS the document, a copy that could not be read
    // leaves nothing safe to edit: the package file is a deploy of the record,
    // so opening it and arming Save would publish it over the record.
@@ -425,7 +527,16 @@ export function ReportEditor(props: ReportEditorProps) {
             <Alert
                severity="warning"
                action={
-                  <Button size="small" onClick={acceptHeld}>
+                  <Button
+                     size="small"
+                     onClick={() => {
+                        // Loading the other version is dropping these edits,
+                        // so the draft holding them goes too: kept, it would
+                        // be offered straight back over the version chosen.
+                        if (draftKey !== undefined) clearReportDraft(draftKey);
+                        acceptHeld();
+                     }}
+                  >
                      Load it
                   </Button>
                }
@@ -444,6 +555,9 @@ export function ReportEditor(props: ReportEditorProps) {
                {supersedeFailure}
             </Alert>
          )}
+         {/* The text is in hand but the document opens a pass later: the
+          loading view meanwhile, never an empty page. */}
+         {!opened && (loading ?? <Loading text={`Opening the ${noun}…`} />)}
          {opened && (
             <EditorSurface
                key={opened.generation}
@@ -452,11 +566,10 @@ export function ReportEditor(props: ReportEditorProps) {
                modelPath={modelPath}
                {...(textSource ? { textSource } : {})}
                slug={dashboardName}
-               modelGivens={
-                  (modelQuery.data?.data as { givens?: Given[] } | undefined)
-                     ?.givens
-               }
                {...(versionId !== undefined ? { versionId } : {})}
+               {...((queryVersionId ?? versionId) !== undefined
+                  ? { queryVersionId: queryVersionId ?? versionId }
+                  : {})}
                opened={opened}
                {...(fromDraft &&
                writer === "package" &&
@@ -466,13 +579,14 @@ export function ReportEditor(props: ReportEditorProps) {
                onSave={save}
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
-               {...(allowLayoutChange !== undefined
-                  ? { allowLayoutChange }
-                  : {})}
+               {...(onOpenModel ? { onOpenModel } : {})}
+               {...(onControlsChange ? { onControlsChange } : {})}
+               {...(draftKey !== undefined ? { draftKey } : {})}
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                note={note}
+               {...(fileModel ? { fileModel } : {})}
             />
          )}
       </Stack>

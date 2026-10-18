@@ -77,4 +77,25 @@ export default [
          ],
       },
    },
+   {
+      // `.malloynb` is deprecated and fenced off: its renderer lives in
+      // `legacy/malloynb/` and nothing outside `legacy/` may import it, so the
+      // format is deleted by deleting that folder and the legacy exports.
+      files: ["packages/sdk/src/**/*.{ts,tsx}"],
+      ignores: ["packages/sdk/src/components/legacy/**"],
+      rules: {
+         "no-restricted-imports": [
+            "error",
+            {
+               patterns: [
+                  {
+                     group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
+                     message:
+                        "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
+                  },
+               ],
+            },
+         ],
+      },
+   },
 ];

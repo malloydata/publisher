@@ -60,7 +60,7 @@ ${stage}
       expect(out).not.toContain("where:");
       expect(out).not.toContain("b ~ $B");
       expect(out).toContain("    aggregate: n is count()");
-      expect(out).toContain("# colspan=4");
+      expect(out).toContain('"a -> kpis" { colspan=4 }');
    });
 
    // Dropping ONE clause of the pair leaves the other exactly, separator and
@@ -103,7 +103,7 @@ source: a is one extend {
          d.tiles[0].colspan = 4;
       });
       expect(out).toContain("    where: a ~ $A\n      and c = 1");
-      expect(out).toContain("# colspan=4");
+      expect(out).toContain('"a -> kpis" { colspan=4 }');
    });
 });
 
@@ -419,7 +419,7 @@ source: a is one extend {
          d.tiles[0].colspan = 4;
       });
       expect(out).toContain("vx -> { group_by: b }");
-      expect(out).toContain("# colspan=4");
+      expect(out).toContain('"a -> kpis" { colspan=4 }');
    });
 
    it("refuses a filter change rather than writing into a stage", async () => {

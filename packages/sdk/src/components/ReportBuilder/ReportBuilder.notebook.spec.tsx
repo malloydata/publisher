@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   act,
    cleanup,
    fireEvent,
    render,
@@ -10,13 +9,10 @@ import {
    waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
 import { ReportBuilder } from "./ReportBuilder";
-import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
 import type { ReportEvent } from "../Report/telemetry";
-import { editInline } from "./testing/inline";
+import { editInline, viewOption } from "./testing/inline";
 
 const NOTEBOOK = `## artifact { layout=linear title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
 import "../data_app.malloy"
@@ -56,14 +52,6 @@ const catalog = {
    ],
 };
 
-const REPO = path.resolve(import.meta.dir, "../../../../..");
-const LEGACY = fs
-   .readFileSync(
-      path.join(REPO, "examples/storefront/category-review.malloy"),
-      "utf8",
-   )
-   .replace(/\r\n/g, "\n");
-
 const button = (name: string) =>
    screen.getByRole("button", { name, hidden: true });
 
@@ -88,13 +76,22 @@ const mountText = async (
    );
 
 describe("ReportBuilder: a notebook is one column", () => {
-   it("draws its text and description bare, as the notebook reader does", async () => {
+   it("draws its tiles as a grid does: query tiles in cards, text and description as prose", async () => {
+      // The layouts differ in arrangement only, not in how a tile is drawn.
       await mountText(NOTEBOOK);
-      for (const card of document.querySelectorAll("[data-chrome]"))
-         expect(card.getAttribute("data-chrome")).toBe("none");
-      expect(document.querySelectorAll("[data-chrome]").length).toBeGreaterThan(
-         0,
-      );
+      const tile = (name: string) =>
+         screen
+            .getByLabelText(`Tile ${name}`)
+            .querySelector("[data-chrome]")
+            ?.getAttribute("data-chrome");
+      expect(tile("intro")).toBe("none");
+      expect(tile("by_cat")).toBe("card");
+      expect(
+         screen
+            .getByRole("group", { name: "Description" })
+            .querySelector("[data-chrome]")
+            ?.getAttribute("data-chrome"),
+      ).toBe("none");
    });
 
    it("offers no width: no resize edge, no width presets", async () => {
@@ -102,8 +99,8 @@ describe("ReportBuilder: a notebook is one column", () => {
       expect(
          screen.queryByRole("separator", { name: /^Width of / }),
       ).toBeNull();
-      fireEvent.click(screen.getByLabelText("Settings for intro"));
-      expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
+      // A text tile has no menu; a query tile's offers no width.
+      expect(screen.queryByLabelText("Settings for intro")).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
    });
@@ -127,7 +124,7 @@ describe("ReportBuilder: a notebook is one column", () => {
       });
       fireEvent.click(button("Add tile"));
       expect(screen.queryByLabelText("Tile width")).toBeNull();
-      fireEvent.click(screen.getByLabelText("View sales_by_state"));
+      fireEvent.click(viewOption("sales_by_state"));
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
@@ -140,14 +137,18 @@ describe("ReportBuilder: a notebook is one column", () => {
       await mountText(NOTEBOOK, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText("A tile shows one view of a source in this package."),
+         screen.getByText(
+            "Pick what the tile shows from the model. You can change its title and chart now or later.",
+         ),
       ).toBeDefined();
       cleanup();
 
       await mountText(DASHBOARD, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText("A tile shows one view of a source in this package."),
+         screen.getByText(
+            "Pick what the tile shows from the model. You can change its title and chart now or later.",
+         ),
       ).toBeDefined();
    });
 
@@ -160,8 +161,7 @@ describe("ReportBuilder: a notebook is one column", () => {
          },
       });
       fireEvent.click(screen.getByLabelText("Insert tile after intro"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
@@ -180,8 +180,7 @@ describe("ReportBuilder: a notebook is one column", () => {
       fireEvent.click(screen.getByLabelText("Insert tile after intro"));
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
       fireEvent.click(screen.getByLabelText("Add tile at the end"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
@@ -217,95 +216,5 @@ describe("ReportBuilder: a document's kind", () => {
       await mountText(DASHBOARD, { onSave: () => {} });
       expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
       expect(screen.queryByLabelText("Show as")).toBeNull();
-   });
-});
-
-describe("ReportBuilder: a notebook in the cell format", () => {
-   const open = async (
-      options: {
-         onSave?: (source: string) => void;
-         onEvent?: (event: ReportEvent) => void;
-         onDirtyChange?: (dirty: boolean) => void;
-      } = {},
-   ) => {
-      const result = await readForEditor(LEGACY);
-      if (result.ok === false) throw new Error(result.reason);
-      if (!result.conversion) throw new Error("expected a conversion");
-      render(
-         <ReportBuilder
-            source={LEGACY}
-            document={result.document}
-            conversion={result.conversion}
-            {...options}
-         />,
-      );
-      return result.conversion;
-   };
-
-   it("opens unsaved, says what Save does, and is not edited", async () => {
-      const onDirtyChange = mock((_dirty: boolean) => {});
-      await open({ onSave: () => {}, onDirtyChange });
-      expect(
-         screen.getByText(
-            /This report is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view\./,
-         ),
-      ).toBeDefined();
-      expect(button("Save")).toBeDefined();
-      // Each tile says why it has no preview yet, beside the view it will run.
-      expect(
-         screen.getAllByText("Preview appears after you Save"),
-      ).toHaveLength(3);
-      expect(
-         screen.getByText("order_items_tiles → revenue_by_month"),
-      ).toBeDefined();
-      // No edit has been made, so a host guarding navigation is told so.
-      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
-   });
-
-   it("asks before Save converts the file, and writes it once confirmed", async () => {
-      const writes: string[] = [];
-      await open({ onSave: (source) => void writes.push(source) });
-      fireEvent.click(button("Save"));
-      expect(
-         await screen.findByText(
-            /Saving rewrites this report in the tile layout/,
-         ),
-      ).toBeDefined();
-      expect(writes).toHaveLength(0);
-      fireEvent.click(button("Convert and save"));
-      await waitFor(() => expect(writes).toHaveLength(1));
-   });
-
-   it("writes nothing when the conversion is cancelled", async () => {
-      const writes: string[] = [];
-      await open({ onSave: (source) => void writes.push(source) });
-      fireEvent.click(button("Save"));
-      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
-      await act(async () => {});
-      expect(writes).toHaveLength(0);
-      expect(button("Save")).toBeDefined();
-   });
-
-   it("saves the conversion exactly as converted", async () => {
-      const writes: string[] = [];
-      const onEvent = mock((_event: ReportEvent) => {});
-      const conversion = await open({
-         onSave: (source) => void writes.push(source),
-         onEvent,
-      });
-      fireEvent.click(button("Save"));
-      fireEvent.click(
-         await screen.findByRole("button", { name: "Convert and save" }),
-      );
-      await waitFor(() => expect(writes).toHaveLength(1));
-      // Nothing was edited, so the file written is the conversion itself.
-      expect(writes[0]).toBe(conversion.to);
-      expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "report.saved",
-         converted: true,
-      });
-      expect(
-         screen.queryByText(/This report is in the cell format/),
-      ).toBeNull();
    });
 });

@@ -295,13 +295,28 @@ the UI sends the current values of exactly those with the option query: enough
 for a gated source's options to load, and no more, so the list still does not
 depend on the page's other filters and is cached across them.
 
+A generated suggest (`suggest { source=… dimension=… }`) fetches the first
+1,000 values in order. When the dimension has more, the dropdown says so, and
+typing searches the whole dimension on the server instead of filtering those
+1,000: after a 250ms pause it runs the same suggest with a case-insensitive
+"contains" on the dimension (`strpos(lower(dim::string), '…') > 0`, which every
+dialect compiles), returning up to 200 matches. The typed text is a plain string
+literal, so quotes, backslashes and pattern characters are matched as written.
+A list of 1,000 or fewer is filtered in the browser and sends nothing more. A
+named suggest (`suggest { query=… }`) is a whole query with nowhere to add a
+condition, so its list is filtered in the browser; when it comes back at the
+server's 1,000-row cap, the dropdown says the list is partial and that a value
+not listed can still be typed.
+
 `#(description="...")` annotations render as MUI helper text beneath the input. A
-**Reset** button appears next to the "Filters" heading whenever any given has a
-value set, whether it was typed, picked, or carried in by the URL. A given left
-unset does not count. Whether an empty parameter (`?REGION=`) counts depends on
-the type: for a `string` or a `filter<…>` the empty string is a real value (the
-empty filter, i.e. "All"), so it counts; for a `number`, `boolean` or date type
-there is no empty value to mean, so it reads as unset and does not.
+**Reset** button appears next to the "Filters" heading whenever the controls
+differ from where the document starts them: a value typed, picked, or carried in
+by the URL, or a starting value cleared. A value the document itself starts with
+(`## artifact { givens { … } }`) is already the reset state, so it shows no
+Reset on its own. Whether an empty parameter (`?REGION=`) counts as a value
+depends on the type: for a `string` or a `filter<…>` the empty string is a real
+value (the empty filter, i.e. "All"), so it does; for a `number`, `boolean` or
+date type there is no empty value to mean, so it reads as unset.
 
 Reset clears every control, and a cleared given is left out of the request
 entirely rather than sent as an empty value. A given declared with a default

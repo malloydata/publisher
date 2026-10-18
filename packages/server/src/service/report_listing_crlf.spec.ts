@@ -5,7 +5,8 @@
  * A report saved with CRLF line endings (a Windows checkout, an editor set to
  * CRLF) lists the same title and description as one saved with LF: no `\r`
  * reaches the listing from any step of the title chain (`title=`, the doc
- * comment's first line and the rest of it, the first markdown heading).
+ * comment's first line and the rest of it, and a `.malloynb`'s first markdown
+ * heading).
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
@@ -24,14 +25,14 @@ const FILES: Record<string, string> = {
    "base.malloy": BASE,
    "explicit.malloy":
       `##" Ignored for the title, kept as the description.\n` +
-      `## artifact { layout=linear title="Explicit title" }\n` +
-      `import "base.malloy"\nrun: s -> v\n`,
+      `## artifact { layout=linear title="Explicit title" tiles=["s -> v"] }\n` +
+      `import "base.malloy"\n`,
    "doc.malloy":
       `##" Carrier volumes\n##" Shipments per carrier,\n##" refreshed nightly.\n` +
-      `## artifact { layout=linear }\nimport "base.malloy"\nrun: s -> v\n`,
-   "heading.malloy":
-      `## artifact { layout=linear }\nimport "base.malloy"\n\n` +
-      `##|(markdown)\n# Brands\nProse.\n|##\n\nrun: s -> v\n`,
+      `## artifact { layout=linear tiles=["s -> v"] }\nimport "base.malloy"\n`,
+   "heading.malloynb":
+      `>>>markdown\n# Brands\nProse.\n` +
+      `>>>malloy\nimport "base.malloy"\nrun: s -> v\n`,
    "grid.malloy":
       `##" Grid title\n##" Grid description.\n` +
       `## artifact { layout=grid tiles=["s -> v"] }\nimport "base.malloy"\n`,
@@ -90,7 +91,7 @@ describe("report listing over CRLF text", () => {
             title: "Grid title",
             description: "Grid description.",
          },
-         "heading.malloy": { title: "Brands", description: undefined },
+         "heading.malloynb": { title: "Brands", description: undefined },
       });
       expect(fromCrlf).toEqual(fromLf);
       expect(JSON.stringify(fromCrlf)).not.toContain("\\r");

@@ -50,6 +50,113 @@ describe("scenario grammar: strict parse", () => {
       expect(parsed.steps.map((s) => s.kind)).toEqual(["publisher", "query"]);
    });
 
+   it("parses each ## Destination action", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}
+## Destination tables
+
+Expect:
+
+| name |
+| ---- |
+| a    |
+
+## Destination drop a (schema=analytics)
+
+## Destination cleanup (snapshots=7d, files=0s)
+
+deleted: 1
+
+## Destination files (dest=other)
+
+Expect:
+
+| table |
+| ----- |
+| b     |
+`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) =>
+            s.kind === "destination"
+               ? [
+                    s.action,
+                    s.dest,
+                    s.schema,
+                    s.table,
+                    s.snapshotsAgeMs,
+                    s.filesAgeMs,
+                    s.deleted,
+                 ]
+               : s.kind,
+         ),
+      ).toEqual([
+         ["tables", "lake", "main", undefined, undefined, undefined, undefined],
+         ["drop", "lake", "analytics", "a", undefined, undefined, undefined],
+         ["cleanup", "lake", "main", undefined, 7 * 864e5, 0, 1],
+         ["files", "other", "main", undefined, undefined, undefined, undefined],
+      ]);
+   });
+
+   it("parses a refused listing, and a destination's metadata schema", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}
+## Connection fresh (type=ducklake, metadataSchema=tenant_fresh)
+
+## Destination tables (dest=fresh)
+
+status: 404
+`,
+         "t",
+      );
+      expect(parsed.connectionDecls).toEqual([
+         {
+            env: "default",
+            name: "fresh",
+            kind: "ducklake",
+            metadataSchema: "tenant_fresh",
+         },
+      ]);
+      const step = parsed.steps[0]!;
+      expect(step.kind === "destination" && [step.action, step.status]).toEqual(
+         ["tables", 404],
+      );
+   });
+
+   it("rejects status: anywhere it would not be compared", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination files\n\nstatus: 404\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to ## Destination tables/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination tables\n\nstatus: 404\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+            "t",
+         ),
+      ).toThrow(/not both/);
+   });
+
+   it("rejects a metadataSchema on anything but a ducklake connection", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection pg2 (type=postgres, metadataSchema=s)\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to type=ducklake/);
+   });
+
+   it("requires a stated window on ## Destination cleanup", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination cleanup (files=0s)\n`,
+            "t",
+         ),
+      ).toThrow(/snapshots=<n>/);
+   });
+
    it("rejects an unknown section kind", () => {
       expect(() =>
          parseMarkdownForTest(`${FRONT}\n## Bulid targets\n`, "t"),
@@ -135,6 +242,7 @@ describe("scenario grammar: every step must verify something", () => {
          "await",
          "delete",
          "reclaim",
+         "destination",
       ]) {
          expect(stepMustAssert(kind)).toBe(true);
       }
