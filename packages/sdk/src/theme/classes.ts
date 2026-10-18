@@ -38,7 +38,7 @@ export const reportClasses = {
    saveStatus: "publisher-save-status",
    /** A tile as the builder draws it: selection, handle and menu around the card. */
    builderTile: "publisher-builder-tile",
-   /** The grip on a tile's right edge that sets its width. */
+   /** The invisible strip along a tile's right edge that sets its width (drawn only as a focus ring). */
    widthHandle: "publisher-width-handle",
    /** The builder's menus (Add, a tile's ⋯, the save status). */
    menu: "publisher-menu",

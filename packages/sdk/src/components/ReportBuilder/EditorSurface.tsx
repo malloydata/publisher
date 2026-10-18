@@ -19,6 +19,7 @@ import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import {
+   isPlaced,
    PLACED_DEFAULT_ROWSPAN,
    tileHeightPx,
 } from "../Dashboard/DashboardGrid";
@@ -560,15 +561,21 @@ export function EditorSurface({
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
                   // Its own rows when it has them (a rowspan, or a placed
-                  // report's fixed rows); otherwise the layout's cap.
+                  // report's fixed rows, placed yet or not); otherwise the
+                  // layout's cap.
                   height={
-                     tile.rowspan !== undefined || tile.row !== undefined
+                     tile.rowspan !== undefined || isPlaced(doc.tiles)
                         ? tileHeightPx(
                              tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
                           )
                         : rules.tileMaxHeight
                   }
                   tableMaxHeight={rules.tableMaxHeight}
+                  // As the reader does: every tile of a placed report sits
+                  // in fixed rows, placed yet or not.
+                  fixedHeight={
+                     tile.rowspan !== undefined || isPlaced(doc.tiles)
+                  }
                />
             );
          },

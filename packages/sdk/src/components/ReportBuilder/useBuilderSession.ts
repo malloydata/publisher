@@ -79,7 +79,10 @@ export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    /** Runs before every save entry point, handing it the save to run once the document is ready. */
    prepare?: (run: () => Promise<void> | void) => Promise<void> | void;
    /** The builder's own keys, less undo, redo and save, which the session owns. Memoized by the caller. */
-   shortcuts: Pick<BuilderShortcutHandlers, "escape" | "nudge">;
+   shortcuts: Pick<
+      BuilderShortcutHandlers,
+      "escape" | "nudge" | "move" | "paused"
+   >;
 }
 
 /**
@@ -216,7 +219,9 @@ export function useBuilderSession<
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open,
+            // Paused by the exit dialog, or by the builder itself (an edge
+            // dragged, whose release would write over a mid-drag undo).
+            paused: exitGuard.dialog.open || shortcuts.paused === true,
          }),
          [shortcuts, editor, onSave, save, exitGuard.dialog.open],
       ),

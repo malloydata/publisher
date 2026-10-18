@@ -668,43 +668,6 @@ function arrayBody(
    return `${lead}${entries.join(separator)}${tail}`;
 }
 
-/**
- * `line` without one property of the artifact tag's own braces: spelled with
- * any spacing round the `=`, and never matched inside a quoted string or a
- * nested block.
- */
-function removeArtifactProperty(line: string, key: string): string {
-   let depth = 0;
-   let groups = 0;
-   for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-         i = endOfString(line, i);
-      } else if (c === "{" || c === "[") {
-         if (depth++ === 0) groups++;
-      } else if (c === "}" || c === "]") {
-         depth--;
-      } else if (
-         groups === 1 &&
-         depth === 1 &&
-         line.startsWith(key, i) &&
-         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
-      ) {
-         const eq = /^\s*=\s*/.exec(line.slice(i + key.length));
-         if (!eq) continue;
-         const valueAt = i + key.length + eq[0].length;
-         const valueEnd =
-            line[valueAt] === '"'
-               ? endOfString(line, valueAt) + 1
-               : valueAt +
-                 (/^[^\s}]*/.exec(line.slice(valueAt))?.[0].length ?? 0);
-         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
-         return line.slice(0, from) + line.slice(valueEnd);
-      }
-   }
-   return line;
-}
-
 /** `line` without its `dashboard { … }` block: outside the artifact braces and never inside a string. */
 function removeDashboardBlock(line: string): string {
    let depth = 0;
@@ -844,8 +807,6 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
       }
       if (current.columns !== next.columns) {
-         // The deprecated alias would otherwise sit beside the new width and conflict with it.
-         line = removeArtifactProperty(line, "dashboard_columns");
          line = removeDashboardBlock(line);
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;

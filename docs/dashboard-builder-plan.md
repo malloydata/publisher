@@ -56,11 +56,15 @@ The Console's builder (`<ReportEditor>` in the SDK) edits the page as it reads:
 - **New report** from the package page: a model, source, view, title and layout, written at the package
   root or a path you choose.
 - **Placement on a grid.** Drag a tile to any cell, empty space included; the first move places every
-  tile where it is drawn, and anything it lands on is pushed down. Row and column guides show while
-  dragging. On a linear report tiles reorder, and **+** inserts between two.
-- **Size.** The right edge sets width in columns and the bottom edge height in rows, by drag or keyboard.
+  tile where it is drawn (each edge snaps to the nearest row line, so tiles that touched still touch), and anything a tile lands on is pushed
+  down. Row and column guides show while dragging, and faintly while a tile is selected. Option/Alt with
+  an arrow moves the selected tile one cell. **Arrange tiles** packs every tile upward or lets the
+  tiles flow again. On a linear report tiles reorder, and **+** inserts between two.
+- **Size.** Every edge and corner resizes, with no handles drawn: the cursor shows a two-headed or
+  diagonal arrow. The right edge sets width in columns and the bottom edge height in rows, by drag or
+  keyboard; the left and top edges move that edge; a corner moves two at once.
   The bottom edge also snaps to auto height, so a tile can be made level with an auto neighbour. A resize
-  pushes covered tiles down. The fewest rows offered are 3 for a query tile and 1 for text.
+  pushes covered tiles down. The fewest rows offered are 3 for a chart, 2 for value cards or a table, and 1 for text.
 - **Tiles.** Add from every view the package publishes (the builder adds the import), edit titles,
   subtitles and text in place, pick a chart from the tile menu (choices the view cannot draw are listed
   with the reason), duplicate, set clickable cells, remove.
@@ -101,8 +105,9 @@ In `packages/sdk/src/components/ReportBuilder`:
   A tile's layout is written on its entry, and the view's `# colspan` and `# break` come off when its
   layout changes. The result is read back and refused if it does not match.
 - **Layout.** `layout.ts` (row structure for flowing reports), `placement.ts` (cells, push-down, placing a
-  flowing report where it is drawn), `useTileReorder.ts`, `useTileResize.ts` and `useTileHeight.ts` (the
-  three gestures, each committed once on release), on the reader's own `DashboardGrid`.
+  flowing report where it is drawn, pack and flow), `useTileReorder.ts` (moving a tile) and
+  `useEdgeResize.ts` (resizing from any edge or corner), each gesture committed once on release, on the
+  reader's own `DashboardGrid`.
 - **The editor.** `useReportEditor.ts` (history and save), `useReportDraft.ts` (the browser draft),
   `ReportBuilder.tsx` (selection, menus and dialogs), `ReportEditor.tsx` (the host: the package file,
   the catalog, the live preview).
@@ -119,7 +124,7 @@ Console's edit page.
 
 | Area            | State of the art                                                   | Publisher today                                                      | Next (§4) |
 | --------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- | --------- |
-| Placement       | Free grid placement with width and height per tile                 | Free placement, widths, heights, push-down                           | 10        |
+| Placement       | Free grid placement with width and height per tile                 | Free placement, widths, heights, push-down, pack, keyboard moves     | 10        |
 | Editing         | Explicit edit mode and save                                        | In-place edit, drafts, undo and redo, saves into a reviewable file   | Ahead     |
 | Governance      | Access rules wired through embedding                               | Givens, row-level access and `#(authorize)` apply with no wiring     | Ahead     |
 | Cross-filtering | Click any mark to filter every tile                                | Drill from table cells only                                          | 1         |
@@ -154,14 +159,14 @@ state) lives in Credible, with Publisher keeping the hooks and the file format.
 
 ### Authors: staying in the builder
 
-| #   | Improvement                  | What it means                                                                                                            | Where                                    | Size |
-| --- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ---- |
-| 5   | Edit a tile's query in place | Fields, filters and sort chosen in a panel inside the tile, written as the tile's own view, not as an edit to the model. | Publisher: builder and splice writer     | L    |
-| 6   | Tabs                         | `tab=` on each entry, the open tab in the URL, and adding, renaming and reordering tabs in the builder.                  | Publisher: entry layout, reader, builder | M    |
-| 7   | Richer value tiles           | Change against the previous period, a trend line, and a target with conditional colour on a big value.                   | Renderer, or Publisher's value cards     | M    |
-| 8   | Text that reads the data     | Titles and text tiles that show current values and filters ("Revenue for {Region}: $2.1M").                              | Publisher: text tiles and headings       | M    |
-| 9   | More tile kinds              | Image, link button, divider or section header, and an embedded page from the package's `public/` folder.                 | Publisher: `kind=` on the entry          | M    |
-| 10  | Finish placement             | Arrow keys move a placed tile one cell at a time; "pack upward" to close gaps; heights of their own on a phone.          | Publisher: builder and reader            | S    |
+| #   | Improvement                  | What it means                                                                                                                           | Where                                    | Size |
+| --- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ---- |
+| 5   | Edit a tile's query in place | Fields, filters and sort chosen in a panel inside the tile, written as the tile's own view, not as an edit to the model.                | Publisher: builder and splice writer     | L    |
+| 6   | Tabs                         | `tab=` on each entry, the open tab in the URL, and adding, renaming and reordering tabs in the builder.                                 | Publisher: entry layout, reader, builder | M    |
+| 7   | Richer value tiles           | Change against the previous period, a trend line, and a target with conditional colour on a big value.                                  | Renderer, or Publisher's value cards     | M    |
+| 8   | Text that reads the data     | Titles and text tiles that show current values and filters ("Revenue for {Region}: $2.1M").                                             | Publisher: text tiles and headings       | M    |
+| 9   | More tile kinds              | Image, link button, divider or section header, and an embedded page from the package's `public/` folder.                                | Publisher: `kind=` on the entry          | M    |
+| 10  | Finish placement             | Heights of their own on a phone, and maps that size from their box (with the renderer). Pack, flow and one-cell keyboard moves shipped. | Publisher: reader; renderer for maps     | S    |
 
 ### Reliability and delivery
 
@@ -179,8 +184,6 @@ state) lives in Credible, with Publisher keeping the hooks and the file format.
   size from their box.
 - **Settings:** timezone, auto-refresh and download defaults on the artifact tag, set from the builder;
   a builder control for grid width and run-on-load, which the file already carries.
-- **Cleanup:** code kept only for compatibility with the Malloyyo dialect, now that it is no longer a
-  constraint.
 
 ### Order
 

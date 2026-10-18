@@ -24,6 +24,7 @@ import {
    remeasuresAfterReady,
    resultSizing,
    type ResultSizing,
+   TIGHT_ATTR,
 } from "./resultSizing";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { chartThemeLayer, resolveTheme } from "../../theme/resolveTheme";
@@ -314,6 +315,23 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
 .malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
    width: auto;
    max-width: none;
+}
+/* Compact, in a tile set shorter than its cards (ResultContainer marks it tight): smaller values,
+   tighter cards and a 190px floor, which a 22px value still fits in, so five cards share a row of
+   about a thousand pixels instead of wrapping into rows the tile has no room for. */
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+   gap: 8px;
+   padding: 8px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   padding: 9px 14px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-value {
+   font-size: 22px;
+}
+[${TIGHT_ATTR}] .malloy-render .malloy-big-value-label {
+   font-size: 11px;
 }
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;

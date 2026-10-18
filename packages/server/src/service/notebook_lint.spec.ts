@@ -737,54 +737,6 @@ describe("notebook lint", () => {
       ).toEqual([]);
    });
 
-   it("errors when dashboard_columns and dashboard { columns } disagree, naming both values", () => {
-      const found = lintNotebookText(
-         "dashboards/d.malloy",
-         `## artifact { tiles=[a] dashboard_columns=8 } dashboard { columns=12 }\n${SOURCE}`,
-      );
-      expect(found).toEqual([
-         {
-            line: 1,
-            code: "notebook-columns-conflict",
-            severity: "error",
-            message:
-               "Line 1: `dashboard_columns=8` in the artifact tag and `dashboard { columns=12 }` disagree about the grid width. Fix: keep `dashboard { columns=… }` and remove `dashboard_columns`.",
-         },
-      ]);
-   });
-
-   it("finds the conflict when dashboard { columns } is its own ## line", () => {
-      const found = lint(
-         `## artifact { tiles=[a] dashboard_columns=8 }\n## dashboard { columns=12 }\n${SOURCE}`,
-         "dashboards/d.malloy",
-      );
-      expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
-   });
-
-   it("warns, and only warns, that dashboard_columns alone is deprecated", () => {
-      const found = lintNotebookText(
-         "dashboards/d.malloy",
-         `## artifact { tiles=[a] dashboard_columns=8 }\n${SOURCE}`,
-      );
-      expect(found).toEqual([
-         {
-            line: 1,
-            code: "notebook-columns-alias",
-            severity: "warn",
-            message:
-               "Line 1: `dashboard_columns=8` is a deprecated spelling of the grid width. Fix: write `dashboard { columns=8 }` instead.",
-         },
-      ]);
-   });
-
-   it("warns about the alias even when dashboard { columns } agrees with it", () => {
-      const found = lint(
-         `## artifact { tiles=[a] dashboard_columns=12 } dashboard { columns=12 }\n${SOURCE}`,
-         "dashboards/d.malloy",
-      );
-      expect(found.map((f) => f.code)).toEqual(["notebook-columns-alias"]);
-   });
-
    it("says nothing about dashboard { columns } alone", () => {
       expect(
          lint(
@@ -953,22 +905,6 @@ describe("notebook lint", () => {
       expect(found.map((f) => [f.code, f.severity, f.line])).toEqual([
          ["notebook-artifact-unparsed", "error", 1],
       ]);
-   });
-
-   it("finds dashboard { columns } inside a ## | block, past its closer", () => {
-      const found = lint(
-         `## artifact { tiles=[a] dashboard_columns=8 }\n##|\ndashboard { columns=12 }\n|##\n${SOURCE}`,
-         "dashboards/d.malloy",
-      );
-      expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
-   });
-
-   it("reports a conflict when dashboard { columns } is present but not a width", () => {
-      const found = lint(
-         `## artifact { tiles=[a] dashboard_columns=8 } dashboard { columns=0 }\n${SOURCE}`,
-         "dashboards/d.malloy",
-      );
-      expect(found.map((f) => f.code)).toEqual(["notebook-columns-conflict"]);
    });
 
    it("errors on opener text of more than one word in a notebook and a dashboard alike", () => {

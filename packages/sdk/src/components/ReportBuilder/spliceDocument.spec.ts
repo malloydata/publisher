@@ -1093,24 +1093,6 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       expect(flowed).not.toContain("dashboard {");
    });
 
-   it("replaces the dashboard_columns alias when a width is set, and the result lints clean", async () => {
-      const aliased = SOURCE.replace(
-         '"a -> by_brand"] } dashboard { columns=12 }',
-         '"a -> by_brand"] dashboard_columns=8 }',
-      );
-      expect(aliased).toContain("dashboard_columns=8");
-      const out = await spliced(aliased, (d) => {
-         d.columns = 12;
-      });
-      expect(out).not.toContain("dashboard_columns");
-      expect(out).toContain("dashboard { columns=12 }");
-      const removed = await spliced(aliased, (d) => {
-         delete d.columns;
-      });
-      expect(removed).not.toContain("dashboard_columns");
-      expect(removed).not.toContain("dashboard {");
-   });
-
    it("adds and removes autorun and starting values inside the tag", async () => {
       const out = await spliced(SOURCE, (d) => {
          d.autorun = false;
@@ -1198,28 +1180,6 @@ describe("spliceDashboardDocument: the page's own settings", () => {
    const lintCodes = (source: string) =>
       lintNotebookText("dashboards/d.malloy", source).map((f) => f.code);
    const TAIL = `import "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
-
-   describe("a width change against the deprecated alias", () => {
-      it("removes the alias whatever spacing surrounds its =", async () => {
-         const source = `## artifact { title="T" tiles=["a -> x"] dashboard_columns = 3 }\n${TAIL}`;
-         const out = await spliced(source, (d) => {
-            d.columns = 6;
-         });
-         expect(out).not.toContain("dashboard_columns");
-         expect(out).toContain("dashboard { columns=6 }");
-         expect(lintCodes(out)).toEqual([]);
-      });
-
-      it("removes the alias, not the same words inside a quoted title", async () => {
-         const source = `## artifact { title="a dashboard_columns=2 b" tiles=["a -> x"] dashboard_columns=3 }\n${TAIL}`;
-         const out = await spliced(source, (d) => {
-            d.columns = 6;
-         });
-         expect(out).toContain('title="a dashboard_columns=2 b"');
-         expect(out.match(/dashboard_columns/g)).toHaveLength(1);
-         expect(lintCodes(out)).toEqual([]);
-      });
-   });
 
    it("reorders a list holding a text tile, keeping its entry as written", async () => {
       const source = fs

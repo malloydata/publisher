@@ -23,8 +23,8 @@ import {
 } from "./document";
 import { InlineText } from "./InlineText";
 import { gapId, tileEntry, withGaps } from "./layout";
-import { minRowsOf, rowsOf } from "./placement";
-import { builderSensors } from "./sortable";
+import { minRowsOf, rowsOf, settle, widestFrom } from "./placement";
+import { builderSensors, EscapeCancelsDrag } from "./sortable";
 import { TextTileBody } from "./TextTileBody";
 import {
    GapTarget,
@@ -36,19 +36,17 @@ import {
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileReorder } from "./useTileReorder";
-import type { useTileHeight } from "./useTileHeight";
-import { widestFrom, type useTileResize } from "./useTileResize";
+import { shapeLabel, withShape, type useEdgeResize } from "./useEdgeResize";
 
 /**
  * The builder's tiles, on the SAME grid the dashboard renders on, each drawn
  * by the caller's `renderTile` inside a `TileFrame` that carries the
- * affordances: selection, the grip and menu, the width handle.
+ * affordances: selection, the menu, and its edges and corners.
  */
 export function BuilderGrid({
    editor,
    reorder,
-   resizing,
-   sizing,
+   edging,
    place = (tiles) => tiles,
    arrange = true,
    gridBox,
@@ -68,9 +66,8 @@ export function BuilderGrid({
 }: {
    editor: ReportEditorHandle;
    reorder: ReturnType<typeof useTileReorder>;
-   resizing: ReturnType<typeof useTileResize>;
-   /** The bottom edges: a tile's height, dragged in whole rows. */
-   sizing?: ReturnType<typeof useTileHeight>;
+   /** Every edge and corner of a tile, dragged to resize it. */
+   edging: ReturnType<typeof useEdgeResize>;
    /**
     * The tiles after the one at `index` changed size: on a placed report,
     * whatever it now covers pushed down. Identity elsewhere.
@@ -109,8 +106,7 @@ export function BuilderGrid({
    const { dragging, preview, onDragStart, onDragMove, onDragOver, onDragEnd } =
       reorder;
    const { columns } = rules;
-   const { resize, startResize, onResize, endResize } = resizing;
-   const tall = sizing?.height;
+   const edge = edging.drag;
    // What the grid lays out: the document, except mid-gesture, where it is
    // the preview — the tile being resized at its previewed width, or the tiles
    // in their previewed order. So the row reflows under the pointer exactly as
@@ -118,35 +114,38 @@ export function BuilderGrid({
    const drawn = (tile: DashboardTile): DashboardTile =>
       tile.colspan === undefined ? { ...tile, colspan: defaultSpan } : tile;
    const shown = (
-      resize !== undefined
-         ? place(
-              editor.document.tiles.map((each, index) =>
-                 index === resize.index
-                    ? { ...each, colspan: resize.span }
+      edge !== undefined
+         ? (() => {
+              // The tiles as the resize would leave them: the one tile with
+              // the edges it moved, and on a placed report everything it now
+              // covers pushed down.
+              const base = edge.placedHere ? edge.base : editor.document.tiles;
+              const tile = base[edge.index];
+              if (!tile) return base;
+              const resized = base.map((each, index) =>
+                 index === edge.index
+                    ? withShape(each, edge.shape, edge.edges, edge.placed)
                     : each,
-              ),
-              resize.index,
-           )
-         : tall !== undefined
-           ? place(
-                editor.document.tiles.map((each, index) =>
-                   index === tall.index ? withRowspan(each, tall.rows) : each,
-                ),
-                tall.index,
-             )
-           : (preview ?? editor.document.tiles)
+              );
+              return edge.placed
+                 ? settle(resized, columns, edge.index)
+                 : resized;
+           })()
+         : (preview ?? editor.document.tiles)
    ).map(drawn);
    // Placed, every cell is somewhere to drop, so there are no row ends to offer.
    const placed = isPlaced(shown);
+   const gesture = dragging || edge !== undefined;
+   // Faintly, while a tile of a placed report is selected and nothing is
+   // dragged: the empty cells read as places a tile can go before any drag.
+   const resting = !gesture && placed && arrange && selected !== undefined;
    // And, while a drag is live, the empty end of every row as a drop target.
    // While an edge is dragged too: narrowing a tile frees columns its row-mate
    // does not take, and an undrawn hole there read as a broken layout rather
    // than room to fill. Not otherwise: a gap is only shown mid-gesture.
    const empty = editor.document.tiles.length === 0;
    const entries =
-      (dragging || resize !== undefined) && !placed
-         ? withGaps(shown, columns)
-         : shown.map(tileEntry);
+      gesture && !placed ? withGaps(shown, columns) : shown.map(tileEntry);
    const heading = (tile: QueryTile) =>
       headingOf(tile, tileDisplayTitle(tile), editTile);
    return (
@@ -158,17 +157,20 @@ export function BuilderGrid({
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
          >
+            <EscapeCancelsDrag active={dragging} />
             <Box ref={gridBox} sx={{ position: "relative" }}>
-               {rules.widths && (dragging || resize !== undefined) && (
-                  <GridGuides columns={columns} />
+               {rules.widths && (gesture || resting) && (
+                  <GridGuides columns={columns} faint={!gesture} />
                )}
-               {tall !== undefined ? (
-                  <RowGuides top={tall.guideTop} />
-               ) : (
-                  // Placed, a move snaps to rows as well as columns.
-                  placed &&
-                  (dragging || resize !== undefined) && <RowGuides top={0} />
-               )}
+               {edge !== undefined && !edge.placed
+                  ? (edge.edges.s || edge.edges.n) && (
+                       <RowGuides top={edge.guideTop} />
+                    )
+                  : // Placed, a move snaps to rows as well as columns.
+                    placed &&
+                    (gesture || resting) && (
+                       <RowGuides top={0} faint={!gesture} />
+                    )}
 
                <DashboardGrid
                   tiles={entries}
@@ -208,9 +210,25 @@ export function BuilderGrid({
                                 }
                               : {})}
                            fixed={!arrange}
+                           {...(rules.widths
+                              ? {
+                                   edges: {
+                                      // Left and top move a place, so they
+                                      // need the grid drawn as a grid.
+                                      all: arrange,
+                                      right: arrange,
+                                      start: (event, edges) =>
+                                         edging.start(event, index, edges),
+                                      move: edging.move,
+                                      end: edging.end,
+                                      ...(edge?.index === index
+                                         ? { label: shapeLabel(edge, columns) }
+                                         : {}),
+                                   },
+                                }
+                              : {})}
                            {...(rules.widths && arrange
                               ? {
-                                   resizing: resize?.index === index,
                                    width: {
                                       span: each.colspan ?? 1,
                                       columns,
@@ -238,22 +256,14 @@ export function BuilderGrid({
                                          });
                                       },
                                    },
-                                   onResizeStart: (event) =>
-                                      startResize(event, index),
-                                   onResizeMove: onResize,
-                                   onResizeEnd: endResize,
                                 }
                               : {})}
-                           {...(rules.widths && sizing
+                           {...(rules.widths
                               ? {
                                    heightEdge: {
                                       rows: each.rowspan,
-                                      dragging: tall?.index === index,
                                       min: minRowsOf(each),
-                                      onStart: (event) =>
-                                         sizing.startHeight(event, index),
-                                      onMove: sizing.onHeight,
-                                      onEnd: sizing.endHeight,
+                                      minFor: (frame) => minRowsOf(each, frame),
                                       onStep: (to) =>
                                          editor.update((draft) => {
                                             if (
@@ -317,15 +327,6 @@ export function BuilderGrid({
       </>
    );
 }
-
-/** A tile at a dragged height: its rows, or auto with no `rowspan` at all. */
-const withRowspan = (
-   tile: DashboardTile,
-   rows: number | undefined,
-): DashboardTile => {
-   const { rowspan: _rowspan, ...rest } = tile;
-   return rows === undefined ? rest : { ...rest, rowspan: rows };
-};
 
 /** A query tile's title and subtitle as fields on the tile, unless the model owns them. */
 const headingOf = (

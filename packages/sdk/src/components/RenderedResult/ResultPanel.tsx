@@ -26,6 +26,8 @@ export interface ResultPanelProps {
    drill?: DrillBinding;
    /** See `ResultContainer`: stretch the result to its cell. */
    fill?: boolean;
+   /** The cell has a set height: a result taller than it is drawn compact (see `ResultContainer`). */
+   compactToFit?: boolean;
    /**
     * Rewrites the result before it is rendered — a dashboard tile promotes a
     * one-row measure result to KPI cards this way. Memoized on the result
@@ -55,6 +57,7 @@ export function ResultPanel({
    maxResultSize,
    drill,
    fill,
+   compactToFit,
    transform,
 }: ResultPanelProps) {
    const { data, isSuccess, isError, error, fetchStatus, isPlaceholderData } =
@@ -108,6 +111,7 @@ export function ResultPanel({
          renderLogs={data.data.renderLogs}
          drill={drill}
          fill={fill}
+         compactToFit={compactToFit}
       />
    );
    // The previous answer, while the new one runs: it stays where it is, eased

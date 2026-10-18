@@ -4,11 +4,12 @@
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, IconButton, SvgIcon, Typography } from "@mui/material";
-import type { PointerEvent, ReactNode } from "react";
+import { useState } from "react";
+import type { FocusEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
-import { edgeColor, hoverEdgeColor } from "../controlTokens";
+import { hoverEdgeColor } from "../controlTokens";
 import {
    REMOVE_BADGE_CLASS,
    RemoveBadge,
@@ -20,6 +21,7 @@ import {
    BARE_RING_OFFSET_PX,
    GRID_GAP_PX,
    MAX_TILE_ROWS,
+   MIN_TILE_ROWS,
    TILE_ROW_PX,
 } from "../Dashboard/DashboardGrid";
 import {
@@ -39,12 +41,12 @@ import {
    type QueryTile,
 } from "./document";
 import { gapId } from "./layout";
+import { edgeCursor, type Edges } from "./useEdgeResize";
 import { GapDroppable, NO_DRAG, TileSortable } from "./sortable";
-import { widthLabel } from "./widthLabel";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the menu
- * button, the handle at the right edge and, in a notebook, the insert button. The tile
+ * button, the resize edges and corners and, in a notebook, the insert button. The tile
  * itself is `children` — the host's real `DashboardTile`, or a placeholder
  * saying what the tile will run.
  */
@@ -60,11 +62,8 @@ export function TileFrame({
    onOpenMenu,
    onRemove,
    removeBlocked,
-   resizing = false,
    width,
-   onResizeStart,
-   onResizeMove,
-   onResizeEnd,
+   edges,
    heightEdge,
    fixed = false,
    children,
@@ -90,13 +89,23 @@ export function TileFrame({
    onRemove: () => void;
    /** Why it cannot be removed (a saved report keeps one tile); the × says so instead. */
    removeBlocked?: string;
-   /** This tile's edge is being dragged. */
-   resizing?: boolean;
-   /** Dragging the right edge sets the width; absent, the tile has no edge handle (one column, or tags the file does not own). */
-   onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
-   onResizeMove?: (event: PointerEvent<HTMLDivElement>) => void;
-   onResizeEnd?: (event: PointerEvent<HTMLDivElement>) => void;
-   /** The tile's width and the grid's, and a step of one column: the edge's keyboard route. */
+   /**
+    * The tile's edges and corners, dragged to resize it. Nothing is drawn on
+    * them: the cursor turns to a two-headed arrow over an edge and a diagonal
+    * one over a corner. Absent, the tile cannot be resized by pointer.
+    */
+   edges?: {
+      /** The right edge (and its corners): off while the grid is one column. */
+      right: boolean;
+      /** The left and top edges too, which move a place: a grid drawn as a grid. */
+      all: boolean;
+      start: (event: PointerEvent<HTMLElement>, edges: Edges) => void;
+      move: (event: PointerEvent<HTMLElement>) => void;
+      end: (event: PointerEvent<HTMLElement>) => void;
+      /** What the drag would make the tile, in words, while this tile is resized. */
+      label?: string;
+   };
+   /** The tile's width and the grid's, and a step of one column: the right edge's keyboard route. */
    width?: {
       span: number;
       columns: number;
@@ -104,23 +113,20 @@ export function TileFrame({
       max?: number;
       onStep: (to: number) => void;
    };
-   /**
-    * The bottom edge, which sets the height in grid rows: dragged, or focused
-    * and stepped with the arrow keys. Delete or a double-click puts the tile
-    * back to fitting its content. Absent, the tile has no bottom handle.
-    */
    /** The tile cannot be moved now (the grid is drawn as one column). */
    fixed?: boolean;
+   /**
+    * The bottom edge's keyboard route: focused, the arrow keys step the height
+    * a row at a time, and Delete puts the tile back to auto height, as a
+    * double-click on the edge does.
+    */
    heightEdge?: {
       /** Its rows: the set height, or the drag's preview; absent on auto, as tall as its row. */
       rows: number | undefined;
-      /** This edge is being dragged. */
-      dragging: boolean;
-      /** The fewest rows offered: a chart's floor, or prose's. */
+      /** The fewest rows offered before anything is known of what the tile draws. */
       min: number;
-      onStart: (event: PointerEvent<HTMLDivElement>) => void;
-      onMove: (event: PointerEvent<HTMLDivElement>) => void;
-      onEnd: (event: PointerEvent<HTMLDivElement>) => void;
+      /** The fewest rows offered for what the tile draws now: two for cards or a table, three for a chart. */
+      minFor?: (frame: Element | null) => number;
       /** A keyboard step, or `undefined` to fit the content again. */
       onStep: (to: number | undefined) => void;
    };
@@ -181,7 +187,7 @@ export function TileFrame({
                   // pixels.
                   cursor: "grab",
                   ...selectionSx(theme, { selected, flash, bare }),
-                  // The edge handle and menu are invisible
+                  // The resize edges and menu are invisible
                   // until wanted, and wanted is: the pointer
                   // over the tile, or the tile selected. A
                   // hover rule on the WRAPPER, so all three
@@ -285,7 +291,9 @@ export function TileFrame({
                         borderRadius: ui.radius.control,
                         width: 28,
                         height: 28,
-                        zIndex: 2,
+                        // Over the edge and corner zones (z 1 and 2), so the corner
+                        // zone around it never takes a click meant for the menu.
+                        zIndex: 3,
                         color: "text.secondary",
                         bgcolor: "action.hover",
                         opacity: selected || menuOpen ? 1 : 0,
@@ -301,166 +309,15 @@ export function TileFrame({
                   </IconButton>
                )}
 
-               {/* The right edge, which sets the width: dragged, or focused and
-                stepped with the arrow keys a column at a time (Home and End go
-                to one column and the full grid). Marked so the move sensor
-                never takes a press on it. */}
-               {onResizeStart && (
-                  <Box
-                     className={`builder-affordance ${reportClasses.widthHandle}`}
-                     {...{ [NO_DRAG]: "" }}
-                     role="separator"
-                     tabIndex={width ? 0 : -1}
-                     aria-orientation="vertical"
-                     aria-label={`Width of ${tileLabel(tile)}`}
-                     {...(width
-                        ? {
-                             "aria-valuenow": width.span,
-                             "aria-valuemin": 1,
-                             "aria-valuemax": width.max ?? width.columns,
-                             "aria-valuetext": `${width.span} of ${width.columns} columns`,
-                          }
-                        : {})}
-                     onKeyDown={(event) => {
-                        if (!width) return;
-                        const to =
-                           event.key === "ArrowRight"
-                              ? width.span + 1
-                              : event.key === "ArrowLeft"
-                                ? width.span - 1
-                                : event.key === "Home"
-                                  ? 1
-                                  : event.key === "End"
-                                    ? (width.max ?? width.columns)
-                                    : undefined;
-                        if (to === undefined) return;
-                        // The builder's own arrow-key nudge must not step it again.
-                        event.preventDefault();
-                        event.stopPropagation();
-                        width.onStep(
-                           Math.min(
-                              Math.max(to, 1),
-                              width.max ?? width.columns,
-                           ),
-                        );
-                     }}
-                     onPointerDown={onResizeStart}
-                     onPointerMove={onResizeMove}
-                     onPointerUp={onResizeEnd}
-                     onPointerCancel={onResizeEnd}
-                     onClick={(event) => event.stopPropagation()}
-                     sx={(mui) => ({
-                        position: "absolute",
-                        top: 0,
-                        bottom: 0,
-                        // Straddles the edge, so the target is a usable width
-                        // without eating into the tile's content; wide enough
-                        // for the knob at its middle.
-                        right: "-8px",
-                        width: "16px",
-                        cursor: "col-resize",
-                        touchAction: "none",
-                        zIndex: 2,
-                        // Invisible until wanted: a rule down every tile edge
-                        // would read as a table.
-                        opacity: resizing || selected ? 1 : 0,
-                        transition: `opacity ${MOTION_FAST}`,
-                        ...reducedMotionSx,
-                        "&:hover": { opacity: 1 },
-                        "&:focus-visible": {
-                           opacity: 1,
-                           outline: `2px solid ${theme.accent}`,
-                           outlineOffset: 1,
-                           borderRadius: "3px",
-                        },
-                        // A grip tab at the middle of the edge: the shape a
-                        // splitter's handle has, so it reads as "drag sideways"
-                        // without a word. The whole edge strip still takes the
-                        // drag; the tab is where the eye goes.
-                        "&::before": {
-                           content: '""',
-                           position: "absolute",
-                           top: "50%",
-                           left: "50%",
-                           transform: "translate(-50%, -50%)",
-                           width: "12px",
-                           height: "40px",
-                           boxSizing: "border-box",
-                           borderRadius: ui.radius.control,
-                           border: `1px solid ${
-                              resizing
-                                 ? theme.accent
-                                 : edgeColor(theme.cardBorder)
-                           }`,
-                           bgcolor: mui.palette.background.paper,
-                           boxShadow:
-                              "0 1px 2px rgba(16, 24, 40, 0.10), 0 2px 6px rgba(16, 24, 40, 0.08)",
-                           transition: `border-color ${MOTION_FAST}`,
-                        },
-                        // Its two grip lines.
-                        "&::after": {
-                           content: '""',
-                           position: "absolute",
-                           top: "50%",
-                           left: "50%",
-                           transform: "translate(-50%, -50%)",
-                           width: "5px",
-                           height: "16px",
-                           borderLeft: `1.5px solid ${
-                              resizing
-                                 ? theme.accent
-                                 : mui.palette.text.secondary
-                           }`,
-                           borderRight: `1.5px solid ${
-                              resizing
-                                 ? theme.accent
-                                 : mui.palette.text.secondary
-                           }`,
-                           boxSizing: "border-box",
-                           opacity: resizing ? 1 : 0.7,
-                        },
-                        "&:hover::before": { borderColor: theme.accent },
-                        "&:hover::after": {
-                           borderColor: theme.accent,
-                           opacity: 1,
-                        },
-                     })}
-                  >
-                     {/* While dragging, the width it will snap to, in words. The
-                      separator's own value text says the same to a screen reader. */}
-                     {resizing && width && (
-                        <Box
-                           aria-hidden
-                           sx={(mui) => ({
-                              position: "absolute",
-                              top: "50%",
-                              // Set against the edge, inside the tile: centred
-                              // on it, half the label hung past the grid's right
-                              // edge for a tile that reaches it, where a
-                              // scrolling host cuts it off.
-                              right: "50%",
-                              transform: "translateY(calc(-100% - 28px))",
-                              px: 1,
-                              py: 0.5,
-                              borderRadius: ui.radius.control,
-                              bgcolor: mui.palette.text.primary,
-                              color: mui.palette.background.paper,
-                              ...ui.type.label,
-                              whiteSpace: "nowrap",
-                              pointerEvents: "none",
-                           })}
-                        >
-                           {widthLabel(width.span, width.columns)}
-                        </Box>
-                     )}
-                  </Box>
-               )}
-
-               {heightEdge && (
-                  <HeightEdge
-                     edge={heightEdge}
+               {/* Every edge and corner resizes the tile; nothing is drawn on
+                them but the cursor. The right and bottom edges are also the
+                keyboard's: focused, the arrows step width and height. */}
+               {edges && (
+                  <TileEdges
+                     edges={edges}
+                     width={width}
+                     heightEdge={heightEdge}
                      label={tileLabel(tile)}
-                     selected={selected}
                   />
                )}
 
@@ -676,7 +533,14 @@ export function GapTarget({ after }: { after: string }) {
  * Column guides, drawn only during a gesture: a flow grid is invisible until
  * you are trying to land on it.
  */
-export function GridGuides({ columns }: { columns: number }) {
+export function GridGuides({
+   columns,
+   faint = false,
+}: {
+   columns: number;
+   /** Drawn fainter, as a hint while nothing is dragged. */
+   faint?: boolean;
+}) {
    const { theme } = usePublisherTheme();
    return (
       <Box
@@ -699,7 +563,7 @@ export function GridGuides({ columns }: { columns: number }) {
                sx={{
                   // A faint band per column: the tracks a width snaps to.
                   bgcolor: theme.accent,
-                  opacity: 0.06,
+                  opacity: faint ? 0.03 : 0.06,
                   borderRadius: "3px",
                }}
             />
@@ -715,7 +579,14 @@ export function GridGuides({ columns }: { columns: number }) {
  * tile's top, since tiles flow and the grid has no row lines of its own.
  * Behind the tiles and held inside the grid.
  */
-export function RowGuides({ top }: { top: number }) {
+export function RowGuides({
+   top,
+   faint = false,
+}: {
+   top: number;
+   /** Drawn fainter, as a hint while nothing is dragged. */
+   faint?: boolean;
+}) {
    const { theme } = usePublisherTheme();
    const step = TILE_ROW_PX + GRID_GAP_PX;
    // From the first whole row above the canvas's top edge to well past its
@@ -742,7 +613,7 @@ export function RowGuides({ top }: { top: number }) {
                   right: 0,
                   height: TILE_ROW_PX,
                   bgcolor: theme.accent,
-                  opacity: 0.06,
+                  opacity: faint ? 0.03 : 0.06,
                   borderRadius: "3px",
                }}
             />
@@ -765,136 +636,215 @@ function SpreadDotsIcon() {
    );
 }
 
+/** Where each edge and corner's zone sits, straddling the tile's border. */
+const ZONES: ReadonlyArray<{ edges: Edges; sx: Record<string, string> }> = [
+   {
+      edges: { n: true },
+      sx: { top: "-6px", left: "12px", right: "12px", height: "12px" },
+   },
+   {
+      edges: { s: true },
+      sx: { bottom: "-6px", left: "12px", right: "12px", height: "12px" },
+   },
+   {
+      edges: { e: true },
+      sx: { right: "-6px", top: "12px", bottom: "12px", width: "12px" },
+   },
+   {
+      edges: { w: true },
+      sx: { left: "-6px", top: "12px", bottom: "12px", width: "12px" },
+   },
+   {
+      edges: { n: true, w: true },
+      sx: { top: "-8px", left: "-8px", width: "20px", height: "20px" },
+   },
+   {
+      // Larger than the other corners: the tile's × sits on this one, and the
+      // L of corner around it is what still takes a diagonal resize.
+      edges: { n: true, e: true },
+      sx: { top: "-8px", right: "-8px", width: "32px", height: "32px" },
+   },
+   {
+      edges: { s: true, w: true },
+      sx: { bottom: "-8px", left: "-8px", width: "20px", height: "20px" },
+   },
+   {
+      edges: { s: true, e: true },
+      sx: { bottom: "-8px", right: "-8px", width: "20px", height: "20px" },
+   },
+];
+
 /**
- * A tile's bottom edge: the height handle, laid out like the width handle
- * turned on its side, so the two read as one control.
+ * A tile's edges and corners as resize targets. Each is an invisible strip
+ * along the border whose cursor says what it does: a two-headed arrow on an
+ * edge, a diagonal one on a corner. Nothing is drawn, so a tile carries no
+ * handles; the selection ring is its outline. The right and bottom strips
+ * are also the keyboard's separators, which show a ring only when focused.
  */
-function HeightEdge({
-   edge,
+function TileEdges({
+   edges,
+   width,
+   heightEdge,
    label,
-   selected,
 }: {
-   edge: NonNullable<Parameters<typeof TileFrame>[0]["heightEdge"]>;
+   edges: NonNullable<Parameters<typeof TileFrame>[0]["edges"]>;
+   width: Parameters<typeof TileFrame>[0]["width"];
+   heightEdge: Parameters<typeof TileFrame>[0]["heightEdge"];
    label: string;
-   selected: boolean;
 }) {
    const { theme } = usePublisherTheme();
    const ui = theme.ui;
-   const { rows, dragging } = edge;
-   const fit = rows === undefined;
+   // The floor the keyboard and a screen reader get, read off what the tile
+   // draws when the bottom edge is reached, since a chart and a row of cards
+   // have different ones and only the drawn result says which this is.
+   const [floor, setFloor] = useState<number | undefined>(undefined);
+   const minRows = floor ?? heightEdge?.min ?? MIN_TILE_ROWS;
+   const readFloor = (frame: Element | null) =>
+      heightEdge && setFloor(heightEdge.minFor?.(frame) ?? heightEdge.min);
+   const offered = (zone: Edges) =>
+      (!(zone.n || zone.w) || edges.all) && (!zone.e || edges.right);
+   const focusRing = {
+      "&:focus-visible": {
+         outline: `2px solid ${theme.accent}`,
+         outlineOffset: -4,
+         borderRadius: "3px",
+      },
+   };
    return (
-      <Box
-         className="builder-affordance"
-         {...{ [NO_DRAG]: "" }}
-         role="separator"
-         tabIndex={0}
-         aria-orientation="horizontal"
-         aria-label={`Height of ${label}`}
-         aria-valuemin={edge.min}
-         aria-valuemax={MAX_TILE_ROWS}
-         {...(fit ? {} : { "aria-valuenow": rows })}
-         aria-valuetext={heightLabel(rows)}
-         onKeyDown={(event) => {
-            const now = rows ?? edge.min;
-            const to =
-               event.key === "ArrowDown"
-                  ? now + 1
-                  : event.key === "ArrowUp"
-                    ? now - 1
-                    : event.key === "Home"
-                      ? edge.min
-                      : event.key === "End"
-                        ? MAX_TILE_ROWS
-                        : event.key === "Delete" || event.key === "Backspace"
-                          ? null
-                          : undefined;
-            if (to === undefined) return;
-            // The builder's own arrow-key nudge must not act on it too.
-            event.preventDefault();
-            event.stopPropagation();
-            if (to === null) {
-               if (!fit) edge.onStep(undefined);
-               return;
-            }
-            const held = Math.min(Math.max(to, edge.min), MAX_TILE_ROWS);
-            if (held !== rows) edge.onStep(held);
-         }}
-         onPointerDown={edge.onStart}
-         onPointerMove={edge.onMove}
-         onPointerUp={edge.onEnd}
-         onPointerCancel={edge.onEnd}
-         onClick={(event) => event.stopPropagation()}
-         onDoubleClick={(event) => {
-            event.stopPropagation();
-            if (!fit) edge.onStep(undefined);
-         }}
-         sx={(mui) => ({
-            position: "absolute",
-            left: 0,
-            right: 0,
-            // Straddles the edge, as the width handle does.
-            bottom: "-8px",
-            height: "16px",
-            cursor: "row-resize",
-            touchAction: "none",
-            zIndex: 2,
-            opacity: dragging || selected ? 1 : 0,
-            transition: `opacity ${MOTION_FAST}`,
-            ...reducedMotionSx,
-            "&:hover": { opacity: 1 },
-            "&:focus-visible": {
-               opacity: 1,
-               outline: `2px solid ${theme.accent}`,
-               outlineOffset: 1,
-               borderRadius: "3px",
-            },
-            "&::before": {
-               content: '""',
-               position: "absolute",
-               top: "50%",
-               left: "50%",
-               transform: "translate(-50%, -50%)",
-               width: "40px",
-               height: "12px",
-               boxSizing: "border-box",
-               borderRadius: ui.radius.control,
-               border: `1px solid ${
-                  dragging ? theme.accent : edgeColor(theme.cardBorder)
-               }`,
-               bgcolor: mui.palette.background.paper,
-               boxShadow:
-                  "0 1px 2px rgba(16, 24, 40, 0.10), 0 2px 6px rgba(16, 24, 40, 0.08)",
-               transition: `border-color ${MOTION_FAST}`,
-            },
-            "&::after": {
-               content: '""',
-               position: "absolute",
-               top: "50%",
-               left: "50%",
-               transform: "translate(-50%, -50%)",
-               width: "16px",
-               height: "5px",
-               borderTop: `1.5px solid ${
-                  dragging ? theme.accent : mui.palette.text.secondary
-               }`,
-               borderBottom: `1.5px solid ${
-                  dragging ? theme.accent : mui.palette.text.secondary
-               }`,
-               boxSizing: "border-box",
-               opacity: dragging ? 1 : 0.7,
-            },
-            "&:hover::before": { borderColor: theme.accent },
-            "&:hover::after": { borderColor: theme.accent, opacity: 1 },
+      <>
+         {ZONES.filter((zone) => offered(zone.edges)).map((zone) => {
+            const key = Object.keys(zone.edges).join("");
+            const isRight = key === "e";
+            const isBottom = key === "s";
+            const keyboard =
+               isRight && width
+                  ? {
+                       role: "separator",
+                       tabIndex: 0,
+                       "aria-orientation": "vertical" as const,
+                       "aria-label": `Width of ${label}`,
+                       "aria-valuenow": width.span,
+                       "aria-valuemin": 1,
+                       "aria-valuemax": width.max ?? width.columns,
+                       "aria-valuetext": `${width.span} of ${width.columns} columns`,
+                       onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+                          // Option/Alt and an arrow moves the tile: the
+                          // builder's shortcut, not this edge's.
+                          if (event.altKey) return;
+                          const max = width.max ?? width.columns;
+                          const to =
+                             event.key === "ArrowRight"
+                                ? width.span + 1
+                                : event.key === "ArrowLeft"
+                                  ? width.span - 1
+                                  : event.key === "Home"
+                                    ? 1
+                                    : event.key === "End"
+                                      ? max
+                                      : undefined;
+                          if (to === undefined) return;
+                          // The builder's own arrow-key nudge must not step it again.
+                          event.preventDefault();
+                          event.stopPropagation();
+                          width.onStep(Math.min(Math.max(to, 1), max));
+                       },
+                    }
+                  : isBottom && heightEdge
+                    ? {
+                         role: "separator",
+                         tabIndex: 0,
+                         "aria-orientation": "horizontal" as const,
+                         "aria-label": `Height of ${label}`,
+                         "aria-valuemin": minRows,
+                         onFocus: (event: FocusEvent<HTMLElement>) =>
+                            readFloor(event.currentTarget.parentElement),
+                         onPointerEnter: (event: PointerEvent<HTMLElement>) =>
+                            readFloor(event.currentTarget.parentElement),
+                         "aria-valuemax": MAX_TILE_ROWS,
+                         ...(heightEdge.rows === undefined
+                            ? {}
+                            : { "aria-valuenow": heightEdge.rows }),
+                         "aria-valuetext": heightLabel(heightEdge.rows),
+                         onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+                            if (event.altKey) return;
+                            const rows = heightEdge.rows;
+                            const now = rows ?? minRows;
+                            const to =
+                               event.key === "ArrowDown"
+                                  ? now + 1
+                                  : event.key === "ArrowUp"
+                                    ? now - 1
+                                    : event.key === "Home"
+                                      ? minRows
+                                      : event.key === "End"
+                                        ? MAX_TILE_ROWS
+                                        : event.key === "Delete" ||
+                                            event.key === "Backspace"
+                                          ? null
+                                          : undefined;
+                            if (to === undefined) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (to === null) {
+                               if (rows !== undefined)
+                                  heightEdge.onStep(undefined);
+                               return;
+                            }
+                            const held = Math.min(
+                               Math.max(to, minRows),
+                               MAX_TILE_ROWS,
+                            );
+                            if (held !== rows) heightEdge.onStep(held);
+                         },
+                      }
+                    : { "aria-hidden": true };
+            return (
+               <Box
+                  key={key}
+                  className={`builder-affordance${isRight ? ` ${reportClasses.widthHandle}` : ""}`}
+                  {...{ [NO_DRAG]: "" }}
+                  {...keyboard}
+                  data-edge={key}
+                  onPointerDown={(event) => {
+                     if (event.button !== 0) return;
+                     edges.start(event, zone.edges);
+                  }}
+                  onPointerMove={edges.move}
+                  onPointerUp={edges.end}
+                  onPointerCancel={edges.end}
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => {
+                     // A double-click on the bottom edge puts the tile back
+                     // to auto height.
+                     if (!zone.edges.s || zone.edges.e || zone.edges.w) return;
+                     event.stopPropagation();
+                     if (heightEdge && heightEdge.rows !== undefined)
+                        heightEdge.onStep(undefined);
+                  }}
+                  sx={{
+                     position: "absolute",
+                     ...zone.sx,
+                     cursor: edgeCursor(zone.edges),
+                     touchAction: "none",
+                     // Corners over edges, both over the tile's content and
+                     // under its × (z 3), so the top-right corner never takes
+                     // a click meant for remove.
+                     zIndex: Object.keys(zone.edges).length > 1 ? 2 : 1,
+                     ...focusRing,
+                  }}
+               />
+            );
          })}
-      >
-         {dragging && (
+         {edges.label && (
+            // While a resize is live, what it would make the tile, in words,
+            // at the tile's lower right. The separators' value text says the
+            // same to a screen reader.
             <Box
                aria-hidden
                sx={(mui) => ({
                   position: "absolute",
-                  left: "50%",
-                  bottom: "50%",
-                  transform: "translate(32px, 50%)",
+                  right: 12,
+                  bottom: 12,
                   px: 1,
                   py: 0.5,
                   borderRadius: ui.radius.control,
@@ -903,15 +853,16 @@ function HeightEdge({
                   ...ui.type.label,
                   whiteSpace: "nowrap",
                   pointerEvents: "none",
+                  zIndex: 4,
                })}
             >
-               {heightLabel(rows)}
+               {edges.label}
             </Box>
          )}
-      </Box>
+      </>
    );
 }
 
-/** A height in words, for the drag's label and a screen reader. */
+/** A height in words, for the label and a screen reader. */
 const heightLabel = (rows: number | undefined) =>
    rows === undefined ? "Auto height" : `${rows} rows tall`;

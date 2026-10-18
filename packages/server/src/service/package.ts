@@ -140,7 +140,6 @@ import {
 import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
    buildReportManifest,
-   COMPONENT_FILE_SUFFIXES,
    dropGridTileLayoutFindings,
    factsReportTag,
    matchesDocumentedReportName,
@@ -178,12 +177,6 @@ type ApiModel = components["schemas"]["Model"];
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
-
-/**
- * Where Malloyyo looks for a dashboard's custom component. The directory means
- * nothing to Publisher; it is named only to warn about an inert `.jsx` there.
- */
-const MALLOYYO_DASHBOARDS_DIR = "dashboards";
 
 /** One report discovery found and serves, keyed by its path. */
 interface ServedReport {
@@ -2970,9 +2963,6 @@ export class Package {
          for (const finding of lintGivenTags(drillFacts)) {
             warnings.push(finding);
          }
-         for (const finding of await this.unsupportedComponentWarnings()) {
-            warnings.push(finding);
-         }
       } catch (err) {
          logger.warn("Report lint failed", {
             packageName: this.packageName,
@@ -2983,8 +2973,8 @@ export class Package {
          warnings.push({
             message:
                `Report lint stopped early, so this list is incomplete: an ` +
-               `unknown subset of the tile, report, drill, given, curation ` +
-               `and unsupported-component checks did not run. Treat a missing ` +
+               `unknown subset of the tile, report, drill, given and curation ` +
+               `checks did not run. Treat a missing ` +
                `finding of any of those kinds as unknown rather than clean. ` +
                `Reload the package to run the lint again. The ` +
                `reports themselves are unaffected, because they are ` +
@@ -3069,39 +3059,6 @@ export class Package {
                     `model, remove its artifact tag; if it is a report, move ` +
                     `what ${INDEX_MODEL_NAME} needs from it into an untagged ` +
                     `model that both import.`,
-            severity: "warn",
-         });
-      }
-      return warnings;
-   }
-
-   /**
-    * A `.jsx`/`.tsx` in `dashboards/`, where Malloyyo looks for custom
-    * components. Publisher does not run them, so a migrated repo is told so
-    * rather than seeing an empty grid.
-    */
-   private async unsupportedComponentWarnings(): Promise<ApiPackageWarning[]> {
-      const dir = safeJoinUnderRoot(this.packagePath, MALLOYYO_DASHBOARDS_DIR);
-      let entries: string[];
-      try {
-         entries = await fs.readdir(dir);
-      } catch {
-         return [];
-      }
-      const warnings: ApiPackageWarning[] = [];
-      for (const entry of entries.sort()) {
-         const suffix = COMPONENT_FILE_SUFFIXES.find((s) => entry.endsWith(s));
-         if (!suffix) continue;
-         const base = entry.slice(0, -suffix.length);
-         warnings.push({
-            model: `${MALLOYYO_DASHBOARDS_DIR}/${entry}`,
-            subject: base,
-            message:
-               `Custom dashboard components are not supported, so ` +
-               `"${MALLOYYO_DASHBOARDS_DIR}/${entry}" is ignored. Any ` +
-               `${MALLOYYO_DASHBOARDS_DIR}/${base}${MODEL_FILE_SUFFIX} beside it still ` +
-               `renders from its tags. For a page that runs its own code, use ` +
-               `an HTML data app in the package's public/ directory.`,
             severity: "warn",
          });
       }
