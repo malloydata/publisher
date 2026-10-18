@@ -2,43 +2,38 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Compiling the synthesized pre-aggregation model — the one seam both legs share.
+ * Compiles the synthesized pre-aggregation model (see preaggregation_synthesis.ts).
  *
- * Synthesis produces a second Malloy model per author model (see
- * preaggregation_synthesis.ts). Two callers need it compiled: the build plan, so
- * rollups are built, and the serve path, so queries route. Both come through
- * here, which is what makes their `sourceEntityId`s agree — the identity property
- * the whole mechanism rests on. Two call sites each doing "roughly this" is the
- * one way to break it, so there is exactly one.
+ * Both the build leg and the serve leg compile through this one function, which
+ * is what makes their `sourceEntityId`s agree; two call sites doing "roughly
+ * this" would break that identity.
  *
- * The synthesized text is never written to disk. It is served to the compiler
- * from an overlay at a URL inside the real package directory, so its `import` of
- * the author's model resolves against the real neighbours while nothing is added
- * to the package tree. A model on disk would be worse in every direction: it
- * would appear in `getModelPaths()`, be listed by the API, be compiled as a model
- * in its own right, and go stale against the author's edits.
+ * The synthesized text is never written to disk. It is served from an overlay at
+ * a URL inside the package directory, so its `import` of the author's model
+ * resolves while it never shows up in `getModelPaths()`, the API, or the
+ * package's own compile, and cannot go stale against the author's edits.
  */
 
 import type {
    Model as MalloyModel,
    ModelMaterializer,
+   Runtime,
 } from "@malloydata/malloy";
 import * as path from "path";
-import type { BuildManifest } from "../storage/DatabaseInterface";
 import { logger } from "../logger";
-import { Model, type ModelConnectionInput } from "./model";
 import {
    planModelPreaggregation,
    synthesizePreaggregationModel,
    type RollupPlan,
 } from "./preaggregation_synthesis";
 
-/**
- * The suffix that turns an author model path into its synthesized companion's.
- * Inside the package directory (so imports resolve) and not a `.malloy` file, so
- * that if it ever DID reach disk it would not be picked up as a model.
- */
+/** Appended to an author model path to name its synthesized companion. */
 const SYNTHESIZED_SUFFIX = ".preagg.malloy";
+
+/** See `compileSynthesizedPreaggregation`'s `getRuntime`. */
+export type SynthesizedRuntimeFactory = (
+   overlay: ReadonlyMap<string, string>,
+) => Promise<{ runtime: Runtime; importBaseURL: URL }>;
 
 export interface SynthesizedPreaggregation {
    /** The rollups the author's declarations asked for. Never empty. */
@@ -56,10 +51,7 @@ export interface SynthesizedPreaggregation {
 }
 
 /** Where the synthesized companion for `modelPath` lives, as an absolute URL. */
-export function synthesizedModelURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function synthesizedModelURL(packagePath: string, modelPath: string): URL {
    return new URL(
       `file://${path.join(packagePath, modelPath)}${SYNTHESIZED_SUFFIX}`,
    );
@@ -69,20 +61,25 @@ export function synthesizedModelURL(
  * Plan, synthesize and compile the rollups for one author model.
  *
  * `contents` is the author model's compiled `modelDef.contents`. Returns
- * `undefined` when the model declares no usable `#@ preaggregate`, so a caller
- * skips the extra compile entirely rather than compiling a model that adds
- * nothing — which is every model in almost every package.
+ * `undefined` when the model declares no usable `#@ preaggregate`, so the common
+ * case skips the extra compile.
  *
  * Assumes the publish/load gate has already run: an unusable declaration is
- * skipped by the planner rather than reported here, so this never becomes a
- * second, quieter opinion about what is legal.
+ * skipped by the planner, not reported here, so this is never a second opinion
+ * about what is legal.
  */
-export async function compileSynthesizedPreaggregation(args: {
+async function compileSynthesizedPreaggregation(args: {
    packagePath: string;
    modelPath: string;
-   malloyConfig: ModelConnectionInput;
    contents: Record<string, unknown>;
-   buildManifest?: BuildManifest["entries"];
+   /**
+    * Builds the runtime the synthesized model compiles in, with `overlay`
+    * served ahead of the package's files. A caller on the main thread passes
+    * `Model.getModelRuntime` (with any build manifest); the package-load
+    * worker passes its own, because it compiles against proxied connections
+    * and must not load `./model`.
+    */
+   getRuntime: SynthesizedRuntimeFactory;
 }): Promise<SynthesizedPreaggregation | undefined> {
    const plans = planModelPreaggregation(args.contents);
    if (plans.length === 0) return undefined;
@@ -96,14 +93,8 @@ export async function compileSynthesizedPreaggregation(args: {
    if (!text) return undefined;
 
    const synthesizedURL = synthesizedModelURL(args.packagePath, args.modelPath);
-   const { runtime, importBaseURL } = await Model.getModelRuntime(
-      args.packagePath,
-      args.modelPath,
-      args.malloyConfig,
-      {
-         buildManifest: args.buildManifest,
-         overlay: new Map([[synthesizedURL.href, text]]),
-      },
+   const { runtime, importBaseURL } = await args.getRuntime(
+      new Map([[synthesizedURL.href, text]]),
    );
    const materializer = runtime.loadModel(synthesizedURL, { importBaseURL });
    const model = await materializer.getModel();
@@ -112,17 +103,12 @@ export async function compileSynthesizedPreaggregation(args: {
 
 /**
  * {@link compileSynthesizedPreaggregation}, with a compile failure logged and
- * swallowed.
+ * swallowed: pre-aggregation is an optimization, so a failure must cost latency
+ * only. The build leg plans no rollup and the serve leg serves live, as if the
+ * feature were off.
  *
- * Both callers want this: pre-aggregation is an optimization, so a rollup that
- * will not compile must cost latency and nothing else. The build leg then plans
- * no rollup and the serve leg serves live — the same outcome as the feature being
- * off, which is the only safe way for a cache to fail.
- *
- * A failure here is a publisher bug rather than an authoring error: the gate has
- * already accepted every declaration, so anything that fails now is text this
- * code generated. Hence `error`, and hence the generated text in the log — it is
- * the only copy, and without it the report is unactionable.
+ * A failure here is a publisher bug (the gate already accepted every
+ * declaration, so the failing text is generated), hence `error` level.
  */
 export async function tryCompileSynthesizedPreaggregation(
    args: Parameters<typeof compileSynthesizedPreaggregation>[0],

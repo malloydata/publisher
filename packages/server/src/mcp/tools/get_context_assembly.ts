@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Assembly: turn the ranked rows into source cards. This is one plain
- * function, not a pluggable stage, because it needs every target's rows at
- * once. Card stages run on its output; shapeCards in get_context_tool.ts
- * pages and serializes it.
+ * Assembly: turn the ranked rows into source cards. A plain function, not a
+ * pluggable stage, because it needs every target's rows at once. Card stages
+ * run on its output; shapeCards (get_context_response.ts) pages and serializes.
  */
 
 import type {
@@ -16,16 +15,16 @@ import type {
 } from "./get_context_pipeline";
 import { KEY_SEPARATOR, entityRowKey } from "./embedding_index";
 import { mapRawScore } from "./get_context_scoring";
-import {
-   enterJoin,
-   matchesScope,
-   sourceContextKey,
-   type Entity,
-   type JoinReach,
-   type JoinTopology,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "./get_context_tool";
+import { matchesScope } from "./get_context_request";
+import type {
+   Entity,
+   JoinReach,
+   JoinTopology,
+   ResolvedRequest,
+   ResultEntity,
+} from "./get_context_types";
+import { enterJoin, sourceContextKey } from "./package_entities";
+import { compareText, round4 } from "./retrieval_shared";
 
 /**
  * Whether a source row carries a real verdict: a model rated it (source match
@@ -39,10 +38,8 @@ function isUnratedOnScale(row: ResultEntity): boolean {
 
 /**
  * A card's relevance after reading one more row. A source's own row sets it
- * outright when it is a verdict on the source (a source match rating, or a
- * plain cosine with no stage at all); any other scored row raises it. One
- * definition, used here and by toSourceResults, so a card and its wire form
- * cannot disagree.
+ * outright when it is a verdict on the source; any other scored row raises it.
+ * Shared with toSourceResults so a card and its wire form cannot disagree.
  */
 export function foldRelevance(
    current: number | undefined,
@@ -68,11 +65,6 @@ export function foldRaw(
    return current === undefined || row.raw > current ? row.raw : current;
 }
 
-/** Plain code-unit order, so the result does not depend on the host's locale. */
-function compareText(a: string, b: string): number {
-   return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /**
  * The number rows are ordered by: the rater's raw score when a stage rated the
  * row, else the unrounded cosine, else the published score. A rated row keeps
@@ -83,11 +75,8 @@ function rankKey(row: ResultEntity): number {
 }
 
 /**
- * The order of ranked rows: score descending, then source, name, kind and
- * model path. The score compared is the unrounded one, so only rows with
- * exactly the same score count as tied and are listed in a fixed order, not in
- * whatever order the scan happened to return them. Shared by the semantic
- * retriever and by assembly, which adds joined copies and so has to sort again.
+ * The order of ranked rows: unrounded score descending, then source, name,
+ * kind and model path, so ties have a fixed order independent of the scan.
  */
 export function compareRanked(a: ResultEntity, b: ResultEntity): number {
    return (
@@ -114,11 +103,8 @@ interface Reacher {
 const reachersCache = new WeakMap<JoinTopology, Map<string, Reacher[]>>();
 
 /**
- * The topology turned around: for each target source, the roots that reach
- * it. The topology is keyed by root; assembly starts from a ranked target
- * field and asks "who can reach this?". A source is identified by the file
- * that defines it and its name, so two files that each define `cust` have
- * different reachers. Built once per topology.
+ * The topology inverted: for each target source (file + name), the roots that
+ * reach it. Built once per topology.
  */
 function reachersOf(topology: JoinTopology): Map<string, Reacher[]> {
    const cached = reachersCache.get(topology);
@@ -185,11 +171,9 @@ function joinedCopiesOf(
 }
 
 /**
- * The vector-cache rows a scoped request can be answered from, when joined
- * copies are made at assembly. A field in scope may be a copy reached through
- * a join, and its score comes from the target field's row, so that row is
- * searched even though the target source itself is out of scope. Returns each
- * such row once.
+ * The vector-cache rows a scoped request can be answered from when joined
+ * copies are made at assembly: a field in scope may be a join copy whose score
+ * comes from an out-of-scope target's row. Each row once.
  */
 export function scopeKeysWithJoins(
    direct: Iterable<Entity>,
@@ -215,8 +199,6 @@ export function scopeKeysWithJoins(
    return keys;
 }
 
-const round4 = (x: number) => Math.round(x * 10_000) / 10_000;
-
 function dampTargetScores(
    row: ResultEntity,
    factor: number,
@@ -231,13 +213,10 @@ function dampTargetScores(
 }
 
 /**
- * A copy's scores, from its direct field's and the damping factor.
- *
- * Rows a refine stage rated carry `raw` (`level + cosine`). The factor
- * multiplies that WHOLE number, so a joined HIGH one hop away (3.4 * 0.81 =
- * 2.75) can fall into the MEDIUM band, and the published score is the damped
- * raw one through the knots. Rows nobody rated have only a cosine, which is
- * damped and published as before.
+ * A copy's scores, from its direct field's and the damping factor. For a
+ * refine-rated row the factor multiplies the whole `raw` (`level + cosine`),
+ * so a joined HIGH can fall into the MEDIUM band; otherwise the cosine is
+ * damped.
  */
 function dampedScores(
    row: ResultEntity,
@@ -285,11 +264,9 @@ function dampedScores(
  * Add the joined copies of the ranked direct fields, damped, and drop what
  * the request's scope excludes.
  *
- * A copy scores as its direct field's score times `damping ** (hops + 1)`, so
- * one join is 0.81 and two are 0.729; the direct field is not damped. The
- * same display name reached twice (the target source is resolvable from two
- * model files) keeps the higher score. A copy's per-target scores are damped
- * the same way, so `matched_targets` agrees with the entity's own relevance.
+ * A copy scores as its direct field's score times `damping ** (hops + 1)`;
+ * per-target scores are damped the same way so `matched_targets` agrees. The
+ * same display name reached twice keeps the higher score.
  */
 function expandJoins(
    rows: ResultEntity[],
@@ -390,10 +367,8 @@ function expandJoins(
  * sources first appear, and cap the entities each card carries per search
  * target.
  *
- * Nothing is folded across sources: two sources exposing a same-named
- * measure are two different numbers, each nested under its own card. Cards
- * are not paged here; shapeCards keeps the first `limit` and sums the
- * entities dropped from those alone.
+ * Nothing is folded across sources: same-named measures on two sources are
+ * different numbers. Paging is shapeCards'.
  */
 export function assembleCards(
    state: RankedState,
@@ -432,9 +407,8 @@ export function assembleCards(
       }
       // A source row becomes the card itself, so it never spends a slot.
       if (r.kind !== "source") {
-         // -1 buckets a row no target claims, so it shares one cap rather
-         // than none. Both ranked paths set bestTarget, so on them this is
-         // only a guard.
+         // -1 buckets a row no target claims (a guard: both ranked paths set
+         // bestTarget), so it shares one cap rather than none.
          const target = r.bestTarget ?? -1;
          const counts = perTarget.get(key) as Map<number, number>;
          const taken = counts.get(target) ?? 0;

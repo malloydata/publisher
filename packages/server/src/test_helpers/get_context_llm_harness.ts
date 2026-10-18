@@ -28,6 +28,7 @@ import {
 } from "../storage/duckdb/schema";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { registerGetContextTool } from "../mcp/tools/get_context_tool";
+import { pollFor } from "./poll";
 
 /** A retry policy that never waits, so a failing call fails at once. */
 export const NO_WAIT_RETRY: RetryPolicy = {
@@ -327,10 +328,9 @@ export async function untilSemantic(
    params: Record<string, unknown>,
    extra?: unknown,
 ) {
-   for (let i = 0; i < 1_000; i++) {
-      const out = await callPayload(handler, params, extra);
-      if (out.payload.retrieval === "semantic" || out.isError) return out;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("retrieval never became semantic");
+   return pollFor(
+      () => callPayload(handler, params, extra),
+      (out) => out.payload.retrieval === "semantic" || out.isError,
+      5_000,
+   );
 }

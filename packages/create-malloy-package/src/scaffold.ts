@@ -69,7 +69,7 @@ export interface DeclinedScript {
    host?: string;
    /**
     * The value written as `--host=<value>`, which Publisher's own argument
-    * parser does not accept (server.ts matches `arg === "--host"` and takes the
+    * parser does not accept (cli_args.ts matches `arg === "--host"` and takes the
     * next argv entry), so the flag is dropped in silence and the bind falls back
     * to 0.0.0.0. Carried alongside `reason: "no-host-flag"`, which is what such a
     * script really is as far as the server is concerned, so a caller can say
@@ -1569,7 +1569,7 @@ function isSingleServerInvocation(script: string): boolean {
  * The value of the last `--host <value>` in a command line, if it carries one.
  *
  * Whitespace only, because that is the whole of what Publisher accepts:
- * `packages/server/src/server.ts` walks argv with
+ * `packages/server/src/cli_args.ts` walks argv with
  * `} else if (arg === "--host" && args[i + 1]) {`, a strict equality against a
  * separate argv entry. `--host=127.0.0.1` matches no branch in that chain, and
  * the chain has no unknown-flag error, so the flag is dropped in silence and
@@ -1583,7 +1583,7 @@ function isSingleServerInvocation(script: string): boolean {
  */
 /**
  * The server flags that consume the following argv entry, mirroring the
- * `arg === "--x" && args[i + 1]` chain in `packages/server/src/server.ts`.
+ * `arg === "--x" && args[i + 1]` chain in `packages/server/src/cli_args.ts`.
  * `--init` and `--help` take no value and so are deliberately absent.
  */
 export const SERVER_VALUE_FLAGS = new Set([

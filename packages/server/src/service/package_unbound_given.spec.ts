@@ -9,7 +9,7 @@
  * worker path (`Package.create`) and the in-process path (`Model.create`).
  *
  * One `PackageLoadPool` is shared across the cases for the reason given in
- * `package_worker_path.spec.ts`.
+ * `tests/component/package_worker_path.component.spec.ts`.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -48,11 +48,11 @@ query: for_org is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LAYOUT_NOTEBOOK = `##! experimental.givens
-## artifact { layout=linear title="Unbound" }
+## artifact { layout=linear title="Unbound" tiles=["tile"] }
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 
-run: orders -> { where: org_id = $ORG; aggregate: c }
+query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LEGACY_NOTEBOOK = `>>>markdown

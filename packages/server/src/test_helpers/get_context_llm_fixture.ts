@@ -90,6 +90,7 @@ export function shopPackage(retrieval: Partial<PackageRetrievalSettings> = {}) {
       ...retrieval,
    };
    return {
+      listSkills: () => [],
       listModels: async () => Object.keys(models).map((p) => ({ path: p })),
       getModel: (p: string) => models[p],
       getRetrievalSettings: () => settings,

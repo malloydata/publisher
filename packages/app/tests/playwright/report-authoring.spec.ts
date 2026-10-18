@@ -10,14 +10,13 @@ import {
 } from "./helpers/packageEnv";
 
 /**
- * Two authoring paths only a browser proves end to end: the toolbar's layout
- * switch, saved into the package and served that way; and a draft kept in the
+ * An authoring path only a browser proves end to end: a draft kept in the
  * browser when the server takes no writes, listed on the package page and
  * opened again from there.
  */
 
 const GRID = `##! experimental.givens
-## artifact { layout=grid title="Switch me" tiles=["orders -> by_brand"] } dashboard { columns=4 }
+## artifact { layout=grid title="Draft me" tiles=["orders -> by_brand"] } dashboard { columns=4 }
 import { orders } from 'orders.malloy'
 import { BRAND, REGION } from 'givens.malloy'
 `;
@@ -48,45 +47,15 @@ test.describe("report authoring", () => {
          serverFixture("dashboards-test"),
          "dashboards-test",
          {
-            "switch.malloy": GRID,
             "reports/draft.malloy": GRID.replace(
-               "Switch me",
-               "Draft me",
-            ).replace(/'(orders|givens)\.malloy'/g, "'../$1.malloy'"),
+               /'(orders|givens)\.malloy'/g,
+               "'../$1.malloy'",
+            ),
          },
       );
    });
    test.afterAll(async () => {
       await pe?.dispose();
-   });
-
-   test("the toolbar's Linear/Grid switch is saved into the file, and the report is served that way", async ({
-      page,
-   }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/switch?edit`);
-      await editing(page);
-      const linear = page.getByRole("button", { name: "Linear layout" });
-      await expect(linear).toHaveAttribute("aria-pressed", "false");
-      await linear.click();
-      await expect(linear).toHaveAttribute("aria-pressed", "true");
-      await saveChanges(page);
-
-      expect(await pe.readSource("switch.malloy")).toContain("layout=linear");
-      const listed = (await (
-         await fetch(
-            `${pe.baseURL}/api/v0/environments/${pe.env}/packages/${pe.pkg}/reports`,
-         )
-      ).json()) as { path: string; layout: string }[];
-      expect(listed.find((r) => r.path === "switch.malloy")?.layout).toBe(
-         "linear",
-      );
-
-      // Opened again, the builder reads the layout back from the file.
-      await page.goto(`/${pe.env}/${pe.pkg}/switch?edit`);
-      await editing(page);
-      await expect(
-         page.getByRole("button", { name: "Linear layout" }),
-      ).toHaveAttribute("aria-pressed", "true");
    });
 
    test("on a read-only server a save is a browser draft, listed under Drafts and resumed from there", async ({
@@ -96,7 +65,12 @@ test.describe("report authoring", () => {
       // The server takes no writes, so Save keeps the edit in the browser.
       await page.goto(`/${pe.env}/${pe.pkg}/reports/draft?edit`);
       await editing(page);
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
       const title = page.getByLabel("Report title");
       await title.fill("Draft idea");
       await title.press("Enter");

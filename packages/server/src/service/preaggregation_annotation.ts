@@ -14,69 +14,41 @@
  *   #@ preaggregate grain="order_day"
  *   measure: total is amount.sum()
  *
- * That is two rollups, not one, and the difference is cost rather than coverage.
- * A rollup does serve queries grouped by any SUBSET of its grain, so a single
- * rollup at `category, order_day` would answer both queries above correctly. But
- * a combined grain has roughly the product of its dimensions' cardinalities, so
- * it can approach the base table's row count and save nothing, while either grain
- * alone is small. Giving each query a small table to read is the whole mechanism,
- * and that needs an author to be able to declare more than one grain.
+ * Two rollups, not one: a rollup serves any SUBSET of its grain, but a combined
+ * grain's size is roughly the product of its dimensions' cardinalities and can
+ * approach the base table, while each grain alone is small. Where several
+ * rollups cover one query, the one with the fewest grain dimensions is offered
+ * first (`compareRollupBreadth`), a proxy for size.
  *
- * Where several rollups COVER one query, the coarsest is offered first: members
- * are emitted fewest-grain-dimensions first and the resolver takes the first that
- * covers (`compareRollupBreadth`, pinned in preaggregation_synthesis.spec.ts).
- * That is a proxy for size rather than a measurement of it — three small
- * dimensions can product out smaller than one large one — so grains still earn
- * their keep by covering different queries.
+ * ## Why this reads the annotation NOTES and not the merged tag
  *
- * ## Why this reads the annotation NOTES and not just the merged tag
+ * The merged MOTLY tag holds one value per key, so two `grain=` lines collapse
+ * to the last with no diagnostic. Grains are therefore collected from the
+ * individual notes, with the smallest possible set of ordering rules: **notes
+ * are processed in source order; a `#@ preaggregate` line with a grain adds
+ * one; a `#@ -preaggregate` line clears every grain accumulated so far.**
+ * `namespace=` and `storage=` bind to the grain on their own line and are
+ * cleared with it (a grain IS a table, so each can be placed differently).
  *
- * `#@ persist` is read through MOTLY's merged tag (`deriveAnnotationFields` in
- * build_plan.ts), which is the right default: merge order, precedence across an
- * extend chain and negation all come from the compiler rather than from anything
- * written here. But the merged tag holds one value per key, so two `grain=` lines
- * collapse to the LAST one and the rest vanish with no diagnostic — verified
- * against the pinned compiler. Several grains simply cannot be expressed through
- * it, so grains are collected from the individual notes instead.
+ * This relies on the IR delivering `blockNotes` in source order, and on an
+ * extending source's fields carrying the base's annotations in their own
+ * `blockNotes` (so an extend that negates reads as `[declare, negate]`).
  *
- * That means owning the ordering rules, which is a real cost, so it is kept to
- * the smallest possible set: **notes are processed in source order; a
- * `#@ preaggregate` line with a grain adds one; a `#@ -preaggregate` line clears
- * every grain accumulated so far.** Nothing else is interpreted.
- *
- * A `namespace=` or `storage=` binds to the grain on its OWN line and is cleared
- * with it, so negation needs no separate rule and neither can outlive the grain
- * it was written for. Both are per grain rather than per measure because a grain
- * IS a table: two grains are two tables, and can genuinely be placed
- * differently.
- *
- * Two measured facts make that safe rather than a re-implementation:
- *
- *  - Annotations arrive in `blockNotes` in source order, each with its line, so
- *    "in order" is read from the IR and not reconstructed.
- *  - An extending source's fields carry the base's annotations in their OWN
- *    `blockNotes`, so inherited declarations are seen without walking a chain,
- *    and an extend that negates one still reads as `[declare, negate]` and
- *    therefore clears.
- *
- * One deliberate divergence from the merged tag, in the safe direction. Because
- * `#@ preaggregate grain="…"` parses as two sibling keys rather than a nested
- * property, the merged tag reports this as UNDECLARED while still holding
- * `grain="b"`:
+ * One deliberate divergence from the merged tag, in the safe direction: for
  *
  *   #@ preaggregate grain="a"
  *   #@ -preaggregate
  *   #@ preaggregate grain="b"
  *
- * Read in order, the author declared `b` last, and that is what this returns. The
- * divergence can only ever turn something ON that the merged tag lost; a trailing
- * `#@ -preaggregate` clears everything, so negation is never overridden.
+ * the merged tag reports UNDECLARED (sibling keys), while this returns `b`. The
+ * divergence can only turn ON something the merged tag lost; a trailing
+ * `#@ -preaggregate` still clears everything.
  *
  * ## Strictness
  *
- * A declaration that cannot be used is an error, not a silent skip: pre-
- * aggregation refuses at publish rather than quietly omitting, so an annotation
- * that does nothing must never be possible. Callers turn errors into a 400.
+ * A declaration that cannot be used is an error, not a silent skip, so an
+ * annotation that does nothing is never possible. Callers turn errors into a
+ * 400.
  */
 
 import { Annotations } from "@malloydata/malloy";
@@ -84,7 +56,7 @@ import { isSpliceableNamespace } from "./preaggregation_synthesis";
 import type { LogMessage } from "@malloydata/malloy";
 
 /** One grain a measure is declared at — one rollup. */
-export interface PreaggregateGrain {
+interface PreaggregateGrain {
    /**
     * The grain's dimensions, canonically sorted and de-duplicated.
     *
@@ -96,41 +68,27 @@ export interface PreaggregateGrain {
    /** The grain exactly as written, for error text and diagnostics. */
    text: string;
    /**
-    * Where this rollup's table is created, when the author named it on the same
-    * line — `#@ preaggregate grain="category" namespace="analytics"`. A dataset on
-    * BigQuery, a schema elsewhere; the rollup's own table name is always derived,
-    * so this names the container and never the table.
-    *
-    * Held per grain rather than per measure because a grain IS a table: two grains
-    * are two tables and can genuinely be created in two places, so a namespace
-    * that outranged its grain would silently move a rollup its author never named.
-    * Undefined when unspecified, in which case the base's `#@ persist name=`
-    * supplies it.
+    * The dataset/schema this rollup's table is created in, when named on the
+    * same line (`#@ preaggregate grain="category" namespace="analytics"`). The
+    * table name itself is always derived. Undefined when unspecified, in which
+    * case the base's `#@ persist name=` supplies it.
     */
    namespace?: string;
    /**
     * The storage destination this rollup's table is built into and served from,
-    * when the author named one — `#@ preaggregate grain="category"
-    * storage=lake`. Undefined means the rollup is colocated: built into the
-    * base's own warehouse, which is the default and the only option before this.
+    * when the author named one (`#@ preaggregate grain="category"
+    * storage=lake`). Undefined means colocated: built into the base's own
+    * warehouse.
     *
-    * Per grain for the same reason {@link PreaggregateGrain.namespace} is: a
-    * grain IS a table, so two grains are two tables and can genuinely be placed
-    * differently. A destination that outranged its grain would move a rollup its
-    * author never named.
-    *
-    * Undefined when unspecified on the line, and NOTHING supplies it: a
-    * destination is never inherited from a sibling `#@ persist storage=` on the
-    * base. Unlike {@link PreaggregateGrain.namespace} directly above, which IS
-    * inherited from the base's `#@ persist name=` — the two fields read alike and
-    * genuinely differ. See `basePersistNamespace` for why a destination cannot
-    * usefully inherit.
+    * Unlike `namespace`, NOTHING supplies it when unspecified: a destination is
+    * never inherited from the base's `#@ persist storage=` (see
+    * `basePersistNamespace` for why).
     */
    storage?: string;
 }
 
 /** A `#@ preaggregate` line that is present but unusable. */
-export interface PreaggregateDeclarationError {
+interface PreaggregateDeclarationError {
    kind:
       | "missing_grain"
       | "empty_grain"
@@ -142,7 +100,7 @@ export interface PreaggregateDeclarationError {
 }
 
 /** What `#@ preaggregate` says about one measure. */
-export interface PreaggregateDeclaration {
+interface PreaggregateDeclaration {
    /**
     * True when at least one `#@ preaggregate` line is in effect for this measure,
     * with negation applied.
@@ -202,11 +160,10 @@ interface OrderedNote {
 /**
  * A field's annotation notes in source order.
  *
- * Inherited notes first (they are the earlier layer), then the field's own block
- * notes and any trailing notes. Measured: an extending source usually carries the
- * base's notes in its own `blockNotes` already, so `inherits` is belt-and-braces —
- * a duplicate grain de-duplicates and costs nothing, whereas a missed one would
- * silently drop a rollup.
+ * Inherited notes first (the earlier layer), then the field's own block notes
+ * and trailing notes. An extending source usually already carries the base's
+ * notes in its own `blockNotes`, so `inherits` is belt-and-braces: a duplicate
+ * grain de-duplicates, whereas a missed one would silently drop a rollup.
  */
 function orderedNotes(annotations: unknown): OrderedNote[] {
    type Note = {
@@ -271,22 +228,17 @@ export function readPreaggregateAnnotation(
       // Nested form wins; the documented sibling-key form is the fallback. Both
       // parse per line, so this is the same precedence the merged tag applied.
       const grainText = tag.text("preaggregate", "grain") ?? tag.text("grain");
-      // Same nested-then-sibling precedence as `grain`, for the same reason: the
-      // documented form parses as siblings. It binds to THIS line's grain, so a
-      // measure declared at two grains names a namespace for each, and a line
-      // carrying only a namespace is a missing grain like any other.
+      // Same precedence as `grain`. Binds to THIS line's grain; a line carrying
+      // only a namespace is a missing grain like any other.
       const namespaceText =
          tag.text("preaggregate", "namespace") ?? tag.text("namespace");
       let namespace: string | undefined;
       if (namespaceText !== undefined) {
          const candidate = namespaceText.trim();
-         // The value is spliced into a generated `#@ persist name="…"`, so it has
-         // to survive being written bare: a quote would end the annotation's own
-         // string, and a name needing quotes cannot be joined to a generated table
-         // name at all (the CREATE and bind sides quote a mixed path differently).
-         // An empty value is refused rather than ignored: an author who typed the
-         // key meant something by it, and silently dropping it would put the
-         // rollup somewhere they did not choose.
+         // Spliced bare into a generated `#@ persist name="…"`: a quote would end
+         // the annotation's string, and a name needing quotes cannot be joined to
+         // a generated table name (the CREATE and bind sides quote a mixed path
+         // differently). Empty is refused, not ignored, per the strictness rule.
          if (!isSpliceableNamespace(candidate)) {
             errors.push({
                kind: "invalid_namespace",
@@ -296,21 +248,15 @@ export function readPreaggregateAnnotation(
          }
          namespace = candidate;
       }
-      // Same nested-then-sibling precedence as `grain` and `namespace`, and bound
-      // to THIS line's grain for the same reason: a grain is a table, and a table
-      // is created in exactly one place.
+      // Same precedence as `grain`, bound to THIS line's grain.
       const storageText =
          tag.text("preaggregate", "storage") ?? tag.text("storage");
       let storage: string | undefined;
       if (storageText !== undefined) {
          const candidate = storageText.trim();
-         // Refused rather than ignored, per this module's strictness rule: an
-         // author who typed the key meant something by it, and dropping it
-         // silently would build the rollup somewhere they did not choose. The
-         // destination NAME itself is not validated here — which destinations
-         // exist is a deployment fact this module cannot see, so an unknown one is
-         // refused downstream by the storage-destination resolver with a message
-         // that can name the configured set.
+         // Empty is refused, per the strictness rule. The NAME is not validated
+         // here: which destinations exist is a deployment fact, so an unknown one
+         // is refused downstream by the storage-destination resolver.
          if (candidate === "") {
             errors.push({
                kind: "empty_storage",
@@ -318,10 +264,8 @@ export function readPreaggregateAnnotation(
             });
             continue;
          }
-         // A quote or backslash cannot survive being re-emitted into the
-         // synthesized `#@ persist storage="…"`, which is a string literal in an
-         // annotation. Refused rather than mangled, per this module's rule; every
-         // other character is fine because the emit quotes.
+         // A quote or backslash cannot survive re-emission into the synthesized
+         // `#@ persist storage="…"` string literal; every other character can.
          if (/["\\]/.test(candidate)) {
             errors.push({
                kind: "invalid_storage",

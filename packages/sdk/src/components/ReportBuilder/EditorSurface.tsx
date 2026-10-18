@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
-import type { DashboardManifest, Given } from "../../client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -18,19 +18,55 @@ import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
+import {
+   isPlaced,
+   PLACED_DEFAULT_ROWSPAN,
+   tileHeightPx,
+} from "../Dashboard/DashboardGrid";
+import { layoutRules } from "../Report/layoutRules";
+import type { CompiledModel } from "../../client";
+import { documentViewsOf } from "./catalog";
 import { useReportListing } from "../Package/useDocumentLocation";
+import {
+   BUILDER_HANDOFF_STALE_MS,
+   reportQueryOptions,
+} from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
+import {
+   missingRequiredGivens,
+   requiredPrompt,
+   waitingOn,
+   waitingText,
+} from "../given/required";
+import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
-import type { DashboardDocument, QueryTile } from "./document";
+import {
+   isQueryTile,
+   isReadOnlyTile,
+   tileExpression,
+   tileKey,
+   type DashboardDocument,
+   type DashboardTile as DocumentTile,
+   type QueryTile,
+} from "./document";
 import type { SavesTo } from "./documentSession";
-import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   givensReadThroughModel,
+   previewGivens,
+   previewTileQuery,
+   tileExpressionKey,
+   unsavedSources,
+   type PreviewTileQuery,
+} from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
+import type { ViewPreview } from "./AddTileDialog";
+import { chartLineText } from "./chartLine";
 import { useEditorCatalog } from "./useEditorCatalog";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
+import type { BuilderControlsHandler } from "./builderControls";
 
 /**
  * The builder under a real control row, with the controls driving the tiles,
@@ -48,43 +84,61 @@ const NO_MANIFEST: DashboardManifest = {};
 
 export function EditorSurface({
    textSource,
-   modelGivens,
    environmentName,
    packageName,
    modelPath,
    versionId,
+   queryVersionId,
    opened,
    replaces,
    onSave,
    onDirtyChange,
    onExit,
-   allowLayoutChange,
+   onOpenModel,
+   onControlsChange,
+   draftKey,
    onEvent,
    savesTo,
    saveLabel,
    note,
+   fileModel,
 }: {
+   /**
+    * The file's own compiled model as the package serves it, for the shapes
+    * of the views it declares (which charts each tile can take). Absent for a
+    * document held as text, whose compile answer carries no per-view shapes,
+    * and whenever the opened text is not the one this model compiled (a kept
+    * draft, the host's record, a held-back version): the catalog answers then.
+    */
+   fileModel?: CompiledModel;
    textSource?: TextSourceOptions;
-   /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
-   modelGivens?: Given[];
    environmentName: string;
    packageName: string;
    modelPath: string;
    /** A display label; the editor keys on `modelPath`. */
    slug: string;
+   /** The document's version, from its `resourceUri`: what its control state is keyed by. */
    versionId?: string;
+   /**
+    * The package version every query runs at: tiles, the manifest, filter
+    * options, the listing and the catalog. `ReportEditor` passes its
+    * `queryVersionId`, or the document's own version when there is none.
+    */
+   queryVersionId?: string;
    opened: {
       source: string;
       document: DashboardDocument;
-      conversion?: { from: string; to: string };
       generation: number;
    };
    replaces?: string;
    /** Save the text, with the layout the document has as it is saved. */
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
-   onDirtyChange: (dirty: boolean) => void;
+   onDirtyChange: (dirty: boolean, wouldLose: boolean) => void;
    onExit?: () => void;
-   allowLayoutChange?: boolean;
+   onOpenModel?: (modelPath: string) => void;
+   onControlsChange?: BuilderControlsHandler;
+   /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
+   draftKey?: string;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
    saveLabel?: string;
@@ -105,48 +159,33 @@ export function EditorSurface({
       isSuccess: manifestLoaded,
       isError: manifestFailed,
    } = useQueryWithApiError({
-      queryKey: [
-         "dashboard-editor-manifest",
-         environmentName,
-         packageName,
-         modelPath,
-         versionId,
-      ],
-      // One read for either layout, by path. A report in the cell format has only the tag's starting values until it is saved.
-      queryFn: async (): Promise<DashboardManifest> => {
-         const read = (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               modelPath,
-               versionId,
-            )
-         ).data;
-         if (read.notebook)
-            return {
-               ...(read.notebook.startingGivens
-                  ? { startingGivens: read.notebook.startingGivens }
-                  : {}),
-               ...(read.notebook.autorun === undefined
-                  ? {}
-                  : { autorun: read.notebook.autorun }),
-            };
-         return read;
-      },
+      // The reader's read of the same report, so opening the builder from the
+      // reader does not read it again.
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path: modelPath,
+            versionId: queryVersionId,
+         },
+         BUILDER_HANDOFF_STALE_MS,
+      ),
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
    });
    // A text source takes its manifest from compiling the text as the viewer.
    const runModelPath = textSource?.modelPath ?? modelPath;
+   const compileText = useCompileText(opened.source, textSource?.compileSource);
    const compiled = useCompiledDocument(
       {
          environmentName,
          packageName,
          modelPath: runModelPath,
-         source: opened.source,
+         source: compileText.text ?? opened.source,
          ...(textSource?.givens ? { givens: textSource.givens } : {}),
       },
-      { enabled: textSource !== undefined },
+      { enabled: textSource !== undefined && compileText.text !== undefined },
    );
    const compiledDocument = compiled.data?.document;
    const manifest: DashboardManifest | undefined = textSource
@@ -155,7 +194,9 @@ export function EditorSurface({
          : undefined
       : data;
    const isSuccess = textSource ? compiled.isSuccess : manifestLoaded;
-   const isError = textSource ? compiled.isError : manifestFailed;
+   const isError = textSource
+      ? compiled.isError || compileText.problem !== undefined
+      : manifestFailed;
    const preamble = textSource
       ? documentPreamble(compiledDocument?.cells)
       : undefined;
@@ -184,7 +225,7 @@ export function EditorSurface({
    const { reports: reportList, settled: reportsSettled } = useReportListing(
       environmentName,
       packageName,
-      versionId,
+      queryVersionId,
    );
    const otherDashboards = useMemo(
       () =>
@@ -202,7 +243,7 @@ export function EditorSurface({
    const catalog = useEditorCatalog({
       environmentName,
       packageName,
-      ...(versionId !== undefined ? { versionId } : {}),
+      ...(queryVersionId !== undefined ? { versionId: queryVersionId } : {}),
       modelPath,
       reports: reportList,
       reportsSettled,
@@ -222,17 +263,21 @@ export function EditorSurface({
             : undefined,
       [catalog, textSource, runModelPath],
    );
-   const offered = useMemo(
-      () =>
+   const documentViews = useMemo(
+      () => (fileModel ? documentViewsOf(fileModel) : undefined),
+      [fileModel],
+   );
+   const offered = useMemo(() => {
+      const scoped =
          catalog && runSources
             ? {
                  sources: catalog.sources.filter((s) =>
                     runSources.includes(s.name),
                  ),
               }
-            : catalog,
-      [catalog, runSources],
-   );
+            : catalog;
+      return scoped && documentViews ? { ...scoped, documentViews } : scoped;
+   }, [catalog, runSources, documentViews]);
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
@@ -251,15 +296,13 @@ export function EditorSurface({
    );
    const modelSpecs = useMemo(
       () =>
-         (
-            manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : [])
-         ).filter(
+         (manifest?.givens ?? []).filter(
             // Only a document held as text hides a `#(secure)` given's control; a saved file's givens show as before.
             (spec) =>
                !(textSource && spec.secure === true) &&
                !(spec.name !== undefined && hidden.has(spec.name)),
          ),
-      [manifest, opened.conversion, modelGivens, hidden, textSource],
+      [manifest, hidden, textSource],
    );
    const runnable = useMemo(
       () =>
@@ -272,37 +315,6 @@ export function EditorSurface({
          ]),
       [modelSpecs, hostGivens],
    );
-   const specs = useMemo(
-      () => previewGivens(doc, modelSpecs),
-      [doc, modelSpecs],
-   );
-   const { declaredTypes, applied, panel } = useDocumentControls({
-      specs,
-      loaded: isSuccess,
-      startingValues: manifest?.startingGivens,
-      // Keyed by path: two reports may share a basename.
-      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${modelPath}/edit`,
-      autorun: manifest?.autorun !== false,
-      environmentName,
-      packageName,
-      modelPath: textSource ? runModelPath : manifest?.path,
-      versionId,
-      documentName: modelPath,
-      ...(preamble !== undefined ? { preamble } : {}),
-      ...(hostGivens ? { hostGivens } : {}),
-   });
-   // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
-   const tileHostGivens = useMemo(
-      () =>
-         Object.fromEntries(
-            Object.entries(hostGivens ?? {}).filter(
-               ([name]) => !declaredTypes.has(name),
-            ),
-         ),
-      [hostGivens, declaredTypes],
-   );
-
-   const manifestSettled = !served || isSuccess || isError;
    // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
    const servedReads = useMemo(
       () =>
@@ -315,6 +327,137 @@ export function EditorSurface({
          ),
       [manifest],
    );
+   // The served tiles' labels, keyed the same way. A tile the builder shows
+   // read-only (its view in the model, or a named query) carries no label in
+   // the document, since its `# label` sits on a declaration the builder does
+   // not read; the reader titles it from the server's label, and so does this.
+   const servedLabels = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.label
+                  ? [[tileExpressionKey(tile.query), tile.label] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
+   // Givens a tile reads through the model (a source's own `where:`), not a
+   // binding in this file: shown, so the row matches the reader's, but the
+   // model's to change.
+   const modelReads = useMemo(
+      () => givensReadThroughModel(doc, opened.document, servedReads),
+      [doc, opened.document, servedReads],
+   );
+   const specs = useMemo(
+      () => previewGivens(doc, modelSpecs, modelReads, servedReads),
+      [doc, modelSpecs, modelReads, servedReads],
+   );
+   // A filter in the row the builder can show and set but not change: say
+   // where it is set instead. Not always the model: a report's own `source:`
+   // can apply a given to every tile on it with a `where:` of its own.
+   const fixedFilters = useMemo(() => {
+      const bound = new Set(
+         doc.tiles.flatMap((tile) =>
+            isQueryTile(tile) ? (tile.filters ?? []).map((f) => f.given) : [],
+         ),
+      );
+      const declared = new Set((doc.localGivens ?? []).map((g) => g.name));
+      const models = [...new Set(doc.imports.map((i) => i.from))];
+      // The model by its package path, for "Open the model": an import is
+      // relative to the report's own folder.
+      const modelFile =
+         models.length === 1
+            ? packagePathOf(modelPath, models[0]!)
+            : models.length === 0 && textSource
+              ? textSource.modelPath
+              : undefined;
+      const reason = (name: string): FixedFilter => {
+         const scoping = doc.sources
+            .filter((source) => source.scopedBy?.includes(name))
+            .map((source) => source.name);
+         if (scoping.length > 0)
+            return {
+               reason: `Applied to every tile on ${scoping.join(", ")} by this report's own source. Edit the file to change it.`,
+            };
+         if (declared.has(name))
+            return {
+               reason:
+                  "Read by a query in this report the builder cannot edit. Edit the file to change it.",
+            };
+         return modelFile !== undefined
+            ? {
+                 reason: `Set in the model ${modelFile}. Edit the model to change it.`,
+                 modelPath: modelFile,
+              }
+            : {
+                 reason:
+                    "Set in a model this report imports. Edit the model to change it.",
+              };
+      };
+      return new Map(
+         [...modelReads]
+            .filter((name) => !bound.has(name))
+            .map((name) => [name, reason(name)]),
+      );
+   }, [doc, modelReads, textSource, modelPath]);
+   const { declaredTypes, applied, panel } = useDocumentControls({
+      specs,
+      loaded: isSuccess,
+      startingValues: manifest?.startingGivens,
+      // Keyed by path: two reports may share a basename.
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${modelPath}/edit`,
+      autorun: manifest?.autorun !== false,
+      environmentName,
+      packageName,
+      modelPath: textSource ? runModelPath : manifest?.path,
+      versionId: queryVersionId,
+      documentName: modelPath,
+      ...(preamble !== undefined ? { preamble } : {}),
+      ...(hostGivens ? { hostGivens } : {}),
+   });
+   // Required filters with no value yet: as in the reader, a tile that
+   // reads one waits, and the page asks for them.
+   const missing = useMemo(
+      () => missingRequiredGivens(specs, applied, hostGivens),
+      [specs, applied, hostGivens],
+   );
+   // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
+   const tileHostGivens = useMemo(
+      () =>
+         Object.fromEntries(
+            Object.entries(hostGivens ?? {}).filter(
+               ([name]) => !declaredTypes.has(name),
+            ),
+         ),
+      [hostGivens, declaredTypes],
+   );
+
+   const manifestSettled = !served || isSuccess || isError;
+   // Held text that did not compile, or that the host's `compileSource`
+   // refused: nothing declares its sources, so a tile run would only fail with
+   // "Reference to undefined object". Its tiles are drawn but never run; the
+   // problem itself is said once, above the page.
+   const notCompiled =
+      textSource !== undefined &&
+      (compileText.problem !== undefined ||
+         compiled.isError ||
+         compileErrors.length > 0);
+   // The tiles as the file was opened, by key: a tile still equal to its
+   // opened self runs exactly as the reader runs it (below).
+   const openedTiles = useMemo(
+      () =>
+         new Map(
+            opened.document.tiles.map((tile) => [tileKey(tile), tile] as const),
+         ),
+      [opened.document],
+   );
+   // Extensions this session added, which the model the tiles run on does not
+   // have until the file is saved and served: a tile on one runs on its base.
+   const unsaved = useMemo(
+      () => unsavedSources(doc, opened.document, modelPath, !!textSource),
+      [doc, opened.document, modelPath, textSource],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(
@@ -322,36 +465,75 @@ export function EditorSurface({
             heading?: TileHeadingSlots,
             chrome: TileChrome = "card",
          ) {
+            const title =
+               (isReadOnlyTile(tile)
+                  ? servedLabels.get(tileExpressionKey(tileExpression(tile)))
+                  : undefined) ?? tileDisplayTitle(tile);
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
+            if (notCompiled)
+               return (
+                  <TileCard chrome={chrome}>
+                     <TileHeading
+                        title={heading?.title ?? title}
+                        subtitle={heading ? heading.subtitle : tile.subtitle}
+                     />
+                     <Typography
+                        variant="body2"
+                        sx={{ color: "text.secondary", py: 1 }}
+                     >
+                        Not run: this document did not compile.
+                     </Typography>
+                  </TileCard>
+               );
             if (!manifestSettled)
                return (
                   <TileCard chrome={chrome}>
                      <TileHeading
-                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        title={heading?.title ?? title}
                         subtitle={heading ? heading.subtitle : tile.subtitle}
                      />
                      <Loading text="Running…" />
                   </TileCard>
                );
-            const query = previewTileQuery(
-               doc,
-               tile,
-               runnable,
-               applied,
-               servedReads.get(
-                  tileExpressionKey(`${tile.source} -> ${tile.name}`),
-               ),
+            const servedReadsOf = servedReads.get(
+               tileExpressionKey(tileExpression(tile)),
             );
+            // A tile not yet edited runs the served view with the served
+            // tile's givens: the request the reader sends, so it shares the
+            // reader's cached result and opening the builder re-runs nothing.
+            // The preview rebuilds the query from the document so an edit
+            // shows before it is saved, which an untouched tile does not need.
+            const untouched =
+               preamble === undefined &&
+               servedReadsOf !== undefined &&
+               sameTile(openedTiles.get(tileKey(tile)), tile);
+            const query: PreviewTileQuery = untouched
+               ? {
+                    expression: tileExpression(tile),
+                    givenNames: [...servedReadsOf],
+                    reads: [...servedReadsOf],
+                 }
+               : previewTileQuery(
+                    doc,
+                    tile,
+                    runnable,
+                    applied,
+                    servedReadsOf,
+                    unsaved,
+                 );
+            const rules = layoutRules(doc.layout, doc.columns);
             return (
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
-                  versionId={versionId}
-                  modelPath={runModelPath}
-                  {...(preamble !== undefined ? { preamble } : {})}
+                  versionId={queryVersionId}
+                  modelPath={query.modelPath ?? runModelPath}
+                  {...(preamble !== undefined && query.modelPath === undefined
+                     ? { preamble }
+                     : {})}
                   {...(restrictedTiles.has(
-                     tileExpressionKey(`${tile.source} -> ${tile.name}`),
+                     tileExpressionKey(tileExpression(tile)),
                   )
                      ? { restricted: true }
                      : {})}
@@ -359,7 +541,7 @@ export function EditorSurface({
                   {...(query.annotation
                      ? { annotation: query.annotation }
                      : {})}
-                  label={tileDisplayTitle(tile)}
+                  label={title}
                   chrome={chrome}
                   subtitle={tile.subtitle}
                   {...(heading ? { heading } : {})}
@@ -368,26 +550,96 @@ export function EditorSurface({
                   hostGivens={tileHostGivens}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
+                  {...(() => {
+                     const waiting = waitingOn(
+                        missing,
+                        query.reads ?? query.givenNames,
+                     );
+                     return waiting.length > 0
+                        ? { waitingFor: waitingText(waiting) }
+                        : {};
+                  })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
-                  height={TILE_MAX_HEIGHT}
+                  // Its own rows when it has them (a rowspan, or a placed
+                  // report's fixed rows, placed yet or not); otherwise the
+                  // layout's cap.
+                  height={
+                     tile.rowspan !== undefined || isPlaced(doc.tiles)
+                        ? tileHeightPx(
+                             tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
+                          )
+                        : rules.tileMaxHeight
+                  }
+                  tableMaxHeight={rules.tableMaxHeight}
+                  // As the reader does: every tile of a placed report sits
+                  // in fixed rows, placed yet or not.
+                  fixedHeight={
+                     tile.rowspan !== undefined || isPlaced(doc.tiles)
+                  }
                />
             );
          },
       [
          doc,
+         openedTiles,
          manifestSettled,
+         notCompiled,
+         missing,
          runnable,
          servedReads,
+         servedLabels,
          environmentName,
          packageName,
-         versionId,
+         queryVersionId,
          runModelPath,
          preamble,
+         unsaved,
          restrictedTiles,
          applied,
          tileHostGivens,
          declaredTypes,
          specs,
+      ],
+   );
+
+   // A view picked in Add a tile, run as the tile it would add: against the
+   // model that exports its source, with the page's filters, so the preview is
+   // the tile as it will look here.
+   const renderViewPreview = useMemo(
+      () =>
+         function ViewPreviewTile(view: ViewPreview) {
+            return (
+               <DashboardTile
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={queryVersionId}
+                  modelPath={view.modelPath}
+                  tile={`${view.base} -> ${view.view}`}
+                  {...(view.chart
+                     ? {
+                          annotation: chartLineText(
+                             view.chart,
+                             view.chartCarried,
+                          ),
+                       }
+                     : {})}
+                  label={view.label}
+                  borderless
+                  givens={applied}
+                  hostGivens={tileHostGivens}
+                  declaredTypes={declaredTypes}
+                  givenNames={view.givens}
+                  height={200}
+               />
+            );
+         },
+      [
+         environmentName,
+         packageName,
+         queryVersionId,
+         applied,
+         tileHostGivens,
+         declaredTypes,
       ],
    );
 
@@ -399,6 +651,15 @@ export function EditorSurface({
                {compileErrors.map((problem) => problem.message).join("; ")}
             </Alert>
          )}
+         {missing.length > 0 && !notCompiled && (
+            <Alert severity="info">{requiredPrompt(missing)}</Alert>
+         )}
+         {textSource && compileText.problem !== undefined && (
+            <Alert severity="error">
+               This document could not be prepared to compile:{" "}
+               {compileText.problem}
+            </Alert>
+         )}
          {textSource && compiled.isError && (
             <Alert severity="error">
                The server could not compile this document:{" "}
@@ -406,7 +667,7 @@ export function EditorSurface({
             </Alert>
          )}
          <ReportBuilder
-            {...(textSource
+            {...(textSource && !textSource.compileSource
                ? {
                     addFilterDisabledReason:
                        "This document holds no given: of its own. Bind a filter the model offers from its chip.",
@@ -414,7 +675,12 @@ export function EditorSurface({
                : {})}
             source={opened.source}
             document={opened.document}
+            fixedFilters={fixedFilters}
+            {...(textSource?.takenGivenNames
+               ? { takenGivenNames: textSource.takenGivenNames }
+               : {})}
             renderTile={renderTile}
+            renderViewPreview={renderViewPreview}
             givens={specs
                .filter((spec) => spec.name !== undefined)
                .map((spec) => ({
@@ -428,18 +694,16 @@ export function EditorSurface({
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
-            {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
-            {...(opened.conversion ? { conversion: opened.conversion } : {})}
+            {...(onOpenModel ? { onOpenModel } : {})}
+            {...(onControlsChange ? { onControlsChange } : {})}
+            {...(draftKey !== undefined ? { draftKey } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (
-                  // The reader's control layout for the document as it stands: a linear report's panel, a grid's bar.
-                  <GivensPanel
-                     {...panel}
-                     layout={doc.layout === "linear" ? "panel" : "bar"}
-                  />
+                  // The reader's control row: filter buttons, in either layout.
+                  <GivensPanel {...panel} layout="bar" />
                ) : undefined
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
@@ -456,4 +720,102 @@ export function EditorSurface({
          </Box>
       </Stack>
    );
+}
+
+/** Whether a tile runs as its opened self did: same view, bindings and chart ({@link whatRuns}). */
+function sameTile(
+   opened: DocumentTile | undefined,
+   now: DocumentTile,
+): boolean {
+   return (
+      opened !== undefined &&
+      JSON.stringify(whatRuns(opened)) === JSON.stringify(whatRuns(now))
+   );
+}
+
+/**
+ * A tile less what only frames its result: its title, subtitle, width, row,
+ * rowspan and card are drawn by the tile around the result, not sent with the query.
+ * Retitling a tile re-ran it before, and its chart blinked as the same rows
+ * were drawn again.
+ */
+function whatRuns(tile: DocumentTile): DocumentTile {
+   const {
+      label: _label,
+      subtitle: _subtitle,
+      colspan: _colspan,
+      break: _break,
+      rowspan: _rowspan,
+      row: _row,
+      col: _col,
+      borderless: _borderless,
+      ...runs
+   } = tile as DocumentTile & {
+      label?: unknown;
+      subtitle?: unknown;
+      colspan?: unknown;
+      break?: unknown;
+      rowspan?: unknown;
+      row?: unknown;
+      col?: unknown;
+      borderless?: unknown;
+   };
+   return runs as DocumentTile;
+}
+
+/**
+ * The text a held document is compiled from: its own, or what the host's
+ * `compileSource` makes of it. Read once per opened text, so a host passing
+ * a new function each render does not recompile.
+ */
+function useCompileText(
+   source: string,
+   compileSource: ((text: string) => string | Promise<string>) | undefined,
+): { text?: string; problem?: string } {
+   const transform = useRef(compileSource);
+   transform.current = compileSource;
+   const hosted = compileSource !== undefined;
+   const [state, setState] = useState<{
+      from: string;
+      text?: string;
+      problem?: string;
+   }>();
+   useEffect(() => {
+      if (!hosted) return;
+      let live = true;
+      Promise.resolve()
+         .then(() => transform.current!(source))
+         .then(
+            (text) => {
+               if (live) setState({ from: source, text });
+            },
+            (error: unknown) => {
+               if (live)
+                  setState({
+                     from: source,
+                     problem:
+                        error instanceof Error ? error.message : String(error),
+                  });
+            },
+         );
+      return () => {
+         live = false;
+      };
+   }, [source, hosted]);
+   if (!hosted) return { text: source };
+   // Until this text is resolved, nothing: never the previous text's result.
+   if (state?.from !== source) return {};
+   return state.problem !== undefined
+      ? { problem: state.problem }
+      : { text: state.text };
+}
+
+/** An import's path (`../storefront.malloy`) as a package path, from the importing file's own path. */
+function packagePathOf(fromFile: string, imported: string): string {
+   const parts = fromFile.split("/").slice(0, -1);
+   for (const part of imported.split("/")) {
+      if (part === "..") parts.pop();
+      else if (part !== "." && part !== "") parts.push(part);
+   }
+   return parts.join("/");
 }

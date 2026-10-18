@@ -4,8 +4,8 @@
 /// <reference types="bun-types" />
 
 /**
- * A served notebook (`notebooks/*.malloy` with a model-level `## artifact`
- * note) on a package that declares a surface. It is a model to every endpoint
+ * A linear report (`notebooks/local.malloy`, written as tiles) on a package
+ * that declares a surface. It is a model to every endpoint
  * that takes a model path, but it admits nothing of its own: what its model GET
  * publishes and what a query against it may read are held to the surface, the
  * same as a dashboard's.
@@ -87,8 +87,8 @@ describe("Served notebook on a package with a surface (E2E)", () => {
 
    it("describes on the model GET only the runs over published names", async () => {
       const notebook = await getModel();
-      // Positive control: a run over the notebook's surface-derived source.
-      expect(runColumns(notebook.modelInfo)).toEqual([["n"]]);
+      // A report written as tiles has no runs of its own to describe.
+      expect(runColumns(notebook.modelInfo)).toEqual([]);
       expect(notebook.modelInfo).not.toContain("secret_total");
 
       for (const file of ["notebooks/cells.malloy", "dashboards/runs.malloy"]) {
@@ -105,15 +105,39 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(runColumns(dashboard.modelInfo)).toEqual([["shown_count"]]);
    });
 
-   it("withholds from the notebook GET a run over a source derived from a hidden one", async () => {
-      const res = await fetch(pkgUrl(`/reports/${NOTEBOOK}`));
+   it("withholds from the deprecated notebook GET a tile over a source derived from a hidden one", async () => {
+      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
       expect(res.status).toBe(200);
-      const body =
-         ((await res.json()) as { notebook?: { modelInfo?: string } })
-            .notebook ?? {};
+      const body = (await res.json()) as {
+         modelInfo?: string;
+         notebookCells?: { text?: string; queryInfo?: string }[];
+      };
       expect(body.modelInfo).not.toContain("secret_total");
-      // Positive control: the runs over the surface and over a source derived from it.
-      expect(runColumns(body.modelInfo)).toEqual([["order_count"], ["n"]]);
+      const infoOf = (text: string) =>
+         body.notebookCells?.find((cell) => cell.text === text)?.queryInfo;
+      expect(infoOf("run: loc -> { aggregate: secret_total }")).toBeUndefined();
+      // Positive control: the tiles over the surface and over a source derived from it.
+      expect(infoOf("run: orders -> { aggregate: order_count }")).toContain(
+         "order_count",
+      );
+      expect(infoOf("run: on_surface -> { aggregate: n }")).toBeDefined();
+   });
+
+   it("serves the report's tiles, and runs one over a source derived from the surface", async () => {
+      const report = (await (
+         await fetch(pkgUrl(`/reports/${NOTEBOOK}`))
+      ).json()) as { tiles?: { kind?: string; query?: string }[] };
+      expect(report.tiles?.map((t) => t.kind)).toEqual([
+         "text",
+         "query",
+         "query",
+         "text",
+         "query",
+      ]);
+      const res = await post(`/models/${NOTEBOOK}/query`, {
+         query: `run: ${report.tiles?.[2].query}`,
+      });
+      expect(res.status).toBe(200);
    });
 
    it("still returns the declared givens, and withholds file text that names a hidden-derived source", async () => {

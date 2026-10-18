@@ -38,7 +38,8 @@ const PATH = "dashboards/overview.malloy";
 const BEFORE = '## artifact { title="Before" tiles=["a -> x"] }';
 const AFTER = '## artifact { title="After" tiles=["a -> x"] }';
 const NOTEBOOK_PATH = "notebooks/tour.malloy";
-const NOTEBOOK = "## artifact { layout=linear }\n##(markdown) Hello\n";
+const NOTEBOOK =
+   "## artifact { layout=linear tiles=[hello { kind=text }] }\n##|(markdown) hello\nHello\n|##\n";
 
 function harness(
    options: {

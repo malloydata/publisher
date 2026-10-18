@@ -107,8 +107,6 @@ export type ReportEvent =
                 tiles: number;
                 /** Whether a tile was added or removed, which moves declarations. */
                 structural: boolean;
-                /** The save rewrote a report in the cell format as tiles. */
-                converted?: boolean;
                 where: SavesTo;
                 /** The host workspace that took the write; never set for a package save. */
                 workspace?: string;
@@ -132,12 +130,6 @@ export type ReportEvent =
                 durationMs: number;
              }
            | { type: "report.create_refused"; reason: string }
-           | {
-                /** The author switched the report between Linear and Grid; `layout` is `to`. */
-                type: "report.layout_changed";
-                from: ReportLayout;
-                to: ReportLayout;
-             }
            | {
                 type: "report.drill";
                 /** `self` filtered this report; `report` went to another. */

@@ -29,6 +29,7 @@ import {
    SemanticSearchResult,
    trySemanticSearch,
 } from "./embedding_index";
+import { notIndexing, pollFor } from "../../test_helpers/poll";
 
 let tempDir: string;
 let db: DuckDBConnection;
@@ -98,23 +99,20 @@ async function ready(
    provider: EmbeddingProvider,
    pkg: Package,
 ): Promise<SemanticSearchResult> {
-   for (let i = 0; i < 200; i++) {
-      const result = await trySemanticSearch({
-         db,
-         provider,
-         pkg,
-         environmentName: "env",
-         packageName: "prefix",
-         entities,
-         queries: [{ targetIndex: 0, text: "revenue", kinds: ["measure"] }],
-         perSourceWindow: 10,
-      });
-      if (!("unavailable" in result) || result.unavailable !== "indexing") {
-         return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("sync never completed");
+   return pollFor(
+      () =>
+         trySemanticSearch({
+            db,
+            provider,
+            pkg,
+            environmentName: "env",
+            packageName: "prefix",
+            entities,
+            queries: [{ targetIndex: 0, text: "revenue", kinds: ["measure"] }],
+            perSourceWindow: 10,
+         }),
+      notIndexing,
+   );
 }
 
 describe("embedding prefixes", () => {

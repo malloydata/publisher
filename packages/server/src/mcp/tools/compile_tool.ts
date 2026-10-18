@@ -15,8 +15,6 @@ import {
 } from "../../query_concurrency";
 import { jsonResource, jsonToolError } from "../tool_response";
 
-// Zod shape for compile_model. environmentName/packageName mirror the other
-// tools and point the agent at get_context for name discovery.
 const compileShape = {
    environmentName: z
       .string()
@@ -79,20 +77,10 @@ type CompileDiagnostic = {
 };
 
 /**
- * Renders error diagnostics as the prose a text-only client will show.
- *
- * A failed compile is an isError result whose diagnostics live in the resource
- * block, so a client that renders only text blocks on isError sees nothing —
- * which is how a real compile error gets reported as a bare "Unknown error".
- * The resource block stays the parseable channel; this is the legible one.
- * Positions are labelled 0-based to match the payload rather than introduce a
- * second convention for the same numbers.
- *
- * Only error-severity diagnostics are rendered: status is "error" because of
- * those, and they are what the caller has to fix. Falling back to every
- * diagnostic keeps the text non-empty if that invariant ever breaks.
- *
- * Exported so a spec can pin the rendering rather than merely its presence.
+ * Renders error diagnostics as the prose a text-only client shows (see
+ * tool_response.ts). Positions stay 0-based, matching the payload. Only
+ * error-severity diagnostics are rendered; falling back to all of them keeps
+ * the text non-empty if that invariant ever breaks.
  */
 export function formatDiagnosticsText(
    diagnostics: CompileDiagnostic[],
@@ -115,9 +103,8 @@ export function formatDiagnosticsText(
 }
 
 /**
- * Registers the compile_model MCP tool: validates Malloy source against a model
- * and returns structured diagnostics without executing a query. Wraps the same
- * in-process compile path the REST /compile endpoint uses (CompileController).
+ * Registers compile_model: structured diagnostics without running a query, via
+ * the same compile path as the REST /compile endpoint (CompileController).
  */
 export function registerCompileTool(
    mcpServer: McpServer,
@@ -140,7 +127,7 @@ export function registerCompileTool(
             scope,
          } = params;
 
-         logger.info("[MCP Tool compile] Compiling source", {
+         logger.debug("[MCP Tool compile] Compiling source", {
             environmentName,
             packageName,
             modelPath,
@@ -158,12 +145,9 @@ export function registerCompileTool(
             "compile",
          );
 
-         // Compile resolves source schemas against the connection, so it draws on
-         // the same warehouse work the query cap exists to bound. Gated here for
-         // the same reason the HTTP compile route is: leaving one surface ungated
-         // relocates the bypass rather than closing it. A refusal throws
-         // ServiceUnavailableError, which the catch below turns into the standard
-         // MCP error payload.
+         // Compile resolves schemas against the warehouse, so it takes a query
+         // slot like the HTTP compile route; one ungated surface would relocate
+         // the bypass. A refusal throws into the catch below.
          let querySlot: QuerySlotHandle | null = null;
          try {
             querySlot = tryAcquireQuerySlot("mcp:compile");
@@ -177,11 +161,8 @@ export function registerCompileTool(
                scope ?? "append",
             );
 
-            // Flatten each LogMessage's nested at.range into line/character so
-            // agents do not have to walk it. Positions are 0-based (LSP-style).
-            // `model` is the package-relative file a diagnostic points at —
-            // load-bearing at scope "package", clarifying elsewhere (an
-            // append-scope diagnostic can point at pre-existing content).
+            // Flattened to 0-based line/character (LSP-style). `model` is the
+            // package-relative file, essential at scope "package".
             const diagnostics = result.problems.map((p) => ({
                severity: p.severity,
                message: p.message,
@@ -200,27 +181,18 @@ export function registerCompileTool(
                ...(result.sql !== undefined && { sql: result.sql }),
             };
 
-            // A compile that returns error diagnostics is still a successful
-            // tool call in the transport sense, but isError tells the agent not
-            // to treat the model as valid. This is the most common way the tool
-            // fails, so it carries a text block for the same reason the catch
-            // below does: the diagnostics are only the message to a client that
-            // parses the resource. The payload keeps its documented
-            // {status, diagnostics} shape rather than the {error, suggestions}
-            // of jsonToolError, so parsing clients are unaffected.
+            // isError so the agent does not treat the model as valid, with a
+            // text block for text-only clients. The payload keeps its documented
+            // {status, diagnostics} shape rather than jsonToolError's.
             const isError = result.status === "error";
             return jsonResource(uri, payload, {
                isError,
                ...(isError && { text: formatDiagnosticsText(diagnostics) }),
             });
          } catch (error) {
-            // Unknown environment/package, a notebook (.malloynb) rejected up
-            // front, an authorize denial, a model that could not be loaded to
-            // check the caller's text against, or a system error: surface as a
-            // clean isError payload rather than a transport fault. A typo in
-            // modelPath reaches here at the default scope, because the
-            // restricted-construct gate needs the named model to classify
-            // against and refuses when it cannot load one.
+            // Not found, a notebook, an authorize denial, an unloadable model
+            // (a modelPath typo lands here at append scope), or a system error:
+            // a clean isError payload rather than a transport fault.
             logger.warn("[MCP Tool compile] compile failed", {
                environmentName,
                packageName,

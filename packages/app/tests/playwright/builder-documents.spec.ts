@@ -8,7 +8,9 @@ import {
    serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
+import { pickView } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
+import { closeFilter } from "./helpers/filters";
 
 /**
  * Documents the builders open or create in shapes the happy path skips: a
@@ -79,7 +81,7 @@ import { orders } from '../orders.malloy'
 
       await page.locator("button", { hasText: /^Add tile$/ }).click();
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
-      await dialog.getByRole("button", { name: "View totals" }).click();
+      await pickView(dialog, "totals");
       await dialog
          .getByRole("button", { name: "Add tile", exact: true })
          .click();
@@ -130,14 +132,22 @@ test.describe("joined filter", () => {
          .getByRole("button", { name: "Add filter", exact: true })
          .click();
 
-      // The new control's picker asks the server for its values.
-      const control = page.getByRole("combobox", { name: /state/i }).first();
-      await expect(control).toBeVisible({ timeout: 30_000 });
+      // The new filter's button opens its picker, which asks the server for
+      // its values.
+      await page
+         .getByRole("button", { name: /state[^:]*: /i })
+         .first()
+         .click({ timeout: 30_000 });
+      const control = page
+         .getByRole("dialog", { name: / filter$/ })
+         .getByRole("combobox")
+         .first();
+      await expect(control).toBeVisible();
       await control.click();
       await expect(page.getByRole("option").first()).toBeVisible({
          timeout: 30_000,
       });
-      await page.keyboard.press("Escape");
+      await closeFilter(page);
 
       await saveChanges(page);
       expect(await pe.readSource("overview.malloy")).toContain(
@@ -154,7 +164,7 @@ test.describe("joined filter", () => {
       // The reader serves the saved file with the control in place.
       await page.goto(`/${pe.env}/${pe.pkg}/overview`);
       await expect(
-         page.getByRole("combobox", { name: /state/i }).first(),
+         page.getByRole("button", { name: /state[^:]*: /i }).first(),
       ).toBeVisible({
          timeout: 60_000,
       });

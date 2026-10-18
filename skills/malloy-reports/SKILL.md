@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT
 What other tools call a dashboard and a notebook are both reports here. The **layout** is the only difference:
 
 - **`layout=grid`**: tiles across a grid behind one filter row, scanned at a glance (a dashboard). Read `reference/grid.md` before you lay one out.
-- **`layout=linear`**: tiles and prose top to bottom, read in order (a notebook, a data story). Read `reference/linear.md` before you write one, and before you edit a report written as `run:` cells.
+- **`layout=linear`**: tiles and prose top to bottom, read in order (a notebook, a data story). Read `reference/linear.md` before you write one.
 
 Everything else (filters, text tiles, drill, the builder, the lint, the write path) is the same for both, and switching layout later is a one-property edit.
 
@@ -45,7 +45,7 @@ Tool names below are bare (`get_context`); match each against the tools you actu
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package: `get_context` if you have it, otherwise the REST model endpoint for `index.malloy` (it answers 404 for a file off the surface) or the `.malloy` files. Never guess a name. A guessed field in a query fails the whole package load, not just that one report; a guessed tile or suggest source is quieter, and only shows up in the package warnings. If the package root holds an `index.malloy` (every scaffolded package does), a tile reads only the sources that file exports.
 2. **PICK THE LAYOUT AND THE TILES.** Which views, in what order, and on a grid how wide each sits. A query tile is a `view:` you declare in the report, named as `"source -> view"`.
-3. **DECLARE THE GIVENS** the report will filter by, in the report file itself, with their control tags (see "Filter controls"). The builder edits the report file and nothing else, so a filter it can add, change or remove is a declaration in that file. A given the model already declares and reads is imported by name, never declared again (see "Givens that stay in the model").
+3. **DECLARE THE GIVENS** the report will filter by, in the report file itself, with their control tags (see "Filter controls"). A report holds its own filters: the builder edits the report file and nothing else, so a filter it can add, change or remove is a declaration in that file. A given the model already declares and reads is imported by name, never declared again; if it is only a reader's filter, move it into the report instead (see "Givens that stay in the model").
 4. **COMPOSE THE FILE** at its path (the package root unless asked otherwise), following the template below, but do not save it yet. Name the sources you need in the import. Each tile binds its controls with a refinement, `view: t is v + { where: category ~ $CATEGORY }`, one clause per given it answers to; a `filter<...>` binds with `~`, a plain `date` or `number` given is a value and binds with `>=`, `<=` or `=`. Only the givens some tile references become controls. Then import every source or query any referenced given names in a `suggest`; **a `suggest` naming a `query=` needs that query's own source imported as well**, because an import is not transitive.
 5. **COMPILE IT** with your compile tool (`POST …/models/<path>/compile` over REST) at the path the file will have, with **`"scope": "file"`**: a report opens with an `import`, which the default `append` scope refuses, and an existing file compiled at `append` collides with itself. **`"scope": "file"` does not check tiles, drills or suggest queries.** To see those before you save, compile the same text at `"scope": "package"` with `modelPath` set to the report's path: it runs the lint step 6 reads and returns its findings with code `dashboard-lint` (or `render-tag`). Editing an untagged model several reports import also wants `"scope": "package"`, which recompiles every file as saved.
 6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** Save by writing the file, or with `PUT …/models/<path>` over REST (omit `expectedHash` to create; it creates at any new path and replaces only a file the package already serves as a report). Then your reload tool, or `GET …/packages/<pkg>?reload=true`. A 424 means the package did not load and your edit is not live. **The `warnings` key is absent when there are none.** Then read `GET …/packages/<pkg>/reports/<path>`: its `givens` are exactly the controls that will render, and its `layout` is the layout Publisher read. See "Read the lint".
@@ -96,10 +96,10 @@ source: overview is order_items extend {
 The same file with `layout=linear` and no `dashboard { … }` or `colspan` is a linear report.
 
 - **The tag is model-level**, one line (`## artifact { … }`) or a `##|` … `|##` block with the same text inside, the form to use once the list is long: one tile per line, `}` on its own line, `|##` closing at the opener's column. A one-line `##` tag must stay on one line: wrapping it is a compile error, or worse, compiles clean and quietly stops being a report.
-- **The header** above the tag holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description. A statement or a `#` tag above `## artifact` is an error.
+- **The header** above the tag holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description. Keep statements and `#` tags below `## artifact`: nothing refuses one above it, but the header is where readers and the builder look.
 - **Quote every query entry.** `"overview -> kpis"` is a string; unquoted, the tag does not parse (`notebook-artifact-unparsed`). A bare quoted name (`"top_products"`) names a model-level `query:` in the file.
-- **A query tile is a thin `view:` on an extension the report declares** (`source: overview is order_items extend { … }`): the modelled view keeps its chart tag, the wrapper carries the tile's `# label`, its width on a grid, and its binding.
-- **A text tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. A bare `intro` without `{ kind=text }` is the query-tile form for a `query:`, so the block is not shown. On a grid the entry also takes `colspan` and `break`, and nothing else.
+- **A query tile is a thin `view:` on an extension the report declares** (`source: overview is order_items extend { … }`): the modelled view keeps its chart tag, the wrapper carries the tile's `# label` and its binding. On a grid its width, row break and height can go on its entry instead, `"overview -> kpis" { colspan=12 rowspan=2 }`, which wins over the view's tags; `rowspan=N` is rows of 80px, and `row=N col=N` place the tile at a grid cell (a report with any `row` is placed: fixed rows, tiles where they say, empty cells allowed).
+- **A text tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. A bare `intro` without `{ kind=text }` is the query-tile form for a `query:`, so the block is not shown. On a grid the entry also takes `colspan`, `break` and `rowspan`, and nothing else.
 - **File order:** header, imports and givens, the prose blocks in tile order, then the extension that defines the tile views. That is the order the builder writes.
 - **A `run:` in a report that lists `tiles` is never shown** (`notebook-layout-run`). Define a view, list it, delete the `run:`.
 - **A tile expression is a string, so the compiler never checks it.** Rename a view and the file still compiles; the tile fails at package load, where the lint names it.
@@ -141,6 +141,71 @@ A given stays in the model, declared once there, when a model source, view or me
 - **Import a name and also declare it: a compile error.** Drop the local declaration.
 - **Declare a name the model already reads, without importing it: no error at all.** The control renders and moves, and the model's own `where:` or gate never sees the value.
 
+**A model that already scopes a source by an optional filter given** (`where: Manufacturer ~ $manufacturer_filter` in the model) needs a decision:
+
+- **It is a reader's filter and you may change the model: move it.** Delete the given and its `where:` clause from the model, declare it in the report with its control tags, and bind it on each tile that should answer to it. A reader's filter is anything a person picks on the page; a given stays in the model only for the reasons `malloy-model` lists (a gate, a value every query must supply, a parameter a field is defined with, scoping meant for every consumer).
+- **The model can't change, or the given is semantic or governance: import it** as above. Say so plainly: the filter shows in the reader and in the builder, and can be set in both, but the builder cannot remove or reconfigure it. It is the model's.
+
+Before, in the model:
+
+```malloy
+##! experimental.givens
+given:
+  manufacturer_filter :: filter<string> is f''
+  subject_filter :: filter<string> is f''
+  major_recall_filter :: filter<boolean> is f''
+  recall_date_filter :: filter<date> is f''
+
+source: recalls is duckdb.table('data/auto_recalls.csv') extend {
+  where:
+    Manufacturer ~ $manufacturer_filter,
+    Subject ~ $subject_filter,
+    `Major Recall` ~ $major_recall_filter,
+    `Report Received Date` ~ $recall_date_filter
+  dimension: `Major Recall` is ifnull(`Potentially Affected`, 0) > 100000
+}
+```
+
+After: the model declares no givens and `recalls` has no `where:`; the report declares the four and binds each tile:
+
+```malloy
+##! experimental.givens
+##| artifact { layout=grid title="Recalls"
+  tiles=["recalls_tiles -> recalls_by_year", "recalls_tiles -> recalls_by_manufacturer"]
+} dashboard { columns=12 }
+|##
+import { recalls } from "auto_recalls.malloy"
+
+# label="Manufacturer" control=multiselect suggest { source=recalls dimension=Manufacturer }
+given: manufacturer_filter :: filter<string> is f''
+# label="Subject"
+given: subject_filter :: filter<string> is f''
+# label="Major recalls only"
+given: major_recall_filter :: filter<boolean> is f''
+# label="Filed"
+given: recall_date_filter :: filter<date> is f''
+
+source: recalls_tiles is recalls extend {
+  # colspan=6
+  view: recalls_by_year is by_year + {
+    where:
+      Manufacturer ~ $manufacturer_filter,
+      Subject ~ $subject_filter,
+      `Major Recall` ~ $major_recall_filter,
+      `Report Received Date` ~ $recall_date_filter
+  }
+  # colspan=6
+  view: recalls_by_manufacturer is by_manufacturer + {
+    where:
+      Subject ~ $subject_filter,
+      `Major Recall` ~ $major_recall_filter,
+      `Report Received Date` ~ $recall_date_filter
+  }
+}
+```
+
+A tile view takes a name of its own: `view: by_year is by_year + { … }` is "Cannot redefine 'by_year'". Each tile binds only the givens it should answer to: `recalls_by_manufacturer` leaves the manufacturer filter off, since it is the breakdown by manufacturer. Every given here is a `filter<…>`, so each binds with `~`; a plain `date` or `number` given binds with `>=`, `<=` or `=` (step 4).
+
 A given has to be in the report file's own scope to be bindable: declared there or imported. Never add a `#(filter)` annotation: it is deprecated, a report renders no control for it, and every use has a `given:` form (`malloy-model` covers the migration). `malloy-model` and `docs/givens.md` cover givens themselves.
 
 ## Drill
@@ -165,24 +230,24 @@ dimension: region is regions.region
 
 Package warnings after a reload are the report's test suite. Fix all of them, and read the text rather than the severity or the count. **"Dashboard lint stopped early, so this list is incomplete"** means the rest of the list is partial.
 
-| Finding                                                                       | Fix                                                                                                                               |
-| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `# drill … targets "x", which is not a report in this package`                | A dead click. Write the target's path                                                                                             |
-| `to=self, but no model in this package declares a given "X"`                  | The clicked value has nowhere to go. Declare the given, or fix `given=`                                                           |
-| `given "X" suggests options from source "y", which this file does not define` | Import `y` into the report                                                                                                        |
-| `filters by given "X", which this file does not import`                       | No control is shown for it. Import the given                                                                                      |
-| A tile that does not resolve to a real view                                   | Fix the view name, or declare the view                                                                                            |
-| `notebook-artifact-unparsed`                                                  | The tag does not parse, usually an unquoted `source -> view` entry                                                                |
-| `notebook-layout-run`                                                         | A `run:` beside `tiles`. Make it a view, list it, delete the `run:`                                                               |
-| `notebook-tile-layout-ignored`                                                | `colspan` or `break` on a linear report. Remove them, or switch to `layout=grid`                                                  |
-| `report-kind-removed`                                                         | The tag sets `kind=`, which is no longer read, so the file is no report. Write the `layout=` the finding gives                    |
-| `report-layout-implicit`                                                      | A tag with no tiles and no `layout=`. Add `layout=`                                                                               |
-| `report-on-surface`                                                           | A model `index.malloy` imports (or `explores` lists) is tagged, so its sources left the surface. Untag it, or move the report out |
-| `index-is-not-a-report`                                                       | The root `index.malloy` carries a tag. Remove it; put the report in its own file                                                  |
-| `report-name-ambiguous`                                                       | Two grid reports share a file name, so the deprecated by-name dashboards route answers 409 for it. Rename one of the files        |
-| `Tile … reads <source>, which index.malloy doesn't export`                    | Add the source to the `export { ... }` in `index.malloy`. Never add an `explores` to `publisher.json`                             |
-| A grid's `columns`, `colspan`, or `dashboard_columns=` findings               | `reference/grid.md`                                                                                                               |
-| A statement or tag above the artifact tag; prose the reader cannot place      | `reference/linear.md`, the cell rules                                                                                             |
+| Finding                                                                                                 | Fix                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `# drill … targets "x", which is not a report in this package`                                          | A dead click. Write the target's path                                                                                             |
+| `to=self, but no model in this package declares a given "X"`                                            | The clicked value has nowhere to go. Declare the given, or fix `given=`                                                           |
+| `given "X" suggests options from source "y", which this file does not define`                           | Import `y` into the report                                                                                                        |
+| `filters by given "X", which this file does not import`                                                 | No control is shown for it. Import the given                                                                                      |
+| A tile that does not resolve to a real view                                                             | Fix the view name, or declare the view                                                                                            |
+| `notebook-artifact-unparsed`                                                                            | The tag does not parse, usually an unquoted `source -> view` entry                                                                |
+| `notebook-layout-run`                                                                                   | A `run:` beside `tiles`. Make it a view, list it, delete the `run:`                                                               |
+| `notebook-tile-layout-ignored`                                                                          | `colspan` or `break` on a linear report. Remove them, or switch to `layout=grid`                                                  |
+| `report-kind-removed`                                                                                   | The tag sets `kind=`, which is no longer read, so the file is no report. Write the `layout=` the finding gives                    |
+| `report-cells-removed`                                                                                  | A linear tag with no `tiles`, the retired cell format, so the file is no report. List its tiles (`reference/linear.md`)           |
+| `report-on-surface`                                                                                     | A model `index.malloy` imports (or `explores` lists) is tagged, so its sources left the surface. Untag it, or move the report out |
+| `index-is-not-a-report`                                                                                 | The root `index.malloy` carries a tag. Remove it; put the report in its own file                                                  |
+| `report-name-ambiguous`                                                                                 | Two grid reports share a file name, so the deprecated by-name dashboards route answers 409 for it. Rename one of the files        |
+| `Tile … reads <source>, which index.malloy doesn't export`                                              | Add the source to the `export { ... }` in `index.malloy`. Never add an `explores` to `publisher.json`                             |
+| A grid's `columns`, `colspan`, or `dashboard_columns=` findings                                         | `reference/grid.md`                                                                                                               |
+| Prose the reader cannot place (`notebook-markdown-attached-nowhere`, `notebook-markdown-block-unnamed`) | `reference/linear.md`                                                                                                             |
 
 **Read the status the reload itself returns, not the listing.** One report that fails to compile fails the whole package load (424), and a package already serving keeps its previous version, so the listing still looks healthy. `GET /api/v0/status` still knows: a package serving an older model than its files appears in `loadErrors` with `stale: true`. If the reload is 200 and your report is not listed, discovery skipped it: usually a missing or misspelled artifact tag, or a file under `public/`.
 
@@ -217,7 +282,7 @@ For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's 
 
 ## Editing in the Console
 
-A person can open any report in the Console's builder (**Edit** on the report page; **New report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; its layout switch rewrites `layout=` and nothing else. A report written as `run:` cells opens converted to tiles, and the first Save asks before it rewrites the file (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
+A person can open any report in the Console's builder (**Edit** on the report page; **+ Report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; it never rewrites `layout=`, so the layout is set in the file. A file written as `run:` cells, the retired linear form, is no report and does not open (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
 
 ## What "done" means
 
@@ -232,6 +297,6 @@ A person can open any report in the Console's builder (**Edit** on the report pa
 ## Reference
 
 - `reference/grid.md`: the grid recipe, its traps, and one query as the whole page.
-- `reference/linear.md`: linear reports, `run:` cells, legacy `.malloynb`, style, and common mistakes.
+- `reference/linear.md`: linear reports, rewriting a retired `run:`-cell file, legacy `.malloynb`, style, and common mistakes.
 - `docs/reports.md`: the full guide this skill condenses.
 - `docs/givens.md`: the givens the controls are generated from.

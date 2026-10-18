@@ -40,7 +40,7 @@ import {
    sourceDescription,
    sourceMatchStage,
 } from "./get_context_source_match";
-import type { Entity, ResolvedRequest } from "./get_context_tool";
+import type { Entity, ResolvedRequest } from "./get_context_types";
 
 // ---------------------------------------------------------------------------
 // The stage alone
@@ -772,6 +772,7 @@ describe("get_context with source match", () => {
          getQueries: () => [],
       };
       const pkg = {
+         listSkills: () => [],
          listModels: async () => [{ path: "big.malloy" }],
          getModel: () => model,
          getRetrievalSettings: () => ({

@@ -213,6 +213,8 @@ describe("the version reaches what the manifest drives", () => {
       });
       await waitFor(() => expect(cacheKeys("queryResult").length).toBe(1));
 
+      // The control sits in its filter button's popover.
+      fireEvent.click(await screen.findByRole("button", { name: /^REGION: / }));
       fireEvent.change(await screen.findByLabelText("REGION"), {
          target: { value: "CA" },
       });
@@ -241,7 +243,7 @@ describe("the version reaches what the manifest drives", () => {
 
       render(dashboardAt(), { wrapper: serverWrapper });
 
-      await screen.findByLabelText("REGION");
+      await screen.findByRole("button", { name: /^REGION: / });
       expect(screen.queryByRole("button", { name: /^Explore / })).toBeNull();
    });
 });
@@ -262,7 +264,7 @@ describe("a failed manifest fetch", () => {
       render(dashboardAt(), { wrapper: serverWrapper });
 
       expect(await screen.findByText("Network Error")).toBeDefined();
-      expect(screen.queryByLabelText("REGION")).toBeNull();
+      expect(screen.queryByRole("button", { name: /^REGION: / })).toBeNull();
    });
 
    it("keeps a rendered dashboard when a refetch fails", async () => {
@@ -273,7 +275,7 @@ describe("a failed manifest fetch", () => {
          Promise.resolve({ data: manifest }),
       );
       render(dashboardAt(), { wrapper: serverWrapper });
-      await screen.findByLabelText("REGION");
+      await screen.findByRole("button", { name: /^REGION: / });
 
       getDashboard.mockImplementation(() =>
          Promise.reject(new Error("Network Error")),
@@ -286,7 +288,7 @@ describe("a failed manifest fetch", () => {
          await screen.findByText(/Could not refresh this dashboard/),
       ).toBeDefined();
       expect(screen.getByText(/Network Error/)).toBeDefined();
-      expect(screen.getByLabelText("REGION")).toBeDefined();
+      expect(screen.getByRole("button", { name: /^REGION: / })).toBeDefined();
       expect(getDashboard).toHaveBeenCalledTimes(2);
    });
 });

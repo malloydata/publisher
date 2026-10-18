@@ -15,8 +15,11 @@
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Counter, type Histogram } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
 /**
@@ -65,7 +68,8 @@ export type EligibilityRefusalReason =
    | "preaggregate_over_dynamic_source"
    | "authorize"
    | "not_duckdb_portable"
-   | "public_surface_unknown";
+   | "public_surface_unknown"
+   | "read_only_dialect";
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -79,8 +83,7 @@ export type EligibilityRefusalReason =
  * under `strictUpstreams`, a persisted upstream was neither built in the run
  * nor referenced, or the downstream reads only stored upstreams yet could not be
  * built over them, so the build failed loudly rather than recomputing a table
- * the orchestrator meant to pin. This is the headline signal for how far the
- * parent-reuse path gets us in practice.
+ * the orchestrator meant to pin.
  */
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
@@ -93,34 +96,6 @@ export type ChainedStorageBuildOutcome =
    // fails rather than recomputing from raw against the same destination.
    | "infra_failure";
 
-const resetHooks: (() => void)[] = [];
-
-/**
- * A lazily-created instrument: built from the global meter on first use (so it
- * binds to the real MeterProvider, not the NoOp default) and memoized. Each
- * registers a reset hook so a test can swap in a fresh MeterProvider.
- */
-function lazyCounter(name: string, description: string): () => Counter {
-   let instrument: Counter | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createCounter(name, { description }));
-}
-
-function lazyHistogram(
-   name: string,
-   description: string,
-   unit: string,
-): () => Histogram {
-   let instrument: Histogram | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createHistogram(name, {
-         description,
-         unit,
-      }));
-}
-
 const runCounter = lazyCounter(
    "publisher_materialization_runs_total",
    "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
@@ -128,7 +103,6 @@ const runCounter = lazyCounter(
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
    "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
-   "ms",
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
@@ -145,7 +119,6 @@ const incrementalStepCounter = lazyCounter(
 const buildPlanComputeDuration = lazyHistogram(
    "publisher_materialization_build_plan_compute_duration_ms",
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
-   "ms",
 );
 const buildPlanComputeFailedCounter = lazyCounter(
    "publisher_materialization_build_plan_compute_failed_total",
@@ -203,7 +176,6 @@ const tableCollisionCounter = lazyCounter(
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
-   "ms",
 );
 const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
@@ -262,7 +234,7 @@ const eligibilityRefusedCounter = lazyCounter(
       "'partition_column_unknown'|'partition_column_not_public'|" +
       "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
       "'authorize'|'partition'|'not_duckdb_portable'|" +
-      "'public_surface_unknown'). 'given' is retained on the enum for records " +
+      "'public_surface_unknown'|'read_only_dialect'). 'given' is retained on the enum for records " +
       "that carry it and is no longer produced: where a given sits decides the " +
       "outcome, so one reason covering every placement cannot be raised.",
 );
@@ -353,12 +325,18 @@ export function recordIncrementalStep(
 }
 
 /**
- * Record the wall-clock cost of compiling a package's build plan
- * (`Package.buildPlan`). This recompiles models at load, so it is worth
- * tracking as a discrete cost separate from the build itself.
+ * Record the wall-clock cost of a package's build plan at load
+ * (`Package.buildPlan`). `computed_in` separates the two populations: `worker`
+ * is the package-load worker deriving it from the compile it already ran (see
+ * WorkerBuildPlan.durationMs); `main_thread` is the derivation that compiles
+ * the package again on the event loop, which a load takes only when the
+ * worker left the plan at its soft deadline.
  */
-export function recordBuildPlanComputeDuration(durationMs: number): void {
-   buildPlanComputeDuration().record(durationMs);
+export function recordBuildPlanComputeDuration(
+   durationMs: number,
+   computedIn: "worker" | "main_thread",
+): void {
+   buildPlanComputeDuration().record(durationMs, { computed_in: computedIn });
 }
 
 /**
@@ -500,7 +478,28 @@ export function recordAttributionSkipped(
 export function recordEligibilityRefused(
    reason: EligibilityRefusalReason,
 ): void {
+   const counts = eligibilityRefusalSink?.();
+   if (counts) {
+      counts[reason] = (counts[reason] ?? 0) + 1;
+      return;
+   }
    eligibilityRefusedCounter().add(1, { reason });
+}
+
+let eligibilityRefusalSink:
+   | (() => Partial<Record<EligibilityRefusalReason, number>> | undefined)
+   | undefined;
+
+/**
+ * Route eligibility refusals to the counts `sink` returns instead of the
+ * meter, whenever it returns any. The package-load worker derives build plans
+ * on a thread whose meter is a no-op, so it counts each job's refusals in that
+ * job's own context and hands them back for the main thread to record.
+ */
+export function setEligibilityRefusalSink(
+   sink: () => Partial<Record<EligibilityRefusalReason, number>> | undefined,
+): void {
+   eligibilityRefusalSink = sink;
 }
 
 /**
@@ -542,12 +541,10 @@ export function recordServeShapeTypeFallback(
  * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
  * BOTH the storage and pre-aggregation tiers before either was attempted — the
  * one outcome with no compile attempt behind it, so without this label a
- * blocked query recorded nothing at all rather than reading as a fallback.
- * This hit rate is the headline KPI of the storage tier; the fallback side also
- * logs its reason per query at INFO — the compile error, plus the sources the
- * shape offered and the ones the freshness gate withheld, which is what
- * separates "never materialized" from "materialized but stale". That is the only
- * per-query account of a miss there is.
+ * blocked query would record nothing. The fallback side also logs its reason
+ * per query at INFO (the compile error, the sources the shape offered, and the
+ * ones the freshness gate withheld), which separates "never materialized" from
+ * "materialized but stale".
  *
  * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
  * joining a dashboard across the two on that token is wrong in both directions.
@@ -558,27 +555,16 @@ export function recordServeShapeTypeFallback(
  * failed.) Each surface is internally consistent and none means what the others
  * do.
  *
- * Scope worth knowing before reading the hit rate as "did materialization work":
- * this counter covers the `storage=` tier only. A COLOCATED `#@ persist` hit
- * never reaches the routing decision, so it is absent from the numerator AND the
- * denominator rather than counted as a miss — the rate is silent about that tier
- * rather than pessimistic about it, which the "headline KPI" framing otherwise
- * invites you to assume.
+ * This counter covers the `storage=` tier only: a COLOCATED `#@ persist` hit
+ * never reaches the routing decision, so it is absent from numerator AND
+ * denominator, not counted as a miss.
  *
- * `origin` separates the two kinds of storage hit. A lake-served pre-aggregation
- * rollup routes through the SAME serve shape as an authored `storage=` source, so
- * it is counted as a storage hit either way — the label makes the two SPLITTABLE,
- * it does not stop the total from including rollups. A consumer summing by
- * `outcome` alone therefore starts counting rollup hits in the headline rate
- * without changing anything; it has to group by `origin` to get what it had
- * before. `persist` is an authored source, `preaggregate` a
- * query answered by a rollup, and the label is absent for outcomes where the
- * distinction has no meaning (nothing routed, so nothing has an origin).
- *
- * An attribute rather than a new `outcome` value on purpose: an outcome enum is
- * mirrored into consumers that generate strict clients from it, where an
- * unexpected value throws on the consuming hop. An added attribute breaks no
- * consumer.
+ * `origin` splits storage hits: `persist` is an authored `storage=` source,
+ * `preaggregate` a query answered by a lake-served rollup (which routes through
+ * the same serve shape, so both count as storage hits in the total). Absent
+ * when nothing routed. An attribute rather than a new `outcome` value because
+ * consumers generate strict clients from the outcome enum, where an unexpected
+ * value throws; an added attribute breaks no consumer.
  */
 export function recordStorageServeRouting(
    outcome:
@@ -598,7 +584,8 @@ export function recordStorageServeRouting(
  * Record how a chained `storage=` source was built (see
  * {@link ChainedStorageBuildOutcome}). Only fired for a source that actually
  * reads a storage-materialized upstream — a single-source build emits nothing
- * here. The parent_reuse : inline_fallback ratio is the spike's key learning.
+ * here. The parent_reuse : inline_fallback ratio shows how often stacking on
+ * the parent works.
  */
 export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
@@ -619,5 +606,5 @@ export function recordColocatedBindDropped(
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */
 export function resetMaterializationTelemetryForTesting(): void {
-   for (const reset of resetHooks) reset();
+   resetInstrumentsForTesting();
 }

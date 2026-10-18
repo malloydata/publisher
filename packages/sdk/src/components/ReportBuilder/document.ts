@@ -95,7 +95,7 @@ export interface DashboardDrill {
 /**
  * Where a tile's view is declared, and therefore what the builder may edit.
  *
- * Four forms, all of them found in dashboards that ship in this repository, and
+ * Five forms, all of them found in dashboards that ship in this repository, and
  * the distinction decides which affordances a tile gets:
  *
  * - `reference` — `view: revenue_trend is sales_by_month` in this file. Fully
@@ -117,12 +117,19 @@ export interface DashboardDrill {
  *   tile is `orders -> by_brand` against an imported source. Nothing about it is
  *   editable here, because its tags live on the model's own view and the builder
  *   does not write model files. Read and shown, not changed.
+ * - `query` — the entry names a query rather than a view: `tiles=["by_carrier"]`
+ *   over a `query: by_carrier is flights -> { … }`, in this file or the model.
+ *   The tile runs `run: by_carrier`, exactly as the reader does, and has no
+ *   `source` of its own. Like `inherited` it is read and shown, and moved or
+ *   removed in the list, but not changed: its tags sit on a `query:` statement
+ *   the writer does not locate, and its body may be anything a query can be.
  */
 export type TileDeclaration =
    | { kind: "reference"; from: string }
    | { kind: "inline" }
    | { kind: "opaque"; why: string }
-   | { kind: "inherited" };
+   | { kind: "inherited" }
+   | { kind: "query" };
 
 /** A tile that runs a view: a view shown on the page, plus how it is presented. */
 export interface QueryTile {
@@ -138,9 +145,10 @@ export interface QueryTile {
    /**
     * The source it reads, by NAME — an index would break on reorder. May name a
     * source this file declares in {@link DashboardDocument.sources}, or one it
-    * merely imports.
+    * merely imports. Absent on a tile that names a query (`declaration.kind`
+    * `"query"`), whose source is whatever the query's own definition reads.
     */
-   source: string;
+   source?: string;
    declaration: TileDeclaration;
    /**
     * Given bindings: a `+ { where: … }` refinement on a `reference` tile, or a
@@ -166,15 +174,39 @@ export interface QueryTile {
    chartLines?: string[];
    /** The chart tags the tile's view carries, when the catalog knows them: the writer negates only these. Never read from a file. */
    chartCarried?: string[];
+   /**
+    * Where the tile sits: its entry's `colspan` and `break` in `tiles=[…]`,
+    * or else its view's `# colspan` and `# break`. The writer puts a changed
+    * layout on the entry, which every tile has, and takes the view's two tags
+    * off a view this file declares, so the layout has one home.
+    */
    colspan?: number;
    break?: boolean;
+   /** `rowspan=N` on its entry: the grid rows it is tall. Only the entry carries it. */
+   rowspan?: number;
+   /** `row=N` and `col=N` on its entry: where it sits on a placed report, counted from 1. */
+   row?: number;
+   col?: number;
    borderless?: boolean;
+   /**
+    * The chart's colour, `#rrggbb`: its first series colour, written as the
+    * per-chart theme line `# theme.palette.series=["#…"]` the renderer reads.
+    * Absent, the chart takes the theme's own series.
+    */
+   color?: string;
+   /**
+    * The tile's own tags set `theme.palette.series` in a line the builder did
+    * not write: a list of two or more colours, or any other spelling. Read from
+    * the file, never written. The preview keeps that line when the tile is on
+    * Theme, where it otherwise takes a saved builder colour off.
+    */
+   ownPalette?: true;
 }
 
 /**
  * A markdown tile: prose between the query tiles, written as a `##|(markdown) <name>` block
- * and listed in `tiles=[…]` as `<name> { kind=text }`. Its width and row break live on that
- * list entry, since a block has no tags.
+ * and listed in `tiles=[…]` as `<name> { kind=text }`. Its layout lives on that list entry,
+ * as every tile's does.
  */
 export interface TextTile {
    kind: "text";
@@ -183,6 +215,9 @@ export interface TextTile {
    markdown: string;
    colspan?: number;
    break?: boolean;
+   rowspan?: number;
+   row?: number;
+   col?: number;
 }
 
 export type DashboardTile = QueryTile | TextTile;
@@ -227,9 +262,32 @@ export interface DashboardSource {
    scopedBy?: string[];
 }
 
+/**
+ * What a query tile runs, as its `tiles=[…]` entry names it: `source -> view`,
+ * or a query's bare name. The one spelling every preview, served-tile lookup
+ * and new list entry derives from.
+ */
+export const tileExpression = (tile: QueryTile): string =>
+   tile.declaration.kind === "query"
+      ? tile.name
+      : `${tile.source} -> ${tile.name}`;
+
+/**
+ * Whether the builder can write nothing about this tile but its place in the
+ * list: declared on the model's view (`inherited`), or a named query, whose
+ * tags are on a `query:` statement the writer does not edit.
+ */
+export const isReadOnlyTile = (tile: QueryTile): boolean =>
+   tile.declaration.kind === "inherited" || tile.declaration.kind === "query";
+
 /** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */
 export const tileKey = (tile: DashboardTile) =>
-   isTextTile(tile) ? `text.${tile.name}` : `${tile.source}.${tile.name}`;
+   isTextTile(tile)
+      ? `text.${tile.name}`
+      : tile.declaration.kind === "query"
+        ? // `query` is a Malloy keyword, so no source can carry this prefix.
+          `query.${tile.name}`
+        : `${tile.source}.${tile.name}`;
 
 /** `dimension: <name> is <expression>` in the dashboard's own extension. */
 export interface DashboardDimension {

@@ -2,29 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// TODO: Remove this during projects cleanup
 /**
- * Legacy `/projects/...` route registration.
+ * Legacy `/projects/...` aliases of the `/environments/...` API, kept for SDK
+ * clients that predate the rename (e.g. `@malloydata/db-publisher`). Removable
+ * once those clients have migrated.
  *
- * The publisher's API was renamed from `projects` to `environments`. This module
- * registers the old `/projects/...` paths on the same Express app so existing
- * SDK clients (e.g. `@malloydata/db-publisher`) keep working without code
- * changes on their side.
- *
- * Implementation strategy:
- *   - Reuse the same controllers that `server.ts` wires up; only the URL
- *     surface changes.
- *   - Most response models (`Connection`, `Package`, `Model`, `Notebook`,
- *     `Database`, `Table`, `QueryResult`, etc.) have identical JSON wire
- *     format between old (`Project`) and new (`Environment`) specs, so they
- *     pass through unchanged.
- *   - The handful of payloads that DO have field-level renames are remapped:
- *       * Materialization responses         — `environmentId` -> `projectId`
- *
- *   - Watch-mode is intentionally not exposed under the legacy prefix; clients
- *     that need it should use the new `/environments/...` paths directly.
- *   - `/status` is shared with the new server.ts handler — both old and new
- *     clients receive the new `environments`-keyed payload.
+ * - Reuses the controllers `server.ts` wires up; only the URL surface differs.
+ * - Most payloads are wire-identical between the two specs; materialization
+ *   responses are remapped `environmentId` -> `projectId`.
+ * - Watch-mode is not exposed here. `/status` is shared, so legacy clients get
+ *   the `environments`-keyed payload.
  */
 
 import bodyParser from "body-parser";
@@ -44,6 +31,7 @@ import {
    NotImplementedError,
 } from "./errors";
 import { logger, redactSensitive } from "./logger";
+import { apiRoute } from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
@@ -108,31 +96,27 @@ export function registerLegacyRoutes(
    } = controllers;
    const legacyReportController = new LegacyReportController(environmentStore);
 
-   // body-parser is already registered on the main app for `${API_PREFIX}/*`
-   // paths via `app.use(bodyParser.json(...))`. The legacy routes share the
-   // same `${API_PREFIX}` prefix so they inherit it automatically.
+   // body-parser is inherited from the main app.
    void bodyParser; // keep the import; helper file reference for clarity
 
    // ── projects (== environments) ──────────────────────────────────────────
-   app.get(`${LEGACY_API_PREFIX}/projects`, async (req, res) => {
-      if (req.query.reload !== undefined) {
-         setCollectionReloadError(
-            res,
-            `${LEGACY_API_PREFIX}/projects/{projectName}`,
-         );
-         return;
-      }
-      try {
-         res.status(200).json(await environmentStore.listEnvironments());
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   });
+   app.get(
+      `${LEGACY_API_PREFIX}/projects`,
+      apiRoute(async (req, res) => {
+         if (req.query.reload !== undefined) {
+            setCollectionReloadError(
+               res,
+               `${LEGACY_API_PREFIX}/projects/{projectName}`,
+            );
+            return;
+         }
+         return environmentStore.listEnvironments();
+      }),
+   );
 
-   app.post(`${LEGACY_API_PREFIX}/projects`, async (req, res) => {
-      try {
+   app.post(
+      `${LEGACY_API_PREFIX}/projects`,
+      apiRoute(async (req) => {
          // Redacted for the same reason as the `POST /environments` twin: the
          // body can carry connection and storage-destination configs.
          logger.info("Adding project", { body: redactSensitive(req.body) });
@@ -140,468 +124,296 @@ export function registerLegacyRoutes(
          // server cannot read must not come back as a 200 that quietly omits it.
          processStorageDestinationsOrThrow(req.body?.storageDestinations ?? []);
          const environment = await environmentStore.addEnvironment(req.body);
-         res.status(200).json(await environment.serialize());
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   });
+         return environment.serialize();
+      }),
+   );
 
-   app.get(`${LEGACY_API_PREFIX}/projects/:projectName`, async (req, res) => {
-      const reload = booleanParamOr400(req, res, "reload");
-      if (reload === undefined) {
-         return;
-      }
-      try {
+   app.get(
+      `${LEGACY_API_PREFIX}/projects/:projectName`,
+      apiRoute(async (req, res) => {
+         const reload = booleanParamOr400(req, res, "reload");
+         if (reload === undefined) {
+            return;
+         }
          const environment = await environmentStore.getEnvironment(
             req.params.projectName,
             reload,
          );
-         res.status(200).json(await environment.serialize());
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   });
+         return environment.serialize();
+      }),
+   );
 
-   app.patch(`${LEGACY_API_PREFIX}/projects/:projectName`, async (req, res) => {
-      try {
+   app.patch(
+      `${LEGACY_API_PREFIX}/projects/:projectName`,
+      apiRoute(async (req) => {
          const environment = await environmentStore.updateEnvironment(req.body);
-         res.status(200).json(await environment.serialize());
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   });
+         return environment.serialize();
+      }),
+   );
 
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName`,
-      async (req, res) => {
-         try {
-            const environment = await environmentStore.deleteEnvironment(
-               req.params.projectName,
-            );
-            res.status(200).json(await environment?.serialize());
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         const environment = await environmentStore.deleteEnvironment(
+            req.params.projectName,
+         );
+         return environment?.serialize();
+      }),
    );
 
    // ── connections ─────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.listConnections(
-                  req.params.projectName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.listConnections(req.params.projectName);
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnection(
-                  req.params.projectName,
-                  req.params.connectionName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnection(
+            req.params.projectName,
+            req.params.connectionName,
+         );
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      async (req, res) => {
-         try {
-            const result = await connectionController.addConnection(
+      apiRoute(
+         async (req) => {
+            return connectionController.addConnection(
                req.params.projectName,
                req.params.connectionName,
                req.body,
             );
-            res.status(201).json(result);
-         } catch (error) {
-            logger.error("Error creating connection", { error });
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         },
+         { status: 201 },
+      ),
    );
 
    app.patch(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      async (req, res) => {
-         try {
-            const result = await connectionController.updateConnection(
-               req.params.projectName,
-               req.params.connectionName,
-               req.body,
-            );
-            res.status(200).json(result);
-         } catch (error) {
-            logger.error("Error updating connection", { error });
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.updateConnection(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body,
+         );
+      }),
    );
 
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName`,
-      async (req, res) => {
-         try {
-            const result = await connectionController.deleteConnection(
-               req.params.projectName,
-               req.params.connectionName,
-            );
-            res.status(200).json(result);
-         } catch (error) {
-            logger.error("Error deleting connection", { error });
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.deleteConnection(
+            req.params.projectName,
+            req.params.connectionName,
+         );
+      }),
    );
 
-   // /connections/test is org-level (no projectName) and unchanged between
-   // old and new specs — it's already registered on the main app.
+   // /connections/test has no project segment and is served by the main app.
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.listSchemas(
-                  req.params.projectName,
-                  req.params.connectionName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.listSchemas(
+            req.params.projectName,
+            req.params.connectionName,
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables`,
-      async (req, res) => {
-         try {
-            const results = await connectionController.listTables(
-               req.params.projectName,
-               req.params.connectionName,
-               req.params.schemaName,
-               normalizeQueryArray(req.query.tableNames),
-            );
-            res.status(200).json(results);
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.listTables(
+            req.params.projectName,
+            req.params.connectionName,
+            req.params.schemaName,
+            normalizeQueryArray(req.query.tableNames),
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
-      async (req, res) => {
-         try {
-            const results = await connectionController.getTable(
-               req.params.projectName,
-               req.params.connectionName,
-               req.params.schemaName,
-               req.params.tablePath,
-            );
-            res.status(200).json(results);
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getTable(
+            req.params.projectName,
+            req.params.connectionName,
+            req.params.schemaName,
+            req.params.tablePath,
+         );
+      }),
    );
 
    // Per-package connection routes (duckdb context)
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.listSchemas(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.listSchemas(
+            req.params.projectName,
+            req.params.connectionName,
+            req.params.packageName,
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.listTables(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.params.schemaName,
-                  normalizeQueryArray(req.query.tableNames),
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.listTables(
+            req.params.projectName,
+            req.params.connectionName,
+            req.params.schemaName,
+            normalizeQueryArray(req.query.tableNames),
+            req.params.packageName,
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getTable(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.params.schemaName,
-                  req.params.tablePath,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getTable(
+            req.params.projectName,
+            req.params.connectionName,
+            req.params.schemaName,
+            req.params.tablePath,
+            req.params.packageName,
+         );
+      }),
    );
 
-   // sqlSource (POST), per-project + per-package. Runs a live DB introspection,
-   // so it is admission-controlled like the query routes below; without the gate
-   // the legacy surface is an unbounded bypass of the modern one.
+   // sqlSource runs a live DB introspection, so it is gated like the modern
+   // route; otherwise the legacy surface would be an unbounded bypass.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionSqlSource(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.body.sqlStatement as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnectionSqlSource(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body.sqlStatement as string,
+         );
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionSqlSource(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.body.sqlStatement as string,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnectionSqlSource(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body.sqlStatement as string,
+            req.params.packageName,
+         );
+      }),
    );
 
-   // queryData (deprecated GET) + sqlQuery (supported POST), per-project +
-   // per-package
-   // Legacy `/projects/...` query routes keep the GET `queryData`
-   // endpoints (unlike the modern `/environments/...` surface, which
-   // removed them) so existing SDK clients are not broken. The
-   // missing protection is concurrency: without `queryConcurrency()`
-   // a flood of legacy clients can saturate the pod even while the
-   // modern routes are properly gated. Apply the same per-pod cap
-   // here so the legacy surface respects PUBLISHER_MAX_CONCURRENT_QUERIES.
-   // Admission, timeout, and row/byte caps are already enforced by
-   // the shared controllers downstream.
+   // queryData (GET, removed from the modern surface) and sqlQuery (POST).
+   // queryConcurrency() applies the same per-pod cap as the modern routes;
+   // timeouts and row/byte caps are enforced by the shared controllers.
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionQueryData(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.query.sqlStatement as string,
-                  req.query.options as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnectionQueryData(
+            req.params.projectName,
+            req.params.connectionName,
+            req.query.sqlStatement as string,
+            req.query.options as string,
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/queryData`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionQueryData(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.query.sqlStatement as string,
-                  req.query.options as string,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnectionQueryData(
+            req.params.projectName,
+            req.params.connectionName,
+            req.query.sqlStatement as string,
+            req.query.options as string,
+            req.params.packageName,
+         );
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-            if (req.body?.options) {
-               options = req.body.options;
-            } else {
-               options = req.query.options;
-            }
-            res.status(200).json(
-               await connectionController.getConnectionQueryData(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.body.sqlStatement as string,
-                  options as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
+      apiRoute(async (req) => {
+         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
+         if (req.body?.options) {
+            options = req.body.options;
+         } else {
+            options = req.query.options;
          }
-      },
+         return connectionController.getConnectionQueryData(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body.sqlStatement as string,
+            options as string,
+         );
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-            if (req.body?.options) {
-               options = req.body.options;
-            } else {
-               options = req.query.options;
-            }
-            res.status(200).json(
-               await connectionController.getConnectionQueryData(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.body.sqlStatement as string,
-                  options as string,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
+      apiRoute(async (req) => {
+         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
+         if (req.body?.options) {
+            options = req.body.options;
+         } else {
+            options = req.query.options;
          }
-      },
+         return connectionController.getConnectionQueryData(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body.sqlStatement as string,
+            options as string,
+            req.params.packageName,
+         );
+      }),
    );
 
    // sqlTemporaryTable (POST), per-project + per-package
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionTemporaryTable(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.body.sqlStatement as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnectionTemporaryTable(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body.sqlStatement as string,
+         );
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionTemporaryTable(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.body.sqlStatement as string,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return connectionController.getConnectionTemporaryTable(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body.sqlStatement as string,
+            req.params.packageName,
+         );
+      }),
    );
 
    // ── packages ────────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
@@ -613,38 +425,24 @@ export function registerLegacyRoutes(
             );
             return;
          }
-         try {
-            res.status(200).json(
-               await packageController.listPackages(req.params.projectName),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         return packageController.listPackages(req.params.projectName);
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages`,
-      async (req, res) => {
-         try {
-            const _package = await packageController.addPackage(
-               req.params.projectName,
-               req.body,
-            );
-            res.status(200).json(_package?.getPackageMetadata());
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         const _package = await packageController.addPackage(
+            req.params.projectName,
+            req.body,
+         );
+         return _package?.getPackageMetadata();
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
@@ -653,396 +451,277 @@ export function registerLegacyRoutes(
          if (reload === undefined) {
             return;
          }
-         try {
-            res.status(200).json(
-               await packageController.getPackage(
-                  req.params.projectName,
-                  req.params.packageName,
-                  reload,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         return packageController.getPackage(
+            req.params.projectName,
+            req.params.packageName,
+            reload,
+         );
+      }),
    );
 
    app.patch(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await packageController.updatePackage(
-                  req.params.projectName,
-                  req.params.packageName,
-                  req.body,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return packageController.updatePackage(
+            req.params.projectName,
+            req.params.packageName,
+            req.body,
+         );
+      }),
    );
 
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await packageController.deletePackage(
-                  req.params.projectName,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return packageController.deletePackage(
+            req.params.projectName,
+            req.params.packageName,
+         );
+      }),
    );
 
    // ── models ──────────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            res.status(200).json(
-               await modelController.listModels(
-                  req.params.projectName,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         return modelController.listModels(
+            req.params.projectName,
+            req.params.packageName,
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            const modelPath = (req.params as Record<string, string>)["0"];
-            res.status(200).json(
-               await modelController.getModel(
-                  req.params.projectName,
-                  req.params.packageName,
-                  modelPath,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         const modelPath = (req.params as Record<string, string>)["0"];
+         return modelController.getModel(
+            req.params.projectName,
+            req.params.packageName,
+            modelPath,
+         );
+      }),
    );
 
-   // Accepts NO authorize bypass, deliberately: this alias exists only for
-   // pre-rename SDK compatibility, it passes no `givens` either (so it cannot
-   // satisfy a gate in the first place), and every extra route that can disable
-   // a gate is another one to audit. A caller that needs the bypass uses the
-   // current `/environments/…` route. Pinned by authorize_bypass_wiring.
+   // Accepts no authorize bypass, deliberately: it passes no `givens` either,
+   // and every route that can disable a gate is one more to audit. Pinned by
+   // authorize_bypass_wiring.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
       queryConcurrency(),
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.body.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            const modelPath = (req.params as Record<string, string>)["0"];
-            res.status(200).json(
-               await queryController.getQuery(
-                  req.params.projectName,
-                  req.params.packageName,
-                  modelPath,
-                  req.body.sourceName as string,
-                  req.body.queryName as string,
-                  req.body.query as string,
-                  req.body.compactJson === true,
-                  (req.body.filterParams ?? req.body.sourceFilters) as
-                     | Record<string, string | string[]>
-                     | undefined,
-                  req.body.bypassFilters === true ? true : undefined,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         const modelPath = (req.params as Record<string, string>)["0"];
+         return queryController.getQuery(
+            req.params.projectName,
+            req.params.packageName,
+            modelPath,
+            req.body.sourceName as string,
+            req.body.queryName as string,
+            req.body.query as string,
+            req.body.compactJson === true,
+            (req.body.filterParams ?? req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined,
+            req.body.bypassFilters === true ? true : undefined,
+         );
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
-      // Real Malloy compilation; gated like the modern compile route so the
-      // legacy surface is not an unbounded bypass.
+      // Gated like the modern compile route.
       queryConcurrency(),
-      async (req, res) => {
-         try {
-            const result = await compileController.compile(
-               req.params.projectName,
-               req.params.packageName,
-               req.params.modelName,
-               req.body.source,
-               req.body.includeSql === true,
-            );
-            res.status(200).json(result);
-         } catch (error) {
-            logger.error("Compilation error", { error });
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         return compileController.compile(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.modelName,
+            req.body.source,
+            req.body.includeSql === true,
+         );
+      }),
    );
 
    // ── notebooks ───────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            res.status(200).json(
-               await legacyReportController.listNotebooks(
-                  req.params.projectName,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         return legacyReportController.listNotebooks(
+            req.params.projectName,
+            req.params.packageName,
+         );
+      }),
    );
 
    // Cell execution route comes BEFORE the general getNotebook wildcard
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            const cellIndex = parseInt(req.params.cellIndex, 10);
-            if (isNaN(cellIndex)) {
-               res.status(400).json({ error: "Invalid cell index" });
-               return;
-            }
-            const notebookPath = (req.params as Record<string, string>)["0"];
-            let filterParams: Record<string, string | string[]> | undefined;
-            if (typeof req.query.filter_params === "string") {
-               try {
-                  filterParams = JSON.parse(req.query.filter_params);
-               } catch {
-                  res.status(400).json({
-                     error: "Invalid filter_params: must be valid JSON",
-                  });
-                  return;
-               }
-            }
-            // Absence must stay distinguishable from an explicit `false`:
-            // the Deprecation header fires on `bypassFilters !== undefined`.
-            const bypass = optionalBooleanParamOr400(
-               req,
-               res,
-               "bypass_filters",
-            );
-            if (!bypass.ok) {
-               return;
-            }
-            const bypassFilters = bypass.value;
-            res.status(200).json(
-               await legacyReportController.executeNotebookCell(
-                  req.params.projectName,
-                  req.params.packageName,
-                  notebookPath,
-                  cellIndex,
-                  filterParams,
-                  bypassFilters,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
+         const cellIndex = parseInt(req.params.cellIndex, 10);
+         if (isNaN(cellIndex)) {
+            res.status(400).json({ error: "Invalid cell index" });
+            return;
          }
-      },
+         const notebookPath = (req.params as Record<string, string>)["0"];
+         let filterParams: Record<string, string | string[]> | undefined;
+         if (typeof req.query.filter_params === "string") {
+            try {
+               filterParams = JSON.parse(req.query.filter_params);
+            } catch {
+               res.status(400).json({
+                  error: "Invalid filter_params: must be valid JSON",
+               });
+               return;
+            }
+         }
+         // Absence must stay distinguishable from an explicit `false`:
+         // the Deprecation header fires on `bypassFilters !== undefined`.
+         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
+         if (!bypass.ok) {
+            return;
+         }
+         const bypassFilters = bypass.value;
+         return legacyReportController.executeNotebookCell(
+            req.params.projectName,
+            req.params.packageName,
+            notebookPath,
+            cellIndex,
+            filterParams,
+            bypassFilters,
+         );
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            const notebookPath = (req.params as Record<string, string>)["0"];
-            res.status(200).json(
-               await legacyReportController.getNotebook(
-                  req.params.projectName,
-                  req.params.packageName,
-                  notebookPath,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         const notebookPath = (req.params as Record<string, string>)["0"];
+         return legacyReportController.getNotebook(
+            req.params.projectName,
+            req.params.packageName,
+            notebookPath,
+         );
+      }),
    );
 
    // ── databases ───────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/databases`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);
             return;
          }
-         try {
-            res.status(200).json(
-               await databaseController.listDatabases(
-                  req.params.projectName,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         return databaseController.listDatabases(
+            req.params.projectName,
+            req.params.packageName,
+         );
+      }),
    );
 
    // ── materializations ────────────────────────────────────────────────────
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
-      async (req, res) => {
-         try {
+      apiRoute(
+         async (req) => {
             const build = await materializationController.createMaterialization(
                req.params.projectName,
                req.params.packageName,
                req.body || {},
             );
-            res.status(201).json(remapMaterializationResponse(build));
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+            return remapMaterializationResponse(build);
+         },
+         { status: 201 },
+      ),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
-      async (req, res) => {
-         try {
-            const limit = req.query.limit
-               ? parseInt(req.query.limit as string, 10)
-               : undefined;
-            const offset = req.query.offset
-               ? parseInt(req.query.offset as string, 10)
-               : undefined;
-            const builds = await materializationController.listMaterializations(
-               req.params.projectName,
-               req.params.packageName,
-               { limit, offset },
-            );
-            res.status(200).json(remapMaterializationResponse(builds));
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         const limit = req.query.limit
+            ? parseInt(req.query.limit as string, 10)
+            : undefined;
+         const offset = req.query.offset
+            ? parseInt(req.query.offset as string, 10)
+            : undefined;
+         const builds = await materializationController.listMaterializations(
+            req.params.projectName,
+            req.params.packageName,
+            { limit, offset },
+         );
+         return remapMaterializationResponse(builds);
+      }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
-      async (req, res) => {
-         try {
-            const build = await materializationController.getMaterialization(
-               req.params.projectName,
-               req.params.packageName,
-               req.params.materializationId,
-            );
-            res.status(200).json(remapMaterializationResponse(build));
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+      apiRoute(async (req) => {
+         const build = await materializationController.getMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         return remapMaterializationResponse(build);
+      }),
    );
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
-      async (req, res) => {
-         try {
-            const action = req.query.action;
-            if (action === "stop") {
-               const build =
-                  await materializationController.stopMaterialization(
-                     req.params.projectName,
-                     req.params.packageName,
-                     req.params.materializationId,
-                  );
-               res.status(200).json(remapMaterializationResponse(build));
-            } else {
-               throw new BadRequestError(
-                  `Unsupported action '${String(action ?? "")}'. Expected 'stop'.`,
-               );
-            }
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
+      apiRoute(async (req) => {
+         const action = req.query.action;
+         if (action !== "stop") {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'stop'.`,
+            );
          }
-      },
+         return remapMaterializationResponse(
+            await materializationController.stopMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            ),
+         );
+      }),
    );
 
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
-      async (req, res) => {
+      apiRoute(async (req, res) => {
          const dropTables = booleanParamOr400(req, res, "dropTables");
-         if (dropTables === undefined) {
-            return;
-         }
-         try {
-            await materializationController.deleteMaterialization(
-               req.params.projectName,
-               req.params.packageName,
-               req.params.materializationId,
-               { dropTables },
-            );
-            res.status(204).send();
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
+         if (dropTables === undefined) return;
+         await materializationController.deleteMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+            { dropTables },
+         );
+         res.status(204).send();
+      }),
    );
 
    logger.info(

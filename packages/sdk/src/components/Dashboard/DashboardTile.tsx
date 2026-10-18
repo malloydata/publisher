@@ -16,6 +16,7 @@ import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { failureCategory, useReportEvents } from "../Report/telemetry";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
@@ -68,7 +69,12 @@ export interface DashboardTileProps {
     * server accepts: a surfaced given a query does not reference is ignored.
     */
    givenNames?: string[];
-   height: number;
+   /** Cap on the result's height, past which it scrolls. Undefined is no cap: the tile grows to fit. */
+   height: number | undefined;
+   /** A further cap when the result is a table, past which it scrolls under its pinned header. */
+   tableMaxHeight?: number;
+   /** The tile has a set height (rows of its own): a result taller than it is drawn compact. */
+   fixedHeight?: boolean;
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;
@@ -89,6 +95,13 @@ export interface DashboardTileProps {
    preamble?: string;
    /** The server marked this tile unreadable for the viewer: nothing is run. */
    restricted?: boolean;
+   /**
+    * Set while a required filter this tile reads has no value: what to say in
+    * place of the result ("Waiting for Recall Year."). Nothing is run, since
+    * the query would only fail with the compiler's "has no value and no
+    * default".
+    */
+   waitingFor?: string;
    /** Its position in the report, for the `report.query_failed` it reports. */
    index?: number;
 }
@@ -134,6 +147,8 @@ export function DashboardTile({
    declaredTypes,
    givenNames,
    height,
+   tableMaxHeight,
+   fixedHeight,
    maxResultSize,
    drill,
    onExplore,
@@ -141,6 +156,7 @@ export function DashboardTile({
    ignoredFilters,
    preamble,
    restricted,
+   waitingFor,
    index,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
@@ -171,7 +187,10 @@ export function DashboardTile({
          ),
       },
       // Restricted tiles never run; the rest wait to come near the viewport.
-      { enabled: nearViewport && restricted !== true },
+      {
+         enabled:
+            nearViewport && restricted !== true && waitingFor === undefined,
+      },
    );
    // Each failed run once: the error is drawn in place, and the report's host
    // hears of it when one is listening.
@@ -237,7 +256,13 @@ export function DashboardTile({
             />
          )}
          {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
-         {noAccess ? (
+         {waitingFor !== undefined ? (
+            <Box sx={{ p: 2 }}>
+               <Typography variant="body2" role="status" color="text.secondary">
+                  {waitingFor}
+               </Typography>
+            </Box>
+         ) : noAccess ? (
             <Box sx={{ p: 2 }}>
                <Typography variant="body2" role="status" color="text.secondary">
                   {RESTRICTED_NOTICE}
@@ -249,6 +274,12 @@ export function DashboardTile({
                state={state}
                context={tile ?? queryName ?? modelPath}
                maxHeight={height}
+               tableMaxHeight={tableMaxHeight}
+               compactToFit={fixedHeight}
+               // Uncapped in a linear report, a tile would first paint at the
+               // 2000px default and collapse once measured. A grid tile's cap
+               // is a sound first guess for every tile.
+               firstPaintHeight={TILE_MAX_HEIGHT}
                maxResultSize={maxResultSize}
                drill={drill}
                // A composite tile that is one row of measures draws as KPI cards,

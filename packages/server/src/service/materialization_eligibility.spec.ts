@@ -20,7 +20,9 @@ import { deriveAnnotationFields } from "./build_plan";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
+import { fakeSource } from "../test_helpers/materialization_test_fixtures";
 import {
    classifyDynamicTerms,
    readTimeDynamicTerms,
@@ -1077,5 +1079,124 @@ source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
             "preaggregate",
          ),
       ).toThrow(/Pre-aggregation rollup/i);
+   });
+});
+
+describe("read-only dialect (colocated persist)", () => {
+   // The SQL Server connector creates no tables, so a colocated build has
+   // nowhere in the source warehouse to write. Refused at load, naming the
+   // connection and the dialect, so the author reads it from the package's
+   // warnings rather than from a build's first DDL. A faked source, because
+   // the gate reads only the dialect name; no SQL Server is needed.
+   it("refuses a colocated #@ persist on a sqlserver source, naming connection and dialect", () => {
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "orders@x",
+         connectionName: "mssql",
+         dialectName: "sqlserver",
+      });
+      let caught: unknown;
+      try {
+         assertColocatedPersistNotAuthorizeGated(source);
+      } catch (err) {
+         caught = err;
+      }
+      expect(caught).toBeInstanceOf(MaterializationEligibilityError);
+      expect((caught as MaterializationEligibilityError).reason).toBe(
+         "read_only_dialect",
+      );
+      expect((caught as Error).message).toContain("'mssql'");
+      expect((caught as Error).message).toContain("'sqlserver'");
+      expect((caught as Error).message).toContain("read-only");
+   });
+
+   it("names the rollup when the origin is a pre-aggregation", () => {
+      const source = fakeSource({
+         name: "orders__preagg",
+         sourceEntityId: "orders__preagg@x",
+         dialectName: "sqlserver",
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            source,
+            source.name,
+            "preaggregate",
+         ),
+      ).toThrow(
+         /Pre-aggregation rollup 'orders__preagg' cannot be materialized/,
+      );
+   });
+
+   it("leaves a rollup that declares a storage destination to the storage gate", () => {
+      // The rollup branch runs this gate before the storage one for every
+      // rollup, so a `storage=` rollup over a SQL Server base must not be
+      // refused here as colocated: the storage build names the source types
+      // it can read, and this gate's doc says storage is not its question.
+      const source = fakeSource({
+         name: "orders__preagg",
+         sourceEntityId: "orders__preagg@x",
+         dialectName: "sqlserver",
+         annotationFields: { storage: "lake" },
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            source,
+            source.name,
+            "preaggregate",
+            undefined,
+            { storage: "lake" },
+         ),
+      ).not.toThrow();
+   });
+
+   it("agrees with canPersist in both directions, over every connection type", async () => {
+      // READ_ONLY_DIALECTS (what the gate refuses) and the static canPersist
+      // (what a client reads to decide whether to offer persistence) are two
+      // statements of one fact. Checked over the whole Connection.type enum,
+      // read from api-doc.yaml as the shared contract, so a dialect added to
+      // either side alone fails here.
+      const { getStaticConnectionAttributes } = await import(
+         "./connection_config"
+      );
+      const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const apiDoc = readFileSync(
+         resolve(import.meta.dir, "../../../../api-doc.yaml"),
+         "utf8",
+      ).replace(/\r\n/g, "\n");
+      const start = apiDoc.indexOf("\n    Connection:\n");
+      const enumAt = apiDoc.indexOf("enum:", start);
+      const types = [
+         ...apiDoc
+            .slice(enumAt, apiDoc.indexOf("]", enumAt))
+            .matchAll(/^\s+(\w+),$/gm),
+      ].map((m) => m[1]);
+      // Guard the extraction: a regex matching nothing would pass vacuously.
+      expect(types).toContain("sqlserver");
+      expect(types).toContain("postgres");
+      for (const type of types) {
+         const attributes = getStaticConnectionAttributes(
+            type as Parameters<typeof getStaticConnectionAttributes>[0],
+         );
+         if (!attributes) continue;
+         expect({
+            type,
+            canPersist: attributes.canPersist,
+         }).toEqual({
+            type,
+            canPersist: !READ_ONLY_DIALECTS.has(attributes.dialectName ?? ""),
+         });
+      }
+   });
+
+   it("admits the same shape on a dialect that can write", () => {
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "orders@x",
+         dialectName: "postgres",
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(source),
+      ).not.toThrow();
    });
 });

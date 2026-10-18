@@ -2,13 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../logger";
-import { recordIncrementalStep } from "../materialization_metrics";
+import type { PersistSource } from "@malloydata/malloy";
+import { Manifest } from "@malloydata/malloy";
+import {
+   recordIncrementalStep,
+   recordSourceBuildDuration,
+} from "../materialization_metrics";
 import type {
+   BuildInstruction,
    IncrementalLedgerEntry,
    IncrementalStrategy,
    LedgerEntry,
    LedgerTableIdentity,
+   ManifestEntry,
 } from "../storage/DatabaseInterface";
+import {
+   collectIncrementalDeclarations,
+   CompiledBuildPlan,
+   deriveColumns,
+} from "./build_plan";
+import { storageDeltaTarget } from "./incremental_storage";
+import {
+   STORAGE_TARGET_DIALECT,
+   type StorageIncrementalRefresh,
+} from "./materialization_build_session";
+import type { QueryMetadata } from "./query_metadata";
 import { errMessage } from "../utils";
 import {
    applyDeltaScript,
@@ -28,25 +46,20 @@ import {
 import type { IncrementalDeclaration } from "./incremental_declaration";
 
 /**
- * The run-level half of incremental materialization: what one build needs to
- * decide, per source, whether this refresh is a bounded DELTA or a full SEED, and
- * to record the boundary it reached.
+ * The run-level half of incremental materialization: per source, decide whether
+ * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
  *
- * The mechanics — probes, range arithmetic, DML text — live in
- * incremental_apply.ts, which knows nothing about a run. This module is the seam
- * between that and the build loop: it reads the ledger, calls the planner, issues
- * the DML, and writes the boundary back. Splitting it this way keeps the planner
- * testable against fakes and keeps the build loop free of ledger bookkeeping.
+ * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
+ * which knows nothing about a run. This module reads the ledger, calls the
+ * planner, issues the DML and writes the boundary back, keeping the planner
+ * testable against fakes and the build loop free of ledger bookkeeping.
  */
 
 /**
- * The ledger surface a build needs; a narrowing of ResourceRepository.
- *
- * Addressed by TABLE, because that is what a boundary is a fact about — so every
- * accessor here takes the same {@link LedgerTableIdentity} the lineage already
- * carries, and none of them needs a source address to find a row.
+ * The ledger surface a build needs; a narrowing of ResourceRepository. Addressed
+ * by TABLE, because that is what a boundary is a fact about.
  */
-export interface IncrementalLedgerStore {
+interface IncrementalLedgerStore {
    getIncrementalLedgerEntry(
       environmentId: string,
       table: LedgerTableIdentity,
@@ -61,13 +74,12 @@ export interface IncrementalLedgerStore {
 }
 
 /**
- * One build's incremental context, assembled once per run. Every field is
- * constant for the run; a source contributes only its own identity.
+ * One build's incremental context, assembled once per run; every field is
+ * constant for the run.
  *
- * `now` is the run's start time and is captured ONCE on purpose: it is the range
- * end for every time-watermarked source in the run, so taking it per source would
- * let two sources in one build disagree about when "now" was, and a downstream
- * source could then record coverage its upstream does not have.
+ * `now` is captured ONCE: it is the range end for every time-watermarked source,
+ * so taking it per source would let a downstream source record coverage its
+ * upstream does not have.
  */
 export interface IncrementalRunContext {
    environmentId: string;
@@ -79,29 +91,23 @@ export interface IncrementalRunContext {
    declarations: Record<string, IncrementalDeclaration>;
    ledger: IncrementalLedgerStore;
    /**
-    * The caller-supplied ledger (`buildInstructions.ledger`), indexed by table —
-    * see {@link indexCallerLedger}. When present (even empty), it REPLACES
-    * {@link ledger} for the whole run: boundaries are read from here, and
-    * nothing local is read or written — not on a delta, not on a seed. A row
-    * left behind "as a backup" is a landmine for a later run in the other mode,
-    * and the caller's copy is authoritative-by-report anyway: the manifest
-    * entry's `ledger` is how the advance travels back.
+    * The caller-supplied ledger (`buildInstructions.ledger`), indexed by table
+    * (see {@link indexCallerLedger}). When present (even empty) it REPLACES
+    * {@link ledger} for the whole run: nothing local is read or written, since a
+    * local "backup" row would mislead a later run in the other mode. The
+    * manifest entry's `ledger` is how the advance travels back.
     *
-    * Run-level rather than per-source because a mixed run has no coherent
-    * answer: a boundary read from one authority and written to another is a
-    * boundary neither can be held to.
+    * Run-level because a boundary read from one authority and written to another
+    * is one neither can be held to.
     */
    callerLedger?: ReadonlyMap<string, RecordedBoundary>;
 }
 
 /**
- * The caller-ledger index key: a boundary is a fact about a TABLE.
- *
- * The destination is part of it, and NUL-delimited alongside the connection
- * rather than folded in with it, because the two are separate namespaces that may
- * legitimately share a name — a connection called `lake` and a destination
- * called `lake` are two different warehouses. Concatenating them into one
- * field would make a boundary measured in one findable from the other.
+ * The caller-ledger index key: a boundary is a fact about a TABLE. Connection and
+ * destination are separate NUL-delimited fields because they are separate
+ * namespaces: a connection and a destination both called `lake` are different
+ * warehouses.
  */
 function ledgerTableKey(table: LedgerTableIdentity): string {
    return [
@@ -112,10 +118,9 @@ function ledgerTableKey(table: LedgerTableIdentity): string {
 }
 
 /**
- * Index a caller-supplied ledger by the table each entry belongs to — the same
- * key the local store uses — converting each wire entry into the boundary shape
- * the planner reads. Nothing is derived: every field is one the publisher
- * reported on a manifest entry, echoed back.
+ * Index a caller-supplied ledger by table (the same key the local store uses),
+ * converting each wire entry into the boundary shape the planner reads. Every
+ * field is one the publisher reported on a manifest entry, echoed back.
  */
 export function indexCallerLedger(
    entries: LedgerEntry[],
@@ -146,13 +151,10 @@ export function indexCallerLedger(
 
 /**
  * The lineage a source's declaration implies, or undefined when this source is
- * not a candidate for a delta at all.
- *
- * Undefined here means "build it the ordinary way, and do not touch the ledger" —
- * it is the answer for the overwhelming majority of sources. A source that
- * declared incremental refresh but fails any of these checks was already REJECTED
- * at publish (see incremental_policy.ts); reaching a build with one means the
- * package predates the gates, so it builds full, exactly as it did before.
+ * not a candidate for a delta: build it the ordinary way and leave the ledger
+ * alone. A declared-incremental source failing these checks is normally REJECTED
+ * at publish (see incremental_policy.ts); one that reaches a build anyway builds
+ * full.
  */
 export function incrementalLineage(params: {
    declaration: IncrementalDeclaration | undefined;
@@ -187,10 +189,9 @@ export function incrementalLineage(params: {
       return undefined;
    }
    if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(params.dialect)) return undefined;
-   // The engine the DML lands in has to be one whose transactional apply is
-   // proven. Unreachable for a legal `storage=` destination, which can only be a
-   // DuckDB-family one — so this is the invariant stated where it is relied on,
-   // not a case the publish gate leaves open.
+   // The DML engine must be one whose transactional apply is proven. A legal
+   // `storage=` destination is always DuckDB-family; this states the invariant
+   // where it is relied on.
    if (!INCREMENTAL_TARGET_DML_DIALECTS.has(params.targetDialect)) {
       return undefined;
    }
@@ -198,10 +199,8 @@ export function incrementalLineage(params: {
       .filter((k) => k.kind === "dimension")
       .map((k) => k.name);
    if (mergeKeys.length !== d.mergeKeys.length) return undefined;
-   // Backstop behind the publish-time refusal, not a second opinion on it: a
-   // merge whose scope could not be resolved must never be ISSUED, whatever let
-   // the declaration through. No lineage means the refresh seeds instead —
-   // slower, and correct.
+   // Backstop behind the publish-time refusal: a merge whose scope could not be
+   // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
    return {
       physicalTableName: params.physicalTableName,
@@ -220,48 +219,35 @@ export function incrementalLineage(params: {
  * Decide this source's refresh: a delta to apply, a seed to fall back to, or
  * nothing to do.
  *
- * Degrades to a seed on any failure, including an unreadable ledger. The ledger
- * is publisher-local state ABOUT a warehouse table, so when the two cannot be
- * reconciled the table wins: rebuild it and record the boundary again.
+ * Degrades to a seed on any failure, including an unreadable ledger: the ledger
+ * is local state ABOUT a warehouse table, so when they disagree the table wins.
  *
- * A caller-supplied boundary reaches the same planner through the same checks,
- * with ONE difference in what a failed check means: a boundary the CALLER sent
- * that no longer describes the source it names is thrown as an error rather
- * than absorbed as a seed. The caller's input was wrong, and per the API
- * contract an invalid ledger entry is rejected, not quietly rebuilt around —
- * create-time validation catches the common case (a changed content address),
- * and this catches what only the compiled declaration can (a moved
- * `watermark=`, `merge_key=`, or strategy). Facts about the TABLE (emptied,
- * unreadable, shape drift) still seed in both modes: the input was fine, the
- * world moved.
+ * One exception: a CALLER-supplied boundary that no longer describes the source
+ * it names (a moved `watermark=`, `merge_key=` or strategy, which create-time
+ * validation cannot see) throws, because the API contract rejects an invalid
+ * ledger entry rather than rebuilding around it. Facts about the TABLE (emptied,
+ * unreadable, shape drift) seed in both modes.
  */
 export async function planSourceRefresh(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
    /**
-    * Where the DML lands and how its rows are produced —
+    * Where the DML lands and how its rows are produced:
     * {@link warehouseDeltaTarget} for a colocated source, the storage target for
-    * one materialized into a `storage=` destination.
-    *
-    * The target owns the build SQL, and passing the MANIFEST-RESOLVED form of it
-    * is not optional: a delta over a chained source has to read its upstream's
-    * MATERIALIZED table for the same reason the seed does, and the raw form would
-    * silently recompute the upstream — a correct-looking delta over the wrong
-    * input.
+    * a `storage=` one. Its build SQL must be the MANIFEST-RESOLVED form, so a
+    * chained source reads its upstream's materialized table; the raw form would
+    * silently recompute the upstream.
     */
    target: DeltaTarget;
    /**
-    * The source's compiled output columns, which the delta's DML names. This is
-    * what the seed's CTAS gives the table its columns from, so the two agree by
-    * construction; order does not matter, because the DML names the same list on
-    * both sides of the INSERT (see deltaStatements).
+    * The source's compiled output columns, which the delta's DML names; the
+    * seed's CTAS takes its columns from the same place. Order does not matter:
+    * the DML names the same list on both sides of the INSERT (see deltaStatements).
     */
    columns: string[];
    /**
-    * This source's `BuildInstruction.reseed`: the per-source ask for a full
-    * rebuild, OR-ed with the run-level `reseed` the context carries. Per source
-    * because one source can rebuild while the rest advance by delta in the same
-    * run.
+    * This source's `BuildInstruction.reseed`, OR-ed with the run-level
+    * `forceRefresh`, so one source can rebuild while the rest advance by delta.
     */
    reseed?: boolean;
 }): Promise<IncrementalStep> {
@@ -270,11 +256,9 @@ export async function planSourceRefresh(params: {
 
    let ledgerEntry: RecordedBoundary | null = null;
    if (context.callerLedger) {
-      // The local store is not consulted, not even as a fallback for a table the
-      // caller sent no entry for. A worker's own row may be stale by a whole
-      // generation (it is why this mode exists), so falling back to it would
-      // reintroduce exactly the boundary the caller was asked to own. No entry
-      // means the planner's ordinary `no_boundary` seed.
+      // No fallback to the local store for a table the caller omitted: a
+      // worker's own row may be a generation stale, which is why this mode
+      // exists. No entry means the ordinary `no_boundary` seed.
       ledgerEntry = context.callerLedger.get(ledgerTableKey(lineage)) ?? null;
    } else {
       try {
@@ -290,12 +274,10 @@ export async function planSourceRefresh(params: {
          };
       }
    }
-   // Asked of the TARGET, because the floor is about where the MERGE runs: a
-   // `storage=` source reads from Postgres and writes to DuckDB, so keying this
-   // on the source's dialect would send `server_version_num` to an engine that
-   // does not have it and gate a statement that was never going to run there.
-   // Only asked when it can change the answer: the version gates MERGE alone,
-   // and a source with no recorded boundary is seeding regardless.
+   // Keyed on the TARGET dialect, because the version floor is about where the
+   // MERGE runs (a `storage=` source reads Postgres but writes DuckDB). Probed
+   // only when it can matter: the version gates MERGE alone, and with no
+   // recorded boundary the source seeds regardless.
    const postgresVersionNum =
       lineage.strategy === "merge" &&
       target.dialect === "postgres" &&
@@ -320,12 +302,10 @@ export async function planSourceRefresh(params: {
          reason: `the delta could not be planned (${errMessage(err)})`,
       };
    }
-   // A caller-supplied entry that does not describe the source it names is the
-   // CALLER's error, and the API contract makes it one: fail the run rather
-   // than absorb it as a seed. Reachable only for a mismatch create-time
-   // validation cannot see (a declaration moved without moving the content
-   // address); the address itself was already checked against the plan, and the
-   // table key matches by construction of the index.
+   // A caller-supplied entry that does not describe its source is the caller's
+   // error: fail the run rather than seed. Reachable only when a declaration
+   // moved without moving the content address, which create-time validation
+   // already checked.
    if (
       context.callerLedger &&
       step.mode === "seed" &&
@@ -343,17 +323,14 @@ export async function planSourceRefresh(params: {
 }
 
 /**
- * Record a boundary the run reached. Best-effort, and deliberately so: the table
- * is already correct at this point, and a ledger write that fails must not fail
- * the build. The cost of losing the write is one full rebuild on the next run,
- * which is the same thing the ledger row is there to avoid — never wrong data.
+ * Record a boundary the run reached. Best-effort: the table is already correct,
+ * and a lost write costs one full rebuild next run, never wrong data.
  *
- * A no-op when the caller supplied the ledger: there the advance travels on the
- * manifest entry (which is written either way, from the value this would have
- * stored), and the local store is left untouched so it cannot later contradict
- * the caller.
+ * A no-op when the caller supplied the ledger: the advance travels on the
+ * manifest entry, and the local store stays untouched so it cannot later
+ * contradict the caller.
  */
-export async function advanceLedger(params: {
+async function advanceLedger(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
    coveredThrough: WatermarkBound;
@@ -386,18 +363,14 @@ export async function advanceLedger(params: {
 }
 
 /**
- * Drop a source's boundary, so the next refresh seeds. Called when a full
- * rebuild is about to run: between the rebuild's start and its boundary write,
- * the recorded value describes a table that no longer exists, and a crash in that
- * window must not leave a delta reading it.
+ * Drop a source's boundary, so the next refresh seeds. Called before a full
+ * rebuild: until the rebuild records a new boundary, the old one describes a
+ * table that no longer exists, and a crash in that window must not leave a delta
+ * reading it.
  *
- * A no-op when the caller supplied the ledger: there is no local row to clear,
- * and the window it protects is closed differently — a run that crashes
- * mid-rebuild reports no manifest, so the caller keeps the entry it already
- * had, measured against a table the failed rebuild replaced. The next run's
- * planner sees that table's emptiness or the entry's own idempotent range,
- * never a silently skipped row (the boundary can only LAG a table the rebuild
- * was refreshing).
+ * A no-op when the caller supplied the ledger: a run that crashes mid-rebuild
+ * reports no manifest, so the caller keeps its old entry, which can only LAG the
+ * table, never skip a row.
  */
 export async function resetLedger(
    context: IncrementalRunContext,
@@ -419,15 +392,13 @@ export async function resetLedger(
 }
 
 /**
- * Record the boundary a completed SEED reached, having just rebuilt the table.
- * Probes the table it wrote (see {@link seedCoveredThrough}); a source with no
- * rows to bound records nothing, leaving the next run to seed again.
+ * Record the boundary a completed SEED reached by probing the table it wrote
+ * (see {@link seedCoveredThrough}); a source with no rows records nothing, so the
+ * next run seeds again.
  *
- * Returns the boundary it recorded (undefined when there was none to record) so
- * the caller can report it on the manifest entry. When the caller supplied the
- * ledger, the probe and the return value are the whole job — the store write
- * below is skipped — because the entry's `ledger` is the only place that
- * boundary needs to reach.
+ * Returns the boundary (undefined when none) for the manifest entry. With a
+ * caller-supplied ledger the store write is skipped and the return value is the
+ * whole job.
  */
 export async function advanceLedgerAfterSeed(params: {
    context: IncrementalRunContext;
@@ -466,21 +437,18 @@ export async function advanceLedgerAfterSeed(params: {
 }
 
 /**
- * Apply the step a plan decided on, and report what happened — the half of a
- * refresh that is identical wherever the table lives.
+ * Apply the step a plan decided on and report what happened, for both colocated
+ * and `storage=` tables.
  *
- * Both callers (a colocated table, a `storage=` one) share this rather than
- * repeating it, because the ORDER is load-bearing and easy to get subtly wrong:
- * the DML commits, and only then is the boundary advanced. A boundary written
- * first would claim coverage a failed DML never delivered, and that is the one
- * direction the ledger must never move in.
+ * Shared because the ORDER is load-bearing: the DML commits, and only then is the
+ * boundary advanced. A boundary written first would claim coverage a failed DML
+ * never delivered.
  *
- * A SEED is not applied here — it returns `applied: false` and the caller falls
- * through to its own full rebuild, which is a different statement on each path.
+ * A SEED is not applied here: it returns `applied: false` and the caller runs its
+ * own full rebuild.
  *
- * @returns what to report on the manifest entry: how long the apply took (absent
- *   for a skip, which did no work), the boundary now in force, and what the
- *   refresh DID.
+ * @returns for the manifest entry: the apply duration (absent for a skip), the
+ *   boundary now in force, and what the refresh DID.
  */
 export async function applyIncrementalStep(params: {
    context: IncrementalRunContext;
@@ -505,9 +473,8 @@ export async function applyIncrementalStep(params: {
    }
    if (step.mode === "seed") return { applied: false };
    if (step.mode === "skip") {
-      // Nothing ran, so nothing is timed: the manifest entry reports null rather
-      // than 0, which would average into the build-duration series as an
-      // implausibly fast build.
+      // No duration (reported as null, not 0, which would skew the
+      // build-duration series).
       return {
          applied: true,
          coveredThrough: step.coveredThrough,
@@ -516,10 +483,9 @@ export async function applyIncrementalStep(params: {
    }
 
    const startTime = performance.now();
-   // One call, because the range replace's DELETE and INSERT have to commit or
-   // roll back together — see deltaScript. A failure here leaves the table as it
-   // was and does NOT advance the boundary, so the next run recomputes the same
-   // range.
+   // One call, so the range replace's DELETE and INSERT commit or roll back
+   // together (see deltaScript). A failure leaves the table and the boundary
+   // as they were; the next run recomputes the same range.
    await applyDeltaScript(target.runner, target.dialect, step.statements);
    await advanceLedger({
       context,
@@ -545,14 +511,11 @@ export async function applyIncrementalStep(params: {
 
 /**
  * Log and count a SEED or a SKIP, so a silent downgrade to a full rebuild is
- * visible. Both are terminal decisions, so reporting them where they are decided
- * is reporting what happened.
+ * visible.
  *
- * A delta is NOT reported here, because at this point it has only been planned.
- * Its metric and its one log line are emitted on COMPLETION, with the duration
- * (see {@link reportDeltaApplied}): a planned delta that then fails would
- * otherwise be counted as work the table received, and the delta:seed ratio the
- * counter exists for would read high exactly when the feature is failing.
+ * A delta is reported on COMPLETION instead (see {@link reportDeltaApplied}), so
+ * a planned delta that fails is not counted and the delta:seed ratio does not
+ * read high exactly when the feature is failing.
  */
 export function reportIncrementalStep(params: {
    step: Extract<IncrementalStep, { mode: "seed" | "skip" }>;
@@ -562,9 +525,8 @@ export function reportIncrementalStep(params: {
 }): void {
    const { step, sourceName, packageName, physicalTableName } = params;
    recordIncrementalStep(step.mode, step.reasonCode);
-   // A seed is the fallback for everything the delta path cannot prove, so its
-   // reason is the only signal that a source declared incremental is quietly
-   // being rebuilt in full every run. Logged at warn for that reason.
+   // Warn: a seed's reason is the only signal that an incremental source is
+   // quietly being rebuilt in full every run.
    logger.warn(
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
@@ -580,11 +542,10 @@ export function reportIncrementalStep(params: {
 }
 
 /**
- * Count and log a delta that COMMITTED. Paired with {@link reportIncrementalStep}
- * so every step is reported exactly once, and a `step="delta"` count always means
- * a table that actually received one.
+ * Count and log a delta that COMMITTED. With {@link reportIncrementalStep}, every
+ * step is reported exactly once.
  */
-export function reportDeltaApplied(params: {
+function reportDeltaApplied(params: {
    sourceName: string;
    packageName: string;
    physicalTableName: string;
@@ -594,4 +555,248 @@ export function reportDeltaApplied(params: {
 }): void {
    recordIncrementalStep("delta");
    logger.info("Applied an incremental delta", params);
+}
+
+/**
+ * What an incremental refresh DID to the table, as the manifest entry's field, or
+ * nothing for a source not refreshed incrementally.
+ *
+ * Reported because it cannot be inferred: every delta-path fallback succeeds by
+ * rebuilding. `none` names the do-nothing case so that absence has ONE meaning
+ * (not refreshed incrementally); `ledger` cannot disambiguate, since an
+ * incremental source over an empty table reports no boundary either.
+ */
+export function refreshFields(
+   did: "delta" | "full" | "none" | undefined,
+): { refresh: "delta" | "full" | "none" } | Record<never, never> {
+   return did ? { refresh: did } : {};
+}
+
+/**
+ * The manifest entry's `ledger` field: the boundary this refresh left in force,
+ * self-contained (table, value, and the source definition it was measured under).
+ * A caller that owns the ledger stores it and returns it verbatim in the next
+ * run's `buildInstructions.ledger`.
+ *
+ * The ONLY place a boundary is reported, so it is emitted whoever owns the ledger
+ * and on every path that leaves one in force (delta, seed, or skip).
+ *
+ * Empty when there is no boundary (a non-incremental or empty source), so the
+ * spread adds no key rather than an explicit undefined.
+ */
+export function ledgerFields(
+   lineage: IncrementalLineage | undefined,
+   bound: WatermarkBound | undefined,
+): { ledger: LedgerEntry } | Record<never, never> {
+   if (!lineage || !bound) return {};
+   return {
+      ledger: {
+         connectionName: lineage.connectionName,
+         physicalTableName: lineage.physicalTableName,
+         // Absent (not undefined) for a colocated table: absence MEANS colocated
+         // on the wire.
+         ...(lineage.storageDestinationName
+            ? { storageDestinationName: lineage.storageDestinationName }
+            : {}),
+         coveredThrough: bound.value,
+         coveredThroughType: bound.malloyType,
+         watermark: lineage.watermarkName,
+         ...(lineage.mergeKeys.length > 0
+            ? { mergeKeys: lineage.mergeKeys }
+            : {}),
+         strategy: lineage.strategy,
+         sourceEntityId: lineage.sourceEntityId,
+      },
+   };
+}
+
+/**
+ * The run's incremental context, or undefined when no source in the package
+ * asked for an incremental refresh (the common case), leaving the build path
+ * untouched.
+ *
+ * Resolved from the compiled plan because the declaration is read off the
+ * compiled source's schema and query, which the wire plan does not carry.
+ */
+export function incrementalRunContext(
+   compiled: CompiledBuildPlan,
+   run: {
+      environmentId: string;
+      packageName: string;
+      materializationId: string;
+      forceRefresh: boolean;
+      now: Date;
+      /**
+       * The caller-supplied ledger. Undefined means the local store; present
+       * (even empty) replaces it for the whole run.
+       */
+      ledger: LedgerEntry[] | undefined;
+   },
+   localLedger: IncrementalLedgerStore,
+): IncrementalRunContext | undefined {
+   // collectIncrementalDeclarations drops (and warns on) an unreadable
+   // declaration, so that source builds full.
+   const declarations: Record<string, IncrementalDeclaration> = {};
+   for (const [sourceID, declaration] of Object.entries(
+      collectIncrementalDeclarations(compiled.sources),
+   )) {
+      if (declaration.incremental) declarations[sourceID] = declaration;
+   }
+   if (Object.keys(declarations).length === 0) return undefined;
+   const { ledger, ...rest } = run;
+   return {
+      ...rest,
+      declarations,
+      ledger: localLedger,
+      ...(ledger !== undefined
+         ? { callerLedger: indexCallerLedger(ledger) }
+         : {}),
+   };
+}
+
+/**
+ * Advance one source's serving table by a bounded delta, if that is what this
+ * refresh should do.
+ *
+ * Returns the manifest entry when the table was advanced in place (or needed
+ * nothing), and `undefined` to mean "rebuild it" via the caller's ordinary CTAS;
+ * {@link reportIncrementalStep} logs and counts every such fallback.
+ *
+ * The DML runs on the SOURCE connection with the build's run options, so the
+ * warehouse attributes a delta to the same unit of work as the seed.
+ */
+export async function refreshOneSourceIncrementally(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   target: DeltaTarget;
+   manifest: Manifest;
+   /**
+    * How the source read its stored upstreams (see
+    * {@link upstreamReuseFromManifest}). Carried on every entry, since an
+    * absent field reads as "no persisted upstream".
+    */
+   upstreamReuse: Pick<
+      ManifestEntry,
+      "upstreamReuse" | "upstreamRecomputeReason"
+   >;
+}): Promise<ManifestEntry | undefined> {
+   const { context, lineage, persistSource, instruction, target } = params;
+   const sourceEntityId = instruction.sourceEntityId;
+
+   const step = await planSourceRefresh({
+      context,
+      lineage,
+      target,
+      columns: deriveColumns(persistSource).map((c) => String(c.name)),
+      reseed: instruction.reseed,
+   });
+   const outcome = await applyIncrementalStep({
+      context,
+      lineage,
+      step,
+      target,
+      sourceName: persistSource.name,
+   });
+   if (!outcome.applied) return undefined;
+   if (outcome.durationMs !== undefined) {
+      recordSourceBuildDuration(outcome.durationMs, "delta");
+   }
+
+   // A delta or skip leaves the existing table serving; it must still enter the
+   // build manifest, or a downstream source in this run would recompute it from
+   // raw.
+   params.manifest.update(sourceEntityId, {
+      tableName: target.quotedTablePath,
+   });
+   return {
+      sourceEntityId,
+      sourceName: persistSource.name,
+      materializedTableId: instruction.materializedTableId,
+      physicalTableName: lineage.physicalTableName,
+      connectionName: persistSource.connectionName,
+      realization: instruction.realization,
+      ...params.upstreamReuse,
+      rowCount: null,
+      buildDurationMs: outcome.durationMs ?? null,
+      // applyDeltaScript returns no cost figure, even on backends that have one.
+      queryCostBytes: null,
+      // A delta reports where it advanced to; a skip, the boundary in force.
+      ...ledgerFields(lineage, outcome.coveredThrough),
+      ...refreshFields(outcome.refresh),
+   };
+}
+
+/**
+ * The in-place refresh a stored source may get instead of a rebuild, as two hooks
+ * in the build session: before the CTAS (advance, or decline and let the rebuild
+ * run) and after it (record where the rebuilt table reaches).
+ *
+ * Callbacks because both probe the destination, and the read-write session on it
+ * exists only for this one source's refresh.
+ */
+export function storageRefreshFor(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   destinationName: string;
+   physicalTableName: string;
+   /** The unprojected build SQL — see storageDeltaTarget. */
+   buildSQL: string;
+   queryMetadata?: QueryMetadata;
+}): StorageIncrementalRefresh {
+   const { context, lineage, persistSource, instruction } = params;
+   return {
+      plan: async ({ session, sourceType, handle, quotedTablePath }) => {
+         const { target, readCost } = storageDeltaTarget({
+            session,
+            sourceType,
+            handle,
+            destinationName: params.destinationName,
+            physicalTableName: params.physicalTableName,
+            quotedTablePath,
+            lineage,
+            persistSource,
+            buildSQL: params.buildSQL,
+            queryMetadata: params.queryMetadata,
+         });
+         const step = await planSourceRefresh({
+            context,
+            lineage,
+            target,
+            columns: deriveColumns(persistSource).map((c) => String(c.name)),
+            reseed: instruction.reseed,
+         });
+         const outcome = await applyIncrementalStep({
+            context,
+            lineage,
+            step,
+            target,
+            sourceName: persistSource.name,
+         });
+         if (!outcome.applied) {
+            // Drop the boundary BEFORE the rebuild, not after: a crash
+            // mid-rebuild must not leave a boundary for data that no longer
+            // exists.
+            await resetLedger(context, lineage);
+            return undefined;
+         }
+         return {
+            durationMs: outcome.durationMs,
+            coveredThrough: outcome.coveredThrough,
+            refresh: outcome.refresh ?? "none",
+            readCost: readCost(),
+         };
+      },
+      afterSeed: ({ session, quotedTablePath }) =>
+         advanceLedgerAfterSeed({
+            context,
+            lineage,
+            quotedTablePath,
+            dialect: STORAGE_TARGET_DIALECT,
+            runner: (sql) => session.runSQL(sql),
+         }),
+   };
 }

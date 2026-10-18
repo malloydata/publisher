@@ -11,7 +11,7 @@ are no open questions.
 
 - **Shipped** (Delivery steps 1–4): the report rule and layout reader on the server and in the SDK,
   path identity, `GET …/reports` and `…/reports/{path}`, one report lint, the curation edges, the
-  write path, the builder with its layout switch, New report at the package root, drafts keyed by
+  write path, the one builder for both layouts, New report at the package root, drafts keyed by
   path, drill by path, the Console's path routes, and the docs and skills. `kind=`, the query-level
   `# artifact` and the bare-name drill fallback are removed, not deprecated: `kind=` is the
   `report-kind-removed` error.
@@ -63,14 +63,14 @@ today still answers, the old ones as deprecated aliases.
 
 ## Vocabulary
 
-| Old                                               | New                                                   |
-| ------------------------------------------------- | ----------------------------------------------------- |
-| dashboard, notebook, document                     | **report**                                            |
-| a dashboard (2-D tiles)                           | a report with **grid** layout                         |
-| a notebook (tiles top to bottom, or `run:` cells) | a report with **linear** layout                       |
-| `kind=dashboard` / `kind=notebook` in the tag     | `layout=grid` / `layout=linear` (`kind=` is not read) |
-| `GET …/dashboards`, `…/notebooks`                 | `GET …/reports`, `GET …/reports/{path}` (§4)          |
-| skills `malloy-dashboards`, `malloy-notebooks`    | one skill, `malloy-reports` (§12)                     |
+| Old                                            | New                                                   |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| dashboard, notebook, document                  | **report**                                            |
+| a dashboard (2-D tiles)                        | a report with **grid** layout                         |
+| a notebook (tiles top to bottom)               | a report with **linear** layout                       |
+| `kind=dashboard` / `kind=notebook` in the tag  | `layout=grid` / `layout=linear` (`kind=` is not read) |
+| `GET …/dashboards`, `…/notebooks`              | `GET …/reports`, `GET …/reports/{path}` (§4)          |
+| skills `malloy-dashboards`, `malloy-notebooks` | one skill, `malloy-reports` (§12)                     |
 
 User-facing text, docs, skills, API descriptions, and new code use "report". Existing code
 identifiers (`DashboardManifest`, `discoverDashboards`, lint codes such as
@@ -141,7 +141,10 @@ In order, first match wins:
 1. `layout=grid` or `layout=linear` in the tag.
 2. A model-level `## artifact` that lists `tiles` or a model-level `dashboard {…}` grid tag (on the
    artifact line or a line of its own) is **grid**.
-3. Anything else is **linear**: a `run:`-cell report, a tag with no tiles, or a `.malloynb`.
+3. Anything else is **linear**.
+
+   _Later:_ a `.malloy` tag that comes out linear with no `tiles` key was the `run:`-cell form, which was
+   retired; such a file is no report (`report-cells-removed`).
 
 A tag that sets `kind=` is no report at all: `kind=` was the old spelling of the layout, removed
 rather than deprecated because reports have no users yet, and reading it silently as a layout, or
@@ -168,14 +171,14 @@ them one column wide, top to bottom, and ignores `colspan` / `break` (today's
 `break`. Nothing else depends on layout. In particular, every feature one kind has today and the
 other lacks becomes available to both, as part of this change or as a listed follow-up:
 
-| Feature                                               | Today                                 | Reports                                   |
-| ----------------------------------------------------- | ------------------------------------- | ----------------------------------------- |
-| Filter bar from givens, URL-synced, Apply / `autorun` | both                                  | both                                      |
-| Text tiles                                            | both                                  | both                                      |
-| `# drill` click-through                               | both render it; target is a dashboard | target is any report (§3)                 |
-| Opened in the builder                                 | both (`DashboardEditor` with `kind`)  | one editor, with a layout switch          |
-| `run:` cells, definitions in the file                 | notebook only                         | linear only, because cells are sequential |
-| Package-page section, viewer page, route              | separate per kind                     | one each (§9, §10)                        |
+| Feature                                               | Today                                 | Reports                     |
+| ----------------------------------------------------- | ------------------------------------- | --------------------------- |
+| Filter bar from givens, URL-synced, Apply / `autorun` | both                                  | both                        |
+| Text tiles                                            | both                                  | both                        |
+| `# drill` click-through                               | both render it; target is a dashboard | target is any report (§3)   |
+| Opened in the builder                                 | both (`DashboardEditor` with `kind`)  | one editor for both layouts |
+| `run:` cells, definitions in the file                 | notebook only                         | retired: rewrite as tiles   |
+| Package-page section, viewer page, route              | separate per kind                     | one each (§9, §10)          |
 
 ### 3. Identity: the path, only
 
@@ -198,15 +201,15 @@ or `..` segment, an empty segment, a leading `/`) resolves to nothing before any
 
 One resource replaces two.
 
-| Route                                              | Change                                                                                                                                                                                                                                                                                                                                                                                                           |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **new** `GET …/reports`                            | Every report in the package: `path`, `name` (label), `layout`, `title`, `description`, `editable` (false for `.malloynb` and `run:`-cell reports), and the load `error` for one that does not compile.                                                                                                                                                                                                           |
-| **new** `GET …/reports/{path}`                     | One report's manifest, where `{path}` is the package path including `.malloy` (or `.malloynb`), exactly as `GET …/reports` returns it, the convention `…/notebooks/{path}` already uses: today's `DashboardManifest` fields with `layout` in place of `kind`; for a `run:`-cell or `.malloynb` report, its cells, as `RawNotebook` returns them today.                                                           |
-| (no cell route)                                    | A `.malloy` report's `run:` cells run through `POST …/models/{path}/query`, the cell's text as the query, as grid tiles do; a `.malloynb`'s through the deprecated `…/notebooks/{path}/cells/{i}`. A `…/reports/{path}/cells/{i}` route was built and removed before release: the query endpoint already applies the same surface, `#(authorize)` and row-level gates (`cell_query_parity.integration.spec.ts`). |
-| `GET …/dashboards`, `GET …/dashboards/{name}`      | **Deprecated aliases.** The listing returns the grid reports; the item resolves a unique basename and answers 409 naming every match when it is ambiguous.                                                                                                                                                                                                                                                       |
-| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Deprecated aliases** for the linear reports; already path-addressed.                                                                                                                                                                                                                                                                                                                                           |
-| `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                                                                                                                                                                                                                                    |
-| `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up.                                                                                                                                                                                                      |
+| Route                                              | Change                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **new** `GET …/reports`                            | Every report in the package: `path`, `name` (label), `layout`, `title`, `description`, `editable` (false for `.malloynb` and `run:`-cell reports), and the load `error` for one that does not compile.                                                                                                                                                          |
+| **new** `GET …/reports/{path}`                     | One report's manifest, where `{path}` is the package path including `.malloy` (or `.malloynb`), exactly as `GET …/reports` returns it, the convention `…/notebooks/{path}` already uses: today's `DashboardManifest` fields with `layout` in place of `kind`; for a `run:`-cell or `.malloynb` report, its cells, as `RawNotebook` returns them today.          |
+| (no cell route)                                    | A `.malloy` report's tiles run through `POST …/models/{path}/query`; a `.malloynb`'s cells through the deprecated `…/notebooks/{path}/cells/{i}`. A `…/reports/{path}/cells/{i}` route was built and removed before release: the query endpoint already applies the same surface, `#(authorize)` and row-level gates (`cell_query_parity.integration.spec.ts`). |
+| `GET …/dashboards`, `GET …/dashboards/{name}`      | **Deprecated aliases.** The listing returns the grid reports; the item resolves a unique basename and answers 409 naming every match when it is ambiguous.                                                                                                                                                                                                      |
+| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Deprecated aliases** for the linear reports; already path-addressed.                                                                                                                                                                                                                                                                                          |
+| `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                                                                                                                                                                                   |
+| `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up.                                                                                                                                                     |
 
 The deprecated routes are removed in a later release (Delivery step 5); they live behind one
 registration (`routes/deprecated.ts`) over projections of the report API
@@ -335,7 +338,8 @@ and its old by-name link, and gives back a package's own `public/dashboards/` an
   the package root whose basename is `README`", replacing the `notebooks/readme.malloy` check; the
   new-report model picker excludes listed report paths instead of two prefixes.
 - **Builder** (`catalog.ts`, `EditorSurface.tsx`, `ReportEditor`): one editor, keyed by `path`,
-  with a layout switch that rewrites `layout=` and nothing else. Reports are excluded from the
+  drawing whichever layout the tag declares (a Linear / Grid switch shipped and was removed: it
+  rewrote `layout=` and nothing else, and read as a mess). Reports are excluded from the
   source catalog by the listed paths, not by prefix. The drill editor writes path targets.
 - **Create** (`DocumentCreate/*`, `newDashboard.ts`, `newNotebook.ts`): one **New report** action
   that asks for a title and a layout, defaulting to linear, and writes `<slug>.malloy` at the
@@ -417,7 +421,7 @@ Each step is shippable alone and leaves the system consistent.
    `GET …/reports` and `…/reports/{path}`, the deprecated aliases, and the `api-doc.yaml` rewrite.
 2. **Console and SDK reading.** `Report`, `ReportPage`, one package-page section, path routes, the
    alias, drill by path, and the SPA fallback (§9, §10 minus create).
-3. **Write path, builder, and create.** §7, the one editor with its layout switch, New report at
+3. **Write path, builder, and create.** §7, the one editor for both layouts, New report at
    the root, and drafts by path, with the `security-posture.md` rewrite in the same pull request.
 4. **Docs, skills, and storefront.** §12, plus the release note.
 5. **Later release: end the deprecations.** The `…/dashboards` and `…/notebooks` routes and the

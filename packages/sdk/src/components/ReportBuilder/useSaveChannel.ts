@@ -210,7 +210,6 @@ export function useSaveChannel({
                      modelPath,
                   }),
                },
-               { queryKey: ["dashboard-editor-manifest"] },
             ],
          });
          invalidateReportQueries(

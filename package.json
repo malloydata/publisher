@@ -49,7 +49,7 @@
     "lint:cli": "cd packages/cli && bun run lint",
     "typecheck:sdk": "cd packages/sdk && bun run tsc --noEmit && bun run tsc -p tsconfig.spec.json",
     "typecheck:app": "cd packages/app && bun run tsc --noEmit && bun run tsc -p tsconfig.spec.json",
-    "typecheck:server": "cd packages/server && bun run tsc --noEmit",
+    "typecheck:server": "cd packages/server && bun run tsc --noEmit && bun run tsc -p tsconfig.spec.json",
     "typecheck:cli": "cd packages/cli && bun run generate-api-types && bun run typecheck",
     "typecheck:skills": "cd packages/skills && bun run typecheck",
     "typecheck:create-malloy-package": "cd packages/create-malloy-package && bun run typecheck",
@@ -112,5 +112,8 @@
     "proxy-addr": "^2.0.8",
     "seroval": "^1.6.3",
     "seroval-plugins": "^1.6.3"
+  },
+  "patchedDependencies": {
+    "@malloydata/render@0.0.435": "patches/@malloydata%2Frender@0.0.435.patch"
   }
 }

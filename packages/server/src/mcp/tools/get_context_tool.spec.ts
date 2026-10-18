@@ -13,14 +13,11 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import {
-   docOnlyText,
-   docText,
-   entityId,
-   sanitize,
-   registerGetContextTool,
-   registerListPackagesTool,
-} from "./get_context_tool";
+import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
+import { entityId } from "./get_context_response";
+import { registerGetContextTool } from "./get_context_tool";
+import { registerListPackagesTool } from "./list_packages_tool";
+import { docOnlyText, docText } from "./package_entities";
 import { embeddingText } from "./embedding_index";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -33,6 +30,8 @@ import {
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
+import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { pollFor } from "../../test_helpers/poll";
 
 // Pin the baseline: every test in this file runs unconfigured (lexical)
 // unless it sets a provider itself, regardless of ambient EMBEDDING_* env
@@ -297,6 +296,7 @@ const mockModel = {
 const mockPackage = {
    listModels: async () => [{ path: "ecommerce.malloy" }],
    getModel: () => mockModel,
+   listSkills: () => [],
 };
 
 // A package with more than 10 sources, to prove the enumeration tier is not
@@ -314,6 +314,7 @@ const mockManySourceModel = {
 const mockManySourcePackage = {
    listModels: async () => [{ path: "many.malloy" }],
    getModel: () => mockManySourceModel,
+   listSkills: () => [],
 };
 
 /**
@@ -331,7 +332,11 @@ const envWith = (
    > = new Map(),
 ) =>
    ({
-      getPackage,
+      // Every package ships no skills unless a test says otherwise.
+      getPackage: async () => ({
+         listSkills: () => [],
+         ...((await getPackage()) as object),
+      }),
       getStaleCompileErrors: () => staleCompileErrors,
    }) as never;
 // A source carrying a raw physical column beside its own documented alias,
@@ -379,6 +384,7 @@ const mockAliasModel = {
 const mockAliasPackage = {
    listModels: async () => [{ path: "b.malloy" }],
    getModel: () => mockAliasModel,
+   listSkills: () => [],
 };
 
 // Both carry an expression, and NEITHER is a bare reference to the other:
@@ -446,10 +452,12 @@ const mockDistinctSpellingModel = {
 const mockDistinctSpellingPackage = {
    listModels: async () => [{ path: "d.malloy" }],
    getModel: () => mockDistinctSpellingModel,
+   listSkills: () => [],
 };
 const mockSiblingPackage = {
    listModels: async () => [{ path: "sib.malloy" }],
    getModel: () => mockSiblingModel,
+   listSkills: () => [],
 };
 
 // A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
@@ -476,6 +484,7 @@ const mockLongDocModel = {
 const mockLongDocPackage = {
    listModels: async () => [{ path: "rooms.malloy" }],
    getModel: () => mockLongDocModel,
+   listSkills: () => [],
 };
 
 const mockTwoSourceModel = {
@@ -510,6 +519,7 @@ const mockTwoSourceModel = {
 const mockTwoSourcePackage = {
    listModels: async () => [{ path: "sales.malloy" }],
    getModel: () => mockTwoSourceModel,
+   listSkills: () => [],
 };
 
 describe("get_context discovery tiers", () => {
@@ -600,6 +610,90 @@ describe("get_context discovery tiers", () => {
          total_available: 1,
          returned: 1,
       });
+   });
+
+   it("names the guides a package ships, without their bodies", async () => {
+      // The listing rides on every package-scoped response because the agent
+      // that most needs it is the one that did not think to ask. Descriptions
+      // only: bodies are what get_skill is for.
+      const withSkills = {
+         ...mockPackage,
+         listSkills: () => [
+            {
+               name: "storefront-conventions",
+               description: "What the measures actually count.",
+               body: "LONG BODY",
+            },
+            {
+               name: "storefront-conventions/margin",
+               description: "Reference detail.",
+               body: "REFERENCE BODY",
+            },
+         ],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => withSkills),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      // The reference entry is addressed by its parent's pointer, so it is not
+      // one of the things a caller chooses from.
+      expect(payload.skills).toEqual([
+         {
+            name: "storefront-conventions",
+            description: "What the measures actually count.",
+         },
+      ]);
+      expect(JSON.stringify(payload)).not.toContain("LONG BODY");
+      expect(typeof payload.skills_note).toBe("string");
+   });
+
+   it("bounds the total description text it attaches, keeping every name", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               ...mockPackage,
+               listSkills: () =>
+                  ["a", "b", "c"].map((name) => ({
+                     name,
+                     description: "x".repeat(3000),
+                     body: "",
+                  })),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      const skills = payload.skills as Array<{
+         name: string;
+         description: string;
+      }>;
+      expect(skills.map((s) => s.name)).toEqual(["a", "b", "c"]);
+      expect(skills.reduce((n, s) => n + s.description.length, 0)).toBe(4000);
+   });
+
+   it("carries no skills key for a package that ships none", async () => {
+      // Most packages ship none, and an empty array is a key every consumer
+      // would then have to test.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({ ...mockPackage, listSkills: () => [] })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      expect("skills" in payload).toBe(false);
+      expect("skills_note" in payload).toBe(false);
    });
 
    it("tier 3: a populated listing of a current package carries no warnings", async () => {
@@ -1305,6 +1399,7 @@ describe("get_context discovery tiers", () => {
                getPackage: async () => ({
                   listModels: async () => [{ path: "h.malloy" }],
                   getModel: () => hiddenModel,
+                  listSkills: () => [],
                }),
             }) as never,
       });
@@ -1671,12 +1766,10 @@ describe("get_context semantic retrieval", () => {
       handler: Handler,
       params: Record<string, unknown>,
    ) {
-      for (let i = 0; i < 200; i++) {
-         const payload = parse(await handler(params));
-         if (payload.retrieval === "semantic") return payload;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      throw new Error("retrieval never became semantic");
+      return pollFor(
+         async () => parse(await handler(params)),
+         (payload) => payload.retrieval === "semantic",
+      );
    }
 
    // Two sources declaring the same field name, which is the shape an
@@ -1968,7 +2061,7 @@ describe("get_context semantic retrieval", () => {
                }),
             ).retrieval,
          );
-         await new Promise((resolve) => setTimeout(resolve, 5));
+         await embeddingSyncQueue.idle();
       }
 
       // Nothing was deleted: the scope narrowed the SCAN, not the cache.
@@ -2535,12 +2628,10 @@ describe("get_context semantic retrieval", () => {
 
       // The sync fails (the provider answers 500), so the search is now an
       // error. Wait for the cooldown to be reached, then check the listing.
-      let result = await handler(search);
-      for (let i = 0; i < 400 && !result.isError; i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         result = await handler(search);
-      }
-      expect(result.isError).toBe(true);
+      await pollFor(
+         () => handler(search),
+         (result) => result.isError === true,
+      );
       const inError = await handler(listing);
       expect(inError.isError).toBe(false);
       expect(parse(inError).sources.length).toBeGreaterThan(0);

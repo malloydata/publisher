@@ -1,14 +1,23 @@
 ##! experimental.givens
 // A doc comment and no `title=`, so the title is the comment's first line
-// rather than the "Volumes" heading below: the middle step of the chain.
+// rather than the "Volumes" heading below.
 ##" Carrier volumes
 ##" Shipments per carrier, refreshed nightly.
-## artifact { layout=linear }
+##| artifact { layout=linear
+  tiles=[
+    heading { kind=text },
+    "carriers_tiles -> volumes"
+  ]
+}
+|##
 
 import "orders.malloy"
+import { SINCE } from "givens.malloy"
 
-##|(markdown)
+##|(markdown) heading
 # Volumes
 |##
 
-run: orders -> since_totals
+source: carriers_tiles is orders extend {
+   view: volumes is since_totals
+}

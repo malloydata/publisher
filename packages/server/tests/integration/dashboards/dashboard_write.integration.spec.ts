@@ -14,13 +14,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
-import {
-   conversionRefused,
-   convertLegacyNotebook,
-} from "../../../../sdk/src/components/ReportBuilder/legacyNotebook";
 import { newNotebookSource } from "../../../../sdk/src/components/DocumentCreate/newNotebook";
 import {
    fixture,
@@ -241,21 +236,20 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(await reportNames()).toContain("sdk-created");
    });
 
+   /** A linear report's tag, listing its one text tile. */
+   const LINEAR = "## artifact { layout=linear tiles=[prose { kind=text }] }";
+   const PROSE = "##|(markdown) prose\nProse.\n|##";
    for (const [name, source] of [
-      ["crlf", "## artifact { layout=linear }\r\n\r\n##(markdown) Prose.\r\n"],
-      [
-         "no_final_newline",
-         "## artifact { layout=linear }\n\n##(markdown) Prose.",
-      ],
+      ["crlf", `${LINEAR}\r\n\r\n${PROSE.replace(/\n/g, "\r\n")}\r\n`],
+      ["no_final_newline", `${LINEAR}\n\n${PROSE}`],
       [
          "license_above_flags",
-         "// Copyright (c) Example\n// SPDX-License-Identifier: MIT\n##! experimental.givens\n## artifact { layout=linear }\n\n##(markdown) Prose.\n",
+         `// Copyright (c) Example\n// SPDX-License-Identifier: MIT\n##! experimental.givens\n${LINEAR}\n\n${PROSE}\n`,
       ],
       [
          "late_import",
-         "##! experimental.givens\n## artifact { layout=linear }\nimport '../orders.malloy'\n\nrun: orders -> { aggregate: order_count }\n\nimport '../givens.malloy'\n\n##(markdown) After a late import.\n",
+         `##! experimental.givens\n## artifact { layout=linear tiles=["orders -> { aggregate: order_count }"] }\nimport '../orders.malloy'\n\nimport '../givens.malloy'\n`,
       ],
-      ["bare_tag", "## artifact\n\n##(markdown) Prose.\n"],
    ] as const) {
       it(`writes a legitimate ${name} notebook and serves it`, async () => {
          const res = await put(`notebooks/${name}.malloy`, { source });
@@ -264,26 +258,42 @@ query: broken is orders -> { aggregate: no_such_measure }
       });
    }
 
+   for (const [name, source] of [
+      ["bare_tag", "## artifact\n\n##(markdown) Prose.\n"],
+      [
+         "run_cells",
+         "## artifact { layout=linear }\nimport '../orders.malloy'\n\n##(markdown) Prose.\n\nrun: orders -> { aggregate: order_count }\n",
+      ],
+   ] as const) {
+      it(`refuses a ${name} notebook, written in the retired cell format, with 400, and writes nothing`, async () => {
+         const res = await put(`notebooks/${name}.malloy`, { source });
+         expect(res.status).toBe(400);
+         expect(await res.text()).toContain("is no longer read");
+         expect(await sourceOf(`notebooks/${name}.malloy`)).toBeUndefined();
+         expect(await reportNames()).not.toContain(name);
+      });
+   }
+
    const GATE_PROSE =
       "Rows are limited by #(access_filter), and a source is locked by #(authorize).";
 
    it("writes a notebook whose markdown prose names #(authorize) and #(access_filter)", async () => {
       const res = await put("notebooks/gate_prose.malloy", {
-         source: `## artifact { layout=linear }\nimport '../orders.malloy'\n\n##|(markdown)\n${GATE_PROSE}\n|##\n\nrun: orders -> { aggregate: order_count }\n`,
+         source: `## artifact { layout=linear tiles=[prose { kind=text }, "orders -> { aggregate: order_count }"] }\nimport '../orders.malloy'\n\n##|(markdown) prose\n${GATE_PROSE}\n|##\n`,
       });
       expect(res.status).toBe(201);
    });
 
-   it("writes a notebook whose one-line markdown cell names #(access_filter)", async () => {
+   it("writes a notebook whose one-line markdown block names #(access_filter)", async () => {
       const res = await put("notebooks/gate_line.malloy", {
-         source: `## artifact { layout=linear }\nimport '../orders.malloy'\n\n##(markdown) Rows are limited by #(access_filter).\n\nrun: orders -> { aggregate: order_count }\n`,
+         source: `## artifact { layout=linear tiles=[prose { kind=text }, "orders -> { aggregate: order_count }"] }\nimport '../orders.malloy'\n\n##|(markdown) prose\nRows are limited by #(access_filter).\n|##\n`,
       });
       expect(res.status).toBe(201);
    });
 
    it("refuses a notebook that declares a real gate, with 400, and writes nothing", async () => {
       const res = await put("notebooks/gate_real.malloy", {
-         source: `## artifact { layout=linear }\nimport '../orders.malloy'\n\n##|(markdown)\n${GATE_PROSE}\n|##\n\n#(authorize) true\nsource: mine is orders extend {}\n\nrun: mine -> { aggregate: order_count }\n`,
+         source: `## artifact { layout=linear tiles=[prose { kind=text }, "mine -> { aggregate: order_count }"] }\nimport '../orders.malloy'\n\n##|(markdown) prose\n${GATE_PROSE}\n|##\n\n#(authorize) true\nsource: mine is orders extend {}\n`,
       });
       expect(res.status).toBe(400);
       expect(await res.text()).toContain("not permitted in caller-submitted");
@@ -309,15 +319,18 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(await res.text()).toContain("not permitted in caller-submitted");
    });
 
-   it("refuses a tagged notebook whose statement above the tag fails the file-scope lint, with 400", async () => {
-      // A statement above the tag: the notebook lint reports it as an error.
+   it("refuses a tagged notebook that fails the file-scope lint, with 400", async () => {
+      // An unnamed block on a report written as tiles: the lint reports the
+      // opener text as an error.
       const res = await put("notebooks/misplaced.malloy", {
          source: `##! experimental.givens
 import { orders } from '../orders.malloy'
 
-## artifact { layout=linear }
+## artifact { layout=linear tiles=[] }
 
-##(markdown) Prose.
+##|(markdown) my-intro
+Prose.
+|##
 `,
       });
       expect(res.status).toBe(400);
@@ -340,8 +353,8 @@ import { orders } from '../orders.malloy'
    });
 });
 
-/** The builder's conversion of each legacy cell notebook is written, served and run by a real environment, and restored byte for byte. */
-describe("PUT model source: notebooks written by the notebook builder", () => {
+/** Reports in the notebook fixtures, read over HTTP by the editor and the viewer. */
+describe("PUT model source: the notebook fixtures", () => {
    const PLAIN = "notebooks-malloyyo";
    const SURFACE = "notebooks-malloyyo-surface";
    let env: PackageEnv;
@@ -356,68 +369,6 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
    }, 300_000);
 
    afterAll(() => env?.stop());
-
-   /** Every cell-format notebook in the fixture; `layout` already lists its tiles and `refused` has a statement no cell can hold. */
-   const CELL_NOTEBOOKS = fsSync
-      .readdirSync(path.join(fixture(PLAIN), "notebooks"))
-      .filter(
-         (f) =>
-            f.endsWith(".malloy") &&
-            !["layout.malloy", "refused.malloy"].includes(f),
-      );
-
-   const modelsUrl = (modelPath: string) =>
-      pkgUrl(PLAIN, `/models/${modelPath}`);
-
-   const putPlain = (modelPath: string, body: unknown) =>
-      env.put(modelPath, body, PLAIN);
-
-   const sourceOf = async (modelPath: string): Promise<string> =>
-      (
-         (await (await fetch(modelsUrl(modelPath))).json()) as {
-            sourceText: string;
-         }
-      ).sourceText;
-
-   it("covers the fixture's cell notebooks", () => {
-      expect(CELL_NOTEBOOKS.length).toBeGreaterThan(5);
-   });
-
-   for (const file of CELL_NOTEBOOKS) {
-      it(`converts ${file}, serves its tiles and runs each, then restores the original byte for byte`, async () => {
-         const modelPath = `notebooks/${file}`;
-         const original = await sourceOf(modelPath);
-         const converted = await convertLegacyNotebook(original);
-         if (conversionRefused(converted)) throw new Error(converted.refused);
-
-         const saved = await putPlain(modelPath, {
-            source: converted.text,
-            expectedHash: hashOf(original),
-         });
-         expect(saved.status).toBe(200);
-
-         const report = (await (
-            await fetch(pkgUrl(PLAIN, `/reports/${modelPath}`))
-         ).json()) as { tiles?: Array<{ kind: string; query?: string }> };
-         const tiles = report.tiles ?? [];
-         expect(tiles).toHaveLength(converted.tiles);
-         for (const tile of tiles.filter((t) => t.kind === "query")) {
-            const ran = await env.query(
-               modelPath,
-               { query: `run: ${tile.query}`, compactJson: true },
-               PLAIN,
-            );
-            expect(ran.status).toBe(200);
-         }
-
-         const restored = await putPlain(modelPath, {
-            source: original,
-            expectedHash: hashOf(converted.text),
-         });
-         expect(restored.status).toBe(200);
-         expect(await sourceOf(modelPath)).toBe(original);
-      });
-   }
 
    it("serves a dashboard's text tiles over HTTP, with their markdown", async () => {
       const res = await fetch(

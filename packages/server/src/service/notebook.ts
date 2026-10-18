@@ -124,8 +124,8 @@ export function docNotesAboveArtifact(
 
 /**
  * A dashboard's description notes: those above the artifact line, or, when they
- * carry no prose, those below it, so a `"` note below the tag (where a
- * dashboard's description used to be read from) still describes the page.
+ * carry no prose, those below it, so a `"` note written below the tag still
+ * describes the page.
  */
 export function dashboardDescriptionNotes(
    notes: readonly AnnotationNote[],
@@ -140,12 +140,10 @@ export function dashboardDescriptionNotes(
 
 /**
  * A file's model-level notes read off its text: each top-level `##` note, and
- * each `##|` block without its `|##` closer, in file order. What the compiler
- * collects as the file's own notes, so the one report tag reader
- * (`readReportTag`) answers the same for text as for the compiled file; the
- * parity table (`reportLayoutParity.json`) holds the two together. For text
- * that is not compiled: a file that failed to compile, and text the write path
- * and the compile check are handed.
+ * each `##|` block without its `|##` closer, in file order: what the compiler
+ * collects as the file's own notes, so `readReportTag` answers the same for
+ * uncompiled text as for the compiled file (`reportLayoutParity.json` holds
+ * the two together).
  */
 export function modelNotesOfParse(
    parse: NotebookParse,
@@ -765,7 +763,7 @@ export function readNotebookCells(
       return refuse({
          line: 1,
          message:
-            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { layout=linear }` after the ##! line.",
+            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { layout=linear tiles=[…] }` after the ##! line.",
       });
    }
 

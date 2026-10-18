@@ -3,28 +3,22 @@
 
 import { type LogMessage, MalloyError } from "@malloydata/malloy";
 
-/**
- * Malloy's translator throws a plain Error, with no problem list, where it
- * hits a case it did not expect in the caller's text (`order_date ~ @2025`
- * reaches "mysterious error in range computation"; `order_date ~ 2025` throws
- * a TypeMismatch). Malloy's own runtime reports such an Error as one problem;
- * this does the same, so the caller gets a compile problem rather than a 500,
- * or a 503 that tells it to retry.
- *
- * Only an Error thrown from the translator (the top stack frame is in
- * `@malloydata/malloy/dist/lang/`) counts. A connection or filesystem failure
- * is also a plain Error and must keep surfacing as it did, so it stays
- * undefined here.
- *
- * Every place a compile catches errors and treats only a `MalloyError` as the
- * caller's mistake calls this first: the query path, `/compile` at each scope,
- * `Model.create`, and the package-load worker. The worker must call it BEFORE
- * serializing, because the check reads the stack and the classification has
- * to be on the wire for the main thread to answer as a compile error.
- */
 const TRANSLATOR_FRAME = /[\\/]@malloydata[\\/]malloy[\\/]dist[\\/]lang[\\/]/;
 const RANGE_COMPARISON_MESSAGE = "mysterious error in range computation";
 
+/**
+ * Malloy's translator throws a plain Error, with no problem list, on some
+ * inputs it did not expect (`order_date ~ @2025` reaches "mysterious error in
+ * range computation"). This turns such an Error into one compile problem, as
+ * Malloy's own runtime does, so the caller gets a compile error rather than a
+ * 500 or a retryable 503.
+ *
+ * Only an Error whose top stack frame is in `@malloydata/malloy/dist/lang/`
+ * counts: a connection or filesystem failure is also a plain Error and must
+ * keep surfacing as one. Every compile catch that treats only `MalloyError`
+ * as the caller's mistake calls this first. The package-load worker must call
+ * it BEFORE serializing, because the check reads the stack.
+ */
 export function translatorInvariantProblem(
    error: unknown,
 ): LogMessage | undefined {

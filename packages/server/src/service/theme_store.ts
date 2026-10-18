@@ -10,23 +10,12 @@ import { StorageManager } from "../storage/StorageManager";
 const THEME_ROW_ID = "default";
 
 /**
- * Persistence for the instance-wide theme edited via the in-app Theme
- * Editor. Backed by a single row in the `themes` table (DuckDB).
+ * Persistence for the instance-wide theme, one row in the DuckDB `themes`
+ * table. As with environments and packages, `publisher.config.json`'s `theme`
+ * block only seeds an empty table; runtime edits live in the DB.
  *
- * Boot semantics: on first read after process start, if the table is
- * empty, the row is seeded from `publisher.config.json`'s top-level
- * `theme` block (if any). Subsequent writes go to DuckDB; the JSON file
- * remains the boot seed only. This mirrors how environments + packages
- * are handled. The JSON config is the seed; runtime mutations live in
- * the DB and survive across restarts.
- *
- * Every payload read out of the DB is run through `sanitizeTheme` so a
- * schema change can't put a stale shape in front of the editor (e.g.
- * old per-mode `series` arrays after the simplification revert). The
- * editor receives only fields that match the current type.
- *
- * Single in-process consumer; a Mutex serializes set / reset against
- * concurrent reads to avoid the cache + DB diverging.
+ * Stored payloads pass through `sanitizeTheme` on read so an outdated shape
+ * never reaches the editor. A Mutex keeps the cache and the DB from diverging.
  */
 export class ThemeStore {
    private mutex = new Mutex();
@@ -42,12 +31,7 @@ export class ThemeStore {
       return this.storageManager.getDuckDbConnection();
    }
 
-   /**
-    * Idempotent. Loads the persisted theme into memory. If the table is
-    * empty, seeds from `publisher.config.json`'s instance theme (if
-    * present) and persists the seed so subsequent reads + the editor see
-    * the same baseline.
-    */
+   /** Idempotent. Loads the persisted theme, seeding an empty table from config. */
    async initialize(): Promise<void> {
       await this.mutex.runExclusive(async () => {
          await this.loadLocked();
@@ -70,10 +54,7 @@ export class ThemeStore {
       });
    }
 
-   /**
-    * Drops the persisted row so the next read falls back to the boot
-    * seed (or to no theme at all if the config doesn't define one).
-    */
+   /** Drops the persisted row so the theme falls back to the config seed, if any. */
    async reset(): Promise<Theme | undefined> {
       return this.mutex.runExclusive(async () => {
          await this.db.run("DELETE FROM themes WHERE id = ?", [THEME_ROW_ID]);
@@ -84,10 +65,7 @@ export class ThemeStore {
       });
    }
 
-   /**
-    * Single source of truth for loading the cache. Must be called with
-    * the mutex held. Idempotent: returns immediately if already loaded.
-    */
+   /** Loads the cache once. Must be called with the mutex held. */
    private async loadLocked(): Promise<void> {
       if (this.cacheLoaded) return;
       const row = await this.db.get<{ payload: string }>(
@@ -106,17 +84,11 @@ export class ThemeStore {
             this.cacheLoaded = true;
             return;
          }
-         // Run through sanitizeTheme so stale schema shapes (e.g. an
-         // old per-mode `series` object) get dropped before the editor
-         // ever sees them. Operators can keep editing without hitting
-         // Reset; fields that match the current shape survive.
          const sanitized = sanitizeTheme(parsed, "ThemeStore.load");
          const dropped = listSanitizerDrops(parsed, sanitized);
          if (dropped.length > 0) {
-            // Surface what disappeared so operators reading the server
-            // log can see why the editor doesn't show their old custom
-            // values after an upgrade. Re-saving from the editor will
-            // overwrite the on-disk payload with the current shape.
+            // Tells an operator why custom values vanished from the editor
+            // after an upgrade.
             logger.info(
                "ThemeStore: dropped stale fields from stored theme during load",
                { dropped },
@@ -148,10 +120,8 @@ export class ThemeStore {
 }
 
 /**
- * Return the list of top-level Theme keys present on `raw` but absent
- * from `sanitized` (i.e. dropped by `sanitizeTheme`). Reports dotted
- * paths down one level so the log says e.g. `palette.series` rather
- * than just `palette`. Returns an empty array when nothing was lost.
+ * Theme keys present on `raw` but dropped by `sanitizeTheme`, as dotted paths
+ * one level deep (e.g. `palette.series`).
  */
 function listSanitizerDrops(
    raw: unknown,

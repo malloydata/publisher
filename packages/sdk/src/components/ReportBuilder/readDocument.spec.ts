@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { CELLS_REMOVED_REASON } from "./reportTag";
 import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
-import { readForEditor } from "./readForEditor";
 import { readReportTagOfText } from "./reportTag";
 import { parseMalloy, parseRefused } from "./malloyTree";
 import { queryTile } from "./testing/fixtures";
@@ -192,42 +192,32 @@ describe("blockAbove", () => {
 });
 
 describe("readDashboardDocument", () => {
-   it("reads a width spelled only as the dashboard_columns alias", async () => {
-      const doc = await read(
-         SIMPLE.replace(
-            '"a -> by_cat"] givens { CATEGORY="Jeans" } } dashboard { columns=12 }',
-            '"a -> by_cat"] givens { CATEGORY="Jeans" } dashboard_columns=8 }',
-         ),
-      );
-      expect(doc.columns).toBe(8);
-   });
-
    describe("a width written badly", () => {
       const withTag = (tagLine: string) =>
          SIMPLE.replace(/^## artifact.*$/m, tagLine);
 
-      it("lets a written columns win even when it is not a width", async () => {
+      it("leaves the default width for a columns that is not a width", async () => {
          const doc = await read(
             withTag(
-               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 } dashboard { columns=1.5 }',
+               '## artifact { tiles=["a -> by_cat"] } dashboard { columns=1.5 }',
             ),
          );
          expect(doc.columns).toBeUndefined();
       });
 
-      it("reads the alias, spaced round its =, when no columns is written", async () => {
-         const doc = await read(
-            withTag(
-               '## artifact { tiles=["a -> by_cat"] dashboard_columns = 8 }',
-            ),
-         );
-         expect(doc.columns).toBe(8);
-      });
-
       it("takes text that only begins with digits as no width", async () => {
          const doc = await read(
             withTag(
-               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8px }',
+               '## artifact { tiles=["a -> by_cat"] } dashboard { columns="8px" }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+
+      it("reads no width from the removed dashboard_columns spelling", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 }',
             ),
          );
          expect(doc.columns).toBeUndefined();
@@ -802,12 +792,56 @@ describe("readDashboardDocument: what it refuses", () => {
       if (readFailed(r)) expect(r.reason).toContain("not a report");
    });
 
-   it("refuses a tile that is not a source -> view expression", async () => {
+   it("refuses a tile that is neither a source -> view expression nor a query's name", async () => {
       const r = await readDashboardDocument(
-         `## artifact { title="T" tiles=["just_a_name"] }\nsource: a is b extend { view: x is y }`,
+         `## artifact { title="T" tiles=["a -> x -> y"] }\nsource: a is b extend { view: x is y }`,
       );
       expect(r.ok).toBe(false);
       if (readFailed(r)) expect(r.reason).toContain("source -> view");
+   });
+
+   // The server's reader runs a quoted bare name as `run: <name>`, so a report
+   // listing a named query is served; the builder used to refuse it whole.
+   it("opens a tile that names a query, read-only and with no source", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles).toEqual([
+         { name: "by_carrier", declaration: { kind: "query" } },
+         {
+            name: "by_month",
+            source: "flights",
+            declaration: { kind: "inherited" },
+         },
+      ]);
+      expect(tileKey(doc.tiles[0])).toBe("query.by_carrier");
+   });
+
+   // The bare spelling (`tiles=[by_carrier]`) is the query-tile form the docs
+   // give, and the server reads it the same way.
+   it("opens a tile that names a query unquoted", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=[by_carrier, "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles[0]).toEqual({
+         name: "by_carrier",
+         declaration: { kind: "query" },
+      });
+   });
+
+   // The reader frames a query tile by the query's own tags, so the builder
+   // draws it at the same width and on the same row.
+   it("reads a query tile's frame off the query's own tags", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=["flights -> by_month", "by_carrier"] } dashboard { columns=12 }\nimport { flights } from '../flights.malloy'\n\n# colspan=6\n# break\n# label="By airline"\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles[1]).toEqual({
+         name: "by_carrier",
+         declaration: { kind: "query" },
+         label: "By airline",
+         colspan: 6,
+         break: true,
+      });
    });
 
    // NOT a refusal, and the tripwire is what taught us so: a dashboard whose
@@ -860,15 +894,6 @@ describe("a tag whose artifact property is not the first", () => {
          `##| dashboard { columns=2 }\n  artifact { title="Probe" tiles=["a -> by_cat"] }\n|##\n${rest}`,
       );
       expect(result.reason).toContain("`artifact { … }` first");
-   });
-
-   it("is refused, not converted, for a cell-format notebook", async () => {
-      const open = await readForEditor(
-         `##! experimental.givens\n## dashboard { columns=2 } artifact { layout=linear title="T" }\nrun: a -> by_cat`,
-      );
-      expect(open.ok === false && open.reason).toContain(
-         "`artifact { … }` first",
-      );
    });
 
    it("still opens when artifact leads and another property follows", async () => {
@@ -948,7 +973,6 @@ describe("the compiler stays lazy", () => {
          fs.readFileSync(path.join(import.meta.dir, file), "utf8");
       const staticImport = /^\s*import\s[^(]*@malloydata\/malloy"/m;
       expect(read("malloyTree.ts")).not.toMatch(staticImport);
-      expect(read("legacyNotebook.ts")).not.toMatch(staticImport);
       expect(read("malloyTree.ts")).toContain("await loadMalloy()");
       expect(read("loadMalloy.ts")).toContain(
          'await import("@malloydata/malloy")',
@@ -957,20 +981,22 @@ describe("the compiler stays lazy", () => {
          expect(read("loadMalloy.ts")).toContain(
             `await import("@malloydata/${pkg}")`,
          );
-      for (const file of ["readDocument.ts", "legacyNotebook.ts"])
-         expect(read(file)).not.toContain('import("@malloydata/malloy-tag")');
+      expect(read("readDocument.ts")).not.toContain(
+         'import("@malloydata/malloy-tag")',
+      );
    });
 });
 
 describe("the layout of a report", () => {
    it("reads the same layout wherever the file lives: the folder no longer matters", async () => {
+      // `null`: no report, whatever the folder.
       const cases = [
-         ["## artifact { }\nrun: q -> { aggregate: c }\n", true],
-         [`## artifact { tiles=["a -> v"] }\n`, false],
-         [`## artifact { layout=linear tiles=["a -> v"] }\n`, true],
-         ["## artifact { layout=grid tiles=[] }\n", false],
+         ["## artifact { }\nrun: q -> { aggregate: c }\n", null],
+         [`## artifact { tiles=["a -> v"] }\n`, "grid"],
+         [`## artifact { layout=linear tiles=["a -> v"] }\n`, "linear"],
+         ["## artifact { layout=grid tiles=[] }\n", "grid"],
       ] as const;
-      for (const [source, linear] of cases)
+      for (const [source, layout] of cases)
          for (const where of [
             undefined,
             "x.malloy",
@@ -979,10 +1005,12 @@ describe("the layout of a report", () => {
             "sales/q3/x.malloy",
          ]) {
             const result = await readDashboardDocument(source, where);
-            const isLinear = readFailed(result)
-               ? result.legacyNotebook === true
-               : result.document.layout === "linear";
-            expect([where, isLinear]).toEqual([where, linear]);
+            const read = readFailed(result)
+               ? result.reason === CELLS_REMOVED_REASON
+                  ? null
+                  : result.reason
+               : result.document.layout;
+            expect([where, read]).toEqual([where, layout]);
          }
    });
 });

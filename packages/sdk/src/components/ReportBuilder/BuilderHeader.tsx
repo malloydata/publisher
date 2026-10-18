@@ -1,106 +1,100 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Stack, Typography } from "@mui/material";
+import { Box } from "@mui/material";
 import type { ReactNode } from "react";
-import { BARE_DESCRIPTION_MARGIN_PX } from "../Dashboard/DashboardGrid";
-import { TileCard, type TileChrome } from "../Dashboard/TileCard";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { ReportHeader, TextTileFrame } from "../Report/ReportPage";
 import { InlineMarkdown } from "./InlineMarkdown";
 import { InlineText } from "./InlineText";
 import { selectionSx } from "./TileFrame";
 import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
- * The document's title, with the builder's actions on its line, and its
- * description beneath: both edited where they stand, as the reader sees them.
+ * How far the description's selection ring stands off its text: wide across,
+ * where the page has room, and close above and below, where it has only the
+ * header's gap to the title (12px) and the page's gap to the filter row
+ * (16px). The ring (2px) and its halo (4px) have to fit inside those too: at
+ * 12px all round, the halo ran into the filters.
+ */
+const DESCRIPTION_RING_OFFSET = { x: 12, y: 6 };
+
+/**
+ * The reader's {@link ReportHeader}, with its title and description edited
+ * where they stand and the builder's actions on the title's line: the same
+ * header in the same place, so editing a page does not move it.
  */
 export function BuilderHeader({
    editor,
    documentSlug,
-   chrome,
    actions,
    descriptionSelected,
    selectDescription,
 }: {
    editor: ReportEditorHandle;
-   /** Kept for callers; the title reads the same in either layout. */
-   notebook?: boolean;
    /** The name a reader's view titles an untitled document with. */
    documentSlug: string | undefined;
-   chrome: TileChrome;
    actions: ReactNode;
    descriptionSelected: boolean;
    selectDescription: () => void;
 }) {
    const { theme } = usePublisherTheme();
    return (
-      <>
-         <Stack direction="row" sx={{ alignItems: "center", gap: 2 }}>
-            <Typography
-               variant="h5"
-               // The host theme's h5 weight, as the reader's title takes it.
-               sx={{ flex: 1, minWidth: 0 }}
+      <ReportHeader
+         actions={actions}
+         title={
+            <InlineText
+               value={editor.document.title}
+               placeholder={
+                  // What a reader's view falls back to: the file's own name.
+                  documentSlug ?? "Untitled report"
+               }
+               ariaLabel="Report title"
+               onCommit={(next) =>
+                  editor.update((draft) => {
+                     draft.title = next;
+                  })
+               }
+            />
+         }
+         description={
+            // Selected as a tile is: one selection on the page, tile or
+            // description.
+            <Box
+               role="group"
+               aria-label="Description"
+               aria-current={descriptionSelected}
+               onPointerDown={selectDescription}
+               onFocus={selectDescription}
             >
-               <InlineText
-                  value={editor.document.title}
-                  placeholder={
-                     // What a reader's view falls back to: the file's own name.
-                     documentSlug ?? "Untitled report"
-                  }
-                  ariaLabel="Report title"
-                  onCommit={(next) =>
-                     editor.update((draft) => {
-                        draft.title = next;
-                     })
-                  }
-               />
-            </Typography>
-            {/* Overhangs the title's line rather than heightening it, so
-             the title sits where the reader's view puts it. */}
-            <Box sx={{ my: "-4px" }}>{actions}</Box>
-         </Stack>
-         {/* The description, drawn as a text block is in this document — a card
-          on a dashboard, bare on a notebook, as the reader draws it —
-          lifting on hover and selected as a tile is: one selection on the
-          page, tile or description. */}
-         <Box
-            role="group"
-            aria-label="Description"
-            aria-current={descriptionSelected}
-            onPointerDown={selectDescription}
-            onFocus={selectDescription}
-            sx={
-               chrome === "none"
-                  ? { my: `${BARE_DESCRIPTION_MARGIN_PX}px` }
-                  : undefined
-            }
-         >
-            <TileCard
-               chrome={chrome}
-               kind="text"
-               sx={{
-                  // Anchors the ring a bare description draws around itself.
-                  position: "relative",
-                  overflow: "visible",
-                  ...selectionSx(theme, {
-                     selected: descriptionSelected,
-                     bare: chrome === "none",
-                  }),
-               }}
-            >
-               <InlineMarkdown
-                  markdown={editor.document.description ?? ""}
-                  placeholder="Add a description"
-                  onCommit={(next) =>
-                     editor.update((draft) => {
-                        if (next.trim() === "") delete draft.description;
-                        else draft.description = next;
-                     })
-                  }
-               />
-            </TileCard>
-         </Box>
-      </>
+               <TextTileFrame
+                  sx={{
+                     // Anchors the ring the bare description draws around itself.
+                     position: "relative",
+                     overflow: "visible",
+                     // Wider than a grid tile's ring: the description is not in
+                     // the grid, so its ring is not held inside a gutter, and
+                     // a paragraph needs more room round it than a tile's prose.
+                     ...selectionSx(theme, {
+                        selected: descriptionSelected,
+                        bare: true,
+                        ringOffset: DESCRIPTION_RING_OFFSET,
+                     }),
+                  }}
+               >
+                  <InlineMarkdown
+                     markdown={editor.document.description ?? ""}
+                     placeholder="Add a description"
+                     onCommit={(next) =>
+                        editor.update((draft) => {
+                           if (next.trim() === "") delete draft.description;
+                           else draft.description = next;
+                        })
+                     }
+                  />
+               </TextTileFrame>
+            </Box>
+         }
+      />
    );
 }

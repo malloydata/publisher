@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import {
    Box,
    Button,
@@ -8,12 +9,14 @@ import {
    ListItemText,
    MenuItem,
    Stack,
+   Switch,
    TextField,
    Typography,
 } from "@mui/material";
 import { useEffect, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { AppDialog } from "../AppDialog";
+import { edgeColor } from "../controlTokens";
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -44,6 +47,8 @@ export interface DrillDialogProps {
    givenNames: string[];
    /** Other dashboards in the package, by slug, as `to=` destinations. */
    dashboards: string[];
+   /** The tile the window was opened from, named in its description. */
+   tileLabel?: string;
    onClose: () => void;
    /** Every drill on `source`, replacing what the document had for it. */
    onApply: (drills: DashboardDrill[]) => void;
@@ -54,6 +59,8 @@ interface Row {
    expression: string;
    to: string[];
    given: string;
+   /** Where it went before it was switched off. */
+   lastTo?: string[];
 }
 
 export function DrillDialog({
@@ -62,10 +69,12 @@ export function DrillDialog({
    source,
    givenNames,
    dashboards,
+   tileLabel,
    onClose,
    onApply,
 }: DrillDialogProps) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const [rows, setRows] = useState<Row[]>([]);
 
    useEffect(() => {
@@ -116,12 +125,44 @@ export function DrillDialog({
       onClose();
    };
 
+   const edge = edgeColor(theme.cardBorder);
+   // A row switched off keeps where it went, so switching it back on is not
+   // starting over.
+   const toggle = (index: number, on: boolean) =>
+      patch(index, (row) => {
+         if (on) row.to = row.lastTo?.length ? row.lastTo : [SELF];
+         else {
+            row.lastTo = row.to;
+            row.to = [];
+         }
+      });
+
    return (
       <AppDialog
+         className={`${reportClasses.dialog} ${reportClasses.clickableCellsDialog}`}
          open={open}
          onClose={onClose}
-         title="Drill"
-         description="A cell in a column that groups by one of these dimensions becomes a link. Clicking it writes the value into a control — here, or on the report it opens."
+         title="Clickable cells"
+         description={
+            <>
+               {tileLabel && (
+                  <Box
+                     component="span"
+                     sx={{ fontWeight: ui.type.label.fontWeight }}
+                  >
+                     {tileLabel} ·{" "}
+                  </Box>
+               )}
+               {/* The renderer reports a click on a table cell and on nothing
+                   a chart draws, and the builder renders its tiles with no
+                   click handling at all, because a press there selects the
+                   tile. Both are said here, or the setting looks broken. */}
+               A click on a table cell sets a filter to its value, on this
+               report or on the one it opens. Bars, lines and points on a chart
+               do not respond to a click. Clicks work in the report, not while
+               you edit it.
+            </>
+         }
          actions={
             <>
                <Button onClick={onClose}>Cancel</Button>
@@ -135,135 +176,212 @@ export function DrillDialog({
             </>
          }
       >
-         <Stack sx={{ gap: 2, pt: 1 }}>
-            {rows.length === 0 ? (
-               <Typography variant="body2" sx={{ color: theme.tileTitle }}>
-                  {source ? (
-                     <>
-                        <Box component="code">{source.name}</Box> declares no
-                        dimensions of its own in this file. A drill is a tag on
-                        the dimension&apos;s declaration, so a dimension the
-                        model declares is made clickable in the model; to make
-                        one clickable here, declare it in{" "}
-                        <Box component="code">{source.name}</Box> and group by
-                        it.
-                     </>
-                  ) : (
-                     "This tile's source is not declared in this file."
-                  )}
-               </Typography>
-            ) : (
-               rows.map((row, index) => (
-                  <Box
-                     key={row.name}
-                     sx={{
-                        display: "grid",
-                        gridTemplateColumns: {
-                           xs: "1fr",
-                           sm: "minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr)",
-                        },
-                        gap: 1.5,
-                        alignItems: "start",
-                     }}
-                  >
-                     <Box sx={{ minWidth: 0, pt: 0.75 }}>
-                        <Typography
-                           variant="body2"
-                           sx={{
-                              fontFamily: "ui-monospace, monospace",
-                              fontSize: 13,
-                           }}
-                        >
-                           {row.name}
-                        </Typography>
-                        <Typography
-                           variant="caption"
-                           sx={{
-                              color: theme.tileTitle,
-                              display: "block",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                           }}
-                           title={row.expression}
-                        >
-                           is {row.expression}
-                        </Typography>
-                     </Box>
-                     <TextField
-                        select
-                        size="small"
-                        label="Clicks go to"
-                        value={row.to}
-                        inputProps={{
-                           "aria-label": `Where ${row.name} goes`,
+         {rows.length === 0 ? (
+            <Typography variant="body2" sx={{ color: theme.tileTitle, pt: 1 }}>
+               {source ? (
+                  <>
+                     <Box component="code">{source.name}</Box> declares no
+                     dimensions of its own in this file. A click is a tag on the
+                     dimension&apos;s declaration, so a dimension the model
+                     declares is made clickable in the model; to make one
+                     clickable here, declare it in{" "}
+                     <Box component="code">{source.name}</Box> and group by it.
+                  </>
+               ) : (
+                  "This tile's source is not declared in this file."
+               )}
+            </Typography>
+         ) : (
+            <Box role="list" aria-label="Dimensions">
+               {rows.map((row, index) => {
+                  const on = row.to.length > 0;
+                  return (
+                     <Box
+                        key={row.name}
+                        role="listitem"
+                        sx={{
+                           display: "grid",
+                           gridTemplateColumns: {
+                              xs: "auto minmax(0, 1fr)",
+                              sm: "auto minmax(0, 0.9fr) minmax(0, 1.6fr)",
+                           },
+                           alignItems: "center",
+                           columnGap: 1.5,
+                           rowGap: 1,
+                           py: 1.25,
+                           borderTop:
+                              index === 0 ? "none" : `1px solid ${edge}`,
                         }}
-                        SelectProps={{
-                           multiple: true,
-                           renderValue: (selected) =>
-                              (selected as string[]).length === 0
-                                 ? "Not clickable"
-                                 : (selected as string[])
-                                      .map(labelFor)
-                                      .join(", "),
-                           displayEmpty: true,
-                        }}
-                        InputLabelProps={{ shrink: true }}
-                        onChange={(event) =>
-                           patch(index, (r) => {
-                              const value = event.target.value as unknown;
-                              r.to = Array.isArray(value)
-                                 ? (value as string[])
-                                 : String(value).split(",").filter(Boolean);
-                           })
-                        }
                      >
-                        {destinations.map((destination) => (
-                           <MenuItem key={destination} value={destination}>
-                              <Checkbox
+                        <Switch
+                           size="small"
+                           checked={on}
+                           onChange={(event) =>
+                              toggle(index, event.target.checked)
+                           }
+                           slotProps={{
+                              input: {
+                                 "aria-label": `${row.name} is clickable`,
+                              },
+                           }}
+                        />
+                        <Box sx={{ minWidth: 0 }}>
+                           <Box
+                              sx={{
+                                 ...ui.type.control,
+                                 whiteSpace: "nowrap",
+                                 overflow: "hidden",
+                                 textOverflow: "ellipsis",
+                              }}
+                           >
+                              {titleCase(row.name)}
+                           </Box>
+                           <Box
+                              title={row.expression}
+                              sx={{
+                                 ...ui.type.code,
+                                 color: "text.secondary",
+                                 whiteSpace: "nowrap",
+                                 overflow: "hidden",
+                                 textOverflow: "ellipsis",
+                              }}
+                           >
+                              {row.name} is {row.expression}
+                           </Box>
+                        </Box>
+                        {on ? (
+                           <Stack
+                              direction="row"
+                              sx={{
+                                 gridColumn: { xs: "1 / -1", sm: "auto" },
+                                 alignItems: "center",
+                                 gap: 1,
+                                 justifyContent: "flex-end",
+                                 ...ui.type.control,
+                              }}
+                           >
+                              <Box
+                                 component="span"
+                                 sx={{ color: "text.secondary" }}
+                              >
+                                 Opens
+                              </Box>
+                              <TextField
+                                 select
                                  size="small"
-                                 checked={row.to.includes(destination)}
-                                 sx={{ p: 0, mr: 1 }}
-                              />
-                              <ListItemText primary={labelFor(destination)} />
-                           </MenuItem>
-                        ))}
-                     </TextField>
-                     <TextField
-                        select
-                        size="small"
-                        label="Sets the filter"
-                        value={row.given}
-                        disabled={row.to.length === 0}
-                        inputProps={{
-                           "aria-label": `Control ${row.name} sets`,
-                        }}
-                        SelectProps={{ displayEmpty: true }}
-                        InputLabelProps={{ shrink: true }}
-                        helperText={
-                           row.given === ""
-                              ? `Named ${row.name}, like the dimension`
-                              : undefined
-                        }
-                        onChange={(event) =>
-                           patch(index, (r) => {
-                              r.given = event.target.value;
-                           })
-                        }
-                     >
-                        <MenuItem value="">
-                           <em>Same name as the dimension</em>
-                        </MenuItem>
-                        {givenNames.map((name) => (
-                           <MenuItem key={name} value={name}>
-                              {name}
-                           </MenuItem>
-                        ))}
-                     </TextField>
-                  </Box>
-               ))
-            )}
-         </Stack>
+                                 value={row.to}
+                                 inputProps={{
+                                    "aria-label": `Where ${row.name} goes`,
+                                 }}
+                                 SelectProps={{
+                                    multiple: true,
+                                    renderValue: (selected) =>
+                                       (selected as string[])
+                                          .map(labelFor)
+                                          .join(", "),
+                                 }}
+                                 onChange={(event) =>
+                                    patch(index, (r) => {
+                                       const value = event.target
+                                          .value as unknown;
+                                       const next = Array.isArray(value)
+                                          ? (value as string[])
+                                          : String(value)
+                                               .split(",")
+                                               .filter(Boolean);
+                                       // Unticking the last destination is
+                                       // switching the row off.
+                                       if (next.length === 0) r.lastTo = r.to;
+                                       r.to = next;
+                                    })
+                                 }
+                                 sx={{
+                                    flex: "1 1 150px",
+                                    minWidth: 0,
+                                    maxWidth: 200,
+                                 }}
+                              >
+                                 {destinations.map((destination) => (
+                                    <MenuItem
+                                       key={destination}
+                                       value={destination}
+                                    >
+                                       <Checkbox
+                                          size="small"
+                                          checked={row.to.includes(destination)}
+                                          sx={{ p: 0, mr: 1 }}
+                                       />
+                                       <ListItemText
+                                          primary={labelFor(destination)}
+                                       />
+                                    </MenuItem>
+                                 ))}
+                              </TextField>
+                              <Box
+                                 component="span"
+                                 sx={{ color: "text.secondary" }}
+                              >
+                                 sets
+                              </Box>
+                              <TextField
+                                 select
+                                 size="small"
+                                 value={row.given}
+                                 inputProps={{
+                                    "aria-label": `Control ${row.name} sets`,
+                                 }}
+                                 SelectProps={{
+                                    displayEmpty: true,
+                                    renderValue: (value) =>
+                                       value === "" ? row.name : String(value),
+                                 }}
+                                 onChange={(event) =>
+                                    patch(index, (r) => {
+                                       r.given = event.target.value;
+                                    })
+                                 }
+                                 sx={{
+                                    flex: "1 1 120px",
+                                    minWidth: 0,
+                                    maxWidth: 170,
+                                 }}
+                              >
+                                 <MenuItem value="">
+                                    <ListItemText
+                                       primary={row.name}
+                                       secondary="Named like the dimension"
+                                    />
+                                 </MenuItem>
+                                 {givenNames.map((name) => (
+                                    <MenuItem key={name} value={name}>
+                                       {name}
+                                    </MenuItem>
+                                 ))}
+                              </TextField>
+                           </Stack>
+                        ) : (
+                           <Typography
+                              variant="body2"
+                              sx={{
+                                 color: "text.secondary",
+                                 textAlign: "right",
+                                 display: { xs: "none", sm: "block" },
+                              }}
+                           >
+                              Not clickable
+                           </Typography>
+                        )}
+                     </Box>
+                  );
+               })}
+            </Box>
+         )}
       </AppDialog>
    );
+}
+
+/** `product_category` -> `Product category`. */
+function titleCase(name: string): string {
+   const words = name.replace(/_+/g, " ").trim();
+   return words.charAt(0).toUpperCase() + words.slice(1);
 }

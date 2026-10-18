@@ -103,6 +103,41 @@ const failing = (status?: number) =>
 const createButton = (name: string | RegExp) =>
    screen.getByRole("button", { name });
 
+/** The picker's views, as "source → view". */
+const viewList = () =>
+   screen.getAllByRole("option").map(
+      (option) =>
+         `${option
+            .closest('[role="group"]')
+            ?.getAttribute("aria-label")
+            ?.replace(/ in .*$/, "")} → ${
+            /\(([^)]*)\)$/.exec(option.getAttribute("aria-label") ?? "")?.[1]
+         }`,
+   );
+/** Pick a view in the list by "source → view". */
+const pickView = (name: string) => {
+   const [, view] = name.split(" → ");
+   const option = screen
+      .getAllByRole("option")
+      .find((o) => o.getAttribute("aria-label")?.endsWith(`(${view})`));
+   if (!option) throw new Error(`no view ${name}`);
+   fireEvent.click(option);
+};
+/** The picked view, as "source → view". */
+const pickedView = () => {
+   const option = screen
+      .getAllByRole("option")
+      .find((o) => o.getAttribute("aria-selected") === "true");
+   return option
+      ? `${option
+           .closest('[role="group"]')
+           ?.getAttribute("aria-label")
+           ?.replace(/ in .*$/, "")} → ${
+           /\(([^)]*)\)$/.exec(option.getAttribute("aria-label") ?? "")?.[1]
+        }`
+      : "";
+};
+
 const isDisabled = (element: HTMLElement) => element.hasAttribute("disabled");
 
 describe("NewDocumentDialog", () => {
@@ -111,18 +146,14 @@ describe("NewDocumentDialog", () => {
       const onCreated = mock((_created: unknown) => {});
       const onEvent = mock((_event: unknown) => {});
       mount({ target: packageTarget([], write), onCreated, onEvent });
-      await titleFilled("by category");
+      await titleFilled("By category");
 
       // A source with no views is not on the list, so a pair that cannot be written cannot be picked.
-      fireEvent.mouseDown(
-         screen.getByRole("combobox", { name: /First query/ }),
-      );
-      expect(
-         screen.getAllByRole("option").map((option) => option.textContent),
-      ).toEqual(["order_items → by_category", "order_items → by_brand"]);
-      fireEvent.click(
-         screen.getByRole("option", { name: "order_items → by_brand" }),
-      );
+      expect(viewList()).toEqual([
+         "order_items → by_category",
+         "order_items → by_brand",
+      ]);
+      pickView("order_items → by_brand");
       fireEvent.change(screen.getByLabelText("Report title"), {
          target: { value: "Sales by Region" },
       });
@@ -163,9 +194,9 @@ describe("NewDocumentDialog", () => {
          target: packageTarget([], write),
          onCreated,
       });
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(
-         screen.getByRole("combobox", { name: /First query/ }),
+         screen.getByRole("listbox", { name: "From the model" }),
       ).toBeDefined();
 
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
@@ -185,9 +216,8 @@ describe("NewDocumentDialog", () => {
    it("switches layout in place, keeping the choices already read, and writes it", async () => {
       const write = mock((_path: string, _source: string) => Promise.resolve());
       mount({ target: packageTarget([], write) });
-      await titleFilled("by category");
-      fireEvent.mouseDown(screen.getByRole("combobox", { name: /Layout/ }));
-      fireEvent.click(screen.getByRole("option", { name: /^Linear/ }));
+      await titleFilled("By category");
+      fireEvent.click(screen.getByRole("radio", { name: "Linear" }));
       expect(getModel).toHaveBeenCalledTimes(2);
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
@@ -197,17 +227,19 @@ describe("NewDocumentDialog", () => {
 
    it("opens on linear when the host names no layout", async () => {
       mount({ layout: undefined });
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(
-         screen.getByRole("combobox", { name: /Layout/ }).textContent,
-      ).toMatch(/^Linear/);
+         screen
+            .getByRole("radio", { name: "Linear" })
+            .getAttribute("aria-checked"),
+      ).toBe("true");
    });
 
    it("writes at a typed location, with the import relative to it", async () => {
       const write = mock((_path: string, _source: string) => Promise.resolve());
       const onCreated = mock((_created: unknown) => {});
       mount({ target: packageTarget([], write), onCreated });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.change(screen.getByLabelText("Location"), {
          target: { value: "team/sales/q3" },
       });
@@ -229,7 +261,7 @@ describe("NewDocumentDialog", () => {
    it("refuses a typed location that is taken, under public/, or the package's index", async () => {
       const write = mock((_path: string, _source: string) => Promise.resolve());
       mount({ target: packageTarget(["taken.malloy"], write) });
-      await titleFilled("by category");
+      await titleFilled("By category");
       const location = screen.getByLabelText("Location");
       fireEvent.change(location, { target: { value: "taken.malloy" } });
       expect(
@@ -250,7 +282,7 @@ describe("NewDocumentDialog", () => {
       mount({
          target: packageTarget(["overview.malloy", "overview-2.malloy"], write),
       });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.change(screen.getByLabelText("Report title"), {
          target: { value: "Overview" },
       });
@@ -267,7 +299,7 @@ describe("NewDocumentDialog", () => {
          layout: "linear",
          target: packageTarget(["dashboards/by-category.malloy"]),
       });
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(
          screen.getByText(/Written as by-category\.malloy in the package/),
       ).toBeDefined();
@@ -285,7 +317,7 @@ describe("NewDocumentDialog", () => {
          ),
          onCreated,
       });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       expect(await screen.findByText("File already exists")).toBeDefined();
       expect(onCreated).not.toHaveBeenCalled();
@@ -293,13 +325,8 @@ describe("NewDocumentDialog", () => {
 
    it("offers only the sources a model exports, not the ones it imports", async () => {
       mount({ models: ["mid.malloy"] });
-      await titleFilled("overview");
-      fireEvent.mouseDown(
-         screen.getByRole("combobox", { name: /First query/ }),
-      );
-      expect(
-         screen.getAllByRole("option").map((option) => option.textContent),
-      ).toEqual(["mid_src → overview"]);
+      await titleFilled("Overview");
+      expect(viewList()).toEqual(["mid_src → overview"]);
    });
 
    it("offers nothing from a model whose exports are not stated", async () => {
@@ -320,7 +347,7 @@ describe("NewDocumentDialog", () => {
       expect(
          screen
             .getByRole("button", {
-               name: "Create report: No model view to start from yet",
+               name: "Create report: Nothing in the model to start from yet",
             })
             .hasAttribute("disabled"),
       ).toBe(true);
@@ -352,7 +379,7 @@ describe("NewDocumentDialog", () => {
                onCreated={() => {}}
             />,
          );
-         await titleFilled("by category");
+         await titleFilled("By category");
          expect(getModel).toHaveBeenCalledTimes(2);
          expect(cacheKeys("new-document-model")).toEqual([
             `["new-document-model","env","pkg",null,"storefront.malloy","${TEST_SERVER}"]`,
@@ -384,7 +411,7 @@ describe("NewDocumentDialog", () => {
                onCreated={() => {}}
             />,
          );
-         await titleFilled("by category");
+         await titleFilled("By category");
          expect(getModel).toHaveBeenCalledTimes(2);
       });
    });
@@ -427,7 +454,7 @@ describe("NewDocumentDialog", () => {
             },
             onCreated,
          });
-         await titleFilled("by category");
+         await titleFilled("By category");
          fireEvent.change(screen.getByLabelText("Report title"), {
             target: { value: "Overview" },
          });
@@ -445,7 +472,7 @@ describe("NewDocumentDialog", () => {
 describe("NewDocumentDialog: what a model read is cached under", () => {
    it("reads each model at the package's version, under a key that names the version and the server", async () => {
       mount({ versionId: "v3" });
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(getModel.mock.calls[0]).toEqual([
          "env",
          "pkg",
@@ -469,7 +496,7 @@ describe("NewDocumentDialog: a model it could not read", () => {
       mount();
       expect(
          await screen.findByText(
-            "Couldn't read storefront.malloy, so its views aren't listed.",
+            "Couldn't read storefront.malloy, so nothing from it is listed.",
          ),
       ).toBeDefined();
       expect(
@@ -478,14 +505,14 @@ describe("NewDocumentDialog: a model it could not read", () => {
       expect(
          isDisabled(
             createButton(
-               "Create report: Couldn't read the model views to start from",
+               "Create report: Couldn't read the model to start from",
             ),
          ),
       ).toBe(true);
 
       healthy = true;
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(screen.queryByText(/Couldn't read storefront\.malloy/)).toBeNull();
       expect(isDisabled(createButton("Create report"))).toBe(false);
    });
@@ -495,7 +522,7 @@ describe("NewDocumentDialog: a model it could not read", () => {
       mount();
       expect(
          await screen.findByText(
-            "Couldn't read storefront.malloy, other.malloy, so their views aren't listed.",
+            "Couldn't read storefront.malloy, other.malloy, so nothing from them is listed.",
          ),
       ).toBeDefined();
    });
@@ -507,10 +534,10 @@ describe("NewDocumentDialog: a model it could not read", () => {
             : serve(env, pkg, path, versionId),
       );
       mount();
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(
          await screen.findByText(
-            "Couldn't read other.malloy, so its views aren't listed.",
+            "Couldn't read other.malloy, so nothing from it is listed.",
          ),
       ).toBeDefined();
       expect(isDisabled(createButton("Create report"))).toBe(false);
@@ -538,20 +565,20 @@ describe("NewDocumentDialog: why Create is off", () => {
    it("while the views load, in its name and its tooltip", async () => {
       getModel.mockImplementation(() => pending());
       mount();
-      const button = createButton("Create report: Loading model views");
+      const button = createButton("Create report: Loading the model");
       expect(isDisabled(button)).toBe(true);
       fireEvent.mouseOver(button.parentElement!);
       expect((await screen.findByRole("tooltip")).textContent).toBe(
-         "Loading model views",
+         "Loading the model",
       );
    });
 
    it("while the host still lists the models, not that the package has none", () => {
       mount({ models: [], modelsLoading: true });
       expect(screen.queryByText(/This package has no models yet/)).toBeNull();
-      expect(
-         isDisabled(createButton("Create report: Loading model views")),
-      ).toBe(true);
+      expect(isDisabled(createButton("Create report: Loading the model"))).toBe(
+         true,
+      );
    });
 
    it("when the host could not list the models, with its Retry", () => {
@@ -570,7 +597,7 @@ describe("NewDocumentDialog: why Create is off", () => {
       expect(
          isDisabled(
             createButton(
-               "Create report: Couldn't read the model views to start from",
+               "Create report: Couldn't read the model to start from",
             ),
          ),
       ).toBe(true);
@@ -597,7 +624,7 @@ describe("NewDocumentDialog: why Create is off", () => {
       expect(
          isDisabled(
             createButton(
-               "Create report: Couldn't read the model views to start from",
+               "Create report: Couldn't read the model to start from",
             ),
          ),
       ).toBe(true);
@@ -608,7 +635,9 @@ describe("NewDocumentDialog: why Create is off", () => {
       await screen.findByText(/no model in this package declares one yet/);
       expect(
          isDisabled(
-            createButton("Create report: No model view to start from yet"),
+            createButton(
+               "Create report: Nothing in the model to start from yet",
+            ),
          ),
       ).toBe(true);
    });
@@ -616,7 +645,7 @@ describe("NewDocumentDialog: why Create is off", () => {
    it("not for a blank title, whose problem it shows on press", async () => {
       const write = mock((_path: string, _source: string) => Promise.resolve());
       mount({ target: packageTarget([], write) });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.change(screen.getByLabelText("Report title"), {
          target: { value: "  " },
       });
@@ -633,7 +662,7 @@ describe("NewDocumentDialog: why Create is off", () => {
 
    it("not for a title that cannot be written, whose problem shows as it is typed", async () => {
       mount({ layout: "linear" });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.change(screen.getByLabelText("Report title"), {
          target: { value: "a |## b" },
       });
@@ -675,16 +704,10 @@ describe("NewDocumentDialog: the picked view", () => {
          />,
       );
 
-   const firstTile = () =>
-      screen.getByRole("combobox", { name: /First query/ });
-
    const pickBrand = async () => {
-      await titleFilled("by category");
-      fireEvent.mouseDown(firstTile());
-      fireEvent.click(
-         screen.getByRole("option", { name: "order_items → by_brand" }),
-      );
-      expect(firstTile().textContent).toBe("order_items → by_brand");
+      await titleFilled("By category");
+      pickView("order_items → by_brand");
+      expect(pickedView()).toBe("order_items → by_brand");
    };
 
    beforeEach(() => {
@@ -700,9 +723,7 @@ describe("NewDocumentDialog: the picked view", () => {
       await pickBrand();
       reread(view, "reordered");
       await waitFor(() => expect(getModel).toHaveBeenCalledTimes(2));
-      await waitFor(() =>
-         expect(firstTile().textContent).toBe("order_items → by_brand"),
-      );
+      await waitFor(() => expect(pickedView()).toBe("order_items → by_brand"));
       expect(isDisabled(createButton("Create report"))).toBe(false);
    });
 
@@ -712,12 +733,12 @@ describe("NewDocumentDialog: the picked view", () => {
       reread(view, "dropped");
       expect(
          await screen.findByText(
-            "The view you picked is no longer in this model; pick another.",
+            "What you picked is no longer in this model; pick something else.",
          ),
       ).toBeDefined();
-      expect(firstTile().textContent).not.toContain("by_category");
+      expect(pickedView()).not.toContain("by_category");
       expect(
-         isDisabled(createButton("Create report: Pick a view to start from")),
+         isDisabled(createButton("Create report: Pick what to start from")),
       ).toBe(true);
    });
 });
@@ -734,7 +755,7 @@ describe("NewDocumentDialog: while it creates", () => {
       const onClose = mock(() => {});
       const onCreated = mock((_created: unknown) => {});
       mount({ target: packageTarget([], write), onClose, onCreated });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.click(createButton("Create report"));
 
       const creating = await screen.findByRole("button", {
@@ -754,7 +775,7 @@ describe("NewDocumentDialog: while it creates", () => {
 
    it("names the report while it creates a linear one", async () => {
       mount({ layout: "linear", target: packageTarget([], () => pending()) });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.click(createButton("Create report"));
       expect(
          await screen.findByRole("button", { name: "Creating report…" }),
@@ -766,7 +787,7 @@ describe("NewDocumentDialog: what the host decides", () => {
    it("closes from Cancel and from Escape", async () => {
       const onClose = mock(() => {});
       mount({ onClose });
-      await titleFilled("by category");
+      await titleFilled("By category");
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
       expect(onClose).toHaveBeenCalledTimes(2);
@@ -774,8 +795,8 @@ describe("NewDocumentDialog: what the host decides", () => {
 
    it("offers no layout to switch to when allowLayoutChange is false", async () => {
       mount({ layout: "linear", allowLayoutChange: false });
-      await titleFilled("by category");
-      expect(screen.queryByRole("combobox", { name: /Layout/ })).toBeNull();
+      await titleFilled("By category");
+      expect(screen.queryByRole("radiogroup", { name: "Layout" })).toBeNull();
       expect(createButton("Create report")).toBeDefined();
    });
 
@@ -796,7 +817,7 @@ describe("NewDocumentDialog: what the host decides", () => {
          },
          savedAs: "Saved to your workspace, and opened in the builder.",
       });
-      await titleFilled("by category");
+      await titleFilled("By category");
       expect(
          screen.getByText(
             "Saved to your workspace, and opened in the builder.",

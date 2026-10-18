@@ -10,8 +10,6 @@ import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 
-// Zod shape for reload_package. environmentName/packageName mirror the
-// other tools and point the agent at list_packages for name discovery.
 const reloadShape = {
    environmentName: z
       .string()
@@ -22,39 +20,37 @@ const reloadShape = {
 };
 
 /**
- * What a failed reload does, in one sentence, shared with MCP_INSTRUCTIONS
- * rather than restated there. Both surfaces describe the same behavior, so one
- * copy is what stops them drifting.
+ * What a failed reload does, shared with MCP_INSTRUCTIONS so the two cannot
+ * drift.
  *
- * SECURITY: interpolated into MCP_INSTRUCTIONS, which is delivered
- * pre-authorization to any connecting client. Keep this a static string
- * literal; never derive it from config, environment, or request data.
+ * SECURITY: interpolated into MCP_INSTRUCTIONS, delivered pre-authorization.
+ * Keep it a static literal; never derive it from config or request data.
  */
 export const RELOAD_FAILURE_IS_SAFE =
    "A reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors.";
 
 const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-${RELOAD_FAILURE_IS_SAFE} Running compile_model at scope "package" first is the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload. It reports the compile errors, render-tag findings and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface and discovery warnings, and deprecated-format warnings for .malloynb notebooks and #(filter) sources, among others) appears only here.
+Receipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.
+
+${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names get_context returns.
 
 ## Behavior
-Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.
+Recompiles the package from its on-disk content under publisher_data/, the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them. A hard compile error returns an error payload instead.`;
 
 /**
- * Registers the reload_package MCP tool: recompiles a package from its
- * on-disk content so a saved model edit becomes queryable by name without a
- * server restart. Wraps the same PackageController.getPackage(reload=true) path
- * the REST GET /environments/:env/packages/:pkg?reload=true endpoint uses, so it
- * adds no capability beyond that already-exposed endpoint (SECURITY: parity with
- * REST. The MCP surface is unauthenticated, and so is that endpoint; a reload
- * mutates the shared in-memory package but returns only names and warnings,
- * never row data or the package's location).
+ * Registers reload_package: recompiles a package from disk so a saved edit is
+ * queryable by name without a restart.
+ *
+ * SECURITY: parity with the unauthenticated REST `?reload=true` path it wraps
+ * (PackageController.getPackage). It returns only names and warnings, never row
+ * data or the package's location.
  */
 export function registerReloadPackageTool(
    mcpServer: McpServer,
@@ -69,7 +65,7 @@ export function registerReloadPackageTool(
       async (params) => {
          const { environmentName, packageName } = params;
 
-         logger.info("[MCP Tool reloadPackage] Reloading package", {
+         logger.debug("[MCP Tool reloadPackage] Reloading package", {
             environmentName,
             packageName,
          });
@@ -84,25 +80,29 @@ export function registerReloadPackageTool(
                await packageController.reloadPackage(
                   environmentName,
                   packageName,
+                  "mcp",
                );
 
             const payload = {
                status: "reloaded" as const,
-               // Which path ran. "in-place" recompiled the tree on disk and left
-               // it alone; "reinstalled" re-fetched from the package's install
-               // location, so any on-disk edits are gone. The caller cannot tell
-               // these apart otherwise, and only one of them keeps their work.
+               // "in-place" recompiled the tree on disk; "reinstalled"
+               // re-fetched it, so on-disk edits are gone. Only this says which.
                mode,
                name: pkg.name,
+               // A reload succeeds whether or not it saw the caller's edit; an unchanged sha on a hashed file is the signal.
+               ...(pkg.sourceContentSha !== undefined && {
+                  sourceContentSha: pkg.sourceContentSha,
+               }),
+               ...(pkg.servedRevision !== undefined && {
+                  servedRevision: pkg.servedRevision,
+               }),
                ...(pkg.description !== undefined && {
                   description: pkg.description,
                }),
                ...(pkg.warnings !== undefined &&
                   pkg.warnings.length > 0 && { warnings: pkg.warnings }),
-               // exploresWarnings is a distinct signal from render-tag warnings:
-               // it flags a curated-discovery (explores) entry that did not
-               // resolve to a model, so a mistyped explores edit is not silently
-               // swallowed on reload.
+               // An explores entry that did not resolve to a model, so a
+               // mistyped explores edit is not silently swallowed.
                ...(pkg.exploresWarnings !== undefined &&
                   pkg.exploresWarnings.length > 0 && {
                      exploresWarnings: pkg.exploresWarnings,
@@ -111,9 +111,7 @@ export function registerReloadPackageTool(
 
             return jsonResource(uri, payload);
          } catch (error) {
-            // Unknown environment/package, or a compile error in the reloaded
-            // package: surface as a clean isError payload rather than a
-            // transport fault.
+            // A clean isError payload rather than a transport fault.
             logger.warn("[MCP Tool reloadPackage] reload failed", {
                environmentName,
                packageName,

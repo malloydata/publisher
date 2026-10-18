@@ -237,7 +237,7 @@ describe("Dashboard discovery (E2E)", () => {
       });
       // Each tile carries the givens it actually references, so a viewer can
       // re-run only the tiles a changed control affects.
-      expect(manifest.tiles).toEqual([
+      expect(manifest.tiles as unknown[]).toEqual([
          { kind: "query", query: "orders -> by_brand", givenNames: ["BRAND"] },
          {
             kind: "query",
@@ -258,7 +258,7 @@ describe("Dashboard discovery (E2E)", () => {
    it("carries each tile's label, colspan and break off its view", async () => {
       const manifest = await getManifest("tiled");
       expect(manifest).toMatchObject({ dashboardColumns: 12 });
-      expect(manifest.tiles).toEqual([
+      expect(manifest.tiles as unknown[]).toEqual([
          {
             kind: "query",
             query: "tiles -> order_tile",
@@ -875,11 +875,6 @@ describe("Dashboard discovery (E2E)", () => {
          // is not just "every self drill warns".
          expect(messages).not.toContainEqual(
             expect.stringContaining("shipping.ships_from"),
-         );
-         expect(messages).toContainEqual(
-            expect.stringContaining(
-               'Custom dashboard components are not supported, so "dashboards/orphan.jsx" is ignored',
-            ),
          );
          // The refinement tile is legal Malloy and must not be warned about.
          expect(messages).not.toContainEqual(

@@ -117,6 +117,66 @@ RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
     gcc -O2 -Wall -Wextra -I/src/adbc-shim -shared -fPIC -o /tmp/stub/libadbc_driver_snowflake.real.so /src/adbc-shim/stub_driver.c && \
     ADBC_REAL_DRIVER=/tmp/stub/libadbc_driver_snowflake.real.so /tmp/selftest /out/libadbc_driver_snowflake.so
 
+# The workspace manifests prod-deps installs from, with every release's version
+# bump pinned out: nothing installs by the version (app takes the sdk as
+# `workspace:*`). Its own stage so that prod-deps copies in only the pinned
+# files: a release changes these manifests' versions, and a COPY of them
+# straight into prod-deps would change its cache key there, before any step
+# could pin them. The workspaces listed here match the builder's and the final
+# stage's lists.
+FROM oven/bun:1.3.13-slim AS prod-manifests
+WORKDIR /publisher
+COPY packages/server/package.json ./packages/server/package.json
+COPY packages/app/package.json ./packages/app/package.json
+COPY packages/sdk/package.json ./packages/sdk/package.json
+COPY scripts/set-version.mjs ./scripts/
+RUN bun scripts/set-version.mjs 0.0.0 packages/*/package.json
+
+# Production node_modules, from the dependency manifests alone. Its own stage,
+# on the plain bun base rather than base-deps, so its build cache is keyed on
+# bun.lock, patches/ and the prepared manifests: the final stage copies the
+# result with COPY --link, so the tree keeps its layer digest from one release
+# to the next until a dependency changes. An install in the final stage would
+# sit after the dist/ copies and on top of base-deps (which APT_REFRESH rebuilds
+# daily), so it would rerun, and its layer re-ship, on every release. The final
+# stage ships the real package.json files from the builder.
+FROM oven/bun:1.3.13-slim AS prod-deps
+WORKDIR /publisher
+COPY package.json bun.lock ./
+COPY patches/ ./patches/
+COPY --from=prod-manifests /publisher/packages/ ./packages/
+# The committed bun.lock covers every workspace under packages/, and the image
+# carries three, so it is re-resolved for those three first, as the builder's
+# `bun install` does. `--production` then installs from it frozen. The cache is
+# locked because the builder installs into the same cache, and the two stages
+# build in parallel.
+#
+# Only the root node_modules leaves this stage. A workspace-local one (bun makes
+# packages/<name>/node_modules when a dependency's version conflicts with the
+# root's) would be left behind and fail the server at startup, so the install
+# refuses to produce one.
+RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
+    bun install --lockfile-only && bun install --production && \
+    if ls -d packages/*/node_modules >/dev/null 2>&1; then \
+      echo "workspace-local node_modules the final stage would not copy:" packages/*/node_modules >&2; exit 1; \
+    fi
+
+# DuckDB extensions, baked with the same @duckdb/node-api the server runs. Keyed
+# on prod-deps' inputs and the bake script, so like prod-deps it ships as a layer
+# that keeps its digest until a production dependency changes; a bake in the
+# server build would rerun, with new file timestamps, on every release. The bake is strict
+# here: with this cache key a bake that skipped an extension would be reused by
+# every later build, so any extension that fails to install fails the stage.
+FROM prod-deps AS duckdb-extensions
+# The bake downloads from extensions.duckdb.org over TLS, and bun:slim ships no
+# CA certificates.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY packages/server/scripts/bake-duckdb-extensions.js ./packages/server/scripts/
+WORKDIR /publisher/packages/server
+RUN HOME=/root DUCKDB_BAKE_STRICT=1 bun scripts/bake-duckdb-extensions.js
+
 # Builder stage
 FROM oven/bun:1.3.13-slim AS builder
 COPY --from=java-base /usr/lib/jvm /usr/lib/jvm
@@ -125,23 +185,19 @@ ENV PATH=$JAVA_HOME/bin:$PATH
 ENV NODE_ENV=production
 WORKDIR /publisher
 
-# CA certificates are required for the DuckDB extension bake (run by
-# packages/server's build): without them @duckdb/node-api can't verify TLS to
-# extensions.duckdb.org and every download fails with an SSL CA cert error.
-# The bun:slim base ships without them.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
+# patchedDependencies in package.json point at patches/; bun install refuses to
+# run without the patch files, so they have to arrive before it does.
+COPY patches/ ./patches/
 COPY scripts/add-license-headers.mjs ./scripts/
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
 
-# Install all workspace dependencies once (cached across builds)
-RUN --mount=type=cache,target=/root/.bun/install/cache \
+# Install all workspace dependencies once (cached across builds). Locked: see
+# prod-deps, which installs into the same cache in parallel.
+RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
     bun install
 
 # Build SDK first
@@ -156,15 +212,23 @@ COPY packages/app/ ./
 RUN --mount=type=cache,target=/root/.bun \
     NODE_OPTIONS='--max-old-space-size=4096' bun run build:server
 
-# Build server
+# Build server. The bundle alone: the extensions the image ships come from the
+# duckdb-extensions stage, so the bake that ends build:server-only is skipped.
 WORKDIR /publisher/packages/server
 COPY packages/server/ ./
 RUN --mount=type=cache,target=/root/.bun \
-    bun run build:server-only
+    bun run build:server-only:bundle
 
 # Final image
 FROM base-deps AS final
 WORKDIR /publisher
+
+# Production-only deps, installed in prod-deps. --link so this layer does not
+# depend on the base-deps layers beneath it, which rebuild daily: it keeps its
+# digest until a dependency changes. Before the chown below, not after: a --link
+# layer carries its own root-owned entry for /publisher, which would otherwise
+# override the ownership that step gives the directory.
+COPY --link --from=prod-deps /publisher/node_modules /publisher/node_modules
 
 # The server runs as `bun` (uid 1000), not root; USER is set just before CMD so
 # the build steps below still run as root. Every application file stays
@@ -201,6 +265,7 @@ LABEL org.opencontainers.image.title="Malloy Publisher" \
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
+COPY --from=builder /publisher/patches/ /publisher/patches/
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
 COPY --from=builder /publisher/packages/app/package.json /publisher/packages/app/package.json
 COPY --from=builder /publisher/packages/server/dist/ /publisher/packages/server/dist/
@@ -208,21 +273,21 @@ COPY --from=builder /publisher/packages/server/package.json /publisher/packages/
 COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
 
-# Install production-only deps
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production
-
-# Carry over the DuckDB extensions baked during the builder stage's
-# `build:server-only` (packages/server's build runs bake-duckdb-extensions).
-# They live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads
-# at INSTALL/LOAD time -- so the server finds them on disk and skips the network
-# fetch. Copying the baked cache from the builder keeps a single bake mechanism
-# (the server build) instead of re-running it here. The CLI (base-deps) and
-# runtime engine are pinned to the same DuckDB version, so all agree on one dir.
-# The bake ran as root in the builder, so its cache is under /root there; here
-# it lands in the runtime user's home, owned by that user so an INSTALL at run
-# time of an extension the bake did not cover can still write beside it.
-COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/extensions
+# Carry over the DuckDB extensions baked in the duckdb-extensions stage. They
+# live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads at
+# INSTALL/LOAD time -- so the server finds them on disk and skips the network
+# fetch. The CLI (base-deps) and runtime engine are pinned to the same DuckDB
+# version, so all agree on one dir. The bake ran as root, so its cache is under
+# /root there; here it lands in the runtime user's home, owned by that user so an
+# INSTALL at run time of an extension the bake did not cover can still write
+# beside it. Numeric owner because --link copies without reading this image's
+# /etc/passwd; --link so the layer keeps its digest across the daily base-deps
+# rebuild.
+COPY --link --from=duckdb-extensions --chown=1000:1000 /root/.duckdb/extensions /home/bun/.duckdb/extensions
+# A --link layer carries its own entries for the parent directories, owned by
+# the --chown above, which replace base-deps' /home (root) and /home/bun (mode
+# 700). Put them back.
+RUN chown root:root /home && chmod 0700 /home/bun
 
 # The Snowflake extension is a wrapper over the ADBC Snowflake driver, and
 # `INSTALL snowflake FROM community` does NOT bring it — the extension ships
@@ -242,23 +307,28 @@ COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/e
 #   libadbc_driver_snowflake.real.so  the upstream driver, unmodified
 #
 # The shim finds the real driver beside itself, so both go wherever the
-# extension is. Placed HERE, after the extensions COPY above, rather than
-# earlier: the extension resolves the driver by calling dladdr on ITSELF and
+# extension is: the extension resolves the driver by calling dladdr on ITSELF and
 # looking beside the loaded object, so the driver has to sit next to whichever
 # snowflake.duckdb_extension the runtime actually loads. That directory is
-# discovered rather than reconstructed from a platform string — the CLI
-# (base-deps) and the bake (@duckdb/node-api, in the builder) each write their
-# own, and this is the layer that ships.
+# discovered rather than reconstructed from a platform string, and both are
+# placed beside every snowflake extension in the shipped tree: the bake's and
+# the CLI's (base-deps), which today share a directory.
 #
-# The closing count-match is the verification — one shim and one real driver
-# for EVERY extension directory, not "at least one somewhere": a pipeline's
-# status is its last command's, so a copy that failed in a non-final loop
-# iteration would otherwise pass. snowflake_version() cannot serve as a check,
-# being a scalar that never touches the driver.
-COPY --from=adbc-driver /out/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so /tmp/adbc/
-RUN find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
+# They are copied here, root-owned, rather than baked into the extensions layer:
+# the server user cannot write into them in place (the directory is the server
+# user's, so it could still rename one aside, as on main), and a rebuilt shim
+# (the adbc-driver stage follows APT_REFRESH) re-ships these two files, not every
+# extension. The driver is bind-mounted, so it lands beside the extension and
+# nowhere else.
+#
+# The count-match is the verification — one shim and one real driver for EVERY
+# extension directory, not "at least one somewhere": a pipeline's status is its
+# last command's, so a copy that failed in a non-final loop iteration would
+# otherwise pass. snowflake_version() cannot serve as a check, being a scalar
+# that never touches the driver.
+RUN --mount=type=bind,from=adbc-driver,source=/out,target=/tmp/adbc \
+    find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
       | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done && \
-    rm -rf /tmp/adbc && \
     ext=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
     shim=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
     real=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \

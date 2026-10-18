@@ -1,20 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { getUnresolvedPublisherConfigPath } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { logger } from "../logger";
+import {
+   emptyRepository,
+   stubStorageManager,
+} from "../test_helpers/storage_manager_stub";
 import packageJson from "../../package.json";
 
 /**
@@ -31,16 +27,12 @@ import packageJson from "../../package.json";
  * `../config` is deliberately NOT mocked: environment_store.spec.ts mocks it in
  * a beforeEach and these cases need the real resolver.
  *
- * Storage IS mocked, and it has to be. `mock.module` is process-wide and every
- * spec file shares one bun process, so without a mock of its own this file
- * inherits whichever StorageManager the previously-run file installed.
- * environment_store_clone.spec.ts installs one whose `initialize` throws its
- * redaction fixture, which makes construction fail, `PUBLISHER_INIT_FAILED`
- * fire, and the success tail that carries the notice never run. Every boot case
- * below then reports the notice missing -- including "stays quiet", which
- * passes for that reason rather than the one it names. Measured: running this
- * file alone passed 6/6; running it after the clone spec failed the two
- * positive cases and left the negative one green.
+ * Storage is stubbed (through stubStorageManager, which removes the stub when
+ * this file finishes) so the boot reads the environments below. A boot that
+ * failed -- a storage `initialize` that throws makes construction fail and
+ * `PUBLISHER_INIT_FAILED` fire -- would never reach the success tail that
+ * carries the notice, and "stays quiet" would pass for that reason rather
+ * than the one it names.
  *
  * Hence `assertInitialized`. A notice-absent assertion is only meaningful once
  * the boot it describes actually happened, so each boot case pins the success
@@ -54,34 +46,10 @@ import packageJson from "../../package.json";
  */
 let storedEnvironments: Array<Record<string, unknown>> = [];
 
-mock.module("../storage/StorageManager", () => ({
-   StorageManager: class MockStorageManager {
-      async initialize(): Promise<void> {}
-      getRepository() {
-         return {
-            listEnvironments: async () => storedEnvironments,
-            getEnvironmentByName: async () => null,
-            createEnvironment: async (data: Record<string, unknown>) => ({
-               id: "env-id",
-               name: data.name,
-               path: data.path,
-            }),
-            listPackages: async () => [],
-            getPackageByName: async () => null,
-            createPackage: async (data: Record<string, unknown>) => ({
-               id: "pkg-id",
-               name: data.name,
-            }),
-            listConnections: async () => [],
-            // Without this the runtime-creation case logs "Error syncing
-            // storage destinations" on every run and passes anyway, which is
-            // the shape of thing this file exists to catch.
-            listStorageDestinations: async () => [],
-         };
-      }
-   },
-   StorageConfig: {} as Record<string, unknown>,
-}));
+stubStorageManager({
+   getRepository: () =>
+      emptyRepository({ listEnvironments: async () => storedEnvironments }),
+});
 
 // After the mock, so the binding is the mock rather than the real module.
 const { EnvironmentStore } = await import("./environment_store");

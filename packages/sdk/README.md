@@ -1018,8 +1018,8 @@ class.
 
 A document is a string, and **its path is its identity**: one path is one document. The `type` on
 its locator is the report's layout (`grid` or `linear`), metadata the store keeps beside the
-document. `saveDocument` and `moveDocument` record it (a layout switch saves the same path with the
-other layout, replacing the document), `listDocuments` reports it and may filter by it, and
+document. `saveDocument` and `moveDocument` record it (a save under the other layout keeps the same
+path and replaces the document), `listDocuments` reports it and may filter by it, and
 `getDocument` and `deleteDocument` find the document at `locator.path` whatever `type` says. Every
 method rejects when the document is not there, so a caller can tell "missing" from "empty".
 
@@ -1117,11 +1117,10 @@ wins:
 A tag that sets the removed `kind=` makes no report, and the builder refuses to open it, naming the
 `layout=` to write. A file that writes `layout=` never depends on steps 2 and 3, and the builder and
 `createDocument` always write it. `readReportTagOfText(text)` from `@malloy-publisher/sdk/builder` gives
-the same answer for any text, for a host that files a document by its layout. The toolbar's Linear / Grid switch rewrites `layout=` and nothing else, so a host that ties a
+the same answer for any text, for a host that files a document by its layout. The builder never rewrites
+`layout=`: a report keeps the layout its tag declares for as long as it is edited, so a host that ties a
 report's layout to where it keeps the file (every grid report under `dashboards/`, every linear one under
-`notebooks/`) passes `allowLayoutChange={false}` to hide the switch; otherwise an author can turn a file
-into the other layout without it moving. Default `true`. A document held as text (`textSource`) never
-gets the switch.
+`notebooks/`) has nothing to guard against.
 
 ### DocumentStorageProvider
 
@@ -1167,7 +1166,6 @@ environment and package and adds them when it logs.
 | `report.save_undo_refused` | `reason`                                                                              | the builder                                                                                      |
 | `report.created`           | `where` (`package`/`host`), `durationMs`                                              | `createDocument`, so `NewDocumentDialog` and `Package`                                           |
 | `report.create_refused`    | `reason`                                                                              | `createDocument`                                                                                 |
-| `report.layout_changed`    | `from`, `to`                                                                          | the builder's Linear / Grid switch                                                               |
 | `report.drill`             | `to` (`self`/`report`), `outcome` (`resolved`/`unresolved`/`unverified`/`malformed`)  | `Report`: a `to=self` drill, or a drill to another report whose `onNavigate` returned an outcome |
 | `report.explored`          | `tile`                                                                                | reserved: nothing emits it yet                                                                   |
 

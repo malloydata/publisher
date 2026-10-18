@@ -6,7 +6,8 @@
 /**
  * The report write path over real HTTP (`docs/reports-design.md` §7): create
  * anywhere (at the root, and nested in a directory that does not exist yet),
- * switch a report's layout, and refuse to replace a model, an untagged file, a
+ * switch a report's layout, refuse a report written as `run:` cells while
+ * replacing a file in that retired format, and refuse to replace a model, an untagged file, a
  * `.malloynb` or `index.malloy`, or to write under `public/`.
  *
  * Runs against a copy of `reports-anywhere`, since these tests write to it.
@@ -28,6 +29,12 @@ const PKG = "reports-anywhere";
 const grid = (title: string, importPath: string) =>
    `## artifact { layout=grid title="${title}" tiles=["orders -> by_brand"] }\n` +
    `import { orders } from "${importPath}"\n`;
+
+/** The retired cell format: a linear tag with no `tiles`, and a `run:`. */
+const CELLS =
+   `## artifact { layout=linear title="Cells" }\n` +
+   `import { orders } from "orders.malloy"\n` +
+   `run: orders -> by_brand\n`;
 
 const BROKEN_TAG =
    `## artifact { layout=grid title="Broken" tiles: ["orders -> by_brand"] }\n` +
@@ -63,6 +70,8 @@ describe("PUT model source: reports anywhere (E2E)", () => {
                   path.join(dir, "broken_tag.malloy"),
                   BROKEN_TAG,
                );
+               // A report written as `run:` cells, the retired format.
+               await fs.writeFile(path.join(dir, "old_cells.malloy"), CELLS);
             },
          },
       );
@@ -129,6 +138,30 @@ describe("PUT model source: reports anywhere (E2E)", () => {
       });
       expect(res.status).toBe(400);
       expect(fsSync.readFileSync(served(modelPath), "utf8")).toBe(before);
+   });
+
+   it("refuses to write a report as `run:` cells, naming the fix, and writes nothing", async () => {
+      const res = await put("new_cells.malloy", { source: CELLS });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { message?: string };
+      expect(body.message).toContain(
+         "written as `run:` cells is no longer read",
+      );
+      expect(body.message).toContain("Fix: list its tiles in `tiles=[…]`");
+      expect(fsSync.existsSync(served("new_cells.malloy"))).toBe(false);
+   });
+
+   it("replaces a file written as `run:` cells with its tiles, so it is a report again", async () => {
+      expect((await reportsByPath())["old_cells.malloy"]).toBeUndefined();
+      const res = await put("old_cells.malloy", {
+         source: grid("Converted", "orders.malloy").replace(
+            "layout=grid",
+            "layout=linear",
+         ),
+         expectedHash: hashOf(CELLS),
+      });
+      expect(res.status).toBe(200);
+      expect((await reportsByPath())["old_cells.malloy"]).toBe("linear");
    });
 
    it("replaces a report whose own artifact tag does not parse, so the fix can be saved", async () => {

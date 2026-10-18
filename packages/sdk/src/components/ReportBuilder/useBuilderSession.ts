@@ -24,11 +24,9 @@ export interface SessionEditor<D, L extends LastSave = LastSave> {
    /** The document as of the last save (or open). */
    saved: D;
    dirty: boolean;
-   /** Unsaved edits made by a person, when that differs from `dirty` (an open that is unsaved before any edit); absent means `dirty`. */
+   /** Unsaved edits made by a person, when that differs from `dirty`; absent means `dirty`. */
    edited?: boolean;
    structural: boolean;
-   /** Whether the document opened unsaved (a conversion); the save that clears it reports so. */
-   pendingOpen?: boolean;
    canUndo: boolean;
    canRedo: boolean;
    undo: () => void;
@@ -53,27 +51,38 @@ export interface SessionReport {
 export interface SessionSaveInfo {
    size: number;
    structural: boolean;
-   /** The save wrote a document that opened unsaved. */
-   fromOpen: boolean;
    durationMs: number;
 }
 
 export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    editor: SessionEditor<D, L>;
    onSave?: SaveHandler<D>;
-   onDirtyChange?: (dirty: boolean) => void;
+   /**
+    * Whether there are unsaved edits, and (second) whether leaving now would
+    * lose any: false while the edits are kept elsewhere (`keepsEdits`).
+    */
+   onDirtyChange?: (dirty: boolean, wouldLose: boolean) => void;
    /** The host's way out, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
    onChange?: (document: D) => void;
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
+   /**
+    * The document's edits are kept elsewhere as they are made (a draft in this
+    * browser), so leaving loses only what the editor does not hold yet: the host
+    * is told dirty for `extraDirty` alone. Close and Done still see every edit.
+    */
+   keepsEdits?: boolean;
    report: SessionReport;
    /** What the notice counts and calls them: "tile" or "cell". */
    unit: { name: string; count: (document: D) => number };
    /** Runs before every save entry point, handing it the save to run once the document is ready. */
    prepare?: (run: () => Promise<void> | void) => Promise<void> | void;
    /** The builder's own keys, less undo, redo and save, which the session owns. Memoized by the caller. */
-   shortcuts: Pick<BuilderShortcutHandlers, "escape" | "nudge">;
+   shortcuts: Pick<
+      BuilderShortcutHandlers,
+      "escape" | "nudge" | "move" | "paused"
+   >;
 }
 
 /**
@@ -91,6 +100,7 @@ export function useBuilderSession<
    onExit,
    onChange,
    extraDirty = false,
+   keepsEdits = false,
    report,
    unit,
    prepare,
@@ -102,8 +112,10 @@ export function useBuilderSession<
    const reportRef = useRef(report);
    reportRef.current = report;
    const dirty = editor.dirty || extraDirty;
-   // Work to lose: a conversion nobody has touched is rebuilt by opening the file again.
+   // Work to lose.
    const hasEdits = (editor.edited ?? editor.dirty) || extraDirty;
+   // What leaving would lose, for the host's leave guard.
+   const wouldLose = keepsEdits ? extraDirty : hasEdits;
 
    useEffect(() => {
       onChange?.(editor.document);
@@ -111,12 +123,12 @@ export function useBuilderSession<
    // Also on mount, so a host that remounted the builder on new text is told the slate is clean rather than carrying the previous mount's answer.
    // A layout effect, so a host's leave guard sees the flag in the same task as the edit.
    useLayoutEffect(() => {
-      onDirtyChange?.(hasEdits);
-   }, [hasEdits, onDirtyChange]);
+      onDirtyChange?.(hasEdits, wouldLose);
+   }, [hasEdits, wouldLose, onDirtyChange]);
    // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
-   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
+   useEffect(() => () => onDirtyChangeRef.current?.(false, false), []);
    const unitRef = useRef(unit);
    unitRef.current = unit;
    // The line saying the undo happened goes with the next edit or save; leaving it up over new work would say something stale.
@@ -129,7 +141,6 @@ export function useBuilderSession<
       setUndone(false);
       const started = now();
       const { structural } = editor;
-      const fromOpen = editor.pendingOpen ?? false;
       const size = reportRef.current.size;
       return editor
          .save()
@@ -138,7 +149,6 @@ export function useBuilderSession<
                reportRef.current.saved({
                   size,
                   structural,
-                  fromOpen,
                   durationMs: now() - started,
                });
             } else reportRef.current.refused(outcome.reason);
@@ -172,7 +182,6 @@ export function useBuilderSession<
                reportRef.current.undone({
                   size,
                   structural,
-                  fromOpen: false,
                   durationMs: now() - started,
                });
             } else reportRef.current.undoRefused(outcome.reason);
@@ -210,7 +219,9 @@ export function useBuilderSession<
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open,
+            // Paused by the exit dialog, or by the builder itself (an edge
+            // dragged, whose release would write over a mid-drag undo).
+            paused: exitGuard.dialog.open || shortcuts.paused === true,
          }),
          [shortcuts, editor, onSave, save, exitGuard.dialog.open],
       ),
@@ -246,6 +257,8 @@ export function useBuilderSession<
       saving,
       save,
       exitGuard,
+      /** Write the edits, then leave; absent unless the host can be left (`onExit`). */
+      ...(onExit ? { done: exitGuard.saveAndExit } : {}),
       /** Write the file back as it was before the last save, and put the edits back unsaved. */
       undoSave,
       canUndoSave,

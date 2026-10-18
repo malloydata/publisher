@@ -48,8 +48,8 @@ describe("report_metrics", () => {
             ],
             [
                { code: "report-kind-removed", severity: "error" },
-               { code: "report-layout-implicit", severity: "warn" },
-               { code: "report-layout-implicit", severity: "warn" },
+               { code: "report-cells-removed", severity: "error" },
+               { code: "report-cells-removed", severity: "error" },
                // The manifest lint's findings carry no code of their own.
                { severity: "error" },
             ],
@@ -61,7 +61,7 @@ describe("report_metrics", () => {
             files: { served: 3, tileless: 1, invalid: 1, dropped: 1 },
             findings: {
                "report-kind-removed": { error: 1 },
-               "report-layout-implicit": { warn: 2 },
+               "report-cells-removed": { error: 2 },
                "dashboard-lint": { error: 1 },
             },
          });
@@ -89,7 +89,7 @@ describe("report_metrics", () => {
                code,
                severity,
             });
-         expect(await findings("report-layout-implicit", "warn")).toBe(2);
+         expect(await findings("report-cells-removed", "error")).toBe(2);
          expect(await findings("report-kind-removed", "error")).toBe(1);
          expect(await findings("dashboard-lint", "error")).toBe(1);
       });

@@ -152,6 +152,7 @@ type Handler = (
 function handlerFor(): Handler {
    let handler: Handler | undefined;
    const pkg = {
+      listSkills: () => [],
       listModels: async () => [{ path: "m.malloy" }],
       getModel: () => ({
          getSourceInfos: () => [

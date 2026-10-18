@@ -67,6 +67,13 @@ export interface UseGivensStateResult {
    apply: () => void;
    /** Whether the draft differs from what is applied. */
    pending: boolean;
+   /**
+    * Whether the controls, shown and applied, are already where Reset would
+    * put them. A surface offers Reset only when this is false: a report that
+    * saves a starting value showed Reset beside it, and pressing it set the
+    * controls to what they already were, so the button looked broken.
+    */
+   atStart: boolean;
 }
 
 /**
@@ -328,9 +335,13 @@ export function useGivensState({
    // they already match, so this cannot loop against a host that feeds its URL
    // back in through `params`.
    //
-   // Starting values are reported too, not just edits: the address bar is meant
-   // to show what the reader is looking at, so a dashboard opened at its
-   // declared defaults is already a link that reproduces them.
+   // Only the reader's own values are reported, not the file's starting values:
+   // a link copied before anything was touched follows the file's starting
+   // values as they are later edited, rather than pinning the ones it was opened
+   // at. That falls out of the seeding below for a host that mounts this with
+   // its manifest loaded, as the report reader does. (A host that mounts first
+   // and loads after, as the deprecated `.malloynb` runner does, reports them on
+   // an uncached load.)
    //
    // The reference starts at the first render's values rather than empty. The
    // control row is empty until the manifest arrives and says which givens
@@ -427,5 +438,18 @@ export function useGivensState({
       return false;
    }, [autorun, draft, applied]);
 
-   return { draft, applied, setGiven, reset, apply, pending };
+   // Compared as the URL would carry them, so a date and its encoding, or a
+   // list and its spelling, count as the same value.
+   const atStart = useMemo(() => {
+      const start = givensToParams(
+         prune(startingPoint, declaredTypes),
+         declaredTypes,
+      );
+      return (
+         sameParams(givensToParams(draft, declaredTypes), start) &&
+         sameParams(appliedParams, start)
+      );
+   }, [startingPoint, draft, appliedParams, declaredTypes]);
+
+   return { draft, applied, setGiven, reset, apply, pending, atStart };
 }

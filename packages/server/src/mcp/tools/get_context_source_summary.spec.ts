@@ -20,7 +20,7 @@ import {
 } from "bun:test";
 import { _clearChatModelForTests } from "../../providers/active";
 import { shopPackage } from "../../test_helpers/get_context_llm_fixture";
-import { summaryViewFor } from "./get_context_tool";
+import { summaryViewFor } from "./get_context_response";
 import { summaryKey } from "./source_summaries";
 import {
    callPayload,
@@ -432,6 +432,7 @@ describe("the source match prompt", () => {
          },
       } as Record<string, unknown>;
       const pkg = {
+         listSkills: () => [],
          listModels: async () => [{ path: "wide.malloy" }],
          getModel: (p: string) => models[p],
          getRetrievalSettings: () => ({

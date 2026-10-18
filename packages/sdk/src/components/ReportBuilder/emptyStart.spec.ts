@@ -57,7 +57,7 @@ describe("a dashboard with an explicit, empty tile list", () => {
             colspan: 6,
          });
       });
-      expect(out).toContain('tiles=["one_tiles -> vx_tile"]');
+      expect(out).toContain('tiles=["one_tiles -> vx_tile" { colspan=6 }]');
       const back = await openDocument(out);
       expect(back.tiles.map(tileKey)).toEqual(["one_tiles.vx_tile"]);
    });
@@ -125,7 +125,7 @@ source: a is one extend {
       const suggest = back.localGivens?.[0].suggest;
       expect(suggest).toEqual({ source: "a", dimension: "products.category" });
       expect(buildSuggestQuery(suggest!.source!, suggest!.dimension)).toBe(
-         `run: a -> {\n  group_by: products.category\n  order_by: category asc\n  limit: ${SUGGEST_OPTION_LIMIT}\n}`,
+         `run: a -> {\n  group_by: products.category\n  order_by: category asc\n  limit: ${SUGGEST_OPTION_LIMIT + 1}\n}`,
       );
    });
 });

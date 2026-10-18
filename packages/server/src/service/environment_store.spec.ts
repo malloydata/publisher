@@ -27,6 +27,7 @@ import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
+import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
 import {
    CloneProgressReporter,
@@ -91,243 +92,206 @@ function managedDestination(name = "managed"): Connection {
 const embeddingCleanupRuns: Array<{ sql: string; params: unknown[] }> = [];
 let embeddingCleanupBlocks = false;
 
-mock.module("../storage/StorageManager", () => {
-   return {
-      StorageManager: class MockStorageManager {
-         async initialize(_reInit?: boolean): Promise<void> {
-            return;
-         }
-
-         getDuckDbConnection() {
-            return {
-               run: (sql: string, params?: unknown[]) => {
-                  embeddingCleanupRuns.push({ sql, params: params ?? [] });
-                  return embeddingCleanupBlocks
-                     ? new Promise<void>(() => {})
-                     : Promise.resolve();
-               },
-               all: async () => [],
-               get: async () => null,
-            };
-         }
-
-         getRepository() {
-            return {
-               // ===== PROJECT METHODS =====
-               listEnvironments: async (): Promise<unknown[]> =>
-                  mockDbEnvironments,
-
-               getEnvironmentById: async (
-                  id: string,
-               ): Promise<MockData | null> => ({
-                  id,
-                  name: "test-project",
-                  path: "/test/path",
-                  description: "Test description",
-                  metadata: {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               getEnvironmentByName: async (
-                  _name: string,
-               ): Promise<MockData | null> => {
-                  // Return null to simulate "project doesn't exist yet"
-                  return null;
-               },
-
-               createEnvironment: async (
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id: "test-project-id",
-                  name: data.name,
-                  path: data.path,
-                  description: data.description,
-                  metadata: data.metadata,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               updateEnvironment: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  name: "test-project",
-                  path: "/test/path",
-                  description: data.description,
-                  metadata: {
-                     ...(data.metadata || {}),
-                     readme: data.readme,
-                  },
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               deleteEnvironment: async (_id: string): Promise<void> => {},
-
-               // ===== PACKAGE METHODS =====
-               listPackages: async (
-                  _environmentId: string,
-               ): Promise<unknown[]> => [],
-
-               getPackageById: async (
-                  id: string,
-               ): Promise<MockData | null> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-package",
-                  description: "Test package",
-                  manifestPath: "/test/manifest.json",
-                  metadata: {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               getPackageByName: async (
-                  _environmentId: string,
-                  _name: string,
-               ): Promise<MockData | null> => null,
-
-               createPackage: async (data: MockData): Promise<MockData> => ({
-                  id: "test-package-id",
-                  environmentId: data.environmentId,
-                  name: data.name,
-                  description: data.description,
-                  manifestPath: data.manifestPath,
-                  metadata: data.metadata,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               updatePackage: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-package",
-                  description: data.description,
-                  manifestPath: "/test/manifest.json",
-                  metadata: data.metadata || {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               deletePackage: async (_id: string): Promise<void> => {},
-
-               // ===== CONNECTION METHODS =====
-               listConnections: async (
-                  _environmentId: string,
-               ): Promise<unknown[]> => [],
-
-               getConnectionById: async (
-                  id: string,
-               ): Promise<MockData | null> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-connection",
-                  type: "postgres",
-                  config: {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               getConnectionByName: async (
-                  _environmentId: string,
-                  _name: string,
-               ): Promise<MockData | null> => null,
-
-               createConnection: async (data: MockData): Promise<MockData> => ({
-                  id: "test-connection-id",
-                  environmentId: data.environmentId,
-                  name: data.name,
-                  type: data.type,
-                  config: data.config,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               updateConnection: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  environmentId: "test-project-id",
-                  name: "test-connection",
-                  type: "postgres",
-                  config: data.config || {},
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-               }),
-
-               deleteConnection: async (_id: string): Promise<void> => {},
-
-               // ===== STORAGE DESTINATION METHODS =====
-               // Backed by `mockDbDestinations` rather than stubbed out, so a
-               // test can drive both directions the store uses: what a restart
-               // reads back, and what the sync writes and prunes.
-               listStorageDestinations: async (
-                  environmentId: string,
-               ): Promise<unknown[]> => {
-                  if (failNextDestinationReads > 0) {
-                     failNextDestinationReads -= 1;
-                     throw new Error("destination read failed (simulated)");
-                  }
-                  return mockDbDestinations.filter(
-                     (row) => row.environmentId === environmentId,
-                  );
-               },
-
-               getStorageDestinationByName: async (
-                  environmentId: string,
-                  name: string,
-               ): Promise<MockData | null> =>
-                  mockDbDestinations.find(
-                     (row) =>
-                        row.environmentId === environmentId &&
-                        row.name === name,
-                  ) ?? null,
-
-               upsertStorageDestination: async (
-                  data: MockData,
-               ): Promise<MockData> => {
-                  const row = {
-                     id: `${data.environmentId}-${data.name}`,
-                     environmentId: data.environmentId as string,
-                     name: data.name as string,
-                     type: data.type as string,
-                     config: data.config as Record<string, unknown>,
-                  };
-                  const index = mockDbDestinations.findIndex(
-                     (existing) => existing.id === row.id,
-                  );
-                  if (index === -1) {
-                     mockDbDestinations.push(row);
-                  } else {
-                     mockDbDestinations[index] = row;
-                  }
-                  return row;
-               },
-
-               deleteStorageDestination: async (id: string): Promise<void> => {
-                  mockDbDestinations = mockDbDestinations.filter(
-                     (row) => row.id !== id,
-                  );
-               },
-
-               deleteStorageDestinationsByEnvironmentId: async (
-                  environmentId: string,
-               ): Promise<void> => {
-                  mockDbDestinations = mockDbDestinations.filter(
-                     (row) => row.environmentId !== environmentId,
-                  );
-               },
-            };
-         }
+stubStorageManager({
+   getDuckDbConnection: () => ({
+      run: (sql: string, params?: unknown[]) => {
+         embeddingCleanupRuns.push({ sql, params: params ?? [] });
+         return embeddingCleanupBlocks
+            ? new Promise<void>(() => {})
+            : Promise.resolve();
       },
-      StorageConfig: {} as Record<string, unknown>,
-   };
+      all: async () => [],
+      get: async () => null,
+   }),
+
+   getRepository: () => ({
+      // ===== PROJECT METHODS =====
+      listEnvironments: async (): Promise<unknown[]> => mockDbEnvironments,
+
+      getEnvironmentById: async (id: string): Promise<MockData | null> => ({
+         id,
+         name: "test-project",
+         path: "/test/path",
+         description: "Test description",
+         metadata: {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      getEnvironmentByName: async (_name: string): Promise<MockData | null> => {
+         // Return null to simulate "project doesn't exist yet"
+         return null;
+      },
+
+      createEnvironment: async (data: MockData): Promise<MockData> => ({
+         id: "test-project-id",
+         name: data.name,
+         path: data.path,
+         description: data.description,
+         metadata: data.metadata,
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      updateEnvironment: async (
+         id: string,
+         data: MockData,
+      ): Promise<MockData> => ({
+         id,
+         name: "test-project",
+         path: "/test/path",
+         description: data.description,
+         metadata: {
+            ...(data.metadata || {}),
+            readme: data.readme,
+         },
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      deleteEnvironment: async (_id: string): Promise<void> => {},
+
+      // ===== PACKAGE METHODS =====
+      listPackages: async (_environmentId: string): Promise<unknown[]> => [],
+
+      getPackageById: async (id: string): Promise<MockData | null> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-package",
+         description: "Test package",
+         manifestPath: "/test/manifest.json",
+         metadata: {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      getPackageByName: async (
+         _environmentId: string,
+         _name: string,
+      ): Promise<MockData | null> => null,
+
+      createPackage: async (data: MockData): Promise<MockData> => ({
+         id: "test-package-id",
+         environmentId: data.environmentId,
+         name: data.name,
+         description: data.description,
+         manifestPath: data.manifestPath,
+         metadata: data.metadata,
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      updatePackage: async (id: string, data: MockData): Promise<MockData> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-package",
+         description: data.description,
+         manifestPath: "/test/manifest.json",
+         metadata: data.metadata || {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      deletePackage: async (_id: string): Promise<void> => {},
+
+      // ===== CONNECTION METHODS =====
+      listConnections: async (_environmentId: string): Promise<unknown[]> => [],
+
+      getConnectionById: async (id: string): Promise<MockData | null> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-connection",
+         type: "postgres",
+         config: {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      getConnectionByName: async (
+         _environmentId: string,
+         _name: string,
+      ): Promise<MockData | null> => null,
+
+      createConnection: async (data: MockData): Promise<MockData> => ({
+         id: "test-connection-id",
+         environmentId: data.environmentId,
+         name: data.name,
+         type: data.type,
+         config: data.config,
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      updateConnection: async (
+         id: string,
+         data: MockData,
+      ): Promise<MockData> => ({
+         id,
+         environmentId: "test-project-id",
+         name: "test-connection",
+         type: "postgres",
+         config: data.config || {},
+         createdAt: new Date(),
+         updatedAt: new Date(),
+      }),
+
+      deleteConnection: async (_id: string): Promise<void> => {},
+
+      // ===== STORAGE DESTINATION METHODS =====
+      // Backed by `mockDbDestinations` rather than stubbed out, so a
+      // test can drive both directions the store uses: what a restart
+      // reads back, and what the sync writes and prunes.
+      listStorageDestinations: async (
+         environmentId: string,
+      ): Promise<unknown[]> => {
+         if (failNextDestinationReads > 0) {
+            failNextDestinationReads -= 1;
+            throw new Error("destination read failed (simulated)");
+         }
+         return mockDbDestinations.filter(
+            (row) => row.environmentId === environmentId,
+         );
+      },
+
+      getStorageDestinationByName: async (
+         environmentId: string,
+         name: string,
+      ): Promise<MockData | null> =>
+         mockDbDestinations.find(
+            (row) => row.environmentId === environmentId && row.name === name,
+         ) ?? null,
+
+      upsertStorageDestination: async (data: MockData): Promise<MockData> => {
+         const row = {
+            id: `${data.environmentId}-${data.name}`,
+            environmentId: data.environmentId as string,
+            name: data.name as string,
+            type: data.type as string,
+            config: data.config as Record<string, unknown>,
+         };
+         const index = mockDbDestinations.findIndex(
+            (existing) => existing.id === row.id,
+         );
+         if (index === -1) {
+            mockDbDestinations.push(row);
+         } else {
+            mockDbDestinations[index] = row;
+         }
+         return row;
+      },
+
+      deleteStorageDestination: async (id: string): Promise<void> => {
+         mockDbDestinations = mockDbDestinations.filter((row) => row.id !== id);
+      },
+
+      deleteStorageDestinationsByEnvironmentId: async (
+         environmentId: string,
+      ): Promise<void> => {
+         mockDbDestinations = mockDbDestinations.filter(
+            (row) => row.environmentId !== environmentId,
+         );
+      },
+   }),
 });
 
 type Connection = components["schemas"]["Connection"];

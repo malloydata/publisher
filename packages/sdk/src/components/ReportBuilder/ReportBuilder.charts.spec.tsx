@@ -9,10 +9,12 @@ import {
    within,
 } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
+import { promoteMeasureRowToKpis } from "../Dashboard/promoteMeasureRow";
+import { requestedChart } from "../RenderedResult/chartShapeProblem";
 import { chartLineText } from "./chartLine";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
-import { closeMenu, editInline } from "./testing/inline";
+import { closeMenu, editInline, viewOption } from "./testing/inline";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import { scoped_orders } from "../data_app.malloy"
@@ -56,21 +58,26 @@ const mount = async (onSave?: (source: string) => void) => {
    );
 };
 
-const chartPicker = (name: string) =>
-   screen.getByRole("combobox", { name: `Viz type, ${name}`, hidden: true });
-const optionsOf = (name: string) => {
-   fireEvent.mouseDown(chartPicker(name));
-   const menu = screen.getAllByRole("listbox", { hidden: true }).at(-1)!;
-   return within(menu).getAllByRole("option", { hidden: true });
-};
-const enabledNames = (name: string) =>
-   optionsOf(name)
-      .filter((o) => o.getAttribute("aria-disabled") !== "true")
-      .map((o) => o.textContent);
-const choose = (name: string, option: string) =>
+/** The open tile menu's Chart submenu: its choices, by their label. */
+const primary = (item: HTMLElement) =>
+   item.querySelector(".MuiListItemText-primary")?.textContent;
+const chartItems = () => {
    fireEvent.click(
-      optionsOf(name).find((o) => o.textContent === option) as HTMLElement,
+      screen.getByRole("menuitem", { name: /^Chart/, hidden: true }),
    );
+   const menu = screen.getByRole("menu", { name: "Chart", hidden: true });
+   return within(menu).getAllByRole("menuitemradio", { hidden: true });
+};
+const enabledCharts = () =>
+   chartItems()
+      .filter((o) => o.getAttribute("aria-disabled") !== "true")
+      .map(primary);
+const pickChart = (option: string) =>
+   fireEvent.click(
+      chartItems().find((o) => primary(o) === option) as HTMLElement,
+   );
+const chartItem = () =>
+   screen.getByRole("menuitem", { name: /^Chart/, hidden: true });
 
 describe("ReportBuilder: charts", () => {
    it("sets a tile's chart from its menu and writes the one line", async () => {
@@ -79,17 +86,17 @@ describe("ReportBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      const names = enabledNames("a by_cat");
+      const names = enabledCharts();
       // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
       expect(names).toEqual([
-         "From the view",
+         "Default",
          "Table",
          "Line",
          "Bar",
          "Scatter",
          "Shape map",
       ]);
-      choose("a by_cat", "Line");
+      pickChart("Line");
       closeMenu();
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
@@ -106,8 +113,8 @@ describe("ReportBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      choose("a by_cat", "Bar");
-      choose("a by_cat", "From the view");
+      pickChart("Bar");
+      pickChart("Default");
       closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save",
@@ -123,14 +130,7 @@ describe("ReportBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(
-         screen
-            .getByRole("combobox", {
-               name: "Viz type, a by_brand",
-               hidden: true,
-            })
-            .getAttribute("aria-disabled"),
-      ).toBe("true");
+      expect(chartItem().getAttribute("aria-disabled")).toBe("true");
       expect(screen.getByText(/is not one the builder models/)).toBeDefined();
       closeMenu();
       editInline("By brand", "Tile title", "Brands");
@@ -147,14 +147,7 @@ describe("ReportBuilder: charts", () => {
       const document = await openDocument(source);
       render(<ReportBuilder source={source} document={document} />);
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(
-         screen
-            .getByRole("combobox", {
-               name: "Viz type, orders by_brand",
-               hidden: true,
-            })
-            .getAttribute("aria-disabled"),
-      ).toBe("true");
+      expect(chartItem().getAttribute("aria-disabled")).toBe("true");
       expect(
          screen.getByText(/so its chart is set in the model/),
       ).toBeDefined();
@@ -168,16 +161,20 @@ describe("ReportBuilder: charts", () => {
       fireEvent.click(
          screen.getByRole("button", { name: "Add tile", hidden: true }),
       );
-      fireEvent.click(screen.getByLabelText("View table_view"));
-      expect(enabledNames("new tile")).not.toContain("Big value");
+      // The chart choices are only the ones the picked view can take.
+      const chartChoicesShown = () =>
+         within(screen.getByRole("group", { name: "Chart", hidden: true }))
+            .getAllByRole("button", { hidden: true })
+            .map((b) => b.textContent);
+      fireEvent.click(viewOption("table_view"));
+      expect(chartChoicesShown()).not.toContain("Big value");
+      fireEvent.click(viewOption("kpis"));
+      expect(chartChoicesShown()).toContain("Big value");
       fireEvent.click(
          within(
-            screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
-         ).getByRole("option", { name: "From the view", hidden: true }),
+            screen.getByRole("group", { name: "Chart", hidden: true }),
+         ).getByRole("button", { name: "Big value", hidden: true }),
       );
-      fireEvent.click(screen.getByLabelText("View kpis"));
-      expect(enabledNames("new tile")).toContain("Big value");
-      choose("new tile", "Big value");
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
@@ -193,7 +190,7 @@ describe("ReportBuilder: charts", () => {
       fireEvent.click(
          screen.getByRole("button", { name: "Add tile", hidden: true }),
       );
-      fireEvent.click(screen.getByLabelText("View odd view"));
+      fireEvent.click(viewOption("odd view"));
       expect(
          screen.getByText(/"odd view" is not a plain Malloy name/),
       ).toBeDefined();
@@ -201,5 +198,194 @@ describe("ReportBuilder: charts", () => {
          (screen.getByRole("button", { name: "Add tile" }) as HTMLButtonElement)
             .disabled,
       ).toBe(true);
+   });
+});
+
+describe("ReportBuilder: charts on a view the report declares itself", () => {
+   // A tile of big numbers whose body is written in the report: in no model
+   // the catalog reads, so its shape comes from the report's own compile.
+   const INLINE = `## artifact { title="Overview" tiles=["a -> kpis"] }
+import { scoped_orders } from "../data_app.malloy"
+
+source: a is scoped_orders extend {
+  # label="Key figures"
+  view: kpis is { aggregate: revenue, order_count }
+}`;
+   const withOwnViews = {
+      ...catalog,
+      documentViews: new Map([
+         [
+            "a",
+            new Map([
+               [
+                  "kpis",
+                  {
+                     name: "kpis",
+                     aggregateOnly: true,
+                     shape: { groupBys: 0, totals: 2 },
+                  },
+               ],
+            ]),
+         ],
+      ]),
+   };
+
+   it("offers big numbers and greys out every chart that needs an x-axis, before and after a switch", async () => {
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={withOwnViews}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      expect(enabledCharts()).toEqual([
+         "Default",
+         "Table",
+         "Big value",
+         "Scatter",
+      ]);
+      const line = chartItems().find((o) => primary(o) === "Line");
+      expect(line?.textContent).toContain(
+         "This view has no field for the x-axis",
+      );
+      pickChart("Table");
+      pickChart("Default");
+      expect(enabledCharts()).toEqual([
+         "Default",
+         "Table",
+         "Big value",
+         "Scatter",
+      ]);
+   });
+
+   // The view carries no chart tag, but its one row of totals draws as big
+   // numbers anyway (the KPI promotion), so Table has to take that off.
+   it("draws a table when Table is picked on a tile of totals", async () => {
+      let written: string | undefined;
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={withOwnViews}
+            onSave={(source) => {
+               written = source;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      pickChart("Table");
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain("  # -big_value -viz\n");
+      const promoted = JSON.parse(
+         promoteMeasureRowToKpis(
+            JSON.stringify({
+               schema: {
+                  fields: [
+                     { kind: "measure", name: "revenue" },
+                     { kind: "measure", name: "order_count" },
+                  ],
+               },
+               data: { kind: "array_cell", array_value: [{}] },
+               annotations: [{ value: "# -big_value -viz\n" }],
+            }),
+         ),
+      ) as { annotations: Array<{ value: string }> };
+      expect(
+         requestedChart(promoted.annotations.map((a) => a.value)),
+      ).toBeUndefined();
+   });
+
+   it("says the shape is unknown, rather than what the view lacks, when no model reported it", async () => {
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={catalog}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      const big = chartItems().find((o) => primary(o) === "Big value");
+      expect(big?.textContent).toContain(
+         "Not in the model's list, so its shape is unknown",
+      );
+   });
+});
+
+describe("ReportBuilder: a chart's color", () => {
+   const colorItem = () =>
+      screen.getByRole("menuitem", { name: /^Color/, hidden: true });
+   const swatches = () => {
+      fireEvent.click(colorItem());
+      const menu = screen.getByRole("menu", { name: "Color", hidden: true });
+      return within(menu).getAllByRole("menuitemradio", { hidden: true });
+   };
+
+   it("sets a bar chart's color from the theme's series and writes the one line", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const choices = swatches();
+      // The theme's own colors first, then any other.
+      expect(primary(choices[0])).toBe("Theme");
+      const second = choices[2];
+      const color = primary(second) as string;
+      expect(color).toMatch(/^#[0-9a-f]{6}$/);
+      fireEvent.click(second);
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(`  # theme.palette.series=["${color}"]\n`);
+      // And reopening the file reads it back.
+      const reopened = await openDocument(written as string);
+      const tile = reopened.tiles.find((t) => t.name === "by_cat");
+      expect(tile && "color" in tile ? tile.color : undefined).toBe(color);
+   });
+
+   it("opens the platform's picker from the keyboard, where focus is on the item and not its input", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const other = swatches().at(-1) as HTMLElement;
+      expect(primary(other)).toBe("Other color…");
+      const input = within(other).getByLabelText("Other color");
+      let opened = 0;
+      input.addEventListener("click", () => opened++);
+      fireEvent.keyDown(other, { key: "Enter" });
+      fireEvent.keyDown(other, { key: " " });
+      expect(opened).toBe(2);
+   });
+
+   // The row's swatch follows its value ("Theme", "#7f9862"); spaced like the
+   // swatches in the Color menu it read as "Theme▢", touching the text.
+   it("spaces the Color row's swatch from its value", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const swatch = colorItem().querySelector("[data-swatch]") as HTMLElement;
+      expect(swatch.dataset.swatch).toBe("trailing");
+      const style = getComputedStyle(swatch);
+      expect(parseFloat(style.marginLeft)).toBeGreaterThan(0);
+      expect(parseFloat(style.marginRight) || 0).toBe(0);
+   });
+
+   it("offers no color on a table, which draws no series", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Table");
+      expect(colorItem().getAttribute("aria-disabled")).toBe("true");
+      expect(screen.getByText(/has a color to set/)).toBeDefined();
    });
 });

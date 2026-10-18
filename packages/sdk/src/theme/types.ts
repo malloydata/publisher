@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Theme } from "../client";
+import type { ReportUi } from "./ui";
 
 export type { Theme };
 
@@ -111,4 +112,10 @@ export interface ResolvedTheme {
     * panel BETWEEN tiles and stays mode-keyed / neutral.
     */
    tableBackground: string;
+   /**
+    * The chrome's design tokens (radii, sizes, type, the mono face, the menu
+    * shadow): {@link DEFAULT_UI} under the host's `ui` overrides. The host's,
+    * not the operator's: see `ui.ts`.
+    */
+   ui: ReportUi;
 }

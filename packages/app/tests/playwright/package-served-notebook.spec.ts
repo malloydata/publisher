@@ -4,11 +4,12 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { openFilter } from "./helpers/filters";
 
 /**
  * The storefront package ships `category-review.malloy` at its root, a linear
- * report written as `run:` cells (a `.malloy` with a `layout=linear` artifact
- * tag), so this spec reads the bundled example rather than writing a fixture.
+ * report of text and query tiles, so this spec reads the bundled example
+ * rather than writing a fixture.
  * It opens at its path, without `.malloy`.
  */
 test.describe("package-served-notebook", () => {
@@ -35,7 +36,7 @@ test.describe("package-served-notebook", () => {
       });
    });
 
-   test("changing the Category control re-runs the cells", async ({ page }) => {
+   test("changing the Category control re-runs the tiles", async ({ page }) => {
       await page.goto(`/${DEFAULT_ENV}/${PACKAGES.storefront}/category-review`);
 
       // All three queries render; the last is the named-query table, bound to the control.
@@ -45,7 +46,8 @@ test.describe("package-served-notebook", () => {
       await expect(table).toContainText("Jacket");
       await expect(table).not.toContainText("Denim");
 
-      await page.getByRole("combobox", { name: "Category" }).click();
+      const filter = await openFilter(page, "Category");
+      await filter.getByRole("combobox", { name: "Category" }).click();
       await page.getByRole("option", { name: "Jeans" }).click({
          timeout: 30_000,
       });

@@ -373,6 +373,53 @@ describe("GivenInput: multi-pick needs a type that can carry several values", ()
    });
 });
 
+describe("GivenInput: a multi-pick keeps its picks when the reader clicks away", () => {
+   const given: Given = {
+      name: "BRAND",
+      type: "filter<string>",
+      control: "multiselect",
+   };
+
+   it("does not take back the option just picked", () => {
+      // The list stays open after a pick with that option highlighted, and
+      // MUI's blur used to pick it again, which in a multi-pick removes it.
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput
+            given={given}
+            value={undefined}
+            onChange={onChange}
+            options={["Aurora", "Levi"]}
+         />,
+      );
+      const input = screen.getByRole("combobox");
+      fireEvent.mouseDown(input);
+      // A pointer hovers an option before it clicks it, which highlights it.
+      const aurora = screen.getByRole("option", { name: "Aurora" });
+      fireEvent.mouseMove(aurora);
+      fireEvent.click(aurora);
+      expect(onChange).toHaveBeenLastCalledWith("Aurora");
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
+   it("still keeps text typed but not picked", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput
+            given={given}
+            value={undefined}
+            onChange={onChange}
+            options={["Aurora"]}
+         />,
+      );
+      const input = screen.getByRole("combobox");
+      fireEvent.change(input, { target: { value: "Zephyr" } });
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenLastCalledWith("Zephyr");
+   });
+});
+
 describe("GivenInput: the whole type x control matrix", () => {
    // Six guards decide which widget a given gets (`pickableType`,
    // `multiplePickable`, `filterIsPickable`, `bareDate`, `dateIsPickable`,
