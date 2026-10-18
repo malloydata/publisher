@@ -944,13 +944,17 @@ in the builder. No directory is ever created for you.
 From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
 status, undo and redo, an **Add** menu (a tile, text or a filter) and **Done**. The page
 under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to place it in any cell, empty space included,
-drag the grip on its right edge to set its width and the one on its bottom edge to set its height, pick its chart and clickable cells from its ⋯
+drag any edge or corner to resize it, pick its chart and clickable cells from its ⋯
 menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
-table or chart) is the result's, never a move. The width snaps to whole columns, with the columns drawn
-behind the tiles and a label saying the width during the drag; the edge is also a keyboard control (Tab to
+table or chart) is the result's, never a move. A tile draws no handles: over an edge the cursor becomes a
+two-headed arrow, and over a corner a diagonal one. The right and bottom edges set the width and height;
+the left and top edges move that edge and keep the opposite one where it is (on a report that flows, the
+first such drag places every tile where it is drawn, as a move does); a corner moves its two edges at
+once. The width snaps to whole columns, with the columns drawn
+behind the tiles and a label saying the size during the drag; the right edge is also a keyboard control (Tab to
 it, Left and Right step one column, Home and End go to one column and full width). The height snaps to whole
-rows the same way; on its edge Up and Down step one row, Home and End go to the shortest and tallest, and
-Delete, or a double-click on the grip, puts the tile back to auto height. The drag also snaps to auto
+rows the same way; on the bottom edge Up and Down step one row, Home and End go to the shortest and tallest, and
+Delete, or a double-click on the edge, puts the tile back to auto height. The drag also snaps to auto
 when that is nearer than a whole row: a row of auto tiles is as tall as its tallest result, which is
 rarely a whole number of rows, so this is how a tile is dragged level with an auto neighbour. Both are written on the
 tile's entry in `tiles=[…]`, so a tile on a view the report imports resizes like any other. A move
@@ -965,8 +969,8 @@ value cards in a tile set shorter than it needs is drawn compact (smaller figure
 to a row) so it fits instead of scrolling; a map draws at its own size, so give it the height it needs.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its
-right edge (or focusing that edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
+The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's size is set by dragging its
+edges and corners (or focusing its right or bottom edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
 keeps it, Escape drops it, and Cmd/Ctrl+S saves from inside the field.

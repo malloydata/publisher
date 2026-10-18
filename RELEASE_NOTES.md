@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Resize a tile from any edge or corner, with no handles drawn
+
+The Console builder's tiles no longer draw grips on their right and bottom edges. Over any edge the cursor becomes a two-headed arrow, and over a corner a diagonal one: the right and bottom edges set the width and height as before, the left and top edges move that edge and keep the opposite one where it is, and a corner moves its two edges at once. On a report that flows, the first left or top drag places every tile where it is drawn, as a move does. The right and bottom edges stay keyboard controls (the arrow keys step them), and a double-click on the bottom edge still puts a tile back to auto height.
+
 ## [Unreleased] — Arranging a placed report: pack, flow, guides and keyboard moves
 
 On a grid report whose tiles are placed, the Console builder's bar has **Arrange tiles**: **Pack tiles upward** slides every tile up into the space above it, and **Let tiles flow** clears every tile's place and keeps its size, each one undoable edit. While a tile is selected the grid's rows and columns show faintly, so empty space reads as somewhere a tile can go, and Option/Alt with an arrow key moves the selected tile one cell, pushing down what it lands on. Placing a report that flowed now rounds a height between two rows up, so no tile is drawn shorter than it was. A row of value cards in a tile shorter than it needs is drawn compact (smaller figures, more cards to a row) so it fits instead of scrolling. A host drawing the builder's controls itself gets the same actions as `BuilderControls.arrange`.
