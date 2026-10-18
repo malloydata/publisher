@@ -1159,17 +1159,39 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    // REMOVED TILES: the declaration and its `#` tags — a view in an
    // extension, or the report's own `query:`. An inline view's body runs to
    // its closing brace; a reference is one line. A tile that names a served
-   // view has nothing here to remove — its entry left the artifact list above
-   // — and nor does a query the builder only reads, which may be read by more
-   // than this list.
+   // view has nothing here to remove — its entry left the artifact list above.
+   // A `query:` goes with its tile unless something else in the file still
+   // names it (another tile, another query built on it): then it stays.
+   const stillNamed = (name: string, own: Span) => {
+      const word = new RegExp(`(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)`);
+      return parsed.text.split("\n").some((line, at) => {
+         const start = parsed.lineStarts[at];
+         const end = start + line.length;
+         // Its own statement, and the report's `##` tag (whose list the edit
+         // has already taken it out of), do not count.
+         if (start < own.end && end > own.start) return false;
+         if (line.trimStart().startsWith("##")) return false;
+         return word.test(line.replace(/\/\/.*$/, ""));
+      });
+   };
    for (const tile of removedTiles) {
+      if (isTextTile(tile) || tile.declaration.kind === "inherited") continue;
+      const readOnlyQuery =
+         isReadOnlyTile(tile) && tile.declaration.kind === "query";
+      if (isReadOnlyTile(tile) && !readOnlyQuery) continue;
+      const view = readOnlyQuery
+         ? parsed.queries.find((query) => query.name === tile.name)
+         : declarationOf(ctx, tile);
+      if (readOnlyQuery && !view) continue;
       if (
-         isTextTile(tile) ||
-         isReadOnlyTile(tile) ||
-         tile.declaration.kind === "inherited"
+         view &&
+         (readOnlyQuery || tile.declaration.kind === "named") &&
+         (stillNamed(tile.name, view.statement) ||
+            ctx.next.tiles.some(
+               (t) => isQueryTile(t) && namesQuery(t) && t.name === tile.name,
+            ))
       )
          continue;
-      const view = declarationOf(ctx, tile);
       if (!view) {
          return {
             ok: false,
@@ -1221,7 +1243,11 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
       // A query of the report's own sits at the top level, set off by the
       // blank line the writer put above it, and that line goes with it. Taking
       // the one ABOVE means two removed in a row never claim the same line.
-      if (tile.declaration.kind === "named" && first > 0 && before === "") {
+      if (
+         (tile.declaration.kind === "named" || readOnlyQuery) &&
+         first > 0 &&
+         before === ""
+      ) {
          edits.push({ ...wholeLine(first - 1), text: "" });
          continue;
       }

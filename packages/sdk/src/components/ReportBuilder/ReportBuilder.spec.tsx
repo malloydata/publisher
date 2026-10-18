@@ -672,7 +672,7 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -
       expect(within(menu).queryByText(/→/)).toBeNull();
    });
 
-   it("removes it from the list and saves the query untouched", async () => {
+   it("removes it from the list, and its query with it when nothing else names it", async () => {
       let written: string | undefined;
       const document = await openDocument(named);
       render(
@@ -690,7 +690,7 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain('tiles=["flights -> by_month"]');
-      expect(written).toContain("query: by_carrier is flights");
+      expect(written).not.toContain("query: by_carrier");
    });
 });
 

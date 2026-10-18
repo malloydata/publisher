@@ -1552,11 +1552,19 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -
          expect(out).toContain('tiles=["flights -> by_month", by_carrier]');
       });
 
-      it("leaves its query in the file when the tile is removed", async () => {
+      it("takes its query out with the tile when nothing else names it", async () => {
          const out = await spliced(NAMED, (d) => {
             d.tiles.shift();
          });
          expect(out).toContain('tiles=["flights -> by_month"]');
+         expect(out).not.toContain("query: by_carrier");
+      });
+
+      it("keeps its query when another query is built on it", async () => {
+         const built = `${NAMED}\nquery: by_carrier_top is by_carrier -> { select: * limit: 5 }\n`;
+         const out = await spliced(built, (d) => {
+            d.tiles.shift();
+         });
          expect(out).toContain("query: by_carrier is flights");
       });
 
