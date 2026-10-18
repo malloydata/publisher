@@ -22,6 +22,7 @@ import {
    resolveResultHeight,
    resultCap,
    type ResultSizing,
+   TIGHT_ATTR,
 } from "./resultSizing";
 
 /** The box a dashboard tile's result scrolls in when it is taller than its cap. */
@@ -114,6 +115,21 @@ export default function ResultContainer({
       return () => observer.disconnect();
    }, [fill, hasResult, userAcknowledged]);
 
+   // Tight: a content-sized result taller than the cell it fills (value cards
+   // in a tile set shorter than they are), drawn compact so it fits rather
+   // than scrolls. Held at the height it needed at full size, and let go only
+   // once the cell is that tall again: let go as soon as the compact result
+   // fit, it would grow back past the cell and the two would flicker.
+   const [tightFrom, setTightFrom] = useState<number | undefined>(undefined);
+   useEffect(() => {
+      if (!fill || sizing !== "content") return;
+      if (cellHeight === undefined || contentHeight === undefined) return;
+      if (tightFrom === undefined && contentHeight > cellHeight + 1)
+         setTightFrom(contentHeight);
+      else if (tightFrom !== undefined && cellHeight >= tightFrom)
+         setTightFrom(undefined);
+   }, [fill, sizing, cellHeight, contentHeight, tightFrom]);
+
    if (!result) {
       return null;
    }
@@ -205,6 +221,7 @@ export default function ResultContainer({
             // scrolls inside itself, under its own pinned header.
             <Box
                className={RESULT_SCROLLER_CLASS}
+               {...(tightFrom !== undefined ? { [TIGHT_ATTR]: "" } : {})}
                sx={{
                   position: "absolute",
                   inset: 0,

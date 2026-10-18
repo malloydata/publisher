@@ -371,3 +371,9 @@ export function resolveResultHeight({
          : Math.min(maxHeight, contentHeight);
    return fillHeight === undefined ? own : Math.max(own, fillHeight);
 }
+
+/**
+ * On a result's box while it is drawn compact to fit a cell shorter than it
+ * (`ResultContainer` sets it); the renderer overrides in `RenderedResult` read it.
+ */
+export const TIGHT_ATTR = "data-publisher-tight";
