@@ -721,14 +721,11 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       if (value !== undefined) startingGivens[key] = value;
    }
 
-   // The server's rule: a written `dashboard { columns }` wins even when it is
-   // not a width (the default width then applies), and the alias only counts
-   // beside `tiles`.
+   // The server's rule: a `dashboard { columns }` that is not a width leaves
+   // the default width.
    const columnsTag = tag?.tag("dashboard")?.has("columns")
       ? gridWidth(tag.tag("dashboard"), "columns")
-      : artifactTag?.array("tiles")
-        ? gridWidth(artifactTag, "dashboard_columns")
-        : undefined;
+      : undefined;
 
    return {
       ok: true,

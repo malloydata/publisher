@@ -2159,19 +2159,16 @@ describe("service/report_manifest grid width and hostile literals", () => {
       expect(lintReport(f, manifest)).toEqual([]);
    });
 
-   it("reads dashboard_columns as the grid width when dashboard { columns } is absent, and leaves reporting it to the notebook lint", () => {
+   it("reads no width from dashboard_columns, and says where the width goes", () => {
       const f = composite(
          '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
       );
-      expect(build(f)?.dashboardColumns).toBe(4);
-      expect(lintOf(f)).toEqual([]);
-   });
-
-   it("lets a dashboard { columns } that is not a width win over the alias", () => {
-      const f = composite(
-         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=0 }\n',
-      );
       expect(build(f)?.dashboardColumns).toBeUndefined();
+      expect(lintOf(f)).toEqual([
+         expect.stringContaining(
+            "`dashboard_columns` in the artifact tag does nothing in Publisher. The grid width is written beside the artifact tag: `## artifact { … } dashboard { columns=N }`.",
+         ),
+      ]);
    });
 
    it("says a kind=text tile with no block shows nothing, rather than that kind is unread", () => {
@@ -2181,20 +2178,6 @@ describe("service/report_manifest grid width and hostile literals", () => {
       const message = lintOf(f).find((finding) => finding.includes("`intro`"));
       expect(message).toContain("has no `##|(markdown) intro` block");
       expect(message).not.toContain("carries");
-   });
-
-   it("prefers dashboard { columns } over the dashboard_columns alias", () => {
-      const f = composite(
-         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=6 }\n',
-      );
-      expect(build(f)?.dashboardColumns).toBe(6);
-   });
-
-   it("ignores an alias that is not a positive integer", () => {
-      const f = composite(
-         '## artifact { tiles=["orders -> totals"] dashboard_columns=0 }\n',
-      );
-      expect(build(f)?.dashboardColumns).toBeUndefined();
    });
 
    it("says nothing about a tile entry that carries only kind=query", () => {

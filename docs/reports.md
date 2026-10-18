@@ -57,10 +57,10 @@ source: overview is order_items extend {
 The [`storefront`](../examples/storefront) example package ships reports of both layouts over the same
 model.
 
-The format comes from [Malloyyo](https://github.com/malloydata/malloyyo)'s dashboards, and a Malloyyo
-repository's `dashboards/` directory largely works unchanged here. Publisher has since diverged: a
-report outside `dashboards/`, a path drill target, and `layout=` work in Publisher and not in Malloyyo.
-The dated list is [Where Publisher diverges](malloyyo-dashboards-design.md#where-publisher-diverges).
+The format began as [Malloyyo](https://github.com/malloydata/malloyyo)'s dashboards and is now
+Publisher's own: it reads no Malloyyo-only spelling (`kind=`, a query-level `# artifact`,
+`dashboard_columns=`), and Malloyyo reads none of Publisher's additions (reports outside `dashboards/`,
+path drill targets, `layout=`, entry layout and placement).
 
 ## Where the pieces live
 
@@ -111,18 +111,18 @@ is the thing being compiled.
 ## artifact { layout=grid title="…" tiles=[…] givens { CATEGORY=f'Outerwear' } autorun=false } dashboard { columns=12 }
 ```
 
-| Construct                                                         | What it does                                                                                                                                                  |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `## artifact { … }`                                               | Makes the file a report. Model-level; the header above it holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description   |
-| `layout=grid` / `layout=linear`                                   | The layout. **Always write it**: see [Which layout](#which-layout)                                                                                            |
-| `kind=…`                                                          | No longer read. A tag that sets it is not a report, and the package says so (`report-kind-removed`, error) with the `layout=` to write                        |
-| `title="…"`                                                       | The report's title. Without one, the title falls back to the description, then to an opening markdown heading, then to the basename                           |
-| `tiles=[…]`                                                       | The tiles, in order. A query tile is a quoted `"source -> view"`; a text tile is `name { kind=text }`. See [Tiles](#tiles)                                    |
-| `givens { NAME=value }`                                           | Starting control values, not a redeclaration. See [Apply, starting values, and the URL](#apply)                                                               |
-| `autorun=false`                                                   | Batches control changes behind an Apply button                                                                                                                |
-| `dashboard { columns=N }` beside the tag                          | The grid width, read on a grid report. `dashboard_columns=N` inside the tag is a deprecated alias: read when `columns` is absent, an error when they disagree |
-| `# colspan=K`, `# break`, `# label`, `# subtitle`, `# borderless` | Per-tile presentation, on the view a tile names. See [Laying out the grid](#laying-out-the-grid)                                                              |
-| `# drill { to=[…] given=… }` on a source `dimension:`             | Makes cells that group by it clickable. See [Drill](#drill)                                                                                                   |
+| Construct                                                         | What it does                                                                                                                                                |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { … }`                                               | Makes the file a report. Model-level; the header above it holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description |
+| `layout=grid` / `layout=linear`                                   | The layout. **Always write it**: see [Which layout](#which-layout)                                                                                          |
+| `kind=…`                                                          | No longer read. A tag that sets it is not a report, and the package says so (`report-kind-removed`, error) with the `layout=` to write                      |
+| `title="…"`                                                       | The report's title. Without one, the title falls back to the description, then to an opening markdown heading, then to the basename                         |
+| `tiles=[…]`                                                       | The tiles, in order. A query tile is a quoted `"source -> view"`; a text tile is `name { kind=text }`. See [Tiles](#tiles)                                  |
+| `givens { NAME=value }`                                           | Starting control values, not a redeclaration. See [Apply, starting values, and the URL](#apply)                                                             |
+| `autorun=false`                                                   | Batches control changes behind an Apply button                                                                                                              |
+| `dashboard { columns=N }` beside the tag                          | The grid width, read on a grid report. `dashboard_columns=N` inside the tag is not read, and is reported with the fix                                       |
+| `# colspan=K`, `# break`, `# label`, `# subtitle`, `# borderless` | Per-tile presentation, on the view a tile names. See [Laying out the grid](#laying-out-the-grid)                                                            |
+| `# drill { to=[…] given=… }` on a source `dimension:`             | Makes cells that group by it clickable. See [Drill](#drill)                                                                                                 |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -835,7 +835,7 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **Tiles and layout.** A tile that does not resolve to a real view; on a grid, a non-positive `columns`, a
   `# colspan` or entry `colspan` that is not a positive integer or is wider than the grid, an entry
   `rowspan` that is not a positive integer, a property on an entry other than its layout, a
-  `dashboard_columns=` alias (an error when it disagrees with `columns`); on a linear report, a `colspan`,
+  `dashboard_columns=` inside the tag (not read; the width goes in `dashboard { columns }`); on a linear report, a `colspan`,
   `break` or `rowspan`
   (`notebook-tile-layout-ignored`) and a `run:` beside `tiles` (`notebook-layout-run`); any property inside
   the artifact tag that Publisher does not read.

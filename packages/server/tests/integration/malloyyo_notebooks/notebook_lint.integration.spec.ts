@@ -98,18 +98,12 @@ describe("notebook lint through the real server (E2E)", () => {
          ).toEqual([]);
       });
 
-      it("carries a file written as cells, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
+      it("carries a file written as cells and a bad text block as errors, and the orphan block as a warn", () => {
          const severityOf = (model: string) =>
             warnings
                .filter((w) => w.model === model && /^Line \d+:/.test(w.message))
                .map((w) => [w.severity, w.message.split(":")[0]]);
          expect(severityOf(CELLS)).toEqual([["error", "Line 2"]]);
-         expect(severityOf("dashboards/columns_conflict.malloy")).toEqual([
-            ["error", "Line 1"],
-         ]);
-         expect(severityOf("dashboards/columns_alias.malloy")).toEqual([
-            ["warn", "Line 1"],
-         ]);
          expect(severityOf("dashboards/text_block_orphan.malloy")).toEqual([
             ["warn", "Line 4"],
          ]);
@@ -124,19 +118,6 @@ describe("notebook lint through the real server (E2E)", () => {
          );
          expect(of).toHaveLength(1);
          expect(of[0].message).not.toMatch(/^Line \d+:/);
-      });
-
-      it("serves the alias's width and, on a conflict, the canonical one", async () => {
-         const width = async (name: string) =>
-            (
-               (await (
-                  await fetch(pkgUrl(`/reports/dashboards/${name}.malloy`))
-               ).json()) as {
-                  dashboardColumns?: number;
-               }
-            ).dashboardColumns;
-         expect(await width("columns_alias")).toBe(8);
-         expect(await width("columns_conflict")).toBe(12);
       });
 
       it("does not read kind as an unknown dashboard property", () => {
@@ -172,7 +153,6 @@ describe("notebook lint through the real server (E2E)", () => {
                .filter((p) => p.severity === "error")
                .map((p) => [p.model, p.code]),
          ).toEqual([
-            ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
             ["dashboards/wrong_kind.malloy", "report-kind-removed"],
             [CELLS, "report-cells-removed"],
             ["notebooks/linty.malloy", "render-tag"],

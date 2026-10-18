@@ -184,8 +184,6 @@ state) lives in Credible, with Publisher keeping the hooks and the file format.
   size from their box.
 - **Settings:** timezone, auto-refresh and download defaults on the artifact tag, set from the builder;
   a builder control for grid width and run-on-load, which the file already carries.
-- **Cleanup:** code kept only for compatibility with the Malloyyo dialect, now that it is no longer a
-  constraint.
 
 ### Order
 

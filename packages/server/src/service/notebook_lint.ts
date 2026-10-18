@@ -653,7 +653,6 @@ export function lintNotebookText(
       }
       const tag = motlyTag([tagNote.text])?.tag("artifact");
       if (!tag) return;
-      const properties = Object.keys(tag.dict ?? {});
       lintLayout(tagNote.line, tagText(tag, "layout"));
       if (linear) {
          for (const entry of tag.array("tiles") ?? []) {
@@ -680,35 +679,6 @@ export function lintNotebookText(
                tagNote.line,
                "notebook-columns-ignored",
                "`dashboard { columns }` other than 1 is ignored on a notebook, which is always one column. Fix: remove `dashboard { columns }`.",
-            );
-         }
-      }
-      // A single query has no grid, and report_manifest.ts already says so.
-      if (
-         properties.includes("dashboard_columns") &&
-         properties.includes("tiles")
-      ) {
-         const alias = tagText(tag, "dashboard_columns") ?? "";
-         const dashboardTag = motlyTag(modelNotes)?.tag("dashboard");
-         const canonical = dashboardTag?.has("columns")
-            ? (tagText(dashboardTag, "columns") ?? "")
-            : undefined;
-         if (
-            canonical !== undefined &&
-            tagNumeric(tag, "dashboard_columns") !==
-               tagNumeric(dashboardTag, "columns")
-         ) {
-            add(
-               tagNote.line,
-               "notebook-columns-conflict",
-               `\`dashboard_columns=${alias}\` in the artifact tag and \`dashboard { columns=${canonical} }\` disagree about the grid width. Fix: keep \`dashboard { columns=… }\` and remove \`dashboard_columns\`.`,
-               "error",
-            );
-         } else {
-            add(
-               tagNote.line,
-               "notebook-columns-alias",
-               `\`dashboard_columns=${alias}\` is a deprecated spelling of the grid width. Fix: write \`dashboard { columns=${alias} }\` instead.`,
             );
          }
       }

@@ -83,12 +83,6 @@ export {
 const MAX_BUILDER_COLUMNS = 24;
 
 /**
- * Suffixes Malloyyo treats as a dashboard's custom component. Publisher does
- * not render these; the list exists only to warn that one was ignored.
- */
-export const COMPONENT_FILE_SUFFIXES = [".jsx", ".tsx"] as const;
-
-/**
  * The control contract is a property of the `given:` declaration, not of the
  * report that filters by it, so these are the shared types (`given.ts`).
  */
@@ -357,8 +351,6 @@ const ARTIFACT_PROPERTIES: readonly string[] = [
    "autorun",
    // Not read here: notebook_lint.ts judges `layout`; this lint only stays quiet about it.
    "layout",
-   // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
-   "dashboard_columns",
 ];
 
 /**
@@ -370,6 +362,9 @@ const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
    dashboard:
       "The grid width is a sibling of the artifact tag, not a property of it: " +
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
+   dashboard_columns:
+      "The grid width is written beside the artifact tag: " +
+      "`## artifact { … } dashboard { columns=N }`.",
 };
 
 /**
@@ -474,12 +469,9 @@ function readArtifactTag(
       // integer: `Tag.numeric()` is parseFloat, which takes `12abc` as 12 and
       // `1e999` as Infinity (JSON null on an integer field), so the manifest
       // would serve a value the lint reports as dropped.
-      // `columns` wins whenever it is written, even when it is not a width.
       dashboardColumns: tag.tag("dashboard")?.has("columns")
          ? positiveInteger(tagNumeric(tag.tag("dashboard"), "columns"))
-         : artifact.array("tiles")
-           ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
-           : undefined,
+         : undefined,
       givens,
       autorun,
    };
@@ -1152,7 +1144,6 @@ export function lintReport(
    // `givens` keys are the author's own given names.
    for (const property of Object.keys(artifactTag?.dict ?? {})) {
       if (ARTIFACT_PROPERTIES.includes(property)) continue;
-      // "in Publisher": a property inert here may mean something in Malloyyo.
       add(
          `\`${property}\` in the artifact tag does nothing in Publisher` +
             (ARTIFACT_PROPERTY_REPLACEMENTS[property]
