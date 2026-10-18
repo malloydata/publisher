@@ -8,7 +8,9 @@ import {
    type DashboardSource,
    type QueryTile,
 } from "./document";
+import { DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
 import { withSource } from "./imports";
+import { rowsOf, settle } from "./placement";
 
 /** Where a tile is added and what the document is: the parts of an add that are not the tile. */
 export interface AddTileContext {
@@ -160,6 +162,25 @@ export function duplicateTile(
             : {}),
       };
    }
+   // On a placed report the copy goes straight under the original, at its
+   // size, and whatever was there moves down; it never lands on top of it.
+   const placed = original.row !== undefined && original.col !== undefined;
+   if (placed) {
+      copy = {
+         ...copy,
+         row: (original.row ?? 1) + rowsOf(original),
+         col: original.col,
+         ...(original.rowspan !== undefined
+            ? { rowspan: original.rowspan }
+            : {}),
+      };
+   }
    draft.tiles.splice(index + 1, 0, copy);
+   if (placed)
+      draft.tiles = settle(
+         draft.tiles,
+         draft.columns ?? DEFAULT_COLUMNS,
+         index + 1,
+      );
    return index + 1;
 }

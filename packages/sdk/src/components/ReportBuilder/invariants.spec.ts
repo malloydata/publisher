@@ -151,16 +151,20 @@ const ROWS: Row[] = [
       outcome: "succeeds",
    },
    {
-      // The `#` tags this rewrites sit above a `--` line, so a writer that
-      // cannot see them adds a second `# colspan` rather than patching the one
-      // that is there -- and the reader, which takes tags from the parser,
-      // reads the lower one back and the round-trip gate is satisfied.
-      what: "retags a tile whose tag block holds a `--` comment",
+      // A width moves to the tile's entry and takes the view's `# colspan`
+      // with it. That tag sits above a `--` line, so a writer that cannot see
+      // it leaves it behind -- and the reader, which lets the entry win, reads
+      // the new width back and the round-trip gate is satisfied.
+      what: "moves a width off a tag block that holds a `--` comment",
       edit: (d) => {
          tile(d, "kpis").colspan = 3;
       },
       outcome: "succeeds",
-      moved: { tagText: ["~view:a.kpis"] },
+      moved: {
+         tagText: ["~view:a.kpis"],
+         tags: ["~view:a.kpis"],
+         declarations: ["~source:a"],
+      },
    },
    {
       // The same shape as the row above, in the spelling that also hid a tag
@@ -169,12 +173,16 @@ const ROWS: Row[] = [
       // which here is prose: walking further up to find the real tag must not
       // turn a line inside a comment into an annotation -- to rewrite in place
       // on the writer's side, or to report as a tag on the reader's.
-      what: "retags a tile whose tag block holds a block comment",
+      what: "moves a width off a tag block that holds a block comment",
       edit: (d) => {
          tile(d, "counts").colspan = 6;
       },
       outcome: "succeeds",
-      moved: { tagText: ["~view:a.counts"] },
+      moved: {
+         tagText: ["~view:a.counts"],
+         tags: ["~view:a.counts"],
+         declarations: ["~source:a"],
+      },
    },
    {
       // A line that is a comment AND a declaration at once. Read as wholly
@@ -183,12 +191,12 @@ const ROWS: Row[] = [
       // to match a tile that never had a label. Nothing downstream can tell:
       // the reader takes tags from the parser and never attributed it to the
       // tile in the first place.
-      what: "retags a tile below a declaration sharing its line with a comment",
+      what: "moves a width off a tile below a declaration sharing its line with a comment",
       edit: (d) => {
          tile(d, "trend").colspan = 4;
       },
       outcome: "succeeds",
-      moved: { tagText: ["~view:a.trend"] },
+      moved: { tagText: ["~view:a.trend"], tags: ["~view:a.trend"] },
    },
    {
       what: "relabels a control",

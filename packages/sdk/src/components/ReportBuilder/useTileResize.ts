@@ -5,6 +5,17 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import type { DashboardTile } from "./document";
 
+/**
+ * The widest a tile may be dragged: the whole grid, or, for a placed tile, up
+ * to the grid's right edge from its column. A right edge dragged past the grid
+ * stops there; it never moves the tile's left edge.
+ */
+export const widestFrom = (
+   tile: DashboardTile | undefined,
+   columns: number,
+): number =>
+   tile?.col === undefined ? columns : Math.max(1, columns - tile.col + 1);
+
 /** A resize in flight: the tile, the width it WOULD be, and the geometry. */
 export interface ResizeState {
    index: number;
@@ -13,6 +24,8 @@ export interface ResizeState {
    from: number;
    left: number;
    track: number;
+   /** The widest it may go: to the grid's right edge from the column a placed tile starts in. */
+   max: number;
 }
 
 /**
@@ -88,6 +101,7 @@ export function useTileResize({
       dragChrome(true);
       onStart(index);
       const from = tiles[index]?.colspan ?? 1;
+      const max = widestFrom(tiles[index], columns);
       setResize({
          index,
          span: from,
@@ -95,6 +109,7 @@ export function useTileResize({
          left: tile.left,
          // One column track: the row's width less every gutter in it.
          track: (grid.width - GRID_GAP_PX * (columns - 1)) / columns,
+         max,
       });
    };
 
@@ -107,7 +122,7 @@ export function useTileResize({
       const span = Math.round(
          (width + GRID_GAP_PX) / (resize.track + GRID_GAP_PX),
       );
-      const clamped = Math.min(Math.max(span, 1), columns);
+      const clamped = Math.min(Math.max(span, 1), resize.max);
       if (clamped !== resize.span) setResize({ ...resize, span: clamped });
    };
 

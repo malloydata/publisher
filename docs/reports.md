@@ -259,16 +259,17 @@ Revenue first, then the seasonal split.
   a malformed-route warning and `##| markdown` reads the prose as tags. `##|(text) name` is also
   read as a text tile; write `(markdown)`.
 - **The body is markdown**: headings, emphasis, lists, links and inline code.
-- **On a grid the entry reads `colspan` and `break`** and nothing else, the same two layout tags a query
-  tile takes from its view. On a linear report both are ignored.
-- **The lint reports** an entry with no block, a block written twice, a `colspan` that is not a positive
-  integer, any other property on the entry, and a named `(markdown)` block no entry lists. Delete an
+- **On a grid the entry reads `colspan`, `break` and `rowspan`** and nothing else, as every tile's entry
+  does (see [Placing a tile on its entry](#placing-a-tile-on-its-entry)). On a linear report all three
+  are ignored.
+- **The lint reports** an entry with no block, a block written twice, a `colspan` or `rowspan` that is not
+  a positive integer, any other property on the entry, and a named `(markdown)` block no entry lists. Delete an
   unlisted block rather than leave it.
 
 The report's own description is separate: the unnamed `"` notes above `## artifact`
 (`##" One line saying what this report is for.`), which render as markdown under the title.
 
-In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break? }` with no `query`, and a
+In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break?, rowspan? }` with no `query`, and a
 query tile is `{ kind: "query", query, … }`. Anything that runs a report's tiles skips the text ones.
 
 ### File order
@@ -325,6 +326,46 @@ Presentation is per tile and lives on the **view**: `# colspan`, `# break`, `# l
 `# borderless`, which is exactly the set `@malloydata/render` resolves for a `# dashboard` nest child.
 One view therefore presents identically whether it is named as a tile here or nested under a
 `# dashboard` query, and there is no second grammar to learn.
+
+<a id="placing-a-tile-on-its-entry"></a>
+
+### Placing a tile on its entry
+
+A report can also place a tile with its own entry in `tiles=[…]`, and the entry wins over the view's
+tags, property by property:
+
+```malloy
+## artifact { layout=grid tiles=["overview -> kpis" { colspan=12 rowspan=2 }, "overview -> revenue_trend" { colspan=8 break rowspan=5 }, "overview -> revenue_by_state" { colspan=4 }] } dashboard { columns=12 }
+```
+
+- **`colspan=N` and `break`** mean what the view's tags mean. `break=false` turns off a view's `# break`.
+  Because the entry belongs to the report, one view can sit at a different width on each report that
+  names it, and a tile on a view the report imports can be laid out at all.
+- **`rowspan=N`** is the tile's height in grid rows, and only the entry sets it. A row is 80px, and a tile
+  N rows tall also spans the N-1 gaps between them (16px each), so `rowspan=5` is 464px. A chart fills the
+  height, a table scrolls inside it, and a text tile scrolls its prose. Without it a tile is as tall as
+  its result, up to 400px, and a row is as tall as its tallest tile; a tile with a height keeps it beside
+  a taller neighbour. A map draws at its own size, so give it the height it needs.
+  On a placed report (below) it is the rows the tile spans.
+- **`row=N` and `col=N`** place the tile: its top left corner sits in that grid row and column, counted
+  from 1. A report where any tile has a `row` is **placed**. Its rows are then fixed 80px tracks, each
+  tile sits where it says instead of flowing, and empty cells stay empty, which is how a tile can sit
+  under a short neighbour beside a tall one. A placed tile with no `rowspan` is 5 rows (a text tile 2);
+  one with no `row` or `col` fills the first free cell; `break` means nothing. On a narrow screen the
+  tiles stack in one column, top to bottom and then left to right. The lint names a placed tile that
+  runs past the grid's right edge, and two that cover each other.
+- **An entry reads only these five.** A label, subtitle, chart or card still goes on the view, and the
+  lint names any other property on an entry.
+- **The Console builder writes here.** Resizing or moving a tile puts its layout on its entry and takes
+  the view's `# colspan` and `# break` off, so the layout has one home. A view's tags are left alone
+  until its tile's layout changes. On a grid a move is free placement: the first move places every tile
+  where it is drawn, so nothing jumps, and the file lists placed tiles in reading order.
+
+```malloy
+## artifact { layout=grid tiles=["overview -> kpis" { row=1 col=1 colspan=12 rowspan=3 }, "overview -> revenue_trend" { row=4 col=1 colspan=6 rowspan=3 }, "overview -> revenue_by_state" { row=4 col=7 colspan=6 rowspan=6 }, "overview -> revenue_by_category" { row=7 col=1 colspan=6 rowspan=3 }] } dashboard { columns=12 }
+```
+
+Here the trend and the category chart stack in the left half beside one tall map.
 
 <a id="laying-out-the-grid"></a>
 
@@ -440,8 +481,8 @@ source: category_tiles is order_items extend {
 ```
 
 - **`layout=linear` is required here**, because the tag lists tiles (see [Which layout](#which-layout)).
-- `dashboard { columns }` has no effect on a linear report, and a `colspan` or `break` on a tile entry is
-  ignored with a warning (`notebook-tile-layout-ignored`).
+- `dashboard { columns }` has no effect on a linear report, and a `colspan`, `break` or `rowspan` on a tile
+  entry is ignored with a warning (`notebook-tile-layout-ignored`).
 - **Write prose that frames questions, not findings about today's data.** "Revenue spiked 23% in March"
   is stale the next time the data refreshes; "How is revenue trending?" is not.
 - **A linear report is the natural home for a cross-model analysis.** The file compiles with all its
@@ -790,12 +831,14 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **Controls.** A given whose `suggest` names a source, query or dimension the file cannot see, or a
   `suggest` in a form that cannot fetch options at all.
 - **Tiles and layout.** A tile that does not resolve to a real view; on a grid, a non-positive `columns`, a
-  `# colspan` that is not a positive integer or is wider than the grid, a `dashboard_columns=` alias (an
-  error when it disagrees with `columns`); on a linear report, a `colspan` or `break`
+  `# colspan` or entry `colspan` that is not a positive integer or is wider than the grid, an entry
+  `rowspan` that is not a positive integer, a property on an entry other than its layout, a
+  `dashboard_columns=` alias (an error when it disagrees with `columns`); on a linear report, a `colspan`,
+  `break` or `rowspan`
   (`notebook-tile-layout-ignored`) and a `run:` beside `tiles` (`notebook-layout-run`); any property inside
   the artifact tag that Publisher does not read.
-- **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan`, an unknown
-  property on the entry, and a named block no entry lists.
+- **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan` or `rowspan`, an
+  unknown property on the entry, and a named block no entry lists.
 - **The tag and the prose.** An artifact tag that does not parse (`notebook-artifact-unparsed`, error);
   a `#(markdown)` note with no statement to take it (`notebook-markdown-attached-nowhere`, error); a
   floating or unnamed `(markdown)` note that no text tile shows (`notebook-markdown-block-unnamed`); each
@@ -898,12 +941,20 @@ in the builder. No directory is ever created for you.
 
 From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
 status, undo and redo, an **Add** menu (a tile, text or a filter) and **Done**. The page
-under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to move it,
-drag the grip on its right edge to set its width, pick its chart and clickable cells from its ⋯
+under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to place it in any cell, empty space included,
+drag the grip on its right edge to set its width and the one on its bottom edge to set its height, pick its chart and clickable cells from its ⋯
 menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
 table or chart) is the result's, never a move. The width snaps to whole columns, with the columns drawn
 behind the tiles and a label saying the width during the drag; the edge is also a keyboard control (Tab to
-it, Left and Right step one column, Home and End go to one column and full width).
+it, Left and Right step one column, Home and End go to one column and full width). The height snaps to whole
+rows the same way; on its edge Up and Down step one row, Home and End go to the shortest and tallest, and
+Delete, or a double-click on the grip, puts the tile back to auto height. The drag also snaps to auto
+when that is nearer than a whole row: a row of auto tiles is as tall as its tallest result, which is
+rarely a whole number of rows, so this is how a tile is dragged level with an auto neighbour. Both are written on the
+tile's entry in `tiles=[…]`, so a tile on a view the report imports resizes like any other. A move
+snaps to rows and columns, with both drawn behind the tiles, and pushes any tile it lands on straight
+down; so does a resize. Nothing is pulled up to fill a gap. The fewest rows offered are 3 for a query
+tile (a chart needs room to draw) and 1 for a text tile.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
 The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its

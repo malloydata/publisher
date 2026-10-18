@@ -536,10 +536,10 @@ describe("ReportBuilder: tiles added and removed", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile"]',
+         'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile" { colspan=6 }]',
       );
       expect(written).toContain(
-         '  # colspan=6\n  # label="Revenue by state"\n  view: sales_by_state_tile is sales_by_state\n}',
+         '\n\n  # label="Revenue by state"\n  view: sales_by_state_tile is sales_by_state\n}',
       );
    });
 
@@ -634,12 +634,13 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
             "By carrier",
          ),
       ).toBeDefined();
-      // No title field on the tile, no width edge, and a menu that says why.
+      // No title field on the tile, and a menu that says why. Its width and
+      // height are the report's, on its entry, so both edges are there.
       fireEvent.click(screen.getByText("By carrier"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(
          screen.queryByRole("separator", { name: "Width of by_carrier" }),
-      ).toBeNull();
+      ).not.toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_carrier"));
       expect(
          screen.getByText(
@@ -694,6 +695,37 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 12");
       fireEvent.click(button("Undo"));
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+   });
+
+   it("steps a tile's height from the keyboard on its bottom edge, and fits it again on Delete", async () => {
+      await mount();
+      const edge = () =>
+         screen.getByRole("separator", { name: "Height of By category" });
+      expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
+      expect(itemStyleOf("by_cat")).not.toContain("height:");
+      fireEvent.keyDown(edge(), { key: "ArrowDown" });
+      // One row past the fewest a chart is offered (3).
+      expect(edge().getAttribute("aria-valuetext")).toBe("4 rows tall");
+      // Four 80px rows and the three gaps between them.
+      expect(itemStyleOf("by_cat")).toContain("height: 368px");
+      fireEvent.keyDown(edge(), { key: "End" });
+      expect(edge().getAttribute("aria-valuenow")).toBe("16");
+      fireEvent.keyDown(edge(), { key: "Delete" });
+      expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
+      fireEvent.click(button("Undo"));
+      expect(edge().getAttribute("aria-valuenow")).toBe("16");
+   });
+
+   it("lays out a tile the model owns: it has both edges", async () => {
+      const source = `## artifact { title="T" tiles=["orders -> by_brand"] } dashboard { columns=12 }\nimport { orders } from '../orders.malloy'`;
+      const document = await openDocument(source);
+      render(<ReportBuilder source={source} document={document} />);
+      expect(
+         screen.getByRole("separator", { name: "Width of by_brand" }),
+      ).toBeDefined();
+      expect(
+         screen.getByRole("separator", { name: "Height of by_brand" }),
+      ).toBeDefined();
    });
 
    it("sets a tile's width by dragging its right edge, not from its menu", async () => {

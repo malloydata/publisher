@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { placeAtEnd } from "./placement";
 import { useState } from "react";
 import type { NewTile } from "./AddTileDialog";
 import {
@@ -56,14 +57,20 @@ export function useTileEditing({
    /** A tile from the picker: on the extension of its source, or a new one. */
    const addTile = (tile: NewTile) => {
       setAddingTile(false);
-      editor.update((draft) =>
+      editor.update((draft) => {
          addTileToDocument(draft, tile, {
             modelPath,
             textHeld,
             widths: rules.widths,
             insertAt,
-         }),
-      );
+         });
+         if (rules.widths)
+            draft.tiles = placeAtEnd(
+               draft.tiles,
+               insertAt ?? draft.tiles.length - 1,
+               rules.columns,
+            );
+      });
       selectTile(insertAt ?? editor.document.tiles.length);
    };
 
@@ -85,6 +92,12 @@ export function useTileEditing({
             markdown: "",
             ...(rules.widths ? { colspan: rules.columns } : {}),
          });
+         if (rules.widths)
+            draft.tiles = placeAtEnd(
+               draft.tiles,
+               at ?? draft.tiles.length - 1,
+               rules.columns,
+            );
       });
       selectTile(at ?? editor.document.tiles.length);
    };

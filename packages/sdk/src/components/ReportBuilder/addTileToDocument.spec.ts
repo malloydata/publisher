@@ -97,6 +97,40 @@ describe("duplicateTile", () => {
       });
    });
 
+   it("puts a placed tile's copy straight under it, pushing what was there down", () => {
+      const draft = {
+         ...withTiles([
+            {
+               name: "by_day_tile",
+               source: "orders_tiles",
+               declaration: { kind: "reference", from: "by_day" },
+               row: 1,
+               col: 1,
+               colspan: 6,
+               rowspan: 4,
+            },
+            {
+               name: "below",
+               source: "orders_tiles",
+               declaration: { kind: "reference", from: "by_week" },
+               row: 5,
+               col: 1,
+               colspan: 6,
+               rowspan: 3,
+            },
+         ]),
+         columns: 12,
+      };
+      expect(duplicateTile(draft, 0)).toBe(1);
+      expect(draft.tiles.map((t) => [t.name, t.row, t.col, t.rowspan])).toEqual(
+         [
+            ["by_day_tile", 1, 1, 4],
+            ["by_day_tile_2", 5, 1, 4],
+            ["below", 9, 1, 3],
+         ],
+      );
+   });
+
    it("copies a view the model declares onto the file's extension of its source", () => {
       const draft: DashboardDocument = {
          ...document(),

@@ -57,7 +57,7 @@ describe("a dashboard with an explicit, empty tile list", () => {
             colspan: 6,
          });
       });
-      expect(out).toContain('tiles=["one_tiles -> vx_tile"]');
+      expect(out).toContain('tiles=["one_tiles -> vx_tile" { colspan=6 }]');
       const back = await openDocument(out);
       expect(back.tiles.map(tileKey)).toEqual(["one_tiles.vx_tile"]);
    });
