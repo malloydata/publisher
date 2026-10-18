@@ -1,14 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { renderHook } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { createElement, Fragment } from "react";
 import { afterAll, describe, expect, it, setDefaultTimeout } from "bun:test";
 import {
    drillClickRelay,
    reportRowsWithoutFilters,
 } from "../drill/drillClickRelay";
 import type { DrillField, DrillRowsRequest } from "../drill/resolveDrill";
-import { useDrill } from "../drill/useDrill";
+import {
+   useDrill,
+   type UseDrillOptions,
+   type UseDrillResult,
+} from "../drill/useDrill";
 import {
    rowsQuery,
    ROWS_REFUSAL,
@@ -111,6 +116,20 @@ const model = new SingleConnectionRuntime({ connection } as never).loadModel(
 );
 afterAll(() => connection.close());
 
+/** `useDrill` mounted with its menu, as a surface renders it. */
+function mountDrill(options: UseDrillOptions): {
+   current: UseDrillResult;
+   unmount: () => void;
+} {
+   const ref = {} as { current: UseDrillResult; unmount: () => void };
+   function Host() {
+      ref.current = useDrill(options);
+      return createElement(Fragment, null, ref.current.drillMenu);
+   }
+   ref.unmount = render(createElement(Host)).unmount;
+   return ref;
+}
+
 async function run(query: string) {
    return model.loadQuery(query).run();
 }
@@ -124,9 +143,9 @@ async function run(query: string) {
 async function clickEveryCell(tile: string, preamble = "") {
    const result = await run(withPreamble(preamble, `run: ${tile}`));
    const requests: DrillRowsRequest[] = [];
-   const { result: hook } = renderHook(() =>
-      useDrill({ onRows: (request) => requests.push(request) }),
-   );
+   // Mounted with its menu: every click opens it, and the rows are what the
+   // reader gets by picking "Show rows" there.
+   const hook = mountDrill({ onRows: (request) => requests.push(request) });
    const binding = hook.current.bindingFor(tile, rowsGateFor(tile));
    const relay = drillClickRelay(binding.onClick);
    const viz = new MalloyRenderer({
@@ -149,9 +168,18 @@ async function clickEveryCell(tile: string, preamble = "") {
       element.querySelectorAll<HTMLElement>(".cell-content"),
    );
    for (const cell of cells) {
-      cell.click();
-      await Promise.resolve();
+      await act(async () => {
+         cell.click();
+         await Promise.resolve();
+      });
+      const showRows = screen.queryByRole("menuitem", { name: "Show rows" });
+      if (showRows) {
+         act(() => {
+            fireEvent.click(showRows);
+         });
+      }
    }
+   hook.unmount();
    viz.remove();
    element.remove();
    return {
@@ -409,9 +437,7 @@ describe("which tile shapes open the rows behind a value", () => {
    it("marks nothing for rows when the host turns rows off for the tile", async () => {
       const result = await run("run: sales_tiles -> by_region");
       const requests: DrillRowsRequest[] = [];
-      const { result: hook } = renderHook(() =>
-         useDrill({ onRows: (request) => requests.push(request) }),
-      );
+      const hook = mountDrill({ onRows: (request) => requests.push(request) });
       const binding = hook.current.bindingFor(
          "sales_tiles -> by_region",
          false,
@@ -431,7 +457,9 @@ describe("which tile shapes open the rows behind a value", () => {
          value: "West",
       });
       await Promise.resolve();
+      expect(screen.queryAllByRole("menuitem")).toEqual([]);
       expect(requests).toEqual([]);
+      hook.unmount();
       viz.remove();
       element.remove();
    });

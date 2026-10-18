@@ -57,12 +57,10 @@ export interface UseDrillOptions {
    selfLabel?: string;
    /**
     * Show the rows behind a grouped value. With it, a dimension cell whose
-    * result names everything its rows query needs (`canShowRows`) is
-    * clickable: one with no `# drill` this surface can honour opens the rows;
-    * one with a drill behaves exactly as it does without this option, since a
-    * drill is the author's own instruction for that value. Omitted on a
-    * surface with nowhere to show them, and cells then click only where a tag
-    * says so.
+    * result names everything its rows query needs (`canShowRows`) offers
+    * "Show rows" in its menu, beside any `# drill` actions. Omitted on a
+    * surface with nowhere to show them, and cells then offer only what a tag
+    * says.
     */
    onRows?: (request: DrillRowsRequest) => void;
 }
@@ -97,14 +95,18 @@ export interface UseDrillResult {
       context: string | undefined,
       rowsGate: ((field: DrillField) => boolean) | false,
    ) => DrillBinding;
-   /** Render anywhere in the subtree: the menu a multi-destination drill opens. */
+   /** Render anywhere in the subtree: the menu every drillable click opens. */
    drillMenu: ReactNode;
 }
 
+interface DrillMenuItem {
+   key: string;
+   label: string;
+   run: () => void;
+}
+
 interface DrillMenuState {
-   intent?: DrillIntent;
-   destinations: string[];
-   event?: MouseEvent;
+   items: DrillMenuItem[];
    top: number;
    left: number;
    label: string;
@@ -112,6 +114,12 @@ interface DrillMenuState {
 
 /**
  * Click-to-drill for any surface that renders a Malloy result.
+ *
+ * Every drillable click opens one small menu that says what it can do, even
+ * when there is only one thing: `Filter this report` for a `to=self` drill,
+ * `Open <report>` for each `to=` report, then `Show rows`. A `# drill` tag
+ * adds actions; it never replaces the rows, and a click never acts on a tag
+ * the reader cannot see.
  *
  * Shared between the dashboard viewer and notebook cells on purpose: `# drill`
  * is declared on a model *dimension*, so it fires wherever that dimension is
@@ -218,27 +226,42 @@ export function useDrill({
          // Runs on every cell click, so "not a drill" is the ordinary answer.
          const intent = resolveDrill(payload);
          const rows = rowsBehind(payload);
-         // Offer only what this surface can actually do, so a menu never lists a
-         // destination that would be a no-op when picked.
-         const destinations = intent ? honorable(intent.to, intent.given) : [];
-         if (destinations.length === 0) {
-            if (rows) onRows?.(rows);
-            return;
-         }
-         if (destinations.length === 1 && intent) {
-            go(intent, destinations[0], payload.event);
-            return;
-         }
+         // Offer only what this surface can actually do, so the menu never lists
+         // an action that would be a no-op when picked. Deduplicated: `# drill
+         // { to=[overview, overview] }` is a typo rather than a request for two
+         // identical rows. `to=self` first, then reports in the tag's order.
+         const destinations = intent
+            ? Array.from(new Set(honorable(intent.to, intent.given))).sort(
+                 (a, b) => Number(b === DRILL_SELF) - Number(a === DRILL_SELF),
+              )
+            : [];
+         const items: DrillMenuItem[] = destinations.map((destination) => ({
+            key: `to:${destination}`,
+            label:
+               destination === DRILL_SELF
+                  ? selfLabel
+                  : // A report's path from the package root; its file name reads as its name.
+                    `Open ${humanizeSlug(destination.split("/").pop() ?? destination)}`,
+            run: () => {
+               if (intent) go(intent, destination, payload.event);
+            },
+         }));
+         if (rows)
+            items.push({
+               key: "rows",
+               label: "Show rows",
+               run: () => onRows?.(rows),
+            });
+         if (items.length === 0) return;
          setMenu({
-            ...(intent ? { intent } : {}),
-            destinations,
-            event: payload.event,
+            items,
             top: payload.event?.clientY ?? 0,
             left: payload.event?.clientX ?? 0,
-            label: intent?.label ?? rows?.label ?? "",
+            label:
+               intent?.label ?? rows?.label ?? drillValueLabel(payload.value),
          });
       },
-      [go, honorable, onRows, rowsBehind],
+      [go, honorable, onRows, rowsBehind, selfLabel],
    );
 
    const canDrillTag = useCallback(
@@ -296,26 +319,17 @@ export function useDrill({
             <ListSubheader sx={{ lineHeight: "32px" }}>
                {menu ? `${menu.label} →` : ""}
             </ListSubheader>
-            {/* Deduplicated: `# drill { to=[overview, overview] }` is a typo
-                rather than a request for two identical rows, and React keys
-                these by destination, so the duplicate warned as well as
-                rendered twice. */}
-            {Array.from(new Set(menu?.destinations ?? [])).map(
-               (destination) => (
-                  <MenuItem
-                     key={destination}
-                     onClick={() => {
-                        close();
-                        if (menu?.intent)
-                           go(menu.intent, destination, menu.event);
-                     }}
-                  >
-                     {destination === DRILL_SELF
-                        ? selfLabel
-                        : humanizeSlug(destination)}
-                  </MenuItem>
-               ),
-            )}
+            {(menu?.items ?? []).map((item) => (
+               <MenuItem
+                  key={item.key}
+                  onClick={() => {
+                     close();
+                     item.run();
+                  }}
+               >
+                  {item.label}
+               </MenuItem>
+            ))}
          </Menu>
       ),
    };
