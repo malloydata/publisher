@@ -201,7 +201,7 @@ export function DashboardTile({
    const failure = state.isError ? state.error : undefined;
    // The result as it landed, for a host that reads it (the builder's click
    // settings read a tile's dimensions and first row off it).
-   const landed = (state.data as { result?: string } | undefined)?.result;
+   const landed = state.data?.data.result;
    useEffect(() => {
       if (landed !== undefined) onResult?.(landed);
    }, [landed, onResult]);
