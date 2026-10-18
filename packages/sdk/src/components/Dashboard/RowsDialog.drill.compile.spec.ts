@@ -99,6 +99,11 @@ source: sales_tiles is quarterly_sales extend {
 }
 query: online_quarters is sales_tiles -> quarter_region_table + { where: is_online = true }
 query: given_regions is sales_tiles -> by_region + { where: region ~ $REGION }
+query: inline_online is sales_tiles -> { group_by: region; aggregate: sale_count } + { where: is_online = true }
+query: inline_products is sales_tiles -> {
+    group_by: region
+    aggregate: sale_count
+  } + { where: product != 'Plain', where: is_online = true }
 `;
 
 type Row = Record<string, unknown>;
@@ -388,6 +393,24 @@ describe("which tile shapes open the rows behind a value", () => {
       expect(queriesOf(outcomes)).toContain(
          "where: region ~ $REGION, is_online = true, sale_date.quarter = ",
       );
+   });
+
+   // The report builder's form for a notebook's inline cell: `src -> { … }`
+   // with its filters in a `+ { where: … }` after the stage, here on fields the
+   // stage does not output (the #723 shapes).
+   it("an inline-stage query whose refinement filters a field its stage drops", async () => {
+      const filtered = (await run("run: inline_online")).data.toObject() as Row[];
+      const direct = (
+         await run(
+            "run: sales_tiles -> { where: is_online = true; group_by: region; aggregate: sale_count }",
+         )
+      ).data.toObject() as Row[];
+      const byRegion = (rows: Row[]) =>
+         Object.fromEntries(rows.map((r) => [String(r.region), r.sale_count]));
+      expect(byRegion(filtered)).toEqual(byRegion(direct));
+      const { outcomes } = await expectEveryRowMatches("inline_online");
+      expect(queriesOf(outcomes)).toContain("where: is_online = true, region = ");
+      await expectEveryRowMatches("inline_products");
    });
 
    it("a tile naming a query whose filter reads a given", async () => {

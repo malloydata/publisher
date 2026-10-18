@@ -19,7 +19,7 @@ import type {
    LocalGiven,
    QueryTile,
 } from "./document";
-import { isTextTile } from "./document";
+import { isInlineStage, isTextTile } from "./document";
 import { loadMalloyTag } from "./loadMalloy";
 import {
    CELLS_REMOVED_REASON,
@@ -35,6 +35,7 @@ import {
    type ParsedMalloy,
    type TreeQuery,
    type TreeStage,
+   type TreeViewBody,
    type TreeView,
 } from "./malloyTree";
 import { isBuilderTag } from "./tileTags";
@@ -247,13 +248,31 @@ function filtersOf(
  * refinement, declared alone in its statement. Its settings are its own tags,
  * read as a view's are, and its filters are the refinement's bindings.
  */
-function namedTile(query: TreeQuery, parse: ParseTags): QueryTile | undefined {
-   const { body, source } = query;
+function namedTile(
+   query: TreeQuery,
+   parse: ParseTags,
+   text: string,
+): QueryTile | undefined {
+   const { source } = query;
+   // An inline stage, `src -> { … }`, is the report's own query as much as a
+   // view reference is: its stage text is its base, kept exactly as written,
+   // and its filters go in a `+ { where: … }` after it like a view's.
+   const body: TreeViewBody =
+      query.body.kind === "inline" && !query.body.pipeline
+         ? {
+              kind: "reference",
+              from: text.slice(
+                 query.body.stage.span.start,
+                 query.body.stage.span.end,
+              ),
+              fromSpan: query.body.stage.span,
+           }
+         : query.body;
    if (
       source === undefined ||
       query.siblings !== 1 ||
       body.kind !== "reference" ||
-      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(body.from)
+      !(isInlineStage(body.from) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(body.from))
    )
       return undefined;
    const t = parse(tagText(query.tags)).tag;
@@ -669,7 +688,8 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
     */
    const namedQueryTile = (name: string, own: EntryLayout): DashboardTile => {
       const query = parsed.queries.find((q) => q.name === name);
-      const named = query && namedTile(query, parseAnnotation as ParseTags);
+      const named =
+         query && namedTile(query, parseAnnotation as ParseTags, parsed.text);
       if (named) {
          const { colspan, break: brk, ...rest } = named;
          return { ...rest, ...placed({ colspan, break: brk }, own) };

@@ -639,7 +639,7 @@ describe("ReportBuilder: a tile that names a query", () => {
    const named = `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }
 import { flights } from '../flights.malloy'
 
-query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`;
 
    it("opens the report and shows the tile, with nothing on it to edit", async () => {
       const document = await openDocument(named);

@@ -19,6 +19,7 @@ import type {
    TextTile,
 } from "./document";
 import {
+   isInlineStage,
    isQueryTile,
    isReadOnlyTile,
    isTextTile,
@@ -1282,9 +1283,25 @@ function scopeText(filters: QueryTile["filters"]): string {
 function planNamedFilters(
    ctx: SpliceContext,
    tile: QueryTile,
-   query: TreeQuery,
+   written: TreeQuery,
 ): SpliceFailure | undefined {
    const { parsed, edits } = ctx;
+   // `src -> { … }` with no refinement yet: its stage is the base a
+   // `+ { where: … }` is appended to, exactly as a view reference's name is.
+   const query: TreeQuery =
+      written.body.kind === "inline" && !written.body.pipeline
+         ? {
+              ...written,
+              body: {
+                 kind: "reference",
+                 from: parsed.text.slice(
+                    written.body.stage.span.start,
+                    written.body.stage.span.end,
+                 ),
+                 fromSpan: written.body.stage.span,
+              },
+           }
+         : written;
    const refinement =
       query.body.kind === "reference" ? query.body.refinement : undefined;
    const binds = (stage: TreeStage | undefined) =>
@@ -1792,8 +1809,10 @@ function unwritable(
       if (before === undefined) {
          const names = [tile.name, tile.source];
          if (
-            tile.declaration.kind === "reference" ||
-            tile.declaration.kind === "named"
+            (tile.declaration.kind === "reference" ||
+               tile.declaration.kind === "named") &&
+            // An inline stage is the query's own text, carried as read.
+            !isInlineStage(tile.declaration.from)
          )
             names.push(tile.declaration.from);
          for (const name of names) {

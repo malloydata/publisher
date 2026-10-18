@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   isInlineStage,
    isQueryTile,
    tileKey,
    type DashboardDocument,
@@ -89,11 +90,11 @@ const viewTile = (tile: QueryTile & { source: string }, from: string) =>
  * the edit did not touch is left as the file has it, so opening and saving a
  * report never rewrites a tile nobody changed.
  *
- * A tile is promoted to a query when it needs one ({@link needsQuery}), or when
- * another tile already names its view (two `"flights -> kpis"` entries could
- * not be told apart). A query goes back to naming its view only when the
- * builder named it, nothing else in it is the author's (`unmodelled`), and no
- * other tile names that view.
+ * A tile is promoted to a query when it needs one ({@link needsQuery}). Two
+ * entries may name the same view: each carries its own layout, so they are
+ * told apart by where they sit. A query goes back to naming its view only when
+ * the builder named it, nothing else in it is the author's (`unmodelled`), and
+ * it is not an inline stage.
  */
 export function normalizeTileForms(
    draft: DashboardDocument,
@@ -116,16 +117,8 @@ export function normalizeTileForms(
    draft.tiles.forEach((tile, index) => {
       if (!isQueryTile(tile) || !touched(tile) || tile.source === undefined)
          return;
-      const viewKey = (source: string, view: string) => `${source}.${view}`;
-      const others = draft.tiles.filter(
-         (t, i) => i !== index && isQueryTile(t),
-      );
-      const viewNamedElsewhere = (view: string) =>
-         others.some(
-            (t) => tileKey(t) === viewKey(tile.source as string, view),
-         );
       if (tile.declaration.kind === "inherited") {
-         if (!needsQuery(tile) && !viewNamedElsewhere(tile.name)) return;
+         if (!needsQuery(tile)) return;
          draft.tiles[index] = {
             ...tile,
             name: freeQueryName(draft, tile.name),
@@ -137,9 +130,10 @@ export function normalizeTileForms(
          const from = tile.declaration.from;
          if (
             tile.unmodelled ||
+            // An inline stage has no served view to go back to.
+            isInlineStage(from) ||
             !namedByBuilder(tile.name, from) ||
-            needsQuery(tile) ||
-            viewNamedElsewhere(from)
+            needsQuery(tile)
          )
             return;
          draft.tiles[index] = viewTile(

@@ -87,7 +87,7 @@ describe("addTileToDocument", () => {
       ]);
    });
 
-   it("makes a second tile on a view already shown a query, so the two can be told apart", () => {
+   it("adds a second entry for a view already shown: each sits where its own entry says", () => {
       const draft = document();
       addTileToDocument(draft, { ...tile, colspan: undefined }, context);
       addTileToDocument(draft, { ...tile, colspan: undefined }, context);
@@ -98,9 +98,9 @@ describe("addTileToDocument", () => {
             declaration: { kind: "inherited" },
          },
          {
-            name: "by_day_tile",
+            name: "by_day",
             source: "orders",
-            declaration: { kind: "named", from: "by_day" },
+            declaration: { kind: "inherited" },
          },
       ]);
    });
@@ -168,7 +168,8 @@ describe("duplicateTile", () => {
       expect(draft.tiles.map((t) => [t.name, t.row, t.col, t.rowspan])).toEqual(
          [
             ["by_day_tile", 1, 1, 4],
-            ["by_day_tile_2", 5, 1, 4],
+            // Nothing of its own but its place: a second entry for the view.
+            ["by_day", 5, 1, 4],
             ["below", 9, 1, 3],
          ],
       );
@@ -228,8 +229,9 @@ describe("duplicateTile beside a narrowed extension", () => {
       };
       expect(duplicateTile(draft, 0)).toBe(1);
       expect(draft.tiles[1]).toMatchObject({
+         name: "by_brand",
          source: "orders",
-         declaration: { kind: "named", from: "by_brand" },
+         declaration: { kind: "inherited" },
       });
       expect(draft.sources.map((s) => s.name)).toEqual(["orders_west"]);
    });

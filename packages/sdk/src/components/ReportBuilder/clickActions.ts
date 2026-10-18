@@ -4,10 +4,12 @@
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { drillClauseLabels, type DrillClause } from "../drill/drillClauses";
 import {
+   columnCounts,
    isNestColumn,
    isTotalColumn,
    type ResultField,
 } from "../RenderedResult/chartShapeProblem";
+import type { CatalogView } from "./catalog";
 import {
    DRILL_SELF,
    drillValueLabel,
@@ -338,4 +340,27 @@ export function entryFor(
    const same = (a: EntryDrill, b: EntryDrill) => key(a) === key(b);
    if (model ? same(next, model) : to.length === 0) return undefined;
    return next;
+}
+
+/**
+ * A tile's shape as the chart picker reads a model view's, from the result the
+ * canvas drew for it: what an inline-stage query, which no model lists, is
+ * judged by. Undefined until the tile has run.
+ */
+export function viewOfResult(
+   result: string | undefined,
+): Pick<CatalogView, "shape" | "aggregateOnly"> | undefined {
+   if (!result) return undefined;
+   try {
+      const fields = (JSON.parse(result) as Malloy.Result).schema
+         .fields as unknown as ResultField[];
+      if (fields.length === 0) return undefined;
+      const { groupBys, totals } = columnCounts(fields);
+      return {
+         shape: { groupBys, totals },
+         ...(totals === fields.length ? { aggregateOnly: true } : {}),
+      };
+   } catch {
+      return undefined;
+   }
 }

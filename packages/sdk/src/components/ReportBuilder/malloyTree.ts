@@ -571,7 +571,18 @@ function readViewBody(r: Reader, vExpr: Ctx): TreeViewBody {
 }
 
 /** One segment of a view or a query: a reference, a refined reference, or a `{ … }` body. */
-function readSegment(r: Reader, seg: Ctx, pipeline: boolean): TreeViewBody {
+function readSegment(
+   r: Reader,
+   seg: Ctx,
+   pipeline: boolean,
+   /**
+    * A query's segment, where `{ … } + { … }` is an inline stage the report
+    * owns plus its filter refinement: read as a reference whose `from` is the
+    * stage's text, exactly as written. Never for a view, whose `from` names a
+    * view.
+    */
+   inlineBase = false,
+): TreeViewBody {
    if (IS.segOps(seg)) {
       const props = call(seg, "queryProperties");
       const stage = props && readStage(r, props);
@@ -610,6 +621,25 @@ function readSegment(r: Reader, seg: Ctx, pipeline: boolean): TreeViewBody {
       }
       if (base && IS.segParen(base))
          return { kind: "unsupported", why: "a parenthesized expression" };
+      if (
+         inlineBase &&
+         base === lhs &&
+         operands.length === 2 &&
+         IS.segOps(base) &&
+         IS.segOps(rhs)
+      ) {
+         const fromSpan = r.span(lhs);
+         const props = call(rhs, "queryProperties");
+         const stage = props && readStage(r, props);
+         return fromSpan && stage
+            ? {
+                 kind: "reference",
+                 from: r.text.slice(fromSpan.start, fromSpan.end),
+                 fromSpan,
+                 refinement: stage,
+              }
+            : { kind: "unsupported", why: "an unreadable refinement" };
+      }
       if (!base || !IS.segField(base))
          return {
             kind: "unsupported",
@@ -707,7 +737,7 @@ function readQueries(r: Reader, root: Ctx): TreeQuery[] {
             siblings: defs.length,
             body:
                source && seg && (!extended || scope)
-                  ? readSegment(r, seg, false)
+                  ? readSegment(r, seg, false, true)
                   : { kind: "unsupported", why: "not a source and a view" },
             ...(source ? { source } : {}),
             ...(source && r.span(named)

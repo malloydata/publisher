@@ -1530,7 +1530,7 @@ query: by_brand_tile is orders -> by_brand
 import { flights } from '../flights.malloy'
 
 # bar_chart
-query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`;
 
       it("moves with its entry spelled as written", async () => {
          const out = await spliced(NAMED, (d) => {
@@ -1538,7 +1538,7 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
          });
          expect(out).toContain('tiles=["flights -> by_month", "by_carrier"]');
          expect(out).toContain(
-            "# bar_chart\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }",
+            "# bar_chart\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }",
          );
       });
 

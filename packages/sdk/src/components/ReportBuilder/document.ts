@@ -299,6 +299,14 @@ export interface DashboardSource {
 export const tileExpression = (tile: QueryTile): string =>
    namesQuery(tile) ? tile.name : `${tile.source} -> ${tile.name}`;
 
+/**
+ * Whether a `named` tile's base is an inline stage, `{ group_by: … }`, rather
+ * than a view's name: its query is `src -> { … }`, and it stays a query
+ * whatever its settings, since there is no served view to name instead.
+ */
+export const isInlineStage = (from: string): boolean =>
+   from.trimStart().startsWith("{");
+
 /** Whether the tile's entry names a query (`"kpis_tile"`) rather than a view. */
 export const namesQuery = (tile: QueryTile): boolean =>
    tile.declaration.kind === "query" || tile.declaration.kind === "named";

@@ -128,14 +128,13 @@ describe("a report the builder writes", () => {
       expect(none).toBe(file('"flights -> by_carrier", "flights -> kpis"'));
    });
 
-   it("duplicates a tile as a query of its own right after it, and deletes one with its query", async () => {
+   it("duplicates a plain tile as a second entry for its view, never an unchanged query, and deletes one", async () => {
       const copied = await edited(PLAIN, (d) => {
          duplicateTile(d, 0);
       });
       expect(copied).toBe(
          file(
-            '"flights -> by_carrier", "by_carrier_tile", "flights -> kpis"',
-            "\nquery: by_carrier_tile is flights -> by_carrier\n",
+            '"flights -> by_carrier", "flights -> by_carrier", "flights -> kpis"',
          ),
       );
       const removed = await edited(copied, (d) => {
@@ -242,7 +241,7 @@ describe("a report the builder writes", () => {
    it("reads a query of another shape as one it only shows", async () => {
       const other = file(
          '"by_month"',
-         "\nquery: by_month is flights -> { group_by: dep_month }\n",
+         "\nquery: by_month is flights -> { group_by: dep_month } -> { select: * }\n",
       );
       expect(queryTile(await openDocument(other), 0).declaration).toEqual({
          kind: "query",

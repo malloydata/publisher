@@ -14,9 +14,9 @@ import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
 import { duplicateBlocked } from "./addTileToDocument";
-import { isQueryTile, tileKey } from "./document";
+import { isInlineStage, isQueryTile, tileKey } from "./document";
 import { ClickActionsDialog } from "./ClickActionsDialog";
-import type { LinkTarget } from "./clickActions";
+import { viewOfResult, type LinkTarget } from "./clickActions";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
 import { tileDisplayTitle } from "./tileDisplayTitle";
@@ -88,7 +88,7 @@ export function BuilderDialogs({
       settingsButton(refocus.current)?.focus();
       refocus.current = undefined;
    });
-   // The tile Clickable cells was opened from, for its window to name.
+   // The tile "What clicking a value does" was opened from, for its window to name.
    const [drillTile, setDrillTile] = useState<string | undefined>();
    // The catalog's view behind the tile whose menu is open, for the charts the
    // picker may offer: a reference tile's base view, else a view of the tile's own name.
@@ -96,6 +96,13 @@ export function BuilderDialogs({
       menu === undefined ? undefined : editor.document.tiles[menu.index];
    const menuTile = menuAt && isQueryTile(menuAt) ? menuAt : undefined;
    const menuView = (() => {
+      // An inline stage is no view in any model: its shape is read off the
+      // result the canvas drew for it, as a model view's is off its schema.
+      if (
+         menuTile?.declaration.kind === "named" &&
+         isInlineStage(menuTile.declaration.from)
+      )
+         return viewOfResult(tileResult?.(tileKey(menuTile)));
       if (!menuTile || !catalog) return undefined;
       // A view this file declares is read off the file's own compiled model:
       // an inline body is in no other model the catalog has.

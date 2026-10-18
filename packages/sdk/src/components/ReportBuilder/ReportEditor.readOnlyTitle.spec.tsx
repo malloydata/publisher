@@ -21,7 +21,7 @@ import { flights } from "../flights.malloy"
 
 # label="Flights by airline"
 # bar_chart
-query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`;
 
 const served: Partial<DashboardManifest> = {
    tiles: [

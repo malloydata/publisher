@@ -3,13 +3,14 @@
 
 import type { NewTile } from "./AddTileDialog";
 import {
+   isInlineStage,
    isQueryTile,
    type DashboardDocument,
    type QueryTile,
 } from "./document";
 import { DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
 import { withSource } from "./imports";
-import { freeQueryName, normalizeTileForms } from "./tileForm";
+import { freeQueryName, needsQuery, normalizeTileForms } from "./tileForm";
 import { rowsOf, settle } from "./placement";
 
 /** Where a tile is added and what the document is: the parts of an add that are not the tile. */
@@ -120,12 +121,23 @@ export function duplicateTile(
       chartLines: _chartLines,
       ...settings
    } = structuredClone(original);
+   // A copy with nothing of its own is a second entry naming the same view;
+   // one with settings is a query of its own. An inline stage has no view to
+   // name, so its copy is always a query, named after the original.
+   const inline = original.declaration.kind === "named" && isInlineStage(view);
    let copy: QueryTile = {
       ...settings,
-      name: freeQueryName(draft, view),
+      name: freeQueryName(draft, inline ? original.name : view),
       source,
       declaration: { kind: "named", from: view },
    };
+   if (!inline && !needsQuery(copy))
+      copy = {
+         ...settings,
+         name: view,
+         source,
+         declaration: { kind: "inherited" },
+      };
    // On a placed report the copy goes straight under the original, at its
    // size, and whatever was there moves down; it never lands on top of it.
    const placed = original.row !== undefined && original.col !== undefined;
