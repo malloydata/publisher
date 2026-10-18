@@ -752,6 +752,18 @@ joined field (`customers.name`). Two shapes offer no rows, and their values are 
 than one stage (`view: v is { … } -> { … }`), whose later dimensions are an earlier stage's outputs that the
 source cannot be filtered by, and a source with parameters.
 
+**Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
+`limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,
+and saves the result as `<source>_rows_<values>.csv`. When that cap cut the result short, the file name ends
+`_first_<N>_rows_server_limit` and the button's tooltip says `First N rows (server limit)`. A text value that a
+spreadsheet would run as a formula (one starting `=`, `+`, `-` or `@`) is written with a leading `'`; numbers are
+written as they are.
+
+A host replaces that button with its own through `rowsActions` on `Report` or `DashboardView`: a function given
+the unlimited query, the environment, package, model path and version, the givens the dialog sends, the
+preamble in text-source mode, and a suggested file name, which returns what to draw in the dialog's title row
+(`null` for nothing).
+
 Declaring it on the dimension is what makes it work everywhere: any result that groups by that dimension
 is clickable, in a grid tile and in a linear report's tile or cell alike, with no per-report wiring. So when
 a view is meant to be drilled, group by the tagged dimension: declaring
