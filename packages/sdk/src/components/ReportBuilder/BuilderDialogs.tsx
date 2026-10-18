@@ -3,12 +3,18 @@
 
 import { isPlaced } from "../Dashboard/DashboardGrid";
 import { holdChartRows, settle } from "./placement";
-import { useState, type ComponentProps, type ReactNode } from "react";
+import {
+   useEffect,
+   useRef,
+   useState,
+   type ComponentProps,
+   type ReactNode,
+} from "react";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
 import { duplicateBlocked } from "./addTileToDocument";
-import { isQueryTile } from "./document";
+import { isQueryTile, tileKey } from "./document";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
@@ -50,6 +56,31 @@ export function BuilderDialogs({
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
+   // A chart or colour pick on a tile that names a served view makes it a
+   // query of the report's own, under a new name, so React mounts the tile
+   // afresh and the button its menu opened from is gone. The same tile's new
+   // button stands in: the menu stays by it, and focus goes back to it on
+   // close. Without that, focus stays on the closing menu, and the ⌘S that
+   // follows lands in an overlay and is ignored.
+   const settingsButton = (index: number): HTMLElement | null => {
+      const tile = editor.document.tiles[index];
+      if (!tile || typeof document === "undefined") return null;
+      return document.querySelector<HTMLElement>(
+         `[data-tile-key="${CSS.escape(tileKey(tile))}"] [aria-label^="Settings for "]`,
+      );
+   };
+   const menuAnchor =
+      menu === undefined
+         ? null
+         : menu.anchor.isConnected
+           ? menu.anchor
+           : (settingsButton(menu.index) ?? menu.anchor);
+   const refocus = useRef<number | undefined>(undefined);
+   useEffect(() => {
+      if (menu !== undefined || refocus.current === undefined) return;
+      settingsButton(refocus.current)?.focus();
+      refocus.current = undefined;
+   });
    // The tile Clickable cells was opened from, for its window to name.
    const [drillTile, setDrillTile] = useState<string | undefined>();
    // The catalog's view behind the tile whose menu is open, for the charts the
@@ -104,13 +135,17 @@ export function BuilderDialogs({
             onRemove={bindings.dropControl}
          />
          <TileMenu
-            anchor={menu?.anchor ?? null}
+            anchor={menuAnchor}
             tile={
                menu === undefined
                   ? undefined
                   : editor.document.tiles[menu.index]
             }
-            onClose={() => setMenu(undefined)}
+            onClose={() => {
+               if (menu && !menu.anchor.isConnected)
+                  refocus.current = menu.index;
+               setMenu(undefined);
+            }}
             onCommit={(next) => {
                const at = menu?.index;
                if (at === undefined) return;
