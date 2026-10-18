@@ -172,7 +172,9 @@ async function clickEveryCell(tile: string, preamble = "") {
          cell.click();
          await Promise.resolve();
       });
-      const showRows = screen.queryByRole("menuitem", { name: "Show rows" });
+      const showRows = screen.queryByRole("menuitem", {
+         name: /^Show rows for /,
+      });
       if (showRows) {
          act(() => {
             fireEvent.click(showRows);

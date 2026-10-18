@@ -633,12 +633,18 @@ test.describe("package-dashboards", () => {
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
 
       // Even one destination is a menu: a click says what it will do before
-      // doing it, and the rows behind the value are offered beside it.
-      await expect(page.getByText("Nike →")).toBeVisible({ timeout: 30_000 });
+      // doing it, each item naming the value, and the rows behind the value
+      // are offered beside it. No header row: every entry is an action.
       await expect(
-         page.getByRole("menuitem", { name: "Show rows" }),
+         page.getByRole("menuitem", { name: "Open Overview for Nike" }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+         page.getByRole("menuitem", { name: /^Show rows for Nike/ }),
       ).toBeVisible();
-      await page.getByRole("menuitem", { name: "Open Overview" }).click();
+      await expect(page.getByText("Nike →")).toHaveCount(0);
+      await page
+         .getByRole("menuitem", { name: "Open Overview for Nike" })
+         .click();
 
       // The slug becomes the route and the clicked value becomes the given.
       await expect(page).toHaveURL(
@@ -946,9 +952,11 @@ test.describe("package-dashboards", () => {
       // rows behind the value.
       await expect(page.getByRole("menuitem")).toHaveCount(3);
       await expect(page.getByRole("menuitem").nth(0)).toHaveText(
-         "Filter this report",
+         /^Filter this report to /,
       );
-      await expect(page.getByRole("menuitem").nth(2)).toHaveText("Show rows");
+      await expect(page.getByRole("menuitem").nth(2)).toHaveText(
+         /^Show rows for /,
+      );
    });
 
    test("arrow keys move within a drillable column and the stop follows", async ({

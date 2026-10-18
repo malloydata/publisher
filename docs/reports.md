@@ -718,9 +718,10 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   stages the value as a draft: neither the page nor the URL changes until Apply is pressed, while the same
   menu's `to=<path>` entry navigates and arrives already applied.
 - **A click always opens a small menu that says what it will do**, even when there is only one thing to do.
-  It is headed by the clicked value (`EU →`) and lists, in this order: `Filter this report` for `to=self`,
-  `Open <report>` for each `to=<path>` (the report's file name, humanized), and `Show rows` when the
-  rows behind the value can be shown (below). A `# drill` tag adds entries to the menu; it never replaces
+  It has no header: each entry names the value it acts on, in this order: `Filter this report to EU`
+  for `to=self`, `Open <report> for EU` for each `to=<path>` (the report's file name, humanized), and
+  `Show rows for EU, 2025-12` (every value of the clicked row) when the rows behind the value can be
+  shown (below). A `# drill` tag adds entries to the menu; it never replaces
   the rows, and a click never acts on a tag the reader cannot see. A cell is marked clickable exactly when
   its menu would list something.
 - **The value is written as filter syntax**, because a click cannot know what it is aiming at, so the

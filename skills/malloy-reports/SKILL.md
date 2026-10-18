@@ -222,7 +222,7 @@ dimension: region is regions.region
 
 - **`to=<path>`** navigates to a report, of either layout, by its package path without `.malloy`, read from the package root: `to=category` is `category.malloy` at the root, `to="regions/west"` is `regions/west.malloy`. Quote a path with a `/`. **Always write the path from the package root**: a bare name is a root file, never a report of that name elsewhere.
 - **`to=self`** filters in place.
-- **A click always opens a menu that says what it will do**, even with one entry: `Filter this report` (`to=self`), `Open <report>` (each `to=<path>`), then `Show rows`. A tag adds entries; it never replaces the rows.
+- **A click always opens a menu that says what it will do**, even with one entry, each entry naming the value: `Filter this report to EU` (`to=self`), `Open <report> for EU` (each `to=<path>`), then `Show rows for EU, 2025-12` (every value of the row). A tag adds entries; it never replaces the rows.
 - **Always write `given=`.** Without it the given is the dimension name verbatim, so `dimension: category` seeds `category`, not `CATEGORY`. `to=self` survives that (it folds case); `to=<path>` does not, and lands on an unfiltered page with nothing erroring.
 - **The destination needs a control for the given**, declared as `filter<T>`. No lint checks that half, so click it and look.
 - **Only table cells are marked drillable.** A report meant to be drilled wants at least one untagged (table) tile, grouped by the tagged dimension. A column whose rendered header another, non-drillable tile also shows loses its marking: give the two different `# label=`s.

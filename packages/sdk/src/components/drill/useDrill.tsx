@@ -1,8 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { ListSubheader, Menu, MenuItem } from "@mui/material";
+import { Menu, MenuItem } from "@mui/material";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { drillClauseLabels } from "./drillClauses";
 import type { DrillField } from "./resolveDrill";
 import {
    canShowRows,
@@ -109,15 +110,31 @@ interface DrillMenuState {
    items: DrillMenuItem[];
    top: number;
    left: number;
-   label: string;
+}
+
+/** A menu item is cut to this width; its full text is its tooltip and accessible name. */
+const MENU_ITEM_MAX_WIDTH = 360;
+
+/**
+ * The values the rows behind a click are filtered on, as the rows dialog's
+ * title names them: every dimension of the row, or the clicked value alone.
+ */
+function rowsValuesLabel(rows: DrillRowsRequest): string {
+   const parts = rows.drillClauses
+      ? drillClauseLabels(rows.drillClauses, rows.timezone)
+      : [];
+   return parts.length > 0
+      ? parts.map((part) => part.label).join(", ")
+      : rows.label;
 }
 
 /**
  * Click-to-drill for any surface that renders a Malloy result.
  *
  * Every drillable click opens one small menu that says what it can do, even
- * when there is only one thing: `Filter this report` for a `to=self` drill,
- * `Open <report>` for each `to=` report, then `Show rows`. A `# drill` tag
+ * when there is only one thing, each item naming the value it acts on:
+ * `Filter this report to West` for a `to=self` drill, `Open Regions for West`
+ * for each `to=` report, then `Show rows for West, 2025-12`. A `# drill` tag
  * adds actions; it never replaces the rows, and a click never acts on a tag
  * the reader cannot see.
  *
@@ -235,13 +252,14 @@ export function useDrill({
                  (a, b) => Number(b === DRILL_SELF) - Number(a === DRILL_SELF),
               )
             : [];
+         const value = intent?.label ?? drillValueLabel(payload.value);
          const items: DrillMenuItem[] = destinations.map((destination) => ({
             key: `to:${destination}`,
             label:
                destination === DRILL_SELF
-                  ? selfLabel
+                  ? `${selfLabel} to ${value}`
                   : // A report's path from the package root; its file name reads as its name.
-                    `Open ${humanizeSlug(destination.split("/").pop() ?? destination)}`,
+                    `Open ${humanizeSlug(destination.split("/").pop() ?? destination)} for ${value}`,
             run: () => {
                if (intent) go(intent, destination, payload.event);
             },
@@ -249,7 +267,7 @@ export function useDrill({
          if (rows)
             items.push({
                key: "rows",
-               label: "Show rows",
+               label: `Show rows for ${rowsValuesLabel(rows)}`,
                run: () => onRows?.(rows),
             });
          if (items.length === 0) return;
@@ -257,8 +275,6 @@ export function useDrill({
             items,
             top: payload.event?.clientY ?? 0,
             left: payload.event?.clientX ?? 0,
-            label:
-               intent?.label ?? rows?.label ?? drillValueLabel(payload.value),
          });
       },
       [go, honorable, onRows, rowsBehind, selfLabel],
@@ -316,18 +332,28 @@ export function useDrill({
             anchorReference="anchorPosition"
             anchorPosition={{ top: menu?.top ?? 0, left: menu?.left ?? 0 }}
          >
-            <ListSubheader sx={{ lineHeight: "32px" }}>
-               {menu ? `${menu.label} →` : ""}
-            </ListSubheader>
+            {/* Only actions: each item names the value it acts on, so there is
+                no header row that reads like an item and does nothing. */}
             {(menu?.items ?? []).map((item) => (
                <MenuItem
                   key={item.key}
+                  title={item.label}
+                  aria-label={item.label}
                   onClick={() => {
                      close();
                      item.run();
                   }}
+                  sx={{ maxWidth: MENU_ITEM_MAX_WIDTH }}
                >
-                  {item.label}
+                  <span
+                     style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                     }}
+                  >
+                     {item.label}
+                  </span>
                </MenuItem>
             ))}
          </Menu>

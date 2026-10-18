@@ -111,9 +111,8 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(onRows).not.toHaveBeenCalled();
-      expect(screen.getByText("Jeans →")).toBeTruthy();
-      expect(menuItems()).toEqual(["Show rows"]);
-      pick("Show rows");
+      expect(menuItems()).toEqual(["Show rows for Jeans"]);
+      pick("Show rows for Jeans");
       expect(onRows).toHaveBeenCalledWith({
          field: "cat",
          rawValue: "Jeans",
@@ -176,8 +175,11 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(onSelf).not.toHaveBeenCalled();
-      expect(menuItems()).toEqual(["Filter this report", "Show rows"]);
-      pick("Filter this report");
+      expect(menuItems()).toEqual([
+         "Filter this report to Jeans",
+         "Show rows for Jeans",
+      ]);
+      pick("Filter this report to Jeans");
       expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
       expect(onRows).not.toHaveBeenCalled();
    });
@@ -201,11 +203,11 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(menuItems()).toEqual([
-         "Filter this view",
-         "Open Category detail",
-         "Open Brand review",
+         "Filter this view to Jeans",
+         "Open Category detail for Jeans",
+         "Open Brand review for Jeans",
       ]);
-      pick("Open Brand review");
+      pick("Open Brand review for Jeans");
       expect(onNavigate).toHaveBeenCalledWith(
          {
             path: "brand_review",
@@ -228,8 +230,8 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(onSelf).not.toHaveBeenCalled();
-      expect(menuItems()).toEqual(["Filter this view"]);
-      pick("Filter this view");
+      expect(menuItems()).toEqual(["Filter this view to Jeans"]);
+      pick("Filter this view to Jeans");
       expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
    });
 
@@ -245,7 +247,9 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
       await act(async () => {
          await new Promise((resolve) => setTimeout(resolve, 0));
       });
-      const first = screen.getByRole("menuitem", { name: "Show rows" });
+      const first = screen.getByRole("menuitem", {
+         name: "Show rows for Jeans",
+      });
       expect(document.activeElement).toBe(first);
       act(() => {
          fireEvent.keyDown(first, { key: "Escape" });
@@ -255,6 +259,81 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
       });
       expect(menuItems()).toEqual([]);
       expect(onRows).not.toHaveBeenCalled();
+   });
+
+   it("names every value of the row the rows are filtered on, and holds nothing but actions", () => {
+      const onRows = mock(() => {});
+      const onSelf = mock(() => {});
+      const result = mountDrill({
+         onRows,
+         onSelf,
+         selfLabel: "Filter this report",
+      });
+      // A two-dimension row: the click is on `region`, the row also has `month`.
+      const root = {
+         name: "root",
+         isArray: () => true,
+         metadataTag: {
+            text: (...at: string[]) =>
+               at.join(".") === "source.name" ? "orders" : undefined,
+            array: () => undefined,
+         },
+         fields: [] as unknown[],
+      };
+      const rowField = (
+         name: string,
+         drill?: { to: string[]; given?: string },
+      ) => {
+         const field = {
+            name,
+            tag: tag(drill),
+            parent: root,
+            isBasic: () => true,
+            wasDimension: () => true,
+            drillStableExpression: { kind: "field_reference", name },
+            metadataTag: {
+               text: (...at: string[]) =>
+                  at.join(".") === "drill_expression.code" ? name : undefined,
+               array: () => undefined,
+            },
+         };
+         root.fields.push(field);
+         return field as unknown as DrillField;
+      };
+      const region = rowField("region", { to: ["self"], given: "REGION" });
+      rowField("status");
+      const clause = (name: string, value: string) => ({
+         filter: {
+            kind: "literal_equality" as const,
+            expression: { kind: "field_reference" as const, name },
+            value: { kind: "string_literal" as const, string_value: value },
+         },
+      });
+      act(() =>
+         result.current.drill.onClick({
+            field: region,
+            value: "West",
+            drillClauses: [
+               clause("region", "West"),
+               clause("status", "Shipped"),
+            ],
+         }),
+      );
+      expect(menuItems()).toEqual([
+         "Filter this report to West",
+         "Show rows for West, Shipped",
+      ]);
+      // No header or divider: every child of the menu list is an action.
+      const list = screen.getByRole("menu");
+      expect(
+         Array.from(list.children).every(
+            (child) => child.getAttribute("role") === "menuitem",
+         ),
+      ).toBe(true);
+      const rows = screen.getByRole("menuitem", {
+         name: "Show rows for West, Shipped",
+      });
+      expect(rows.getAttribute("title")).toBe("Show rows for West, Shipped");
    });
 
    it("leaves out a destination this surface cannot honour", () => {
