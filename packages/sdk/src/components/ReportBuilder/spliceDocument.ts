@@ -26,6 +26,7 @@ import {
    tileExpression,
 } from "./document";
 import type { LocalGiven } from "./document";
+import type { EntryDrill } from "../drill/resolveDrill";
 import {
    artifactLine,
    artifactTag,
@@ -388,13 +389,18 @@ function checkShape(
 /** The tag keys of a tile's layout, which a view declared here carries until the builder moves them to its entry. */
 const LAYOUT_TAG_KEYS: ReadonlySet<string> = new Set(["colspan", "break"]);
 
-/** Whether a tile's place on the grid changed: its width, row break, rowspan, row or column. */
+/** A tile's entry drill, or none: text tiles carry none. */
+const drillOf = (tile: DashboardTile) =>
+   isTextTile(tile) ? undefined : tile.drill;
+
+/** Whether what a tile's entry says changed: its width, row break, rowspan, row, column or click actions. */
 const layoutChanged = (was: DashboardTile, now: DashboardTile) =>
    was.colspan !== now.colspan ||
    Boolean(was.break) !== Boolean(now.break) ||
    was.rowspan !== now.rowspan ||
    was.row !== now.row ||
-   was.col !== now.col;
+   was.col !== now.col ||
+   drillText(drillOf(was)) !== drillText(drillOf(now));
 
 /** A tile with its layout taken off, for asking whether anything ELSE about it changed. */
 const withoutLayout = <T extends DashboardTile>(tile: T): T => {
@@ -406,16 +412,42 @@ const withoutLayout = <T extends DashboardTile>(tile: T): T => {
       col: _col,
       ...rest
    } = tile;
+   // The entry's click actions are the entry's too, like its layout.
+   delete (rest as { drill?: unknown }).drill;
    return rest as T;
 };
 
-/** The properties a tile's layout is written as on its entry. */
+/** A drill destination as the entry writes it: `self` bare, a report path quoted. */
+const destinationText = (to: string) =>
+   to === "self" ? "self" : JSON.stringify(to);
+
+/**
+ * A tile's click actions as its entry writes them, `drill { cat { to=self
+ * given=CATEGORY } }`, or "" when it has none. Dimensions in name order, so
+ * the same settings always write the same text.
+ */
+function drillText(drill: Record<string, EntryDrill> | undefined): string {
+   const dimensions = Object.keys(drill ?? {}).sort();
+   if (!drill || dimensions.length === 0) return "";
+   const specs = dimensions.map((dimension) => {
+      const { to, given } = drill[dimension];
+      const target =
+         to.length === 1
+            ? destinationText(to[0])
+            : `[${to.map(destinationText).join(", ")}]`;
+      return `${dimension} { to=${target}${given ? ` given=${given}` : ""} }`;
+   });
+   return `drill { ${specs.join(" ")} }`;
+}
+
+/** The properties a tile's entry is written with: its layout, then its click actions. */
 const layoutProperties = (tile: DashboardTile): string[] => [
    ...(tile.row === undefined ? [] : [`row=${tile.row}`]),
    ...(tile.col === undefined ? [] : [`col=${tile.col}`]),
    ...(tile.colspan === undefined ? [] : [`colspan=${tile.colspan}`]),
    ...(tile.break ? ["break"] : []),
    ...(tile.rowspan === undefined ? [] : [`rowspan=${tile.rowspan}`]),
+   ...(drillText(drillOf(tile)) ? [drillText(drillOf(tile))] : []),
 ];
 
 /** `text` with every quoted string blanked to `x`s of the same length, so a scan for syntax cannot land inside one. */
@@ -466,6 +498,19 @@ function tileEntryText(tile: DashboardTile, written?: string): string {
    drop(/\s*\browspan\s*=\s*[^\s}]+/);
    drop(/\s*\brow\s*=\s*[^\s}]+/);
    drop(/\s*\bcol\s*=\s*[^\s}]+/);
+   // `drill { … }` holds braces of its own: drop it through its matching close.
+   const drillAt = /\s*\bdrill\s*\{/.exec(maskedInner);
+   if (drillAt) {
+      let depth = 0;
+      let end = drillAt.index + drillAt[0].length - 1;
+      for (; end < maskedInner.length; end++) {
+         if (maskedInner[end] === "{") depth++;
+         else if (maskedInner[end] === "}" && --depth === 0) break;
+      }
+      inner = inner.slice(0, drillAt.index) + inner.slice(end + 1);
+      maskedInner =
+         maskedInner.slice(0, drillAt.index) + maskedInner.slice(end + 1);
+   }
    const props = [inner.trim(), ...layout].filter(Boolean);
    // A query entry left with nothing in its braces is its expression alone.
    if (props.length === 0) return written.slice(0, open).trimEnd();

@@ -397,6 +397,8 @@ describe("useDrill: a tile entry's drill is that tile's click actions", () => {
    it("turns the model's tag off where the entry writes to=[]", () => {
       const result = mountDrill({ onSelf: mock(() => {}) });
       const binding = result.current.bindingFor("t", false, entries);
-      expect(binding.canDrill(dimension("brand", { to: ["self"] }))).toBe(false);
+      expect(binding.canDrill(dimension("brand", { to: ["self"] }))).toBe(
+         false,
+      );
    });
 });

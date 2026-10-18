@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Tag } from "@malloydata/malloy-tag";
+import type { EntryDrill } from "../drill/resolveDrill";
 import {
    chartLinesOf,
    chartStateOfTagLines,
@@ -406,34 +407,61 @@ function gridWidth(
 const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"\s*(\{[\s\S]*\})?$/;
 
 /** The layout a `tiles=[…]` entry carries, read the way the server reads it. */
-function entryLayout(
-   tag:
-      | {
-           text(key: string): string | undefined;
-           has(key: string): boolean;
-        }
-      | undefined,
-): EntryLayout {
+function entryLayout(tag: EntryTag | undefined): EntryLayout {
    const colspan = gridWidth(tag, "colspan");
    const rowspan = gridWidth(tag, "rowspan");
    const row = gridWidth(tag, "row");
    const col = gridWidth(tag, "col");
+   const drill = entryDrill(tag);
    return {
       ...(colspan === undefined ? {} : { colspan }),
       ...(tag?.has("break") ? { break: tag.text("break") !== "false" } : {}),
       ...(rowspan === undefined ? {} : { rowspan }),
       ...(row === undefined ? {} : { row }),
       ...(col === undefined ? {} : { col }),
+      ...(drill === undefined ? {} : { drill }),
    };
 }
 
-/** What an entry in `tiles=[…]` can say about where its tile sits. */
+/** As much of a parsed entry tag as the reader asks of it. */
+interface EntryTag {
+   text(key: string): string | undefined;
+   textArray?(key: string): string[] | undefined;
+   has(key: string): boolean;
+   tag?(key: string): EntryTag | undefined;
+   dict?: Record<string, unknown>;
+}
+
+/**
+ * `drill { <dimension> { to=… given=… } }` on an entry, read the way the server
+ * reads it (`readEntryDrill`): one destination may go unbracketed, `to=[]` is
+ * the tag turned off, and a dimension with no `to` is left out.
+ */
+function entryDrill(
+   tag: EntryTag | undefined,
+): Record<string, EntryDrill> | undefined {
+   const drill = tag?.tag?.("drill");
+   if (!drill) return undefined;
+   const out: Record<string, EntryDrill> = {};
+   for (const dimension of Object.keys(drill.dict ?? {})) {
+      const spec = drill.tag?.(dimension);
+      if (!spec?.has("to")) continue;
+      const one = spec.text("to");
+      const to = spec.textArray?.("to") ?? (one ? [one] : []);
+      const given = spec.text("given");
+      out[dimension] = given === undefined ? { to } : { to, given };
+   }
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** What an entry in `tiles=[…]` can say about its tile: where it sits, and what a click on a value offers. */
 interface EntryLayout {
    colspan?: number;
    break?: boolean;
    rowspan?: number;
    row?: number;
    col?: number;
+   drill?: Record<string, EntryDrill>;
 }
 
 /** An entry's layout over a view's own: each property the entry sets wins, and a `break` that ends up off is no field. */
@@ -446,6 +474,7 @@ function placed(
    rowspan?: number;
    row?: number;
    col?: number;
+   drill?: Record<string, EntryDrill>;
 } {
    const colspan = entry.colspan ?? view.colspan;
    return {
@@ -454,6 +483,7 @@ function placed(
       ...(entry.rowspan === undefined ? {} : { rowspan: entry.rowspan }),
       ...(entry.row === undefined ? {} : { row: entry.row }),
       ...(entry.col === undefined ? {} : { col: entry.col }),
+      ...(entry.drill === undefined ? {} : { drill: entry.drill }),
    };
 }
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;

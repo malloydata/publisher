@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { EntryDrill } from "../drill/resolveDrill";
+
 /**
  * The builder's working representation of a report file.
  *
@@ -199,6 +201,13 @@ export interface QueryTile {
    /** `row=N` and `col=N` on its entry: where it sits on a placed report, counted from 1. */
    row?: number;
    col?: number;
+   /**
+    * `drill { <dimension> { to=… given=… } }` on its entry: what clicking a
+    * value of that dimension offers on this tile, over the model's `# drill`
+    * tag for it. A dimension it does not name keeps the model's tag; `to: []`
+    * turns that tag off here. Only the entry carries it.
+    */
+   drill?: Record<string, EntryDrill>;
    borderless?: boolean;
    /**
     * The chart's colour, `#rrggbb`: its first series colour, written as the
