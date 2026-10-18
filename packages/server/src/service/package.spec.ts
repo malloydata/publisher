@@ -415,27 +415,30 @@ describe("service/package", () => {
             });
          });
 
-         it("should probe a data file whose name has a space or a quote", async () => {
-            // A bare path with a space is refused by DuckDB's table-path
-            // check, so these files used to list with `error` and no `info`.
+         it("should probe a data file whose name is outside the bare-path set", async () => {
+            // DuckDB's table-path check takes a bare path only when every
+            // character is in a short safe set, so these files used to list
+            // with `error` and no `info`. A double quote can't appear in a
+            // Windows file name.
+            const names = [
+               "Revenue by month.csv",
+               "Bob's sales.csv",
+               "orders (1).csv",
+               "données.csv",
+               ...(process.platform === "win32" ? [] : ['say "hi".csv']),
+            ];
             await fs.mkdir(join(testPackageDirectory, "data"), {
                recursive: true,
             });
             const csv = "Name,Value\nJohn,10\nJane,20\nJim,30";
-            await fs.writeFile(
-               join(testPackageDirectory, "data", "Revenue by month.csv"),
-               csv,
-            );
-            await fs.writeFile(
-               join(testPackageDirectory, "data", "Bob's sales.csv"),
-               csv,
-            );
             const conn = new DuckDBConnection("duckdb");
 
-            for (const name of [
-               "data/Revenue by month.csv",
-               "data/Bob's sales.csv",
-            ]) {
+            for (const file of names) {
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", file),
+                  csv,
+               );
+               const name = `data/${file}`;
                // @ts-expect-error Accessing private static method for testing
                const info = await Package.getDatabaseInfo(
                   testPackageDirectory,
