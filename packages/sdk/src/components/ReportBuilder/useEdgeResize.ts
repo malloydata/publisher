@@ -159,6 +159,23 @@ export function useEdgeResize({
       setDragState(next);
    };
    useEffect(() => () => dragChrome(undefined), []);
+   // Escape cancels a resize in flight wherever focus is: the tile goes back
+   // to where it began and the release writes nothing.
+   const active = drag !== undefined;
+   useEffect(() => {
+      if (!active) return;
+      const onKey = (event: KeyboardEvent) => {
+         if (event.key !== "Escape" || !live.current) return;
+         event.preventDefault();
+         event.stopPropagation();
+         live.current = undefined;
+         setDragState(undefined);
+         startedAuto.current = undefined;
+         dragChrome(undefined);
+      };
+      window.addEventListener("keydown", onKey, true);
+      return () => window.removeEventListener("keydown", onKey, true);
+   }, [active]);
 
    /**
     * How tall a flowing tile's row is on auto height: the tallest of the auto

@@ -266,6 +266,27 @@ describe("useEdgeResize on a report that flows", () => {
       expect(commit).not.toHaveBeenCalled();
       expect(view.result.current.drag).toBeUndefined();
    });
+
+   it("puts the tile back, and writes nothing, when Escape is pressed mid-drag", () => {
+      const { commit, view } = mount([tile({ colspan: 6 })]);
+      act(() => view.result.current.start(pointer(0, 0), 0, { e: true }));
+      act(() => view.result.current.move(pointer(2 * COL, 0)));
+      expect(view.result.current.drag).toBeDefined();
+      const escape = new KeyboardEvent("keydown", {
+         key: "Escape",
+         cancelable: true,
+      });
+      act(() => {
+         window.dispatchEvent(escape);
+      });
+      expect(escape.defaultPrevented).toBe(true);
+      expect(view.result.current.drag).toBeUndefined();
+      // The pointer let go after Escape: still nothing written.
+      act(() =>
+         view.result.current.end(pointer(2 * COL, 0, undefined, "pointerup")),
+      );
+      expect(commit).not.toHaveBeenCalled();
+   });
 });
 
 describe("edgeCursor", () => {

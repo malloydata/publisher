@@ -24,7 +24,7 @@ import {
 import { InlineText } from "./InlineText";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { minRowsOf, rowsOf, settle, widestFrom } from "./placement";
-import { builderSensors } from "./sortable";
+import { builderSensors, EscapeCancelsDrag } from "./sortable";
 import { TextTileBody } from "./TextTileBody";
 import {
    GapTarget,
@@ -157,6 +157,7 @@ export function BuilderGrid({
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
          >
+            <EscapeCancelsDrag active={dragging} />
             <Box ref={gridBox} sx={{ position: "relative" }}>
                {rules.widths && (gesture || resting) && (
                   <GridGuides columns={columns} faint={!gesture} />
