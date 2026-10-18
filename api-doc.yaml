@@ -5272,8 +5272,9 @@ components:
           type: boolean
           description: >-
             Set on a tile of a compiled document (`CompileResult.document`) whose
-            source the caller may not read. The tile carries its `query` and
-            nothing derived from the source: no `givenNames`, no layout tags.
+            source the caller may not read. The tile carries its `query`, the
+            layout its own entry in `tiles=[…]` sets, and nothing derived from
+            the source: no `givenNames`, no tags from the view.
         givenNames:
           type: array
           items:
@@ -5307,16 +5308,17 @@ components:
         colspan:
           type: integer
           description: >-
-            Grid columns this tile spans, from a `# colspan=N` on the view or
-            query it names, or from `colspan=N` on a text tile's entry in
-            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
+            Grid columns this tile spans, from `colspan=N` on the tile's entry
+            in `tiles=[…]`, or else from a `# colspan=N` on the view or query it
+            names. The entry wins, so one view can sit at a different width on
+            each report. Clamped to `dashboardColumns` at render time. Absent
             means one column.
         break:
           type: boolean
           description: >-
-            Start a new grid row at this tile, from a `# break` on the view or
-            query it names, or from `break` on a text tile's entry in
-            `tiles=[…]`. Named for the tag, so every per-tile field on this
+            Start a new grid row at this tile, from `break` on the tile's entry
+            in `tiles=[…]`, or else from a `# break` on the view or query it
+            names; `break=false` on the entry turns off the view's. Named for the tag, so every per-tile field on this
             schema is spelled the way an author writes it. A generated client
             escapes the attribute where the word is reserved (the Python client
             exposes `break_`) while the wire key stays `break`.
@@ -5328,6 +5330,29 @@ components:
             and `break` this is the whole per-child tag set `@malloydata/render`
             resolves for a `# dashboard` nest child, read the same way here so one
             view presents identically as a tile and as a nest.
+        rowspan:
+          type: integer
+          description: >-
+            The tile's height in grid rows, from `rowspan=N` on its entry in
+            `tiles=[…]`; only the entry sets it. A row is 80px, and a tile N rows
+            tall also spans the N-1 row gaps between them. Absent, the tile is
+            as tall as its result, up to the viewer's cap; on a placed report
+            (see `row`), 5 rows for a query tile and 2 for a text tile. A grid
+            report only.
+        row:
+          type: integer
+          description: >-
+            The grid row the tile's top sits in, counted from 1, from `row=N` on
+            its entry in `tiles=[…]`. A report where any tile has a `row` is
+            placed: its rows are fixed 80px tracks, and each tile sits at its
+            `row` and `col` rather than flowing. A placed tile with no `row` or
+            `col` fills the first free cell. On a narrow screen tiles stack in
+            one column, ordered by row then column.
+        col:
+          type: integer
+          description: >-
+            The grid column the tile's left edge sits in, counted from 1, from
+            `col=N` on its entry in `tiles=[…]`. See `row`.
 
     ReportCells:
       type: object

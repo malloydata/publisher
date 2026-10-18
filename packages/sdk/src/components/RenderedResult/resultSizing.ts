@@ -61,7 +61,7 @@ export type ResultSizing = "content" | "container";
  * put a map that needs 365px into 700px of cell.
  *
  * Every name here is checked against the plugin's declared strategy at runtime
- * and agrees with it today (`bar:fill`, `line:fill`, `shape_map:fixed`); the
+ * and agrees with it today (`bar:fill`, `line:fill`, `combo:fill`, `shape_map:fixed`); the
  * strategy wins where both are available, so this list carries the roots no
  * plugin claims and anything a renderer stops declaring.
  */
@@ -70,6 +70,7 @@ const CONTAINER_SIZED_ROOTS: ReadonlySet<string> = new Set([
    "line",
    "chart",
    "scatter_chart",
+   "combo",
 ]);
 
 /**
@@ -241,6 +242,39 @@ export const TILE_MAX_HEIGHT = 400;
  */
 export const NOTEBOOK_CELL_MAX_HEIGHT = 700;
 
+/**
+ * Cap for a table in a linear report, whose tiles otherwise grow to fit. A
+ * long table drawn at full length pushes everything after it a screen or more
+ * down, so it stops here and scrolls inside its tile under its own pinned
+ * header row. The same number as a notebook cell, the linear report's
+ * predecessor.
+ */
+export const LINEAR_TABLE_MAX_HEIGHT = 700;
+
+/**
+ * The cap a rendered root is held to: `maxHeight`, and for a table root also
+ * `tableMaxHeight`, whichever is lower. Undefined is no cap.
+ *
+ * Only a root that IS a table. A `# dashboard` root is not one: the renderer
+ * caps the tables inside it itself, at its own default or the author's
+ * `# dashboard { table.max_height=N | none }`. A KPI row, a list or a map keeps
+ * `maxHeight` alone, so a linear report still grows to show every card.
+ */
+export function resultCap({
+   renderAs,
+   maxHeight,
+   tableMaxHeight,
+}: {
+   renderAs: string | undefined;
+   maxHeight: number | undefined;
+   tableMaxHeight: number | undefined;
+}): number | undefined {
+   if (renderAs !== "table" || tableMaxHeight === undefined) return maxHeight;
+   return maxHeight === undefined
+      ? tableMaxHeight
+      : Math.min(maxHeight, tableMaxHeight);
+}
+
 /** Cap for a query result shown inside a model page's cell. */
 export const MODEL_CELL_MAX_HEIGHT = 600;
 
@@ -273,11 +307,20 @@ export const UNCAPPED_CONTAINER_HEIGHT = 400;
  */
 export const INITIAL_RENDER_HEIGHT = 2000;
 
-/** First-paint height, before anything is known about the result. */
-export function initialResultHeight(maxHeight: number | undefined): number {
-   return maxHeight === undefined
-      ? INITIAL_RENDER_HEIGHT
-      : Math.min(maxHeight, INITIAL_RENDER_HEIGHT);
+/**
+ * First-paint height, before anything is known about the result.
+ *
+ * `firstPaintHeight` replaces {@link INITIAL_RENDER_HEIGHT} for a caller that
+ * knows better. A report tile does: uncapped in a linear report, it would
+ * otherwise open at 2000px and collapse once measured, jumping the page under
+ * the reader. It is a first paint only; the measured height still wins.
+ */
+export function initialResultHeight(
+   maxHeight: number | undefined,
+   firstPaintHeight?: number,
+): number {
+   const first = firstPaintHeight ?? INITIAL_RENDER_HEIGHT;
+   return maxHeight === undefined ? first : Math.min(maxHeight, first);
 }
 
 /**
@@ -290,26 +333,37 @@ export function initialResultHeight(maxHeight: number | undefined): number {
  * `fillHeight` is the room the surface has to give, for a cell that stretches
  * its result (a dashboard tile). It is a FLOOR on a measured content-sized
  * result and wins over the cap, so a short table reaches the bottom of its cell
- * and a long one still scrolls inside it. A container-sized result ignores it,
- * and so does one not measured yet, which would otherwise paint at a made-up
- * height.
+ * and a long one still scrolls inside it. A content-sized result not measured
+ * yet ignores it, since it would otherwise paint at a made-up height.
+ *
+ * A container-sized result (a chart) takes it only as a CEILING: drawn at its
+ * cap in a cell shorter than that, it ran past the cell's bottom and lost its
+ * x-axis labels to the card's clip, which is what a tile with a set `rowspan`
+ * is. It still never grows past its cap. No ratchet follows, because the chart
+ * sits out of flow in its cell, so the cell's height never depends on it.
  */
 export function resolveResultHeight({
    sizing,
    contentHeight,
    maxHeight,
    fillHeight,
+   firstPaintHeight,
 }: {
    sizing: ResultSizing | undefined;
    contentHeight: number | undefined;
    maxHeight: number | undefined;
    fillHeight?: number | undefined;
+   /** See {@link initialResultHeight}. */
+   firstPaintHeight?: number | undefined;
 }): number {
    if (sizing === "container") {
-      return maxHeight ?? UNCAPPED_CONTAINER_HEIGHT;
+      const cap = maxHeight ?? UNCAPPED_CONTAINER_HEIGHT;
+      return fillHeight !== undefined && fillHeight > 0
+         ? Math.min(cap, fillHeight)
+         : cap;
    }
    if (contentHeight === undefined || contentHeight <= 0) {
-      return initialResultHeight(maxHeight);
+      return initialResultHeight(maxHeight, firstPaintHeight);
    }
    const own =
       maxHeight === undefined

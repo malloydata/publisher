@@ -8,119 +8,228 @@ import {
    describe,
    expect,
    it,
+   mock,
    spyOn,
 } from "bun:test";
+import express from "express";
 import { Server } from "http";
-import { performGracefulShutdownAfterDrain } from "./health";
+import request from "supertest";
 import { logger } from "./logger";
 import { __setPackageLoadPoolForTests } from "./package_load/package_load_pool";
 
-// Regression test for the graceful-shutdown ordering bug that caused
-//   [winston] Attempt to write logs with no transports: {"message":"Waiting 50 seconds..."}
-// to appear in production logs. logger.close() must run after every
-// logger.* call, including the "Waiting ... seconds after server close
-// before exit..." message.
-//
-// Tests call performGracefulShutdownAfterDrain directly rather than
-// emitting SIGTERM, so module-level operationalState is not mutated
-// and the spec stays isolated from sibling tests in the same process.
-describe("performGracefulShutdownAfterDrain: shutdown ordering", () => {
-   const originalExit = process.exit;
-   let callOrder: string[];
+type Health = typeof import("./health");
 
-   afterAll(async () => {
-      // performGracefulShutdownAfterDrain drains the package-load worker pool
-      // via getPackageLoadPool().shutdown() — which lazily CREATES the global
-      // singleton and leaves it installed in its shut-down state. In prod the
-      // process exits right after, so that's fine; in this shared test process
-      // it poisons every later spec that touches the worker path
-      // (Package.create → "PackageLoadPool is shutting down"), with failures
-      // that come and go with bun's platform-dependent file order. Reset the
-      // singleton so the next user lazily creates a fresh pool.
-      await __setPackageLoadPoolForTests(null);
+// health.ts keeps its state at module level and has no reset, so each test
+// imports its own instance (the query string makes a separate module record).
+// Draining is one-way; a shared instance would leave every later spec in this
+// process unable to mark the server ready.
+let instance = 0;
+async function freshHealth(): Promise<Health> {
+   instance += 1;
+   return (await import(`./health?instance=${instance}`)) as Health;
+}
+
+/** A bare app with the guard in front, the probes, and two ordinary routes. */
+function appFor(health: Health) {
+   const app = express();
+   app.use(health.drainingGuard);
+   health.registerHealthEndpoints(app);
+   app.get("/api/v0/status", (_req, res) => res.json({ ok: true }));
+   app.get("/metrics", (_req, res) => res.send("metrics"));
+   return app;
+}
+
+async function probes(app: express.Express) {
+   const [health, liveness, readiness] = await Promise.all([
+      request(app).get("/health"),
+      request(app).get("/health/liveness"),
+      request(app).get("/health/readiness"),
+   ]);
+   return {
+      health: [health.status, health.body.components?.readinessState?.status],
+      liveness: [liveness.status, liveness.body.status],
+      readiness: [readiness.status, readiness.body.status],
+   };
+}
+
+/** A listening server whose close() is recorded. */
+function fakeServer(name: string, closed: string[]): Server {
+   return {
+      listening: true,
+      close: (cb: (err?: Error) => void) => {
+         closed.push(name);
+         cb();
+      },
+   } as unknown as Server;
+}
+
+let calls: string[];
+const originalExit = process.exit;
+
+beforeEach(() => {
+   calls = [];
+   spyOn(logger, "info").mockImplementation(((msg: string) => {
+      calls.push(`info:${msg}`);
+      return logger;
+   }) as never);
+   spyOn(logger, "warn").mockImplementation((() => logger) as never);
+   spyOn(logger, "error").mockImplementation((() => logger) as never);
+   // Closing the real logger would silence every later spec in this process.
+   spyOn(logger, "close").mockImplementation((() => {
+      calls.push("close");
+      return logger;
+   }) as never);
+   process.exit = ((code?: number) => {
+      calls.push(`exit:${code}`);
+   }) as never;
+});
+
+afterEach(() => {
+   process.exit = originalExit;
+   mock.restore();
+});
+
+// Shutdown drains the package-load pool through getPackageLoadPool(), which
+// lazily creates the global singleton and leaves it shut down. Later specs in
+// this process would inherit a dead pool; reset it so they get a fresh one.
+afterAll(async () => {
+   await __setPackageLoadPoolForTests(null);
+});
+
+describe("operational state and probes", () => {
+   it("starts initializing: alive but not ready", async () => {
+      const health = await freshHealth();
+      expect(health.getOperationalState()).toBe("initializing");
+      expect(await probes(appFor(health))).toEqual({
+         health: [200, "DOWN"],
+         liveness: [200, "UP"],
+         readiness: [503, "DOWN"],
+      });
    });
 
-   beforeEach(() => {
-      callOrder = [];
+   it("markReady moves to serving and the readiness probe passes", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      expect(health.getOperationalState()).toBe("serving");
+      expect(await probes(appFor(health))).toEqual({
+         health: [200, "UP"],
+         liveness: [200, "UP"],
+         readiness: [200, "UP"],
+      });
+   });
 
-      spyOn(logger, "info").mockImplementation(((msg: string) => {
-         callOrder.push(`info:${msg}`);
-         return logger;
+   it("markNotReady fails readiness without leaving serving", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      health.markNotReady();
+      expect(health.getOperationalState()).toBe("serving");
+      expect(await probes(appFor(health))).toEqual({
+         health: [200, "DOWN"],
+         liveness: [200, "UP"],
+         readiness: [503, "DOWN"],
+      });
+      health.markReady();
+      expect(
+         (await request(appFor(health)).get("/health/readiness")).status,
+      ).toBe(200);
+   });
+
+   it("lets every request through while not draining", async () => {
+      const health = await freshHealth();
+      const app = appFor(health);
+      expect((await request(app).get("/api/v0/status")).status).toBe(200);
+      health.markReady();
+      expect((await request(app).get("/api/v0/status")).status).toBe(200);
+   });
+});
+
+describe("SIGTERM: drain, then refuse, then shut down", () => {
+   it("fails readiness at once, refuses app routes only after the drain, and closes both servers", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const app = appFor(health);
+
+      // Capture the handler rather than registering it, so the test can run
+      // it without sending this process a real signal.
+      let onSigterm: (() => Promise<void>) | undefined;
+      spyOn(process, "once").mockImplementation(((
+         event: string,
+         handler: () => Promise<void>,
+      ) => {
+         if (event === "SIGTERM") onSigterm = handler;
+         return process;
       }) as never);
-      spyOn(logger, "close").mockImplementation((() => {
-         callOrder.push("close");
-         return logger;
-      }) as never);
-      // Silence warn/error calls so spec output stays clean. They are
-      // not load-bearing for these assertions.
-      spyOn(logger, "warn").mockImplementation((() => logger) as never);
-      spyOn(logger, "error").mockImplementation((() => logger) as never);
-
-      process.exit = ((_code?: number) => {
-         callOrder.push("exit");
-      }) as never;
-   });
-
-   afterEach(() => {
-      process.exit = originalExit;
-   });
-
-   // performGracefulShutdownAfterDrain lazily creates and shuts down the
-   // module-level PackageLoadPool singleton. If we leave that shut-down
-   // pool installed, sibling specs that run later in the same Bun process
-   // (e.g. package.spec.ts, package_race.spec.ts) inherit a dead pool and
-   // fail with "PackageLoadPool is shutting down". Reset the singleton so
-   // the next getPackageLoadPool() spins up a fresh one. The leaked-pool
-   // ordering is filesystem-readdir dependent, which is why it only
-   // surfaced on Linux CI.
-   afterAll(async () => {
-      await __setPackageLoadPoolForTests(null);
-   });
-
-   const fakeServer = (): Server => ({ listening: false }) as unknown as Server;
-
-   it("logs the 'Waiting ...' message before closing the logger", async () => {
-      await performGracefulShutdownAfterDrain(fakeServer(), fakeServer(), 0.05);
-
-      const waitingIdx = callOrder.findIndex((entry) =>
-         entry.startsWith("info:Waiting"),
+      const closed: string[] = [];
+      // Long enough that the requests below land inside the drain window on a
+      // slow CI runner; 50ms was not.
+      health.registerSignalHandlers(
+         fakeServer("main", closed),
+         fakeServer("mcp", closed),
+         2,
+         0,
       );
-      const closeIdx = callOrder.indexOf("close");
-      const exitIdx = callOrder.indexOf("exit");
+      expect(onSigterm).toBeDefined();
 
-      expect(waitingIdx).toBeGreaterThanOrEqual(0);
-      expect(closeIdx).toBeGreaterThanOrEqual(0);
-      expect(exitIdx).toBeGreaterThanOrEqual(0);
-      expect(waitingIdx).toBeLessThan(closeIdx);
-      expect(closeIdx).toBeLessThan(exitIdx);
+      const shutdown = onSigterm!();
+
+      // Observed during the drain window, asserted once shutdown has settled
+      // so a failure here cannot leave it running into the next test.
+      const stateWhileDraining = health.getOperationalState();
+      const probesWhileDraining = await probes(app);
+      const appRouteWhileDraining = (await request(app).get("/api/v0/status"))
+         .status;
+      health.markReady(); // a late markReady must not undo draining
+      const stateAfterLateReady = health.getOperationalState();
+      const readinessAfterLateReady = (
+         await request(app).get("/health/readiness")
+      ).status;
+
+      await shutdown;
+
+      // Draining window: readiness fails, liveness holds, requests still served.
+      expect(stateWhileDraining).toBe("draining");
+      expect(probesWhileDraining).toEqual({
+         health: [200, "DOWN"],
+         liveness: [200, "UP"],
+         readiness: [503, "DOWN"],
+      });
+      expect(appRouteWhileDraining).toBe(200);
+      expect(stateAfterLateReady).toBe("draining");
+      expect(readinessAfterLateReady).toBe(503);
+
+      // After the drain the guard refuses app routes but not probes or metrics.
+      const refused = await request(app).get("/api/v0/status");
+      expect(refused.status).toBe(503);
+      expect(refused.body.message).toBe("Service is draining");
+      expect((await request(app).get("/health/liveness")).status).toBe(200);
+      expect((await request(app).get("/metrics")).status).toBe(200);
+      expect(closed.sort()).toEqual(["main", "mcp"]);
+      expect(calls.at(-1)).toBe("exit:0");
+   });
+});
+
+// Regression: winston printed "Attempt to write logs with no transports" for
+// the "Waiting N seconds..." line because the logger was closed before it.
+describe("performGracefulShutdownAfterDrain", () => {
+   const idle = () => ({ listening: false }) as unknown as Server;
+
+   it("logs the graceful-close wait, then closes the logger once, then exits", async () => {
+      const health = await freshHealth();
+      await health.performGracefulShutdownAfterDrain(idle(), idle(), 0.05);
+
+      const waiting = calls.findIndex((c) => c.startsWith("info:Waiting"));
+      const close = calls.indexOf("close");
+      expect(waiting).toBeGreaterThanOrEqual(0);
+      expect(waiting).toBeLessThan(close);
+      expect(calls.filter((c) => c === "close")).toHaveLength(1);
+      expect(calls.slice(close + 1)).toEqual(["exit:0"]);
    });
 
-   it("emits no logger.info calls after logger.close", async () => {
-      await performGracefulShutdownAfterDrain(fakeServer(), fakeServer(), 0.05);
+   it("skips the wait when the graceful-close timeout is 0", async () => {
+      const health = await freshHealth();
+      await health.performGracefulShutdownAfterDrain(idle(), idle(), 0);
 
-      const closeIdx = callOrder.indexOf("close");
-      const lateInfoIdx = callOrder.findIndex(
-         (entry, idx) => idx > closeIdx && entry.startsWith("info:"),
-      );
-      expect(closeIdx).toBeGreaterThanOrEqual(0);
-      expect(lateInfoIdx).toBe(-1);
-   });
-
-   it("closes the logger exactly once", async () => {
-      await performGracefulShutdownAfterDrain(fakeServer(), fakeServer(), 0.05);
-
-      const closes = callOrder.filter((entry) => entry === "close").length;
-      expect(closes).toBe(1);
-   });
-
-   it("skips the 'Waiting ...' message when gracefulCloseTimeoutSeconds is 0", async () => {
-      await performGracefulShutdownAfterDrain(fakeServer(), fakeServer(), 0);
-
-      const waitingCalls = callOrder.filter((entry) =>
-         entry.startsWith("info:Waiting"),
-      );
-      expect(waitingCalls.length).toBe(0);
-      expect(callOrder.indexOf("close")).toBeGreaterThanOrEqual(0);
-      expect(callOrder.indexOf("exit")).toBeGreaterThanOrEqual(0);
+      expect(calls.some((c) => c.startsWith("info:Waiting"))).toBe(false);
+      expect(calls.slice(-2)).toEqual(["close", "exit:0"]);
    });
 });

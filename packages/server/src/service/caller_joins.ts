@@ -606,19 +606,14 @@ export function resolveCallerJoin(
          anchored = true;
          declaredByModel = anchor === "model";
       } else {
-         // An inline `X extend { … }` has no sourceID of its own (Malloy
-         // strips it from any modified source). When the result is
-         // persistable — `X` was a query source or a `sql_select` — Malloy
-         // records what it extends, and when that is a source the MODEL
-         // declares the extension is the caller entering that source with
-         // additions on top: anchor on it, and gate it as that source. The
-         // additions themselves are the caller's and are held by the graft,
-         // which must land on the recompiled query. When `X` is a source the
-         // caller declared, or an inline extend of a TABLE source (no
-         // `extends` at all), nothing changes: the `query_source` branch
-         // below walks the compiled base, as before. Resolving a caller
-         // source here would hand it to `decideCallerSource`, which decides
-         // a caller source from its own struct and over-denies this shape.
+         // An inline `X extend { … }` has no sourceID (Malloy strips it from
+         // a modified source). When `X` was a query source or `sql_select`,
+         // Malloy records what it extends; if the model declares that source,
+         // the caller is entering it with additions: anchor and gate it as
+         // that source (the additions are held by the graft). A caller-declared
+         // `X` or an extended table source falls to the `query_source` branch
+         // below; resolving it here would hand it to `decideCallerSource`,
+         // which over-denies this shape.
          const extendsID = (struct as { extends?: string }).extends;
          if (extendsID && modelDeclaresSourceID(extendsID)) {
             const anchor = bySourceID(extendsID, forBoundary);

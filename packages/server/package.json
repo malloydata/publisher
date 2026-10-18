@@ -19,7 +19,7 @@
       "snowflake"
    ],
    "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents",
-   "version": "0.9.14",
+   "version": "0.9.15",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"
@@ -40,9 +40,10 @@
       "access": "public"
    },
    "scripts": {
-      "test": "bun run test:unit && bun run test:integration",
+      "test": "bun run test:unit && bun run test:component && bun run test:integration",
       "test:unit": "bun test --timeout 100000 ./src",
-      "test:integration": "bun test --timeout 200000 ./tests --max-workers=1",
+      "test:component": "bun test --timeout 200000 ./tests/component",
+      "test:integration": "bun test --timeout 200000 ./tests/integration ./tests/unit --max-workers=1",
       "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts && bun run bake-duckdb-extensions",
       "build:server-only": "bun run build:server-only:bundle && bun run bake-duckdb-extensions",
       "build:server-only:bundle": "bun generate-api-types && NODE_ENV=production SKIP_APP_BUNDLE=1 bun run build.ts",
@@ -109,7 +110,7 @@
       "@eslint/compat": "^1.2.7",
       "@eslint/eslintrc": "^3.3.1",
       "@eslint/js": "^9.23.0",
-      "@types/bun": "^1.2.20",
+      "@types/bun": "^1.4.2",
       "@types/cors": "^2.8.12",
       "@types/express": "^4.17.14",
       "@types/lunr": "^2.3.7",

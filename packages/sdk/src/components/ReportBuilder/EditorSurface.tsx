@@ -18,7 +18,13 @@ import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
+import {
+   PLACED_DEFAULT_ROWSPAN,
+   tileHeightPx,
+} from "../Dashboard/DashboardGrid";
+import { layoutRules } from "../Report/layoutRules";
+import type { CompiledModel } from "../../client";
+import { documentViewsOf } from "./catalog";
 import { useReportListing } from "../Package/useDocumentLocation";
 import {
    BUILDER_HANDOFF_STALE_MS,
@@ -36,6 +42,8 @@ import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
    isQueryTile,
+   isReadOnlyTile,
+   tileExpression,
    tileKey,
    type DashboardDocument,
    type DashboardTile as DocumentTile,
@@ -47,6 +55,7 @@ import {
    previewGivens,
    previewTileQuery,
    tileExpressionKey,
+   unsavedSources,
    type PreviewTileQuery,
 } from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
@@ -91,7 +100,16 @@ export function EditorSurface({
    savesTo,
    saveLabel,
    note,
+   fileModel,
 }: {
+   /**
+    * The file's own compiled model as the package serves it, for the shapes
+    * of the views it declares (which charts each tile can take). Absent for a
+    * document held as text, whose compile answer carries no per-view shapes,
+    * and whenever the opened text is not the one this model compiled (a kept
+    * draft, the host's record, a held-back version): the catalog answers then.
+    */
+   fileModel?: CompiledModel;
    textSource?: TextSourceOptions;
    environmentName: string;
    packageName: string;
@@ -244,17 +262,21 @@ export function EditorSurface({
             : undefined,
       [catalog, textSource, runModelPath],
    );
-   const offered = useMemo(
-      () =>
+   const documentViews = useMemo(
+      () => (fileModel ? documentViewsOf(fileModel) : undefined),
+      [fileModel],
+   );
+   const offered = useMemo(() => {
+      const scoped =
          catalog && runSources
             ? {
                  sources: catalog.sources.filter((s) =>
                     runSources.includes(s.name),
                  ),
               }
-            : catalog,
-      [catalog, runSources],
-   );
+            : catalog;
+      return scoped && documentViews ? { ...scoped, documentViews } : scoped;
+   }, [catalog, runSources, documentViews]);
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
@@ -304,6 +326,21 @@ export function EditorSurface({
          ),
       [manifest],
    );
+   // The served tiles' labels, keyed the same way. A tile the builder shows
+   // read-only (its view in the model, or a named query) carries no label in
+   // the document, since its `# label` sits on a declaration the builder does
+   // not read; the reader titles it from the server's label, and so does this.
+   const servedLabels = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.label
+                  ? [[tileExpressionKey(tile.query), tile.label] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
    // Givens a tile reads through the model (a source's own `where:`), not a
    // binding in this file: shown, so the row matches the reader's, but the
    // model's to change.
@@ -312,8 +349,8 @@ export function EditorSurface({
       [doc, opened.document, servedReads],
    );
    const specs = useMemo(
-      () => previewGivens(doc, modelSpecs, modelReads),
-      [doc, modelSpecs, modelReads],
+      () => previewGivens(doc, modelSpecs, modelReads, servedReads),
+      [doc, modelSpecs, modelReads, servedReads],
    );
    // A filter in the row the builder can show and set but not change: say
    // where it is set instead. Not always the model: a report's own `source:`
@@ -414,6 +451,12 @@ export function EditorSurface({
          ),
       [opened.document],
    );
+   // Extensions this session added, which the model the tiles run on does not
+   // have until the file is saved and served: a tile on one runs on its base.
+   const unsaved = useMemo(
+      () => unsavedSources(doc, opened.document, modelPath, !!textSource),
+      [doc, opened.document, modelPath, textSource],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(
@@ -421,13 +464,17 @@ export function EditorSurface({
             heading?: TileHeadingSlots,
             chrome: TileChrome = "card",
          ) {
+            const title =
+               (isReadOnlyTile(tile)
+                  ? servedLabels.get(tileExpressionKey(tileExpression(tile)))
+                  : undefined) ?? tileDisplayTitle(tile);
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
             if (notCompiled)
                return (
                   <TileCard chrome={chrome}>
                      <TileHeading
-                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        title={heading?.title ?? title}
                         subtitle={heading ? heading.subtitle : tile.subtitle}
                      />
                      <Typography
@@ -442,14 +489,14 @@ export function EditorSurface({
                return (
                   <TileCard chrome={chrome}>
                      <TileHeading
-                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        title={heading?.title ?? title}
                         subtitle={heading ? heading.subtitle : tile.subtitle}
                      />
                      <Loading text="Running…" />
                   </TileCard>
                );
             const servedReadsOf = servedReads.get(
-               tileExpressionKey(`${tile.source} -> ${tile.name}`),
+               tileExpressionKey(tileExpression(tile)),
             );
             // A tile not yet edited runs the served view with the served
             // tile's givens: the request the reader sends, so it shares the
@@ -462,20 +509,30 @@ export function EditorSurface({
                sameTile(openedTiles.get(tileKey(tile)), tile);
             const query: PreviewTileQuery = untouched
                ? {
-                    expression: `${tile.source} -> ${tile.name}`,
+                    expression: tileExpression(tile),
                     givenNames: [...servedReadsOf],
                     reads: [...servedReadsOf],
                  }
-               : previewTileQuery(doc, tile, runnable, applied, servedReadsOf);
+               : previewTileQuery(
+                    doc,
+                    tile,
+                    runnable,
+                    applied,
+                    servedReadsOf,
+                    unsaved,
+                 );
+            const rules = layoutRules(doc.layout, doc.columns);
             return (
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
                   versionId={queryVersionId}
-                  modelPath={runModelPath}
-                  {...(preamble !== undefined ? { preamble } : {})}
+                  modelPath={query.modelPath ?? runModelPath}
+                  {...(preamble !== undefined && query.modelPath === undefined
+                     ? { preamble }
+                     : {})}
                   {...(restrictedTiles.has(
-                     tileExpressionKey(`${tile.source} -> ${tile.name}`),
+                     tileExpressionKey(tileExpression(tile)),
                   )
                      ? { restricted: true }
                      : {})}
@@ -483,7 +540,7 @@ export function EditorSurface({
                   {...(query.annotation
                      ? { annotation: query.annotation }
                      : {})}
-                  label={tileDisplayTitle(tile)}
+                  label={title}
                   chrome={chrome}
                   subtitle={tile.subtitle}
                   {...(heading ? { heading } : {})}
@@ -502,7 +559,16 @@ export function EditorSurface({
                         : {};
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
-                  height={TILE_MAX_HEIGHT}
+                  // Its own rows when it has them (a rowspan, or a placed
+                  // report's fixed rows); otherwise the layout's cap.
+                  height={
+                     tile.rowspan !== undefined || tile.row !== undefined
+                        ? tileHeightPx(
+                             tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
+                          )
+                        : rules.tileMaxHeight
+                  }
+                  tableMaxHeight={rules.tableMaxHeight}
                />
             );
          },
@@ -514,11 +580,13 @@ export function EditorSurface({
          missing,
          runnable,
          servedReads,
+         servedLabels,
          environmentName,
          packageName,
          queryVersionId,
          runModelPath,
          preamble,
+         unsaved,
          restrictedTiles,
          applied,
          tileHostGivens,
@@ -659,8 +727,8 @@ function sameTile(
 }
 
 /**
- * A tile less what only frames its result: its title, subtitle, width, row
- * and card are drawn by the tile around the result, not sent with the query.
+ * A tile less what only frames its result: its title, subtitle, width, row,
+ * rowspan and card are drawn by the tile around the result, not sent with the query.
  * Retitling a tile re-ran it before, and its chart blinked as the same rows
  * were drawn again.
  */
@@ -670,6 +738,9 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle: _subtitle,
       colspan: _colspan,
       break: _break,
+      rowspan: _rowspan,
+      row: _row,
+      col: _col,
       borderless: _borderless,
       ...runs
    } = tile as DocumentTile & {
@@ -677,6 +748,9 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       subtitle?: unknown;
       colspan?: unknown;
       break?: unknown;
+      rowspan?: unknown;
+      row?: unknown;
+      col?: unknown;
       borderless?: unknown;
    };
    return runs as DocumentTile;

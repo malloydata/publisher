@@ -99,15 +99,19 @@ interface TileSortableHandles {
 export function TileSortable({
    id,
    index,
+   disabled = false,
    children,
 }: {
    id: string;
    index: number;
+   /** Not movable now: the grid is drawn as one column, where a move means nothing. */
+   disabled?: boolean;
    children: (handles: TileSortableHandles) => ReactNode;
 }) {
    const { ref, handleRef, isDragSource } = useSortable({
       id,
       index,
+      disabled,
       type: TILE_TYPE,
       accept: TILE_TYPE,
       // The same rule the gaps use: the target is what the POINTER is over.

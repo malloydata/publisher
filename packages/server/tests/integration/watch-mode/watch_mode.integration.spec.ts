@@ -4,12 +4,14 @@
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ChildProcess, spawn } from "child_process";
 import fs from "fs";
-import net from "net";
-import os from "os";
 import path from "path";
-import { fileURLToPath } from "url";
+import {
+   pollUntil,
+   singlePackageConfig,
+   spawnServer,
+   writeSourcePackage,
+} from "../../harness/spawn_server";
 
 /**
  * End-to-end coverage for watch mode's source-edit live reload, plus the
@@ -32,10 +34,6 @@ import { fileURLToPath } from "url";
  * writable temp source package that the tests then edit.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// tests/integration/watch-mode -> packages/server
-const SERVER_DIR = path.resolve(__dirname, "../../..");
-
 const ENV_NAME = "watch-it-env";
 const PKG_NAME = "watch-it-pkg";
 
@@ -46,35 +44,6 @@ interface TestServer {
    /** Writable source package dir the tests mutate to simulate source edits. */
    srcDir: string;
    stop(): Promise<void>;
-}
-
-/** Allocate an OS-assigned free TCP port (avoids fixed-port collisions). */
-async function getFreePort(): Promise<number> {
-   return new Promise<number>((resolve, reject) => {
-      const srv = net.createServer();
-      srv.on("error", reject);
-      srv.listen(0, "127.0.0.1", () => {
-         const addr = srv.address();
-         const found = typeof addr === "object" && addr ? addr.port : 0;
-         srv.close(() =>
-            found ? resolve(found) : reject(new Error("no free port")),
-         );
-      });
-   });
-}
-
-/** Returns true once `predicate` does, or false if `timeoutMs` elapses first. */
-async function poll(
-   predicate: () => Promise<boolean>,
-   timeoutMs: number,
-   intervalMs = 300,
-): Promise<boolean> {
-   const deadline = Date.now() + timeoutMs;
-   while (Date.now() < deadline) {
-      if (await predicate()) return true;
-      await new Promise((r) => setTimeout(r, intervalMs));
-   }
-   return false;
 }
 
 const apiUrl = (baseUrl: string, sub: string) =>
@@ -91,114 +60,33 @@ const modelsText = async (baseUrl: string): Promise<string> => {
  * the in-place symlink mount and auto-starting the watcher after env load.
  */
 async function startServer(opts: { watch: boolean }): Promise<TestServer> {
-   const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "wm-src-"));
-   fs.writeFileSync(
-      path.join(srcDir, "publisher.json"),
-      JSON.stringify({ name: PKG_NAME, version: "1.0.0" }),
-   );
-   fs.writeFileSync(
-      path.join(srcDir, "first.malloy"),
-      'source: first_source is duckdb.sql("SELECT 1 as n")\n',
-   );
-
-   const serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wm-root-"));
-   fs.writeFileSync(
-      path.join(serverRoot, "publisher.config.json"),
-      JSON.stringify({
-         frozenConfig: false,
-         environments: [
-            {
-               name: ENV_NAME,
-               packages: [{ name: PKG_NAME, location: srcDir }],
-               connections: [],
-            },
-         ],
+   const src = writeSourcePackage(PKG_NAME);
+   const server = await spawnServer({
+      config: singlePackageConfig(ENV_NAME, {
+         name: PKG_NAME,
+         location: src.dir,
       }),
-   );
-
-   const port = await getFreePort();
-   let mcpPort = await getFreePort();
-   while (mcpPort === port) mcpPort = await getFreePort();
-   const baseUrl = `http://127.0.0.1:${port}`;
-
-   const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      SERVER_ROOT: serverRoot,
-      PUBLISHER_HOST: "127.0.0.1",
-      PUBLISHER_PORT: String(port),
-      MCP_PORT: String(mcpPort),
-   };
-   if (opts.watch) env.PUBLISHER_WATCH = ENV_NAME;
-
-   // No `--watch` on bun, so there is no stray file watcher to clean up beyond
-   // the server itself.
-   const proc: ChildProcess = spawn("bun", ["src/server.ts"], {
-      cwd: SERVER_DIR,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
+      env: { PUBLISHER_WATCH: opts.watch ? ENV_NAME : undefined },
    });
-   let exited = false;
-   let serverLog = "";
-   const capture = (d: Buffer) => {
-      serverLog = (serverLog + d.toString()).slice(-4000);
+   const stop = async () => {
+      await server.stop();
+      src.cleanup();
    };
-   proc.stdout?.on("data", capture);
-   proc.stderr?.on("data", capture);
-   proc.on("exit", () => {
-      exited = true;
-   });
-
-   const cleanup = () => {
-      for (const dir of [srcDir, serverRoot]) {
-         try {
-            fs.rmSync(dir, { recursive: true, force: true });
-         } catch {
-            // best-effort cleanup
-         }
-      }
-   };
-
    try {
-      const ready = await poll(async () => {
-         if (exited) throw new Error("server exited before becoming ready");
-         try {
-            return (await fetch(apiUrl(baseUrl, "/models"))).ok;
-         } catch {
-            return false;
-         }
-      }, 120_000);
-      if (!ready) throw new Error("server did not become ready within 120s");
+      await server.waitUntilServing();
    } catch (err) {
-      proc.kill("SIGKILL");
-      cleanup();
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(`${reason}\n--- server log tail ---\n${serverLog}`);
+      await stop();
+      throw err;
    }
-
-   const stop = async (): Promise<void> => {
-      if (!exited) {
-         await new Promise<void>((resolve) => {
-            // Backstop in case SIGTERM is ignored; cleared once the process exits.
-            const backstop = setTimeout(() => proc.kill("SIGKILL"), 5_000);
-            proc.on("exit", () => {
-               clearTimeout(backstop);
-               resolve();
-            });
-            proc.kill("SIGTERM");
-         });
-      }
-      cleanup();
-   };
-
    return {
-      baseUrl,
+      baseUrl: server.baseUrl,
       mountedPkgPath: path.join(
-         serverRoot,
+         server.serverRoot,
          "publisher_data",
          ENV_NAME,
          PKG_NAME,
       ),
-      srcDir,
+      srcDir: src.dir,
       stop,
    };
 }
@@ -293,7 +181,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
          'source: second_source is duckdb.sql("SELECT 2 as n")\n',
       );
 
-      const appeared = await poll(
+      const appeared = await pollUntil(
          async () => (await modelsText(baseUrl)).includes("second.malloy"),
          25_000,
       );
@@ -309,7 +197,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
          'source: renamed_source is duckdb.sql("SELECT 1 as n")\n',
       );
 
-      const recompiled = await poll(async () => {
+      const recompiled = await pollUntil(async () => {
          const res = await fetch(apiUrl(baseUrl, "/models/first.malloy"));
          if (!res.ok) return false;
          // `sources` is the parsed source list ({ name, views }); `sourceInfos`
@@ -334,7 +222,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
 
       // Over a window long enough for the watcher to fire and fail the reload,
       // the mounted package path must never disappear.
-      const mountGone = await poll(
+      const mountGone = await pollUntil(
          async () => !fs.existsSync(server!.mountedPkgPath),
          8_000,
       );
@@ -344,7 +232,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
       // /status reports the package as a loadErrors entry with stale: true
       // (still serving the last good compile) while the file is broken, and
       // the package stays listed under environments because it IS serving.
-      const staleStatus = await poll(async () => {
+      const staleStatus = await pollUntil(async () => {
          const res = await fetch(`${baseUrl}/api/v0/status`);
          if (!res.ok) return false;
          const status = (await res.json()) as {
@@ -374,7 +262,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
          badPath,
          'source: recovered_source is duckdb.sql("SELECT 1 as n")\n',
       );
-      const recovered = await poll(async () => {
+      const recovered = await pollUntil(async () => {
          const res = await fetch(apiUrl(baseUrl, "/models/broken.malloy"));
          if (!res.ok) return false;
          const model = (await res.json()) as {
@@ -388,7 +276,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
 
       // Recovery clears the stale entry: a healthy status omits loadErrors
       // entirely (the byte-for-byte-healthy contract).
-      const staleCleared = await poll(async () => {
+      const staleCleared = await pollUntil(async () => {
          const res = await fetch(`${baseUrl}/api/v0/status`);
          if (!res.ok) return false;
          const status = (await res.json()) as {
@@ -454,7 +342,7 @@ describe("Watch-mode copy semantics without --watch-env (E2E)", () => {
       );
 
       // Copy mode never propagates, so this should time out without appearing.
-      const appeared = await poll(
+      const appeared = await pollUntil(
          async () => (await modelsText(baseUrl)).includes("second.malloy"),
          6_000,
       );

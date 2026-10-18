@@ -3,21 +3,17 @@
 
 // DuckLake catalog-format version contract.
 //
-// A DuckLake catalog records the on-disk format version it was written at. The
-// DuckLake extension bundled with a given DuckDB engine attaches only a bounded
-// RANGE of catalog formats without migration; a catalog outside that range
-// fails deep inside DuckDB with an opaque error. This module derives the
-// supported range purely from the pinned DuckDB engine version, so it never has
-// to enumerate an allow-list of "known good" catalog versions (which drifts
-// silently on an engine bump and is easy to forget to update). Both the runtime
-// attach preflight (`service/connection.ts`) and the CI version-contract check
-// (`scripts/validate-ducklake-catalog-range.ts`) consume this one source.
+// The DuckLake extension bundled with a DuckDB engine attaches only a bounded
+// RANGE of catalog formats without migration; a catalog outside it fails deep
+// inside DuckDB with an opaque error. The range is derived from the pinned
+// engine version rather than an allow-list of catalog versions, which would
+// drift silently on an engine bump. Consumed by the attach preflight
+// (`service/connection.ts`) and the CI check
+// (`scripts/validate-ducklake-catalog-range.ts`).
 //
-// Lower bound: fixed at "1.0". The 1.x DuckLake line does not attach the older
-// 0.x formats without AUTOMATIC_MIGRATION, and the Publisher attach paths never
-// pass that flag, so 1.0 is the floor. Upper bound: the maximum format the
-// engine's bundled extension writes/attaches, looked up in the migration matrix
-// below and keyed by engine (major, minor).
+// Lower bound "1.0": 0.x formats need AUTOMATIC_MIGRATION, which Publisher
+// never passes. Upper bound: the migration matrix below, keyed by engine
+// (major, minor).
 
 /** A parsed DuckLake catalog format version, e.g. `1.0` or `0.3-dev1`. */
 export interface CatalogFormat {
@@ -40,17 +36,11 @@ export const MIN_CATALOG_FORMAT = "1.0";
 
 /**
  * Migration matrix: DuckDB engine minor line -> the maximum DuckLake catalog
- * format its bundled DuckLake extension attaches WITHOUT migration. This is NOT
- * an allow-list of catalog versions -- it is the single fact, per engine minor
- * line, from which the `[MIN_CATALOG_FORMAT, maxFormat]` range is derived.
+ * format its bundled DuckLake extension attaches WITHOUT migration.
  *
- * Verified against the baked extension: DuckDB 1.5.x's DuckLake extension writes
- * and attaches the "1.0" catalog format (the older 0.x formats require
- * AUTOMATIC_MIGRATION, which Publisher never passes). When a Malloy bump moves
- * `@duckdb/node-api` to a new minor line, add its row here after verifying the
- * extension's max attach-without-migration format -- the CI version-contract
- * check FAILS THE BUILD until a row covers the pinned engine, so this never
- * drifts silently.
+ * When `@duckdb/node-api` moves to a new minor line, add its row after
+ * verifying the extension's max attach-without-migration format; the CI
+ * version-contract check fails the build until a row covers the pinned engine.
  */
 export const ENGINE_MAX_FORMAT: ReadonlyArray<{
    engine: { major: number; minor: number };

@@ -39,6 +39,7 @@ import {
    pickSnowflakeReadRow,
    snowflakeCostSQL,
    snowflakeReadCost,
+   str,
    type BuildReadCost,
 } from "./build_read_cost";
 import { recordAttributionSkipped } from "../materialization_metrics";
@@ -62,9 +63,8 @@ type ApiConnection = components["schemas"]["Connection"];
 
 /**
  * The process-wide session the build-time servability gate compiles against.
- * Created on first use and deliberately never disposed: it holds no attach and
- * no credentials, and recreating it per build was the single largest source of
- * per-build memory growth.
+ * Created on first use and never disposed: it holds no attach and no
+ * credentials, and a session per build was the largest per-build memory cost.
  */
 let sharedGateSession: DuckDBConnection | undefined;
 type WireColumn = components["schemas"]["Column"];
@@ -85,23 +85,18 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
 
 /**
- * The Malloy `dialectName` every storage destination speaks, since both types it
- * may be are DuckDB-family. Named because it is the dialect a stored table's DDL,
- * DML and identifier quoting are all written in, which is NOT the source's — and
- * a bare "duckdb" at each of those sites reads like a default rather than the one
- * fact it is.
+ * The Malloy dialect every storage destination speaks (both types are
+ * DuckDB-family): the dialect of a stored table's DDL, DML and identifier
+ * quoting, which is NOT the source's.
  */
 export const STORAGE_TARGET_DIALECT = "duckdb";
 
 /**
- * Wrap a source-dialect SELECT as a native per-engine query-passthrough call so
- * a build-scoped DuckDB session can execute it against the source warehouse and
- * stream back only result-sized rows. The compiled SELECT is embedded verbatim
- * as a SQL string literal (single-quote-escaped) — the warehouse computes; the
- * base tables never enter DuckDB. `handle` is the per-engine reference
- * {@link federateSourceForPassthrough} established on the session (a projectId,
- * a secret name, or an ATTACH alias). Argument ORDER differs per engine, which
- * is the whole reason this is centralized.
+ * Wrap a source-dialect SELECT as a native per-engine query-passthrough call, so
+ * the warehouse computes and only result rows enter DuckDB. `handle` is the
+ * per-engine reference {@link federateSourceForPassthrough} established (a
+ * projectId, a secret name, or an ATTACH alias). Argument order differs per
+ * engine, which is why this is centralized.
  */
 export function wrapPassthrough(
    sourceType: FederatedSourceType,
@@ -133,22 +128,18 @@ export function wrapPassthrough(
 /**
  * The SELECT a partitioned insert reads, ordered by the partition columns.
  *
- * DuckDB's partitioned COPY -- which is what a DuckLake insert into a laid-out
- * table plans -- charges each appender one vector per column for every
- * partition it has met, at first sight, before any row of it is flushed. Rows
- * that arrive in partition order keep that set at one or two partitions; rows
- * that arrive interleaved bring every partition into it within the first few
- * chunks, and a 308-partition, 120-column insert then fails against the
- * session's `memory_limit` before it has flushed anything, at any threshold.
+ * DuckDB's partitioned COPY (what a DuckLake insert into a laid-out table
+ * plans) charges each appender one vector per column for every partition it
+ * has met, before flushing any. Rows in partition order keep that set at one or
+ * two partitions; interleaved rows bring in every partition within a few
+ * chunks, and a wide, many-partition insert then exceeds `memory_limit` at any
+ * flush threshold.
  *
- * Applied at the top level of a passthrough-sourced partitioned INSERT and
- * nowhere else: the SELECT it wraps is exactly the passthrough the CTAS would
- * have read, so what the warehouse runs, what is attributed to it and what the
- * source is addressed by are all unchanged. Sorted here rather than by the
- * warehouse because a warehouse that reads its result over several streams
- * (BigQuery) re-interleaves a sorted result on the way in. The sort is
- * DuckDB's, out of core against the session's spill directory. Wrapped as a
- * subselect so the SELECT is not parsed.
+ * Applied only at the top of a passthrough-sourced partitioned INSERT, so what
+ * the warehouse runs and is attributed for is unchanged. Sorted by DuckDB
+ * (out of core, against the session's spill directory) rather than by the
+ * warehouse, because a multi-stream read (BigQuery) re-interleaves a sorted
+ * result. Wrapped as a subselect so the SELECT is not parsed.
  */
 export function orderByPartitionColumns(
    selectSQL: string,
@@ -161,9 +152,8 @@ export function orderByPartitionColumns(
    const order = partitionColumns
       .map((name) => quoteIdentifier(name, dialect))
       .join(", ");
-   // A compiled SELECT carries no terminator, but one would end the subselect
-   // early, so it is not left to chance. The closing paren goes on its own
-   // line: a SELECT that ends in a `--` comment would otherwise swallow it.
+   // A trailing terminator would end the subselect early. The closing paren
+   // goes on its own line so a trailing `--` comment cannot swallow it.
    const inner = selectSQL.replace(/[\s;]+$/, "");
    return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
 }
@@ -172,16 +162,12 @@ export function orderByPartitionColumns(
  * Tag every subsequent read on a Snowflake build session with this build's
  * query metadata.
  *
- * Snowflake only, and by capability rather than preference: the passthrough
- * reuses ONE session across `snowflake_query()` calls, so a session-level
- * `QUERY_TAG` reaches the read that follows. BigQuery has no equivalent —
- * `bigquery_query()` accepts no labels parameter and cannot run the script that
- * would set one — so its labelling is part of how the read itself is issued.
- * Postgres has no per-statement tag to set.
+ * Snowflake only: its passthrough reuses ONE session across `snowflake_query()`
+ * calls, so a session-level `QUERY_TAG` reaches the following read. BigQuery
+ * labels as part of issuing the read (see {@link issuePassthroughRead});
+ * Postgres has no tag to set.
  *
- * <b>Best-effort.</b> A build that produces correct rows must not fail because
- * the warehouse refused a tag; the cost is attribution for this one build, which
- * the log line makes diagnosable.
+ * Best-effort: a refused tag costs this build's attribution, never the build.
  */
 async function tagSnowflakeSession(
    session: DuckDBConnection,
@@ -205,23 +191,14 @@ async function tagSnowflakeSession(
 }
 
 /**
- * Can this connection reach the job records the split depends on?
+ * Can this connection list the job records the split read depends on?
  *
- * The split locates its result table by listing the executed script's child job,
- * which is an API surface the direct `bigquery_query()` path never touches — so
- * turning attribution on would otherwise add a permission requirement to builds
- * that previously needed none, and discover it only AFTER a read had been billed.
- * This asks the question with a one-row listing, before anything runs.
+ * The split locates its result table through the job listing, a permission the
+ * direct `bigquery_query()` path never needs. Probing with a one-row listing
+ * BEFORE the read means a missing permission costs attribution, not the build:
+ * once the read has run, falling back would bill it a second time.
  *
- * <b>A false answer costs attribution, not the build.</b> That is the invariant
- * this whole path is meant to keep, and it is the reason the check exists rather
- * than a try/catch further down: once the read has run, falling back is no longer
- * free — the rows live only in a table this cannot find, so the alternative to
- * failing would be paying for the read a second time.
- *
- * Not cached: it is one listing per build against an API the build is about to
- * use anyway, and caching it would have to key on the connection's credentials
- * and survive their rotation.
+ * Not cached: caching would have to key on credentials and survive rotation.
  */
 async function canSplitBigQueryRead(
    session: DuckDBConnection,
@@ -248,16 +225,11 @@ async function canSplitBigQueryRead(
 /**
  * A build failed AFTER its warehouse read had run and been billed.
  *
- * The distinction is the whole point of the type: everything else this path
- * throws happens before anything is charged, and can be retried for the price of
- * a retry. This cannot — the read is paid for, and its rows live in an anonymous
- * table the build could not locate, so retrying pays for the same read twice.
- * A caller with a retry policy should treat it as a decision for an operator
- * rather than something to re-drive automatically.
- *
- * It is not degradable to "no cost". Without the job record there is no result
- * table, so there are no rows to capture — the failure is the build's, not the
- * telemetry's, which is why this path throws where the Snowflake one returns null.
+ * Everything else this path throws happens before anything is charged. Here the
+ * rows live in an anonymous table the build could not locate, so a retry pays
+ * for the same read twice: treat it as an operator decision, not something to
+ * re-drive automatically. Without the job record there are no rows to capture,
+ * so this fails the build rather than degrading to "no cost".
  */
 export class BilledReadNotCapturedError extends Error {
    constructor(message: string, options?: { cause?: unknown }) {
@@ -266,23 +238,15 @@ export class BilledReadNotCapturedError extends Error {
    }
 }
 
-/** How many times to re-ask for the job record before giving up on the build. */
 const BIGQUERY_LOOKUP_ATTEMPTS = 3;
 const BIGQUERY_LOOKUP_BACKOFF_MS = 250;
 
 /**
  * Re-ask for the job record a few times before failing a build whose read has
- * already been billed.
- *
- * The capability probe establishes that this connection CAN list jobs, so a
- * failure here is a transient — a 5xx, a quota trip, a credential rotated between
- * the probe and now — rather than a standing permission answer. Those are worth a
- * retry precisely because the alternative is so expensive: the read is paid for
- * and cannot be re-issued for free.
- *
- * Bounded and short. This runs while the build session still holds federated
- * credentials, and a warehouse that is genuinely down should surface as a failed
- * build rather than a long stall.
+ * already been billed. The capability probe showed this connection CAN list
+ * jobs, so a failure here is likely transient (5xx, quota, rotated credential).
+ * Bounded and short: the session still holds federated credentials, and a
+ * warehouse that is down should fail the build rather than stall it.
  */
 async function withBigQueryLookupRetry<T>(
    work: () => Promise<T>,
@@ -311,10 +275,8 @@ async function withBigQueryLookupRetry<T>(
          }
       }
    }
-   // Names the parent job because this is the failure that leaves a read paid for
-   // and uncaptured, and the parent is the only handle on it: a script's child
-   // job is absent from the default listing. Telling an operator a read was
-   // billed without saying which one leaves them nothing to act on.
+   // Names the parent job: it is an operator's only handle on the billed read,
+   // since a script's child job is absent from the default listing.
    throw new BilledReadNotCapturedError(
       `Could not read the BigQuery job record for a build's read (parent job ` +
          `${parentJobId}) after ${BIGQUERY_LOOKUP_ATTEMPTS} attempts, so its ` +
@@ -325,56 +287,40 @@ async function withBigQueryLookupRetry<T>(
 }
 
 /**
- * What the CTAS reads from, and the warehouse's own id for the read when the
- * shape of that read yielded one.
- *
- * `jobId` is what makes a build's cost recoverable by an EXACT key rather than by
- * matching recorded query text, so it is carried out of here even though the
- * build itself does not need it.
+ * What the CTAS reads from, plus the warehouse's id for the read when its shape
+ * yields one. `jobId` lets a build's cost be recovered by exact key rather than
+ * by matching query text.
  */
-export interface PassthroughRead {
+interface PassthroughRead {
    /** The SELECT the CTAS wraps. */
    selectSQL: string;
    /** The warehouse's id for the read, null when this shape does not produce one. */
    jobId: string | null;
    /**
-    * What the read cost, when the shape that issued it also reported it.
-    *
-    * Read from the SAME job record that located the result table rather than by a
-    * later lookup, because a later lookup is not available: a script's child job
-    * is absent from the default `bigquery_jobs()` listing and reachable only
-    * through its parent, so its id resolves to nothing on its own.
+    * What the read cost, when the shape that issued it also reported it. Read
+    * from the same job record that located the result table: a script's child
+    * job is reachable only through its parent, so no later lookup can find it.
     */
    cost: BuildReadCost | null;
 }
 
 /**
  * Issue the source-warehouse read for a `storage=` build and return what the
- * CTAS should select from.
- *
- * Two shapes, and which one runs is decided by whether there is a BigQuery label
- * to apply:
+ * CTAS should select from. Two shapes, chosen by whether there is a BigQuery
+ * label to apply:
  *
  * <ul>
- *   <li><b>Direct</b> — `wrapPassthrough`'s single rows-returning call. Every
- *       engine, and BigQuery too when there is nothing to label. Returns no job
- *       id: no passthrough hands one back for a call that returns rows.
- *   <li><b>Split (BigQuery, labelled)</b> — `bigquery_execute` runs the SELECT
- *       inside a script that sets `@@query_label` first, then the anonymous result
- *       table that job wrote is read with `bigquery_scan`. `bigquery_query()`
- *       cannot serve this: it takes no labels parameter, and it cannot run a
- *       script (a script returns no result schema), so labelling BigQuery is not
- *       available without splitting the read.
+ *   <li><b>Direct</b> — `wrapPassthrough`'s single rows-returning call, for every
+ *       engine and for unlabelled BigQuery. Yields no job id.
+ *   <li><b>Split (BigQuery, labelled)</b> — `bigquery_execute` runs the SELECT in
+ *       a script that sets `@@query_label` first, then `bigquery_scan` reads the
+ *       anonymous result table. `bigquery_query()` takes no labels and cannot run
+ *       a script, so labelling requires the split.
  * </ul>
  *
- * <b>The split is not a second scan.</b> Reading the anonymous result table goes
- * through the Storage Read API and creates no new QUERY job — measured by
- * diffing the project's QUERY job ids across the read. `bigquery_query()` is
- * almost certainly doing the same two steps internally.
- *
- * Gating on the label rather than on the engine keeps the unlabelled path
- * byte-identical to what it was, so the blast radius of the split is exactly the
- * set of builds that asked to be attributed.
+ * The split is not a second scan: reading the result table goes through the
+ * Storage Read API and creates no new QUERY job. Gating on the label keeps the
+ * unlabelled path unchanged, so only builds that asked to be attributed split.
  */
 export async function issuePassthroughRead(
    session: DuckDBConnection,
@@ -387,11 +333,8 @@ export async function issuePassthroughRead(
       sourceType === "bigquery"
          ? bigQueryQueryLabelValue(queryMetadata)
          : undefined;
-   // Asked BEFORE anything runs, so an unusable split costs a probe rather than a
-   // build. Past this point the read has been issued and billed, and there is no
-   // longer a cheap way back: without the job record the result table cannot be
-   // located, so the rows cannot be captured at all and re-issuing them through
-   // the direct shape would bill the same read twice.
+   // Probed BEFORE anything runs: past this point the read is billed, and an
+   // unusable split could only be recovered by billing the read twice.
    if (label === undefined || !(await canSplitBigQueryRead(session, handle))) {
       return {
          selectSQL: wrapPassthrough(sourceType, handle, buildSQL),
@@ -400,9 +343,8 @@ export async function issuePassthroughRead(
       };
    }
 
-   // The label is set by a statement of its own, so the script has two: BigQuery
-   // creates a parent job for the script and one child per statement, and it is
-   // the CHILD that ran the SELECT which carries both the label and the cost.
+   // BigQuery creates a parent job for the script and one child per statement;
+   // the child that ran the SELECT carries both the label and the cost.
    const script = `SET @@query_label = "${label}";\n${buildSQL};`;
    const executed = await session.runSQL(
       `SELECT * FROM bigquery_execute('${escapeSQL(handle)}', '${escapeSQL(script)}')`,
@@ -415,15 +357,10 @@ export async function issuePassthroughRead(
       );
    }
 
-   // The destination table is read from the job record rather than constructed:
-   // it is an anonymous table whose name BigQuery chooses.
-   //
-   // Ordered NEWEST first because the script has more than one statement and
-   // nothing documents the order a `parentJobId` listing returns them in. Taking
-   // the newest with a destination table takes the SELECT, which is the last
-   // statement and the one whose rows this is after. (Measured, `SET
-   // @@query_label` produces no such child — but that is behaviour, not a
-   // guarantee, and this costs nothing to pin.)
+   // The result table is anonymous, so its name comes from the job record.
+   // Newest first, because the listing order is undocumented and the SELECT is
+   // the script's last statement; `SET @@query_label` is not observed to produce
+   // a child with a destination table, but that is not guaranteed.
    const located = await withBigQueryLookupRetry(async () => {
       const child = await session.runSQL(`
       SELECT job_id,
@@ -437,10 +374,7 @@ export async function issuePassthroughRead(
       ORDER BY creation_time DESC`);
       const row = resultRows(child).find((r) => str(r.dataset) && str(r.table));
       if (row === undefined) {
-         // Inside the retry on purpose: a listing can answer 200 without having
-         // enumerated the child yet, which is the same transient as a 5xx and is
-         // indistinguishable from it here. Throwing plainly lets the backoff take
-         // it; only the LAST attempt becomes a terminal failure.
+         // Retried: a listing can answer 200 before it enumerates the child.
          throw new Error(
             `no child job with a result table under parent ${parentJobId}`,
          );
@@ -463,17 +397,12 @@ export async function issuePassthroughRead(
 
 /**
  * Ask Snowflake what the build's read just cost, scoped by the tag the build set
- * on its session.
+ * on its session. Scoped by tag rather than `LAST_QUERY_ID()`, because the ADBC
+ * driver issues `SELECT 1` probes around each passthrough call and
+ * `LAST_QUERY_ID()` returns a probe.
  *
- * Runs AFTER the read, because the history has to contain it. Scoped by the TAG
- * rather than `LAST_QUERY_ID()`: the session is not exclusively this build's, as
- * the ADBC driver issues `SELECT 1` connection probes around each passthrough
- * call — measured against a live account, `LAST_QUERY_ID()` after a build-shaped
- * read returned a probe rather than the read, which would have reported a probe's
- * zero cost for every Snowflake build.
- *
- * <b>Best-effort.</b> The rows are already built and captured, so a lookup that
- * fails costs a number, never the build.
+ * Best-effort: the rows are already captured, so a failure costs a number,
+ * never the build.
  */
 async function snowflakeReadCostAfterBuild(
    session: DuckDBConnection,
@@ -482,15 +411,13 @@ async function snowflakeReadCostAfterBuild(
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
    /**
-    * The source connection's configured database, absent when it has none.
-    * Snowflake supports that shape, and `INFORMATION_SCHEMA` is per-database, so
-    * the lookup has to be told where to resolve it — see {@link snowflakeCostSQL}.
+    * The source connection's configured database, if any. `INFORMATION_SCHEMA`
+    * is per-database — see {@link snowflakeCostSQL}.
     */
    database: string | null | undefined,
 ): Promise<BuildReadCost | null> {
    if (sourceType !== "snowflake") return null;
-   // Untagged there is nothing to scope the history by — and nothing asked to be
-   // attributed in the first place.
+   // Untagged: nothing to scope the history by, and no attribution was asked for.
    const tag = snowflakeQueryTagValue(queryMetadata);
    if (tag === undefined) return null;
    try {
@@ -500,9 +427,8 @@ async function snowflakeReadCostAfterBuild(
       const candidates = resultRows(costResult);
       const row = pickSnowflakeReadRow(candidates, buildSQL);
       if (row === null) {
-         // Counted, not just absent. This is the likeliest Snowflake miss —
-         // it turns on QUERY_TEXT matching buildSQL byte for byte after a round
-         // trip through the driver — and without a signal it is invisible.
+         // Counted: the likeliest Snowflake miss (QUERY_TEXT must match buildSQL
+         // byte for byte after the driver round trip), invisible otherwise.
          recordAttributionSkipped(
             candidates.length === 0
                ? "read_row_not_found"
@@ -538,23 +464,12 @@ function firstColumn(result: unknown, column: string): string | null {
    return rows.length > 0 ? str(rows[0][column]) : null;
 }
 
-function str(value: unknown): string | null {
-   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
 /**
  * Clear the session's `QUERY_TAG` before the session is released.
  *
- * The build session is private and disposed here, so this is not about leaking a
- * tag to a later build. It covers the one case the tag statement is allowed to
- * fail: {@link tagSnowflakeSession} is best-effort, and whether the driver hands
- * this build a session that was ALREADY tagged is the driver's business rather
- * than something this can observe. A failed tag on a pre-tagged session would
- * leave the read attributed to whatever set it last, and wrong attribution is
- * worse than none — nothing about it looks wrong.
- *
- * Best-effort in turn, and last: a build that produced correct rows must not fail
- * on its own cleanup.
+ * {@link tagSnowflakeSession} may fail, and the driver may hand out a session
+ * that was already tagged; a stale tag would misattribute the read, which is
+ * worse than no attribution. Best-effort: cleanup must not fail a good build.
  */
 async function clearSnowflakeSessionTag(
    session: DuckDBConnection,
@@ -590,31 +505,21 @@ export function passthroughSourceType(
 
 /**
  * A build-scoped DuckDB session on its OWN in-memory instance, plus a disposer
- * that closes it and removes the throwaway working directory that pins its
- * instance identity.
+ * that closes it and removes its throwaway working directory.
  *
  * Isolation is load-bearing for multi-tenant safety. `@malloydata/db-duckdb`
- * pools DuckDB instances in a process-global cache keyed by a "share key" that
- * deliberately EXCLUDES the connection name, and it never gives a `:memory:`
- * primary a private instance — so build sessions built with identical default
- * config get pooled onto ONE shared in-memory instance whenever their lifetimes
- * overlap (notably with the long-lived serve connection). Pooled together, they
- * collide on their transient ATTACH aliases: two builds (or two environments
- * with same-named-but-different-credential source/destination connections) both
- * `ATTACH … AS orders_pg` / `AS lake` on the shared instance and one clobbers
- * the other — a cross-tenant read (source) or WRITE (read-write destination).
- * DuckDB itself isolates SEPARATE instances cleanly; the collision is purely an
- * artifact of the shared pool.
+ * pools instances in a process-global cache keyed by a share key that EXCLUDES
+ * the connection name, so sessions with identical config share one in-memory
+ * instance while their lifetimes overlap. Shared, they collide on transient
+ * ATTACH aliases: two builds (or two environments with same-named connections
+ * holding different credentials) clobber each other's `ATTACH … AS lake`, a
+ * cross-tenant read or WRITE.
  *
- * Fix: give each session a UNIQUE `workingDirectory`, which is part of the share
- * key, so it lands its OWN in-memory instance — its own catalog, secrets, and
- * attaches, torn down on close. Crucially `databasePath` stays exactly
- * `:memory:` (NOT a temp file): a `:memory:` primary lets a DuckLake attach
- * auto-initialize a fresh catalog, whereas a file primary does not. The working
- * directory started out only as a way to make the share key unique — every real
- * path the build uses is absolute — and it is also where the caller points
- * DuckDB's `temp_directory`, so it holds spill for the life of the build and
- * nothing else. Removed on dispose (best-effort; a leftover dir is benign).
+ * A UNIQUE `workingDirectory` is part of the share key, so each session gets its
+ * own instance (catalog, secrets, attaches). `databasePath` stays `:memory:`,
+ * not a temp file, because only a `:memory:` primary lets a DuckLake attach
+ * auto-initialize a fresh catalog. The working directory also holds the build's
+ * spill (`temp_directory`) and nothing else; removal on dispose is best-effort.
  */
 export function createIsolatedBuildSession(sessionName: string): {
    session: DuckDBConnection;
@@ -633,14 +538,11 @@ export function createIsolatedBuildSession(sessionName: string): {
    // nothing left holding a reference to it.
    let session: DuckDBConnection;
    try {
-      // Row limit lifted off db-duckdb's `DEFAULT_QUERY_OPTIONS.rowLimit` of 10,
-      // which `runSQL` enforces by slicing the result. Every read this session
-      // makes is metadata about the table it just wrote — `duckdb_columns()` and
-      // `DESCRIBE` both return one row per COLUMN — so the default silently
-      // truncates an 11-column table's shape. Downstream that reads as columns
-      // missing from the table: the delta path calls it a shape mismatch and
-      // rebuilds in full forever, and the manifest declares a short schema for
-      // the serve transform to bind.
+      // Lifts db-duckdb's default `rowLimit` of 10, which `runSQL` enforces by
+      // slicing. `DESCRIBE` and `duckdb_columns()` return one row per COLUMN, so
+      // the default would truncate a wide table's schema: the delta path would
+      // see a shape mismatch and rebuild forever, and the manifest would declare
+      // a short schema.
       session = new DuckDBConnection(sessionName, ":memory:", workDir, {
          rowLimit: Number.MAX_SAFE_INTEGER,
       });
@@ -649,21 +551,16 @@ export function createIsolatedBuildSession(sessionName: string): {
       throw err;
    }
    const dispose = async () => {
-      // `close()` alone does not end the session. It refcount-decrements the
-      // DuckDBInstance, but the node-api Connection holds a C++ ClientContext that
-      // keeps the refcount above zero — so the in-memory database survives, and with
-      // it the destination's ATTACH and the source's federated credentials. Measured:
-      // 2 idle Postgres backends stranded per build, freed only at process exit,
-      // where the whole point of a per-build session is that they exist only for
-      // the build.
+      // `close()` alone does not end the session: the node-api Connection's C++
+      // ClientContext keeps the instance refcount above zero, so the database —
+      // with the destination ATTACH and federated source credentials — survives
+      // (e.g. idle Postgres backends stranded until process exit).
       //
-      // db-duckdb cannot do this itself: 0.0.389 disconnected unconditionally and
-      // had to be reverted (PR #2793) because malloy's translate layer holds
-      // weak_ptrs to the C++ Connection and the language server segfaulted. A build
-      // session is different in the way that matters — server-owned, single-use, and
-      // nothing outside this function ever sees it — so it can release what a
-      // general-purpose connection cannot. Reached through a cast because the handle
-      // is library-internal; if db-duckdb ever grows an explicit hard-close, use it.
+      // db-duckdb cannot disconnect unconditionally (reverted upstream in
+      // PR #2793: malloy's translate layer holds weak_ptrs to the
+      // Connection). A build session is server-owned and single-use, so it can.
+      // Reached through a cast because the handle is library-internal; use an
+      // explicit hard-close if db-duckdb adds one.
       const nodeConnection = (
          session as unknown as { connection?: { disconnectSync?: () => void } }
       ).connection;
@@ -699,16 +596,11 @@ export function createIsolatedBuildSession(sessionName: string): {
 /**
  * Pin a build session's timezone before any predicate is rendered against it.
  *
- * A `TIMESTAMP WITH TIME ZONE` column compared against a naive `TIMESTAMP`
- * literal is resolved in the SESSION's zone, and every bound the incremental path
- * renders is UTC text — so a session on the host's local zone selects a window
- * offset by that host's offset. Silently: the delta commits, the rows are simply
- * the wrong ones, and a boundary recorded from a host east of UTC would LEAD the
- * table, the one direction the ledger must never move in.
- *
- * Malloy's DuckDB connector already sets UTC at setup, so this is insurance
- * rather than a fix — issued anyway because a correctness property that lives in
- * another package's setup path is one nothing here would notice losing.
+ * A `TIMESTAMPTZ` column compared with a naive `TIMESTAMP` literal resolves in
+ * the session's zone, and the incremental path renders bounds as UTC text; on a
+ * host-local zone the window silently shifts, and a boundary could LEAD the
+ * table. Malloy's DuckDB connector already sets UTC; this keeps the property
+ * from depending on another package's setup.
  */
 export async function pinSessionToUTC(
    session: DuckDBConnection,
@@ -723,21 +615,16 @@ export interface StorageBuildResult {
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
    /**
-    * What the source warehouse charged for the read, when the read's shape
-    * reported it. Null is never "free" — see {@link PassthroughRead.cost} for
-    * which shapes report and which do not.
+    * What the source warehouse charged for the read, when its shape reported it.
+    * Null means unknown, not free (except on a chained build, which reads no
+    * warehouse).
     */
    readCost: BuildReadCost | null;
-   /**
-    * Present only when the table was advanced IN PLACE rather than rebuilt, which
-    * is what makes the two outcomes distinguishable from the outside: both leave a
-    * correct table and a captured schema, and only this says which one ran.
-    */
+   /** Present only when the table was advanced IN PLACE rather than rebuilt. */
    refresh?: StorageRefreshOutcome;
    /**
-    * Where the table a REBUILD wrote reaches, for an incremental source that was
-    * seeded rather than advanced. This is the boundary that turns the NEXT refresh
-    * into a delta, so it has to reach the manifest entry.
+    * For an incremental source that was rebuilt: where the new table reaches,
+    * the boundary that lets the NEXT refresh be a delta.
     */
    seededThrough?: WatermarkBound;
    /**
@@ -753,7 +640,7 @@ export interface StorageBuildResult {
 }
 
 /** What an in-place refresh did, for the manifest entry to report. */
-export interface StorageRefreshOutcome {
+interface StorageRefreshOutcome {
    /** Absent for a refresh that applied nothing (the watermark had not moved). */
    durationMs?: number;
    /** The boundary now in force — where the next refresh starts. */
@@ -767,14 +654,9 @@ export interface StorageRefreshOutcome {
 /**
  * A caller's chance to advance the table IN PLACE instead of rebuilding it,
  * handed a session that already holds the destination read-write and the source
- * federated.
- *
- * A callback rather than a parameter block because the decision belongs to the
- * caller and the SESSION belongs here: the plan has to probe the destination
- * before it can choose, and the probes need this session — while the credentials
- * it holds must not outlive the one source's refresh. Returning undefined means
- * "rebuild it", and the seed then proceeds on this same session rather than
- * paying for a second attach and a second credential federation.
+ * federated. A callback because the decision is the caller's but the session
+ * (whose credentials must not outlive this build) is owned here. Returning
+ * undefined means "rebuild", which then runs on the same session.
  */
 export interface StorageIncrementalRefresh {
    /**
@@ -790,13 +672,9 @@ export interface StorageIncrementalRefresh {
    }) => Promise<StorageRefreshOutcome | undefined>;
    /**
     * Record where the table a REBUILD just wrote reaches, so the next refresh can
-    * be a delta, and return that boundary for the manifest entry to report. Runs
-    * on the same session, after the CTAS, because the boundary is probed from the
-    * table itself — and the session holding the destination is gone by the time
-    * this function returns.
-    *
-    * Undefined when the rebuilt table has no boundary to record (an empty source),
-    * which leaves the next refresh to rebuild again.
+    * be a delta, and return that boundary. Runs on the same session after the
+    * CTAS, since the boundary is probed from the table. Undefined when there is
+    * no boundary (an empty source), so the next refresh rebuilds again.
     */
    afterSeed: (deps: {
       session: DuckDBConnection;
@@ -804,68 +682,55 @@ export interface StorageIncrementalRefresh {
    }) => Promise<WatermarkBound | undefined>;
 }
 
-/**
- * Build one persist source into a `storage=` destination via native
- * query-passthrough CTAS, on a *build-scoped* DuckDB session that is created,
- * used, and disposed here — so the read-write destination attach and the source
- * credential federation exist ONLY for the build's duration and NEVER on the
- * serve connection (the least-privilege boundary the design requires).
- *
- * Steps: create a private build session → attach the destination read-write
- * → federate the source's credentials on demand → `CREATE OR REPLACE TABLE`
- * (qualified with the destination catalog) whose FROM is the source passthrough
- * → capture the built table's authoritative schema (DESCRIBE) → dispose the
- * session (releasing every credential/attach). DuckLake's catalog swap is
- * transactional, so the replace is atomic. The compiled SELECT (source dialect)
- * is unchanged; only where it executes and where the result lands move.
- *
- * @returns the destination connection name and the captured authoritative
- *   schema, both recorded on the manifest entry for the serve transform.
- */
 /** See `buildSourceIntoStorage`'s `deps`. */
 export interface BuildSessionDeps {
    federate?: typeof federateSourceForPassthrough;
    read?: typeof issuePassthroughRead;
 }
 
+/**
+ * Build one persist source into a `storage=` destination via native
+ * query-passthrough CTAS, on a build-scoped DuckDB session created and disposed
+ * here — so the read-write destination attach and the source credentials exist
+ * only for the build and NEVER on the serve connection (least privilege).
+ *
+ * Attach destination read-write → federate source → `CREATE OR REPLACE TABLE`
+ * from the passthrough → DESCRIBE the result → dispose. DuckLake's catalog swap
+ * is transactional, so the replace is atomic.
+ *
+ * @returns the destination name and the captured schema, recorded on the
+ *   manifest entry for the serve transform.
+ */
 export async function buildSourceIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
    sourceConnection: ApiConnection;
-   /** The source-dialect compiled SELECT (v0's getSQL output), verbatim. */
+   /** The source-dialect compiled SELECT (`getSQL` output), verbatim. */
    buildSQL: string;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
     * Columns to lay the destination table out by (`#@ persist partition=`),
-    * already resolved against the source's public projection. Empty keeps the
-    * single-statement CTAS this function has always issued.
+    * already resolved against the source's public projection. Empty means a
+    * single-statement CTAS.
     */
    partitionColumns?: string[];
    environmentPath: string;
    /**
-    * Per-query metadata for the warehouse read, already resolved through the
-    * same layering the colocated path uses.
-    *
-    * It has to be applied HERE rather than by a Malloy connector, which is the
-    * whole reason this parameter exists: the read runs inside DuckDB's native
-    * query-passthrough, so no connector is in the call path to render the bag
-    * onto the statement. Without this, a `storage=` build is the one kind of
-    * warehouse work the deployment cannot attribute.
+    * Per-query metadata for the warehouse read, already resolved. Applied here
+    * because the read runs inside DuckDB's passthrough, where no Malloy
+    * connector is in the call path to attach it.
     */
    queryMetadata?: QueryMetadata;
    /**
-    * Offered the chance to advance this table in place before the CTAS below
-    * runs. Absent for every non-incremental source, which is the common case and
-    * leaves this function exactly the full build it was.
+    * Offered the chance to advance this table in place before the CTAS runs.
+    * Absent for a non-incremental source, which always builds in full.
     */
    incremental?: StorageIncrementalRefresh;
    /**
-    * Injection seam for tests: how the source is federated onto the session and
-    * how the passthrough read is issued. Production callers pass nothing. It
-    * exists so the one line that closes a proxied source's tunnel — in this
-    * function's `finally` — can be proven to run, on a clean build and on a
-    * failed one, without a live warehouse.
+    * Test seam for federation and the passthrough read; production passes
+    * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
+    * without a live warehouse.
     */
    deps?: BuildSessionDeps;
 }): Promise<StorageBuildResult> {
@@ -884,28 +749,20 @@ export async function buildSourceIntoStorage(params: {
    assertSupportedDestination(destinationName, destinationConnection);
    const sourceType = passthroughSourceType(sourceConnection);
 
-   // A dedicated, disposable build session on its OWN in-memory instance, so its
-   // read-write destination attach and federated source credentials cannot be
-   // pooled onto — or collide with — any other build/serve connection (see
-   // createIsolatedBuildSession).
+   // Its own instance, so its attach and credentials cannot collide with any
+   // other connection (see createIsolatedBuildSession).
    const { session, dispose, workDir } = createIsolatedBuildSession(
       `build_${destinationName}`,
    );
-   // Visible to the finally, which clears the session tag before release.
    let federatedHandle: string | undefined;
-   // The tunnel a proxied source was federated through, if any: closed in the
-   // finally, because disposing the DuckDB session does not close a listener
-   // this process opened outside it.
+   // A proxied source's tunnel, if any: closed in the finally, because disposing
+   // the session does not close a listener opened outside it.
    let federatedClose: (() => Promise<void>) | undefined;
    try {
-      // FIRST, before the destination attach: the attach is what carries a
-      // DuckLake session into the shared funnel, which applies the limits without
-      // a `tempDirectory` and latches them. Running after it therefore lost this
-      // build its own disposable directory on exactly the destination type that
-      // reaches production, sending spill to the shared configured path instead —
-      // outliving `dispose`, and collidable between concurrent builds. Ordering
-      // it here also puts the memory bound in effect during the attach itself,
-      // and matches `dropStorageTable`.
+      // Before the destination attach, which applies (and latches) the limits
+      // without a `tempDirectory` for DuckLake: afterwards, spill would go to the
+      // shared configured path, outliving `dispose` and colliding between
+      // builds. It also bounds memory during the attach itself.
       await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
@@ -915,17 +772,14 @@ export async function buildSourceIntoStorage(params: {
       );
 
       if (destinationConnection.type === "ducklake") {
-         // Write-path: disable DuckLake row inlining for this build session so
-         // materialized rows land as Parquet in the data store, NOT inlined into
-         // the catalog database. Materializations are generally large, and in a
-         // shared/multitenant catalog inlining would push tenant data into the
-         // catalog Postgres. Session-scoped (this build only) — it does not
-         // mutate the shared catalog's persisted options.
+         // Disable row inlining for this session so rows land as Parquet in the
+         // data store, not in the catalog database — in a shared catalog,
+         // inlining would push tenant data into the catalog Postgres.
+         // Session-scoped; the catalog's persisted options are untouched.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
-      // Before any predicate is rendered against this session. Matters only to an
-      // incremental refresh (a full CTAS issues none), but it is cheap and the
-      // session it protects is this one — see pinSessionToUTC.
+      // Before any predicate is rendered (incremental refresh only); see
+      // pinSessionToUTC.
       await pinSessionToUTC(session);
 
       const federated = await federate(
@@ -934,6 +788,7 @@ export async function buildSourceIntoStorage(params: {
          sourceFederationConfig(sourceConnection),
       );
       federatedClose = federated.close;
+      federatedHandle = federated.handle;
 
       await tagSnowflakeSession(
          session,
@@ -942,35 +797,23 @@ export async function buildSourceIntoStorage(params: {
          queryMetadata,
       );
 
-      // The CTAS target MUST be qualified with the destination catalog (the
-      // attach alias) — an unqualified name lands in the build session's own
-      // (private, throwaway) in-memory catalog, not the DuckLake/DuckDB store,
-      // so the rows would be captured for the schema and then vanish with the
-      // session. DuckLake's
-      // catalog swap is transactional, so CREATE OR REPLACE is atomic — no
-      // staging/rename dance needed on this path.
-      // quoteManifestTablePath, NOT quoteTablePath: the serve side renders this same
-      // path with the manifest rule, which passes an already-quoted name through
-      // unchanged. Quoting unconditionally here would create a table whose NAME
-      // contains the author's quote characters while the serve side asks for the
-      // unquoted-inner form — and because that mismatch surfaces at shape RUN time,
-      // past the compile-time live fallback, every query on the source 400s. For an
-      // unquoted name the two functions are identical, so nothing else moves.
+      // Qualified with the destination catalog: an unqualified name would land
+      // in the session's throwaway in-memory catalog and vanish with it.
+      // quoteManifestTablePath, NOT quoteTablePath, to match how the serve side
+      // renders the path (an already-quoted name passes through). A mismatch
+      // surfaces only at run time, past the live fallback, and 400s every query.
       const target = quoteManifestTablePath(
          `${destinationName}.${physicalTableName}`,
          STORAGE_TARGET_DIALECT,
       );
 
-      // Advance in place, if the caller's plan says this refresh can be a bounded
-      // delta. Offered here — after the attach and the federation, before the
-      // CTAS — because the plan has to probe this destination to decide, and a
-      // seed then continues below on the same session.
+      // After the attach and federation, because the plan probes this
+      // destination to decide; a seed then continues on the same session.
       if (params.incremental) {
          // A delta into a laid-out table is the same partitioned COPY as the
-         // seed, and its width x partitions is what decides its memory, not its
-         // row count. The threshold and the single appender reach it through
-         // the session; its statements are composed elsewhere, so the ordered
-         // read is the seed's alone (see createTableAndDescribe).
+         // seed, whose memory scales with width x partitions. The threshold and
+         // single appender apply via the session; the ordered read is the
+         // seed's alone (see createTableAndDescribe).
          const partitioned = (params.partitionColumns?.length ?? 0) > 0;
          const flushThreshold = getPartitionedWriteFlushThreshold();
          const boundDelta = partitioned && flushThreshold !== undefined;
@@ -1003,12 +846,9 @@ export async function buildSourceIntoStorage(params: {
          if (refreshed) {
             return {
                storageDestinationName: destinationName,
-               // Read back even though a delta cannot change the shape (a
-               // definitional change re-addresses the source, and a shape that
-               // drifted anyway forces a seed): the manifest entry declares this
-               // schema to the serve transform on every publication, so an entry
-               // that omitted it would leave the source unservable from the tier
-               // until its next full build.
+               // A delta cannot change the shape, but the manifest entry
+               // declares the schema on every publication; omitting it would
+               // leave the source unservable until its next full build.
                schema: await describeTable(session, target),
                readCost: refreshed.readCost,
                refresh: refreshed,
@@ -1024,9 +864,8 @@ export async function buildSourceIntoStorage(params: {
          queryMetadata,
       );
 
-      // Capture the authoritative schema from the freshly-built table — the
-      // serve transform declares exactly this, and the compiler does not
-      // type-check a virtual source's declared columns.
+      // The serve transform declares exactly this schema, and the compiler does
+      // not type-check a virtual source's declared columns.
       const schema = await createTableAndDescribe(
          session,
          target,
@@ -1034,10 +873,8 @@ export async function buildSourceIntoStorage(params: {
          params.partitionColumns ?? [],
          { sourceType },
       );
-      // The table now holds a full snapshot, so record where that snapshot
-      // reaches: this is what turns the NEXT refresh into a delta. On this
-      // session, because the boundary is probed from the table it just wrote and
-      // the destination attach does not outlive this function.
+      // Record where the new snapshot reaches, so the next refresh can be a
+      // delta. On this session: the attach does not outlive this function.
       const seededThrough = await params.incremental?.afterSeed({
          session,
          quotedTablePath: target,
@@ -1047,10 +884,8 @@ export async function buildSourceIntoStorage(params: {
          seededThrough,
          storageDestinationName: destinationName,
          schema,
-         // BigQuery reported its cost while issuing the read, because the shape
-         // that carries the label also returns the job. Snowflake's read is
-         // unchanged, so it can only be asked once the read has run — which is
-         // here, while the session still holds the credentials.
+         // BigQuery's labelled read reports its cost; Snowflake's must be asked
+         // after the read, while the session still holds the credentials.
          readCost:
             passthrough.cost ??
             (await snowflakeReadCostAfterBuild(
@@ -1064,13 +899,9 @@ export async function buildSourceIntoStorage(params: {
       };
    } finally {
       await clearSnowflakeSessionTag(session, sourceType, federatedHandle);
-      // Dispose closes the private instance (releasing every secret + attach —
-      // nothing federated or read-write survives the build) and removes its
-      // throwaway working directory.
+      // Releases every secret and attach; nothing federated survives the build.
       await dispose();
-      // Then the tunnel, after the attach that used it is gone. Best-effort: a
-      // listener that fails to close is logged, never raised over the build's
-      // own outcome.
+      // Then the tunnel, once the attach using it is gone. Best-effort.
       if (federatedClose) {
          await federatedClose().catch((e) =>
             logger.warn(
@@ -1082,28 +913,18 @@ export async function buildSourceIntoStorage(params: {
 }
 
 /**
- * Build a CHAINED `storage=` source by reading its already-materialized
- * upstream(s) from the destination store — the "stack on the parent" path —
- * instead of recomputing the upstream from raw against the source
- * warehouse. Reuses the parent's work and is consistent-by-construction
- * (the downstream is a pure function of the parent's STORED rows).
+ * Build a CHAINED `storage=` source from its upstreams' already-materialized
+ * tables in the destination, instead of recomputing them from the warehouse.
+ * The downstream is then a pure function of the parents' STORED rows.
  *
- * The `transientModel` (assembled by the caller from the serve-shape rebind
- * machinery, see {@link buildChainedStorageBuildModel}) rebinds every upstream to
- * a virtual source on THIS destination and re-declares the downstream as a
- * persist source over them. We compile it against the build session (the only
- * connection it references is the attached destination), read the downstream
- * persist source's `getSQL({ virtualMap })` — the exact mirror of the warehouse
- * build's `getSQL`, only the SQL now reads the attached lake tables — and CTAS
- * the result into the destination. No source federation, no passthrough: nothing
- * leaves DuckDB. The `virtualMap` maps each upstream's handle to its (quoted)
- * physical lake path.
+ * `transientModel` (see {@link buildChainedStorageBuildModel}) rebinds every
+ * upstream to a virtual source on this destination and re-declares the
+ * downstream as a persist source over them. It is compiled against the build
+ * session, and the downstream's `getSQL({ virtualMap })` is CTAS'd into the
+ * destination; nothing is federated and nothing leaves DuckDB. Session
+ * lifecycle mirrors {@link buildSourceIntoStorage}.
  *
- * Session lifecycle mirrors {@link buildSourceIntoStorage} exactly (create →
- * attach read-write → build → dispose), so no read-write attach survives the
- * build, and the same authoritative-schema capture applies.
- *
- * @returns the destination connection name and the captured authoritative schema.
+ * @returns the destination name and the captured schema.
  */
 export async function buildDownstreamIntoStorage(params: {
    destinationName: string;
@@ -1118,8 +939,8 @@ export async function buildDownstreamIntoStorage(params: {
    physicalTableName: string;
    /**
     * Columns to lay the destination table out by (`#@ persist partition=`),
-    * already resolved against the source's public projection. Empty keeps the
-    * single-statement CTAS this function has always issued.
+    * already resolved against the source's public projection. Empty means a
+    * single-statement CTAS.
     */
    partitionColumns?: string[];
    environmentPath: string;
@@ -1140,14 +961,7 @@ export async function buildDownstreamIntoStorage(params: {
       `build_${destinationName}`,
    );
    try {
-      // FIRST, before the destination attach: the attach is what carries a
-      // DuckLake session into the shared funnel, which applies the limits without
-      // a `tempDirectory` and latches them. Running after it therefore lost this
-      // build its own disposable directory on exactly the destination type that
-      // reaches production, sending spill to the shared configured path instead —
-      // outliving `dispose`, and collidable between concurrent builds. Ordering
-      // it here also puts the memory bound in effect during the attach itself,
-      // and matches `dropStorageTable`.
+      // Before the destination attach — see buildSourceIntoStorage.
       await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
@@ -1156,21 +970,15 @@ export async function buildDownstreamIntoStorage(params: {
          environmentPath,
       );
       if (destinationConnection.type === "ducklake") {
-         // Same rationale as buildSourceIntoStorage: keep materialized rows out
-         // of the shared catalog database.
+         // See buildSourceIntoStorage: keep rows out of the catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
-      // Pinned here as well as on the non-chained path, which is the only other
-      // place a build session is created. No predicate or boundary probe runs on
-      // this one today — a chained source is excluded from the delta path — so
-      // this guards the case that lifting that exclusion creates, in the one
-      // function where its absence would not be obvious.
+      // No predicate runs here today (chained sources are excluded from the
+      // delta path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
-      // Compile the transient rebind model against the build session. Its only
-      // connection is the attached destination; the upstream virtual sources
-      // declare their captured schema, so compiling reads no tables (schema-on-
-      // faith) — the CTAS below runs the real SQL against the attached lake.
+      // The upstream virtual sources declare their captured schema, so compiling
+      // reads no tables; the CTAS below runs the real SQL.
       const root = "file:///chained-build/";
       const url = `${root}m.malloy`;
       const runtime = new Runtime({
@@ -1180,13 +988,10 @@ export async function buildDownstreamIntoStorage(params: {
             destinationName,
          ),
       });
-      // Compiling the transient model is the only SHAPE step in this function:
-      // a failure means the downstream cannot be expressed over its rebound
-      // parents, which is a legitimate reason to fall back and recompute from
-      // raw. Everything around it — the attach, the CTAS, the DESCRIBE — is
-      // infrastructure, where falling back would just fail the same way against
-      // the same destination. Marking the shape failures lets the caller tell
-      // them apart.
+      // The only SHAPE step here: a compile failure means the downstream cannot
+      // be expressed over its rebound parents, so the caller may fall back to
+      // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
+      // the same way on fallback, so only shape failures are marked eligible.
       let model;
       try {
          model = await runtime
@@ -1197,13 +1002,9 @@ export async function buildDownstreamIntoStorage(params: {
             message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
          });
       }
-      // `getBuildPlan`, not `getBuildTargets`, and not by oversight: a target
-      // carries its SQL, so `getBuildTargets` renders every persist source's SQL
-      // as it plans, and the rebound parents are virtual sources that cannot
-      // render without the `virtualMap` — which that call has no way to take.
-      // The plan lists the sources and leaves `getSQL` to the caller, which hands
-      // the map in below. Moving this call is the port's to do once targets can
-      // take one.
+      // `getBuildPlan`, not `getBuildTargets`: targets render every source's SQL
+      // while planning, and the rebound virtual parents cannot render without
+      // the `virtualMap`, which that call cannot take.
       const plan = model.getBuildPlan();
       let downstream: PersistSource | undefined;
       for (const ps of Object.values(plan.sources)) {
@@ -1213,9 +1014,8 @@ export async function buildDownstreamIntoStorage(params: {
          }
       }
       if (!downstream) {
-         // The downstream didn't survive as a persist source — its definition
-         // references something the rebind model doesn't provide (a parent
-         // refinement not carried, a live leaf). The caller falls back.
+         // The downstream references something the rebind model lacks (an
+         // uncarried parent refinement, a live leaf). The caller falls back.
          throw new MaterializationEligibilityError({
             message:
                `Chained build model did not yield a persist source named ` +
@@ -1223,17 +1023,14 @@ export async function buildDownstreamIntoStorage(params: {
                `rebound parents don't provide).`,
          });
       }
-      // The downstream's materialization SQL, over the rebound parents — DuckDB
-      // dialect, reading the attached lake tables via the virtualMap. Project to
-      // the public columns so a hidden (`except:` / access-restricted) downstream
-      // column is not materialized — same rationale as the single-source build:
-      // keeping hidden values out of the store at rest.
+      // Projected to public columns so hidden (`except:` / access-restricted)
+      // values are not stored at rest.
       const sql = projectToPublicColumns(
          downstream,
          downstream.getSQL({ virtualMap }),
       );
 
-      // Same write/read mirror as the single-source build above.
+      // Quoted as in buildSourceIntoStorage, to match the serve side.
       const target = quoteManifestTablePath(
          `${destinationName}.${physicalTableName}`,
          STORAGE_TARGET_DIALECT,
@@ -1248,10 +1045,7 @@ export async function buildDownstreamIntoStorage(params: {
       return {
          storageDestinationName: destinationName,
          schema,
-         // A chained build reads its parent's already-materialized table out of
-         // the destination store, so it touches no source warehouse and there is
-         // nothing to account for. Null here means "did not spend", which is the
-         // one place in this file where it does.
+         // Reads no source warehouse: here, uniquely, null means "spent nothing".
          readCost: null,
          upstreamReuse: "reused",
       };
@@ -1261,17 +1055,11 @@ export async function buildDownstreamIntoStorage(params: {
 }
 
 /**
- * Build-time servability gate (the portable-DuckDB eligibility check, deferred
- * from the pre-build pass because it needs the POST-build schema): compile the
- * source's serve-shape in DuckDB against the captured schema and REFUSE the
- * build if it does not compile. The served table lives in DuckDB, so a source
- * authored against a warehouse must have a DuckDB-portable served shape — this
- * turns a serve-time execution error into a build-time refusal (HTTP 422),
- * running as part of stage→validate, the same step that captured the schema.
- *
- * The compile is schema-on-faith (the compiler does not type-check a virtual
- * source's columns and no SQL runs), so a throwaway in-memory DuckDB connection
- * suffices — no attach, no table read, nothing federated.
+ * Build-time servability gate: compile the source's serve shape in DuckDB
+ * against the captured (post-build) schema and refuse the build if it does not
+ * compile. The served table lives in DuckDB, so this turns a serve-time error
+ * into a build-time 422. No SQL runs and no table is read, so an in-memory
+ * session with no attach suffices.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) if the shape can't compile.
  */
@@ -1284,12 +1072,8 @@ export async function assertStorageServeShapeCompiles(params: {
 }): Promise<void> {
    const { destinationName, sourceName, virtualHandle, physicalTableName } =
       params;
-   // No `origin`, and none is needed. This gate compiles a throwaway shape from
-   // the CAPTURED schema alone — no author-model lookup, no composite, no
-   // refinements — so it asks the same question of a rollup's table as of an
-   // authored one: do these columns form a valid DuckDB virtual source. It reads
-   // the binding as an opaque (handle, table, destination) triple, which is the
-   // property that makes a consumer origin-neutral.
+   // No `origin`: the gate compiles from the captured schema alone, so it treats
+   // a rollup's table and an authored one alike.
    const binding: ServeBinding = {
       sourceName,
       destinationName,
@@ -1299,39 +1083,21 @@ export async function assertStorageServeShapeCompiles(params: {
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string })),
    };
-   // ONE session for the process, not one per build. The build and GC sessions
-   // need their own instance because they ATTACH a destination read-write and
-   // federate customer credentials; this gate does neither — it compiles a
-   // throwaway serve shape against a captured schema — so it has no cross-tenant
-   // collision surface to isolate. A fresh instance per build cost ~5.9MB of RSS
-   // per build on the production image, roughly three quarters of the build
-   // path's total growth, and it is never reclaimed.
+   // ONE session for the process: this gate neither attaches nor federates, so
+   // it has no cross-tenant collision surface, and an instance per build was
+   // the bulk of the build path's unreclaimed memory growth. The risk is a
+   // shared catalog (earlier declarations leaking into later compiles); the
+   // spec pins that refusals still refuse and recompiles see new schemas.
    //
-   // The risk of sharing is a shared CATALOG: every compile declares a virtual
-   // source into it, so a later shape could in principle pass on declarations
-   // left by an earlier one. Pinned in the spec — refusals still refuse after 25
-   // successful compiles, a refusal does not poison the session, and the same
-   // handle recompiled with a different schema sees the new one.
-   // Assigned synchronously, deliberately. An `await` between the check and the
-   // assignment lets two concurrent callers both pass the check and both build a
-   // session, and the loser is an orphaned connection and temp directory that
-   // nothing disposes for the life of the process — and because the limits call
-   // is `async` even when nothing is configured, that window would be open on
-   // every deployment rather than only opted-in ones.
+   // Assigned synchronously: an `await` before the assignment would let two
+   // concurrent callers each create a session, orphaning one for the life of
+   // the process.
    sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
-   // Bounded on every use rather than at creation, which is what keeps the line
-   // above synchronous: the call is idempotent per connection, so this is one
-   // WeakMap hit after the first compile. This is the instance that most needs
-   // bounding — process-wide and deliberately never disposed, so the
-   // longest-lived DuckDB instance here — and it reaches `assertServesInDuckDB`
-   // through a `FixedConnectionMap` that builds a Runtime directly, with no
-   // connection lookup and no attach, so neither hook that bounds the other
-   // sessions ever sees it.
-   //
-   // No session-owned spill directory, unlike a build: this session outlives
-   // every build, so a directory of its own would accumulate for the life of the
-   // process with nothing to remove it. It uses the configured one, which is
-   // where an operator who set it wants spill to land.
+   // Bounded on every use (idempotent per connection) so the line above stays
+   // synchronous. It must be bounded here: it is the longest-lived instance and
+   // reaches no connection lookup or attach that would bound it otherwise. No
+   // session-owned spill directory: one would accumulate for the process's life,
+   // so it uses the configured one.
    await applySessionResourceLimits(sharedGateSession);
    await assertServesInDuckDB(
       sourceName,
@@ -1356,16 +1122,12 @@ export function dropStorageTableSql(
 }
 
 /**
- * Drop one materialized table from a `storage=` destination, on a build-scoped
- * read-write session with its OWN in-memory instance (the SERVE attach is
- * read-only, so GC cannot run there; and an isolated instance keeps this GC's
- * read-write destination attach from colliding with another tenant's same-named
- * destination — see {@link createIsolatedBuildSession}). Mirrors
- * {@link buildSourceIntoStorage}'s lifecycle: attach read-write → drop → dispose.
+ * Drop one materialized table from a `storage=` destination, on an isolated
+ * read-write session (the serve attach is read-only; isolation keeps the attach
+ * from colliding with another tenant's — see {@link createIsolatedBuildSession}).
  *
- * Exactly one named table is dropped, never a pattern or a scan, so the caller
- * decides what goes: the publisher's own cleanup paths pass a name it recorded
- * building, and an orchestrator that owns table lifecycle passes one it assigned.
+ * Exactly one named table, never a pattern or scan, so the caller decides what
+ * goes: a name Publisher recorded building, or one an orchestrator assigned.
  */
 export async function dropStorageTable(params: {
    destinationName: string;
@@ -1386,10 +1148,8 @@ export async function dropStorageTable(params: {
       `gc_${destinationName}`,
    );
    try {
-      // Bounded like the build sessions even though a DROP allocates almost
-      // nothing. DuckDB does not reserve the limit up front, so this instance
-      // costs little while idle; what it carries is a CAP, and it is the sum of
-      // the caps across every live instance that has to fit the container.
+      // Bounded even for a DROP: the sum of caps across all live instances is
+      // what has to fit the container.
       await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
@@ -1408,18 +1168,12 @@ export async function dropStorageTable(params: {
 /**
  * The tables in one schema of a `storage=` destination, in name order.
  *
- * Read-only: it runs on its own isolated instance like {@link dropStorageTable},
- * but attaches the catalog the way the serve path does, since listing never
- * needs to write. A plain DuckDB destination whose database file does not exist
- * yet has, by construction, no tables — it is reported empty rather than created
- * by the act of looking.
+ * Read-only, on an isolated instance. A plain DuckDB destination with no
+ * database file yet is reported empty rather than created by looking.
  *
- * A DuckLake destination whose catalog does not exist yet is a 404
- * ({@link StorageCatalogNotFoundError}) rather than empty, found by looking the
- * catalog up before attaching (see `attachDuckLakeReadOnlyIfPresent`). An empty
- * listing invites the follow-up an orchestrator makes for a catalog it has seen,
- * a drop or a file cleanup, and both attach read-write, which creates the
- * catalog.
+ * A DuckLake destination with no catalog yet is a 404
+ * ({@link StorageCatalogNotFoundError}), not empty: an empty listing invites a
+ * follow-up drop or cleanup, and those attach read-write, creating the catalog.
  */
 export async function listStorageTables(params: {
    destinationName: string;
@@ -1458,10 +1212,9 @@ export async function listStorageTables(params: {
             );
          }
       } else {
-         // Existence is read off the destinations directory, which the
-         // environment determines, rather than by stat-ing a path built from the
-         // request: the name is only ever compared, never used to reach the
-         // filesystem before the attach.
+         // Existence is checked by listing the environment's destinations
+         // directory, so the request-supplied name is only compared, never used
+         // to reach the filesystem before the attach.
          const destinationRoot = storageDestinationRoot(environmentPath);
          const fileName = `${destinationName}.duckdb`;
          if (
@@ -1490,7 +1243,7 @@ export async function listStorageTables(params: {
 }
 
 /** What one storage file cleanup reclaimed. */
-export interface StorageFileCleanupResult {
+interface StorageFileCleanupResult {
    expiredSnapshots: number;
    deletedFiles: number;
 }
@@ -1498,29 +1251,18 @@ export interface StorageFileCleanupResult {
 /**
  * Reclaim object-storage bytes in a DuckLake destination.
  *
- * Dropping a DuckLake table only retires it in the catalog: its data files stay
- * in storage for as long as any snapshot still references them, which is every
- * snapshot from the table's creation to its drop. Two catalog calls reclaim them,
- * in this order:
+ * Dropping a DuckLake table only retires it in the catalog; its files stay while
+ * any snapshot references them. Two calls, in order:
  *
  *  1. `ducklake_expire_snapshots(older_than)` — forgets snapshots older than the
- *     cutoff (never the latest), and schedules for deletion the files only those
- *     snapshots referenced. Snapshots kept are what time travel and recovery can
- *     still read, so this cutoff is the recovery window for a dropped table.
- *  2. `ducklake_cleanup_old_files(older_than)` — deletes files that were
- *     scheduled for deletion before the cutoff. The age is measured from when
- *     step 1 scheduled the file, so it protects a reader still scanning a file
- *     from a snapshot that has just been expired.
+ *     cutoff (never the latest) and schedules files only they referenced. This
+ *     cutoff is the recovery window for a dropped table.
+ *  2. `ducklake_cleanup_old_files(older_than)` — deletes files scheduled before
+ *     the cutoff, protecting a reader still scanning a just-expired snapshot.
  *
- * Deliberately NOT `CHECKPOINT` and NOT `ducklake_delete_orphaned_files`: both
- * delete files the catalog does not track, which includes another catalog's live
- * files when two catalogs share a data path, and a concurrent build's files that
- * are written but not yet committed. Every file the two calls above delete is
- * one this catalog itself recorded and then retired.
- *
- * Read-write, on an isolated instance, like {@link dropStorageTable}. Only a
- * DuckLake destination keeps retired files around this way, so any other type is
- * refused.
+ * NOT `CHECKPOINT` or `ducklake_delete_orphaned_files`: both delete untracked
+ * files, which include another catalog's live files on a shared data path and a
+ * concurrent build's uncommitted ones. Non-DuckLake destinations are refused.
  */
 export async function cleanupStorageFiles(params: {
    destinationName: string;
@@ -1606,12 +1348,9 @@ async function attachDestinationReadWrite(
       await attachDuckLakeReadWrite(session, destinationName, cfg);
       return;
    }
-   // Plain DuckDB destination: attach its database file read-write. The file
-   // path is derived the same way connection assembly derives it — under the
-   // destinations root, which is where a destination's files live so they cannot
-   // collide with a connection of the same name. The directory is created here
-   // because a build can be the first thing that ever touches it: on a worker
-   // that has not served this destination, nothing else has made it yet.
+   // Plain DuckDB: the file lives under the destinations root (as connection
+   // assembly derives it) so it cannot collide with a same-named connection.
+   // Created here because a build may be the first thing to touch it.
    mkdirSync(storageDestinationRoot(environmentPath), { recursive: true });
    const dbPath = destinationDatabasePath(environmentPath, destinationName);
    await session.runSQL(
@@ -1650,36 +1389,20 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
       bigqueryConnection: sourceConnection.bigqueryConnection,
       snowflakeConnection: sourceConnection.snowflakeConnection,
       postgresConnection: sourceConnection.postgresConnection,
-      // A proxied source is reached through its tunnel, on the build path as on
-      // the query path; federatePostgres opens and the build session closes it.
+      // federatePostgres opens the tunnel; buildSourceIntoStorage closes it.
       proxy: sourceConnection.proxy,
    };
 }
 
 /**
- * Read the authoritative column schema of a just-built table with `DESCRIBE`,
- * mapping DuckDB's `column_name`/`column_type` rows to the wire {@link Column}
- * shape the manifest carries. This is the schema the serve transform declares.
- */
-/**
- * Build the table and read back its authoritative schema — dropping the table
- * again if anything after it is created fails.
+ * Build the table and read back its schema.
  *
- * With no partition columns this is the CTAS it has always been. With them it
- * becomes create-empty / lay out / insert, because DuckLake applies a layout
- * only to files written after it is set.
+ * Without partition columns, a CTAS; with them, create-empty / lay out / insert
+ * in one transaction, because DuckLake applies a layout only to files written
+ * after it is set.
  *
- * The window this closes: the CTAS has committed by the time DESCRIBE runs, and
- * the caller records nothing until this function RETURNS. So a DESCRIBE failure
- * propagates past a committed table that no manifest entry names and that
- * `builtThisRun` never saw — leaving it unreachable by the failed-run reclaim
- * and by manifest-driven GC alike, which only drop names they recorded building.
- * Same class the post-build serve-shape gate already closes with its own
- * targeted drop (see materialization_service), and closed the same way.
- *
- * Best-effort: a failed drop is logged, never raised, and never replaces the
- * DESCRIBE error that is the actual failure. The drop runs on the session that
- * created the table, whose read-write attach is still open.
+ * On the CTAS path a failed DESCRIBE drops the committed table: the caller
+ * records nothing until this returns, so no reclaim or GC would ever find it.
  */
 export async function createTableAndDescribe(
    session: DuckDBConnection,
@@ -1688,17 +1411,10 @@ export async function createTableAndDescribe(
    partitionColumns: readonly string[] = [],
    options: {
       /**
-       * Set by the single-source build, naming the passthrough engine its
-       * SELECT reads from; absent from a chained build. Its presence is what
-       * the memory bounds on the partitioned path below -- the ordered insert,
-       * the single thread and the flush threshold -- key on: they apply to a
-       * passthrough source and to nothing else, and a chained build issues
-       * exactly the statements it did before. The engine itself does not
-       * change the treatment. The failure is the writer's, not the source's:
-       * measured on Postgres and on BigQuery, whose multi-stream read
-       * interleaves partitions even from a sorted result, the same interleaved
-       * insert dies and the same ordered, single-threaded insert completes.
-       * Snowflake is covered by the same reasoning, unmeasured.
+       * The passthrough engine the SELECT reads from; absent on a chained build.
+       * Its presence (not its value) enables the partitioned path's memory
+       * bounds — ordered insert, single thread, flush threshold — since the
+       * failure they prevent is the writer's, whatever the source.
        */
       sourceType?: FederatedSourceType;
    } = {},
@@ -1710,58 +1426,33 @@ export async function createTableAndDescribe(
       return await describeOrDrop(session, quotedTablePath);
    }
 
-   // DuckLake applies a partition layout to files written AFTER it is set, so
-   // the layout has to precede the rows — which is why this is three statements
-   // rather than a CTAS.
+   // IN ONE TRANSACTION: the physical name is stable across generations
+   // (`selfAssignTableName`), so a rebuild targets the table being SERVED. Run
+   // bare, `WITH NO DATA` would serve zero rows until the INSERT lands, and a
+   // failed INSERT would lose the previous generation; a ROLLBACK keeps it.
    //
-   // IN ONE TRANSACTION, because the unpartitioned path's single `CREATE OR
-   // REPLACE` is not merely convenient: the physical name is self-assigned and
-   // stable across generations (`selfAssignTableName`), so a rebuild targets the
-   // table currently being SERVED. Run bare, `WITH NO DATA` replaces the served
-   // generation with an empty one and every routed query answers zero rows —
-   // with `servedFrom: storage`, so not even a visible fallback — until the
-   // INSERT lands. A failed INSERT is worse: the drop below would remove the
-   // table the manifest still names.
-   //
-   // Verified against a real DuckLake: bare, the served table reads 0 rows
-   // mid-rebuild and is gone after the failure; wrapped, a ROLLBACK leaves the
-   // previous generation's rows intact and a committed rebuild still writes one
-   // directory per partition value.
-   //
-   // The session's `SET ducklake_default_data_inlining_row_limit=0` (set on
-   // attach) is what makes the layout mean anything: with inlining on, a small
-   // table lands in the catalog's own rows rather than in files, and there is
-   // nothing to lay out.
+   // The layout only means something because the session disabled inlining
+   // (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
    const columns = partitionColumns
       .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
       .join(", ");
-   // `off` on the threshold turns the whole treatment off -- one switch, because
-   // the three parts only work together and a source that built fine before is
-   // better served by none of them than by the sort alone.
+   // One switch: `off` on the threshold disables all three bounds, which only
+   // work together.
    const flushThreshold = getPartitionedWriteFlushThreshold();
    const bounded =
       options.sourceType !== undefined && flushThreshold !== undefined;
    if (bounded) {
-      // Before the transaction, and only on this path: it bounds the rows each
-      // appender thread holds before flushing them to the partition files,
-      // which is the term an ordered stream leaves. See
-      // getPartitionedWriteFlushThreshold for the measurement; the session is
-      // this build's own instance, so the setting reaches nothing else.
+      // Bounds the rows each appender holds before flushing to partition files
+      // (see getPartitionedWriteFlushThreshold). The session is this build's
+      // own instance, so the setting reaches nothing else.
       await session.runSQL(
          `SET partitioned_write_flush_threshold = ${flushThreshold}`,
       );
-      // One appender. The ORDER BY below is DuckDB's, and a sorted result is
-      // read in parallel, so with several threads each one meets every
-      // partition again and the same insert fails at 768MB that completes on
-      // one thread (measured: 616k rows x 122 columns into 308 partitions, 4
-      // threads fails at 7 s, 1 thread completes in 9.5 s against 8.4 s for the
-      // same rows pre-sorted by the warehouse). What this gives up depends on
-      // the read: `postgres_query`, `snowflake_query` and `bigquery_query` are
-      // one stream, but the labelled BigQuery split reads its result table
-      // with `bigquery_scan`, which is multi-stream, and there the single
-      // thread costs real scan parallelism. This session is the build's own
-      // instance; `SET threads` is NOT transactional, so the RESET in the
-      // finally is what gives the count back after a rollback, not tidiness.
+      // One appender: a sorted result is read in parallel, so with several
+      // threads each meets every partition again and the insert runs out of
+      // memory. Costs scan parallelism only on the labelled BigQuery split
+      // (`bigquery_scan` is multi-stream). `SET threads` is NOT transactional,
+      // so the RESET in the finally is what restores it after a rollback.
       await session.runSQL("SET threads = 1");
    }
    let schema: WireColumn[];
@@ -1773,10 +1464,7 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
       );
-      // Ordered by the partition columns here, and only here: see
-      // orderByPartitionColumns for why the rows must arrive partition by
-      // partition, and why that is done at the top of this statement rather
-      // than in the SELECT the build was handed.
+      // See orderByPartitionColumns.
       const inserted = bounded
          ? orderByPartitionColumns(
               selectSQL,
@@ -1785,19 +1473,14 @@ export async function createTableAndDescribe(
            )
          : selectSQL;
       await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
-      // Read back INSIDE the transaction, and this is the reason rather than
-      // tidiness. `describeOrDrop` DROPS the table when the read-back fails, and
-      // the physical name is stable across generations — so after a COMMIT that
-      // drop deletes the generation the previous manifest still names, which is
-      // the same defect the transaction above exists to prevent, one statement
-      // later. Inside, a failed read-back rolls back like any other statement
-      // and the previous generation survives. A DESCRIBE resolves against the
-      // uncommitted table, so nothing is given up by asking here.
+      // Read back INSIDE the transaction, not via `describeOrDrop`: after COMMIT
+      // a drop would delete the generation the previous manifest names. Here a
+      // failed read-back rolls back and the previous generation survives.
       schema = await describeTable(session, quotedTablePath);
       await session.runSQL("COMMIT");
    } catch (buildErr) {
-      // Restores the previous generation rather than deleting it. Best-effort:
-      // a rollback that itself fails must not replace the error that caused it.
+      // Restores the previous generation. A failed rollback must not replace
+      // the error that caused it.
       try {
          await session.runSQL("ROLLBACK");
       } catch (rollbackErr) {
@@ -1813,10 +1496,8 @@ export async function createTableAndDescribe(
       }
       throw buildErr;
    } finally {
-      // Best-effort, on both outcomes: the thread count is this session's, and
-      // neither a committed generation nor the build's own error is worth
-      // reporting differently because giving it back failed. The session is
-      // disposed with the build; a stuck setting dies with it.
+      // Best-effort: the session is disposed with the build, so a stuck setting
+      // dies with it.
       if (bounded) {
          try {
             await session.runSQL("RESET threads");
@@ -1842,10 +1523,9 @@ async function describeOrDrop(
 }
 
 /**
- * Drop a table a failed build left committed. Best-effort: a failed drop is
- * logged, never raised, and never replaces the error that is the actual failure.
- * The drop runs on the session that created the table, whose read-write attach
- * is still open.
+ * Drop a table a failed build left committed, on the session whose read-write
+ * attach created it. Best-effort: a failed drop is logged, never raised over
+ * the actual failure.
  */
 async function dropStranded(
    session: DuckDBConnection,
@@ -1867,7 +1547,7 @@ async function dropStranded(
    }
 }
 
-export async function describeTable(
+async function describeTable(
    session: DuckDBConnection,
    quotedTablePath: string,
 ): Promise<WireColumn[]> {

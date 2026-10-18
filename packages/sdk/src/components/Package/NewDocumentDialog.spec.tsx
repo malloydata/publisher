@@ -195,7 +195,9 @@ describe("NewDocumentDialog", () => {
          onCreated,
       });
       await titleFilled("By category");
-      expect(screen.getByRole("listbox", { name: "Views" })).toBeDefined();
+      expect(
+         screen.getByRole("listbox", { name: "From the model" }),
+      ).toBeDefined();
 
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
@@ -345,7 +347,7 @@ describe("NewDocumentDialog", () => {
       expect(
          screen
             .getByRole("button", {
-               name: "Create report: No model view to start from yet",
+               name: "Create report: Nothing in the model to start from yet",
             })
             .hasAttribute("disabled"),
       ).toBe(true);
@@ -494,7 +496,7 @@ describe("NewDocumentDialog: a model it could not read", () => {
       mount();
       expect(
          await screen.findByText(
-            "Couldn't read storefront.malloy, so its views aren't listed.",
+            "Couldn't read storefront.malloy, so nothing from it is listed.",
          ),
       ).toBeDefined();
       expect(
@@ -503,7 +505,7 @@ describe("NewDocumentDialog: a model it could not read", () => {
       expect(
          isDisabled(
             createButton(
-               "Create report: Couldn't read the model views to start from",
+               "Create report: Couldn't read the model to start from",
             ),
          ),
       ).toBe(true);
@@ -520,7 +522,7 @@ describe("NewDocumentDialog: a model it could not read", () => {
       mount();
       expect(
          await screen.findByText(
-            "Couldn't read storefront.malloy, other.malloy, so their views aren't listed.",
+            "Couldn't read storefront.malloy, other.malloy, so nothing from them is listed.",
          ),
       ).toBeDefined();
    });
@@ -535,7 +537,7 @@ describe("NewDocumentDialog: a model it could not read", () => {
       await titleFilled("By category");
       expect(
          await screen.findByText(
-            "Couldn't read other.malloy, so its views aren't listed.",
+            "Couldn't read other.malloy, so nothing from it is listed.",
          ),
       ).toBeDefined();
       expect(isDisabled(createButton("Create report"))).toBe(false);
@@ -563,20 +565,20 @@ describe("NewDocumentDialog: why Create is off", () => {
    it("while the views load, in its name and its tooltip", async () => {
       getModel.mockImplementation(() => pending());
       mount();
-      const button = createButton("Create report: Loading model views");
+      const button = createButton("Create report: Loading the model");
       expect(isDisabled(button)).toBe(true);
       fireEvent.mouseOver(button.parentElement!);
       expect((await screen.findByRole("tooltip")).textContent).toBe(
-         "Loading model views",
+         "Loading the model",
       );
    });
 
    it("while the host still lists the models, not that the package has none", () => {
       mount({ models: [], modelsLoading: true });
       expect(screen.queryByText(/This package has no models yet/)).toBeNull();
-      expect(
-         isDisabled(createButton("Create report: Loading model views")),
-      ).toBe(true);
+      expect(isDisabled(createButton("Create report: Loading the model"))).toBe(
+         true,
+      );
    });
 
    it("when the host could not list the models, with its Retry", () => {
@@ -595,7 +597,7 @@ describe("NewDocumentDialog: why Create is off", () => {
       expect(
          isDisabled(
             createButton(
-               "Create report: Couldn't read the model views to start from",
+               "Create report: Couldn't read the model to start from",
             ),
          ),
       ).toBe(true);
@@ -622,7 +624,7 @@ describe("NewDocumentDialog: why Create is off", () => {
       expect(
          isDisabled(
             createButton(
-               "Create report: Couldn't read the model views to start from",
+               "Create report: Couldn't read the model to start from",
             ),
          ),
       ).toBe(true);
@@ -633,7 +635,9 @@ describe("NewDocumentDialog: why Create is off", () => {
       await screen.findByText(/no model in this package declares one yet/);
       expect(
          isDisabled(
-            createButton("Create report: No model view to start from yet"),
+            createButton(
+               "Create report: Nothing in the model to start from yet",
+            ),
          ),
       ).toBe(true);
    });
@@ -729,12 +733,12 @@ describe("NewDocumentDialog: the picked view", () => {
       reread(view, "dropped");
       expect(
          await screen.findByText(
-            "The view you picked is no longer in this model; pick another.",
+            "What you picked is no longer in this model; pick something else.",
          ),
       ).toBeDefined();
       expect(pickedView()).not.toContain("by_category");
       expect(
-         isDisabled(createButton("Create report: Pick a view to start from")),
+         isDisabled(createButton("Create report: Pick what to start from")),
       ).toBe(true);
    });
 });

@@ -2,29 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Generic TCP proxy layer for publisher database connections.
+ * TCP proxy layer for publisher database connections. Only SSH bastion tunnels
+ * (type "ssh") exist; another type needs only a new `openProxy` branch.
  *
- * Currently supports SSH bastion tunnels (type "ssh").  Future connection
- * types (mysql, trino, …) only need a new `openProxy` branch — the caller
- * interface is unchanged.
+ * A connection proxy is an ordinary connection capability, authorized by
+ * whoever configures the connection, so it is deliberately not behind an env
+ * gate (unlike the `publisher` type's PUBLISHER_ALLOW_PROXY_CONNECTIONS).
  *
- * A connection proxy is a normal connection capability (authorized by whoever
- * configures the connection); it is intentionally NOT behind an env-flag gate,
- * and is kept separate from the `publisher` HTTP multi-hop type's
- * PUBLISHER_ALLOW_PROXY_CONNECTIONS gate. When host-key pinning is configured it
- * is fail-closed (below).
- *
- * # Host-key policy
- *
- * `ssh.hostKey` is optional. When set, it pins the bastion's host key(s) and the
- * tunnel is fail-closed on mismatch; it may list multiple known_hosts lines (a
- * load-balanced/HA bastion presents a different key per backend), and any listed
- * key is accepted. When absent, the tunnel is fail-closed by default: an
- * unverified host key means a MITM on the publisher->bastion hop is undetectable,
- * so the connection is refused. An operator who accepts that risk (typically
- * because egress is allowlisted on the bastion) opts in for the deployment via
- * PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true, which restores the unpinned
- * connect with a warning. The SSH transport is encrypted regardless.
+ * Host-key policy: `ssh.hostKey` pins one or more bastion host keys and the
+ * tunnel fails closed on mismatch. Without it the tunnel is refused, because
+ * an unverified host key makes a MITM on the publisher-to-bastion hop
+ * undetectable; an operator who accepts that risk (e.g. bastion egress is
+ * allowlisted) sets PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true. The SSH
+ * transport is encrypted either way.
  */
 
 import net from "net";
@@ -35,25 +25,20 @@ import { logger } from "../logger";
 
 type ConnectionProxy = components["schemas"]["ConnectionProxy"];
 
-// Deployment opt-in to connect an SSH tunnel whose bastion host key is not pinned.
-// Off by default (fail closed): whether to accept an unverified host key is an
-// operator posture, so it is an env flag rather than a per-connection spec field.
+// Off by default (fail closed). Accepting an unverified host key is an operator
+// posture, so it is an env flag rather than a per-connection spec field.
 export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
    "PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY";
 
 /**
- * Whether this deployment accepts an unverified bastion host key.
+ * Whether this deployment accepts an unverified bastion host key. Accepts the
+ * same spellings as every other boolean flag (`1`, `true`, `yes`, `on`).
  *
- * Accepts the same spellings as every other boolean flag in this server (`1`,
- * `true`, `yes`, `on`, and their negatives) so an operator who writes `=1` here
- * gets what they get everywhere else. It does NOT use `parseBoolEnv`, whose
- * contract is to throw on an unrecognised value: one of the two callers is
- * ssh2's `hostVerifier`, a synchronous callback inside a Promise constructor,
- * and a throw there escapes past `fail()` -- losing the descriptive refusal and
- * settling the connection through a path this module does not control. An
- * unrecognised value therefore falls back to the secure default here, and the
- * loud version of that check lives at config load, which is a context that can
- * throw (see validateConnectionShape).
+ * Not `parseBoolEnv`, which throws on an unrecognised value: one caller is
+ * ssh2's synchronous `hostVerifier`, where a throw escapes past `fail()` and
+ * loses the descriptive refusal. An unrecognised value falls back to the
+ * secure default here; validateConnectionShape rejects it loudly at config
+ * load.
  */
 export function allowUnverifiedHostKey(): boolean {
    return TRUTHY_ENV_VALUES.has(
@@ -85,15 +70,12 @@ const SSH_CONNECT_TIMEOUT_MS = 15_000;
 const SSH_KEEPALIVE_INTERVAL_MS = 15_000;
 
 /**
- * Parse a stored hostKey into the set of base64 wire-format key blobs to accept.
- * The value may hold one or more OpenSSH known_hosts entries (one per line) — a
- * load-balanced bastion presents a different host key per backend, so pinning
- * such a bastion means listing every backend's key. Blank lines and `#` comments
- * are skipped. Each entry may be a full known_hosts line (`[markers] host keytype
- * AAAA…`), a `keytype AAAA…` pair, or a bare base64 blob; SSH key blobs
- * base64-encode to a string starting with "AAAA" (the length prefix of the
- * key-type name), so we pick that token, else the last whitespace-delimited
- * token. Compared against what ssh2 hands us (`key.toString("base64")`).
+ * Parse a stored hostKey into the base64 key blobs to accept, compared against
+ * ssh2's `key.toString("base64")`. One known_hosts entry per line (a
+ * load-balanced bastion presents a different key per backend); blank lines and
+ * `#` comments are skipped. Each entry may be a full known_hosts line, a
+ * `keytype AAAA…` pair, or a bare blob. Key blobs start with "AAAA" (the
+ * length prefix of the key-type name), so that token wins, else the last one.
  */
 export function parseHostKeys(raw: string): Set<string> {
    const keys = new Set<string>();
@@ -135,16 +117,11 @@ function openSshProxy(
    target: { host: string; port: number },
 ): Promise<ProxyEndpoint> {
    return new Promise((resolve, reject) => {
-      // Refuse an unpinned tunnel BEFORE dialing. This needs no network, and the
-      // condition is a permanent misconfiguration rather than a transient one: a
-      // rejected build is evicted from proxyConnectionCache so the next query
-      // rebuilds, and the passthrough federate caller is not cached at all, so
-      // leaving this to the hostVerifier below costs a real TCP connect and key
-      // exchange against the tenant's bastion on every query, forever. It also
-      // buries the actionable message, because a bastion that accepts but stalls
-      // the handshake surfaces as a handshake timeout instead. Same reasoning as
-      // the sslmode check in validateConnectionShape, which fails at config load
-      // for this exact reason. The hostVerifier branch stays as the backstop.
+      // Refuse an unpinned tunnel before dialing. It is a permanent
+      // misconfiguration and failed builds are not cached, so leaving it to the
+      // hostVerifier would cost a TCP connect and key exchange against the
+      // bastion on every query, and a stalled handshake would bury the message
+      // under a timeout. The hostVerifier branch stays as the backstop.
       if (!ssh.hostKey && !allowUnverifiedHostKey()) {
          reject(unpinnedRefusal(ssh.host));
          return;
@@ -153,9 +130,8 @@ function openSshProxy(
       let localPort = 0;
       let server: net.Server | undefined;
       let settled = false;
-      // Track accepted local sockets so close() can force them down. Relying on
-      // server.close() alone waits for in-flight sockets to drain, which can
-      // hang teardown indefinitely if a forwarded socket lingers.
+      // Tracked so close() can force them down; server.close() alone waits for
+      // sockets to drain and can hang teardown indefinitely.
       const sockets = new Set<net.Socket>();
 
       function fail(err: Error): void {
@@ -173,24 +149,18 @@ function openSshProxy(
          privateKey: ssh.privateKey,
          ...(ssh.privateKeyPass ? { passphrase: ssh.privateKeyPass } : {}),
          readyTimeout: SSH_CONNECT_TIMEOUT_MS,
-         // Send SSH-level keepalives so an idle tunnel isn't silently reaped by
-         // Cloud NAT / bastion ClientAlive / stateful-firewall idle timeouts —
-         // which would otherwise only surface as a confusing pg error on the
-         // next query. 3 missed (~45s) before ssh2 considers the link dead.
+         // Keepalives stop NAT / firewall idle timeouts from silently reaping an
+         // idle tunnel, which would surface as a confusing pg error on the next
+         // query. 3 missed (~45s) and ssh2 considers the link dead.
          keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
          keepaliveCountMax: 3,
          hostVerifier: ((key: Buffer): boolean => {
-            // `key` is the raw Buffer of the host's public key.
             const presented = key.toString("base64");
-            // "Pinned" is gated on hostKey being a non-empty value, not on it
-            // parsing to ≥1 key: a set-but-degenerate hostKey (only whitespace,
-            // blanks, or comments) must fail closed, never fall through to the
-            // unpinned branch. Config load (validateConnectionShape) already
-            // rejects that case; this is the security-boundary backstop for any
-            // path that reaches here directly. ("" is the unpinned signal.)
+            // "Pinned" means hostKey is non-empty, not that it parses to a key:
+            // a hostKey of only blanks or comments must fail closed, never fall
+            // through to the unpinned branch. Config load rejects that case too;
+            // this is the backstop.
             if (ssh.hostKey) {
-               // Fail-closed, accepting any listed key — an LB/HA bastion presents
-               // a different host key per backend.
                const pinned = parseHostKeys(ssh.hostKey);
                if (pinned.has(presented)) {
                   return true;
@@ -204,12 +174,7 @@ function openSshProxy(
                );
                return false;
             }
-            // Unpinned (no hostKey). Fail closed by default: an unverified host
-            // key means a MITM on the publisher->bastion hop is undetectable.
-            // An operator who accepts that risk (e.g. egress is allowlisted on the
-            // bastion) opts in explicitly via the deployment env flag; this is an
-            // operator posture, not a per-connection author choice, so it is an
-            // env flag rather than a spec field.
+            // Unpinned: fail closed unless the deployment opted in (see header).
             if (allowUnverifiedHostKey()) {
                logger.warn(
                   `Connecting to SSH bastion ${ssh.host} without host-key verification ` +
@@ -244,31 +209,25 @@ function openSshProxy(
                      socket.destroy(err);
                      return;
                   }
-                  // The local socket may have closed while forwardOut was still
-                  // opening the channel; if so, tear the channel down instead of
-                  // attaching it to a dead socket (which would leak the remote
-                  // connection). The rest of this callback is synchronous, so no
-                  // close can slip in between this check and the listeners below.
+                  // The socket may have closed while the channel opened; attaching
+                  // to it would leak the remote connection. The rest of this
+                  // callback is synchronous, so no close can slip in after this.
                   if (socket.destroyed) {
                      channel.destroy();
                      return;
                   }
-                  // Flush buffered data, then switch to live forwarding.
                   for (const chunk of earlyData) {
                      channel.write(chunk);
                   }
                   earlyData.length = 0;
                   socket.removeAllListeners("data");
-                  // pipe() honors backpressure (pauses the source when the
-                  // destination's buffer is full) — unlike a raw on('data') =>
-                  // write() which would buffer unbounded on a slow peer.
+                  // pipe() honors backpressure; on('data') => write() would
+                  // buffer unbounded on a slow peer.
                   socket.pipe(channel);
                   channel.pipe(socket);
                   socket.on("error", () => channel.destroy());
                   channel.on("error", () => socket.destroy());
-                  // Propagate teardown both ways so neither side is left
-                  // half-open when the other closes (e.g. pool eviction or the
-                  // DB dropping the connection).
+                  // Propagate teardown both ways so neither side is left half-open.
                   socket.on("close", () => channel.destroy());
                   channel.on("close", () => socket.destroy());
                },
@@ -295,8 +254,7 @@ function openSshProxy(
                port: localPort,
                close(): Promise<void> {
                   return new Promise((res) => {
-                     // Force-destroy live forwarded sockets first so server.close()
-                     // doesn't wait on them (which would hang teardown).
+                     // Destroy live sockets first or server.close() waits on them.
                      for (const s of sockets) s.destroy();
                      server!.close(() => {
                         client.end();

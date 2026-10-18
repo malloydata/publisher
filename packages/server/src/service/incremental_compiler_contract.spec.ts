@@ -34,7 +34,7 @@ import { renderSqlBound } from "./incremental_apply";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 let connections: FixedConnectionMap;
 let duckdb: DuckDBConnection;

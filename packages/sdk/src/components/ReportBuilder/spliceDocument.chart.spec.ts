@@ -86,7 +86,7 @@ describe("a tile's chart line", () => {
          queryTile(d, 0).chart = "none";
          queryTile(d, 0).chartCarried = [];
       });
-      expect(table).toContain("  # -viz\n  view: x is vx");
+      expect(table).toContain("  # -big_value -viz\n  view: x is vx");
       expect(await chartOf(table, 0)).toBe("none");
    });
 

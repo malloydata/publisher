@@ -156,7 +156,6 @@ export function lintNotebookText(
          message: `Line ${line}: ${message}`,
       });
 
-   // The statements, in file order.
    const children: ParseNode[] = [];
    for (let i = 0; i < (root.childCount ?? 0); i++)
       children.push(root.getChild(i));
@@ -658,7 +657,13 @@ export function lintNotebookText(
       lintLayout(tagNote.line, tagText(tag, "layout"));
       if (linear) {
          for (const entry of tag.array("tiles") ?? []) {
-            const ignored = ["colspan", "break"].filter((p) => entry.has(p));
+            const ignored = [
+               "row",
+               "col",
+               "colspan",
+               "rowspan",
+               "break",
+            ].filter((p) => entry.has(p));
             if (ignored.length === 0) continue;
             add(
                tagNote.line,

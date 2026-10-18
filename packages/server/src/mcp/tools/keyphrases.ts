@@ -6,24 +6,15 @@
  * and stored, so a long or missing description does not decide how an entity
  * is found.
  *
- * The rule, for `retrieval.keyphrases: "auto"` (and only with an LLM
- * configured):
+ * Under `auto` (LLM configured), a short description (see
+ * shortDescriptionLimit) is its own keyphrase; an empty or longer one gets an
+ * LLM-written keyphrase. `always` sends every entity; `never` none. Stored in
+ * `entity_keyphrases`, regenerated only when inputs, prompt or model change,
+ * and saved per batch so a restart resumes.
  *
- *   - a description of 1 to 8 words (1 to 12 for a view) IS the keyphrase, with
- *     no LLM call;
- *   - an empty description, or a longer one, gets an LLM-written keyphrase.
- *
- * `always` sends every entity to the LLM; `never` sends none.
- *
- * Generated keyphrases live in the `entity_keyphrases` table, keyed so that
- * one is regenerated only when the entity's inputs, the prompt text or the
- * model changed. Each batch is saved as it returns, so a failure part way
- * keeps the batches before it, and a restart resumes from there.
- *
- * What is sent to the LLM: name, kind, source, data type and `#(doc)` text,
- * and under the `full` egress preset also the field's code. Never an access
- * predicate: the doc text is `#(doc)`-only to begin with, and it is scrubbed
- * again here so a future change to that upstream filter cannot leak one.
+ * What is sent: name, kind, source, data type and `#(doc)` text, plus code
+ * under the `full` egress preset. Never an access predicate: doc text is
+ * `#(doc)`-only and scrubbed again here in case that upstream filter changes.
  */
 
 import { createHash } from "crypto";
@@ -39,7 +30,11 @@ import type { EgressPreset } from "../../retrieval_config";
 import type { KeyphraseMode } from "../../service/package_retrieval";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { EmbeddableEntity } from "./embedding_index";
-import { SyncBudgetReached, SyncRequestBudget } from "./get_context_llm";
+import {
+   runPooled,
+   SyncBudgetReached,
+   SyncRequestBudget,
+} from "./get_context_llm";
 
 /** Entities per LLM call. */
 export const KEYPHRASE_BATCH_SIZE = 10;
@@ -179,10 +174,8 @@ export function keyphraseInputHash(
 }
 
 /**
- * Extra inputs the readiness fingerprint must see. The fingerprint is built
- * from row texts, which carry name and doc but not the data type or code; with
- * keyphrases on, those also decide the stored keyphrase, so they are folded
- * in. Empty string when keyphrases are off.
+ * Extra inputs the readiness fingerprint must see: row texts omit data type
+ * and code, which also decide a stored keyphrase. Empty when keyphrases are off.
  */
 export function keyphraseInputsDigest(
    entities: readonly EmbeddableEntity[],
@@ -389,15 +382,12 @@ function validateReply(ids: readonly string[]) {
 /**
  * Produce the keyphrase for every entity that gets one.
  *
- * Description keyphrases (the `auto` rule) are free. For the rest, a stored
- * keyphrase is reused when its input, prompt and model hashes all match;
- * anything else is generated in batches of {@link KEYPHRASE_BATCH_SIZE},
- * `concurrency` batches at a time, each saved as it returns. At most
- * `maxCallsPerSync` batches run; entities beyond that are left without a
- * keyphrase (they embed from their doc or name) and reported through
- * `progress.capped`. A batch that fails after the provider layer's retries
- * stops the step with a {@link KeyphraseStageError}: loud, never a silent
- * downgrade, and what was saved stays.
+ * Description keyphrases are free; a stored one is reused when its input,
+ * prompt and model hashes match; the rest are generated in batches. Entities
+ * the sync budget does not reach embed from their doc or name and are reported
+ * through `progress.capped`. A failed batch stops the step with a
+ * {@link KeyphraseStageError} (loud, never a silent downgrade); what was saved
+ * stays.
  */
 export async function resolveKeyphrases(args: {
    db: DuckDBConnection;
@@ -473,61 +463,56 @@ export async function resolveKeyphrases(args: {
    }
 
    let failure: unknown;
-   let next = 0;
-   const worker = async () => {
-      while (failure === undefined) {
-         if (args.shouldStop?.()) return;
-         const index = next++;
-         if (index >= batches.length) return;
-         const batch = batches[index];
-         const ids = batch.map((_, i) => String(i + 1));
-         try {
-            const reply = await budget.spend((onRequest) =>
-               settings.chat.completeJson({
-                  system: settings.instructions,
-                  prompt: renderKeyphraseUserPrompt(
-                     batch.map((b, i) =>
-                        promptEntityOf(b.entity, settings.egress, ids[i]),
-                     ),
+   let budgetReached = false;
+   const runBatch = async (batch: (typeof batches)[number]) => {
+      if (budgetReached || args.shouldStop?.()) return;
+      const ids = batch.map((_, i) => String(i + 1));
+      try {
+         const reply = await budget.spend((onRequest) =>
+            settings.chat.completeJson({
+               system: settings.instructions,
+               prompt: renderKeyphraseUserPrompt(
+                  batch.map((b, i) =>
+                     promptEntityOf(b.entity, settings.egress, ids[i]),
                   ),
-                  maxTokens: 80 * batch.length + 100,
-                  validate: validateReply(ids),
-                  onRequest,
-               }),
-            );
-            await saveBatch(
-               db,
-               environmentName,
-               packageName,
-               batch.map((b, i) => ({
-                  key: b.key,
-                  inputHash: b.inputHash,
-                  keyphrase: reply.value.get(ids[i]) as string,
-               })),
-               settings.promptHash,
-               settings.modelId,
-            );
-            batch.forEach((b, i) =>
-               keyphrases.set(b.key, reply.value.get(ids[i]) as string),
-            );
-            progress.done += batch.length;
-            onProgress?.({ ...progress });
-         } catch (error) {
-            // Out of budget: this batch and the rest are left for the next
-            // sync, which resumes from what is stored. Not a failure.
-            if (error instanceof SyncBudgetReached) return;
-            failure ??= error;
+               ),
+               maxTokens: 80 * batch.length + 100,
+               validate: validateReply(ids),
+               onRequest,
+            }),
+         );
+         await saveBatch(
+            db,
+            environmentName,
+            packageName,
+            batch.map((b, i) => ({
+               key: b.key,
+               inputHash: b.inputHash,
+               keyphrase: reply.value.get(ids[i]) as string,
+            })),
+            settings.promptHash,
+            settings.modelId,
+         );
+         batch.forEach((b, i) =>
+            keyphrases.set(b.key, reply.value.get(ids[i]) as string),
+         );
+         progress.done += batch.length;
+         onProgress?.({ ...progress });
+      } catch (error) {
+         // Out of budget: this batch and the rest are left for the next
+         // sync, which resumes from what is stored. Not a failure.
+         if (error instanceof SyncBudgetReached) {
+            budgetReached = true;
+            return;
          }
+         throw error;
       }
    };
-   await Promise.all(
-      Array.from(
-         {
-            length: Math.min(Math.max(1, settings.concurrency), batches.length),
-         },
-         worker,
-      ),
-   );
+   try {
+      await runPooled(batches, settings.concurrency, runBatch);
+   } catch (error) {
+      failure = error;
+   }
    if (
       failure === undefined &&
       progress.done < progress.total &&

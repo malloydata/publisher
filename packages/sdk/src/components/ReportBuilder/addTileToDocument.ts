@@ -8,7 +8,9 @@ import {
    type DashboardSource,
    type QueryTile,
 } from "./document";
+import { DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
 import { withSource } from "./imports";
+import { rowsOf, settle } from "./placement";
 
 /** Where a tile is added and what the document is: the parts of an add that are not the tile. */
 export interface AddTileContext {
@@ -43,7 +45,9 @@ export function addTileToDocument(
       name,
       source: extension.name,
       declaration: { kind: "reference", from: tile.view },
-      ...(widths ? { colspan: tile.colspan } : {}),
+      ...(widths && tile.colspan !== undefined
+         ? { colspan: tile.colspan }
+         : {}),
       ...(tile.label ? { label: tile.label } : {}),
       ...(tile.chart ? { chart: tile.chart } : {}),
       ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
@@ -102,6 +106,8 @@ export function duplicateBlocked(tile: QueryTile): string | undefined {
          return "Its query is written in this file, and the builder does not copy a query's body.";
       case "opaque":
          return `Its query is ${tile.declaration.why}, which the builder does not copy.`;
+      case "query":
+         return "It names a query, and a copy could not be told apart from it: the builder writes nothing about such a tile but its place.";
       default:
          return tile.chart === "custom"
             ? "Its chart line is one the builder does not write, so a copy would lose it."
@@ -156,6 +162,25 @@ export function duplicateTile(
             : {}),
       };
    }
+   // On a placed report the copy goes straight under the original, at its
+   // size, and whatever was there moves down; it never lands on top of it.
+   const placed = original.row !== undefined && original.col !== undefined;
+   if (placed) {
+      copy = {
+         ...copy,
+         row: (original.row ?? 1) + rowsOf(original),
+         col: original.col,
+         ...(original.rowspan !== undefined
+            ? { rowspan: original.rowspan }
+            : {}),
+      };
+   }
    draft.tiles.splice(index + 1, 0, copy);
+   if (placed)
+      draft.tiles = settle(
+         draft.tiles,
+         draft.columns ?? DEFAULT_COLUMNS,
+         index + 1,
+      );
    return index + 1;
 }

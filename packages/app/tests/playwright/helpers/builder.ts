@@ -92,14 +92,15 @@ export async function addTextTile(page: Page): Promise<void> {
 export async function pickChart(
    page: Page,
    tile: Locator,
-   option: "Bar" | "From the view" | "Table",
+   option: "Bar" | "Default" | "Table",
 ): Promise<void> {
    await tile.getByLabel(/^Settings for /).click();
    await page.getByRole("menuitem", { name: /^Chart/ }).click();
    await page
       .getByRole("menu", { name: "Chart" })
       .getByRole("menuitemradio")
-      .filter({ hasText: new RegExp(`^${option}$`) })
+      // Match the label alone: a choice can carry a second line under it.
+      .filter({ has: page.getByText(option, { exact: true }) })
       .click();
    // The submenu closes on the pick; Escape closes the tile menu, which commits.
    await page.keyboard.press("Escape");

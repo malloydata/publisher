@@ -6,28 +6,16 @@ import fs from "fs";
 import path from "path";
 
 /**
- * Hashed in place of a file whose bytes could not be read.
- *
- * Without it an unreadable file and an empty one produce the same digest, so a
- * package that started failing to read a model would look byte-identical to one
- * whose model is legitimately empty. The marker is not valid file content (no
- * path can contain a NUL), so it cannot collide with a file that happens to
- * hold this text.
+ * Hashed in place of an unreadable file, so it digests differently from an
+ * empty one. The NULs keep it from colliding with real file content.
  */
 const UNREADABLE = "\0<unreadable>\0";
 
 /**
  * SHA-256 of the exact bytes a package is serving, keyed by package-relative
- * path.
- *
- * Paths are sorted so the digest is independent of the caller's iteration
- * order, and each path is hashed alongside its content so a rename moves the
- * digest even when the bytes are unchanged.
- *
- * The caller decides what counts as served content by choosing what to pass,
- * plus `extra` for served text that lives in no file. Anything omitted is invisible here: a change to a file outside the set moves
- * nothing, which is the whole reason the set is a parameter rather than a walk
- * of the package directory.
+ * path. Paths are sorted (order-independent) and hashed with their content (a
+ * rename moves the digest). The caller chooses the served set, plus `extra`
+ * for served text that lives in no file; anything outside it is invisible.
  */
 export function computeSourceContentSha(
    packagePath: string,
@@ -46,7 +34,6 @@ export function computeSourceContentSha(
       }
       hash.update("\0");
    }
-   // Inline manifest content that is served but lives in no file of its own.
    if (extra !== undefined) hash.update(`\0extra\0${extra}`);
    return hash.digest("hex");
 }
@@ -90,12 +77,9 @@ export function canonicalSha(value: unknown): string {
 }
 
 /**
- * A fresh identifier for one load of a package.
- *
- * Minted per load rather than derived from content, so two loads of identical
- * bytes get different revisions. That makes it the wrong thing to compare when
- * asking "did my edit reach the server" -- use the content sha for that -- and
- * the right thing for identifying which load answered.
+ * A fresh identifier for one load of a package. Minted per load, not derived
+ * from content: it identifies which load answered; use the content sha to ask
+ * whether an edit reached the server.
  */
 export function mintServedRevision(): string {
    return randomUUID();

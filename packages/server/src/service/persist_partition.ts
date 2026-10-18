@@ -7,28 +7,20 @@ import type { PersistSource } from "@malloydata/malloy";
  * The `partition=` key on a `#@ persist` tag: the columns a storage build lays
  * the destination table out by.
  *
- * It is a LAYOUT choice and carries no isolation. Every dynamic term a source
- * strips is re-applied when the artifact is read, whether or not its column is
- * partitioned; a partition column only decides which of those terms prune files
- * before they are read and which filter rows after. So a partition list that
- * omits the column a caller is scoped by costs a full scan, never a leak — and
- * nothing here needs to prove otherwise.
+ * A LAYOUT choice that carries no isolation: every stripped dynamic term is
+ * re-applied on read whether or not its column is partitioned, so omitting the
+ * caller's scoping column costs a full scan, never a leak.
  *
- * That is also why the list is free rather than derived. An earlier sketch made
- * the equality columns of the stripped terms the MINIMUM partition set, which
- * forces a partition per user for a source whose rows many users can see — not
- * a partition but a cross product.
- *
- * It lives on the `#@ persist` tag beside `storage=` because that tag already
- * decides what is built and where, and partitioning is a property of that
- * build.
+ * That is why the list is author-chosen rather than derived from the stripped
+ * terms' equality columns: forcing those would create a partition per user for
+ * a source whose rows many users share.
  */
-export type PartitionRefusal =
+type PartitionRefusal =
    | "partition_without_storage"
    | "partition_column_unknown"
    | "partition_column_not_public";
 
-export type PartitionResolution =
+type PartitionResolution =
    | { ok: true; columns: string[] }
    | { ok: false; reason: PartitionRefusal; detail: string };
 
@@ -49,16 +41,13 @@ export function parsePartitionValue(raw: string): string[] {
  * Resolve a source's declared `partition=` against the relation the build will
  * actually write, or refuse naming the column.
  *
- * The relation is the source's PUBLIC projection — `projectToPublicColumns`
- * narrows the build to it — so a partition column outside that surface is not
- * merely undesirable, it does not exist in the table the `ALTER TABLE … SET
- * PARTITIONED BY` would run against. Refusing here turns what would be an
- * opaque mid-build SQL error into a publish-time message naming the column.
+ * The build writes only the source's PUBLIC projection (`projectToPublicColumns`),
+ * so a column outside it does not exist in the table being partitioned. Refusing
+ * here replaces an opaque mid-build SQL error with a publish-time message.
  *
- * `partition=` without `storage=` is refused rather than ignored: a colocated
- * build writes into the customer's own warehouse, where partitioning is that
- * warehouse's DDL and outside this mechanism entirely, so honouring the key
- * silently is the one outcome that would mislead.
+ * `partition=` without `storage=` is refused, not ignored: a colocated build's
+ * layout is the customer warehouse's own DDL, so silently accepting the key
+ * would mislead.
  */
 export function resolvePartitionColumns(
    persistSource: PersistSource,
@@ -110,22 +99,15 @@ export function resolvePartitionColumns(
 }
 
 /**
- * The source's column names, split into the ones it exposes publicly and the
- * full set it declares — the two the refusals above distinguish between.
+ * The source's public column names and the full set it declares.
  *
- * Reads the compiled `SourceDef.fields` rather than `_explore.intrinsicFields`
- * precisely because it needs the hidden ones: an access-restricted column is
- * present there with a non-public `accessModifier`, which is what separates
- * "you named a column the source hides" from "you named nothing at all". A
- * column removed with `except:` is absent from the list altogether and so
- * reports as unknown; the refusal's wording says so rather than implying the
- * author mistyped.
+ * Reads `SourceDef.fields` rather than `_explore.intrinsicFields` because it
+ * needs hidden columns too (present with a non-public `accessModifier`) to tell
+ * "hidden" from "unknown". An `except:`-removed column is absent, so reports as
+ * unknown.
  *
- * Degrades to empty sets on unreadable IR, which refuses every declared column
- * as unknown. That is the fail-closed direction: `partition=` is not load
- * bearing for correctness, so refusing the build is a cost, while emitting DDL
- * against columns this pass could not see is a mid-build failure with no
- * message worth reading.
+ * Unreadable IR yields empty sets, refusing every column: fail closed, since a
+ * refused build is only a cost while DDL against unseen columns fails mid-build.
  */
 function columnSurface(persistSource: PersistSource): {
    publicNames: Set<string>;

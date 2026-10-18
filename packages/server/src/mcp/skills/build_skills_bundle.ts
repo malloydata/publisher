@@ -13,20 +13,10 @@
  *
  * <skills-dir> points at the repo's top-level skills/ directory.
  *
- * Indented rather than minified, and that is load-bearing rather than cosmetic.
- * One line per entry field gives git something to merge: two branches that edit
- * different skills land on different lines and merge without a conflict, where a
- * single-line bundle made every pair of concurrent skills edits collide on the
- * one line the whole file consists of. A skill body stays on one line either
- * way, since a JSON string cannot hold a raw newline, so what remains is a
- * normal line-scoped conflict: the two branches touched the same region, either
- * the same entry or two entries inserted at the same sorted position.
- *
- * The width is 3 to match tabWidth in packages/server/.prettierrc, which makes
- * this output byte-identical to what prettier emits. At any other width the file
- * is permanently unformatted by its own package's config, so a contributor with
- * format-on-save rewrites every line of it just by opening the file. Change this
- * only alongside that setting.
+ * Indented rather than minified so concurrent edits to different skills land on
+ * different lines and merge cleanly. The width is 3 to match tabWidth in
+ * packages/server/.prettierrc, so prettier leaves the file byte-identical;
+ * change it only alongside that setting.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -66,15 +56,10 @@ export function parseSkill(md: string, dirName: string): SkillEntry {
 }
 
 /**
- * `credible-*` skills are Credible-platform-specific and never ship (see
- * skills/README.md). They can legitimately sit in skills/ uncommitted: the
- * directory is a gitignored local install target (`skills/credible-*` in
- * .gitignore), so the bundle must skip them or a regeneration on a machine
- * with Credible installed would bake them into the committed bundle, and the
- * regenerate-and-compare spec would fail on a clean checkout.
- *
- * The canonical predicate lives in packages/skills/scripts/exclusions.ts;
- * duplicated here because the server does not depend on that package.
+ * `credible-*` skills never ship (see skills/README.md) but can sit in skills/
+ * as a gitignored local install, so the bundle must skip them or a regeneration
+ * would bake them in. Duplicates packages/skills/scripts/exclusions.ts, because
+ * the server does not depend on that package.
  */
 export function isCredible(dirName: string): boolean {
    return dirName.toLowerCase().startsWith("credible-");
@@ -90,8 +75,7 @@ export function referenceName(skillName: string, file: string): string {
 
 /**
  * Turn a reference file into an entry. These carry no frontmatter, so the
- * description comes from the first H1, which every reference file in the tree
- * has ("# Rubric: Correctness", "# Severity, Confidence, Categorization").
+ * description comes from the first H1.
  */
 export function parseReference(
    md: string,
@@ -111,13 +95,9 @@ export function parseReference(
 
 /**
  * Tell an agent that reached this body over MCP where the reference files went.
- *
- * The skill text points at them by relative path ("see `reference/rubric-*.md`"),
- * which is correct for a host reading the skill off disk and unresolvable for
- * one that received this as a prompt: nothing in the prompt says which directory
- * to stand in. Rewriting the paths in the source file is not an option, since
- * that would break the filesystem channel, so the mapping is appended to the
- * bundled copy only. One source file, one correct rendering per channel.
+ * The skill's relative `reference/...` paths are unresolvable over MCP, and
+ * rewriting them in the source would break the filesystem channel, so the
+ * mapping is appended to the served copy only.
  */
 export function referencePointer(
    skillName: string,
@@ -140,17 +120,10 @@ export function referencePointer(
 }
 
 /**
- * The skills the deployment manifest ships, as a set.
- *
- * The manifest is the single answer to "what ships"; this channel used to take
- * everything under `skills/` minus `credible-*`, so a skill added to the tree
- * reached every agent connected to a server whether or not anyone meant it to.
- *
- * Read here rather than imported: the server does not depend on
- * `@malloy-publisher/skills`, for the same reason `isCredible` is duplicated
- * above. `manifests/publisher-local.json` is resolved relative to the skills
- * directory it was handed, so a caller pointing at a different tree (the specs
- * do) gets that tree's manifest rather than the repo's.
+ * The skills the deployment manifest ships, as a set. The manifest is the single
+ * answer to "what ships", so a skill merely present in the tree does not reach
+ * agents. Read rather than imported (see `isCredible`), and resolved relative to
+ * the given skills directory so a spec's tree gets its own manifest.
  */
 function manifestSkillNames(skillsDir: string): Set<string> {
    const manifestFile = path.join(
@@ -168,12 +141,7 @@ function manifestSkillNames(skillsDir: string): Set<string> {
    ]);
 }
 
-/**
- * Reference files for one skill, sorted, or [] when it has none.
- *
- * Exported for the package-skill reader, which shares this repo's on-disk
- * skill layout but not its manifest gating (see mcp/skills/package_skills.ts).
- */
+/** Reference files for one skill, sorted, or [] when it has none. */
 export function referenceFiles(skillDir: string): string[] {
    const dir = path.join(skillDir, REFERENCE_DIR);
    if (!fs.existsSync(dir)) return [];
@@ -187,10 +155,7 @@ export function referenceFiles(skillDir: string): string[] {
  * Read every skill under a skills directory, in the bundle's own order.
  *
  * A skill's `reference/` files become entries of their own rather than being
- * folded into the parent body: they are the skill's on-demand detail (a review
- * loads the rubrics its scope needs, not all ten), and one prompt per file
- * keeps that property over MCP. Folding them in would put 83k characters of
- * malloy-review rubrics in front of an agent that wanted the workflow.
+ * folded into the parent body, so they stay on-demand detail over MCP.
  */
 export function buildSkills(skillsDir: string): SkillEntry[] {
    const shipping = manifestSkillNames(skillsDir);
@@ -222,11 +187,8 @@ export function buildSkills(skillsDir: string): SkillEntry[] {
          );
       }
    }
-   // Codepoint order, not localeCompare: entry order decides line positions in a
-   // committed artifact, so it has to be identical on every contributor's machine.
-   // localeCompare follows the runtime's locale (under cs-CZ the `ch` digraph sorts
-   // after `h`, moving malloy-charts), which made a regeneration produce a spurious
-   // reordering diff unrelated to the skill the contributor actually edited.
+   // Codepoint order, not localeCompare: the committed artifact's order must be
+   // identical on every machine, and localeCompare follows the runtime locale.
    return skills.sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
    );

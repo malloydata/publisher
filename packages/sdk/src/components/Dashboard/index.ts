@@ -4,6 +4,7 @@
 export {
    DashboardView,
    STICKY_CONTROLS_Z,
+   STICKY_TOP_VAR,
    type DashboardViewProps,
 } from "./DashboardView";
 export { TileFilterTag, tileIgnoredFilterLabels } from "./TileFilterTag";

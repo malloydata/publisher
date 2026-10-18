@@ -8,12 +8,10 @@ export const README_NAME = "README.md";
 export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
 /**
- * Where an environment keeps the server's own records of where it installed
- * each package from: `<environment>/.install-records/<package>.json`. Outside
- * every package directory, so nothing a package's content carries, downloaded
- * or added from a directory, can plant one; a reload trusts the record as the
- * source to re-fetch, and a `location` an author writes into `publisher.json`
- * is never read as one.
+ * `<environment>/.install-records/<package>.json`: where the server recorded
+ * installing each package from. Kept outside every package directory so
+ * package content cannot plant one, since a reload trusts it as the source to
+ * re-fetch (an author's `location` in `publisher.json` is never read as one).
  */
 export const PACKAGE_INSTALL_RECORDS_DIR = ".install-records";
 
@@ -34,112 +32,55 @@ export const GIVENS_DOCS_URL =
    "https://github.com/malloydata/publisher/blob/main/docs/givens.md";
 
 /**
- * Conventional name for the model file that declares a package's published
- * surface. When a package root holds one and its publisher.json declares no
- * `explores`, the discovery surface is defaulted to this file, so what it
- * `export { ... }`s is what the package lists and what callers may query.
- *
- * A fixed name rather than a configurable one, matching Malloyyo, whose project
- * entry point is the same hardcoded filename. The point of a convention is that
- * a reader can predict a package's entry point without opening its manifest,
- * which only holds if there is exactly one place to look. See
+ * The model file that declares a package's published surface. With no
+ * `explores` in publisher.json, what it `export { ... }`s is what the package
+ * lists and serves. Fixed rather than configurable, so a reader can predict a
+ * package's entry point without opening its manifest. See
  * {@link resolveExplores}.
  */
 export const INDEX_MODEL_NAME = "index.malloy";
 
 /**
- * Normalize a package-relative model path so author-written `explores`
- * entries compare equal to the paths produced by `listPackageFiles`
- * (forward slashes, no leading "./"). Shared by every input channel — the
- * worker's on-disk parse and the API publish/update path — so a manifest
- * behaves the same whether it's loaded from disk or written via the API.
+ * Normalize a package-relative model path (forward slashes, no leading "./")
+ * so author-written `explores` compare equal to `listPackageFiles` output,
+ * whether the manifest came from disk or the API.
  */
 export function normalizeModelPath(p: string): string {
    return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
 /**
- * Default row cap applied to Malloy model queries (the `runnable.run`
- * path used by `getQueryResults` and notebook cell execution) when
- * the user's query doesn't carry its own `LIMIT`. Override at startup
- * via `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`.
- *
- * This is *the default*, not a hard ceiling. A Malloy query that
- * carries `LIMIT 50000` overrides this. The hard ceiling is
- * {@link DEFAULT_MAX_QUERY_ROWS} (env-tuned via
- * `PUBLISHER_MAX_QUERY_ROWS`), which the model-query path now also
- * enforces — preventing a user `LIMIT 10000000` from blowing up the
- * process.
- *
- * Tuned conservatively (1000) because notebook UIs typically render
- * tabular previews; operators who need larger ad-hoc exports can
- * raise it.
+ * Row limit for a Malloy model query that carries no `LIMIT` of its own
+ * (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`). A default, not a ceiling: the hard
+ * ceiling is {@link DEFAULT_MAX_QUERY_ROWS}. Conservative because UIs mostly
+ * render tabular previews.
  */
 export const DEFAULT_QUERY_ROW_LIMIT = 1000;
 /**
- * Maximum number of rows the ad-hoc connection SQL endpoints
- * (`/environments/.../connections/.../sqlQuery`) will return in a
- * single response before failing with HTTP 413. Override at startup
- * via `PUBLISHER_MAX_QUERY_ROWS`.
- *
- * Tuned high enough to handle typical interactive SQL exploration
- * without truncating, while still bounding memory: 100k narrow rows
- * is ~tens of MB of buffered result + a same-order JSON.stringify
- * copy, comfortably under any reasonable pod memory budget. Wide
- * rows (large strings, JSON blobs) are bounded separately by the
- * Step 2 byte budget.
+ * Hard row ceiling for one query response before a 413
+ * (`PUBLISHER_MAX_QUERY_ROWS`). 100k narrow rows is tens of MB buffered plus
+ * a same-order JSON copy; wide rows are bounded by
+ * {@link DEFAULT_MAX_RESPONSE_BYTES}.
  */
 export const DEFAULT_MAX_QUERY_ROWS = 100_000;
 /**
- * Maximum aggregate JSON-serialized byte size of an ad-hoc
- * connection SQL response before failing with HTTP 413. Override at
- * startup via `PUBLISHER_MAX_RESPONSE_BYTES`.
- *
- * This is the actual memory bound: row count alone is a poor proxy
- * for memory pressure because a single 10 MB JSON column blows past
- * the 100k-row cap's safe envelope. Enforced only when the
- * underlying connection implements `StreamingConnection` (Postgres,
- * DuckDB, ...) since byte counting requires iterating row-at-a-time
- * — on non-streaming connections the driver has already buffered
- * the whole result by the time we see it, so client-side byte
- * counting gains nothing.
- *
- * 50 MB picked as a middle ground: comfortably accommodates wide
- * exploratory results (50k rows × 1 KB, or 5k rows × 10 KB) while
- * keeping a single pod able to serve a handful of concurrent
- * requests under a typical 1-2 GB memory budget.
+ * Maximum JSON-serialized size of an ad-hoc connection SQL response before a
+ * 413 (`PUBLISHER_MAX_RESPONSE_BYTES`). This is the real memory bound, since
+ * one wide column defeats a row cap. Enforced only on a `StreamingConnection`:
+ * a non-streaming driver has already buffered the whole result.
  */
 export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
 /**
- * Default wall-clock timeout (milliseconds) applied to a single query
- * — whether it's an ad-hoc connection SQL call or a Malloy model
- * query. Override at startup via `PUBLISHER_QUERY_TIMEOUT_MS`; `0`
- * disables the timeout entirely.
- *
- * 5 minutes is generous enough to let ad-hoc materializations and
- * larger interactive queries finish, while still well under the
- * 10-minute HTTP socket timeout so the publisher returns a clean
- * `504 Gateway Timeout` instead of letting the load balancer
- * disconnect mid-stream. Operators running long-tail analytical
- * jobs should raise this; operators running a high-RPS API surface
- * may want to lower it.
+ * Wall-clock timeout (ms) for one query, SQL or Malloy
+ * (`PUBLISHER_QUERY_TIMEOUT_MS`; `0` disables). Kept under the 10-minute
+ * socket timeout so the caller gets a clean 504 rather than a dropped
+ * connection.
  */
 export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
 /**
- * Default upper bound on the number of inbound query requests a
- * single publisher pod will handle concurrently. Excess requests
- * are rejected with `503 Service Unavailable` so the upstream load
- * balancer can retry / shed load instead of letting them pile up
- * and stampede memory. Override at startup via
- * `PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables the limit.
- *
- * 32 picked as a safe out-of-the-box value: it bounds aggregate
- * memory usage at ~32× the per-query byte cap
- * ({@link DEFAULT_MAX_RESPONSE_BYTES}, i.e. ~1.5 GB at the default
- * 50 MB) while leaving substantial headroom for the API surface,
- * notebook execution, and background materializations. Pods sized
- * larger than the default should raise it; pods running on tight
- * memory budgets should lower it.
+ * Concurrent query requests per pod; excess requests get a 503 so the load
+ * balancer can shed load (`PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables).
+ * Bounds aggregate memory at ~32x {@link DEFAULT_MAX_RESPONSE_BYTES}.
  */
 export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
 /**

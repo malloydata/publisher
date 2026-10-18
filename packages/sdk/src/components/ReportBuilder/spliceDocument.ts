@@ -7,6 +7,8 @@ import {
    isChartPick,
    mentionsChartTag,
    parseChartLine,
+   seriesColorLine,
+   seriesColorOf,
    type ChartPick,
 } from "./chartLine";
 import type {
@@ -17,7 +19,12 @@ import type {
    QueryTile,
    TextTile,
 } from "./document";
-import { isQueryTile, isTextTile } from "./document";
+import {
+   isQueryTile,
+   isReadOnlyTile,
+   isTextTile,
+   tileExpression,
+} from "./document";
 import type { LocalGiven } from "./document";
 import {
    artifactLine,
@@ -174,22 +181,33 @@ const writableChart = (
 ): ChartPick | "none" | undefined =>
    chart === "none" || isChartPick(chart) ? chart : undefined;
 
-/** The `#` tags a tile's presentation implies, in the order they are written. */
+/**
+ * The `#` tags a tile's presentation implies, in the order they are written.
+ * Never its layout: that is written on its entry in `tiles=[…]`.
+ */
 function tagsFor(tile: QueryTile, withChart = true): string[] {
    const tags: string[] = [];
-   if (tile.colspan !== undefined) tags.push(`# colspan=${tile.colspan}`);
-   if (tile.break) tags.push("# break");
    if (tile.borderless) tags.push("# borderless");
    if (tile.label !== undefined) tags.push(`# label=${quoted(tile.label)}`);
    if (tile.subtitle !== undefined)
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    const chart = withChart ? writableChart(tile.chart) : undefined;
    if (chart !== undefined) tags.push(chartLineText(chart, tile.chartCarried));
+   if (tile.color !== undefined) tags.push(seriesColorLine(tile.color));
    return tags;
 }
 
-/** Which property a tag line carries, so an existing line can be replaced. */
+/** The key of the one-colour line the builder writes; see `seriesColorLine`. */
+const SERIES_COLOR_KEY = "theme.palette.series";
+
+/**
+ * Which property a tag line carries, so an existing line can be replaced. A
+ * colour line is keyed only when it is the builder's own one-colour form: a
+ * `# theme.palette.series` that lists a whole palette is the author's, and is
+ * keyed apart so it is never rewritten or removed.
+ */
 function tagKey(text: string): string | undefined {
+   if (seriesColorOf(text) !== undefined) return SERIES_COLOR_KEY;
    const m = /^#\s*([a-z_]+)/.exec(text);
    return m?.[1];
 }
@@ -211,6 +229,7 @@ const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
    "borderless",
    "label",
    "subtitle",
+   SERIES_COLOR_KEY,
 ]);
 
 /**
@@ -430,9 +449,38 @@ function checkShape(
    };
 }
 
-/** A text entry's width and row break, which the list entry carries because the block has no tags. */
-const textEntryChanged = (was: TextTile, now: TextTile) =>
-   was.colspan !== now.colspan || Boolean(was.break) !== Boolean(now.break);
+/** The tag keys of a tile's layout, which a view declared here carries until the builder moves them to its entry. */
+const LAYOUT_TAG_KEYS: ReadonlySet<string> = new Set(["colspan", "break"]);
+
+/** Whether a tile's place on the grid changed: its width, row break, rowspan, row or column. */
+const layoutChanged = (was: DashboardTile, now: DashboardTile) =>
+   was.colspan !== now.colspan ||
+   Boolean(was.break) !== Boolean(now.break) ||
+   was.rowspan !== now.rowspan ||
+   was.row !== now.row ||
+   was.col !== now.col;
+
+/** A tile with its layout taken off, for asking whether anything ELSE about it changed. */
+const withoutLayout = <T extends DashboardTile>(tile: T): T => {
+   const {
+      colspan: _c,
+      break: _b,
+      rowspan: _r,
+      row: _row,
+      col: _col,
+      ...rest
+   } = tile;
+   return rest as T;
+};
+
+/** The properties a tile's layout is written as on its entry. */
+const layoutProperties = (tile: DashboardTile): string[] => [
+   ...(tile.row === undefined ? [] : [`row=${tile.row}`]),
+   ...(tile.col === undefined ? [] : [`col=${tile.col}`]),
+   ...(tile.colspan === undefined ? [] : [`colspan=${tile.colspan}`]),
+   ...(tile.break ? ["break"] : []),
+   ...(tile.rowspan === undefined ? [] : [`rowspan=${tile.rowspan}`]),
+];
 
 /** `text` with every quoted string blanked to `x`s of the same length, so a scan for syntax cannot land inside one. */
 function maskStrings(text: string): string {
@@ -449,14 +497,22 @@ function maskStrings(text: string): string {
    return out;
 }
 
-/** A `name { kind=text … }` entry with its `colspan` and `break` set as `tile` has them, every other property as written. */
-function textEntry(tile: TextTile, written?: string): string {
-   if (written === undefined)
-      return `${tile.name} { kind=text${
-         tile.colspan === undefined ? "" : ` colspan=${tile.colspan}`
-      }${tile.break ? " break" : ""} }`;
+/**
+ * A tile's entry in `tiles=[…]` with its layout set as `tile` has it, and
+ * every other property as written: `name { kind=text … }` for prose, and
+ * `"source -> view"` for a query, with a `{ … }` only when it has layout.
+ */
+function tileEntryText(tile: DashboardTile, written?: string): string {
+   const layout = layoutProperties(tile);
+   if (written === undefined) {
+      const head = isTextTile(tile) ? tile.name : `"${tileExpression(tile)}"`;
+      const props = [...(isTextTile(tile) ? ["kind=text"] : []), ...layout];
+      return props.length > 0 ? `${head} { ${props.join(" ")} }` : head;
+   }
    const masked = maskStrings(written);
    const open = masked.indexOf("{");
+   if (open === -1)
+      return layout.length > 0 ? `${written} { ${layout.join(" ")} }` : written;
    const close = masked.lastIndexOf("}");
    let inner = written.slice(open + 1, close);
    let maskedInner = masked.slice(open + 1, close);
@@ -470,12 +526,13 @@ function textEntry(tile: TextTile, written?: string): string {
          maskedInner.slice(hit.index + hit[0].length);
    };
    drop(/\s*\bcolspan\s*=\s*[^\s}]+/);
-   drop(/\s*\bbreak\b(?!\s*=)/);
-   const props = [
-      inner.trim(),
-      tile.colspan === undefined ? "" : `colspan=${tile.colspan}`,
-      tile.break ? "break" : "",
-   ].filter(Boolean);
+   drop(/\s*\bbreak\b(?:\s*=\s*[^\s}]+)?/);
+   drop(/\s*\browspan\s*=\s*[^\s}]+/);
+   drop(/\s*\brow\s*=\s*[^\s}]+/);
+   drop(/\s*\bcol\s*=\s*[^\s}]+/);
+   const props = [inner.trim(), ...layout].filter(Boolean);
+   // A query entry left with nothing in its braces is its expression alone.
+   if (props.length === 0) return written.slice(0, open).trimEnd();
    return `${written.slice(0, open)}{ ${props.join(" ")} }${written.slice(close + 1)}`;
 }
 
@@ -490,14 +547,12 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       nextKeys,
       edits,
    } = ctx;
-   const wasText = new Map(
-      current.tiles.filter(isTextTile).map((tile) => [tile.name, tile]),
-   );
-   const resized = next.tiles.filter(isTextTile).some((tile) => {
-      const was = wasText.get(tile.name);
-      return was !== undefined && textEntryChanged(was, tile);
+   const wasByKey = new Map(current.tiles.map((tile) => [tileKey(tile), tile]));
+   const resized = next.tiles.some((tile) => {
+      const was = wasByKey.get(tileKey(tile));
+      return was !== undefined && layoutChanged(was, tile);
    });
-   // A reorder, and a text tile's width, are one rewritten array on the
+   // A reorder, and any tile's layout, are one rewritten array on the
    // `## artifact` line. Each entry is re-emitted AS IT WAS WRITTEN rather than
    // rebuilt from `source` and `name`, so a file that spells a tile
    // `overview->kpis` keeps its spelling and the diff is the change and nothing else.
@@ -526,33 +581,44 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
    }
    const byKey = new Map<string, string>();
    for (const { text } of list.entries) {
-      const quoted = /^"((?:[^"\\]|\\.)+)"$/.exec(text);
+      const quoted = /^"((?:[^"\\]|\\.)+)"\s*(?:\{[\s\S]*\})?$/.exec(text);
       if (quoted) {
          const parts = quoted[1].split("->").map((part) => part.trim());
          if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, text);
+         // A named query: kept as written, never resolved to what it reads.
+         else if (parts.length === 1) byKey.set(`query.${parts[0]}`, text);
          continue;
       }
+      // A bare name is a named query too (`tiles=[by_carrier]`), kept bare.
+      if (isIdentifier(text)) {
+         byKey.set(`query.${text}`, text);
+         continue;
+      }
+      // `name { … }`: a text tile, or a bare named query carrying its layout.
       const name = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(text)?.[1];
-      if (name !== undefined) byKey.set(`text.${name}`, text);
+      if (name !== undefined)
+         byKey.set(
+            /\bkind\s*=\s*text\b/.test(maskStrings(text))
+               ? `text.${name}`
+               : `query.${name}`,
+            text,
+         );
    }
    // An existing tile keeps its spelling; a new one is written canonically.
    const nextEntries = next.tiles.map((tile) => {
       const isNew = !currentKeys.has(tileKey(tile));
-      if (isTextTile(tile)) {
-         const written = byKey.get(`text.${tile.name}`);
-         return written !== undefined
-            ? wasText.has(tile.name) &&
-              !textEntryChanged(wasText.get(tile.name), tile)
-               ? written
-               : textEntry(tile, written)
-            : isNew
-              ? textEntry(tile)
-              : undefined;
-      }
-      return (
-         byKey.get(`${tile.source}->${tile.name}`) ??
-         (isNew ? `"${tile.source} -> ${tile.name}"` : undefined)
+      const written = byKey.get(
+         isTextTile(tile)
+            ? `text.${tile.name}`
+            : tile.declaration.kind === "query"
+              ? `query.${tile.name}`
+              : `${tile.source}->${tile.name}`,
       );
+      if (written === undefined) return isNew ? tileEntryText(tile) : undefined;
+      const was = wasByKey.get(tileKey(tile));
+      return was !== undefined && !layoutChanged(was, tile)
+         ? written
+         : tileEntryText(tile, written);
    });
    if (nextEntries.some((entry) => entry === undefined)) {
       return {
@@ -1149,9 +1215,10 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, removedTiles, edits, parsed } = ctx;
    // REMOVED TILES: the declaration and its `#` tags. An inline view's body
    // runs to its closing brace; a reference is one line. An inherited tile has
-   // nothing here to remove — its entry left the artifact list above.
+   // nothing here to remove — its entry left the artifact list above — and nor
+   // does a named query, whose `query:` may be read by more than this list.
    for (const tile of removedTiles) {
-      if (isTextTile(tile) || tile.declaration.kind === "inherited") continue;
+      if (isTextTile(tile) || isReadOnlyTile(tile)) continue;
       const view = viewOf(ctx, tile);
       if (!view) {
          return {
@@ -1340,21 +1407,35 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       const was = currentByKey.get(tileKey(tile));
       // Written whole above, tags and all; a text tile has no declaration to retag.
       if (was === undefined || isTextTile(tile) || isTextTile(was)) continue;
-      if (
-         canonical(withoutDefaultChart(was)) ===
-         canonical(withoutDefaultChart(tile))
-      )
-         continue;
+      // A layout change is written on the entry (`planOrder`); here it only
+      // takes the view's own `# colspan` and `# break` off, so the entry is
+      // the one place the layout lives.
+      const moved = layoutChanged(was, tile);
+      const presented =
+         canonical(withoutLayout(withoutDefaultChart(was))) !==
+         canonical(withoutLayout(withoutDefaultChart(tile)));
+      if (!presented && !moved) continue;
 
       // Declared in the model, not here, so there is nothing in this file to
       // patch -- saying so beats writing a tag that would land on the wrong
-      // object.
+      // object. Its layout is its entry's, which is this file's.
       if (tile.declaration.kind === "inherited") {
+         if (!presented) continue;
          return {
             ok: false,
             reason:
-               `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
+               `\`${tileExpression(tile)}\` is declared on its source, ` +
                `not in this report, so its presentation cannot be changed here.`,
+         };
+      }
+      // Its layout is its entry's too, which wins over the query's own tags.
+      if (tile.declaration.kind === "query") {
+         if (!presented) continue;
+         return {
+            ok: false,
+            reason:
+               `\`${tile.name}\` names a query, whose presentation is the ` +
+               `query's own, so it cannot be changed here.`,
          };
       }
 
@@ -1426,6 +1507,12 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          const key = tagKey(tag.text);
          // Not a property this document models: not ours to touch.
          if (key === undefined || !MODELLED_TAG_KEYS.has(key)) continue;
+         // The view's layout stays put until the tile's layout changes, and
+         // then it moves to the entry.
+         if (LAYOUT_TAG_KEYS.has(key)) {
+            if (moved) edits.push({ ...wholeLine(tag.line), text: "" });
+            continue;
+         }
          const want = wantedByKey.get(key);
          if (want === undefined) {
             // Removed: take the whole line, including its newline.

@@ -9,9 +9,8 @@ export interface ErrorDetails {
 }
 
 /**
- * Generates error details for a resource not found scenario.
- * @param resourceUriOrContext The URI that was not found, or a context string (e.g., "Package 'X'", "Model 'Y' in package 'X'").
- * @returns ErrorDetails object with message and suggestions.
+ * @param resourceUriOrContext The URI that was not found, or a context string
+ *   (e.g., "Model 'Y' in package 'X'").
  */
 export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
    const baseMessage = `Resource not found: ${resourceUriOrContext}`;
@@ -27,9 +26,9 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 }
 
 /**
- * An unknown environment, named, with the ones that do exist. getNotFoundError
- * cannot say which part of "env/package" was wrong, so an agent that guessed
- * the environment name had nothing to correct it with.
+ * An unknown environment, named, with the ones that do exist, so an agent that
+ * guessed the name can correct it (getNotFoundError cannot say which part of
+ * "env/package" was wrong).
  */
 export function getEnvironmentNotFoundError(lookup: {
    environmentName: string;
@@ -48,34 +47,18 @@ export function getEnvironmentNotFoundError(lookup: {
 }
 
 /**
- * Generates generic error details for internal server errors.
+ * Error details for an unexpected internal failure.
  *
- * A `ConnectionError` is withheld from the caller here for the same reason
- * `internalErrorToHttpError` withholds it on the HTTP side: it wraps a driver
- * message that can name an internal host and port, echo the caller's SQL, or
- * distinguish refused from timed-out from auth-failed. Withholding it on only
- * one of the two transports would leave the same text retrievable over the
- * other. The detail is logged server-side instead, and a server-authored
- * `callerSafe` message stays as it is.
+ * A non-`callerSafe` `ConnectionError` is withheld (and logged), as on the HTTP
+ * side: its driver text can name an internal host, echo the caller's SQL, or
+ * distinguish refused from auth-failed, and withholding it on one transport only
+ * would leave it retrievable over the other.
  *
- * Every other error keeps its message, and the line is drawn by CLASS rather
- * than by transport. `ConnectionError` is the one class whose message is always
- * someone else's text -- a driver's -- so it is the one that is always unsafe to
- * echo. Everything else reaching here is operational: a store failure, an
- * unresolved environment, a thrown string. Blanking those returns callers to the
- * generic text `classifyToolError` exists to avoid, and costs an agent the only
- * sentence that tells it what to do next.
- *
- * That is deliberately NOT the same rule the HTTP mapper applies, which
- * generalizes its unrecognized-error branch too. An unrecognized error there can
- * carry a filesystem path (an ENOSPC naming an environment root, say), and it
- * still can here -- so this is a narrower posture, justified by the endpoint
- * being local and unauthenticated-by-design rather than by the text being safe.
- * If this endpoint ever fronts a remote caller, this branch generalizes with it.
- *
- * @param operation The operation that failed (e.g., 'executeQuery').
- * @param error Optional: The underlying error object or message.
- * @returns ErrorDetails object.
+ * Every other error keeps its message, because it is the only sentence telling
+ * an agent what to do next. That is narrower than the HTTP mapper, which also
+ * generalizes unrecognized errors (they can carry a filesystem path); it is
+ * justified by this endpoint being local, and must generalize too if it ever
+ * fronts a remote caller.
  */
 export function getInternalError(
    operation: string,
@@ -87,9 +70,8 @@ export function getInternalError(
       "If the problem persists, check server logs or contact support.",
    ];
    if (error instanceof ConnectionError && !error.callerSafe) {
-      // warn, not error: the same reasoning as the HTTP 502 branch -- this is
-      // the caller's or the warehouse's failure and a caller can drive it in a
-      // loop, so it must not fill the error log or move an error-rate dashboard.
+      // warn, not error: a caller can drive this in a loop, so it must not
+      // fill the error log or move an error-rate dashboard.
       logInternalFailure(
          `Upstream connection error during ${operation}`,
          error,
@@ -108,29 +90,18 @@ export function getInternalError(
 }
 
 /**
- * Every construct restricted mode refuses in ad-hoc query text, in one place
- * because two surfaces state it: the suggestion below, which a caller reads
- * only after tripping the rule, and `execute_query`'s `query` param doc,
- * which it reads before. Two hand-maintained copies drift, and a rule that is
- * missing from the list an agent is handed reads as permission.
+ * Every construct restricted mode refuses in ad-hoc query text, shared by the
+ * suggestion below and `execute_query`'s `query` param doc so they cannot
+ * drift (a rule missing from the list reads as permission).
  *
- * These mirror the compiler's `restricted-construct-forbidden` sites. Two more
- * exist and are deliberately absent: `given:` declarations sit behind the
- * `givens` experiment, whose `##!` flag restricted mode refuses first, so that
- * diagnostic is unreachable here — documenting it would describe a rule no
- * caller can trip. (The `sql_*` family IS listed: its restriction is checked
- * before its experiment gate, so unlike `given:` it is reachable.)
+ * Mirrors the compiler's `restricted-construct-forbidden` sites, except
+ * `given:`, which is unreachable: its experiment's `##!` flag is refused first.
+ * The `sql_*` family is reachable (its restriction precedes its gate).
  */
 export const RESTRICTED_CONSTRUCTS =
    "raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...)";
 
-/**
- * Generates detailed error information for Malloy compilation or query execution errors.
- * @param operation The operation that failed (e.g., 'executeQuery (load model)', 'executeQuery').
- * @param modelIdentifier A path or URI identifying the model/notebook involved.
- * @param error The underlying Malloy error object or other error.
- * @returns ErrorDetails object.
- */
+/** Error details for a Malloy compilation or query execution error. */
 export function getMalloyErrorDetails(
    operation: string,
    modelIdentifier: string,
@@ -144,31 +115,22 @@ export function getMalloyErrorDetails(
       "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/",
    ];
 
-   let suggestions: string[] = [...initialSuggestions]; // Clone initial suggestions
-   let refined = false; // Flag to track if specific suggestions were added
+   let suggestions: string[] = [...initialSuggestions];
+   let refined = false;
 
-   // Attempt to extract more specific info if it's a MalloyError or similar
    if (error instanceof Error) {
-      // Restricted-mode rejection: checked FIRST, and it returns early with
-      // ONLY the restricted diagnostics. One forbidden construct (e.g.
-      // `conn.table(...)` in ad-hoc text) cascades into several downstream
-      // diagnostics ("'X' is not defined", "Reference to undefined object")
-      // because the construct was refused, and those read top-down send the
-      // caller hunting for column typos in the warehouse — entirely the wrong
-      // place. The compiler marks the real cause with a structured problem
-      // code ('restricted-construct-forbidden'); a message sniff is the
-      // fallback for re-wrapped errors (see restricted_mode.spec.ts, which
-      // documents both shapes).
+      // Restricted-mode rejection first, returning ONLY the restricted
+      // diagnostics: one refused construct cascades into "'X' is not defined"
+      // fallout that would send the caller hunting for typos. The structured
+      // problem code is primary; the message sniff covers re-wrapped errors.
       const problems = (
          error as { problems?: Array<{ code?: string; message?: string }> }
       ).problems;
       const restrictedProblems = Array.isArray(problems)
          ? problems.filter((p) => (p.code ?? "").includes("restricted"))
          : [];
-      // Deliberately narrower than the spec helper's includes("restricted"):
-      // this one CLASSIFIES (a match suppresses other diagnostics), so a
-      // user's own identifier containing the word must not trip it. The
-      // compiler's phrasing is "… cannot be used in a restricted query".
+      // Narrower than includes("restricted"): a match suppresses other
+      // diagnostics, so a user identifier containing the word must not trip it.
       const restrictedBySniff =
          restrictedProblems.length === 0 &&
          /cannot be used in a restricted/i.test(error.message);
@@ -188,12 +150,9 @@ export function getMalloyErrorDetails(
          };
       }
 
-      // Prepend the specific error message
       baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
 
-      // --- Add more specific suggestions based on common Malloy error patterns ---
-      // Note: Order matters, check for more specific patterns first.
-
+      // Order matters: more specific patterns are checked first.
       const viewNotFoundMatch = error.message.match(
          /View '([^']+)' not found in source '([^']+)'/i,
       );
@@ -218,10 +177,8 @@ export function getMalloyErrorDetails(
       const invalidRequestMatch = error.message.match(
          /Invalid query request\\. Query OR queryName must be defined/i,
       );
-      // `#(authorize)` gate denial. The message names only the source (gate
-      // logic is never leaked), so the suggestion is about satisfying access,
-      // not fixing syntax — otherwise this falls through to generic Malloy
-      // syntax advice that misleads the caller.
+      // `#(authorize)` denial: the message names only the source (gate logic
+      // is never leaked), and the advice is about access, not syntax.
       const accessDeniedMatch = error.message.match(
          /Access denied for source "([^"]+)"/i,
       );
@@ -287,14 +244,12 @@ export function getMalloyErrorDetails(
          );
       }
 
-      // If no specific pattern matched, keep the initial suggestions
       if (!refined) {
          suggestions = initialSuggestions;
       }
    } else {
-      // Generic message if it's not a standard Error object
       baseMessage += `: ${String(error)}`;
-      suggestions = initialSuggestions; // Use initial for non-errors too
+      suggestions = initialSuggestions;
    }
 
    return {
