@@ -185,9 +185,7 @@ describe("a tile's chart line", () => {
       });
       const z = queryTile(await openDocument(out), 2);
       expect(z.chart).toBe("scatter_chart");
-      expect(out).toContain(
-         "# scatter_chart\nquery: z_tile is a -> vz\n",
-      );
+      expect(out).toContain("# scatter_chart\nquery: z_tile is a -> vz\n");
    });
 
    it("refuses a chart it cannot write", async () => {
