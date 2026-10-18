@@ -14,6 +14,8 @@ export interface ListedReport {
    layout?: string;
    title?: string;
    editable?: boolean;
+   /** The givens it shows a control for: what opening it from a click can set. */
+   givenNames?: string[];
 }
 
 export interface LocatedDocument {

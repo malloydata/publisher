@@ -3126,6 +3126,11 @@ export class Package {
          title: manifest?.title ?? listing.title ?? report.name,
          description: manifest?.description ?? listing.description,
          editable: report.path.endsWith(MODEL_FILE_SUFFIX),
+         ...(manifest?.givens && {
+            givenNames: manifest.givens
+               .map((given) => given.name)
+               .filter((name): name is string => typeof name === "string"),
+         }),
          ...(error !== undefined && { error }),
       };
    }

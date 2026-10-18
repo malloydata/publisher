@@ -2239,7 +2239,7 @@ describe("service/report_manifest grid width and hostile literals", () => {
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
       expect(carried).toContain(
-         "reads only `row`, `col`, `colspan`, `rowspan` and `break`",
+         "reads only `row`, `col`, `colspan`, `rowspan`, `break` and `drill`",
       );
       expect(carried).toContain("# label");
       // Alongside, not instead of: `intro` is also a tile expression that does
