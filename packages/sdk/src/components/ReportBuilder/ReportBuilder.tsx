@@ -47,9 +47,9 @@ import {
    pack,
    settle,
    stepTo,
+   widestFrom,
 } from "./placement";
-import { useTileHeight } from "./useTileHeight";
-import { useTileResize, widestFrom } from "./useTileResize";
+import { useEdgeResize, withShape } from "./useEdgeResize";
 import { layoutRules, withSpan } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
 
@@ -350,31 +350,27 @@ export function ReportBuilder({
          ),
       [editor.document.tiles, defaultSpan],
    );
-   const resizing = useTileResize({
+   // Dragging any edge or corner of a tile resizes it: the right and bottom
+   // edges set width and height, the left and top move those edges (placing a
+   // report that flows, as a move does), a corner both at once. Written once,
+   // on release, and on a placed report whatever it now covers moves down.
+   const edging = useEdgeResize({
       tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
-      commit: (index, span) =>
+      commit: ({ index, edges, shape, placed, placedAll }) =>
          editor.update((draft) => {
-            const tile = draft.tiles[index];
-            if (tile)
-               draft.tiles[index] = withSpan(tile, span, columns, defaultSpan);
-            draft.tiles = place(draft.tiles, index);
-         }),
-   });
-   // Dragging a tile's bottom edge sets its height in rows, the same way.
-   const sizing = useTileHeight({
-      tiles: editor.document.tiles,
-      gridBox,
-      onStart: selectTile,
-      commit: (index, rows) =>
-         editor.update((draft) => {
-            const tile = draft.tiles[index];
+            const all = placedAll ?? draft.tiles;
+            const tile = all[index];
             if (!tile) return;
-            if (rows === undefined) delete tile.rowspan;
-            else tile.rowspan = rows;
-            draft.tiles = place(draft.tiles, index);
+            let next = withShape(tile, shape, edges, placed);
+            if (edges.e || edges.w)
+               next = withSpan(next, shape.colspan, columns, defaultSpan);
+            const resized = all.map((each, i) => (i === index ? next : each));
+            draft.tiles = placed
+               ? inReadingOrder(settle(resized, columns, index))
+               : resized;
          }),
    });
    const tiles = useTileEditing({
@@ -741,8 +737,7 @@ export function ReportBuilder({
                   editor={editor}
                   arrange={arrange}
                   reorder={reorder}
-                  resizing={resizing}
-                  sizing={sizing}
+                  edging={edging}
                   place={place}
                   gridBox={gridBox}
                   defaultSpan={defaultSpan}

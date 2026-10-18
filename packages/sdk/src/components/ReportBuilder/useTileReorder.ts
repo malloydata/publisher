@@ -21,7 +21,7 @@ import {
 import { GAP_TYPE, type GapData } from "./sortable";
 
 /** The boxes of the tiles as drawn, against the grid's top left corner, by tile key. */
-function drawnBoxes(grid: HTMLElement): Map<string, Box> {
+export function drawnBoxes(grid: HTMLElement): Map<string, Box> {
    const origin = grid.getBoundingClientRect();
    const boxes = new Map<string, Box>();
    for (const frame of grid.querySelectorAll<HTMLElement>("[data-tile-key]")) {

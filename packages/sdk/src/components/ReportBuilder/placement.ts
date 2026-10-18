@@ -310,3 +310,14 @@ export const stepTo = (
    at: { row: number; col: number },
 ): DashboardTile[] =>
    tiles.map((tile, i) => (i === index ? { ...tile, ...at } : tile));
+
+/**
+ * The widest a tile may be dragged: the whole grid, or, for a placed tile, up
+ * to the grid's right edge from its column. A right edge dragged past the grid
+ * stops there; it never moves the tile's left edge.
+ */
+export const widestFrom = (
+   tile: DashboardTile | undefined,
+   columns: number,
+): number =>
+   tile?.col === undefined ? columns : Math.max(1, columns - tile.col + 1);
