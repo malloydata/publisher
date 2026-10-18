@@ -761,8 +761,8 @@ function validateConnectionShape(
             // has no per-connection recovery), and nothing here validates an attached
             // database's credentials today — so demanding a key pair at load would turn
             // configs that load-and-fail-late into configs that load nothing at all.
-            // These checks reject only shapes no path ever accepted, so no config that
-            // loads today stops loading.
+            // These checks reject only shapes that never produced a working query, so no
+            // working config stops loading.
             for (const attachedDb of attached) {
                if (attachedDb.type === "s3" && attachedDb.s3Connection) {
                   validateS3ProviderShape(

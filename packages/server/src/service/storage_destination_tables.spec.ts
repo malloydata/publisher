@@ -129,6 +129,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
    ];
    const saved: Record<string, string | undefined> = {};
    let secretStatements: string[];
+   let allStatements: string[];
 
    const CHAIN_LAKE: ApiConnection = {
       name: "lake",
@@ -160,10 +161,12 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
       process.env.AWS_ACCESS_KEY_ID = "AKIAFAKE";
       process.env.AWS_SECRET_ACCESS_KEY = "fakesecret";
       secretStatements = [];
+      allStatements = [];
       const runSQL = DuckDBConnection.prototype.runSQL;
       sinon
          .stub(DuckDBConnection.prototype, "runSQL")
          .callsFake(async function (this: DuckDBConnection, sql: string) {
+            allStatements.push(String(sql));
             if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
                secretStatements.push(String(sql));
             }
@@ -211,5 +214,103 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
             filesOlderThan: new Date(),
          }),
       );
+   });
+
+   // The scope is what keeps a modeler's raw SQL on this session from reading
+   // another tenant's prefix of the shared bucket with the destination's credential.
+   describe("storage secret scope", () => {
+      const lakeAt = (bucketUrl: string, gcs = false): ApiConnection => ({
+         ...CHAIN_LAKE,
+         ducklakeConnection: {
+            ...CHAIN_LAKE.ducklakeConnection!,
+            storage: gcs
+               ? { bucketUrl, gcsConnection: { keyId: "k", secret: "s" } }
+               : {
+                    bucketUrl,
+                    s3Connection:
+                       CHAIN_LAKE.ducklakeConnection!.storage!.s3Connection,
+                 },
+         },
+      });
+      const attach = (lake: ApiConnection) =>
+         listStorageTables({
+            destinationName: "lake",
+            destinationConnection: lake,
+            schemaName: "main",
+            environmentPath: tmpdir(),
+         }).catch(() => undefined);
+
+      it("scopes the S3 secret to the prefix with exactly one trailing slash", async () => {
+         for (const [url, scope] of [
+            ["s3://bucket", "s3://bucket/"],
+            ["s3://bucket/prefix", "s3://bucket/prefix/"],
+            ["s3://bucket/prefix/", "s3://bucket/prefix/"],
+            ["s3://bucket/prefix//", "s3://bucket/prefix/"],
+         ]) {
+            secretStatements.length = 0;
+            await attach(lakeAt(url));
+            expect(secretStatements).toHaveLength(1);
+            expect(secretStatements[0]).toContain(`SCOPE '${scope}'`);
+         }
+      });
+
+      it("scopes the GCS secret too", async () => {
+         await attach(lakeAt("gs://bucket/prefix", true));
+         expect(secretStatements).toHaveLength(1);
+         expect(secretStatements[0]).toContain("TYPE gcs");
+         expect(secretStatements[0]).toContain("SCOPE 'gs://bucket/prefix/'");
+      });
+
+      it("turns off the env-seeded global S3 config before the secret exists", async () => {
+         await attach(lakeAt("s3://bucket/prefix"));
+         const set = allStatements.findIndex((sql) =>
+            /SET enable_global_s3_configuration=false/.test(sql),
+         );
+         const secret = allStatements.findIndex((sql) =>
+            /CREATE OR REPLACE SECRET/.test(sql),
+         );
+         expect(set).toBeGreaterThanOrEqual(0);
+         expect(set).toBeLessThan(secret);
+      });
+
+      it("does not touch the global S3 config for GCS storage", async () => {
+         await attach(lakeAt("gs://bucket/prefix", true));
+         expect(allStatements.join("\n")).not.toContain(
+            "enable_global_s3_configuration",
+         );
+      });
+
+      it("re-emits the scope when the expired-credential renewer rebuilds the secret", async () => {
+         const proto = DuckDBConnection.prototype as unknown as {
+            setStorageSecretRenewer?: (renew: () => Promise<void>) => void;
+         };
+         let renew: (() => Promise<void>) | undefined;
+         // A chain secret cannot validate without real credentials, and the renewer
+         // is only registered once creation succeeds, so the statement is faked.
+         sinon.restore();
+         const runSQL = DuckDBConnection.prototype.runSQL;
+         sinon
+            .stub(DuckDBConnection.prototype, "runSQL")
+            .callsFake(async function (this: DuckDBConnection, sql: string) {
+               if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+                  secretStatements.push(String(sql));
+                  return { rows: [] } as never;
+               }
+               return runSQL.call(this, sql);
+            });
+         proto.setStorageSecretRenewer = (fn) => {
+            renew = fn;
+         };
+         try {
+            await attach(lakeAt("s3://bucket/prefix"));
+            expect(renew).toBeDefined();
+            secretStatements.length = 0;
+            await renew!();
+         } finally {
+            delete proto.setStorageSecretRenewer;
+         }
+         expect(secretStatements).toHaveLength(1);
+         expect(secretStatements[0]).toContain("SCOPE 's3://bucket/prefix/'");
+      });
    });
 });

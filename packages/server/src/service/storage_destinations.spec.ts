@@ -5,6 +5,7 @@ import { beforeEach, afterEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import sinon from "sinon";
 
 import { components } from "../api";
@@ -538,6 +539,16 @@ describe("Environment: connections and storage destinations are disjoint", () =>
 
       it("assembles a chain-auth destination and serves it past the policy gate", async () => {
          const errors = sinon.stub(logger, "error");
+         const secretStatements: string[] = [];
+         const runSQL = DuckDBConnection.prototype.runSQL;
+         sinon
+            .stub(DuckDBConnection.prototype, "runSQL")
+            .callsFake(async function (this: DuckDBConnection, sql: string) {
+               if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+                  secretStatements.push(String(sql));
+               }
+               return runSQL.call(this, sql);
+            });
          const environment = makeEnvironment([], [chainLake("managed")]);
 
          // A dropped origin either rejects the destination at validation or installs an
@@ -557,6 +568,9 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          expect(failure).toBeDefined();
          expect(failure!.message).not.toMatch(/not permitted/);
          expect(failure!.message).not.toMatch(/No connection named/);
+         // The secret statement is the proof the policy gate was passed.
+         expect(secretStatements).toHaveLength(1);
+         expect(secretStatements[0]).toContain("PROVIDER credential_chain");
       });
 
       it("still refuses a tenant connection that shares the destination's name", async () => {

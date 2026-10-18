@@ -46,6 +46,9 @@ export interface CloudStorageCredentials {
    // this path — its secret is HMAC-only.
    provider?: "config" | "credential_chain";
    chain?: string;
+   // Restricts the secret to this URL prefix; unset keeps DuckDB's default scope
+   // (the whole scheme), which is what a generic attached database wants.
+   scope?: string;
 }
 
 interface CloudStorageBucket {
@@ -98,7 +101,8 @@ export function s3ConnectionToCredentials(s3Connection: {
  * so a pasted `https://h` becomes `https://https://h`; the SDK wants the opposite, a
  * full URL. The scheme is therefore carried as `useSsl`, which is false only for
  * `http://`. A query or fragment has no meaning on an endpoint and is rejected, as
- * is a scheme other than http(s).
+ * is a scheme other than http(s), whitespace, userinfo, or an authority starting
+ * with `/` (the SDK's URL parser and DuckDB disagree on those).
  */
 export function parseS3Endpoint(endpoint: string): {
    hostAndPath: string;
@@ -111,6 +115,9 @@ export function parseS3Endpoint(endpoint: string): {
          `S3 endpoint scheme must be http:// or https://, got ${protocol}://`,
       );
    }
+   if (/\s/.test(endpoint)) {
+      throw new Error("S3 endpoint must not contain whitespace");
+   }
    if (/[?#]/.test(endpoint)) {
       throw new Error(
          "S3 endpoint must not contain a query string or fragment",
@@ -122,6 +129,12 @@ export function parseS3Endpoint(endpoint: string): {
    if (!hostAndPath) {
       throw new Error("S3 endpoint must include a host");
    }
+   if (hostAndPath.startsWith("/")) {
+      throw new Error("S3 endpoint must include a host before any path");
+   }
+   if (hostAndPath.split("/", 1)[0].includes("@")) {
+      throw new Error("S3 endpoint must not contain userinfo");
+   }
    return { hostAndPath, useSsl: protocol !== "http" };
 }
 
@@ -130,8 +143,8 @@ export function parseS3Endpoint(endpoint: string): {
  * face, independent of whether a key pair is required.
  *
  * Separate from {@link resolveCloudStorageCredentials} because of where each is safe
- * to call. These checks reject only configurations that no path ever accepted, so a
- * config that loads today still loads; the key-pair requirement is a longer-standing
+ * to call. These checks reject only configurations that never produced a working
+ * query (a malformed endpoint included), so no working config stops loading; the key-pair requirement is a longer-standing
  * rule whose enforcement point is load-bearing (see the callers in
  * connection_config.ts).
  *
@@ -162,6 +175,10 @@ export function validateS3ProviderShape(
    const chain = s3Connection.chain as unknown;
    if (chain !== undefined && typeof chain !== "string") {
       throw new Error(`S3 chain must be a string for: ${connectionName}`);
+   }
+   const endpoint = s3Connection.endpoint as unknown;
+   if (endpoint !== undefined && typeof endpoint !== "string") {
+      throw new Error(`S3 endpoint must be a string for: ${connectionName}`);
    }
    if (s3Connection.endpoint) {
       try {

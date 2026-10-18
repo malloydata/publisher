@@ -1151,7 +1151,13 @@ async function attachDuckLakeWithMode(
    const hasS3 = !!ducklakeConfig.storage.s3Connection;
    const hasGCS = !!ducklakeConfig.storage.gcsConnection;
 
+   // Prefix match, so the trailing slash keeps `…/org_a` from matching `…/org_ab`.
+   const scope = `${ducklakeConfig.storage.bucketUrl.replace(/\/+$/, "")}/`;
+
    if (hasS3) {
+      // Unmatched reads otherwise fall back to a legacy key seeded from AWS_* env,
+      // which would sign them outside the scoped secret.
+      await connection.runSQL("SET enable_global_s3_configuration=false");
       await attachCloudStorage(
          connection,
          {
@@ -1160,13 +1166,19 @@ async function attachDuckLakeWithMode(
             s3Connection: ducklakeConfig.storage.s3Connection,
          },
          options.origin,
+         scope,
       );
    } else if (hasGCS) {
-      await attachCloudStorage(connection, {
-         name: `${dbName}_storage`,
-         type: "gcs",
-         gcsConnection: ducklakeConfig.storage.gcsConnection,
-      });
+      await attachCloudStorage(
+         connection,
+         {
+            name: `${dbName}_storage`,
+            type: "gcs",
+            gcsConnection: ducklakeConfig.storage.gcsConnection,
+         },
+         undefined,
+         scope,
+      );
    }
 
    const pg = ducklakeConfig.catalog.postgresConnection;
@@ -1894,6 +1906,10 @@ export function buildCloudStorageSecretSQL(
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
 
+   const scopeClause = credentials.scope
+      ? `SCOPE '${escapeSQL(credentials.scope)}'`
+      : "";
+
    let createSecretCommand: string;
 
    if (isGCS) {
@@ -1901,7 +1917,7 @@ export function buildCloudStorageSecretSQL(
          CREATE OR REPLACE SECRET ${secretName} (
             TYPE gcs,
             KEY_ID '${escapedKeyId}',
-            SECRET '${escapedSecret}'
+            SECRET '${escapedSecret}'${scopeClause ? `,\n            ${scopeClause}` : ""}
          );
       `;
    } else {
@@ -1977,6 +1993,9 @@ export function buildCloudStorageSecretSQL(
       ) {
          clauses.push(`SESSION_TOKEN '${escapeSQL(credentials.sessionToken)}'`);
       }
+      if (scopeClause) {
+         clauses.push(scopeClause);
+      }
       createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
                ${clauses.join(",\n               ")}
@@ -1991,9 +2010,13 @@ async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
    origin: ConnectionOrigin = "connection",
+   scope?: string,
 ): Promise<void> {
    const storageType = attachedDb.type?.toUpperCase() || "";
-   const credentials = resolveCloudStorageCredentials(attachedDb, origin);
+   const credentials = {
+      ...resolveCloudStorageCredentials(attachedDb, origin),
+      scope,
+   };
 
    await installAndLoadExtension(connection, "httpfs");
    // `credential_chain` is implemented by the `aws` extension and resolves when

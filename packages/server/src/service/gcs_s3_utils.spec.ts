@@ -262,6 +262,37 @@ describe("parseS3Endpoint", () => {
       expect(() => parseS3Endpoint("ftp://h")).toThrow(/scheme/);
       expect(() => parseS3Endpoint("http://")).toThrow(/host/);
    });
+
+   it("rejects whitespace anywhere", () => {
+      for (const endpoint of [" https://h", "https://h ", "h :9000", "h\t"]) {
+         expect(() => parseS3Endpoint(endpoint)).toThrow(/whitespace/);
+      }
+   });
+
+   it("rejects userinfo in the authority but not an @ in the path", () => {
+      expect(() => parseS3Endpoint("u:p@h:9000")).toThrow(/userinfo/);
+      expect(() => parseS3Endpoint("https://u@h")).toThrow(/userinfo/);
+      expect(parseS3Endpoint("h/a@b").hostAndPath).toBe("h/a@b");
+   });
+
+   it("rejects an authority that starts with a slash", () => {
+      expect(() => parseS3Endpoint("//h")).toThrow(/host/);
+      expect(() => parseS3Endpoint("http:///p")).toThrow(/host/);
+   });
+});
+
+describe("validateS3ProviderShape — endpoint", () => {
+   it("names a non-string endpoint instead of throwing a TypeError", () => {
+      expect(() =>
+         validateS3ProviderShape({ endpoint: 123 } as never, "c"),
+      ).toThrow("S3 endpoint must be a string for: c");
+   });
+
+   it("names the connection when the endpoint is malformed", () => {
+      expect(() =>
+         validateS3ProviderShape({ endpoint: " https://h" } as never, "c"),
+      ).toThrow("S3 endpoint must not contain whitespace for: c");
+   });
 });
 
 describe("createCloudStorageClient — endpoint", () => {

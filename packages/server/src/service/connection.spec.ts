@@ -4380,3 +4380,48 @@ describe("buildPgConnectionString", () => {
       }
    });
 });
+
+describe("buildCloudStorageSecretSQL — scope", () => {
+   const base = { accessKeyId: "AK", secretAccessKey: "SK", region: "r" };
+
+   it("adds SCOPE to the S3 chain, S3 key and GCS arms", () => {
+      const chain = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         provider: "credential_chain",
+         scope: "s3://b/p/",
+      });
+      const key = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         scope: "s3://b/p/",
+      });
+      const gcs = buildCloudStorageSecretSQL("s", {
+         type: "gcs",
+         ...base,
+         scope: "gs://b/p/",
+      });
+      expect(chain).toContain("PROVIDER credential_chain");
+      expect(chain).toContain("SCOPE 's3://b/p/'");
+      expect(key).toContain("SCOPE 's3://b/p/'");
+      expect(gcs).toContain("SCOPE 'gs://b/p/'");
+   });
+
+   it("escapes the scope literal", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: "s3://b/o'brien/",
+         }),
+      ).toContain("SCOPE 's3://b/o''brien/'");
+   });
+
+   it("emits no SCOPE when none is set, as the generic attach does", () => {
+      for (const type of ["s3", "gcs"] as const) {
+         expect(
+            buildCloudStorageSecretSQL("s", { type, ...base }),
+         ).not.toContain("SCOPE");
+      }
+   });
+});
