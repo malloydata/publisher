@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — Resize a tile from any edge or corner, with no handles drawn
 
-The Console builder's tiles no longer draw grips on their right and bottom edges. Over any edge the cursor becomes a two-headed arrow, and over a corner a diagonal one: the right and bottom edges set the width and height as before, the left and top edges move that edge and keep the opposite one where it is, and a corner moves its two edges at once. On a report that flows, the first left or top drag places every tile where it is drawn, as a move does. The right and bottom edges stay keyboard controls (the arrow keys step them), and a double-click on the bottom edge still puts a tile back to auto height.
+The Console builder's tiles no longer draw grips on their right and bottom edges. Over any edge the cursor becomes a two-headed arrow, and over a corner a diagonal one: the right and bottom edges set the width and height as before, the left and top edges move that edge and keep the opposite one where it is, and a corner moves its two edges at once. On a report that flows, the first left or top drag places every tile where it is drawn, as a move does. The right and bottom edges stay keyboard controls (the arrow keys step them), and a double-click on the bottom edge still puts a tile back to auto height. A tile of value cards or a table can now be made two rows tall (a chart still needs three to draw its plot), and the cards draw compact to fit.
 
 ## [Unreleased] — Arranging a placed report: pack, flow, guides and keyboard moves
 

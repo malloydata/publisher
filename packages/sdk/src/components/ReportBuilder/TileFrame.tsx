@@ -4,7 +4,8 @@
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, IconButton, SvgIcon, Typography } from "@mui/material";
-import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
+import { useState } from "react";
+import type { FocusEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
@@ -20,6 +21,7 @@ import {
    BARE_RING_OFFSET_PX,
    GRID_GAP_PX,
    MAX_TILE_ROWS,
+   MIN_TILE_ROWS,
    TILE_ROW_PX,
 } from "../Dashboard/DashboardGrid";
 import {
@@ -121,8 +123,10 @@ export function TileFrame({
    heightEdge?: {
       /** Its rows: the set height, or the drag's preview; absent on auto, as tall as its row. */
       rows: number | undefined;
-      /** The fewest rows offered: a chart's floor, or prose's. */
+      /** The fewest rows offered before anything is known of what the tile draws. */
       min: number;
+      /** The fewest rows offered for what the tile draws now: two for cards or a table, three for a chart. */
+      minFor?: (frame: Element | null) => number;
       /** A keyboard step, or `undefined` to fit the content again. */
       onStep: (to: number | undefined) => void;
    };
@@ -688,6 +692,13 @@ function TileEdges({
 }) {
    const { theme } = usePublisherTheme();
    const ui = theme.ui;
+   // The floor the keyboard and a screen reader get, read off what the tile
+   // draws when the bottom edge is reached, since a chart and a row of cards
+   // have different ones and only the drawn result says which this is.
+   const [floor, setFloor] = useState<number | undefined>(undefined);
+   const minRows = floor ?? heightEdge?.min ?? MIN_TILE_ROWS;
+   const readFloor = (frame: Element | null) =>
+      heightEdge && setFloor(heightEdge.minFor?.(frame) ?? heightEdge.min);
    const offered = (zone: Edges) =>
       (!(zone.n || zone.w) || edges.all) && (!zone.e || edges.right);
    const focusRing = {
@@ -715,6 +726,9 @@ function TileEdges({
                        "aria-valuemax": width.max ?? width.columns,
                        "aria-valuetext": `${width.span} of ${width.columns} columns`,
                        onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+                          // Option/Alt and an arrow moves the tile: the
+                          // builder's shortcut, not this edge's.
+                          if (event.altKey) return;
                           const max = width.max ?? width.columns;
                           const to =
                              event.key === "ArrowRight"
@@ -739,22 +753,27 @@ function TileEdges({
                          tabIndex: 0,
                          "aria-orientation": "horizontal" as const,
                          "aria-label": `Height of ${label}`,
-                         "aria-valuemin": heightEdge.min,
+                         "aria-valuemin": minRows,
+                         onFocus: (event: FocusEvent<HTMLElement>) =>
+                            readFloor(event.currentTarget.parentElement),
+                         onPointerEnter: (event: PointerEvent<HTMLElement>) =>
+                            readFloor(event.currentTarget.parentElement),
                          "aria-valuemax": MAX_TILE_ROWS,
                          ...(heightEdge.rows === undefined
                             ? {}
                             : { "aria-valuenow": heightEdge.rows }),
                          "aria-valuetext": heightLabel(heightEdge.rows),
                          onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+                            if (event.altKey) return;
                             const rows = heightEdge.rows;
-                            const now = rows ?? heightEdge.min;
+                            const now = rows ?? minRows;
                             const to =
                                event.key === "ArrowDown"
                                   ? now + 1
                                   : event.key === "ArrowUp"
                                     ? now - 1
                                     : event.key === "Home"
-                                      ? heightEdge.min
+                                      ? minRows
                                       : event.key === "End"
                                         ? MAX_TILE_ROWS
                                         : event.key === "Delete" ||
@@ -770,7 +789,7 @@ function TileEdges({
                                return;
                             }
                             const held = Math.min(
-                               Math.max(to, heightEdge.min),
+                               Math.max(to, minRows),
                                MAX_TILE_ROWS,
                             );
                             if (held !== rows) heightEdge.onStep(held);

@@ -170,12 +170,43 @@ describe("useEdgeResize on a placed report", () => {
       });
    });
 
+   it("measures the bottom edge from the tile as drawn, wherever its row is", () => {
+      // A placed tile drawn somewhere its row does not say (stacked in one
+      // column on a narrow screen): 4 rows tall at y = 1000.
+      const stacked = { ...box, top: 1000 };
+      const { drag } = mount(placed());
+      expect(
+         drag({ s: true }, 0, 1000 + 6 * ROW - GRID_GAP_PX, stacked),
+      ).toMatchObject({ row: 3, rowspan: 6 });
+   });
+
    it("stops the right edge at the grid's edge, never moving the left", () => {
       const { drag } = mount(placed());
       expect(drag({ e: true }, 50 * COL, 0, box)).toMatchObject({
          col: 4,
          colspan: 9,
       });
+   });
+});
+
+describe("useEdgeResize on a tile a placed report leaves to the grid", () => {
+   it("places that tile where it is drawn when its left edge is pulled", () => {
+      const tiles = [
+         tile({ colspan: 6 }),
+         tile({
+            name: "b",
+            row: 9,
+            col: 1,
+            colspan: 6,
+            rowspan: 3,
+         } as Partial<DashboardTile>),
+      ];
+      const { commit, drag } = mount(tiles);
+      drag({ w: true }, 1 * COL + 4, 0);
+      const result = commit.mock.calls[0]?.[0];
+      expect(result?.placed).toBe(true);
+      expect(result?.placedAll?.[0]).toMatchObject({ row: 1, col: 1 });
+      expect(result?.shape).toMatchObject({ col: 2, colspan: 5 });
    });
 });
 

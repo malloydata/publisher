@@ -262,6 +262,7 @@ export function BuilderGrid({
                                    heightEdge: {
                                       rows: each.rowspan,
                                       min: minRowsOf(each),
+                                      minFor: (frame) => minRowsOf(each, frame),
                                       onStep: (to) =>
                                          editor.update((draft) => {
                                             if (

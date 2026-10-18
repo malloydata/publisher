@@ -325,7 +325,7 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    padding: 8px;
 }
 [${TIGHT_ATTR}] .malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
-   padding: 10px 14px;
+   padding: 9px 14px;
 }
 [${TIGHT_ATTR}] .malloy-render .malloy-big-value-value {
    font-size: 22px;

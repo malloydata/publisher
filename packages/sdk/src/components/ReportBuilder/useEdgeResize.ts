@@ -48,6 +48,8 @@ export interface EdgeDrag {
    shape: TileShape;
    /** The tile's top against the grid's, where the row guides of a flowing report are drawn from. */
    guideTop: number;
+   /** The fewest rows offered, read off what the tile draws when the drag began. */
+   min: number;
    /** The tile's top and left on the page when it began, for a flowing report's edges. */
    top: number;
    left: number;
@@ -197,9 +199,14 @@ export function useEdgeResize({
       event.currentTarget.setPointerCapture(event.pointerId);
       dragChrome(edgeCursor(edges));
       onStart(index);
-      // A left or top edge moves a place, which a flowing report has not
-      // got yet: it is placed where it is drawn, so nothing jumps.
-      const needsPlace = (edges.n || edges.w) && !isPlaced(tiles);
+      // A left or top edge moves a place, which a flowing report has not got
+      // yet, nor has a tile a placed report leaves to the grid: each tile
+      // without one is placed where it is drawn, so nothing jumps.
+      const needsPlace =
+         (edges.n || edges.w) &&
+         (!isPlaced(tiles) ||
+            tiles[index].row === undefined ||
+            tiles[index].col === undefined);
       const base = needsPlace
          ? (() => {
               const boxes = drawnBoxes(grid);
@@ -230,6 +237,7 @@ export function useEdgeResize({
          begun,
          shape: begun,
          guideTop: tileBox.top - gridBoxNow.top,
+         min: minRowsOf(tile, event.currentTarget.parentElement),
          top: tileBox.top,
          left: tileBox.left,
       });
@@ -247,7 +255,14 @@ export function useEdgeResize({
       // during the drag still lands the edge under the pointer.
       const x = event.clientX - grid.left;
       const y = event.clientY - grid.top;
-      const min = minRowsOf(tile);
+      // The tile's own box as it is drawn now. A bottom or right edge is
+      // measured from it, not from the grid's rows: on a narrow screen a
+      // placed report stacks in one column, where a tile's row says nothing
+      // about where it is, and a page scrolled mid-drag moves it too.
+      const own = event.currentTarget.parentElement?.getBoundingClientRect();
+      const ownTop = own?.top ?? state.top;
+      const ownLeft = own?.left ?? state.left;
+      const { min } = state;
       const now = state.shape;
       let { row, col, colspan, rowspan } = now;
 
@@ -270,14 +285,13 @@ export function useEdgeResize({
             colspan = lastCol - col + 1;
          }
          if (state.edges.s) {
-            const bottom = Math.round((y + GRID_GAP_PX) / ROW_STEP);
-            rowspan =
-               Math.min(
-                  Math.max(bottom, firstRow + min - 1),
-                  firstRow + MAX_TILE_ROWS - 1,
-               ) -
-               firstRow +
-               1;
+            // From the tile's top, so it is right in the stacked layout too.
+            // A top edge moved in the same gesture (a corner) has moved that
+            // top already, so it is measured from the row it started on.
+            const top = state.edges.n
+               ? grid.top + (firstRow - 1) * ROW_STEP
+               : ownTop;
+            rowspan = rowsForHeight(event.clientY - top, min);
             row = firstRow;
          }
          if (state.edges.n) {
@@ -293,12 +307,12 @@ export function useEdgeResize({
          // edge a height, each against the tile's own top left.
          if (state.edges.e) {
             const span = Math.round(
-               (event.clientX - state.left + GRID_GAP_PX) / colStep,
+               (event.clientX - ownLeft + GRID_GAP_PX) / colStep,
             );
             colspan = Math.min(Math.max(span, 1), columns);
          }
          if (state.edges.s) {
-            const px = event.clientY - state.top;
+            const px = event.clientY - ownTop;
             const rows = rowsForHeight(px, min);
             const auto = autoHeight(state);
             // Ties go to rows: a neighbour stretched to the preview is no

@@ -964,7 +964,8 @@ holds **Pack tiles upward**, which slides every tile up into the space above it,
 which clears every tile's place and keeps its size. While a tile of a placed report is selected, the
 rows and columns show faintly behind the tiles, so empty space reads as somewhere to put one; with
 Option/Alt held, the arrow keys move the selected tile one cell, pushing down what it lands on. The
-fewest rows offered are 3 for a query tile (a chart needs room to draw) and 1 for a text tile. A row of
+fewest rows offered are 3 for a chart (it needs room to draw its plot), 2 for value cards or a table, and 1
+for a text tile; which a query tile is comes from what it draws. A row of
 value cards in a tile set shorter than it needs is drawn compact (smaller figures, tighter cards, more
 to a row) so it fits instead of scrolling; a map draws at its own size, so give it the height it needs.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).

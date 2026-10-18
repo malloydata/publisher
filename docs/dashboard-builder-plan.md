@@ -64,7 +64,7 @@ The Console's builder (`<ReportEditor>` in the SDK) edits the page as it reads:
   diagonal arrow. The right edge sets width in columns and the bottom edge height in rows, by drag or
   keyboard; the left and top edges move that edge; a corner moves two at once.
   The bottom edge also snaps to auto height, so a tile can be made level with an auto neighbour. A resize
-  pushes covered tiles down. The fewest rows offered are 3 for a query tile and 1 for text.
+  pushes covered tiles down. The fewest rows offered are 3 for a chart, 2 for value cards or a table, and 1 for text.
 - **Tiles.** Add from every view the package publishes (the builder adds the import), edit titles,
   subtitles and text in place, pick a chart from the tile menu (choices the view cannot draw are listed
   with the reason), duplicate, set clickable cells, remove.

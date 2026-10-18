@@ -5,6 +5,7 @@ import {
    GRID_GAP_PX,
    MIN_TEXT_TILE_ROWS,
    MIN_TILE_ROWS,
+   MIN_VALUE_TILE_ROWS,
    PLACED_DEFAULT_ROWSPAN,
    TILE_ROW_PX,
 } from "../Dashboard/DashboardGrid";
@@ -29,9 +30,23 @@ export interface Cell {
    rowspan: number;
 }
 
-/** The fewest rows the builder offers a tile: a chart needs room to draw, prose does not. */
-export const minRowsOf = (tile: DashboardTile) =>
-   isTextTile(tile) ? MIN_TEXT_TILE_ROWS : MIN_TILE_ROWS;
+/** A drawn result that is not a chart: value cards or a table, which hold their shape when short. */
+const NOT_A_CHART = ".malloy-big-value, .malloy-table";
+
+/**
+ * The fewest rows the builder offers a tile: a chart needs three to draw its
+ * plot at all (at two a line chart had no plot area and the renderer failed
+ * on it); value cards and a table fit in two, the cards drawing compact;
+ * prose fits in one. Which a query tile is comes from what it draws, so
+ * `frame` is the tile's element when the caller has it; without it, a query
+ * tile is taken for a chart.
+ */
+export const minRowsOf = (tile: DashboardTile, frame?: Element | null) =>
+   isTextTile(tile)
+      ? MIN_TEXT_TILE_ROWS
+      : frame?.querySelector(NOT_A_CHART)
+        ? MIN_VALUE_TILE_ROWS
+        : MIN_TILE_ROWS;
 
 /** Rows a tile takes on a placed report: its own, or its kind's default. */
 export const rowsOf = (tile: DashboardTile) =>

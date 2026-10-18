@@ -8,6 +8,7 @@ import {
    dropAt,
    flowTiles,
    hasGaps,
+   minRowsOf,
    pack,
    placeAtEnd,
    inReadingOrder,
@@ -251,5 +252,31 @@ describe("placeWhereDrawn rounds heights up", () => {
          track,
       );
       expect(exact.rowspan).toBe(5);
+   });
+});
+
+describe("minRowsOf", () => {
+   const drawn = (html: string) => {
+      const frame = document.createElement("div");
+      frame.innerHTML = html;
+      return frame;
+   };
+   it("gives a chart three rows, value cards and a table two, and prose one", () => {
+      expect(minRowsOf(tile("chart"), drawn('<svg class="plot"></svg>'))).toBe(
+         3,
+      );
+      expect(
+         minRowsOf(tile("kpis"), drawn('<div class="malloy-big-value"></div>')),
+      ).toBe(2);
+      expect(
+         minRowsOf(tile("rows"), drawn('<div class="malloy-table"></div>')),
+      ).toBe(2);
+      expect(
+         minRowsOf({ kind: "text", name: "note", markdown: "" }, null),
+      ).toBe(1);
+   });
+
+   it("takes a query tile for a chart until it has drawn", () => {
+      expect(minRowsOf(tile("t"))).toBe(3);
    });
 });

@@ -62,6 +62,8 @@ export const TILE_ROW_PX = 80;
  * heading and axes, and the renderer failed on it. Prose fits in one.
  */
 export const MIN_TILE_ROWS = 3;
+/** A query tile that draws no chart (value cards, a table) goes down to two rows. */
+export const MIN_VALUE_TILE_ROWS = 2;
 export const MIN_TEXT_TILE_ROWS = 1;
 export const MAX_TILE_ROWS = 16;
 
