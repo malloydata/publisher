@@ -359,7 +359,7 @@ tags, property by property:
 - **The Console builder writes here.** Resizing or moving a tile puts its layout on its entry and takes
   the view's `# colspan` and `# break` off, so the layout has one home. A view's tags are left alone
   until its tile's layout changes. On a grid a move is free placement: the first move places every tile
-  where it is drawn, with any height between two rows rounded up so nothing is cut, and the file lists
+  where it is drawn, each edge snapped to the nearest row line so tiles that touched still touch, and the file lists
   placed tiles in reading order. **Arrange tiles** in the builder's bar then packs every tile upward to
   close the gaps, or lets the tiles flow again (their places cleared, their sizes kept).
 
@@ -963,7 +963,7 @@ down; so does a resize. Nothing is pulled up to fill a gap until you ask: **Arra
 holds **Pack tiles upward**, which slides every tile up into the space above it, and **Let tiles flow**,
 which clears every tile's place and keeps its size. While a tile of a placed report is selected, the
 rows and columns show faintly behind the tiles, so empty space reads as somewhere to put one; with
-Option/Alt held, the arrow keys move the selected tile one cell, pushing down what it lands on. The
+Option/Alt held, the arrow keys move the selected tile one cell; a step into the tile beside it swaps the two, and anything else it lands on is pushed down. The
 fewest rows offered are 3 for a chart (it needs room to draw its plot), 2 for value cards or a table, and 1
 for a text tile; which a query tile is comes from what it draws. A row of
 value cards in a tile set shorter than it needs is drawn compact (smaller figures, tighter cards, more

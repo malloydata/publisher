@@ -87,8 +87,8 @@ is a Console convenience.
   status, undo and redo, an **Add** menu (a tile, text or a filter), and
   **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
   report, drag a tile by its heading or its padding to place it in any cell, or move the selected one
-  with Option/Alt and the arrows (a tile it lands on moves
-  down), drag any edge or corner to resize it (the cursor turns to a two-headed arrow over an edge and a
+  with Option/Alt and the arrows (a step into the tile beside it
+  swaps the two), drag any edge or corner to resize it (the cursor turns to a two-headed arrow over an edge and a
   diagonal one over a corner; a label says what it will snap to; double-click the bottom edge to fit the
   result again), and set its chart and clickable cells, or duplicate it,
   from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to

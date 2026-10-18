@@ -152,6 +152,27 @@ describe("useEdgeResize on a placed report", () => {
       });
    });
 
+   it("never puts a tile shorter than its floor above row 1 from the top edge", () => {
+      // Two rows at the top, where a chart's floor is three.
+      const { commit, drag } = mount([
+         tile({ row: 1, col: 1, colspan: 4, rowspan: 2 }),
+      ]);
+      const short = {
+         left: 0,
+         top: 0,
+         width: 4 * COL - GRID_GAP_PX,
+         height: 2 * ROW - GRID_GAP_PX,
+      };
+      // A small press and nudge: it changes nothing, so nothing is written.
+      drag({ n: true }, 0, 5, short);
+      expect(commit).not.toHaveBeenCalled();
+      // Pulled up past the grid's top: still row 1.
+      expect(drag({ n: true }, 0, -3 * ROW, short)).toMatchObject({
+         row: 1,
+         rowspan: 2,
+      });
+   });
+
    it("moves two edges at once from a corner", () => {
       const { drag } = mount(placed());
       // Bottom-right corner to the end of column 9, row 8.

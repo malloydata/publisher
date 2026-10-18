@@ -31,8 +31,19 @@ export interface Cell {
    rowspan: number;
 }
 
-/** A drawn result that is not a chart: value cards or a table, which hold their shape when short. */
+/** Value cards or a table, which hold their shape when short. */
 const NOT_A_CHART = ".malloy-big-value, .malloy-table";
+
+/**
+ * Whether a drawn result is only value cards or a table. A dashboard result
+ * can hold a chart beside its cards, and that chart needs a chart's rows; a
+ * sparkline in a card, or a chart in a table's cell, sizes with its host.
+ */
+const drawsNoChart = (frame: Element) =>
+   frame.querySelector(NOT_A_CHART) !== null &&
+   ![...frame.querySelectorAll(".malloy-chart")].some(
+      (chart) => chart.closest(NOT_A_CHART) === null,
+   );
 
 /**
  * The fewest rows the builder offers a tile: a chart needs three to draw its
@@ -45,7 +56,7 @@ const NOT_A_CHART = ".malloy-big-value, .malloy-table";
 export const minRowsOf = (tile: DashboardTile, frame?: Element | null) =>
    isTextTile(tile)
       ? MIN_TEXT_TILE_ROWS
-      : frame?.querySelector(NOT_A_CHART)
+      : frame && drawsNoChart(frame)
         ? MIN_VALUE_TILE_ROWS
         : MIN_TILE_ROWS;
 
@@ -330,6 +341,54 @@ export const stepTo = (
    at: { row: number; col: number },
 ): DashboardTile[] =>
    tiles.map((tile, i) => (i === index ? { ...tile, ...at } : tile));
+
+/**
+ * A placed tile moved one cell by the keyboard, settled. A step into the one
+ * tile beside it in that direction swaps the two, so Down past a tile is the
+ * mirror of Up past it; otherwise the tile steps and whatever it lands on is
+ * pushed down. Returns the tiles unchanged when the tile is at the grid's edge.
+ */
+export function stepPlaced(
+   tiles: readonly DashboardTile[],
+   index: number,
+   rows: -1 | 0 | 1,
+   cols: -1 | 0 | 1,
+   columns: number,
+): DashboardTile[] {
+   const cell = cellOf(tiles[index], columns);
+   if (!cell) return [...tiles];
+   const to = {
+      row: Math.max(1, cell.row + rows),
+      // Held so the tile's right edge stays on the grid.
+      col: Math.min(Math.max(1, cell.col + cols), columns - cell.colspan + 1),
+   };
+   if (to.row === cell.row && to.col === cell.col) return [...tiles];
+   const moved = { ...cell, ...to };
+   const blockers = tiles.flatMap((each, i) => {
+      const other = i === index ? undefined : cellOf(each, columns);
+      return other && overlaps(moved, other) && !overlaps(cell, other)
+         ? [{ i, other }]
+         : [];
+   });
+   const swap = blockers.length === 1 ? blockers[0] : undefined;
+   if (!swap) return settle(stepTo(tiles, index, to), columns, index);
+   const { i, other } = swap;
+   const out = tiles.map((tile) => ({ ...tile }));
+   if (rows > 0) {
+      out[i].row = cell.row;
+      out[index].row = cell.row + other.rowspan;
+   } else if (rows < 0) {
+      out[index].row = other.row;
+      out[i].row = other.row + cell.rowspan;
+   } else if (cols > 0) {
+      out[i].col = cell.col;
+      out[index].col = cell.col + other.colspan;
+   } else {
+      out[index].col = other.col;
+      out[i].col = other.col + cell.colspan;
+   }
+   return settle(out, columns, index);
+}
 
 /**
  * The widest a tile may be dragged: the whole grid, or, for a placed tile, up

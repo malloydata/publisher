@@ -47,7 +47,7 @@ import {
    inReadingOrder,
    pack,
    settle,
-   stepTo,
+   stepPlaced,
    widestFrom,
 } from "./placement";
 import { useEdgeResize, withShape } from "./useEdgeResize";
@@ -72,7 +72,7 @@ export type { BuilderGiven } from "./controls";
  * draws its own card AND its own heading. Nesting one inside a card of ours
  * would show a card in a card under two titles — which is precisely not what a
  * reader sees. So every affordance is drawn AROUND whatever the caller renders:
- * an outline for selection, a grip and a menu in the corners.
+ * an outline for selection, a menu in the corner, and edges that resize.
  *
  * **Everything here is on the thing it changes.** Set a tile's width from its menu, and drag
  * the tile itself to reorder — into the empty end of a row
@@ -349,7 +349,7 @@ export function ReportBuilder({
    const { dragging } = reorder;
    // Dragging a tile's right edge sets its width, written once on release.
    // A tile with no `# colspan` is drawn as the reader draws it, at least
-   // MIN_TILE_PX wide, rather than one column: the width handle and the row
+   // MIN_TILE_PX wide, rather than one column: the right edge and the row
    // arithmetic start from that span. Only drawn; nothing is written until
    // the author sets a width.
    const defaultSpan = useDefaultTileSpan(gridBox, columns);
@@ -427,39 +427,36 @@ export function ReportBuilder({
             )
                clearSelection();
          },
-         // Option/Alt and an arrow: a placed tile moves exactly one cell, and
-         // whatever it lands on is pushed down. Unlike a drop it never slides
-         // under a taller tile, so a key press moves it where the arrow points.
+         // Option/Alt and an arrow: a placed tile moves exactly one cell. A
+         // step into the tile beside it swaps the two; otherwise whatever it
+         // lands on is pushed down. Unlike a drop it never slides under a
+         // taller tile, so a key press moves it where the arrow points.
          move: (rows: -1 | 0 | 1, cols: -1 | 0 | 1) => {
             if (dragging || selected === undefined || !rules.widths || !arrange)
                return false;
             const tile = editor.document.tiles[selected];
             if (!tile || tile.row === undefined || tile.col === undefined)
                return false;
-            const to = {
-               row: Math.max(1, tile.row + rows),
-               // Held so the tile's right edge stays on the grid.
-               col: Math.min(
-                  Math.max(1, tile.col + cols),
-                  columns - Math.min(tile.colspan ?? 1, columns) + 1,
-               ),
-            };
+            const next = stepPlaced(
+               editor.document.tiles,
+               selected,
+               rows,
+               cols,
+               columns,
+            );
             // At the grid's edge: the key is still the builder's, so it does
             // not fall through to the browser's Back or Forward.
-            if (to.row === tile.row && to.col === tile.col) return true;
+            if (next.every((each, i) => each === editor.document.tiles[i]))
+               return true;
             const key = tileKey(tile);
             editor.update((draft) => {
                draft.tiles = inReadingOrder(
-                  settle(stepTo(draft.tiles, selected, to), columns, selected),
+                  stepPlaced(draft.tiles, selected, rows, cols, columns),
                );
             });
-            const landed = inReadingOrder(
-               settle(
-                  stepTo(editor.document.tiles, selected, to),
-                  columns,
-                  selected,
-               ),
-            ).findIndex((each) => tileKey(each) === key);
+            const landed = inReadingOrder(next).findIndex(
+               (each) => tileKey(each) === key,
+            );
             if (landed >= 0) selectTile(landed);
             return true;
          },

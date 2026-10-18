@@ -313,9 +313,16 @@ export function useEdgeResize({
          }
          if (state.edges.n) {
             const top = Math.round(y / ROW_STEP) + 1;
-            row = Math.min(
-               Math.max(top, 1, lastRow - MAX_TILE_ROWS + 1),
-               lastRow - min + 1,
+            // A tile already shorter than its floor (a 2-row chart written
+            // by hand, or one still loading) holds the rows it has rather
+            // than growing upward, which could put its top above row 1.
+            const floor = Math.min(min, fromRows);
+            row = Math.max(
+               1,
+               Math.min(
+                  Math.max(top, lastRow - MAX_TILE_ROWS + 1),
+                  lastRow - floor + 1,
+               ),
             );
             rowspan = lastRow - row + 1;
          }

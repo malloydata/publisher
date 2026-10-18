@@ -56,7 +56,7 @@ The Console's builder (`<ReportEditor>` in the SDK) edits the page as it reads:
 - **New report** from the package page: a model, source, view, title and layout, written at the package
   root or a path you choose.
 - **Placement on a grid.** Drag a tile to any cell, empty space included; the first move places every
-  tile where it is drawn (heights round up, so nothing is cut), and anything a tile lands on is pushed
+  tile where it is drawn (each edge snaps to the nearest row line, so tiles that touched still touch), and anything a tile lands on is pushed
   down. Row and column guides show while dragging, and faintly while a tile is selected. Option/Alt with
   an arrow moves the selected tile one cell. **Arrange tiles** packs every tile upward or lets the
   tiles flow again. On a linear report tiles reorder, and **+** inserts between two.
@@ -105,8 +105,9 @@ In `packages/sdk/src/components/ReportBuilder`:
   A tile's layout is written on its entry, and the view's `# colspan` and `# break` come off when its
   layout changes. The result is read back and refused if it does not match.
 - **Layout.** `layout.ts` (row structure for flowing reports), `placement.ts` (cells, push-down, placing a
-  flowing report where it is drawn), `useTileReorder.ts`, `useTileResize.ts` and `useTileHeight.ts` (the
-  three gestures, each committed once on release), on the reader's own `DashboardGrid`.
+  flowing report where it is drawn, pack and flow), `useTileReorder.ts` (moving a tile) and
+  `useEdgeResize.ts` (resizing from any edge or corner), each gesture committed once on release, on the
+  reader's own `DashboardGrid`.
 - **The editor.** `useReportEditor.ts` (history and save), `useReportDraft.ts` (the browser draft),
   `ReportBuilder.tsx` (selection, menus and dialogs), `ReportEditor.tsx` (the host: the package file,
   the catalog, the live preview).

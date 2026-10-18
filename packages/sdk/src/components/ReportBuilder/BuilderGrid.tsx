@@ -41,7 +41,7 @@ import { shapeLabel, withShape, type useEdgeResize } from "./useEdgeResize";
 /**
  * The builder's tiles, on the SAME grid the dashboard renders on, each drawn
  * by the caller's `renderTile` inside a `TileFrame` that carries the
- * affordances: selection, the grip and menu, and its edges and corners.
+ * affordances: selection, the menu, and its edges and corners.
  */
 export function BuilderGrid({
    editor,

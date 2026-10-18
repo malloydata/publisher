@@ -15,6 +15,7 @@ import {
    inReadingOrder,
    placeWhereDrawn,
    settle,
+   stepPlaced,
    trackWidth,
 } from "./placement";
 
@@ -288,6 +289,36 @@ describe("minRowsOf", () => {
    it("takes a query tile for a chart until it has drawn", () => {
       expect(minRowsOf(tile("t"))).toBe(3);
    });
+
+   it("gives a dashboard with a chart beside its cards a chart's rows", () => {
+      expect(
+         minRowsOf(
+            tile("mixed"),
+            drawn(
+               '<div class="malloy-dashboard"><div class="malloy-big-value"></div><div class="malloy-chart"></div></div>',
+            ),
+         ),
+      ).toBe(3);
+   });
+
+   it("lets a chart inside a card or a table's cell size with its host", () => {
+      expect(
+         minRowsOf(
+            tile("spark"),
+            drawn(
+               '<div class="malloy-big-value"><div class="malloy-chart"></div></div>',
+            ),
+         ),
+      ).toBe(2);
+      expect(
+         minRowsOf(
+            tile("cells"),
+            drawn(
+               '<div class="malloy-table"><div class="malloy-chart"></div></div>',
+            ),
+         ),
+      ).toBe(2);
+   });
 });
 
 describe("holdChartRows", () => {
@@ -306,5 +337,65 @@ describe("holdChartRows", () => {
       expect(
          holdChartRows(tile("t", { chart: "bar_chart" })).rowspan,
       ).toBeUndefined();
+   });
+});
+
+describe("stepPlaced", () => {
+   const at = (tiles: DashboardTile[], name: string) => {
+      const t = tiles.find((each) => each.name === name)!;
+      return [t.row, t.col];
+   };
+   const stacked = () => [
+      tile("a", { row: 1, col: 1, colspan: 6, rowspan: 4 }),
+      tile("b", { row: 5, col: 1, colspan: 6, rowspan: 3 }),
+   ];
+
+   it("swaps a tile down past the one under it", () => {
+      const next = stepPlaced(stacked(), 0, 1, 0, 12);
+      expect(at(next, "b")).toEqual([1, 1]);
+      expect(at(next, "a")).toEqual([4, 1]);
+   });
+
+   it("swaps a tile up past the one over it, the mirror of down", () => {
+      const next = stepPlaced(stacked(), 1, -1, 0, 12);
+      expect(at(next, "b")).toEqual([1, 1]);
+      expect(at(next, "a")).toEqual([4, 1]);
+   });
+
+   it("swaps tiles side by side", () => {
+      const tiles = [
+         tile("a", { row: 1, col: 1, colspan: 4, rowspan: 3 }),
+         tile("b", { row: 1, col: 5, colspan: 8, rowspan: 3 }),
+      ];
+      const right = stepPlaced(tiles, 0, 0, 1, 12);
+      expect(at(right, "b")).toEqual([1, 1]);
+      expect(at(right, "a")).toEqual([1, 9]);
+      const left = stepPlaced(tiles, 1, 0, -1, 12);
+      expect(at(left, "b")).toEqual([1, 1]);
+      expect(at(left, "a")).toEqual([1, 9]);
+   });
+
+   it("steps one cell into empty space", () => {
+      const next = stepPlaced(stacked(), 0, 0, 1, 12);
+      expect(at(next, "a")).toEqual([1, 2]);
+      expect(at(next, "b")).toEqual([5, 1]);
+   });
+
+   it("pushes down what it lands on when two tiles are in the way", () => {
+      const tiles = [
+         tile("a", { row: 1, col: 1, colspan: 12, rowspan: 3 }),
+         tile("b", { row: 4, col: 1, colspan: 6, rowspan: 3 }),
+         tile("c", { row: 4, col: 7, colspan: 6, rowspan: 3 }),
+      ];
+      const next = stepPlaced(tiles, 0, 1, 0, 12);
+      expect(at(next, "a")).toEqual([2, 1]);
+      expect(at(next, "b")).toEqual([5, 1]);
+      expect(at(next, "c")).toEqual([5, 7]);
+   });
+
+   it("leaves the tiles as they were at the grid's edge", () => {
+      const tiles = stacked();
+      const next = stepPlaced(tiles, 0, -1, 0, 12);
+      expect(next.every((each, i) => each === tiles[i])).toBe(true);
    });
 });

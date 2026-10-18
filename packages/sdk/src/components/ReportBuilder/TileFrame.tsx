@@ -46,7 +46,7 @@ import { GapDroppable, NO_DRAG, TileSortable } from "./sortable";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the menu
- * button, the handle at the right edge and, in a notebook, the insert button. The tile
+ * button, the resize edges and corners and, in a notebook, the insert button. The tile
  * itself is `children` — the host's real `DashboardTile`, or a placeholder
  * saying what the tile will run.
  */
@@ -187,7 +187,7 @@ export function TileFrame({
                   // pixels.
                   cursor: "grab",
                   ...selectionSx(theme, { selected, flash, bare }),
-                  // The edge handle and menu are invisible
+                  // The resize edges and menu are invisible
                   // until wanted, and wanted is: the pointer
                   // over the tile, or the tile selected. A
                   // hover rule on the WRAPPER, so all three
