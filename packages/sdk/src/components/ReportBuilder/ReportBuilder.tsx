@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { usePlacementNote } from "./PlacementNote";
 import type { LinkTarget } from "./clickActions";
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
@@ -383,11 +384,13 @@ export function ReportBuilder({
    // edges set width and height, the left and top move those edges (placing a
    // report that flows, as a move does), a corner both at once. Written once,
    // on release, and on a placed report whatever it now covers moves down.
+   const placementNote = usePlacementNote();
    const edging = useEdgeResize({
       tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
+      onPlaceAll: placementNote.warn,
       commit: ({ index, edges, shape, placed, placedAll }) => {
          const all = placedAll ?? editor.document.tiles;
          const tile = all[index];
@@ -770,7 +773,22 @@ export function ReportBuilder({
                <BuilderGrid
                   editor={editor}
                   arrange={arrange}
-                  reorder={reorder}
+                  reorder={
+                     editor.document.layout === "grid" &&
+                     editor.document.tiles.length > 1 &&
+                     !isPlaced(editor.document.tiles)
+                        ? {
+                             ...reorder,
+                             // The first move places every tile: say so as it begins.
+                             onDragStart: (
+                                ...args: Parameters<typeof reorder.onDragStart>
+                             ) => {
+                                placementNote.warn();
+                                return reorder.onDragStart(...args);
+                             },
+                          }
+                        : reorder
+                  }
                   edging={edging}
                   place={place}
                   gridBox={gridBox}
@@ -813,6 +831,7 @@ export function ReportBuilder({
                   {...(renderViewPreview ? { renderViewPreview } : {})}
                   {...(takenGivenNames ? { takenGivenNames } : {})}
                />
+               {placementNote.note}
             </ReportPage>
          </Stack>
       </OpenDraftContext.Provider>
