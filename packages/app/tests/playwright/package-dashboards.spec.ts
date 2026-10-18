@@ -655,6 +655,48 @@ test.describe("package-dashboards", () => {
       await expectFilterValue(page, "Brand", "Nike");
    });
 
+   test("the rows behind a value download as CSV, every row the unlimited query returns", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
+      await page.getByRole("menuitem", { name: /^Show rows for Nike/ }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByText(/Rows where/)).toBeVisible({
+         timeout: 30_000,
+      });
+
+      // The download runs the dialog's query with no limit through the same
+      // query endpoint; its response is the oracle for the file.
+      const unlimited = page.waitForResponse((response) => {
+         const body = response.request().postData() ?? "";
+         return (
+            response.request().method() === "POST" &&
+            body.includes("select: *") &&
+            !body.includes("limit:")
+         );
+      });
+      const download = page.waitForEvent("download");
+      await dialog.getByRole("button", { name: /Download CSV/ }).click();
+      const [response, file] = await Promise.all([unlimited, download]);
+
+      const result = JSON.parse((await response.json()).result) as {
+         data?: { array_value?: unknown[] };
+      };
+      const expected = result.data?.array_value?.length ?? 0;
+      expect(expected).toBeGreaterThan(0);
+      expect(file.suggestedFilename()).toMatch(/^orders_rows_Nike.*\.csv$/);
+      const text = await (
+         await import("fs/promises")
+      ).readFile(await file.path(), "utf8");
+      const lines = text
+         .replace(/^\uFEFF/, "")
+         .trimEnd()
+         .split("\r\n");
+      // A header, then one line per row of the unlimited query.
+      expect(lines.length - 1).toBe(expected);
+   });
+
    test("a two-destination drill offers a menu, and `self` filters in place", async ({
       page,
    }) => {

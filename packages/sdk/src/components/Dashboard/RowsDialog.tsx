@@ -12,7 +12,7 @@ import {
    IconButton,
    Typography,
 } from "@mui/material";
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import {
    drillClauseLabels,
@@ -34,6 +34,8 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { withPreamble } from "./textSource";
 import { now } from "../../utils/clock";
+import { DownloadRowsCsv } from "./DownloadRowsCsv";
+import { rowsFileName } from "./rowsCsv";
 
 /**
  * The rows behind a value: "show the rows" on a cell, as one query.
@@ -84,8 +86,45 @@ export function rowsRequestFor(
    };
 }
 
-/** The query the dialog runs, or undefined when a value cannot be spelled. */
-export function rowsQuery(request: RowsRequest): string | undefined {
+/**
+ * What a host's rows actions get: everything needed to fetch the rows behind
+ * the value in full, not just the first {@link ROW_LIMIT} the dialog shows.
+ */
+export interface RowsActionsContext {
+   /**
+    * The rows query with no `limit:`, so the server's own row cap is the only
+    * bound. Without the preamble: in text-source mode send
+    * `withPreamble(preamble, query)`, as the dialog does.
+    */
+   query: string;
+   /** Text-source mode: the document's definitions, sent ahead of `query`. */
+   preamble?: string;
+   environmentName: string;
+   packageName: string;
+   modelPath: string;
+   versionId?: string;
+   /** The givens the dialog's own query sends. */
+   givens: Record<string, unknown>;
+   /** A file name without an extension: the source and each value of the row. */
+   fileName: string;
+}
+
+/**
+ * The host's actions for the rows behind a value (a download, an export),
+ * drawn in the rows dialog's title row. Return `null` to show none; omitted,
+ * the dialog offers its own Download CSV.
+ */
+export type RowsActions = (context: RowsActionsContext) => ReactNode;
+
+/**
+ * The query the dialog runs, or undefined when a value cannot be spelled.
+ * `limit` caps the rows; `null` leaves the query unlimited, so only the
+ * server's own cap applies.
+ */
+export function rowsQuery(
+   request: RowsRequest,
+   limit: number | null = ROW_LIMIT,
+): string | undefined {
    const values = dimensionFilters(request);
    if (values === undefined) return undefined;
    const where = [...request.target.filters, ...values].join(", ");
@@ -94,7 +133,8 @@ export function rowsQuery(request: RowsRequest): string | undefined {
    const zone = request.timezone
       ? `timezone: '${escapeMalloyString(request.timezone)}'; `
       : "";
-   return `run: ${request.target.source} -> { ${zone}where: ${where}; select: *; limit: ${ROW_LIMIT} }`;
+   const cap = limit === null ? "" : `; limit: ${limit}`;
+   return `run: ${request.target.source} -> { ${zone}where: ${where}; select: *${cap} }`;
 }
 
 /** Each dimension at its value; undefined if any one cannot be written. */
@@ -187,6 +227,7 @@ export function RowsDialog({
    givens,
    onClose,
    onDone,
+   actions,
 }: {
    request: RowsRequest | undefined;
    environmentName: string;
@@ -204,9 +245,28 @@ export function RowsDialog({
    onClose: () => void;
    /** The query's outcome and how long it took, once per request. */
    onDone?: (ok: boolean, durationMs: number) => void;
+   /** The host's actions for these rows; omitted, the dialog's own Download CSV. */
+   actions?: RowsActions;
 }) {
    const { theme } = usePublisherTheme();
    const query = request ? rowsQuery(request) : undefined;
+   const unlimited = request ? rowsQuery(request, null) : undefined;
+   const actionsContext: RowsActionsContext | undefined =
+      request && unlimited !== undefined
+         ? {
+              query: unlimited,
+              ...(preamble === undefined ? {} : { preamble }),
+              environmentName,
+              packageName,
+              modelPath,
+              ...(versionId === undefined ? {} : { versionId }),
+              givens,
+              fileName: rowsFileName(
+                 request.target.source,
+                 rowsTitleParts(request).map((part) => part.label),
+              ),
+           }
+         : undefined;
 
    return (
       <Dialog
@@ -250,14 +310,22 @@ export function RowsDialog({
                      : ""}
                </Typography>
             </Box>
-            <IconButton
-               onClick={onClose}
-               aria-label="Close"
-               size="small"
-               sx={{ color: "text.secondary", ml: 1 }}
-            >
-               <CloseIcon fontSize="small" />
-            </IconButton>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: 1 }}>
+               {actionsContext &&
+                  (actions ? (
+                     actions(actionsContext)
+                  ) : (
+                     <DownloadRowsCsv {...actionsContext} />
+                  ))}
+               <IconButton
+                  onClick={onClose}
+                  aria-label="Close"
+                  size="small"
+                  sx={{ color: "text.secondary" }}
+               >
+                  <CloseIcon fontSize="small" />
+               </IconButton>
+            </Box>
          </DialogTitle>
          <DialogContent dividers sx={{ p: 0, minHeight: 240 }}>
             {query === undefined && request && (

@@ -33,6 +33,7 @@ import {
 import { DashboardTile } from "./DashboardTile";
 import {
    RowsDialog,
+   type RowsActions,
    rowsGateFor,
    rowsRequestFor,
    type RowsRequest,
@@ -112,6 +113,12 @@ export interface DashboardViewProps {
     * end of the title's line, where the builder's toolbar sits.
     */
    actions?: ReactNode;
+   /**
+    * The host's actions for the rows behind a clicked value (a download),
+    * drawn in the rows dialog's title row. Omitted, the dialog offers its own
+    * Download CSV; return `null` for none.
+    */
+   rowsActions?: RowsActions;
 }
 
 /**
@@ -138,6 +145,7 @@ export function DashboardView({
    literalReads,
    onLinkNavigate,
    actions,
+   rowsActions,
 }: DashboardViewProps) {
    // Where a relative link in the report's prose resolves from, and how the
    // host navigates to it. Only a host with a router gets its links resolved:
@@ -451,6 +459,7 @@ export function DashboardView({
                modelPath={modelPath}
                {...(preamble === undefined ? {} : { preamble })}
                givens={rowsGivens}
+               {...(rowsActions === undefined ? {} : { actions: rowsActions })}
                onClose={() => setRows(undefined)}
                onDone={(ok, durationMs) => {
                   if (rows)
