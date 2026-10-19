@@ -16,12 +16,13 @@
 //   - Publisher.context  ({ environment, package } inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
 //
-// When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...
-// (or from /apps/<env>/<pkg>/..., a hosted embed surface),
+// When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
 // the runtime auto-subscribes to a Server-Sent Events live-reload stream
-// (GET .../events) and reloads the page on file changes. It also posts size
-// updates to the parent window so Publisher.embed() in the host can resize
-// the iframe.
+// (GET .../events) and reloads the page on file changes. Served from
+// /apps/<env>/<pkg>/... (a hosted embed surface) it infers the same context
+// but does not subscribe: that page belongs to a customer's site. On both it
+// posts size updates to the parent window so Publisher.embed() in the host
+// can resize the iframe.
 //
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
@@ -41,10 +42,11 @@
    // "demo env") would arrive as "demo%20env" — and the encodeURIComponent
    // we apply when building API URLs (below) would produce "demo%2520env",
    // which Publisher then 404s on.
+   var inAppMatch = location.pathname.match(
+      /^\/environments\/([^/]+)\/packages\/([^/]+)\//,
+   );
    var pathMatch =
-      location.pathname.match(
-         /^\/environments\/([^/]+)\/packages\/([^/]+)\//,
-      ) || location.pathname.match(/^\/apps\/([^/]+)\/([^/]+)\//);
+      inAppMatch || location.pathname.match(/^\/apps\/([^/]+)\/([^/]+)\//);
    function safeDecode(s) {
       try {
          return decodeURIComponent(s);
@@ -334,7 +336,13 @@
    }
 
    // --- SSE live reload --------------------------------------------------
+   // In-app viewer only. A hosted embed surface (/apps/...) is a customer's page: a reload
+   // on publish would throw away an end user's state, the events route is not one an embed
+   // session may call (so onerror's auto-reconnect would loop), and the credentialed
+   // cross-origin request is exactly what that surface keeps to a minimum. The resize
+   // postMessage below still runs there; it is what Publisher.embed on the host relies on.
    function setUpLiveReload() {
+      if (!inAppMatch) return;
       if (!ctx.environment || !ctx.package) return;
       if (typeof EventSource === "undefined") return;
       var url =
