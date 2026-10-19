@@ -5,6 +5,7 @@ import { beforeEach, afterEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import sinon from "sinon";
 
 import { components } from "../api";
@@ -486,6 +487,104 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.listStorageDestinations()).toEqual([]);
       // And the empty list is not mistaken for a desired state afterwards.
       expect(environment.hasAuthoritativeStorageDestinations()).toBe(false);
+   });
+
+   describe("S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+      const ENV_KEYS = [
+         "S3_CREDENTIAL_CHAIN_POLICY",
+         "AWS_ACCESS_KEY_ID",
+         "AWS_SECRET_ACCESS_KEY",
+      ];
+      const saved: Record<string, string | undefined> = {};
+
+      beforeEach(() => {
+         for (const key of ENV_KEYS) saved[key] = process.env[key];
+         process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+         process.env.AWS_ACCESS_KEY_ID = "AKIAFAKE";
+         process.env.AWS_SECRET_ACCESS_KEY = "fakesecret";
+      });
+      afterEach(() => {
+         for (const key of ENV_KEYS) {
+            if (saved[key] === undefined) delete process.env[key];
+            else process.env[key] = saved[key];
+         }
+      });
+
+      // `chain: "env"` resolves from the variables above, so CREATE SECRET never
+      // probes instance metadata.
+      const chainLake = (name: string): ApiConnection => {
+         const lake = ducklakeDestination(name, "org_a");
+         lake.ducklakeConnection!.storage = {
+            bucketUrl: "s3://managed-tier/org_a",
+            s3Connection: {
+               provider: "credential_chain",
+               chain: "env",
+               region: "us-east-1",
+            },
+         };
+         return lake;
+      };
+
+      const destinationLookupFailure = (
+         environment: Environment,
+         name: string,
+      ) =>
+         environment
+            .getStorageDestinationMalloyConfig()
+            .connections.lookupConnection(name)
+            .then(
+               () => undefined,
+               (error: Error) => error,
+            );
+
+      it("assembles a chain-auth destination and serves it past the policy gate", async () => {
+         const errors = sinon.stub(logger, "error");
+         const secretStatements: string[] = [];
+         const runSQL = DuckDBConnection.prototype.runSQL;
+         sinon
+            .stub(DuckDBConnection.prototype, "runSQL")
+            .callsFake(async function (this: DuckDBConnection, sql: string) {
+               if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+                  secretStatements.push(String(sql));
+               }
+               return runSQL.call(this, sql);
+            });
+         const environment = makeEnvironment([], [chainLake("managed")]);
+
+         // A dropped origin either rejects the destination at validation or installs an
+         // EMPTY config at the rebuild; either way there is no connection to look up.
+         const failure = await destinationLookupFailure(environment, "managed");
+
+         expect(
+            errors
+               .getCalls()
+               .filter((call) =>
+                  String(call.args[0]).includes(
+                     "Failed to assemble storage destinations",
+                  ),
+               ),
+         ).toHaveLength(0);
+         expect(environment.listStorageDestinations()).toHaveLength(1);
+         expect(failure).toBeDefined();
+         expect(failure!.message).not.toMatch(/not permitted/);
+         expect(failure!.message).not.toMatch(/No connection named/);
+         // The secret statement is the proof the policy gate was passed.
+         expect(secretStatements).toHaveLength(1);
+         expect(secretStatements[0]).toContain("PROVIDER credential_chain");
+      });
+
+      it("still refuses a tenant connection that shares the destination's name", async () => {
+         expect(() =>
+            buildEnvironmentMalloyConfig([chainLake("shared")], envPath),
+         ).toThrow(/not permitted/);
+
+         const environment = makeEnvironment([], [chainLake("shared")]);
+         const failure = await destinationLookupFailure(environment, "shared");
+         expect(environment.listStorageDestinations()).toHaveLength(1);
+         expect(failure).toBeDefined();
+         expect(failure!.message).not.toMatch(/not permitted/);
+         expect(failure!.message).not.toMatch(/No connection named/);
+      });
    });
 
    it("derives a destination's DuckDB file apart from a same-named connection's", () => {

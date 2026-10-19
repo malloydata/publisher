@@ -958,6 +958,9 @@ export const isDuckdbSetupSqlAllowed = (): boolean =>
  */
 export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
 
+/** Who authored a connection config, which is what S3CredentialChainPolicy turns on. */
+export type ConnectionOrigin = "connection" | "storage-destination";
+
 /**
  * Resolve the S3 credential-chain policy from `S3_CREDENTIAL_CHAIN_POLICY`; falls
  * back to `any` when unset or empty.

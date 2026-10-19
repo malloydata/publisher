@@ -7,6 +7,7 @@ import path from "path";
 import { components } from "../api";
 import {
    ALLOW_DUCKDB_SETUP_SQL_ENV,
+   ConnectionOrigin,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
    parseBoolEnv,
@@ -706,7 +707,10 @@ function validateMotherDuckShape(connection: ApiConnection): void {
    }
 }
 
-function validateDuckLakeShape(connection: ApiConnection): void {
+function validateDuckLakeShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin,
+): void {
    // Every field the ATTACH demands (see attachDuckLakeWithMode). A
    // destination is only attached at its first BUILD, so a field missed here
    // would surface hours after the config change that caused it.
@@ -731,7 +735,7 @@ function validateDuckLakeShape(connection: ApiConnection): void {
    // applies the full check.
    const storage = connection.ducklakeConnection.storage;
    if (storage.s3Connection) {
-      validateS3ProviderShape(storage.s3Connection, connection.name);
+      validateS3ProviderShape(storage.s3Connection, connection.name, origin);
    }
    // metadataSchema reaches the ATTACH as a quoted string literal AND the
    // catalog-format preflight as a quoted identifier. Rather than escape one
@@ -857,7 +861,10 @@ function validatePublisherShape(connection: ApiConnection): void {
  * switch rather than a lookup table, so a caller-supplied type selects only a
  * function named here.
  */
-function validateTypeShape(connection: ApiConnection): void {
+function validateTypeShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin,
+): void {
    switch (connection.type) {
       case "sqlserver":
          return validateSqlServerShape(connection);
@@ -868,7 +875,7 @@ function validateTypeShape(connection: ApiConnection): void {
       case "motherduck":
          return validateMotherDuckShape(connection);
       case "ducklake":
-         return validateDuckLakeShape(connection);
+         return validateDuckLakeShape(connection, origin);
       case "trino":
          return validateTrinoShape(connection);
       case "databricks":
@@ -880,7 +887,10 @@ function validateTypeShape(connection: ApiConnection): void {
    }
 }
 
-function validateConnectionShape(connection: ApiConnection): void {
+function validateConnectionShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin = "connection",
+): void {
    if (connection.proxy) {
       validateProxyShape(connection, connection.proxy);
    }
@@ -907,7 +917,7 @@ function validateConnectionShape(connection: ApiConnection): void {
       );
    }
 
-   validateTypeShape(connection);
+   validateTypeShape(connection, origin);
 }
 
 /**
@@ -1039,7 +1049,7 @@ export function validateStorageDestinations(
       }
 
       try {
-         validateConnectionShape(destination);
+         validateConnectionShape(destination, "storage-destination");
          // The full credential check, which validateConnectionShape cannot
          // afford (its throw fails a whole environment): a destination is only
          // attached at its first BUILD, so a missing credential would surface
@@ -1443,6 +1453,7 @@ function buildCoreEntry(
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
+   origin: ConnectionOrigin = "connection",
 ): AssembledEnvironmentConnections {
    const pojo: CoreConnectionsPojo = { connections: {} };
    const metadata = new Map<string, EnvironmentConnectionMetadata>();
@@ -1466,7 +1477,7 @@ export function assembleEnvironmentConnections(
 
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
-      validateConnectionShape(connection);
+      validateConnectionShape(connection, origin);
       warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);

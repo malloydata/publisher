@@ -822,7 +822,7 @@ async function getSchemasForDuckLake(
    return withIntrospectionFailure(
       `schemas for DuckLake connection ${connection.name}`,
       async () => {
-         // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
+         // The catalog is attached with the connection name (see attachDuckLakeWithMode in connection.ts)
          const catalogName = connection.name ?? "";
          const result = await runIntrospectionSQL(
             malloyConnection,
