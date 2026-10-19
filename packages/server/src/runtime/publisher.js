@@ -16,7 +16,8 @@
 //   - Publisher.context  ({ environment, package } inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
 //
-// When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
+// When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...
+// (or from /apps/<env>/<pkg>/..., a hosted embed surface),
 // the runtime auto-subscribes to a Server-Sent Events live-reload stream
 // (GET .../events) and reloads the page on file changes. It also posts size
 // updates to the parent window so Publisher.embed() in the host can resize
@@ -32,16 +33,18 @@
    "use strict";
 
    // --- Context inference -------------------------------------------------
-   // URL shape: /environments/<env>/packages/<pkg>/<file>
+   // URL shapes: /environments/<env>/packages/<pkg>/<file> (the in-app viewer)
+   //             /apps/<env>/<pkg>/<file>                   (a hosted embed surface)
    //
    // location.pathname is URL-encoded, so we MUST decode the captured
    // segments here. Without this step, a name with a space (e.g.
    // "demo env") would arrive as "demo%20env" — and the encodeURIComponent
    // we apply when building API URLs (below) would produce "demo%2520env",
    // which Publisher then 404s on.
-   var pathMatch = location.pathname.match(
-      /^\/environments\/([^/]+)\/packages\/([^/]+)\//,
-   );
+   var pathMatch =
+      location.pathname.match(
+         /^\/environments\/([^/]+)\/packages\/([^/]+)\//,
+      ) || location.pathname.match(/^\/apps\/([^/]+)\/([^/]+)\//);
    function safeDecode(s) {
       try {
          return decodeURIComponent(s);
@@ -70,7 +73,8 @@
       if (!env || !pkg) {
          throw new Error(
             "Publisher: no environment/package; either serve the page from " +
-               "/environments/<env>/packages/<pkg>/... or pass { environment, package } in opts.",
+               "/environments/<env>/packages/<pkg>/... or /apps/<env>/<pkg>/..., " +
+               "or pass { environment, package } in opts.",
          );
       }
       return { env: env, pkg: pkg };
