@@ -179,9 +179,19 @@ function fieldsIdentical(
    b: FieldDef | undefined,
 ): boolean {
    if (!a || !b) return false;
-   if (a.name !== b.name || a.type !== b.type) return false;
+   if (a.type !== b.type) return false;
    if (!deepEqualIgnoring((a as { e?: unknown }).e, (b as { e?: unknown }).e))
       return false;
+   if (isJoined(a) && isJoined(b) && a.type === "query_source") {
+      // Malloy names a query source's joined struct `QuerySource-<uuid>` afresh
+      // per compile, so identity is the alias plus the query it wraps.
+      if (a.as !== b.as) return false;
+      const qa = (a as unknown as { query?: unknown }).query;
+      const qb = (b as unknown as { query?: unknown }).query;
+      if (!deepEqualIgnoring(qa, qb)) return false;
+   } else if (a.name !== b.name) {
+      return false;
+   }
    if (isJoined(a) || isJoined(b)) {
       if (!isJoined(a) || !isJoined(b)) return false;
       if (a.join !== b.join) return false;

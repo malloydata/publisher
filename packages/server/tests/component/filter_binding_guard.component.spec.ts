@@ -2042,3 +2042,123 @@ source: base is duckdb.table('orgtable') extend {
       }
    });
 });
+
+describe("filter binding guard — a source's own where: crossing a join to a query source", () => {
+   // A query source's joined struct is named `QuerySource-<uuid>`, fresh per
+   // compile, so the package's sibling compile can never match it by name.
+   const CLOSE = `
+source: deal_first_close is duckdb.sql("select 1 as deal_id, cast(null as integer) as close_type union all select 2, 7 union all select 3, cast(null as integer)") -> { group_by: deal_id, close_type } extend { primary_key: deal_id }
+`;
+   const dealsFile = (dealsExtend: string) => `
+import "close.malloy"
+
+source: deals_incl is duckdb.sql("select 1 as deal_id, false as is_deleted union all select 2, false union all select 3, true") extend {
+   join_one: deal_first_close on deal_id = deal_first_close.deal_id
+   dimension: is_open is deal_first_close.close_type is null
+   measure: n is count()
+}
+
+source: deals is deals_incl extend { ${dealsExtend} }
+`;
+   const files = (dealsExtend: string, pipelineWhere: string) => ({
+      "close.malloy": CLOSE,
+      "deals.malloy": dealsFile(dealsExtend),
+      "pipeline.malloy": `
+import "deals.malloy"
+
+source: pipeline_now is deals extend { where: ${pipelineWhere} }
+`,
+      "index.malloy": `
+import "deals.malloy"
+import "pipeline.malloy"
+
+export { pipeline_now, deals }
+`,
+   });
+   const COUNT = "run: pipeline_now -> { aggregate: n is count() }";
+
+   it("serves a source whose own where: reads a field joined from a query source", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectServesWithCountViaPackage(pkg, "index.malloy", COUNT, 2);
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("serves a source that inherits a where: across a join to a query source from another file", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("where: is_open", "not is_deleted"),
+      );
+      try {
+         await expectServesWithCountViaPackage(pkg, "index.malloy", COUNT, 1);
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller join that rebinds the query source the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            `run: pipeline_now extend { except: deal_first_close } extend {
+   join_one: deal_first_close is deals -> { group_by: deal_id, close_type is 7 } extend { primary_key: deal_id } on deal_id = deal_first_close.deal_id
+} -> { aggregate: n is count() }`,
+         );
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller extend that renames a field the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            "run: pipeline_now extend { rename: open_flag is is_open } -> { aggregate: n is count() }",
+         );
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller extend that redefines a field the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            "run: pipeline_now extend { except: is_open } -> { aggregate: n is count() }",
+         );
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller-named source that drops and redefines the field the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            `source: evil is pipeline_now extend { except: is_open } extend { dimension: is_open is true }
+run: evil -> { aggregate: n is count() }`,
+         );
+      } finally {
+         await cleanup();
+      }
+   });
+});
