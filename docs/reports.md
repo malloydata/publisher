@@ -36,9 +36,9 @@ files.
 ```malloy
 ##! experimental.givens
 ## artifact { layout=grid title="Storefront overview" tiles=["kpis", "revenue_trend"] } dashboard { columns=12 }
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # colspan=12
@@ -306,9 +306,9 @@ A grid report lays its tiles out across `columns` by each tile's `colspan` and `
   ]
 } dashboard { columns=12 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 # label="Ordered since"
 given: SINCE :: date is @2023-01-01
@@ -463,10 +463,10 @@ for a narrative: a question framed in prose, a query that answers it, the next q
   ]
 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 #(description="Narrow to one product category")
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##|(markdown) intro
@@ -537,7 +537,7 @@ are its control contract:
 ```malloy
 ##! experimental.givens
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
@@ -834,7 +834,7 @@ One query whose single result is the whole page is a report with that query as i
 
 ```malloy
 ##! experimental.givens
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 import "givens.malloy"
 
 ##" Revenue and margin at a glance.

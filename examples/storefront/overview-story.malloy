@@ -24,17 +24,16 @@
 }
 |##
 // The same imports as the grid report, for the same reason: the controls'
-// pickers read their options from `products`, `regions` and `brand_suggest`,
+// pickers read their options from `order_items`, `regions` and `brand_suggest`,
 // and a suggest source has to resolve in this file.
 import {
    order_items,
-   products,
    regions,
    brand_suggest
 } from "storefront.malloy"
 
 # description="Narrow to one product category. Leave empty for all"
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # description="One or more brands. Leave empty for all"

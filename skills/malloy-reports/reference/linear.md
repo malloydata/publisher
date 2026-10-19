@@ -20,10 +20,10 @@ A report with `layout=linear` renders its tiles one column wide, top to bottom, 
   ]
 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 #(description="Narrow to one product category")
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##|(markdown) intro

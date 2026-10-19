@@ -31,7 +31,7 @@
 // `control=select` with a `suggest` renders a picker whose options come from
 // the data. A `source=`/`dimension=` pair reads distinct values off a source.
 # description="Narrow to one product category. Leave empty for all"
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 // `multiselect` lets a reader pick several at once. Here the options come from

@@ -19,7 +19,7 @@
   ]
 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 ##|(markdown) intro
 Pick a **Category** in the controls above and every chart below re-runs for it.
@@ -28,7 +28,7 @@ way revenue is moving.
 |##
 
 # description="Narrow to one product category. Leave empty for all"
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##|(markdown) brands_intro

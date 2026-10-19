@@ -65,9 +65,9 @@ Tool names below are bare (`get_context`); match each against the tools you actu
   ]
 } dashboard { columns=12 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 # label="Ordered since"
 given: SINCE :: date is @2023-01-01
@@ -107,7 +107,7 @@ Controls come from the `given:` declarations the tiles reference. The tags on th
 ```malloy
 ##! experimental.givens
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
@@ -125,6 +125,7 @@ given: SINCE :: date is @2023-01-01
 - `#(description="…")` renders as helper text under the control and draws a cosmetic "not a well-formed route" compile diagnostic for a multi-word value; `# description="…"` publishes to the API but the UI does not render it.
 - `dimension=` can name a field of a directly joined source, quoted: `suggest { source=sales dimension="products.department" }`. On the `query=` form, `dimension` names a column of that query's output; match it to the query's `group_by`.
 - **A suggest's source or query has to resolve in the report file**, so import it there. Getting it wrong does not error: the control still looks like a picker and says "Could not load the options for this control"; the package warnings name it.
+- **A suggest must read a source the package serves.** With an `index.malloy`, that's a source the file exports: a suggest over one it doesn't export compiles, but its options query answers 404 and the picker says "Could not load the options for this control". Suggest from the exported source the tiles already read (`source=order_items dimension=category`), or reach a joined field through it (`dimension="products.category"`).
 - Two options on the artifact tag, either layout: `autorun=false` batches control changes behind an Apply button; `givens { CATEGORY=f'Outerwear' }` sets starting values (a URL parameter wins). A file-level `## autorun=false` does nothing on a `.malloy` report.
 
 ### Binding, and givens that stay in the model

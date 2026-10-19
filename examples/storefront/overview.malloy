@@ -54,15 +54,15 @@
 ##" list in it.
 ## artifact { layout=grid title="Storefront overview" tiles=["kpis" { colspan=12 }, "revenue_trend" { colspan=6 break }, "revenue_by_state" { colspan=6 }, "revenue_by_category" { colspan=6 break }, "best_sellers" { colspan=6 }] } dashboard { columns=12 }
 // What this page reads from the model, by name. `order_items` is what every
-// tile runs over. `products`, `regions` and `brand_suggest` are what the
-// controls' pickers read their options from, and a `suggest { source= }` or
+// tile runs over, and the Category picker reads its options from it too (a suggest
+// reads a source the package serves). `regions` and `brand_suggest` are what the
+// other pickers read their options from, and a `suggest { source= }` or
 // `{ query= }` has to resolve in THIS file: an import is not transitive, so
 // `brand_suggest` needs `order_items` beside it too, or the Brand picker answers
 // 400 "Undefined source 'order_items'" and offers no options. The load lint
 // names a missing suggest source; it cannot name this one.
 import {
    order_items,
-   products,
    regions,
    brand_suggest
 } from "storefront.malloy"
@@ -76,7 +76,7 @@ import {
 // binds costs nothing and shows nothing. Which tiles a control drives is on the
 // tiles themselves, below; here is only what each control is.
 # description="Narrow to one product category. Leave empty for all"
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # description="One or more brands. Leave empty for all"
