@@ -8,6 +8,7 @@ import type { VersionPromotionMode } from "../../config";
 import {
    BadRequestError,
    PackageVersionError,
+   refuseVersionDelete,
    VersionFilesMissingError,
 } from "../../errors";
 import { logger } from "../../logger";
@@ -33,6 +34,7 @@ export type VersionRegistry = Pick<
    | "setLatestVersion"
    | "setVersionArchiveStatus"
    | "setVersionManifestPath"
+   | "deleteVersion"
 >;
 
 /**
@@ -105,6 +107,18 @@ export interface VersionHost<P> {
     * `scope: version` tables). Runs in the background; must not throw.
     */
    onVersionArchived?(packageName: string, versionId: string): void;
+   /**
+    * A version is about to be deleted: drop what it alone owns (its
+    * `scope: version` tables), before its row goes. Called holding the
+    * version's lock, and awaited; must not throw.
+    */
+   reclaimVersion?(packageName: string, versionId: string): Promise<void>;
+   /**
+    * A delete took the package's last version, and the package with it:
+    * forget what is held about the package itself (its load state). Called
+    * holding the package lock.
+    */
+   packageRemoved?(packageName: string): void;
 }
 
 export interface PublishOptions<P> {
@@ -893,6 +907,113 @@ export class VersionService<P = unknown> {
          }
          return updated;
       });
+   }
+
+   /**
+    * Delete a version for good: archiving takes it out of service, deleting
+    * removes it. While other versions remain, the package's `latest` and its
+    * last version in service (when archived ones remain) are refused, and so
+    * is a version a materialization is building. It is unloaded, its own
+    * tables are dropped, then its row and its folder go, all under the
+    * version's lock, so a publish of the same version id (which the delete
+    * frees) waits for it. Deleting the package's only version deletes
+    * the package; `packageRemoved` says so.
+    */
+   async deleteVersion(
+      packageName: string,
+      rawVersion: unknown,
+   ): Promise<{ version: Version; packageRemoved: boolean }> {
+      const versionId = requiredVersionId(rawVersion);
+      const host = this.requireHost();
+      const store = this.requireStore();
+      // Looked up before the lock, so a request naming a version that does
+      // not exist leaves no lock behind.
+      await this.getVersion(packageName, versionId);
+      const deleted = await this.withVersionWrite(
+         packageName,
+         versionId,
+         async () => {
+            const current = await this.getVersion(packageName, versionId);
+            // Checked before anything is dropped. The registry checks again
+            // in the transaction that deletes the row; a refusal there, after
+            // a move of `latest` in between, leaves the version serving live.
+            const all = await this.registry.listVersions(
+               this.environmentId,
+               packageName,
+            );
+            if (all.length > 1) {
+               refuseVersionDelete(
+                  packageName,
+                  versionId,
+                  current.archiveStatus === "unarchive",
+                  (
+                     await this.registry.getPackageByName(
+                        this.environmentId,
+                        packageName,
+                     )
+                  )?.latestVersion ?? null,
+                  all.filter((v) => v.archiveStatus === "unarchive").length,
+               );
+            }
+            // Its tables are dropped next: a run of it must not be writing
+            // them.
+            if (host.isVersionBuilding?.(packageName, versionId)) {
+               throw new PackageVersionError(
+                  "VERSION_BUILDING",
+                  `A materialization of version ${versionId} of package ${packageName} is running, and deleting it would drop the tables it is writing. Wait for it, or stop it.`,
+               );
+            }
+            // Unloaded before its tables go, as an archive unloads before it
+            // reclaims, so no query of it reads a table being dropped.
+            this.cache.evict(packageName, versionId);
+            await host.reclaimVersion?.(packageName, versionId);
+            const result = await this.registry.deleteVersion(
+               this.environmentId,
+               packageName,
+               versionId,
+            );
+            // Again after the row: a load that read it before is overtaken by
+            // this evict and released, and one that reads it now finds none.
+            this.cache.evict(packageName, versionId);
+            this.restoreFailedAt.delete(
+               `${packageName}@${versionId}@${current.contentHash}`,
+            );
+            this.publishedManifests.delete(`${packageName}@${current.dirName}`);
+            if (this.latestSeen.get(packageName) === versionId) {
+               this.latestSeen.delete(packageName);
+            }
+            try {
+               await this.withFilesLock(packageName, current.dirName, () =>
+                  store.remove(packageName, current.dirName),
+               );
+            } catch (error) {
+               // The row is gone, so nothing serves the folder; startup
+               // removes a version folder no row owns.
+               logger.warn("Could not remove a deleted version's folder", {
+                  packageName,
+                  versionId,
+                  error,
+               });
+            }
+            return result;
+         },
+      );
+      if (deleted.packageRemoved) {
+         // After the version's lock, which a first versioned publish takes
+         // inside the package lock. That publish may have recorded the
+         // package again meanwhile; then its folder stays.
+         await host.withPackageLock(packageName, async () => {
+            if (
+               await this.registry.hasVersions(this.environmentId, packageName)
+            ) {
+               return;
+            }
+            this.forgetPackage(packageName);
+            await store.removePackage(packageName);
+            host.packageRemoved?.(packageName);
+         });
+      }
+      return deleted;
    }
 
    /**

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Alert } from "@mui/material";
+import { Alert, Box } from "@mui/material";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
@@ -23,7 +23,14 @@ import {
 } from "../given/required";
 import { Prose, type ProseLinkContext } from "../Prose";
 import type { NavigationClick } from "../click_helper";
-import { DashboardGrid, GRID_GAP_PX, MIN_TILE_PX } from "./DashboardGrid";
+import {
+   DashboardGrid,
+   GRID_GAP_PX,
+   isPlaced,
+   MIN_TILE_PX,
+   PLACED_DEFAULT_ROWSPAN,
+   tileHeightPx,
+} from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import { useReportEvents } from "../Report/telemetry";
@@ -291,6 +298,7 @@ export function DashboardView({
 
    const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
+   const placed = isPlaced(tiles);
 
    return (
       <ReportPage
@@ -340,7 +348,20 @@ export function DashboardView({
                   tile.kind === "text" || tile.query === undefined ? (
                      // Prose, never a card, in either layout: a text tile is
                      // part of the page, not a result.
-                     <TextTile markdown={tile.markdown ?? ""} links={links} />
+                     // A set height scrolls the prose rather than overflowing
+                     // the tile below it.
+                     <Box
+                        sx={
+                           tile.rowspan !== undefined || placed
+                              ? { minHeight: 0, overflow: "auto" }
+                              : undefined
+                        }
+                     >
+                        <TextTile
+                           markdown={tile.markdown ?? ""}
+                           links={links}
+                        />
+                     </Box>
                   ) : (
                      <DashboardTile
                         index={index}
@@ -357,11 +378,18 @@ export function DashboardView({
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={
-                           layout === "grid"
-                              ? (height ?? tileMaxHeight)
-                              : tileMaxHeight
+                           // A set rowspan, or a placed report's fixed rows, is
+                           // the tile's own height; otherwise the layout's cap.
+                           tile.rowspan !== undefined || placed
+                              ? tileHeightPx(
+                                   tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
+                                )
+                              : layout === "grid"
+                                ? (height ?? tileMaxHeight)
+                                : tileMaxHeight
                         }
                         tableMaxHeight={tableMaxHeight}
+                        fixedHeight={tile.rowspan !== undefined || placed}
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         ignoredFilters={tileIgnoredFilterLabels(

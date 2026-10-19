@@ -174,8 +174,19 @@ export interface QueryTile {
    chartLines?: string[];
    /** The chart tags the tile's view carries, when the catalog knows them: the writer negates only these. Never read from a file. */
    chartCarried?: string[];
+   /**
+    * Where the tile sits: its entry's `colspan` and `break` in `tiles=[…]`,
+    * or else its view's `# colspan` and `# break`. The writer puts a changed
+    * layout on the entry, which every tile has, and takes the view's two tags
+    * off a view this file declares, so the layout has one home.
+    */
    colspan?: number;
    break?: boolean;
+   /** `rowspan=N` on its entry: the grid rows it is tall. Only the entry carries it. */
+   rowspan?: number;
+   /** `row=N` and `col=N` on its entry: where it sits on a placed report, counted from 1. */
+   row?: number;
+   col?: number;
    borderless?: boolean;
    /**
     * The chart's colour, `#rrggbb`: its first series colour, written as the
@@ -194,8 +205,8 @@ export interface QueryTile {
 
 /**
  * A markdown tile: prose between the query tiles, written as a `##|(markdown) <name>` block
- * and listed in `tiles=[…]` as `<name> { kind=text }`. Its width and row break live on that
- * list entry, since a block has no tags.
+ * and listed in `tiles=[…]` as `<name> { kind=text }`. Its layout lives on that list entry,
+ * as every tile's does.
  */
 export interface TextTile {
    kind: "text";
@@ -204,6 +215,9 @@ export interface TextTile {
    markdown: string;
    colspan?: number;
    break?: boolean;
+   rowspan?: number;
+   row?: number;
+   col?: number;
 }
 
 export type DashboardTile = QueryTile | TextTile;

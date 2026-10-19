@@ -28,6 +28,7 @@ export {
    type BuilderBarProps,
 } from "./components/ReportBuilder/BuilderBar";
 export type {
+   ArrangeActions,
    BuilderControls,
    BuilderControlsHandler,
 } from "./components/ReportBuilder/builderControls";

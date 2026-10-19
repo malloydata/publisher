@@ -287,8 +287,20 @@ describe("resolveResultHeight with a cell to fill", () => {
       expect(fill("content", 4000, 400, 520)).toBe(520);
    });
 
-   it("leaves a chart at its cap", () => {
+   it("leaves a chart at its cap in a taller cell", () => {
       expect(fill("container", undefined, 400, 520)).toBe(400);
+   });
+
+   // A tile with a set rowspan hands its chart less room than the cap, which
+   // counts the tile's heading and padding too. Drawn at the cap, the chart ran
+   // past the cell and its x-axis labels were clipped.
+   it("shrinks a chart to a cell shorter than its cap", () => {
+      expect(fill("container", undefined, 464, 330)).toBe(330);
+      expect(fill("container", undefined, undefined, 250)).toBe(250);
+   });
+
+   it("ignores a cell not measured yet", () => {
+      expect(fill("container", undefined, 400, 0)).toBe(400);
    });
 
    it("keeps the seed for a table not measured yet", () => {

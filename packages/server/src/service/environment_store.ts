@@ -467,6 +467,14 @@ export class EnvironmentStore {
            versionId: string,
         ) => void)
       | null = null;
+   // Awaited before a version is deleted; picked up like versionArchivedHook.
+   private versionDeletingHook:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => Promise<void>)
+      | null = null;
 
    /**
     * Environments (from `PUBLISHER_WATCH`) whose package directories under
@@ -560,6 +568,36 @@ export class EnvironmentStore {
    private attachVersionArchivedHook(env: Environment): void {
       const hook = this.versionArchivedHook;
       env.setVersionArchivedHook(
+         hook
+            ? (packageName, versionId) =>
+                 hook(env.getEnvironmentName(), packageName, versionId)
+            : null,
+      );
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback awaited before a version is
+    * deleted, which drops the tables that version alone owns. Remembered, so
+    * Environments bound after this call also use it.
+    */
+   public setVersionDeletingHook(
+      hook:
+         | ((
+              environmentName: string,
+              packageName: string,
+              versionId: string,
+           ) => Promise<void>)
+         | null,
+   ): void {
+      this.versionDeletingHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachVersionDeletingHook(env);
+      }
+   }
+
+   private attachVersionDeletingHook(env: Environment): void {
+      const hook = this.versionDeletingHook;
+      env.setVersionDeletingHook(
          hook
             ? (packageName, versionId) =>
                  hook(env.getEnvironmentName(), packageName, versionId)
@@ -918,6 +956,7 @@ export class EnvironmentStore {
          storageBindingResolverFor(repository, environmentId),
       );
       this.attachVersionArchivedHook(environment);
+      this.attachVersionDeletingHook(environment);
       environment.bindVersions(repository, environmentId, {
          downloaderFor: (packageName, location) => (stagingPath) =>
             this.downloadPackageInto(
@@ -1437,7 +1476,7 @@ export class EnvironmentStore {
     * the package's sync mutex, which a bulk embed can hold for minutes. An
     * orphaned row is inert, so failure is logged, never propagated.
     */
-   private cleanupPackageEmbeddings(
+   public cleanupPackageEmbeddings(
       environmentName: string,
       packageName: string,
    ): void {

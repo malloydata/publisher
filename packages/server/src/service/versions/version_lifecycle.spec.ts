@@ -42,6 +42,8 @@ let failLoad: Set<string>;
 let heldLoads: Map<string, Promise<void>>;
 let failBind: boolean;
 let throwOnArchive: boolean;
+/** A delete's reclaim waits on this, when set. */
+let heldReclaim: Promise<void> | undefined;
 
 function host(): VersionHost<Loaded> {
    const lock = new Mutex();
@@ -92,6 +94,13 @@ function host(): VersionHost<Loaded> {
          if (throwOnArchive) throw new Error("reclaim could not start");
          log.push(`reclaim ${versionId}`);
       },
+      reclaimVersion: async (packageName, versionId) => {
+         await heldReclaim;
+         // Whether the row is still there says the drop came before it went.
+         const row = await repo.getVersion(ENV_ID, packageName, versionId);
+         log.push(`drop ${versionId}${row ? "" : " (row gone)"}`);
+      },
+      packageRemoved: (packageName) => log.push(`removed ${packageName}`),
    };
 }
 
@@ -108,6 +117,7 @@ async function publish(
    svc: VersionService<Loaded>,
    versionId: string,
    promotion: "on-publish" | "explicit" = "on-publish",
+   model = `// ${versionId}`,
 ) {
    const dir = path.join(root, "src", versionId);
    fs.mkdirSync(dir, { recursive: true });
@@ -115,7 +125,7 @@ async function publish(
       path.join(dir, "publisher.json"),
       JSON.stringify({ name: PKG, version: versionId }),
    );
-   fs.writeFileSync(path.join(dir, "model.malloy"), `// ${versionId}`);
+   fs.writeFileSync(path.join(dir, "model.malloy"), model);
    return svc.publish(
       PKG,
       async (staging) => {
@@ -160,6 +170,7 @@ beforeEach(async () => {
    heldLoads = new Map();
    failBind = false;
    throwOnArchive = false;
+   heldReclaim = undefined;
 });
 
 afterEach(async () => {
@@ -302,6 +313,125 @@ describe("archive and unarchive", () => {
       await expectReason(
          svc.setArchiveStatus(PKG, "9.0.0", "archive"),
          "VERSION_NOT_FOUND",
+      );
+   });
+});
+
+describe("delete", () => {
+   it("deletes a version: unloaded, its tables dropped before its row, its folder removed, its id freed", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      expect(svc.cache.isLoaded(PKG, "1.0.0")).toBe(true);
+      log = [];
+
+      const deleted = await svc.deleteVersion(PKG, "1.0.0");
+      expect(deleted.packageRemoved).toBe(false);
+      expect(deleted.version.versionId).toBe("1.0.0");
+      expect(log).toEqual(["release 1.0.0", "drop 1.0.0"]);
+      expect(svc.cache.isLoaded(PKG, "1.0.0")).toBe(false);
+      expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(false);
+      await expectReason(svc.getVersion(PKG, "1.0.0"), "VERSION_NOT_FOUND");
+      await expectReason(svc.getLoaded(PKG, "1.0.0"), "VERSION_NOT_FOUND");
+      // The rest of the package is untouched.
+      expect(await latest()).toBe("2.0.0");
+      expect(svc.cache.isLoaded(PKG, "2.0.0")).toBe(true);
+      expect(fs.existsSync(path.join(envPath, PKG, "2.0.0"))).toBe(true);
+
+      // The id is free: other content under it publishes, where before the
+      // delete it would have been a conflict.
+      const again = await publish(svc, "1.0.0", "on-publish", "// changed");
+      expect(again.created).toBe(true);
+      expect(again.version.contentHash).not.toBe(deleted.version.contentHash);
+      expect(
+         fs.readFileSync(
+            path.join(envPath, PKG, "1.0.0", "model.malloy"),
+            "utf8",
+         ),
+      ).toBe("// changed");
+   });
+
+   it("deletes an archived version, which is how its files go", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(true);
+      const deleted = await svc.deleteVersion(PKG, "1.0.0");
+      expect(deleted.version.archiveStatus).toBe("archive");
+      expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(false);
+      expect(
+         (await svc.listVersions(PKG)).versions.map((v) => v.versionId),
+      ).toEqual(["2.0.0"]);
+   });
+
+   it("refuses latest and a version that is building, dropping nothing", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      log = [];
+      await expectReason(svc.deleteVersion(PKG, "2.0.0"), "VERSION_IS_LATEST");
+      building.add("1.0.0");
+      await expectReason(svc.deleteVersion(PKG, "1.0.0"), "VERSION_BUILDING");
+      expect(log).toEqual([]);
+      expect(svc.cache.isLoaded(PKG, "1.0.0")).toBe(true);
+      expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(true);
+      await expectReason(svc.deleteVersion(PKG, "9.0.0"), "VERSION_NOT_FOUND");
+   });
+
+   it("keeps the last version in service while archived ones remain", async () => {
+      // Explicit promotion: no latest.
+      const svc = service();
+      await publish(svc, "1.0.0", "explicit");
+      await publish(svc, "2.0.0", "explicit");
+      await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      log = [];
+      await expectReason(
+         svc.deleteVersion(PKG, "2.0.0"),
+         "VERSION_IS_LAST_ACTIVE",
+      );
+      expect(log).toEqual([]);
+      expect((await svc.getVersion(PKG, "2.0.0")).archiveStatus).toBe(
+         "unarchive",
+      );
+   });
+
+   it("deletes the package with its only version", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      log = [];
+      const deleted = await svc.deleteVersion(PKG, "1.0.0");
+      expect(deleted.packageRemoved).toBe(true);
+      expect(log).toEqual(["release 1.0.0", "drop 1.0.0", `removed ${PKG}`]);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
+      expect(await svc.isVersioned(PKG)).toBe(false);
+      expect(await svc.latestOf(PKG)).toBeNull();
+   });
+
+   it("holds a publish of the same version until the delete has removed the old folder", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      let release!: () => void;
+      heldReclaim = new Promise<void>((resolve) => (release = resolve));
+      const deleting = svc.deleteVersion(PKG, "1.0.0");
+      // Give the delete time to take the version's lock.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const republishing = publish(svc, "1.0.0", "on-publish", "// new");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      release();
+      await deleting;
+      const republished = await republishing;
+      expect(republished.created).toBe(true);
+      expect(
+         fs.readFileSync(
+            path.join(envPath, PKG, "1.0.0", "model.malloy"),
+            "utf8",
+         ),
+      ).toBe("// new");
+      expect((await svc.getVersion(PKG, "1.0.0")).contentHash).toBe(
+         republished.version.contentHash,
       );
    });
 });

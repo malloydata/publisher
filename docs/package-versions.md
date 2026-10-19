@@ -117,10 +117,27 @@ Clients send whole objects, so a body that echoes the package back is accepted: 
 An archive is refused with 409 when:
 
 - the version is the package's `latest` (`VERSION_IS_LATEST`). Move `latest` first;
-- it is the package's last version in service (`VERSION_IS_LAST_ACTIVE`). To take the whole package out of service, delete it. Deleting does not drop the tables its versions built, so first drop the last version's tables with `DELETE …/materializations/{id}?dropTables=true` (see [Disk growth](#disk-growth));
+- it is the package's last version in service (`VERSION_IS_LAST_ACTIVE`). To take the whole package out of service, delete it, or delete the version (see [Delete a version](#delete-a-version)). Deleting the package does not drop the tables its versions built, so first drop the last version's tables with `DELETE …/materializations/{id}?dropTables=true` (see [Disk growth](#disk-growth));
 - a materialization of that version is running (`VERSION_BUILDING`), since the archive would reclaim the tables it is writing. A run starts under the version's lock, so either the run is refused (410) or the archive is.
 
-**The version's files stay on disk.** See [Disk growth](#disk-growth).
+**The version's files stay on disk**, so it can be unarchived without being published again. To remove them, delete the version. See [Disk growth](#disk-growth).
+
+## Delete a version
+
+`DELETE …/versions/{version}` removes one version for good, where an archive only takes it out of service. The version is unloaded, the tables its own auto-runs built under `scope: "version"` are dropped with their runs (the tables an archive reclaims, dropped here before the response), and its row and its folder are deleted. The other versions are untouched. The response is the version as it was.
+
+- **It frees the version id.** A later publish of the same version is a new version, with whatever content it carries, where before the delete different content under that id was 409 `VERSION_CONFLICT`. A publish of the id that arrives during the delete waits for it.
+- **An archived version can be deleted**, which is how its files are reclaimed.
+- **Deleting the package's only version deletes the package** with it: its row, its run records and its ledger, so no package is left with no version. That version's own tables are dropped first, as with any delete.
+- **What is kept**, as an archive keeps it: a table another version's run still references, an orchestrated run's tables, and everything under `scope: "package"`. A table that could not be dropped keeps a `FAILED` run naming it, and the server tries the drop again each time it starts.
+
+A delete is refused with 409 when:
+
+- the version is the package's `latest` and other versions remain (`VERSION_IS_LATEST`). Move `latest` first;
+- it is the package's last version in service and archived versions remain (`VERSION_IS_LAST_ACTIVE`). Delete the archived versions first, or delete the package;
+- a materialization of that version is running (`VERSION_BUILDING`).
+
+An unknown version is 404 `VERSION_NOT_FOUND`, and a malformed one 400 `VERSION_ID_INVALID`.
 
 There is no error state: a version that cannot load is simply refused as a `latest` target, and an orchestrator that tracks failures keeps its own.
 
@@ -135,7 +152,7 @@ Who owns the tables a run builds is the package's materialization scope (`"mater
 
 **`scope: "version"`.** Each version builds into tables of its own: a self-assigned name gains the version's numbers and 8 hex of a hash of the environment, the package and the version (`order_summary__v1_2_0_3f9c2a1b`), so two packages at the same version never share a table and archiving one never drops the other's, skip-if-unchanged reuses only that version's earlier runs, and each version serves from its own tables, including after a restart. A long name is cut and given a short hash so its table segment stays within 50 characters, so a dialect that truncates identifiers (Postgres, at 63) never folds two versions into one table.
 
-Archiving the version reclaims the tables its auto-runs built, in the background, keeping any table another run still references, and deletes those runs. A run whose table could not be dropped (an unreachable warehouse, say) is kept, marked `FAILED` and holding only the tables still owed; the reclaim is tried again at the next archive and every time the server starts. A version's package-local `duckdb` is in memory, so its tables went with the unload and there is nothing to drop there.
+Archiving the version reclaims the tables its auto-runs built, in the background, keeping any table another run still references, and deletes those runs. Deleting the version drops the same tables before it answers. A run whose table could not be dropped (an unreachable warehouse, say) is kept, marked `FAILED` and holding only the tables still owed; the reclaim is tried again at the next archive and every time the server starts, for an archived version and for a deleted one. A version's package-local `duckdb` is in memory, so its tables went with the unload and there is nothing to drop there.
 
 **`scope: "package"` (the default).** The versions share the package's tables under their usual names.
 
@@ -146,13 +163,13 @@ Archiving the version reclaims the tables its auto-runs built, in the background
 
 **Active runs.** An auto-run under `scope: "package"` writes the shared tables, so one runs per package. A run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot, so versions build side by side. Two runs never write one table at once: a run with instructions names its tables when it starts, an auto-run claims its tables before it builds (a `scope: "version"` run's own as well as the shared ones), and a run with instructions that would write a table another active run writes answers 409; an auto-run learns its tables only when it starts building, so one that would write such a table fails then. A run with instructions may not name the tables the versions share, either. The tables of a run with instructions are the caller's: the publisher never reclaims them, and another version never reads that run.
 
-**Schedules.** A `materialization.schedule` is legal only under `scope: "version"`, so each version is scheduled on its own. The standalone scheduler (`PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER`) sweeps every version in service, reading its schedule from its `publisher.json` without loading it, and loads a version (through the memory governor, like any load) only when its cron comes due. Archiving a version takes it out of the sweep; unarchiving it arms it again. A version bound to a build manifest is left to whoever built that manifest.
+**Schedules.** A `materialization.schedule` is legal only under `scope: "version"`, so each version is scheduled on its own. The standalone scheduler (`PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER`) sweeps every version in service, reading its schedule from its `publisher.json` without loading it, and loads a version (through the memory governor, like any load) only when its cron comes due. Archiving a version takes it out of the sweep; unarchiving it arms it again. Deleting it takes it out for good. A version bound to a build manifest is left to whoever built that manifest.
 
 ## Disk growth
 
-A published version's tree is never deleted while the package exists. Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. The only thing that removes version trees is deleting the package, which removes all of them, with its version rows and materialization records. It does not drop the tables those versions built, as deleting an unversioned package never has: once the records are gone nothing names them, so reclaim a package's tables by archiving its versions, or with `DELETE …/materializations/{id}?dropTables=true`, before deleting it.
+Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. Two things remove version trees. Deleting a version removes its tree, with its row and its own tables (see [Delete a version](#delete-a-version)). Deleting the package removes all of them, with its version rows and materialization records. That one does not drop the tables those versions built, as deleting an unversioned package never has: once the records are gone nothing names them, so reclaim a package's tables by archiving or deleting its versions, or with `DELETE …/materializations/{id}?dropTables=true`, before deleting it.
 
-So a package's disk use grows by one tree per version published, and nothing shrinks it:
+So unless versions are deleted, a package's disk use grows by one tree per version published:
 
 > disk per package ≈ (size of one version's tree) × (versions published since the package was created)
 
@@ -164,13 +181,13 @@ For one package on one server:
 | 20 MB (models and some data) | 5 a day   | 3 GB          | 37 GB        |
 | 200 MB (bundled data files)  | 1 a day   | 6 GB          | 73 GB        |
 
-An orchestrator that archives versions after a period (30 days, say) bounds memory and materialized tables, not disk: a server that has held a package for a year holds every version published in that year. A server whose `publisher_data/` does not survive a restart starts empty each time and fetches versions again as they are named.
+An orchestrator that archives versions after a period (30 days, say) bounds memory and materialized tables, not disk: a server that has held a package for a year holds every version published in that year. To bound disk too, delete the versions it no longer needs, archived ones included. A server whose `publisher_data/` does not survive a restart starts empty each time and fetches versions again as they are named.
 
 Size the volume under `publisher_data/` for the retention you need, and keep large data out of package trees: a connection to a warehouse, or a DuckLake destination, holds data once, while a bundled file is copied into every version. Delete and re-publish a package to start its history over.
 
 ## Limits worth knowing
 
-- **Loaded versions.** A version is loaded when it is published, on its first read after a restart, or by the standalone scheduler when its schedule comes due, and stays loaded until it is archived, its package is deleted, or a rebind it cannot take unloads it, whether or not it is `latest` and whether or not anyone reads it. Nothing evicts one that is rarely read ([#1396](https://github.com/malloydata/publisher/issues/1396)). The only limit is the memory governor (see [configuration.md](configuration.md)), and it is not a per-version one: when it trips, it answers 503 to queries against every version, `latest` included, until memory is reclaimed.
+- **Loaded versions.** A version is loaded when it is published, on its first read after a restart, or by the standalone scheduler when its schedule comes due, and stays loaded until it is archived or deleted, its package is deleted, or a rebind it cannot take unloads it, whether or not it is `latest` and whether or not anyone reads it. Nothing evicts one that is rarely read ([#1396](https://github.com/malloydata/publisher/issues/1396)). The only limit is the memory governor (see [configuration.md](configuration.md)), and it is not a per-version one: when it trips, it answers 503 to queries against every version, `latest` included, until memory is reclaimed.
 - **Each version keeps its own governance.** A version serves its own files, so its own `#(authorize)` gates, row filters and `index.malloy` curation. A gate or a hidden source added in a new version does not reach the older ones: a request that names an older version with `versionId` is answered under that version's rules until it is archived, and moving `latest` back rolls the rules back too. The MCP tools serve `latest` only. Archive a version whose rules must no longer apply.
 - **Symlinks in a published tree.** The content hash records a symlink's target text, not what it points at. A tree copied from a local directory has its relative symlinks rewritten as absolute ones pointing back into that directory, so content behind a link can change after publish without changing the hash. Do not publish trees that rely on symlinks.
 - **Legacy `/projects` routes** do not take versions: a `versionId` on them answers 501. Use the `/environments` routes.
@@ -178,7 +195,7 @@ Size the volume under `publisher_data/` for the retention you need, and keep lar
 
 ## Restart
 
-Versions, `latest`, archive state, manifest bindings and the package's own description are recorded in the publisher's database, and read back before anything loads. At startup the publisher removes a version folder no row owns (a publish that never committed) and restores an unversioned tree a first versioned publish had moved aside. A version whose tree has gone missing is fetched again from the location it was published from, and served only if it hashes to what was published; if it cannot be, the version answers 424, and the fetch is not retried on every request.
+Versions, `latest`, archive state, manifest bindings and the package's own description are recorded in the publisher's database, and read back before anything loads. At startup the publisher removes a version folder no row owns (a publish that never committed, or a delete whose folder removal failed) and restores an unversioned tree a first versioned publish had moved aside. A version whose tree has gone missing is fetched again from the location it was published from, and served only if it hashes to what was published; if it cannot be, the version answers 424, and the fetch is not retried on every request.
 
 ## What this does not do yet
 

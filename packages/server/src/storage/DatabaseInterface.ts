@@ -85,6 +85,18 @@ export interface ResourceRepository {
       versionId: string,
       manifestPath: string | null,
    ): Promise<Version>;
+   /**
+    * Delete a version's row. While other versions remain it refuses the
+    * package's `latest` (VERSION_IS_LATEST) and its last version in service
+    * while archived ones remain (VERSION_IS_LAST_ACTIVE), checked in the same
+    * transaction as the delete. The package's only version takes the package's
+    * rows with it (`packageRemoved`). Returns the row as it was.
+    */
+   deleteVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<{ version: Version; packageRemoved: boolean }>;
 
    // Connections
    listConnections(environmentId: string): Promise<Connection[]>;

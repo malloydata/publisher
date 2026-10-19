@@ -788,6 +788,7 @@ export async function buildSourceIntoStorage(params: {
          sourceFederationConfig(sourceConnection),
       );
       federatedClose = federated.close;
+      federatedHandle = federated.handle;
 
       await tagSnowflakeSession(
          session,

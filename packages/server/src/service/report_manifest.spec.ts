@@ -832,11 +832,11 @@ describe("service/report_manifest manifest (composite form)", () => {
 });
 
 describe("service/report_manifest per-tile layout", () => {
-   // The layout tags sit on the VIEW, not on the tile entry, which is the whole
-   // point: the same three tags @malloydata/render resolves for the children of
-   // a `# dashboard` nest, so one view lays out identically whichever way it is
-   // consumed. A tile entry is a string in an annotation and could never have
-   // carried a second grammar without reintroducing what this collapses.
+   // The presentation tags sit on the VIEW: the same tags @malloydata/render
+   // resolves for the children of a `# dashboard` nest, so one view presents
+   // identically whichever way it is consumed. Its `# colspan` and `# break` are
+   // the default; a report's own entry in `tiles=[…]` places the tile on that
+   // report and wins (see "entry layout" below).
    const withViews = (
       annotation: string,
       views: Record<string, string[]>,
@@ -1011,6 +1011,190 @@ describe("service/report_manifest per-tile layout", () => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
       expect(lintReport(f, manifest)).toEqual([]);
+   });
+});
+
+describe("service/report_manifest entry layout", () => {
+   // A report places a tile with its entry in `tiles=[…]`, property by
+   // property over the view's own tags. That is what lets one view sit at two
+   // widths on two reports, and an imported view be resized at all.
+   const withViews = (
+      annotation: string,
+      views: Record<string, string[]>,
+   ): ReportModelFacts =>
+      facts({
+         modelAnnotations: [annotation],
+         viewGivens: new Map(Object.keys(views).map((key) => [key, []])),
+         viewAnnotations: new Map(Object.entries(views)),
+         sourceFields: new Map([["orders", new Set(["kpi", "by_month"])]]),
+      });
+   const lint = (f: ReportModelFacts) => {
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a report");
+      return lintReport(f, manifest).map((x) => x.message);
+   };
+
+   it("puts the entry's colspan, break and rowspan over the view's tags", () => {
+      const manifest = build(
+         withViews(
+            '## artifact { layout=grid tiles=["orders -> kpi" { colspan=4 rowspan=3 }, "orders -> by_month" { break=false }] } dashboard { columns=12 }\n',
+            {
+               "orders -> kpi": ["# colspan=6\n", '# label="Revenue"\n'],
+               "orders -> by_month": ["# colspan=8\n", "# break\n"],
+            },
+         ),
+      );
+      expect(manifest?.tiles).toEqual([
+         {
+            kind: "query",
+            query: "orders -> kpi",
+            givenNames: [],
+            colspan: 4,
+            label: "Revenue",
+            rowspan: 3,
+         },
+         {
+            kind: "query",
+            query: "orders -> by_month",
+            givenNames: [],
+            colspan: 8,
+         },
+      ]);
+   });
+
+   it("breaks a row from the entry when the view does not", () => {
+      const manifest = build(
+         withViews(
+            '## artifact { layout=grid tiles=["orders -> kpi", "orders -> by_month" { break }] } dashboard { columns=12 }\n',
+            { "orders -> kpi": [], "orders -> by_month": [] },
+         ),
+      );
+      expect(manifest?.tiles?.[1]).toMatchObject({ break: true });
+   });
+
+   it("gives a text tile its rowspan", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: [
+               "## artifact { layout=grid tiles=[note { kind=text rowspan=2 }] }\n",
+               "##|(markdown) note\nhi",
+            ],
+         }),
+      );
+      expect(manifest?.tiles).toEqual([
+         { kind: "text", name: "note", markdown: "hi", rowspan: 2 },
+      ]);
+   });
+
+   it("keeps a restricted tile's place on the grid", () => {
+      const f = withViews(
+         '## artifact { layout=grid tiles=["orders -> kpi" { colspan=6 rowspan=2 }] } dashboard { columns=12 }\n',
+         { "orders -> kpi": ['# label="Secret"\n'] },
+      );
+      const manifest = buildReportManifest(f, {
+         restrictedTiles: new Set(["orders -> kpi"]),
+      });
+      expect(manifest?.tiles).toEqual([
+         {
+            kind: "query",
+            query: "orders -> kpi",
+            colspan: 6,
+            rowspan: 2,
+            restricted: true,
+         },
+      ]);
+   });
+
+   it("drops and reports a colspan or rowspan that is not a positive integer", () => {
+      const f = withViews(
+         '## artifact { layout=grid tiles=["orders -> kpi" { colspan=0 rowspan="tall" }] } dashboard { columns=12 }\n',
+         { "orders -> kpi": [] },
+      );
+      expect(build(f)?.tiles).toEqual([
+         { kind: "query", query: "orders -> kpi", givenNames: [] },
+      ]);
+      expect(lint(f)).toEqual([
+         expect.stringContaining("colspan on `orders -> kpi`"),
+         expect.stringContaining("rowspan on `orders -> kpi`"),
+      ]);
+   });
+
+   it("reads where a placed tile sits", () => {
+      const manifest = build(
+         withViews(
+            '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=1 colspan=6 }, "orders -> by_month" { row=3 col=7 colspan=6 rowspan=4 }] } dashboard { columns=12 }\n',
+            { "orders -> kpi": [], "orders -> by_month": [] },
+         ),
+      );
+      expect(manifest?.tiles).toEqual([
+         {
+            kind: "query",
+            query: "orders -> kpi",
+            givenNames: [],
+            colspan: 6,
+            row: 1,
+            col: 1,
+         },
+         {
+            kind: "query",
+            query: "orders -> by_month",
+            givenNames: [],
+            colspan: 6,
+            rowspan: 4,
+            row: 3,
+            col: 7,
+         },
+      ]);
+   });
+
+   it("says when placed tiles cover each other, counting a missing rowspan as the default", () => {
+      // kpi takes rows 1-5 by default, so by_month at row 5 covers its last row.
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=1 colspan=6 }, "orders -> by_month" { row=5 col=4 colspan=6 }] } dashboard { columns=12 }\n',
+               { "orders -> kpi": [], "orders -> by_month": [] },
+            ),
+         ),
+      ).toEqual([expect.stringContaining("placed over each other")]);
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=1 colspan=6 }, "orders -> by_month" { row=6 col=4 colspan=6 }] } dashboard { columns=12 }\n',
+               { "orders -> kpi": [], "orders -> by_month": [] },
+            ),
+         ),
+      ).toEqual([]);
+   });
+
+   it("says when a placed tile runs past the grid's right edge", () => {
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { row=1 col=9 colspan=6 }] } dashboard { columns=12 }\n',
+               { "orders -> kpi": [] },
+            ),
+         ),
+      ).toEqual([expect.stringContaining("runs past the 12 columns")]);
+   });
+
+   it("checks the entry's width against the grid, not the view's it replaces", () => {
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { colspan=4 }] } dashboard { columns=4 }\n',
+               { "orders -> kpi": ["# colspan=8\n"] },
+            ),
+         ),
+      ).toEqual([]);
+      expect(
+         lint(
+            withViews(
+               '## artifact { layout=grid tiles=["orders -> kpi" { colspan=8 }] } dashboard { columns=4 }\n',
+               { "orders -> kpi": [] },
+            ),
+         ),
+      ).toEqual([expect.stringContaining("clamped to 4")]);
    });
 });
 
@@ -1975,19 +2159,16 @@ describe("service/report_manifest grid width and hostile literals", () => {
       expect(lintReport(f, manifest)).toEqual([]);
    });
 
-   it("reads dashboard_columns as the grid width when dashboard { columns } is absent, and leaves reporting it to the notebook lint", () => {
+   it("reads no width from dashboard_columns, and says where the width goes", () => {
       const f = composite(
          '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
       );
-      expect(build(f)?.dashboardColumns).toBe(4);
-      expect(lintOf(f)).toEqual([]);
-   });
-
-   it("lets a dashboard { columns } that is not a width win over the alias", () => {
-      const f = composite(
-         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=0 }\n',
-      );
       expect(build(f)?.dashboardColumns).toBeUndefined();
+      expect(lintOf(f)).toEqual([
+         expect.stringContaining(
+            "`dashboard_columns` in the artifact tag does nothing in Publisher. The grid width is written beside the artifact tag: `## artifact { … } dashboard { columns=N }`.",
+         ),
+      ]);
    });
 
    it("says a kind=text tile with no block shows nothing, rather than that kind is unread", () => {
@@ -1999,20 +2180,6 @@ describe("service/report_manifest grid width and hostile literals", () => {
       expect(message).not.toContain("carries");
    });
 
-   it("prefers dashboard { columns } over the dashboard_columns alias", () => {
-      const f = composite(
-         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=6 }\n',
-      );
-      expect(build(f)?.dashboardColumns).toBe(6);
-   });
-
-   it("ignores an alias that is not a positive integer", () => {
-      const f = composite(
-         '## artifact { tiles=["orders -> totals"] dashboard_columns=0 }\n',
-      );
-      expect(build(f)?.dashboardColumns).toBeUndefined();
-   });
-
    it("says nothing about a tile entry that carries only kind=query", () => {
       const f = composite(
          "## artifact { tiles=[orders_totals { kind=query }] }\n",
@@ -2021,11 +2188,11 @@ describe("service/report_manifest grid width and hostile literals", () => {
          lintOf(f).find((finding) => finding.includes("carries")),
       ).toBeUndefined();
       const withMore = composite(
-         "## artifact { tiles=[orders_totals { kind=query colspan=3 }] }\n",
+         '## artifact { tiles=[orders_totals { kind=query label="x" }] }\n',
       );
       expect(
          lintOf(withMore).find((finding) =>
-            finding.includes("carries `colspan`"),
+            finding.includes("carries `label`"),
          ),
       ).toBeDefined();
    });
@@ -2040,14 +2207,13 @@ describe("service/report_manifest grid width and hostile literals", () => {
       ).toEqual([]);
    });
 
-   // A tile entry is the run expression alone, and a property hung off one is
-   // dropped by `tagText` without a word. The shape PARSES today, which is what
-   // makes it worth a finding before tile kinds exist: an author who has read
-   // about them somewhere can write one, get a tile whose query does not
-   // resolve, and be told only that the query failed.
-   it("names a property on a tile entry as unread, and where layout goes", () => {
+   // A tile entry reads its layout and nothing else, and any other property
+   // hung off one is dropped by the reader without a word. An author who
+   // writes one gets a tile that looks the same as without it, so the finding
+   // says where that property belongs instead.
+   it("names a non-layout property on a tile entry as unread, and where it goes", () => {
       const f = composite(
-         '## artifact { tiles=[intro { colspan=3 }, "orders -> totals"] }\n',
+         '## artifact { tiles=[intro { label="Intro" }, "orders -> totals"] }\n',
       );
       // It builds, and the entry is reduced to its text.
       expect(queryTiles(build(f)?.tiles).map((tile) => tile.query)).toEqual([
@@ -2055,11 +2221,13 @@ describe("service/report_manifest grid width and hostile literals", () => {
          "orders -> totals",
       ]);
       const carried = lintOf(f).find((finding) =>
-         finding.includes("carries `colspan`"),
+         finding.includes("carries `label`"),
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
-      expect(carried).toContain("run expression alone");
-      expect(carried).toContain("# colspan");
+      expect(carried).toContain(
+         "reads only `row`, `col`, `colspan`, `rowspan` and `break`",
+      );
+      expect(carried).toContain("# label");
       // Alongside, not instead of: `intro` is also a tile expression that does
       // not resolve, and the author needs both halves. Saying only that the
       // query failed is the state this finding exists to fix.

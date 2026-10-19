@@ -83,12 +83,6 @@ export {
 const MAX_BUILDER_COLUMNS = 24;
 
 /**
- * Suffixes Malloyyo treats as a dashboard's custom component. Publisher does
- * not render these; the list exists only to warn that one was ignored.
- */
-export const COMPONENT_FILE_SUFFIXES = [".jsx", ".tsx"] as const;
-
-/**
  * The control contract is a property of the `given:` declaration, not of the
  * report that filters by it, so these are the shared types (`given.ts`).
  */
@@ -117,6 +111,21 @@ export interface ReportQueryTileSpec extends ReportTileLayout {
     */
    givenNames?: string[];
    /**
+    * `rowspan=N` on the tile's entry in `tiles=[…]`: the grid rows it is tall.
+    * Absent, the tile is as tall as its result, or on a placed report
+    * {@link PLACED_DEFAULT_ROWSPAN} rows. Only the entry sets it; a view's own
+    * tags never do.
+    */
+   rowspan?: number;
+   /**
+    * `row=N` and `col=N` on the tile's entry: the grid row and column its top
+    * left corner sits in, counted from 1. A report with any `row` is placed:
+    * its rows are fixed tracks and its tiles sit where they say rather than
+    * flowing. Only the entry sets them.
+    */
+   row?: number;
+   col?: number;
+   /**
     * The caller may not read this tile's source. Set only by a compile of
     * caller-submitted text; carries nothing else of the tile, so the answer
     * discloses neither the gated view's layout tags nor the givens it reads.
@@ -132,6 +141,11 @@ export interface ReportTextTileSpec {
    markdown: string;
    colspan?: number;
    break?: boolean;
+   /** `rowspan=N` on its entry: the grid rows it is tall. */
+   rowspan?: number;
+   /** `row=N` and `col=N` on its entry: where it sits on a placed report. */
+   row?: number;
+   col?: number;
 }
 
 export type ReportTileSpec = ReportQueryTileSpec | ReportTextTileSpec;
@@ -337,8 +351,6 @@ const ARTIFACT_PROPERTIES: readonly string[] = [
    "autorun",
    // Not read here: notebook_lint.ts judges `layout`; this lint only stays quiet about it.
    "layout",
-   // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
-   "dashboard_columns",
 ];
 
 /**
@@ -350,12 +362,70 @@ const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
    dashboard:
       "The grid width is a sibling of the artifact tag, not a property of it: " +
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
+   dashboard_columns:
+      "The grid width is written beside the artifact tag: " +
+      "`## artifact { … } dashboard { columns=N }`.",
 };
 
-/** One entry of `tiles=[…]`: a run expression, or a named text block with its own layout. */
+/**
+ * The layout a `tiles=[…]` entry carries, read the same on either kind of
+ * entry. On a query entry each property wins over the view's own tag, so
+ * `break=false` is kept: it is how an entry turns off a view's `# break`.
+ */
+interface EntryLayout {
+   colspan?: number;
+   break?: boolean;
+   rowspan?: number;
+   row?: number;
+   col?: number;
+}
+
+/** The properties an entry's layout is written with, and so the only ones the lint lets an entry carry. */
+const ENTRY_LAYOUT_PROPERTIES = ["row", "col", "colspan", "rowspan", "break"];
+
+/**
+ * Rows a tile with no `rowspan` takes on a placed report, whose rows are fixed
+ * tracks: about the height an unplaced tile is drawn at. Kept equal to the
+ * SDK's `PLACED_DEFAULT_ROWSPAN`, since the lint's overlap check must count
+ * the rows the viewer draws.
+ */
+export const PLACED_DEFAULT_ROWSPAN = { query: 5, text: 2 } as const;
+
+/** One entry of `tiles=[…]`: a run expression or a named text block, each with its own layout. */
 type ArtifactTileEntry =
-   | { kind: "query"; expression: string }
-   | { kind: "text"; name: string; colspan?: number; break?: boolean };
+   | { kind: "query"; expression: string; layout: EntryLayout }
+   | { kind: "text"; name: string; layout: EntryLayout };
+
+function readEntryLayout(entry: Tag): EntryLayout {
+   const colspan = positiveInteger(tagNumeric(entry, "colspan"));
+   const rowspan = positiveInteger(tagNumeric(entry, "rowspan"));
+   const row = positiveInteger(tagNumeric(entry, "row"));
+   const col = positiveInteger(tagNumeric(entry, "col"));
+   return {
+      ...(colspan !== undefined && { colspan }),
+      ...(entry.has("break") && { break: tagText(entry, "break") !== "false" }),
+      ...(rowspan !== undefined && { rowspan }),
+      ...(row !== undefined && { row }),
+      ...(col !== undefined && { col }),
+   };
+}
+
+/** The layout fields a tile spec carries from its entry: a `break` that is off is no field at all. */
+function entryLayoutFields(layout: EntryLayout): {
+   colspan?: number;
+   break?: true;
+   rowspan?: number;
+   row?: number;
+   col?: number;
+} {
+   return {
+      ...(layout.colspan !== undefined && { colspan: layout.colspan }),
+      ...(layout.break === true && { break: true as const }),
+      ...(layout.rowspan !== undefined && { rowspan: layout.rowspan }),
+      ...(layout.row !== undefined && { row: layout.row }),
+      ...(layout.col !== undefined && { col: layout.col }),
+   };
+}
 
 /** The `artifact` sub-tag read into the manifest fields it contributes. */
 interface ArtifactTagData {
@@ -371,17 +441,10 @@ function readTileEntries(artifact: Tag): ArtifactTileEntry[] | undefined {
    return artifact.array("tiles")?.flatMap((entry): ArtifactTileEntry[] => {
       const text = tagText(entry);
       if (text === undefined) return [];
-      if (tagText(entry, "kind") !== "text")
-         return [{ kind: "query", expression: text }];
-      const colspan = positiveInteger(tagNumeric(entry, "colspan"));
-      return [
-         {
-            kind: "text",
-            name: text,
-            ...(colspan !== undefined && { colspan }),
-            ...(entry.has("break") && { break: true }),
-         },
-      ];
+      const layout = readEntryLayout(entry);
+      return tagText(entry, "kind") === "text"
+         ? [{ kind: "text", name: text, layout }]
+         : [{ kind: "query", expression: text, layout }];
    });
 }
 
@@ -406,12 +469,9 @@ function readArtifactTag(
       // integer: `Tag.numeric()` is parseFloat, which takes `12abc` as 12 and
       // `1e999` as Infinity (JSON null on an integer field), so the manifest
       // would serve a value the lint reports as dropped.
-      // `columns` wins whenever it is written, even when it is not a width.
       dashboardColumns: tag.tag("dashboard")?.has("columns")
          ? positiveInteger(tagNumeric(tag.tag("dashboard"), "columns"))
-         : artifact.array("tiles")
-           ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
-           : undefined,
+         : undefined,
       givens,
       autorun,
    };
@@ -952,21 +1012,35 @@ export function buildReportManifest(
                name: entry.name,
                markdown:
                   blocks.find((block) => block.name === entry.name)?.body ?? "",
-               ...(entry.colspan !== undefined && { colspan: entry.colspan }),
-               ...(entry.break && { break: true }),
+               ...entryLayoutFields(entry.layout),
             };
          }
          const query = entry.expression;
+         // The entry's layout is the report's own, not the gated view's, so a
+         // restricted tile keeps its place on the grid.
          if (options?.restrictedTiles?.has(normalizeTileExpression(query))) {
-            return { kind: "query", query, restricted: true };
+            return {
+               kind: "query",
+               query,
+               ...entryLayoutFields(entry.layout),
+               restricted: true,
+            };
          }
          const givenNames = resolveTileGivens(query, facts);
-         const layout = resolveTileLayout(query, facts);
+         // The view's tags, then the entry's layout over them, property by
+         // property: the entry is where this report places the tile, and the
+         // view's tags are the default for every report that names it.
+         const { break: viewBreak, ...viewLayout } =
+            resolveTileLayout(query, facts) ?? {};
          return {
             kind: "query",
             query,
             ...(givenNames ? { givenNames } : {}),
-            ...layout,
+            ...viewLayout,
+            ...entryLayoutFields({
+               break: viewBreak,
+               ...entry.layout,
+            }),
          };
       });
       const queries = queryTiles(tiles).filter((tile) => !tile.restricted);
@@ -1070,7 +1144,6 @@ export function lintReport(
    // `givens` keys are the author's own given names.
    for (const property of Object.keys(artifactTag?.dict ?? {})) {
       if (ARTIFACT_PROPERTIES.includes(property)) continue;
-      // "in Publisher": a property inert here may mean something in Malloyyo.
       add(
          `\`${property}\` in the artifact tag does nothing in Publisher` +
             (ARTIFACT_PROPERTY_REPLACEMENTS[property]
@@ -1079,30 +1152,58 @@ export function lintReport(
       );
    }
 
-   // A query entry is the run expression and nothing else: `readArtifactTag`
-   // takes its text and drops anything hung off it, so a property there is
-   // silently inert. A text entry reads only its layout.
+   // An entry reads its layout and nothing else: `readArtifactTag` drops
+   // anything else hung off it, so a property there is silently inert. A
+   // tile's label, subtitle, chart and card belong to the view it names.
    const textBlocks = readTextBlocks(facts.modelAnnotations);
+   const grid = manifest.layout !== "linear";
    for (const entry of artifactTag?.array("tiles") ?? []) {
       const kind = tagText(entry, "kind");
       const label = tagText(entry) ?? "a tile";
-      const read = kind === "text" ? ["kind", "colspan", "break"] : [];
       const carried = Object.keys(entry.dict ?? {}).filter(
          (property) =>
-            !read.includes(property) &&
-            !(property === "kind" && kind === "query"),
+            !ENTRY_LAYOUT_PROPERTIES.includes(property) &&
+            !(property === "kind" && (kind === "text" || kind === "query")),
       );
       if (carried.length > 0) {
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
-            kind === "text"
-               ? `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: a text tile's entry reads only \`colspan\` and \`break\`.`
-               : `\`${label}\` in \`tiles=[…]\` carries ${named}, ` +
-                    `which Publisher does not read: a tile entry is the run expression ` +
-                    `alone. Per-tile presentation goes on the view the tile names ` +
-                    `(\`# colspan\`, \`# break\`, \`# label\`, \`# subtitle\`, ` +
-                    `\`# borderless\`).`,
+            `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
+               `a tile's entry reads only \`row\`, \`col\`, \`colspan\`, \`rowspan\` and \`break\`.` +
+               (kind === "text"
+                  ? ""
+                  : ` The rest of its presentation goes on the view the tile names ` +
+                    `(\`# label\`, \`# subtitle\`, \`# borderless\`).`),
          );
+      }
+      const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
+      for (const property of ["row", "col", "colspan", "rowspan"]) {
+         if (
+            entry.has(property) &&
+            positiveInteger(tagNumeric(entry, property)) === undefined
+         ) {
+            add(
+               `${property} on ${tile} in \`tiles=[…]\` must be a positive integer, so it is ignored.`,
+            );
+         }
+      }
+      // A linear report's entry layout is `notebook_lint`'s to report.
+      const colspan = positiveInteger(tagNumeric(entry, "colspan"));
+      if (grid && colspan !== undefined) {
+         const columns = manifest.dashboardColumns;
+         if (columns === undefined) {
+            add(
+               `colspan=${colspan} on ${tile} needs a grid to span. This ` +
+                  `report declares no # dashboard { columns=N }, so it lays out ` +
+                  `at the viewer's default width and every colspan is clamped to it.`,
+            );
+         } else if (colspan > columns) {
+            add(
+               `colspan=${colspan} on ${tile} exceeds the ${columns} columns ` +
+                  `of this report and is clamped to ${columns}. Widen ` +
+                  `# dashboard { columns=… } or lower the colspan.`,
+            );
+         }
       }
       if (kind !== "text") continue;
       if (!textBlocks.some((block) => block.name === label)) {
@@ -1111,15 +1212,59 @@ export function lintReport(
                `Fix: write that block, with the text on the lines below its opener and \`|##\` after.`,
          );
       }
-      if (
-         entry.has("colspan") &&
-         positiveInteger(tagNumeric(entry, "colspan")) === undefined
-      ) {
-         add(
-            `colspan on text tile \`${label}\` must be a positive integer. The tile spans one column.`,
-         );
+   }
+   // A placed tile that runs past the grid's right edge, or covers another:
+   // the viewer draws both anyway, the first spilling into an extra column
+   // and the second stacked on its neighbour, so neither is what was meant.
+   if (grid) {
+      const columns = manifest.dashboardColumns;
+      const placed = (manifest.tiles ?? []).flatMap((tile) => {
+         if (tile.row === undefined || tile.col === undefined) return [];
+         const name = tile.kind === "text" ? tile.name : tile.query;
+         const colspan = Math.min(tile.colspan ?? 1, columns ?? Infinity);
+         const rowspan =
+            tile.rowspan ??
+            PLACED_DEFAULT_ROWSPAN[tile.kind === "text" ? "text" : "query"];
+         return [{ name, row: tile.row, col: tile.col, colspan, rowspan }];
+      });
+      for (const tile of placed) {
+         if (columns !== undefined && tile.col + tile.colspan - 1 > columns) {
+            add(
+               `\`${tile.name}\` at col=${tile.col} with colspan=${tile.colspan} runs past the ` +
+                  `${columns} columns of this report. Move it left or narrow it.`,
+            );
+         }
+      }
+      for (let a = 0; a < placed.length; a++) {
+         for (let b = a + 1; b < placed.length; b++) {
+            const [x, y] = [placed[a], placed[b]];
+            const overlaps =
+               x.col < y.col + y.colspan &&
+               y.col < x.col + x.colspan &&
+               x.row < y.row + y.rowspan &&
+               y.row < x.row + x.rowspan;
+            if (overlaps) {
+               add(
+                  `\`${x.name}\` and \`${y.name}\` are placed over each other, so one is ` +
+                     `drawn on top of the other. Move one, or change a colspan or rowspan.`,
+               );
+            }
+         }
       }
    }
+
+   // A tile whose entry sets its width is not spanned by its view's
+   // `# colspan`, so the view's tag is not checked against this grid.
+   const entrySpanned = new Set(
+      (artifactTag?.array("tiles") ?? []).flatMap((entry) => {
+         const text = tagText(entry);
+         return text !== undefined &&
+            tagText(entry, "kind") !== "text" &&
+            entry.has("colspan")
+            ? [normalizeTileExpression(text)]
+            : [];
+      }),
+   );
    const seenBlocks = new Set<string>();
    for (const { name } of textBlocks) {
       if (seenBlocks.has(name)) {
@@ -1136,6 +1281,7 @@ export function lintReport(
    for (const { query: tile } of manifest.layout === "linear"
       ? []
       : queryTiles(manifest.tiles)) {
+      if (entrySpanned.has(normalizeTileExpression(tile))) continue;
       const tag = motlyTag(tileAnnotations(tile, facts) ?? []);
       if (!tag?.has("colspan")) continue;
       const colspan = positiveInteger(tagNumeric(tag, "colspan"));

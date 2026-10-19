@@ -77,14 +77,14 @@ there for the primitive, then follow the application you need.
 
 ## Develop & contribute
 
-| Doc                                                            | Read it when you want to…                                                                                                                                                                          |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                                                          |
-| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                                                     |
-| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                                         |
-| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind Publisher's dashboards, now grid reports.                                                                                                        |
-| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the `.malloy` notebook — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
-| [reports-design.md](reports-design.md)                         | _Design doc:_ dashboards and notebooks as one document type, the report, with a linear or grid layout, anywhere in a package.                                                                      |
+| Doc                                                            | Read it when you want to…                                                                                                                                                    |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                                    |
+| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                               |
+| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                   |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind Publisher's dashboards, now grid reports.                                                                                  |
+| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ reports and their builder — what is built, how the builder is put together, how it compares with the state of the art, and the improvements still to make, in order. |
+| [reports-design.md](reports-design.md)                         | _Design doc:_ dashboards and notebooks as one document type, the report, with a linear or grid layout, anywhere in a package.                                                |
 
 ## Full public docs
 

@@ -5,6 +5,12 @@ SPDX-License-Identifier: MIT
 
 # Design: Malloyyo dashboards in Publisher
 
+> **History, not a reference (2026-10-18).** Publisher no longer keeps compatibility with Malloyyo's
+> dashboard format: `kind=`, the query-level `# artifact`, bare drill names and the
+> `dashboard_columns` alias are not read, and `.jsx` components in `dashboards/` are not warned about.
+> [reports.md](reports.md) is the format. Statements below about reading Malloyyo files unchanged
+> describe what was true then.
+>
 > **Superseded in part by [reports-design.md](reports-design.md) (2026-10-10).** Publisher now has
 > one document type, the **report**: a `.malloy` file with an `## artifact` tag, anywhere in the
 > package, whose `layout=grid` or `layout=linear` is the only difference between what this page calls
