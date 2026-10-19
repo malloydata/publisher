@@ -645,6 +645,35 @@ describe("useGivensState: clearing a given that has a starting value", () => {
       expect(entries(result.current.applied)).toEqual({ REGION: "East" });
    });
 
+   it("keeps the newest edit when a URL two reports old arrives late", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "dashboard",
+               autorun: true,
+            }),
+         { initialProps: { params: url } },
+      );
+
+      const reportedUrls: Record<string, string>[] = [];
+      for (const typed of ["F", "Fo", "For"]) {
+         act(() => result.current.setGiven("REGION", typed));
+         reportedUrls.push(url);
+      }
+
+      // The host delivers them late and in order, the oldest first.
+      for (const arriving of reportedUrls) {
+         rerender({ params: arriving });
+         expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+      }
+   });
+
    it("Reset after a clear restores the starting value and runs once", () => {
       const host = renderWithUrlHost({
          autorun: true,

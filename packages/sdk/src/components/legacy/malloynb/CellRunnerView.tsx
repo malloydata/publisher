@@ -95,9 +95,8 @@ export interface CellReportProps {
     * committed and typing in a text control reports per keystroke. It does NOT
     * run per keystroke: a changed value waits `GIVEN_SETTLE_MS` before
     * anything is dispatched, so a burst of typing produces one run. A run that
-    * does start supersedes and aborts the one before it. The REPORTS are still
-    * per keystroke, so a host doing something expensive per call should
-    * debounce.
+    * does start supersedes and aborts the one before it. A text, number, date
+    * or slider control commits once it settles, so reports follow commits.
     *
     * `managed` names every given this report declares, set or not. A host
     * writing to a shared query string needs it: `givens` alone says which

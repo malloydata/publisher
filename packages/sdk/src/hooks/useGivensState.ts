@@ -130,6 +130,9 @@ function sameDeclaredParams(
    return true;
 }
 
+/** Bounds the reports remembered as in flight when a host never echoes them. */
+const MAX_IN_FLIGHT_REPORTS = 32;
+
 /** Same entries, same values: enough for state whose values are primitives. */
 function sameParams(
    a: Record<string, string>,
@@ -163,7 +166,7 @@ export function useGivensState({
    // mount reads as an echo.
    const lastReported = useRef<Record<string, string> | null>(null);
 
-   // The report BEFORE `lastReported`, kept only until the newer one is seen
+   // The reports BEFORE `lastReported`, kept only until the newer one is seen
    // coming back.
    //
    // A report does not reach `params` in the same tick: the host navigates, the
@@ -175,12 +178,13 @@ export function useGivensState({
    // the edits were discarded, and `initial` put the value the reader had just
    // cleared straight back into the control, and into the URL after it.
    //
-   // Narrow by construction: it holds one report, only while that report is in
-   // flight, and is dropped the moment the newer one is observed. The cost is
+   // Narrow by construction: it holds the reports still in flight (several, when
+   // each keystroke reports), and is dropped the moment the newest one is
+   // observed. The cost is
    // that an external push landing in that window whose values happen to equal
-   // the report being replaced is taken for the echo — the same values we were
+   // a report being replaced is taken for the echo — the same values we were
    // just showing, arriving in the few milliseconds before our own URL lands.
-   const priorReported = useRef<Record<string, string> | null>(null);
+   const priorReported = useRef<Record<string, string>[]>([]);
 
    // The URL that defines the current starting point. This is `params` EXCEPT
    // when `params` is our own report arriving back through the host, which is
@@ -211,16 +215,21 @@ export function useGivensState({
    const echoes = (reported: Record<string, string> | null) =>
       reported !== null &&
       sameDeclaredParams(params ?? {}, reported, declaredTypes);
-   // The newest report has arrived, so the one it replaced is no longer in
-   // flight and stops counting as an echo.
-   if (echoes(lastReported.current)) priorReported.current = null;
+   // The newest report has arrived, so the ones it replaced are no longer in
+   // flight and stop counting as echoes.
+   if (echoes(lastReported.current)) priorReported.current = [];
    if (
       anchor.current.documentKey !== documentKey ||
       (!sameParams(params ?? {}, anchor.current.params ?? {}) &&
          !echoes(lastReported.current) &&
-         !echoes(priorReported.current))
+         !priorReported.current.some(echoes))
    ) {
       anchor.current = { documentKey, params };
+   }
+   // A report that has come back also retires the older ones before it.
+   const arrived = priorReported.current.findLastIndex(echoes);
+   if (arrived >= 0) {
+      priorReported.current = priorReported.current.slice(arrived + 1);
    }
    const anchorParams = anchor.current.params;
    const startingValuesKey = JSON.stringify(startingValues);
@@ -384,7 +393,12 @@ export function useGivensState({
    useEffect(() => {
       if (!onParamsChange) return;
       if (sameParams(lastReported.current ?? {}, appliedParams)) return;
-      priorReported.current = lastReported.current;
+      if (lastReported.current !== null) {
+         priorReported.current = [
+            ...priorReported.current.slice(-MAX_IN_FLIGHT_REPORTS + 1),
+            lastReported.current,
+         ];
+      }
       lastReported.current = appliedParams;
       onParamsChange(appliedParams);
    }, [appliedParams, onParamsChange]);

@@ -1,10 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it, mock } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   jest,
+   mock,
+} from "bun:test";
+import {
+   act,
+   cleanup,
+   fireEvent,
+   render,
+   screen,
+} from "@testing-library/react";
+import { useState } from "react";
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
+import { GIVEN_SETTLE_MS } from "../../hooks/useSettled";
 import { GivenInput } from "./GivenInput";
 
 /**
@@ -992,5 +1008,243 @@ describe("GivenInput: the range slider's commits", () => {
       render(<GivenInput given={given} value=">= 2" onChange={onChange} />);
       fireEvent.change(handles()[0], { target: { value: "0" } });
       expect(onChange).toHaveBeenCalledWith(null);
+   });
+});
+
+// Bun runs it; its typings do not declare it.
+const advance = (ms: number) =>
+   (
+      jest as unknown as { advanceTimersByTime(ms: number): void }
+   ).advanceTimersByTime(ms);
+
+/** A host that feeds each commit back in as `value`, the way a dashboard does. */
+function Host({
+   given,
+   initial,
+   onChange,
+}: {
+   given: Given;
+   initial: GivenValue | undefined;
+   onChange: (next: GivenValue) => void;
+}) {
+   const [value, setValue] = useState<GivenValue | undefined>(initial);
+   return (
+      <GivenInput
+         given={given}
+         value={value}
+         onChange={(next) => {
+            onChange(next);
+            setValue(next);
+         }}
+      />
+   );
+}
+
+describe("GivenInput: typing commits once the field settles", () => {
+   beforeEach(() => {
+      jest.useFakeTimers();
+   });
+   afterEach(() => {
+      jest.useRealTimers();
+      cleanup();
+   });
+
+   const text: Given = { name: "brand", type: "filter<string>" };
+   const type = (input: HTMLElement, value: string) => {
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value } });
+   };
+
+   it("sends one change for a burst of keystrokes, after the burst", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<Host given={text} initial={undefined} onChange={onChange} />);
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      for (const value of ["F", "Fo", "For", "Ford"]) {
+         type(input, value);
+         act(() => advance(GIVEN_SETTLE_MS - 1));
+      }
+      expect(onChange).toHaveBeenCalledTimes(0);
+      act(() => advance(1));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("Ford");
+      act(() => advance(GIVEN_SETTLE_MS * 3));
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
+   it("commits on Enter without waiting", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<Host given={text} initial={undefined} onChange={onChange} />);
+      const input = screen.getByLabelText("brand");
+      type(input, "Ford");
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("Ford");
+      act(() => advance(GIVEN_SETTLE_MS * 3));
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
+   it("commits a draft that settled mid-composition once the composition ends", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<Host given={text} initial={undefined} onChange={onChange} />);
+      const input = screen.getByLabelText("brand");
+      fireEvent.focus(input);
+      fireEvent.compositionStart(input);
+      fireEvent.change(input, { target: { value: "日本" } });
+      act(() => advance(GIVEN_SETTLE_MS * 2));
+      expect(onChange).toHaveBeenCalledTimes(0);
+      fireEvent.compositionEnd(input);
+      act(() => advance(GIVEN_SETTLE_MS));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("日本");
+   });
+
+   it("commits a pending draft when the field unmounts", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      const view = render(
+         <Host given={text} initial={undefined} onChange={onChange} />,
+      );
+      type(screen.getByLabelText("brand"), "Ford");
+      view.unmount();
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("Ford");
+   });
+
+   it("commits on blur without waiting", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<Host given={text} initial={undefined} onChange={onChange} />);
+      const input = screen.getByLabelText("brand");
+      type(input, "Ford");
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("Ford");
+      act(() => advance(GIVEN_SETTLE_MS * 3));
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
+   it("does not overwrite typed text when the value changes under a focused field", () => {
+      const view = render(
+         <GivenInput given={text} value={undefined} onChange={() => {}} />,
+      );
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      type(input, "Fordo");
+      // The URL echoing back an earlier keystroke.
+      view.rerender(
+         <GivenInput given={text} value="Ford" onChange={() => {}} />,
+      );
+      expect(input.value).toBe("Fordo");
+   });
+
+   it("shows a new value once the field is no longer focused", () => {
+      const view = render(
+         <GivenInput given={text} value="Ford" onChange={() => {}} />,
+      );
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      view.rerender(
+         <GivenInput given={text} value="Audi" onChange={() => {}} />,
+      );
+      expect(input.value).toBe("Audi");
+   });
+
+   it("never commits on mount, for an unset filter given", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={text} value={undefined} onChange={onChange} />);
+      act(() => advance(GIVEN_SETTLE_MS * 3));
+      expect(onChange).toHaveBeenCalledTimes(0);
+   });
+
+   it("clears without sending the half-typed text first", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<Host given={text} initial="Audi" onChange={onChange} />);
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      type(input, "Ford");
+      fireEvent.click(clearButtons()[0]);
+      fireEvent.blur(input);
+      act(() => advance(GIVEN_SETTLE_MS * 3));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange.mock.calls[0][0]).toBeNull();
+      expect(input.value).toBe("");
+   });
+
+   it("sends one change for a burst typed into a number field", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <Host
+            given={{ name: "n", type: "number" }}
+            initial={undefined}
+            onChange={onChange}
+         />,
+      );
+      const input = screen.getByLabelText("n");
+      for (const value of ["1", "12", "123"]) {
+         type(input, value);
+         act(() => advance(100));
+      }
+      expect(onChange).toHaveBeenCalledTimes(0);
+      act(() => advance(GIVEN_SETTLE_MS));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(123);
+   });
+});
+
+describe("GivenInput: a date typed into the field", () => {
+   beforeEach(() => {
+      jest.useFakeTimers();
+   });
+   afterEach(() => {
+      jest.useRealTimers();
+      cleanup();
+   });
+
+   it("commits once it settles, not for each edit", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <Host
+            given={{ name: "d", type: "date" }}
+            initial={undefined}
+            onChange={onChange}
+         />,
+      );
+      const input = screen.getByRole("textbox") as HTMLInputElement;
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "01/15/2024" } });
+      fireEvent.change(input, { target: { value: "01/16/2024" } });
+      expect(onChange).toHaveBeenCalledTimes(0);
+      act(() => advance(GIVEN_SETTLE_MS));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect((onChange.mock.calls[0][0] as Date).toISOString()).toBe(
+         "2024-01-16T00:00:00.000Z",
+      );
+   });
+});
+
+describe("GivenInput: a slider commits on release, not on every move", () => {
+   afterEach(cleanup);
+
+   it("sends nothing while the thumb is dragged and one change on release", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput
+            given={{ name: "n", type: "number", rangeMin: 0, rangeMax: 10 }}
+            value={2}
+            onChange={onChange}
+         />,
+      );
+      const root = document.querySelector(".MuiSlider-root") as HTMLElement;
+      root.getBoundingClientRect = () =>
+         ({
+            left: 0,
+            width: 100,
+            top: 0,
+            height: 10,
+            right: 100,
+            bottom: 10,
+         }) as DOMRect;
+      fireEvent.mouseDown(root, { clientX: 30, button: 0 });
+      fireEvent.mouseMove(document, { clientX: 50, buttons: 1 });
+      fireEvent.mouseMove(document, { clientX: 70, buttons: 1 });
+      expect(onChange).toHaveBeenCalledTimes(0);
+      fireEvent.mouseUp(document, { clientX: 70, buttons: 1 });
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(7);
    });
 });
