@@ -84,4 +84,43 @@ ${MODEL}
 `);
       expect(tiles?.[0]).toMatchObject({ label: "Flights by airline" });
    });
+
+   it("is the view's # label for an extension view that adds a tag of its own", async () => {
+      const tiles =
+         await tilesOf(`## artifact { tiles=["flights_tiles -> by_carrier_tile"] }
+${MODEL}
+source: flights_tiles is flights extend {
+  # subtitle="Busiest first"
+  view: by_carrier_tile is by_carrier
+}
+`);
+      expect(tiles?.[0]).toMatchObject({
+         query: "flights_tiles -> by_carrier_tile",
+         label: "Flights by airline",
+         subtitle: "Busiest first",
+      });
+   });
+
+   it("is the view's # label for an extension view with no tag of its own", async () => {
+      const tiles =
+         await tilesOf(`## artifact { tiles=["flights_tiles -> by_carrier_tile"] }
+${MODEL}
+source: flights_tiles is flights extend {
+  view: by_carrier_tile is by_carrier
+}
+`);
+      expect(tiles?.[0]).toMatchObject({ label: "Flights by airline" });
+   });
+
+   it("is an extension view's own # label over the view it renames", async () => {
+      const tiles =
+         await tilesOf(`## artifact { tiles=["flights_tiles -> by_carrier_tile"] }
+${MODEL}
+source: flights_tiles is flights extend {
+  # label="Airlines"
+  view: by_carrier_tile is by_carrier
+}
+`);
+      expect(tiles?.[0]).toMatchObject({ label: "Airlines" });
+   });
 });

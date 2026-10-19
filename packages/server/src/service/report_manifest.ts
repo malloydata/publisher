@@ -851,8 +851,7 @@ export function readReportModelFacts(
          givens: (query.givenUsage ?? [])
             .map((usage) => registry[usage.id]?.name)
             .filter((name): name is string => name !== undefined),
-         sourceName:
-            typeof query.structRef === "string" ? query.structRef : undefined,
+         sourceName: structRefSourceName(query.structRef),
       }));
 
    const viewGivens = new Map<string, string[]>();
@@ -891,13 +890,16 @@ export function readReportModelFacts(
             viewGivens.set(key, Array.from(refs));
             const outputs = viewOutputNames(field as TurtleDef);
             if (outputs) viewOutputs.set(key, outputs);
-            viewAnnotations.set(
-               key,
-               [
+            // A view that renames another and adds a tag of its own keeps the
+            // other's tags under `inherits`, as a query does: read them first so
+            // its own `# label` still wins.
+            viewAnnotations.set(key, [
+               ...inheritedNotes(field.annotations),
+               ...[
                   ...(field.annotations?.blockNotes ?? []),
                   ...(field.annotations?.notes ?? []),
                ].map((note) => note.text),
-            );
+            ]);
             continue;
          }
          const drill = readDrillTag(
@@ -1087,8 +1089,9 @@ function resolveTileLayout(
 }
 
 /**
- * The annotation texts a query inherits from what it reads, outermost first:
- * the `inherits` chain Malloy keeps once the query carries tags of its own.
+ * The annotation texts a query, or a view that renames another, inherits from
+ * what it reads, outermost first: the `inherits` chain Malloy keeps once it
+ * carries tags of its own.
  */
 function inheritedNotes(
    annotation: NamedQueryDef["annotations"] | undefined,
@@ -1732,6 +1735,19 @@ export function lintReport(
 }
 
 /**
+ * The source a query reads, by the name the file knows it by. Malloy gives a
+ * source defined in this file as its name, and one this file imports as the
+ * source itself, carrying the name in `as`. An inline table has no name: its
+ * `name` is Malloy's internal `sql://…` key, never a source a reader wrote, so
+ * it reads as no source.
+ */
+function structRefSourceName(structRef: unknown): string | undefined {
+   if (typeof structRef === "string") return structRef;
+   const as = (structRef as { as?: unknown } | undefined)?.as;
+   return typeof as === "string" ? as : undefined;
+}
+
+/**
  * A filter most of a report's tiles apply, missing from one of them.
  *
  * A report's filter is a given its tiles bind one by one, each in its own
@@ -2131,12 +2147,7 @@ export async function compileTileGivens(
       const reads = usage
          .map((given) => registry[given.id]?.name)
          .filter((name): name is string => name !== undefined);
-      const target = prepared._query?.structRef;
-      const sourceName =
-         typeof target === "string"
-            ? target
-            : (target as { as?: string; name?: string } | undefined)?.as ||
-              (target as { name?: string } | undefined)?.name;
+      const sourceName = structRefSourceName(prepared._query?.structRef);
       const gateReads = new Set<string>();
       for (const expr of sourceName ? (gatesOf(sourceName) ?? []) : []) {
          for (const name of referencedGivenNames(expr)) gateReads.add(name);
