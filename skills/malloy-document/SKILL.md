@@ -89,8 +89,8 @@ One rule worth knowing here: a filter the model reads lives on the source, never
 
 | Mechanism | Layer | Why you reach for it |
 |---|---|---|
-| `internal:` | Inside a source (one column in `include {}`) | The column **isn't part of your model's public API**. Common reasons: data is messy (empty/garbage, raw JSON, duplicates), or a documented derived dimension already supersedes it, or the raw column exists only to be joined on / referenced internally and shouldn't appear as a dimension callers can pick. The data may be perfectly fine, it's just not what you want exposed. |
-| `private:` | Inside a source (one column in `include {}`) | The **data is sensitive**: SSN, raw credit card, password. Governance / security concern; a harder block than `internal:`. |
+| `internal:` | Inside a source (one column in `include {}`) | The column **isn't part of your model's public API**. Common reasons: data is messy (empty/garbage, raw JSON, duplicates), or a documented derived dimension already supersedes it, or the raw column exists only to be joined on / referenced internally and shouldn't appear as a dimension callers can pick. The data may be perfectly fine, it's just not what you want exposed. This is curation, not access control: a caller's query can still read the column through its own `extend` or `include`. |
+| `private:` | Inside a source (one column in `include {}`) | The **data is sensitive**: SSN, raw credit card, password. Governance / security concern; unlike `internal:`, it blocks callers' queries from reading the column. |
 
 In one sentence: **`internal:` and `private:` shape what's inside a source's public API; `#(doc)` describes the fields you do expose.**
 
