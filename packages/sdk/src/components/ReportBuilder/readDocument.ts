@@ -287,6 +287,20 @@ function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
    };
 }
 
+/** A view's own `# colspan` and `# break`, read as the builder always has. */
+function viewLayout(
+   t:
+      | { numeric(key: string): number | undefined; has(key: string): boolean }
+      | null
+      | undefined,
+): { colspan?: number; break?: boolean } {
+   const colspan = t?.numeric("colspan");
+   return {
+      ...(colspan === undefined ? {} : { colspan }),
+      ...(t?.has("break") ? { break: true } : {}),
+   };
+}
+
 /** A grid width: a plain decimal positive integer, else undefined. */
 function gridWidth(
    tag: { text(key: string): string | undefined } | undefined,
@@ -302,7 +316,60 @@ function gridWidth(
    return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
-const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
+/** A quoted run expression, with the `{ … }` of layout an entry may carry after it. */
+const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"\s*(\{[\s\S]*\})?$/;
+
+/** The layout a `tiles=[…]` entry carries, read the way the server reads it. */
+function entryLayout(
+   tag:
+      | {
+           text(key: string): string | undefined;
+           has(key: string): boolean;
+        }
+      | undefined,
+): EntryLayout {
+   const colspan = gridWidth(tag, "colspan");
+   const rowspan = gridWidth(tag, "rowspan");
+   const row = gridWidth(tag, "row");
+   const col = gridWidth(tag, "col");
+   return {
+      ...(colspan === undefined ? {} : { colspan }),
+      ...(tag?.has("break") ? { break: tag.text("break") !== "false" } : {}),
+      ...(rowspan === undefined ? {} : { rowspan }),
+      ...(row === undefined ? {} : { row }),
+      ...(col === undefined ? {} : { col }),
+   };
+}
+
+/** What an entry in `tiles=[…]` can say about where its tile sits. */
+interface EntryLayout {
+   colspan?: number;
+   break?: boolean;
+   rowspan?: number;
+   row?: number;
+   col?: number;
+}
+
+/** An entry's layout over a view's own: each property the entry sets wins, and a `break` that ends up off is no field. */
+function placed(
+   view: { colspan?: number; break?: boolean },
+   entry: EntryLayout,
+): {
+   colspan?: number;
+   break?: true;
+   rowspan?: number;
+   row?: number;
+   col?: number;
+} {
+   const colspan = entry.colspan ?? view.colspan;
+   return {
+      ...(colspan === undefined ? {} : { colspan }),
+      ...((entry.break ?? view.break) ? { break: true as const } : {}),
+      ...(entry.rowspan === undefined ? {} : { rowspan: entry.rowspan }),
+      ...(entry.row === undefined ? {} : { row: entry.row }),
+      ...(entry.col === undefined ? {} : { col: entry.col }),
+   };
+}
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 /** An entry that is one plain name, quoted or bare: a query, as the server's reader takes it. */
 const NAMED_QUERY = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -347,6 +414,14 @@ function readOnlyFrame(t: Tag | undefined): {
       ...(t?.has("break") ? { break: true as const } : {}),
       ...(t?.has("borderless") ? { borderless: true as const } : {}),
    };
+}
+
+/** A frame with its layout taken off, for a tile whose layout comes from {@link placed}. */
+function frameWithout<T extends { colspan?: number; break?: true }>(
+   frame: T,
+): Omit<T, "colspan" | "break"> {
+   const { colspan: _colspan, break: _break, ...rest } = frame;
+   return rest;
 }
 
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
@@ -486,12 +561,34 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
    }
 
    const tiles: DashboardTile[] = [];
+   /**
+    * A tile that names a query: framed by the query's own tags when the file
+    * declares it, and laid out by its entry over the query's `# colspan` and
+    * `# break`, as a view's tile is.
+    */
+   const namedQueryTile = (name: string, own: EntryLayout): DashboardTile => {
+      const frame = readOnlyFrame(
+         parseAnnotation(tagText(queryTags(parsed, lines, name))).tag,
+      );
+      return {
+         name,
+         declaration: { kind: "query" },
+         ...frameWithout(frame),
+         ...placed({ colspan: frame.colspan, break: frame.break }, own),
+      };
+   };
    for (const { text: entryText } of list.entries) {
       const quoted = QUOTED_ENTRY.exec(entryText);
       const textName = quoted ? undefined : TEXT_ENTRY.exec(entryText)?.[1];
       if (textName !== undefined) {
          const textTag = parseAnnotation([`# ${entryText}`]).tag?.tag(textName);
-         if (textTag?.text("kind") !== "text") {
+         // A bare named query with its layout on it, `by_carrier { row=1 col=1 }`.
+         const entryKind = textTag?.text("kind");
+         if (entryKind === undefined || entryKind === "query") {
+            tiles.push(namedQueryTile(textName, entryLayout(textTag)));
+            continue;
+         }
+         if (entryKind !== "text") {
             return {
                ok: false,
                reason:
@@ -506,33 +603,30 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
                reason: `Two text tiles are named \`${textName}\`, so the builder cannot tell them apart.`,
             };
          }
-         const colspan = gridWidth(textTag, "colspan");
          tiles.push({
             kind: "text",
             name: textName,
             markdown:
                parsed.textBlocks.find((block) => block.name === textName)
                   ?.body ?? "",
-            ...(colspan === undefined ? {} : { colspan }),
-            ...(textTag.has("break") ? { break: true } : {}),
+            ...placed({}, entryLayout(textTag)),
          });
          continue;
       }
       const entry = quoted?.[1] ?? entryText;
+      const own = entryLayout(
+         quoted?.[2]
+            ? (parseAnnotation([`# tile ${quoted[2]}`]).tag?.tag("tile") ??
+                 undefined)
+            : undefined,
+      );
       // A plain name, quoted or bare, is a named query,
       // `query: by_carrier is flights -> { … }`, here or in the model: the
       // server's reader runs it as `run: by_carrier`. Shown and movable, never
       // rewritten (see the `query` declaration), and framed by the query's own
       // tags when this file declares it, as the reader frames it.
       if (NAMED_QUERY.test(entry.trim())) {
-         const name = entry.trim();
-         tiles.push({
-            name,
-            declaration: { kind: "query" },
-            ...readOnlyFrame(
-               parseAnnotation(tagText(queryTags(parsed, lines, name))).tag,
-            ),
-         });
+         tiles.push(namedQueryTile(entry.trim(), own));
          continue;
       }
       const steps = quoted ? tileSteps(entry) : undefined;
@@ -557,6 +651,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             name: viewName,
             source: sourceName,
             declaration: { kind: "inherited" },
+            ...placed({}, own),
          });
          continue;
       }
@@ -585,7 +680,8 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
                      ? view.body.why
                      : "unreadable",
             },
-            ...readOnlyFrame(t),
+            ...frameWithout(readOnlyFrame(t)),
+            ...placed(viewLayout(t), own),
             ...chartField(view.tags),
             ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
          });
@@ -609,12 +705,9 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
          ...(t?.text("subtitle")
             ? { subtitle: t.text("subtitle") as string }
             : {}),
-         ...(t?.numeric("colspan") !== undefined
-            ? { colspan: t.numeric("colspan") as number }
-            : {}),
+         ...placed(viewLayout(t), own),
          ...chartField(view.tags),
          ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
-         ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });
    }
@@ -628,14 +721,11 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       if (value !== undefined) startingGivens[key] = value;
    }
 
-   // The server's rule: a written `dashboard { columns }` wins even when it is
-   // not a width (the default width then applies), and the alias only counts
-   // beside `tiles`.
+   // The server's rule: a `dashboard { columns }` that is not a width leaves
+   // the default width.
    const columnsTag = tag?.tag("dashboard")?.has("columns")
       ? gridWidth(tag.tag("dashboard"), "columns")
-      : artifactTag?.array("tiles")
-        ? gridWidth(artifactTag, "dashboard_columns")
-        : undefined;
+      : undefined;
 
    return {
       ok: true,

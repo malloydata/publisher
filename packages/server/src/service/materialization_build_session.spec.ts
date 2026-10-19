@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -827,6 +827,73 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
          expect(result.seededThrough).toBeUndefined();
       } finally {
          lake.cleanup();
+      }
+   });
+});
+
+describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => {
+   // The tag is best-effort, so the session may arrive already tagged by
+   // someone else; the cleanup has to run whenever the source is Snowflake.
+   it("issues ALTER SESSION UNSET QUERY_TAG against the federated handle", async () => {
+      const executed: string[] = [];
+      const original = DuckDBConnection.prototype.runSQL;
+      const runSQL = spyOn(
+         DuckDBConnection.prototype,
+         "runSQL",
+      ).mockImplementation(async function (
+         this: DuckDBConnection,
+         sql: string,
+      ) {
+         executed.push(sql);
+         // The passthrough statements need the Snowflake extension; every
+         // other statement runs for real so the build completes.
+         if (
+            sql.includes("snowflake_query") ||
+            sql.includes("snowflake_execute")
+         ) {
+            throw new Error("no snowflake extension in this test");
+         }
+         return original.call(this, sql);
+      });
+      const dir = mkdtempSync(join(tmpdir(), "snowflake-tag-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      try {
+         await buildSourceIntoStorage({
+            destinationName: "lake",
+            destinationConnection: {
+               name: "lake",
+               type: "duckdb",
+            } as ApiConnection,
+            sourceConnection: {
+               name: "sf",
+               type: "snowflake",
+            } as ApiConnection,
+            buildSQL: "SELECT 1",
+            physicalTableName: "t",
+            environmentPath: dir,
+            deps: {
+               federate: async () => ({
+                  handle: "secret_sf",
+                  sourceType: "snowflake" as const,
+                  close: async () => {},
+               }),
+               read: async () => ({
+                  selectSQL: "SELECT 1 AS x",
+                  jobId: null,
+                  cost: null,
+               }),
+            },
+         });
+         expect(
+            executed.some(
+               (sql) =>
+                  sql.includes("ALTER SESSION UNSET QUERY_TAG") &&
+                  sql.includes("secret_sf"),
+            ),
+         ).toBe(true);
+      } finally {
+         runSQL.mockRestore();
+         rmSync(dir, { recursive: true, force: true });
       }
    });
 });

@@ -192,42 +192,32 @@ describe("blockAbove", () => {
 });
 
 describe("readDashboardDocument", () => {
-   it("reads a width spelled only as the dashboard_columns alias", async () => {
-      const doc = await read(
-         SIMPLE.replace(
-            '"a -> by_cat"] givens { CATEGORY="Jeans" } } dashboard { columns=12 }',
-            '"a -> by_cat"] givens { CATEGORY="Jeans" } dashboard_columns=8 }',
-         ),
-      );
-      expect(doc.columns).toBe(8);
-   });
-
    describe("a width written badly", () => {
       const withTag = (tagLine: string) =>
          SIMPLE.replace(/^## artifact.*$/m, tagLine);
 
-      it("lets a written columns win even when it is not a width", async () => {
+      it("leaves the default width for a columns that is not a width", async () => {
          const doc = await read(
             withTag(
-               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 } dashboard { columns=1.5 }',
+               '## artifact { tiles=["a -> by_cat"] } dashboard { columns=1.5 }',
             ),
          );
          expect(doc.columns).toBeUndefined();
       });
 
-      it("reads the alias, spaced round its =, when no columns is written", async () => {
-         const doc = await read(
-            withTag(
-               '## artifact { tiles=["a -> by_cat"] dashboard_columns = 8 }',
-            ),
-         );
-         expect(doc.columns).toBe(8);
-      });
-
       it("takes text that only begins with digits as no width", async () => {
          const doc = await read(
             withTag(
-               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8px }',
+               '## artifact { tiles=["a -> by_cat"] } dashboard { columns="8px" }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+
+      it("reads no width from the removed dashboard_columns spelling", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 }',
             ),
          );
          expect(doc.columns).toBeUndefined();

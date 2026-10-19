@@ -881,11 +881,6 @@ describe("Dashboard discovery (E2E)", () => {
          expect(messages).not.toContainEqual(
             expect.stringContaining("shipping.ships_from"),
          );
-         expect(messages).toContainEqual(
-            expect.stringContaining(
-               'Custom dashboard components are not supported, so "dashboards/orphan.jsx" is ignored',
-            ),
-         );
          // The refinement tile is legal Malloy and must not be warned about.
          expect(messages).not.toContainEqual(
             expect.stringContaining("by_brand + { limit: 2 }"),

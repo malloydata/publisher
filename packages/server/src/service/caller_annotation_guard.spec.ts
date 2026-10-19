@@ -295,13 +295,15 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          return performance.now() - started;
       };
       time(prose(1000));
-      const single = Math.min(time(prose(32500)), time(prose(32500)));
-      const double = Math.min(time(prose(65000)), time(prose(65000)));
+      const small = Math.min(time(prose(16250)), time(prose(16250)));
+      const large = Math.min(time(prose(65000)), time(prose(65000)));
       console.log(
-         `caller-annotation guard, three asks: ${Math.round(single)}ms at ~490KB, ${Math.round(double)}ms at ~975KB`,
+         `caller-annotation guard, three asks: ${Math.round(small)}ms at ~245KB, ${Math.round(large)}ms at ~975KB`,
       );
-      // Quadratic doubles to 4x; linear stays near 2x, so 3x leaves room for noise.
-      expect(double).toBeLessThan(3 * single + 50);
+      // Four times the text: linear takes about 4x, quadratic 16x. 8x keeps
+      // that apart with room for a shared runner's noise, which a 2x step
+      // (2x against 4x) did not: Windows CI measured 3.5x on linear code.
+      expect(large).toBeLessThan(8 * small + 50);
       expect(
          hasCallerAuthorizeAnnotation(`${prose(65000)}\n#(authorize) y\n`),
       ).toBe(true);

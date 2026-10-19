@@ -1679,3 +1679,76 @@ describe("the rejection message matches what the guard actually accepts", () => 
       expect(message).not.toContain("hyphen");
    });
 });
+
+// ---------------------------------------------------------------------------
+// A raw Azure URL is read only inside a configured attachment
+// ---------------------------------------------------------------------------
+describe("listTablesForSchema: Azure file URLs", () => {
+   const attached = (fileUrl: string): ApiConnection => ({
+      name: "lake",
+      type: "duckdb",
+      duckdbConnection: {
+         attachedDatabases: [
+            {
+               name: "az_files",
+               type: "azure",
+               azureConnection: {
+                  authType: "sas_token",
+                  sasUrl: fileUrl,
+               },
+            },
+         ],
+      },
+   });
+   const describeRows = [{ column_name: "id", column_type: "INTEGER" }];
+
+   it.each([
+      "https://internal.example/c/x.parquet",
+      "https://acct.blob.core.windows.net/other-container/x.parquet",
+      "https://other.blob.core.windows.net/data/x.parquet",
+      "abfss://other.dfs.core.windows.net/data/x.parquet",
+      "az://other.blob.core.windows.net/data/x.parquet",
+   ])(
+      "refuses %s, which no attachment covers, without reading it",
+      async (url) => {
+         const m = mockConnection(describeRows);
+         await expect(
+            listTablesForSchema(
+               attached(
+                  "https://acct.blob.core.windows.net/data/a.parquet?sv=1&sig=s",
+               ),
+               url,
+               m.conn,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(m.lastSQL).toBe("");
+      },
+   );
+
+   it("refuses a URL on a connection with no Azure attachment", async () => {
+      const m = mockConnection(describeRows);
+      await expect(
+         listTablesForSchema(
+            { name: "plain", type: "duckdb", duckdbConnection: {} },
+            "https://acct.blob.core.windows.net/data/x.parquet",
+            m.conn,
+         ),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(m.lastSQL).toBe("");
+   });
+
+   it("reads a file inside the attachment's container", async () => {
+      const m = mockConnection(describeRows);
+      const tables = await listTablesForSchema(
+         attached(
+            "https://acct.blob.core.windows.net/data/a.parquet?sv=1&sig=s",
+         ),
+         "https://acct.blob.core.windows.net/data/sub/x.parquet",
+         m.conn,
+      );
+      expect(tables).toHaveLength(1);
+      expect(m.lastSQL).toContain(
+         "acct.blob.core.windows.net/data/sub/x.parquet",
+      );
+   });
+});

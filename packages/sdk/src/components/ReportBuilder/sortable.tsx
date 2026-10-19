@@ -3,9 +3,9 @@
 
 import { pointerIntersection } from "@dnd-kit/collision";
 import { Feedback, KeyboardSensor, PointerSensor } from "@dnd-kit/dom";
-import { useDroppable } from "@dnd-kit/react";
+import { useDragDropManager, useDroppable } from "@dnd-kit/react";
 import { useSortable, type UseSortableInput } from "@dnd-kit/react/sortable";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 /**
  * The builder's drag and drop, on `@dnd-kit/react`.
@@ -99,15 +99,19 @@ interface TileSortableHandles {
 export function TileSortable({
    id,
    index,
+   disabled = false,
    children,
 }: {
    id: string;
    index: number;
+   /** Not movable now: the grid is drawn as one column, where a move means nothing. */
+   disabled?: boolean;
    children: (handles: TileSortableHandles) => ReactNode;
 }) {
    const { ref, handleRef, isDragSource } = useSortable({
       id,
       index,
+      disabled,
       type: TILE_TYPE,
       accept: TILE_TYPE,
       // The same rule the gaps use: the target is what the POINTER is over.
@@ -157,4 +161,28 @@ export function GapDroppable({
       data: { after },
    });
    return <>{children({ ref, isDropTarget })}</>;
+}
+
+/**
+ * Escape cancels a drag wherever focus is. The library's pointer drag listens
+ * for Escape only on the element under the pointer, and a press on a tile's
+ * padding focuses nothing, so the key reached the page instead and the drop
+ * landed on release. Mounted inside the drag provider while a drag is live.
+ */
+export function EscapeCancelsDrag({ active }: { active: boolean }) {
+   const manager = useDragDropManager();
+   useEffect(() => {
+      if (!active || !manager) return;
+      const onKey = (event: KeyboardEvent) => {
+         if (event.key !== "Escape" || manager.dragOperation.status.idle)
+            return;
+         // The drag's, not the builder's: it must not also drop the selection.
+         event.preventDefault();
+         event.stopPropagation();
+         manager.actions.stop({ event, canceled: true });
+      };
+      window.addEventListener("keydown", onKey, true);
+      return () => window.removeEventListener("keydown", onKey, true);
+   }, [active, manager]);
+   return null;
 }

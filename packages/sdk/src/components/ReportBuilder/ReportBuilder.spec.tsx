@@ -536,10 +536,10 @@ describe("ReportBuilder: tiles added and removed", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile"]',
+         'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile" { colspan=6 }]',
       );
       expect(written).toContain(
-         '  # colspan=6\n  # label="Revenue by state"\n  view: sales_by_state_tile is sales_by_state\n}',
+         '\n\n  # label="Revenue by state"\n  view: sales_by_state_tile is sales_by_state\n}',
       );
    });
 
@@ -634,12 +634,13 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
             "By carrier",
          ),
       ).toBeDefined();
-      // No title field on the tile, no width edge, and a menu that says why.
+      // No title field on the tile, and a menu that says why. Its width and
+      // height are the report's, on its entry, so both edges are there.
       fireEvent.click(screen.getByText("By carrier"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(
          screen.queryByRole("separator", { name: "Width of by_carrier" }),
-      ).toBeNull();
+      ).not.toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_carrier"));
       expect(
          screen.getByText(
@@ -694,6 +695,37 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 12");
       fireEvent.click(button("Undo"));
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+   });
+
+   it("steps a tile's height from the keyboard on its bottom edge, and fits it again on Delete", async () => {
+      await mount();
+      const edge = () =>
+         screen.getByRole("separator", { name: "Height of By category" });
+      expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
+      expect(itemStyleOf("by_cat")).not.toContain("height:");
+      fireEvent.keyDown(edge(), { key: "ArrowDown" });
+      // One row past the fewest a chart is offered (3).
+      expect(edge().getAttribute("aria-valuetext")).toBe("4 rows tall");
+      // Four 80px rows and the three gaps between them.
+      expect(itemStyleOf("by_cat")).toContain("height: 368px");
+      fireEvent.keyDown(edge(), { key: "End" });
+      expect(edge().getAttribute("aria-valuenow")).toBe("16");
+      fireEvent.keyDown(edge(), { key: "Delete" });
+      expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
+      fireEvent.click(button("Undo"));
+      expect(edge().getAttribute("aria-valuenow")).toBe("16");
+   });
+
+   it("lays out a tile the model owns: it has both edges", async () => {
+      const source = `## artifact { title="T" tiles=["orders -> by_brand"] } dashboard { columns=12 }\nimport { orders } from '../orders.malloy'`;
+      const document = await openDocument(source);
+      render(<ReportBuilder source={source} document={document} />);
+      expect(
+         screen.getByRole("separator", { name: "Width of by_brand" }),
+      ).toBeDefined();
+      expect(
+         screen.getByRole("separator", { name: "Height of by_brand" }),
+      ).toBeDefined();
    });
 
    it("sets a tile's width by dragging its right edge, not from its menu", async () => {
@@ -1000,5 +1032,104 @@ describe("ReportBuilder: saving", () => {
       // The edit is still on screen and still unsaved.
       expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
       expect(button("Save")).toBeDefined();
+   });
+});
+
+describe("ReportBuilder: arranging a placed report", () => {
+   const PLACED = `## artifact { title="T" tiles=["a -> x" { row=1 col=1 colspan=6 rowspan=3 }, "a -> y" { row=9 col=1 colspan=6 rowspan=3 }] } dashboard { columns=12 }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is vx
+
+  view: y is vy
+}`;
+   const mountPlaced = async (source = PLACED) => {
+      const document = await openDocument(source);
+      render(<ReportBuilder source={source} document={document} />);
+   };
+
+   it("packs the tiles upward from the Arrange menu, as one undo step", async () => {
+      await mountPlaced();
+      expect(itemStyleOf("y")).toContain("grid-row: 9/span 3");
+      fireEvent.click(button("Arrange tiles"));
+      fireEvent.click(
+         screen.getByRole("menuitem", { name: /Pack tiles upward/ }),
+      );
+      expect(itemStyleOf("y")).toContain("grid-row: 4/span 3");
+      fireEvent.click(button("Undo"));
+      expect(itemStyleOf("y")).toContain("grid-row: 9/span 3");
+   });
+
+   it("lets the tiles flow again, keeping their sizes", async () => {
+      await mountPlaced();
+      fireEvent.click(button("Arrange tiles"));
+      fireEvent.click(screen.getByRole("menuitem", { name: /Let tiles flow/ }));
+      expect(itemStyleOf("y")).not.toMatch(/grid-row: \d+\//);
+      expect(itemStyleOf("y")).toContain("height: 272px");
+      // A report that flows has nothing to arrange.
+      expect(
+         screen.queryByRole("button", { name: "Arrange tiles", hidden: true }),
+      ).toBeNull();
+   });
+
+   it("offers no packing when there is no gap to close", async () => {
+      await mountPlaced(PLACED.replace("row=9", "row=4"));
+      fireEvent.click(button("Arrange tiles"));
+      expect(
+         screen
+            .getByRole("menuitem", { name: /Pack tiles upward/ })
+            .getAttribute("aria-disabled"),
+      ).toBe("true");
+   });
+
+   it("moves the selected tile a cell at a time with Option and the arrows", async () => {
+      await mountPlaced();
+      fireEvent.click(tile("x"));
+      fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+      expect(itemStyleOf("x")).toContain("grid-column: 2/span 6");
+      fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
+      expect(itemStyleOf("x")).toContain("grid-row: 2/span 3");
+      // Held on the grid: six columns wide, it goes no further right than 7.
+      for (let i = 0; i < 10; i++)
+         fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+      expect(itemStyleOf("x")).toContain("grid-column: 7/span 6");
+   });
+
+   it("keeps the selection on the same tile when packing re-sorts the tiles", async () => {
+      // y sits at row 9 beside nothing; packing moves it to row 4, and on a
+      // report where it reads first after the move the order changes.
+      await mountPlaced(
+         PLACED.replace(
+            '"a -> x" { row=1 col=1 colspan=6 rowspan=3 }',
+            '"a -> x" { row=5 col=7 colspan=6 rowspan=3 }',
+         ),
+      );
+      fireEvent.click(tile("y"));
+      expect(tile("y").getAttribute("aria-current")).toBe("true");
+      fireEvent.click(button("Arrange tiles"));
+      fireEvent.click(
+         screen.getByRole("menuitem", { name: /Pack tiles upward/ }),
+      );
+      expect(tile("y").getAttribute("aria-current")).toBe("true");
+      expect(tile("x").getAttribute("aria-current")).toBe("false");
+   });
+
+   it("leaves Option and an arrow to the browser when no placed tile is selected", async () => {
+      await mountPlaced();
+      const event = new KeyboardEvent("keydown", {
+         key: "ArrowLeft",
+         altKey: true,
+         cancelable: true,
+      });
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+   });
+
+   it("offers no Arrange menu on a report that flows", async () => {
+      await mount();
+      expect(
+         screen.queryByRole("button", { name: "Arrange tiles", hidden: true }),
+      ).toBeNull();
    });
 });
