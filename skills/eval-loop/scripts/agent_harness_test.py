@@ -579,5 +579,31 @@ class VerdictScanner(unittest.TestCase):
                          json_scan.json_objects(self.REPLY)[-1])
 
 
+class RunCliStampsEventsTest(unittest.TestCase):
+    """run_cli reads stdout as it streams and stamps each event with `_t`,
+    seconds since spawn, so an attempt can say when each step happened."""
+
+    def test_events_carry_increasing_stamps(self):
+        script = ("import json, sys, time\n"
+                  "print(json.dumps({'type': 'system'})); sys.stdout.flush(); time.sleep(0.2)\n"
+                  "print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'ok'}]}}))\n")
+        events, text, stderr, attempts, _wall = ah.run_cli(
+            [sys.executable, "-c", script], cwd=str(HERE), timeout=30, retries=0)
+        self.assertEqual(text, "ok")
+        self.assertEqual(attempts, 1)
+        self.assertEqual([e["type"] for e in events], ["system", "assistant"])
+        self.assertLess(events[0]["_t"], events[1]["_t"])
+        self.assertGreaterEqual(events[1]["_t"] - events[0]["_t"], 0.15)
+
+    def test_timeout_returns_no_events(self):
+        events, _text, stderr, _attempts, _wall = ah.run_cli(
+            [sys.executable, "-c", "import time; time.sleep(5)"], cwd=str(HERE), timeout=1, retries=0)
+        self.assertEqual(events, [])
+        self.assertIn("timeout after 1s", stderr)
+
+    def test_publish_plugin_is_always_blocked(self):
+        self.assertIn("PublishPlugin", ah.ALWAYS_BLOCKED)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
