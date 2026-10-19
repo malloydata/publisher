@@ -3753,9 +3753,10 @@ export class MaterializationService {
     * does archiving the version again after an unarchive; archiving one that
     * is already archived changes nothing and starts no reclaim).
     *
-    * Done under the version's lock, and only while it is still archived: an
-    * unarchive, and a run of the version (which is refused while it is
-    * archived), take the same lock.
+    * Done under the version's lock, and only while it is still archived, or
+    * deleted (no row: a delete that left a table owed): an unarchive, a
+    * publish of the version, and a run of it (which is refused while it is
+    * archived) take the same lock.
     */
    async reclaimVersionTables(
       environmentName: string,
@@ -3776,75 +3777,15 @@ export class MaterializationService {
                packageName,
                versionId,
             );
-            if (row?.archiveStatus !== "archive") return;
-            const runs = (
-               await this.repository.listMaterializations(
-                  environmentId,
-                  packageName,
-                  { version: versionId },
-               )
-            ).filter(
-               (m) =>
-                  isVersionOwnedRun(m) &&
-                  m.metadata?.mode === "auto" &&
-                  m.status !== "PENDING" &&
-                  m.status !== "MANIFEST_ROWS_READY",
-            );
-            if (runs.length === 0) return;
-            const reclaimed = new Set(runs.map((m) => m.id));
-            const stillReferenced = await this.tablesStillReferenced(
+            if (row !== null && row.archiveStatus !== "archive") return;
+            await this.reclaimOwnedRuns(
+               environment,
+               environmentName,
                environmentId,
                packageName,
-               (other) => !reclaimed.has(other.id),
-            );
-            // Never through getPackage: the version is archived, and its
-            // package-local duckdb went with its unload.
-            const connectionFor = await this.connectionResolverFor(
-               environment,
-               packageName,
                versionId,
+               row === null ? "deleted" : "archived",
             );
-            for (const m of runs) {
-               const owed = await this.dropManifestEntries(
-                  environment,
-                  environmentName,
-                  packageName,
-                  m.id,
-                  reclaimableEntries(m),
-                  stillReferenced,
-                  connectionFor,
-               );
-               if (owed.length === 0) {
-                  await this.repository.deleteMaterialization(m.id);
-                  continue;
-               }
-               await this.repository.updateMaterialization(m.id, {
-                  status: "FAILED",
-                  error: `Reclaiming archived version ${versionId} could not drop ${owed.length} table(s); the next reclaim retries.`,
-                  manifest: {
-                     ...(m.manifest ?? { strict: false }),
-                     entries: Object.fromEntries(
-                        owed.map((e) => [e.sourceEntityId, e]),
-                     ),
-                  },
-               });
-               logger.warn(
-                  "Kept a reclaimed run's record: some of its tables could not be dropped",
-                  {
-                     environmentName,
-                     packageName,
-                     version: versionId,
-                     materializationId: m.id,
-                     owed: owed.map((e) => e.physicalTableName),
-                  },
-               );
-            }
-            logger.info("Reclaimed an archived version's tables", {
-               environmentName,
-               packageName,
-               version: versionId,
-               runs: runs.length,
-            });
          });
       } catch (err) {
          logger.warn("Failed to reclaim an archived version's tables", {
@@ -3857,10 +3798,137 @@ export class MaterializationService {
    }
 
    /**
-    * Reclaim every archived version that still has runs to reclaim, across
-    * the environments this server holds. Run once at startup: a reclaim is
-    * started only by an archive, so one that a crash or a failed drop cut
-    * short would otherwise never run again. Best-effort, one at a time.
+    * Reclaim what a version being deleted alone owns, as an archive's reclaim
+    * does (see reclaimVersionTables), before the delete removes its row.
+    * Called by the delete holding the version's lock, so it takes none; a
+    * table it could not drop keeps a FAILED record, which the startup sweep
+    * tries again once the row is gone. Best-effort: never throws.
+    */
+   async reclaimDeletingVersion(
+      environmentName: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      try {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const environmentId = await this.resolveEnvironmentId(environmentName);
+         await this.reclaimOwnedRuns(
+            environment,
+            environmentName,
+            environmentId,
+            packageName,
+            versionId,
+            "deleted",
+         );
+      } catch (err) {
+         logger.warn("Failed to reclaim a deleted version's tables", {
+            environmentName,
+            packageName,
+            version: versionId,
+            error: errMessage(err),
+         });
+      }
+   }
+
+   /**
+    * Drop the tables of a version's own committed or failed auto-runs that no
+    * other run references, and delete those runs; keep a FAILED record naming
+    * any table that could not be dropped. Called holding the version's lock,
+    * with the version archived or being deleted, so nothing serves those
+    * tables or writes them.
+    */
+   private async reclaimOwnedRuns(
+      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
+      environmentName: string,
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      cause: "archived" | "deleted",
+   ): Promise<void> {
+      const runs = (
+         await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+            {
+               version: versionId,
+            },
+         )
+      ).filter(
+         (m) =>
+            isVersionOwnedRun(m) &&
+            m.metadata?.mode === "auto" &&
+            m.status !== "PENDING" &&
+            m.status !== "MANIFEST_ROWS_READY",
+      );
+      if (runs.length === 0) return;
+      const reclaimed = new Set(runs.map((m) => m.id));
+      const stillReferenced = await this.tablesStillReferenced(
+         environmentId,
+         packageName,
+         (other) => !reclaimed.has(other.id),
+      );
+      // Never through getPackage: the version is out of service, and its
+      // package-local duckdb went with its unload.
+      const connectionFor = await this.connectionResolverFor(
+         environment,
+         packageName,
+         versionId,
+      );
+      for (const m of runs) {
+         const owed = await this.dropManifestEntries(
+            environment,
+            environmentName,
+            packageName,
+            m.id,
+            reclaimableEntries(m),
+            stillReferenced,
+            connectionFor,
+         );
+         if (owed.length === 0) {
+            await this.repository.deleteMaterialization(m.id);
+            continue;
+         }
+         await this.repository.updateMaterialization(m.id, {
+            status: "FAILED",
+            error: `Reclaiming ${cause} version ${versionId} could not drop ${owed.length} table(s); the next reclaim retries.`,
+            manifest: {
+               ...(m.manifest ?? { strict: false }),
+               entries: Object.fromEntries(
+                  owed.map((e) => [e.sourceEntityId, e]),
+               ),
+            },
+         });
+         logger.warn(
+            "Kept a reclaimed run's record: some of its tables could not be dropped",
+            {
+               environmentName,
+               packageName,
+               version: versionId,
+               materializationId: m.id,
+               owed: owed.map((e) => e.physicalTableName),
+            },
+         );
+      }
+      logger.info(
+         `Reclaimed ${cause === "archived" ? "an archived" : "a deleted"} version's tables`,
+         {
+            environmentName,
+            packageName,
+            version: versionId,
+            runs: runs.length,
+         },
+      );
+   }
+
+   /**
+    * Reclaim every archived version that still has runs to reclaim, and every
+    * deleted version whose delete left a table owed, across the environments
+    * this server holds. Run once at startup: a reclaim is started only by an
+    * archive or a delete, so one that a crash or a failed drop cut short would
+    * otherwise never run again. Best-effort, one at a time.
     */
    async reclaimArchivedVersions(): Promise<void> {
       for (const environment of this.environmentStore.getLoadedEnvironments()) {
@@ -3868,15 +3936,46 @@ export class MaterializationService {
          try {
             const environmentId =
                await this.resolveEnvironmentId(environmentName);
-            for (const version of await this.repository.listVersionsByEnvironment(
-               environmentId,
-            )) {
+            const rows =
+               await this.repository.listVersionsByEnvironment(environmentId);
+            for (const version of rows) {
                if (version.archiveStatus !== "archive") continue;
                await this.reclaimVersionTables(
                   environmentName,
                   version.packageName,
                   version.versionId,
                );
+            }
+            // A deleted version has no row: its own runs, still recorded,
+            // name it. A package that lost its last version lost its runs
+            // with it, so only packages that still have versions are read.
+            const held = new Map<string, Set<string>>();
+            for (const row of rows) {
+               const ids = held.get(row.packageName) ?? new Set<string>();
+               ids.add(row.versionId);
+               held.set(row.packageName, ids);
+            }
+            for (const [packageName, ids] of held) {
+               const deleted = new Set<string>();
+               for (const m of await this.repository.listMaterializations(
+                  environmentId,
+                  packageName,
+               )) {
+                  if (
+                     isVersionOwnedRun(m) &&
+                     m.version !== null &&
+                     !ids.has(m.version)
+                  ) {
+                     deleted.add(m.version);
+                  }
+               }
+               for (const versionId of deleted) {
+                  await this.reclaimVersionTables(
+                     environmentName,
+                     packageName,
+                     versionId,
+                  );
+               }
             }
          } catch (err) {
             logger.warn("Failed to sweep archived versions for reclaim", {

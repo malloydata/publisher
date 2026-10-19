@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PackageVersionError } from "../../errors";
+import { PackageVersionError, refuseVersionDelete } from "../../errors";
 import {
    NewVersion,
    PromoteRule,
@@ -203,6 +203,66 @@ export class VersionRepository {
             ],
          );
          return mapRow(row!);
+      });
+   }
+
+   /**
+    * Delete one version's row, in one transaction with the checks that guard
+    * it: while other versions remain, neither the package's `latest`
+    * (VERSION_IS_LATEST) nor its last version in service while archived ones
+    * remain (VERSION_IS_LAST_ACTIVE). Deleting the package's only version
+    * deletes the package with it, as deleting the package does: its row, its
+    * runs and its ledger, so no package is left with no version.
+    */
+   async delete(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<{ version: Version; packageRemoved: boolean }> {
+      return this.db.transaction(async (tx) => {
+         const target = await tx.get<Row>(
+            `SELECT * FROM versions WHERE ${KEY}`,
+            [environmentId, packageName, versionId],
+         );
+         if (!target) throw versionNotFound(packageName, versionId);
+         const counts = await tx.get<{
+            total: number | bigint;
+            active: number | bigint;
+         }>(
+            "SELECT count(*) AS total, count(*) FILTER (WHERE archive_status = 'unarchive') AS active FROM versions WHERE environment_id = ? AND package_name = ?",
+            [environmentId, packageName],
+         );
+         const packageRemoved = Number(counts?.total ?? 0) <= 1;
+         if (!packageRemoved) {
+            refuseVersionDelete(
+               packageName,
+               versionId,
+               target.archive_status === "unarchive",
+               await readLatest(tx, environmentId, packageName),
+               Number(counts?.active ?? 0),
+            );
+         }
+         await tx.run(`DELETE FROM versions WHERE ${KEY}`, [
+            environmentId,
+            packageName,
+            versionId,
+         ]);
+         if (packageRemoved) {
+            const byPackage = "WHERE environment_id = ? AND package_name = ?";
+            await tx.run(`DELETE FROM incremental_ledger ${byPackage}`, [
+               environmentId,
+               packageName,
+            ]);
+            await tx.run(`DELETE FROM materializations ${byPackage}`, [
+               environmentId,
+               packageName,
+            ]);
+            await tx.run(
+               "DELETE FROM packages WHERE environment_id = ? AND name = ?",
+               [environmentId, packageName],
+            );
+         }
+         return { version: mapRow(target), packageRemoved };
       });
    }
 

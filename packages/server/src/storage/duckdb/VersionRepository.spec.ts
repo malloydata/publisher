@@ -355,6 +355,126 @@ describe("VersionRepository", () => {
       );
    });
 
+   it("deletes a version's row, leaving the others, and frees its id", async () => {
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      await repo.commitPublish(newVersion("2.0.0"), always);
+      const deleted = await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
+      expect(deleted.packageRemoved).toBe(false);
+      expect(deleted.version.versionId).toBe("1.0.0");
+      expect(deleted.version.contentHash).toBe("hash-1.0.0");
+      expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
+      expect(
+         (await repo.listVersions(ENV_ID, PKG)).map((v) => v.versionId),
+      ).toEqual(["2.0.0"]);
+      expect(await latestOf(repo)).toBe("2.0.0");
+      // The id is free: publishing it again, with other content, is a new row.
+      const again = await repo.commitPublish(
+         newVersion("1.0.0", { contentHash: "other" }),
+         never,
+      );
+      expect(again.version.contentHash).toBe("other");
+      await expectReason(
+         repo.deleteVersion(ENV_ID, PKG, "9.0.0"),
+         "VERSION_NOT_FOUND",
+      );
+   });
+
+   it("deletes an archived version, but never latest or the last one in service while others remain", async () => {
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      await repo.commitPublish(newVersion("2.0.0"), always);
+      await expectReason(
+         repo.deleteVersion(ENV_ID, PKG, "2.0.0"),
+         "VERSION_IS_LATEST",
+      );
+      await repo.setVersionArchiveStatus(ENV_ID, PKG, "1.0.0", "archive");
+      await repo.commitPublish(newVersion("3.0.0"), never);
+      // 2.0.0 is latest, 3.0.0 is in service, 1.0.0 is archived.
+      const archived = await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
+      expect(archived.version.archiveStatus).toBe("archive");
+      expect(archived.packageRemoved).toBe(false);
+
+      // Explicit promotion: no latest. With an archived version left, the
+      // last version in service is kept.
+      const other = await freshRepo();
+      await other.repo.commitPublish(newVersion("1.0.0"), never);
+      await other.repo.commitPublish(newVersion("2.0.0"), never);
+      await other.repo.setVersionArchiveStatus(ENV_ID, PKG, "1.0.0", "archive");
+      await expectReason(
+         other.repo.deleteVersion(ENV_ID, PKG, "2.0.0"),
+         "VERSION_IS_LAST_ACTIVE",
+      );
+      expect(
+         (await other.repo.getVersion(ENV_ID, PKG, "2.0.0"))!.archiveStatus,
+      ).toBe("unarchive");
+   });
+
+   it("deletes the package with its only version: its row, runs and ledger", async () => {
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "MANIFEST_FILE_READY",
+         null,
+         {
+            version: "1.0.0",
+         },
+      );
+      await repo.upsertIncrementalLedgerEntry({
+         environmentId: ENV_ID,
+         packageName: PKG,
+         sourceEntityId: "s",
+         coveredThroughValue: "1",
+         coveredThroughType: "number",
+         watermarkDimension: "w",
+         mergeKeyDimensions: [],
+         derivedStrategy: "range_replace",
+         advancedByMaterializationId: null,
+         connectionName: "duckdb",
+         physicalTableName: "t",
+      });
+      // An unrelated package keeps everything.
+      await repo.createPackage({
+         environmentId: ENV_ID,
+         name: "other",
+         manifestPath: "/env/other",
+      });
+      await repo.createMaterialization(ENV_ID, "other", "MANIFEST_FILE_READY");
+
+      const deleted = await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
+      expect(deleted.packageRemoved).toBe(true);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await repo.hasVersions(ENV_ID, PKG)).toBe(false);
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+      expect(
+         await repo.getIncrementalLedgerEntry(ENV_ID, {
+            connectionName: "duckdb",
+            physicalTableName: "t",
+         }),
+      ).toBeNull();
+      expect(await repo.getPackageByName(ENV_ID, "other")).not.toBeNull();
+      expect(await repo.listMaterializations(ENV_ID, "other")).toHaveLength(1);
+   });
+
+   it("removes the package once two concurrent deletes take both its versions", async () => {
+      // Each delete alone leaves a version; the two share the registry's
+      // transaction, so the second sees it is deleting the last one.
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), never);
+      await repo.commitPublish(newVersion("2.0.0"), never);
+      const outcomes = await Promise.all([
+         repo.deleteVersion(ENV_ID, PKG, "1.0.0"),
+         repo.deleteVersion(ENV_ID, PKG, "2.0.0"),
+      ]);
+      expect(outcomes.map((o) => o.packageRemoved).sort()).toEqual([
+         false,
+         true,
+      ]);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+   });
+
    it("binds and clears a version's manifest", async () => {
       const { repo } = await freshRepo();
       await repo.commitPublish(newVersion("1.0.0"), always);

@@ -98,6 +98,8 @@ export function createDuckDBRepository(
             versionId,
             manifestPath,
          ),
+      deleteVersion: (environmentId, packageName, versionId) =>
+         versions.delete(environmentId, packageName, versionId),
 
       listConnections: (environmentId) =>
          connections.listConnections(environmentId),

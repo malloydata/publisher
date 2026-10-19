@@ -25,8 +25,8 @@ type ApiPackage = components["schemas"]["Package"];
 
 /**
  * A package's published versions and their lifecycle: list, get, archive and
- * unarchive, manifest binding, and the `latest` pointer. The rules live in the
- * environment's VersionService; this is their HTTP shape.
+ * unarchive, delete, manifest binding, and the `latest` pointer. The rules
+ * live in the environment's VersionService; this is their HTTP shape.
  */
 export class VersionController {
    constructor(private readonly environmentStore: EnvironmentStore) {}
@@ -87,6 +87,28 @@ export class VersionController {
          row,
          await versions.latestOf(packageName),
       );
+   }
+
+   /**
+    * Delete a version for good. Answers the version as it was. When it was
+    * the package's only version the package went with it, and so do the
+    * package's cached embeddings.
+    */
+   async deleteVersion(
+      environmentName: string,
+      packageName: string,
+      version: unknown,
+   ): Promise<ApiPackageVersion> {
+      this.assertWritable();
+      const { versions } = await this.service(environmentName);
+      const deleted = await versions.deleteVersion(packageName, version);
+      if (deleted.packageRemoved) {
+         this.environmentStore.cleanupPackageEmbeddings(
+            environmentName,
+            packageName,
+         );
+      }
+      return toApiVersion(environmentName, deleted.version, null);
    }
 
    async setManifest(
@@ -222,6 +244,16 @@ export function registerVersionRoutes(
             req.params.packageName,
             req.params.version,
             req.body,
+         ),
+      ),
+   );
+   app.delete(
+      `${pkg}/versions/:version`,
+      route((req) =>
+         controller.deleteVersion(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.version,
          ),
       ),
    );

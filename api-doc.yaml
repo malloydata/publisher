@@ -1706,7 +1706,8 @@ paths:
 
         On a versioned package this deletes every published version and its files. To take one
         version out of service while keeping the rest, archive it with
-        `PATCH .../packages/{packageName}/versions/{version}`.
+        `PATCH .../packages/{packageName}/versions/{version}`; to remove one version for good,
+        delete it with `DELETE .../packages/{packageName}/versions/{version}`.
       parameters:
         - name: environmentName
           in: path
@@ -1815,7 +1816,8 @@ paths:
           auto-runs built under `scope: version` are reclaimed in the background, with their run
           records; tables another version's run still references are kept, and so are an
           orchestrated run's, whose names and lifetime the caller that assigned them owns. Its
-          files stay on disk, so the publisher never reclaims an archived version's directory.
+          files stay on disk, so it can be unarchived. To remove them, delete the version with
+          `DELETE .../versions/{version}`.
         - `unarchive` puts it back in service. It loads again on its next read, and serves live
           until it is built again.
 
@@ -1844,6 +1846,61 @@ paths:
       responses:
         "200":
           description: The version after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags:
+        - versions
+      operationId: delete-package-version
+      summary: Delete a version
+      description: |
+        Removes one version for good, where an archive only takes it out of service. The version
+        is unloaded from memory, the tables its own auto-runs built under `scope: version` are
+        dropped with their run records (the tables an archive reclaims, dropped here before the
+        response), and its row and its files are deleted. Other versions are untouched. It cannot
+        be undone, and it frees the version id: a later publish of the same version is a new
+        version, with whatever content it carries.
+
+        An archived version can be deleted too; that is how its files are reclaimed. Deleting the
+        package's only version deletes the package with it (its row, run records and ledger), so
+        no package is left with no version.
+
+        A table that could not be dropped keeps a failed run record naming it, and the server
+        tries the drop again when it next starts. Tables another version's run still references
+        are kept, as are an orchestrated run's.
+
+        A delete is refused with 409 when:
+
+        - the version is the package's `latest` and other versions remain (`reason`
+          `VERSION_IS_LATEST`): move `latest` first;
+        - it is the package's last version in service and archived versions remain (`reason`
+          `VERSION_IS_LAST_ACTIVE`): a package that has versions always keeps one in service.
+          Delete the archived versions first, or delete the package;
+        - a materialization of that version is running (`reason` `VERSION_BUILDING`): wait for
+          it, or stop it.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/versionPath"
+      responses:
+        "200":
+          description: The version deleted
           content:
             application/json:
               schema:
@@ -3821,11 +3878,13 @@ components:
           * PACKAGE_IS_VERSIONED: the package has published versions, which are
             immutable, so it cannot be changed in place.
           * VERSION_IS_LATEST: the version is the package's `latest` and cannot
-            be archived. Move `latest` first.
+            be archived, or deleted while other versions remain. Move `latest` first.
           * VERSION_IS_LAST_ACTIVE: the version is the package's last one in
-            service and cannot be archived. Delete the package instead.
+            service and cannot be archived, or deleted while archived versions
+            remain. Delete the package instead.
           * VERSION_BUILDING: a materialization of the version is running, and
-            archiving would reclaim the tables it is writing. Wait for it, or stop it.
+            archiving or deleting it would drop the tables it is writing. Wait for
+            it, or stop it.
       content:
         application/json:
           schema:
@@ -8086,11 +8145,12 @@ components:
                 so it cannot be changed in place (a write, or a publish with
                 package versioning off).
               * VERSION_IS_LATEST (409): the package's `latest` version cannot be
-                archived.
+                archived, or deleted while other versions remain.
               * VERSION_IS_LAST_ACTIVE (409): the package's last version in
-                service cannot be archived.
+                service cannot be archived, or deleted while archived versions
+                remain.
               * VERSION_BUILDING (409): a materialization of the version is
-                running, so it cannot be archived yet.
+                running, so it cannot be archived or deleted yet.
               * VERSION_ID_INVALID (400): a requested `versionId` is not a
                 semantic version.
               * VERSION_NOT_LATEST (400): an auto-run of a version other than

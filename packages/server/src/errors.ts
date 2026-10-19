@@ -159,6 +159,32 @@ export class PackageVersionError extends Error {
    }
 }
 
+/**
+ * The checks on deleting a version while other versions remain, given
+ * whether it is in service, the package's `latest`, and how many versions are
+ * in service. Throws the refusal; returns when the delete may go ahead.
+ */
+export function refuseVersionDelete(
+   packageName: string,
+   versionId: string,
+   inService: boolean,
+   latest: string | null,
+   activeCount: number,
+): void {
+   if (latest === versionId) {
+      throw new PackageVersionError(
+         "VERSION_IS_LATEST",
+         `Version ${versionId} is the latest version of package ${packageName}; make another version latest before deleting it.`,
+      );
+   }
+   if (inService && activeCount <= 1) {
+      throw new PackageVersionError(
+         "VERSION_IS_LAST_ACTIVE",
+         `Version ${versionId} is the last version of package ${packageName} in service; delete its archived versions first, or delete the package.`,
+      );
+   }
+}
+
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
    EPERM: "operation not permitted",

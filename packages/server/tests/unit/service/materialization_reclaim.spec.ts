@@ -226,6 +226,9 @@ describe("reclaiming an archived version's tables", () => {
             created.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
+      environment.setVersionDeletingHook((packageName, versionId) =>
+         created.reclaimDeletingVersion(ENV, packageName, versionId),
+      );
       return created;
    }
 
@@ -543,6 +546,76 @@ describe("reclaiming an archived version's tables", () => {
       await tamper(TABLE_V1, 101);
       expect(await answerOf("1.0.0")).toBe(101);
    });
+
+   it("deleting a version drops its own tables before it answers, and keeps an orchestrated run's and other versions'", async () => {
+      await publish("1.0.0", 1, "version", { detail: true });
+      await publish("2.0.0", 2, "version");
+      const v1 = await build({ versionId: "1.0.0" });
+      const orchestrated = await buildInstructed("1.0.0", "summary", "host_v1");
+      const v2 = await build({ versionId: "2.0.0" });
+      expect((await tablesIn(env)).sort()).toEqual(
+         [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
+      );
+
+      const deleted = await env
+         .getVersionService()!
+         .deleteVersion(PKG, "1.0.0");
+      expect(deleted.packageRemoved).toBe(false);
+
+      // No background reclaim to wait for: the delete dropped them itself.
+      expect(reclaims).toEqual([]);
+      expect((await tablesIn(env)).sort()).toEqual(
+         ["host_v1", TABLE_V2].sort(),
+      );
+      expect(await statusOf(v1.id)).toBeNull();
+      // The host's run is the host's: table and record stay.
+      expect(await statusOf(orchestrated.id)).toBe("MANIFEST_FILE_READY");
+      // 2.0.0 keeps its run and still reads its table.
+      expect(await statusOf(v2.id)).toBe("MANIFEST_FILE_READY");
+      await tamper(TABLE_V2, 202);
+      expect(await answerOf("2.0.0")).toBe(202);
+   });
+
+   it("deleting a package's only version drops its tables and takes the package's records", async () => {
+      await publish("1.0.0", 1, "version");
+      const v1 = await build({ versionId: "1.0.0" });
+      expect(await tablesIn(env)).toEqual([TABLE_V1]);
+
+      const deleted = await env
+         .getVersionService()!
+         .deleteVersion(PKG, "1.0.0");
+      expect(deleted.packageRemoved).toBe(true);
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await statusOf(v1.id)).toBeNull();
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+   });
+
+   it("the startup sweep drops a table a delete could not, once the version's row is gone", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      const v1 = await build({ versionId: "1.0.0" });
+      const v2 = await build({ versionId: "2.0.0" });
+
+      // The delete's drop fails: every table is still owed.
+      const drop = spyOn(
+         service as unknown as {
+            dropManifestEntries: (...args: unknown[]) => Promise<unknown>;
+         },
+         "dropManifestEntries",
+      ).mockImplementationOnce(async (...args: unknown[]) => args[4]);
+      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+      drop.mockRestore();
+      expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
+      expect(await statusOf(v1.id)).toBe("FAILED");
+      expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
+
+      await restart();
+      await service.reclaimArchivedVersions();
+
+      expect(await tablesIn(env)).toEqual([TABLE_V2]);
+      expect(await statusOf(v1.id)).toBeNull();
+      expect(await statusOf(v2.id)).toBe("MANIFEST_FILE_READY");
+   });
 });
 
 // ---------------------------------------------------------------------------
@@ -609,6 +682,15 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
                   versionId,
                );
             },
+         );
+         // Deleting a version drops those tables first, before its row goes.
+         environmentStore.setVersionDeletingHook(
+            (environmentName, packageName, versionId) =>
+               materializationService.reclaimDeletingVersion(
+                  environmentName,
+                  packageName,
+                  versionId,
+               ),
          );
          // A reclaim that a crash or a failed drop cut short is retried once the
          // environments have loaded: nothing else would start it again.
@@ -739,6 +821,38 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
       expect(await statusOf(server, v2.id)).toBe("MANIFEST_FILE_READY");
    });
 
+   it("deleting a version through the controller drops its own tables and frees its id", async () => {
+      const server = await openServer();
+      await server.sweep;
+      await server.store.addEnvironment({
+         name: ENV,
+         connections: [WAREHOUSE],
+      } as never);
+      await publish(server, "1.0.0", 1);
+      await publish(server, "2.0.0", 2);
+      const v1 = await build(server, "1.0.0");
+      const v2 = await build(server, "2.0.0");
+      expect(await tables(server)).toEqual([TABLE_V1, TABLE_V2]);
+
+      const answered = await new VersionController(server.store).deleteVersion(
+         ENV,
+         PKG,
+         "1.0.0",
+      );
+      expect(answered.id).toBe("1.0.0");
+      expect(await tables(server)).toEqual([TABLE_V2]);
+      expect(await statusOf(server, v1.id)).toBeNull();
+      expect(await statusOf(server, v2.id)).toBe("MANIFEST_FILE_READY");
+      // The id is free again: other content publishes under it.
+      await publish(server, "1.0.0", 11);
+      const again = await new VersionController(server.store).getVersion(
+         ENV,
+         PKG,
+         "1.0.0",
+      );
+      expect(again.archiveStatus).toBe("unarchive");
+   });
+
    // Skipped on Windows, where DuckDB keeps the OS handle on a file database
    // after close(), so the restarted store, in this same process, cannot open
    // the warehouse file again ("being used by another process"); the same
@@ -814,6 +928,16 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
                   versionId,
                );
             },
+         );`),
+      );
+      expect(server).toContain(
+         squash(`environmentStore.setVersionDeletingHook(
+            (environmentName, packageName, versionId) =>
+               materializationService.reclaimDeletingVersion(
+                  environmentName,
+                  packageName,
+                  versionId,
+               ),
          );`),
       );
       expect(server).toContain(

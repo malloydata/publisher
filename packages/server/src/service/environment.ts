@@ -408,6 +408,12 @@ export class Environment {
    private versionArchivedHook:
       | ((packageName: string, versionId: string) => void)
       | null = null;
+   // Called, and awaited, before a version's row is deleted, to drop the
+   // tables it alone owns. Set by EnvironmentStore (see
+   // setVersionDeletingHook).
+   private versionDeletingHook:
+      | ((packageName: string, versionId: string) => Promise<void>)
+      | null = null;
    public metadata: ApiEnvironment;
    // Owner of the RSS back-pressure flag; null makes the admission gates no-ops.
    private memoryGovernor: PackageMemoryGovernor | null = null;
@@ -1468,6 +1474,17 @@ export class Environment {
    }
 
    /**
+    * Attach (or detach with `null`) the callback awaited before a version is
+    * deleted, which drops the tables that version alone owns. Called holding
+    * the version's lock; it must not throw.
+    */
+   public setVersionDeletingHook(
+      hook: ((packageName: string, versionId: string) => Promise<void>) | null,
+   ): void {
+      this.versionDeletingHook = hook;
+   }
+
+   /**
     * Record that a materialization of a version is running, until the
     * returned release is called. Called holding the version's lock, so an
     * archive (which takes the same lock) either refuses because the build is
@@ -1846,6 +1863,13 @@ export class Environment {
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
                this.versionArchivedHook?.(packageName, versionId),
+            reclaimVersion: async (packageName, versionId) => {
+               await this.versionDeletingHook?.(packageName, versionId);
+            },
+            packageRemoved: (packageName) => {
+               this.clearPackageLoadFailure(packageName);
+               this.deletePackageStatus(packageName);
+            },
             onVersionLoaded: (packageName, loaded, isLatest) => {
                this.setPackageStatus(packageName, PackageStatus.SERVING);
                void this.settleSharedBindings(packageName, loaded);
