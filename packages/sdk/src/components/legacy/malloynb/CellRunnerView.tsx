@@ -95,7 +95,9 @@ export interface CellReportProps {
     * committed. A changed value waits `GIVEN_SETTLE_MS` before anything is
     * dispatched, so a burst of changes produces one run. A run that
     * does start supersedes and aborts the one before it. A text, number, date
-    * or slider control commits once it settles, so reports follow commits.
+    * or slider control commits once it settles, so typed text runs after both
+    * waits; the wait here still covers pickers, keyboard slider steps, drill
+    * and Reset, which commit at once.
     *
     * `managed` names every given this report declares, set or not. A host
     * writing to a shared query string needs it: `givens` alone says which

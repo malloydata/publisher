@@ -3,7 +3,7 @@
 
 import { act, renderHook } from "@testing-library/react";
 import { StrictMode } from "react";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import { useGivensState } from "./useGivensState";
 
 const TYPES = new Map<string, string | undefined>([
@@ -706,6 +706,48 @@ describe("useGivensState: clearing a given that has a starting value", () => {
       rerender({ params: reportedUrls[1] });
       rerender({ params: reportedUrls[1] });
       expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+   });
+
+   describe("a report that was replaced before its URL landed", () => {
+      afterEach(() => setSystemTime());
+
+      const mount = (documentKey = "dashboard") => {
+         let url: Record<string, string> = {};
+         const view = renderHook(
+            (props: { params: Record<string, string>; documentKey: string }) =>
+               useGivensState({
+                  declaredTypes: TYPES,
+                  params: props.params,
+                  onParamsChange: (next) => {
+                     url = next;
+                  },
+                  documentKey: props.documentKey,
+                  autorun: true,
+               }),
+            { initialProps: { params: url, documentKey } },
+         );
+         // Set, then cleared, before the URL for the first lands.
+         act(() => view.result.current.setGiven("REGION", "F"));
+         act(() => view.result.current.setGiven("REGION", null));
+         return view;
+      };
+
+      it("stops reading a later push that repeats it as an echo", () => {
+         setSystemTime(1_000_000);
+         const { result, rerender } = mount();
+         rerender({ params: {}, documentKey: "dashboard" });
+         setSystemTime(1_005_000);
+         rerender({ params: { REGION: "F" }, documentKey: "dashboard" });
+         expect(entries(result.current.applied)).toEqual({ REGION: "F" });
+      });
+
+      it("is forgotten when the document changes", () => {
+         setSystemTime(1_000_000);
+         const { result, rerender } = mount();
+         rerender({ params: {}, documentKey: "other" });
+         rerender({ params: { REGION: "F" }, documentKey: "other" });
+         expect(entries(result.current.applied)).toEqual({ REGION: "F" });
+      });
    });
 
    it("Reset after a clear restores the starting value and runs once", () => {

@@ -1163,6 +1163,17 @@ describe("GivenInput: typing commits once the field settles", () => {
       expect(onChange).toHaveBeenLastCalledWith("ab");
    });
 
+   it("does not send a settled draft again when the control unmounts before the host echoes it", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      const view = render(
+         <GivenInput given={text} value="ab" onChange={onChange} />,
+      );
+      type(screen.getByLabelText("brand"), "abc");
+      act(() => advance(GIVEN_SETTLE_MS));
+      view.unmount();
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
    it("commits a backspace back to the stale committed value when the host echo is late", () => {
       const onChange = mock((_next: GivenValue) => {});
       const view = render(
@@ -1325,6 +1336,50 @@ describe("GivenInput: a date typed into the field", () => {
       // The committed day is UTC and the typed one is local, equal days that
       // are different instants outside UTC: blurring must not send it again.
       fireEvent.blur(input);
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
+   it("commits at once when the field is not focused, as a calendar pick is", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <Host
+            given={{ name: "d", type: "date" }}
+            initial={undefined}
+            onChange={onChange}
+         />,
+      );
+      const input = screen.getByRole("textbox") as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "01/15/2024" } });
+      expect(onChange).toHaveBeenCalledTimes(1);
+   });
+
+   it("keeps focus on the field when the clear button is pressed", () => {
+      render(
+         <Host
+            given={{ name: "d", type: "date" }}
+            initial={new Date("2024-01-16T00:00:00Z")}
+            onChange={() => {}}
+         />,
+      );
+      const clear = screen.getByRole("button", { name: "Clear" });
+      expect(fireEvent.mouseDown(clear)).toBe(false);
+   });
+
+   it("sends one change for a custom range edited in a burst", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <Host
+            given={{ name: "p", type: "filter<timestamp>" }}
+            initial="2024-01-01 to 2024-02-01"
+            onChange={onChange}
+         />,
+      );
+      const to = screen.getByLabelText("To") as HTMLInputElement;
+      fireEvent.focus(to);
+      fireEvent.change(to, { target: { value: "01/15/2024" } });
+      fireEvent.change(to, { target: { value: "01/20/2024" } });
+      expect(onChange).toHaveBeenCalledTimes(0);
+      act(() => advance(GIVEN_SETTLE_MS));
       expect(onChange).toHaveBeenCalledTimes(1);
    });
 });

@@ -132,6 +132,8 @@ function sameDeclaredParams(
 
 /** Bounds the reports remembered as in flight when a host never echoes them. */
 const MAX_IN_FLIGHT_REPORTS = 32;
+// How long a superseded report can still be told apart from a push that repeats it.
+const IN_FLIGHT_REPORT_MS = 1500;
 
 /** Same entries, same values: enough for state whose values are primitives. */
 function sameParams(
@@ -186,7 +188,10 @@ export function useGivensState({
    // just showing, arriving in the few milliseconds before our own URL lands.
    // A value that repeats while in flight (A, B, A) matches its oldest report,
    // so B stays in flight until the next report lands.
-   const priorReported = useRef<Record<string, string>[]>([]);
+   const priorReported = useRef<
+      { params: Record<string, string>; at: number }[]
+   >([]);
+   const lastReportedAt = useRef(0);
 
    // The URL that defines the current starting point. This is `params` EXCEPT
    // when `params` is our own report arriving back through the host, which is
@@ -220,11 +225,21 @@ export function useGivensState({
    // The oldest report still in flight that `params` matches. Reports are
    // delivered in order, so those before it are gone for good and it stays
    // until the URL moves past it: a re-render at the same URL is idempotent.
+   // An entry older than the window is dropped: a URL that repeats it then is
+   // a push (Back, a drill), not a straggler.
+   const now = Date.now();
+   priorReported.current = priorReported.current.filter(
+      (r) => now - r.at < IN_FLIGHT_REPORT_MS,
+   );
    const inFlight =
       lastReported.current === null
-         ? priorReported.current
-         : [...priorReported.current, lastReported.current];
+         ? priorReported.current.map((r) => r.params)
+         : [
+              ...priorReported.current.map((r) => r.params),
+              lastReported.current,
+           ];
    const arrived = inFlight.findIndex(echoes);
+   if (anchor.current.documentKey !== documentKey) priorReported.current = [];
    if (
       anchor.current.documentKey !== documentKey ||
       (!sameParams(params ?? {}, anchor.current.params ?? {}) && arrived < 0)
@@ -374,7 +389,10 @@ export function useGivensState({
       () => givensToParams(applied, declaredTypes),
       [applied, declaredTypes],
    );
-   if (lastReported.current === null) lastReported.current = appliedParams;
+   if (lastReported.current === null) {
+      lastReported.current = appliedParams;
+      lastReportedAt.current = Date.now();
+   }
    // Recorded only when the report is actually DELIVERED. A surface withholds
    // the callback while it is still loading — `Notebook` passes undefined until
    // the document has arrived, so that a report made in the window where it
@@ -398,10 +416,11 @@ export function useGivensState({
       if (lastReported.current !== null) {
          priorReported.current = [
             ...priorReported.current.slice(-MAX_IN_FLIGHT_REPORTS + 1),
-            lastReported.current,
+            { params: lastReported.current, at: lastReportedAt.current },
          ];
       }
       lastReported.current = appliedParams;
+      lastReportedAt.current = Date.now();
       onParamsChange(appliedParams);
    }, [appliedParams, onParamsChange]);
 

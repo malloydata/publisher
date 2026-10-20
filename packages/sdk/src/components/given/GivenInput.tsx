@@ -1043,12 +1043,14 @@ function SettledDatePicker({
    toValue,
    onChange,
    helperText,
+   minDate,
 }: {
    label: string;
    committed: Dayjs | null;
    toValue: (picked: Dayjs) => GivenValue;
    onChange: (next: GivenValue) => void;
-   helperText: ReactNode;
+   helperText?: ReactNode;
+   minDate?: Dayjs;
 }) {
    const { draft, change, reset, bind } = useSettledDraft<Dayjs | null>(
       committed,
@@ -1064,6 +1066,7 @@ function SettledDatePicker({
          <DatePicker
             label={label}
             value={draft}
+            minDate={minDate}
             onChange={change}
             slotProps={{
                textField: {
@@ -1358,31 +1361,31 @@ function TimeRangeControl({
             <MenuItem value={CUSTOM_RANGE}>Custom range</MenuItem>
          </TextField>
          {custom && (
-            <LocalizationProvider dateAdapter={AdapterDayjs}>
-               <DatePicker
+            <>
+               <SettledDatePicker
                   label="From"
-                  value={day(draft.from)}
+                  committed={day(draft.from)}
+                  toValue={(d) => d.format("YYYY-MM-DD")}
                   onChange={(next) =>
                      commitDays({
                         ...draft,
-                        from: next ? next.format("YYYY-MM-DD") : undefined,
+                        from: next === null ? undefined : String(next),
                      })
                   }
-                  slotProps={{ textField: { size: "small" } }}
                />
-               <DatePicker
+               <SettledDatePicker
                   label="To"
-                  value={day(draft.to)}
+                  committed={day(draft.to)}
                   minDate={day(draft.from) ?? undefined}
+                  toValue={(d) => d.format("YYYY-MM-DD")}
                   onChange={(next) =>
                      commitDays({
                         ...draft,
-                        to: next ? next.format("YYYY-MM-DD") : undefined,
+                        to: next === null ? undefined : String(next),
                      })
                   }
-                  slotProps={{ textField: { size: "small" } }}
                />
-            </LocalizationProvider>
+            </>
          )}
       </Stack>
    );
