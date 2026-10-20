@@ -336,11 +336,15 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          newMalformed.source.lastIndexOf("(?:") + 3,
          -1,
       );
+      const spaceAfterOpener = (tag: string) => {
+         const at = tag.search(/[([{<]/);
+         return at < 0 ? tag : `${tag.slice(0, at + 1)}\t ${tag.slice(at + 1)}`;
+      };
       const samples = [...EVERY_SPELLING, ...NEAR_MISSES].flatMap((tag) => [
          tag,
          ` ${tag}`,
          tag.replace(/^(##?\|?)/, "$1 \t "),
-         tag.replace(/([([{<])/, "$1\t "),
+         spaceAfterOpener(tag),
          `${tag}x`,
          `${tag})`,
          `prose ${tag} true`,

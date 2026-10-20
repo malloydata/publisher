@@ -4,7 +4,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { createEmbeddedQueryResult } from "../components/QueryResult";
 import { encodeResourceUri } from "../utils/formatting";
-import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
+import { FilterSelection } from "./useDimensionFilters";
+import { formatMalloyValue } from "../utils/malloyLiteral";
 import { escapeMalloyString } from "../utils/malloyString";
 
 /**
@@ -41,41 +42,6 @@ export interface DimensionFiltersQueryResult {
    executeQuery: () => void;
    /** Whether a query can be executed (has filter selections) */
    canExecute: boolean;
-}
-
-/**
- * Formats a value for use in Malloy query
- */
-function formatMalloyValue(
-   value: FilterValuePrimitive | null | undefined,
-   isDate: boolean = false,
-): string {
-   if (value === null || value === undefined) {
-      return "null";
-   }
-
-   if (isDate) {
-      if (value instanceof Date) {
-         // Format as YYYY-MM-DD
-         return `@${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
-      }
-      // If it's a string, assume it's already in ISO format
-      return `@${value}`;
-   }
-
-   if (typeof value === "string") {
-      return `'${escapeMalloyString(value)}'`;
-   }
-
-   if (typeof value === "number") {
-      return String(value);
-   }
-
-   if (typeof value === "boolean") {
-      return value ? "true" : "false";
-   }
-
-   return String(value);
 }
 
 /**
