@@ -1124,6 +1124,45 @@ describe("GivenInput: typing commits once the field settles", () => {
       expect(onChange).toHaveBeenCalledTimes(0);
    });
 
+   it("reverts an emptied number once, and an untouched blur sends nothing more", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <Host
+            given={{ name: "n", type: "number" }}
+            initial={5}
+            onChange={onChange}
+         />,
+      );
+      const input = screen.getByLabelText("n");
+      type(input, "");
+      fireEvent.blur(input);
+      fireEvent.focus(input);
+      fireEvent.blur(input);
+      fireEvent.focus(input);
+      fireEvent.keyDown(input, { key: "Enter" });
+      act(() => advance(GIVEN_SETTLE_MS * 3));
+      expect(onChange.mock.calls.map((c) => c[0])).toEqual([null]);
+   });
+
+   it("keeps a backspace typed while the host still shows the older commit", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      const view = render(
+         <GivenInput given={text} value="ab" onChange={onChange} />,
+      );
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      type(input, "abc");
+      act(() => advance(GIVEN_SETTLE_MS));
+      expect(onChange).toHaveBeenCalledWith("abc");
+      // The host has not adopted "abc" yet when the reader backspaces.
+      fireEvent.change(input, { target: { value: "ab" } });
+      view.rerender(
+         <GivenInput given={text} value="abc" onChange={onChange} />,
+      );
+      expect(input.value).toBe("ab");
+      act(() => advance(GIVEN_SETTLE_MS));
+      expect(onChange).toHaveBeenLastCalledWith("ab");
+   });
+
    it("sends an explicit empty value when an unset field is typed in and emptied", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<Host given={text} initial={undefined} onChange={onChange} />);

@@ -958,6 +958,7 @@ export function GivenInput({
          }
          helperText={helperNode}
          isOverridden={isOverridden}
+         emptyOverrides
          onClear={() => onChange(null)}
       />
    );
@@ -976,6 +977,7 @@ function SettledTextField({
    placeholder,
    helperText,
    isOverridden,
+   emptyOverrides = false,
    onClear,
 }: {
    label: string;
@@ -985,10 +987,12 @@ function SettledTextField({
    placeholder: string | undefined;
    helperText: ReactNode;
    isOverridden: boolean;
+   /** An emptied box is a deliberate `""` override, not a revert to the default. */
+   emptyOverrides?: boolean;
    onClear: () => void;
 }) {
    const { draft, change, reset, bind } = useSettledDraft(committed, onCommit, {
-      unset: !isOverridden,
+      unset: emptyOverrides && !isOverridden,
    });
    return (
       <TextField

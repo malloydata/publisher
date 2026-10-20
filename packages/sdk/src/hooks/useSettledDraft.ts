@@ -37,6 +37,9 @@ export function useSettledDraft<T>(
    const [focused, setFocused] = useState(false);
    // A ref, set synchronously, so an unmount in the same batch as a reset sees it.
    const edited = useRef(false);
+   // What was last committed, until `committed` catches up with it: a draft
+   // that equals the stale `committed` meanwhile has still been edited.
+   const sent = useRef<{ value: T } | null>(null);
    const composing = useRef(false);
    const latest = useRef({ draft, committed, focused, unset, commit, same });
    useEffect(() => {
@@ -47,8 +50,15 @@ export function useSettledDraft<T>(
       const l = latest.current;
       return edited.current && (l.unset || !l.same(l.draft, l.committed));
    };
+   const send = () => {
+      const l = latest.current;
+      sent.current = { value: l.draft };
+      l.commit(l.draft);
+      // The draft is already what is on screen: nothing is left to protect.
+      if (l.unset && l.same(l.draft, l.committed)) edited.current = false;
+   };
    const flush = () => {
-      if (due()) latest.current.commit(latest.current.draft);
+      if (due()) send();
    };
 
    // Composition end bumps `gen` so a draft that settled mid-composition is
@@ -60,9 +70,9 @@ export function useSettledDraft<T>(
    useEffect(() => {
       const l = latest.current;
       if (l.same(settled.draft, l.draft) && due() && !composing.current) {
-         l.commit(settled.draft);
+         send();
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- `due` reads refs only
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- `due`/`send` read refs only
    }, [settled]);
 
    // A pending draft is committed rather than dropped if the field goes away.
@@ -70,8 +80,11 @@ export function useSettledDraft<T>(
    useEffect(() => () => flush(), []);
 
    useEffect(() => {
+      if (sent.current && same(sent.current.value, committed)) {
+         sent.current = null;
+      }
       if (same(draft, committed)) {
-         if (!unset) edited.current = false;
+         if (!unset && !sent.current) edited.current = false;
          return;
       }
       if (!focused || !edited.current) setDraft(committed);
@@ -88,6 +101,7 @@ export function useSettledDraft<T>(
       /** Drop the draft for `next` without committing, for a clear. */
       reset: (next: T) => {
          edited.current = false;
+         sent.current = null;
          setDraft(next);
       },
       bind: {
@@ -95,6 +109,7 @@ export function useSettledDraft<T>(
          onBlur: () => {
             setFocused(false);
             flush();
+            sent.current = null;
          },
          onKeyDown: (e: KeyboardEvent) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) flush();
