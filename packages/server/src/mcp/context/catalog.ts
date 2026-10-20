@@ -22,18 +22,10 @@
 
 import type { ModelDef } from "@malloydata/malloy";
 import type { Relationship } from "@malloydata/malloy-interfaces";
-import {
-   comparePaths,
-   docOnlyText,
-   docText,
-   enterJoin,
-   entityId,
-   modelPathOfUrl,
-   sourceContextKey,
-   type Entity,
-   type JoinTopology,
-   type PackageIndex,
-} from "../tools/get_context_tool";
+import { compareText as comparePaths } from "../tools/retrieval_shared";
+import { docOnlyText, docText, enterJoin, modelPathOfUrl, sourceContextKey } from "../tools/package_entities";
+import { entityId } from "../tools/get_context_response";
+import { type Entity, type JoinTopology, type PackageIndex } from "../tools/get_context_types";
 
 export type NodeKind = Entity["kind"];
 
