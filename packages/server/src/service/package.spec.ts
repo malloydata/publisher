@@ -486,20 +486,16 @@ describe("service/package", () => {
                   "forbidden character `;` or `--`",
                );
             }
-            // A glob would read `x.csv` (1 row) in place of `[x].csv` (2 rows).
-            await fs.writeFile(
-               join(testPackageDirectory, "data", "x.csv"),
-               "Name,Value\nJohn,10",
-            );
-            // `?` and `*` can't appear in a Windows file name.
+            // The refusal throws before DuckDB reads anything, so the message
+            // is the proof. `?` and `*` can't appear in a Windows file name.
             const globNames = [
                "[x].csv",
                ...(process.platform === "win32" ? [] : ["x?.csv", "x*.csv"]),
             ];
             for (const file of globNames) {
-               await expect(
-                  probe(file, "Name,Value\nJohn,10\nJane,20"),
-               ).rejects.toThrow("pattern matching other files");
+               await expect(probe(file, "Name,Value\nJohn,10")).rejects.toThrow(
+                  "pattern matching other files",
+               );
             }
          });
 

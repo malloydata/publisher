@@ -3327,11 +3327,12 @@ export class Package {
       // Forward slashes work on Windows DuckDB and avoid escaping.
       const normalizedPath = fullPath.replace(/\\/g, "/");
       // DuckDB reads `[`, `?` and `*` in a table path as a glob, so such a
-      // name would report another file's columns and rows (`[x].csv` reads
-      // `x.csv`). List it as unreadable instead.
+      // path would report other files' columns and rows (`[x].csv` reads
+      // `x.csv`). The check covers the whole path, since a glob in a folder
+      // name matches sibling folders. List it as unreadable instead.
       if (/[[?*]/.test(normalizedPath)) {
          throw new Error(
-            `Cannot read ${databasePath}: DuckDB reads [, ? and * in a file path as a pattern matching other files. Rename the file without those characters.`,
+            `Cannot read ${databasePath}: its path holds [, ? or *, which DuckDB reads as a pattern matching other files. Rename the file, or the folder holding it, without those characters.`,
          );
       }
       // DuckDB's table-path check refuses a bare path holding a space or a
