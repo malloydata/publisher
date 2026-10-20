@@ -178,9 +178,9 @@ export function useGivensState({
    // the edits were discarded, and `initial` put the value the reader had just
    // cleared straight back into the control, and into the URL after it.
    //
-   // Narrow by construction: it holds the reports still in flight (several, when
-   // each keystroke reports), and is dropped the moment the newest one is
-   // observed. The cost is
+   // Narrow by construction: it holds the reports still in flight (several when
+   // a control reports faster than the URL lands), and drops each as the URL
+   // moves past it. The cost is
    // that an external push landing in that window whose values happen to equal
    // a report being replaced is taken for the echo — the same values we were
    // just showing, arriving in the few milliseconds before our own URL lands.
@@ -215,22 +215,22 @@ export function useGivensState({
    const echoes = (reported: Record<string, string> | null) =>
       reported !== null &&
       sameDeclaredParams(params ?? {}, reported, declaredTypes);
-   // The newest report has arrived, so the ones it replaced are no longer in
-   // flight and stop counting as echoes.
-   if (echoes(lastReported.current)) priorReported.current = [];
+   // The oldest report still in flight that `params` matches. Reports are
+   // delivered in order, so those before it are gone for good and it stays
+   // until the URL moves past it: a re-render at the same URL is idempotent.
+   const inFlight =
+      lastReported.current === null
+         ? priorReported.current
+         : [...priorReported.current, lastReported.current];
+   const arrived = inFlight.findIndex(echoes);
    if (
       anchor.current.documentKey !== documentKey ||
-      (!sameParams(params ?? {}, anchor.current.params ?? {}) &&
-         !echoes(lastReported.current) &&
-         !priorReported.current.some(echoes))
+      (!sameParams(params ?? {}, anchor.current.params ?? {}) && arrived < 0)
    ) {
       anchor.current = { documentKey, params };
    }
-   // A report that has come back also retires the older ones before it.
-   const arrived = priorReported.current.findLastIndex(echoes);
-   if (arrived >= 0) {
-      priorReported.current = priorReported.current.slice(arrived + 1);
-   }
+   if (arrived > 0)
+      priorReported.current = priorReported.current.slice(arrived);
    const anchorParams = anchor.current.params;
    const startingValuesKey = JSON.stringify(startingValues);
    const anchorParamsKey = JSON.stringify(anchorParams);

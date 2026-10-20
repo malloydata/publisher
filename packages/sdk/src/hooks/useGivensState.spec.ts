@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode } from "react";
 import { describe, expect, it } from "bun:test";
 import { useGivensState } from "./useGivensState";
 
@@ -672,6 +673,39 @@ describe("useGivensState: clearing a given that has a starting value", () => {
          rerender({ params: arriving });
          expect(entries(result.current.applied)).toEqual({ REGION: "For" });
       }
+   });
+
+   it("keeps the newest edit through repeated renders at a stale URL", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "dashboard",
+               autorun: true,
+            }),
+         { initialProps: { params: url }, wrapper: StrictMode },
+      );
+
+      const reportedUrls: Record<string, string>[] = [];
+      for (const typed of ["F", "Fo", "For"]) {
+         act(() => result.current.setGiven("REGION", typed));
+         reportedUrls.push(url);
+      }
+
+      // The first report lands, and the host re-renders for its own reasons
+      // before the next one does.
+      for (let i = 0; i < 3; i++) {
+         rerender({ params: reportedUrls[0] });
+         expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+      }
+      rerender({ params: reportedUrls[1] });
+      rerender({ params: reportedUrls[1] });
+      expect(entries(result.current.applied)).toEqual({ REGION: "For" });
    });
 
    it("Reset after a clear restores the starting value and runs once", () => {

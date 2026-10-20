@@ -33,6 +33,7 @@ import {
    type ReactNode,
    useContext,
    useEffect,
+   useRef,
    useState,
 } from "react";
 import { Given } from "../../client";
@@ -289,6 +290,7 @@ export function GivenInput({
    const [typed, setTyped] = useState("");
    // The thumb(s) while the reader holds them; the value commits on release.
    const [drag, setDrag] = useState<number | number[] | null>(null);
+   const gesture = useRef<number | number[] | null>(null);
    const search = useOptionSearch(
       pickerControl ? optionSearch : undefined,
       typed,
@@ -661,9 +663,17 @@ export function GivenInput({
                   // 26px this control cannot spare; the row above already
                   // gives the thumb somewhere to be.
                   sx={{ py: 0, mt: 0.5 }}
-                  onChange={(_event, next) => setDrag(next)}
-                  onChangeCommitted={(_event, next) => {
+                  onChange={(_event, next) => {
+                     gesture.current = next;
+                     setDrag(next);
+                  }}
+                  // MUI repeats the previous gesture's value for a click that
+                  // moved nothing, which would bring a cleared value back.
+                  onChangeCommitted={() => {
+                     const next = gesture.current;
+                     gesture.current = null;
                      setDrag(null);
+                     if (next === null) return;
                      if (numericFilter) {
                         const [lo, hi] = Array.isArray(next)
                            ? [next[0], next[1]]
@@ -847,8 +857,8 @@ export function GivenInput({
    if (type === "number") {
       // Track whether a value is OVERRIDDEN, the way the string branch below
       // does, rather than whether the box happens to render non-empty. A
-      // non-number renders blank (see `num` above), and keying the revert off
-      // that blank left the user no way to clear it.
+      // non-number renders blank, and keying the revert off that blank left
+      // the user no way to clear it.
       const isOverridden = value !== undefined && value !== null;
       // `""` is an empty box, not an unreadable value. `paramToGiven` now reads
       // `?N=` as UNSET so it no longer arrives here at all, but a host passing
@@ -977,7 +987,9 @@ function SettledTextField({
    isOverridden: boolean;
    onClear: () => void;
 }) {
-   const { draft, change, reset, bind } = useSettledDraft(committed, onCommit);
+   const { draft, change, reset, bind } = useSettledDraft(committed, onCommit, {
+      unset: !isOverridden,
+   });
    return (
       <TextField
          label={label}
@@ -1041,7 +1053,7 @@ function SettledDatePicker({
          if (next === null) onChange(null);
          else if (next.isValid()) onChange(toValue(next));
       },
-      sameDay,
+      { same: sameDay },
    );
    return (
       <LocalizationProvider dateAdapter={AdapterDayjs}>

@@ -1109,6 +1109,55 @@ describe("GivenInput: typing commits once the field settles", () => {
       expect(onChange).toHaveBeenCalledWith("Ford");
    });
 
+   it("follows the host while focused when nothing has been typed", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      const view = render(
+         <GivenInput given={text} value="East" onChange={onChange} />,
+      );
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      fireEvent.focus(input);
+      view.rerender(
+         <GivenInput given={text} value="West" onChange={onChange} />,
+      );
+      expect(input.value).toBe("West");
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenCalledTimes(0);
+   });
+
+   it("sends an explicit empty value when an unset field is typed in and emptied", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<Host given={text} initial={undefined} onChange={onChange} />);
+      const input = screen.getByLabelText("brand");
+      fireEvent.focus(input);
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenCalledTimes(0);
+      type(input, "x");
+      type(input, "");
+      act(() => advance(GIVEN_SETTLE_MS));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("");
+   });
+
+   it("does not send the draft after a clear that swaps the control", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <Host
+            given={{
+               name: "n",
+               type: "filter<number>",
+               rangeMin: 0,
+               rangeMax: 10,
+            }}
+            initial="!= 3"
+            onChange={onChange}
+         />,
+      );
+      const input = screen.getByRole("textbox");
+      type(input, "!= 4");
+      fireEvent.click(clearButtons()[0]);
+      expect(onChange.mock.calls.map((c) => c[0])).toEqual([null]);
+   });
+
    it("commits on blur without waiting", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<Host given={text} initial={undefined} onChange={onChange} />);
@@ -1214,6 +1263,10 @@ describe("GivenInput: a date typed into the field", () => {
       expect((onChange.mock.calls[0][0] as Date).toISOString()).toBe(
          "2024-01-16T00:00:00.000Z",
       );
+      // The committed day is UTC and the typed one is local, equal days that
+      // are different instants outside UTC: blurring must not send it again.
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenCalledTimes(1);
    });
 });
 
@@ -1246,5 +1299,29 @@ describe("GivenInput: a slider commits on release, not on every move", () => {
       fireEvent.mouseUp(document, { clientX: 70, buttons: 1 });
       expect(onChange).toHaveBeenCalledTimes(1);
       expect(onChange).toHaveBeenCalledWith(7);
+   });
+
+   it("sends nothing for a press that moves nothing", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput
+            given={{ name: "n", type: "number", rangeMin: 0, rangeMax: 10 }}
+            value={undefined}
+            onChange={onChange}
+         />,
+      );
+      const root = document.querySelector(".MuiSlider-root") as HTMLElement;
+      root.getBoundingClientRect = () =>
+         ({
+            left: 0,
+            width: 100,
+            top: 0,
+            height: 10,
+            right: 100,
+            bottom: 10,
+         }) as DOMRect;
+      fireEvent.mouseDown(root, { clientX: 0, button: 0 });
+      fireEvent.mouseUp(document, { clientX: 0, buttons: 1 });
+      expect(onChange).toHaveBeenCalledTimes(0);
    });
 });
