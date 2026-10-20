@@ -1163,6 +1163,26 @@ describe("GivenInput: typing commits once the field settles", () => {
       expect(onChange).toHaveBeenLastCalledWith("ab");
    });
 
+   it("commits a backspace back to the stale committed value when the host echo is late", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      const view = render(
+         <GivenInput given={text} value="ab" onChange={onChange} />,
+      );
+      const input = screen.getByLabelText("brand") as HTMLInputElement;
+      fireEvent.focus(input);
+      type(input, "abc");
+      act(() => advance(GIVEN_SETTLE_MS));
+      fireEvent.change(input, { target: { value: "ab" } });
+      fireEvent.blur(input);
+      expect(onChange).toHaveBeenLastCalledWith("ab");
+      view.rerender(
+         <GivenInput given={text} value="abc" onChange={onChange} />,
+      );
+      view.rerender(<GivenInput given={text} value="ab" onChange={onChange} />);
+      expect(input.value).toBe("ab");
+      expect(onChange).toHaveBeenCalledTimes(2);
+   });
+
    it("sends an explicit empty value when an unset field is typed in and emptied", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<Host given={text} initial={undefined} onChange={onChange} />);

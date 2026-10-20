@@ -48,7 +48,8 @@ export function useSettledDraft<T>(
 
    const due = () => {
       const l = latest.current;
-      return edited.current && (l.unset || !l.same(l.draft, l.committed));
+      const shown = sent.current ? sent.current.value : l.committed;
+      return edited.current && (l.unset || !l.same(l.draft, shown));
    };
    const send = () => {
       const l = latest.current;
