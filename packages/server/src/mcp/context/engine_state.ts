@@ -26,10 +26,10 @@ import {
    fcjSettingsOf,
 } from "../../service/package_retrieval";
 import { logger } from "../../logger";
-import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/embedding_index";
+import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
 import { embeddingSyncQueue } from "../tools/embedding_sync_queue";
 import { SyncRequestBudget } from "../tools/get_context_llm";
-import { getPackageIndex } from "../tools/get_context_tool";
+import { getPackageIndex } from "../tools/package_entities";
 import { indexSettingsOf } from "../tools/index_settings";
 import {
    currentSummaryHashes,

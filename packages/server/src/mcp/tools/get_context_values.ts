@@ -56,13 +56,10 @@ import {
    MAX_VALUES_PER_DIMENSION_HIT,
    type ValueHit,
 } from "./get_context_value_match";
-import {
-   matchesScope,
-   projectEntity,
-   sanitize,
-   type Entity,
-   type ResultEntity,
-} from "./get_context_tool";
+import { matchesScope } from "./get_context_request";
+import { projectEntity } from "./get_context_response";
+import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
+import { type Entity, type ResultEntity } from "./get_context_types";
 
 /** What one lookup query returns. */
 export interface DistinctValues {

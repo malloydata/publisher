@@ -26,11 +26,9 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-   truncateDoc,
-   type ResolvedRequest,
-   type SourceCard,
-} from "../tools/get_context_tool";
+import { truncateDoc } from "../tools/package_entities";
+import { type ResolvedRequest } from "../tools/get_context_types";
+import { type SourceCard } from "../tools/get_context_response";
 
 /** A page's character budget for its cards, the shipped engine's response budget. */
 export const FCJ_MAX_CHARS = 35_000;

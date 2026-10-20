@@ -8,7 +8,8 @@ import {
    type FcjIndexFixture,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
-import type { ResolvedRequest, SourceCard } from "../tools/get_context_tool";
+import type { ResolvedRequest } from "../tools/get_context_types";
+import type { SourceCard } from "../tools/get_context_response";
 import { connect } from "./connect";
 import { unjudged } from "./engine";
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";

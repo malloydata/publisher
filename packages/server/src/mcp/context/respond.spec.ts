@@ -15,7 +15,7 @@ import {
    type FcjIndexFixture,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
-import type { ResolvedRequest } from "../tools/get_context_tool";
+import type { ResolvedRequest } from "../tools/get_context_types";
 import type { CatalogNode } from "./catalog";
 import { connect } from "./connect";
 import { gatedValueWarning, unjudged, withPinnedDimensions } from "./engine";

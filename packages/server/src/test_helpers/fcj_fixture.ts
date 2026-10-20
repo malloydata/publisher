@@ -24,12 +24,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import type { PackageIndex } from "../mcp/tools/get_context_tool";
+import type { PackageIndex } from "../mcp/tools/get_context_types";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    type PackageRetrievalSettings,
 } from "../service/package_retrieval";
-import { getPackageIndex } from "../mcp/tools/get_context_tool";
+import { getPackageIndex } from "../mcp/tools/package_entities";
 import {
    buildCatalog,
    catalogInputOf,
@@ -312,6 +312,7 @@ export async function compileFcjFixture(
    const pkg = {
       getPackageName: () => FCJ_PACKAGE,
       getRetrievalSettings: () => retrieval,
+      listSkills: () => [],
       listModels: served
          ? async () =>
               (await inner.listModels()).filter((m) => served.includes(m.path))

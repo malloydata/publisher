@@ -47,16 +47,9 @@ import {
    type ValueFetcher,
 } from "../tools/get_context_values";
 import { matchValues } from "../tools/get_context_value_match";
-import {
-   projectEntity,
-   sourceContextKey,
-   summaryViewFor,
-   toSourceResults,
-   type PackageIndex,
-   type ResolvedRequest,
-   type ResultEntity,
-   type SourceCard,
-} from "../tools/get_context_tool";
+import { projectEntity, summaryViewFor, toSourceResults, type SourceCard } from "../tools/get_context_response";
+import { sourceContextKey } from "../tools/package_entities";
+import { type PackageIndex, type ResolvedRequest, type ResultEntity } from "../tools/get_context_types";
 import type { AlsoLikelyField } from "./also_likely";
 import { nodeKeyOf, type CatalogNode, type CatalogSource } from "./catalog";
 import type { Cluster, ConnectResult, PeerSource } from "./connect";

@@ -34,12 +34,8 @@ import { activeLlmSettings } from "../../providers/active";
 import type { ChatModel } from "../../providers/types";
 import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
-import {
-   projectEntity,
-   type PackageIndex,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "../tools/get_context_tool";
+import { projectEntity, skillsFor } from "../tools/get_context_response";
+import { type PackageIndex, type ResolvedRequest, type ResultEntity } from "../tools/get_context_types";
 import { alsoLikelyFields } from "./also_likely";
 import { dateRangeFields } from "./date_range";
 import type { CatalogNode } from "./catalog";
@@ -282,6 +278,7 @@ export async function runFcjQuery(args: {
          total_available: 0,
          returned: 0,
          retrieval: "indexing",
+         ...skillsFor({ pkgIndex }),
          warnings: [
             ...args.warnings,
             "This package's search index is still being built, so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. A request with no search_text (a listing) works now.",
@@ -297,6 +294,7 @@ export async function runFcjQuery(args: {
       if (kept) {
          return pageResponse({
             uri,
+            pkgIndex,
             result: kept,
             request,
             leading,
@@ -556,6 +554,7 @@ export async function runFcjQuery(args: {
    };
    return pageResponse({
       uri,
+      pkgIndex,
       result,
       request,
       leading,
@@ -648,6 +647,7 @@ export async function runFcjQuery(args: {
  */
 function pageResponse(args: {
    uri: string;
+   pkgIndex: PackageIndex;
    result: HeldResult;
    request: ResolvedRequest;
    /** The request's warnings, ahead of the result's own. */
@@ -712,6 +712,7 @@ function pageResponse(args: {
       clusters: result.clusters,
       ...(result.coverage ? { coverage: result.coverage } : {}),
       unresolved_targets: result.unresolved_targets,
+      ...skillsFor({ pkgIndex: args.pkgIndex }),
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(traceMode !== "none"
          ? { retrieval_trace: { engine: "fcj", stages } }

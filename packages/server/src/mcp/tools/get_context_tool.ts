@@ -54,7 +54,6 @@ import {
 } from "./get_context_source_match";
 import { resolveLlmStages } from "./get_context_stage_settings";
 import { valuesStage } from "./get_context_values";
-import { getDimensionValueSettings } from "../../retrieval_config";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 import { engineOf } from "../../service/package_retrieval";
 import { runFcjQuery, type TraceMode } from "../context/engine";
