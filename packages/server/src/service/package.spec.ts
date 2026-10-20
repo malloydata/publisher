@@ -456,6 +456,30 @@ describe("service/package", () => {
             }
          });
 
+         it("still refuses a data file whose name holds `;` or `--`", async () => {
+            // Malloy refuses these in a table path even when quoted, so the
+            // probe throws and the file lists with `error` and no `info`. Pinned
+            // so the day Malloy lifts the limit shows up as a test change.
+            await fs.mkdir(join(testPackageDirectory, "data"), {
+               recursive: true,
+            });
+            const conn = new DuckDBConnection("duckdb");
+            for (const file of ["a;b.csv", "a--b.csv"]) {
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", file),
+                  "Name,Value\nJohn,10",
+               );
+               await expect(
+                  // @ts-expect-error Accessing private static method for testing
+                  Package.getDatabaseInfo(
+                     testPackageDirectory,
+                     `data/${file}`,
+                     conn,
+                  ),
+               ).rejects.toThrow("forbidden character `;` or `--`");
+            }
+         });
+
          it("should probe an xlsx database file", async () => {
             // Real committed fixture: DuckDB's excel extension reads it via the
             // same duckdb.table() replacement scan the csv path uses.

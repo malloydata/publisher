@@ -3327,13 +3327,14 @@ export class Package {
       const normalizedPath = fullPath.replace(/\\/g, "/");
       // DuckDB's table-path check refuses a bare path holding a space or a
       // quote, which left such a file listed as unreadable. So the path goes
-      // in as a single-quoted literal ('' for a quote), which the check
-      // accepts and canonicalizes to the same SQL a bare path gets. The
-      // literal sits in a Malloy double-quoted string, so `\` and `"` are
-      // escaped for that string.
-      const literal = `'${normalizedPath.replace(/'/g, "''")}'`;
+      // in as a single-quoted SQL literal ('' for a quote), which the check
+      // accepts and canonicalizes to the same SQL a bare path gets.
+      const sqlLiteral = `'${normalizedPath.replace(/'/g, "''")}'`;
+      // That literal sits in a Malloy double-quoted string. Normalizing left
+      // no backslash, so only `"` needs escaping there.
+      const malloyString = `"${sqlLiteral.replace(/"/g, '\\"')}"`;
       const model = runtime.loadModel(
-         `source: temp is duckdb.table("${literal.replace(/[\\"]/g, (c) => `\\${c}`)}")`,
+         `source: temp is duckdb.table(${malloyString})`,
       );
       const modelDef = await model.getModel();
       const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;
