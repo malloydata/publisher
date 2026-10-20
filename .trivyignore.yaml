@@ -58,7 +58,7 @@
 #   package.json  "undici": "^6.27.0"
 #     openapi-typescript 6.7.6 (build-time generate-api-types) declares ^5.28.4 and uses
 #     undici only to fetch remote specs; ours is local, and the generated src/api.ts is
-#     byte-identical on 6.x. Retire when openapi-typescript moves to 7.x, which drops it.
+#     byte-identical on 6.x. Retire when packages/server moves to openapi-typescript 7.x, which drops it.
 vulnerabilities:
   # Eleven CRITICALs and one HIGH in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
   # orval. The fix is 8.21.0-only (no 7.x backport), and no @grafana/openapi-to-k6
