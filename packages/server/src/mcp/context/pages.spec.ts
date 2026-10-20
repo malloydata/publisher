@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { ResolvedRequest } from "../tools/get_context_types";
@@ -87,7 +87,7 @@ async function completeAnswer() {
       index: f.index,
       found,
       queries,
-      settings: DEFAULT_FCJ_SETTINGS,
+      settings: CLUSTER_SETTINGS,
       allow,
    });
    const verdicts = unjudged(connected, targets);

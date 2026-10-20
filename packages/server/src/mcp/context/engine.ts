@@ -2,18 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A ranked get_context request answered by find, connect, judge. Reached only
- * for a package whose publisher.json sets `retrieval.engine: "fcj"`; listings
- * and every other package take the shipped path in get_context_tool.ts,
- * unchanged.
+ * A ranked get_context request answered by find, connect, judge: the only
+ * engine for a request with search text. A listing (no search text) is
+ * answered from the package's entity index in get_context_tool.ts.
  *
  *   find (Stage 1)    per target, the N best nodes of the whole catalog
- *   connect (Stage 2) the few sources whose reach explains the targets together
- *   judge (Stage 3)   one model call per cluster picks what to return
+ *   connect (Stage 2) the sources the judge is shown: a list of every
+ *                     target's best candidates grouped by source (the
+ *                     default), or the few sources whose reach explains the
+ *                     targets together
+ *   judge (Stage 3)   one model call picks what to return
  *
- * Each stage is timed and traced the way the shipped stages are, so the
- * `X-Publisher-Retrieval-Trace: summary` header gives the same block, and
- * `full` adds what each stage kept and why.
+ * Each stage is timed and traced, so the
+ * `X-Publisher-Retrieval-Trace: summary` header gives a block of stage rows,
+ * and `full` adds what each stage kept and why.
  *
  * The stages return the complete result, and only the response is paged
  * (pages.ts): a result longer than one page carries `next_offset`, and a
@@ -35,7 +37,11 @@ import type { ChatModel } from "../../providers/types";
 import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { projectEntity, skillsFor } from "../tools/get_context_response";
-import { type PackageIndex, type ResolvedRequest, type ResultEntity } from "../tools/get_context_types";
+import {
+   type PackageIndex,
+   type ResolvedRequest,
+   type ResultEntity,
+} from "../tools/get_context_types";
 import { alsoLikelyFields } from "./also_likely";
 import { dateRangeFields } from "./date_range";
 import type { CatalogNode } from "./catalog";
@@ -89,7 +95,18 @@ function knownPhraseOf(index: FcjIndex): (phrase: string) => boolean {
 
 export type TraceMode = "none" | "summary" | "full";
 
-/** One row of the stage trace, in the shipped trace's shape. */
+/**
+ * `PUBLISHER_MCP_TRACE=retrieval` writes each ranked call's stage summary to
+ * the server log, one line per call, and adds nothing to any response. Read on
+ * each call so a test can change it.
+ */
+export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
+
+function traceToLog(): boolean {
+   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+}
+
+/** One row of the stage trace. */
 interface StageRow {
    name: string;
    status: "ran" | "skipped" | "failed";
@@ -186,7 +203,7 @@ async function embedTargets(
    return { queries, phrases };
 }
 
-/** A node as the shipped card builder wants it, under one of its model paths. */
+/** A node as the card builder wants it, under one of its model paths. */
 export function resultRowOf(
    node: CatalogNode,
    request: ResolvedRequest,
@@ -262,7 +279,7 @@ export async function runFcjQuery(args: {
                message: `The fcj search index for this package could not be built: ${state.message}`,
                suggestions: [
                   "Ask again in a minute; the build is retried by the next question after a short cool-down.",
-                  "The operator should read the server log. To use the shipped search instead, remove retrieval.engine from the package's publisher.json.",
+                  "The operator should read the server log.",
                ],
             },
             {
@@ -639,7 +656,7 @@ export async function runFcjQuery(args: {
 }
 
 /**
- * One page of a complete result, in the shipped response's shape plus
+ * One page of a complete result, in the card shape of a listing plus
  * `next_offset` when more pages remain. `total_available` counts every card
  * of the result. The clusters, coverage and unresolved targets describe the
  * whole result and ride on every page. A page served from a held result
@@ -699,6 +716,13 @@ function pageResponse(args: {
            ]
          : []),
    ];
+   if (traceToLog()) {
+      logger.info("[MCP Tool getContext] Retrieval trace", {
+         environmentName: request.environmentName,
+         packageName: request.packageName,
+         retrieval_trace: { engine: "fcj", stages },
+      });
+   }
    return jsonResource(args.uri, {
       sources: page.cards,
       ranking: "relevance" as const,

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { CatalogNode } from "./catalog";
@@ -28,7 +28,7 @@ const t = (
 function run(
    targets: FindTarget[],
    allow: (n: CatalogNode) => boolean = () => true,
-   settings = DEFAULT_FCJ_SETTINGS,
+   settings = CLUSTER_SETTINGS,
 ) {
    const queries = new Map(
       targets.map((x) => [x.index, toUnit(embedText(x.text))]),
@@ -185,7 +185,7 @@ describe("connect", () => {
             t(2, "measure", "number of flights"),
          ],
          () => true,
-         { ...DEFAULT_FCJ_SETTINGS, maxClusters: 1 },
+         { ...CLUSTER_SETTINGS, maxClusters: 1 },
       );
       expect(out.clusters.map((c) => c.home)).toEqual([
          "flights@travel.malloy",
@@ -200,7 +200,7 @@ describe("connect", () => {
          CONTENDERS_OFF,
       );
       const on = run(targets, () => true, {
-         ...DEFAULT_FCJ_SETTINGS,
+         ...CLUSTER_SETTINGS,
          contenderShare: 0.9,
       });
       expect(on.clusters.map((c) => [c.home, c.contenders])).toEqual(
@@ -214,7 +214,7 @@ describe("connect", () => {
          t(1, "measure", "number of flights"),
       ];
       const out = run(targets, () => true, {
-         ...DEFAULT_FCJ_SETTINGS,
+         ...CLUSTER_SETTINGS,
          connect: "list",
          listTopK: 6,
       });
@@ -262,7 +262,7 @@ describe("connect", () => {
             t(1, "measure", "number of flights"),
          ],
          () => true,
-         { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
+         { ...CLUSTER_SETTINGS, connect: "list" },
       );
       const c = out.clusters[0];
       const region = c.candidates
@@ -291,7 +291,7 @@ describe("connect", () => {
          [0, toUnit(embedText("start date in the month"))],
       ]);
       const settings = {
-         ...DEFAULT_FCJ_SETTINGS,
+         ...CLUSTER_SETTINGS,
          connect: "list" as const,
          listTopK: 2,
          listUnion: 4,
@@ -370,7 +370,7 @@ describe("connect", () => {
             t(1, "dimension", "city by month"),
          ],
          () => true,
-         { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 3 },
+         { ...CLUSTER_SETTINGS, connect: "list", listTopK: 3 },
       ).clusters[0];
       expect(c.candidates.get(0)!.map((x) => x.key)).toEqual([
          "measure:races@reports.malloy:race_count",
@@ -392,7 +392,7 @@ describe("connect", () => {
 
    it("with the provisional collapseCopies, an extension's copy is not a second home", async () => {
       const folded = await buildFcjIndexFixture({
-         ...DEFAULT_FCJ_SETTINGS,
+         ...CLUSTER_SETTINGS,
          collapseCopies: true,
       });
       try {
@@ -414,7 +414,7 @@ describe("connect", () => {
             index: folded.index,
             found,
             queries,
-            settings: DEFAULT_FCJ_SETTINGS,
+            settings: CLUSTER_SETTINGS,
             allow: () => true,
          });
          expect(out.clusters.map((c) => [c.home, c.twins])).toEqual([
@@ -427,7 +427,7 @@ describe("connect", () => {
 
    it("with the provisional collapseCopies, an extension wins when its own field counts and reaches the inherited one", async () => {
       const folded = await buildFcjIndexFixture({
-         ...DEFAULT_FCJ_SETTINGS,
+         ...CLUSTER_SETTINGS,
          collapseCopies: true,
       });
       try {
@@ -451,7 +451,7 @@ describe("connect", () => {
             index: folded.index,
             found,
             queries,
-            settings: DEFAULT_FCJ_SETTINGS,
+            settings: CLUSTER_SETTINGS,
             allow: () => true,
          });
          expect(out.clusters.map((c) => [c.home, c.covers])).toEqual([

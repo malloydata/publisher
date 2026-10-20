@@ -3,7 +3,6 @@
 
 import path from "path";
 import { fileURLToPath } from "url";
-import lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
@@ -11,7 +10,6 @@ import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
-import type { PipelineSettings } from "./get_context_pipeline";
 import { compareText } from "./retrieval_shared";
 import type {
    Entity,
@@ -1012,21 +1010,6 @@ function buildSourceContext(
 const indexCache = new WeakMap<Package, PackageIndex>();
 
 /**
- * The entities the semantic index embeds and searches. With joins made at
- * assembly that is the direct fields only: a joined copy would be embedded
- * again under a longer name and take a window slot from the field it copies.
- * The lexical path ranks `retrievalEntities` regardless.
- */
-export function embeddedEntitiesOf(
-   pkgIndex: PackageIndex,
-   settings: PipelineSettings,
-): readonly Entity[] {
-   return settings.joins === "assembly"
-      ? pkgIndex.directEntities
-      : pkgIndex.retrievalEntities;
-}
-
-/**
  * Every entity except a joined copy that assembly will rebuild from the
  * topology: one whose join reaches an indexed target source holding a direct
  * field of that name (or one folded away, `aliasedAway`). A joined field
@@ -1063,7 +1046,7 @@ function directEntitiesOf(
    return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
 }
 
-/** Get, or lazily build and cache, the lunr entity index for a package. */
+/** Get, or lazily build and cache, the entity index for a package. */
 export async function getPackageIndex(
    environmentStore: EnvironmentStore,
    environmentName: string,
@@ -1088,20 +1071,6 @@ export async function packageIndexOf(
    const collected = await collectEntities(pkg);
    const { entities } = collected;
    const byId = new Map(entities.map((e) => [e.id, e]));
-   const index = lunr(function () {
-      this.ref("id");
-      this.field("name", { boost: 4 });
-      this.field("source");
-      this.field("doc");
-      for (const e of entities) {
-         this.add({
-            id: e.id,
-            name: e.name,
-            source: e.source ?? "",
-            doc: e.doc,
-         });
-      }
-   });
    const retrievalEntities = Object.freeze(Array.from(byId.values()));
    const built: PackageIndex = {
       pkg,
@@ -1113,7 +1082,6 @@ export async function packageIndexOf(
          collected.aliasedAway,
       ),
       topology: collected.topology,
-      index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
       droppedSources: collected.droppedSources,

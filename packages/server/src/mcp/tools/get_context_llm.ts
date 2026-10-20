@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What the request-time LLM stages share: a meter that counts one request's
- * chat calls and tokens, and the error a stage throws so that get_context can
- * answer with a message naming the stage.
+ * What the request-time LLM step and the index-time LLM steps share: a meter
+ * that counts one request's chat calls and tokens, a pool that bounds how many
+ * calls run at once, and the budget a sync spends.
  */
 
 import type {
@@ -27,39 +27,6 @@ export const REQUEST_RETRY: RetryPolicy = {
    maxDelayMs: 1_000,
    maxTotalDelayMs: 1_000,
 };
-
-/** A stage failed after the provider layer's retries. get_context returns an error result. */
-export class StageError extends Error {
-   constructor(
-      readonly stage: string,
-      readonly reason: string,
-      cause?: unknown,
-   ) {
-      super(`${stage}: ${reason}`, { cause });
-      this.name = "StageError";
-   }
-}
-
-/**
- * The array a model replied with. The prompts ask for a root array, but a
- * vendor's JSON mode (e.g. OpenAI `json_object`) only returns objects, so also
- * accept: one array-valued key (`{"ratings": [...]}`), a single bare element
- * (`{"index": 3, ...}`), or `{}` for nothing.
- */
-export function replyArray(value: unknown): unknown[] {
-   if (Array.isArray(value)) return value;
-   if (typeof value === "object" && value !== null) {
-      const arrays = Object.values(value).filter(Array.isArray);
-      if (arrays.length === 1) return arrays[0] as unknown[];
-      if (arrays.length === 0) {
-         if (Object.keys(value).length === 0) return [];
-         if ("index" in value) return [value];
-      }
-   }
-   throw new Error(
-      'expected a JSON array, for example [{"index": 1, "score": ...}]',
-   );
-}
 
 /**
  * Run `fn` over `items` with at most `concurrency` calls in flight, results in
@@ -107,8 +74,8 @@ export class SyncBudgetReached extends Error {
 }
 
 /**
- * The chat requests one index sync may still send, shared by its LLM steps
- * (keyphrases, then source summaries). Counts HTTP requests, so retries and
+ * The chat requests one index build may still send, shared by its LLM steps
+ * (source summaries, doc parts, questions). Counts HTTP requests, so retries and
  * JSON-repair re-asks each count. A model that reports no requests (a test
  * double) counts one per job.
  */

@@ -53,8 +53,8 @@ export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
  * Malloy advice; anything else is reported as internal.
  *
  * Routing is by class, not message: getMalloyErrorDetails's message patterns
- * do not all match what the shipped engine emits, so "did it refine?" would
- * send genuine compile errors to the internal branch.
+ * do not all match what the tools emit, so a pattern check would send
+ * genuine compile errors to the internal branch.
  *
  * @param operation The operation that failed (e.g. 'compile', 'reloadPackage').
  * @param identifier The resource it failed on (e.g. 'env/package').

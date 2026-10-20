@@ -8,26 +8,14 @@ import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
-import {
-   enqueuePackageSync,
-   getEmbeddingIndexStatus,
-   type EmbeddingIndexStatus,
-} from "./embedding_index";
-import { engineOf } from "../../service/package_retrieval";
 import { fcjStatusOf, kickFcjBuild } from "../context/engine_state";
-import { PIPELINE_SETTINGS } from "./get_context_pipeline";
-import {
-   embeddedEntitiesOf,
-   getPackageIndex,
-   packageIndexOf,
-} from "./package_entities";
+import type { EmbeddingIndexStatus } from "./embedding_index";
+import { getPackageIndex } from "./package_entities";
 
 /**
- * The semantic index state for one package; `lexical`, by design, when no
- * embedding provider is configured.
- *
- * Composed from the same cached package index retrieval uses, so
- * `totalEntities` cannot drift from what collectEntities decides is an entity.
+ * The search index state for one package: the build state of the find, list,
+ * judge engine's index (see ../context/engine_state.ts). `lexical`, by design,
+ * when no embedding provider is configured.
  */
 export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
@@ -59,66 +47,29 @@ export async function getPackageEmbeddingStatus(
       environmentName,
       packageName,
    );
-   // An fcj package builds its own index and never runs the shipped sync, so
-   // its state is the fcj build's.
-   if (engineOf(pkgIndex.pkg.getRetrievalSettings?.()) === "fcj") {
-      const fcj = fcjStatusOf(pkgIndex.pkg);
-      return {
-         ...empty,
-         status: fcj.status as EmbeddingIndexStatus["status"],
-         fcj,
-      };
-   }
-   return getEmbeddingIndexStatus(
-      environmentStore.storageManager.getDuckDbConnection(),
-      provider,
-      environmentName,
-      packageName,
-      embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
-      pkgIndex.pkg,
-   );
+   const fcj = fcjStatusOf(pkgIndex.pkg);
+   return {
+      ...empty,
+      status: fcj.status as EmbeddingIndexStatus["status"],
+      fcj,
+   };
 }
 
 /**
- * Queue the semantic index for a package that has just loaded, so the vectors
- * build before the first question. Only enqueues; see {@link enqueuePackageSync}.
- * Wired to the environment store's package-loaded hook at server start.
+ * Start the search index build for a package that has just loaded, so the
+ * index is ready before the first question. Only starts the build; see
+ * {@link kickFcjBuild}. Wired to the environment store's package-loaded hook
+ * at server start.
  */
 export function startPackageEmbeddingSync(
    environmentStore: EnvironmentStore,
    environmentName: string,
    pkg: Package,
 ): void {
-   const packageName = pkg.getPackageName();
-   // An fcj package needs its own index, not the shipped one: building both
-   // would spend the embedding provider (and the keyphrase LLM) twice.
-   if (engineOf(pkg.getRetrievalSettings?.()) === "fcj") {
-      kickFcjBuild({ environmentStore, environmentName, packageName, pkg });
-      return;
-   }
-   enqueuePackageSync({
-      pkg,
+   kickFcjBuild({
+      environmentStore,
       environmentName,
-      packageName,
-      prepare: async () => {
-         if (!embeddingConfigured()) return undefined;
-         // Throws on a malformed embedding configuration; the queue logs it,
-         // and the status endpoint reports it.
-         const provider = getEmbeddingProvider();
-         if (!provider) return undefined;
-         // Ask whether this instance is still the one being served, without
-         // loading anything. A package unloaded or deleted while this waited
-         // must stay gone, and a reload queued its own sync.
-         const served = environmentStore
-            .peekEnvironment(environmentName)
-            ?.peekPackage(packageName);
-         if (served !== pkg) return undefined;
-         const pkgIndex = await packageIndexOf(pkg, packageName);
-         return {
-            db: environmentStore.storageManager.getDuckDbConnection(),
-            provider,
-            entities: embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
-         };
-      },
+      packageName: pkg.getPackageName(),
+      pkg,
    });
 }

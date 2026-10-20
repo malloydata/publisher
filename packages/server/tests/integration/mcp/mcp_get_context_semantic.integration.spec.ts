@@ -50,6 +50,8 @@ let mcpClient: Client<Request, Notification, Result>;
 let embeddingStub: http.Server;
 let stubFailing = false;
 let stubRequests = 0;
+/** Every text the stub was asked to embed, in order. */
+const stubInputs: string[] = [];
 
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
@@ -141,6 +143,7 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
                return;
             }
             const { input } = JSON.parse(body) as { input: string[] };
+            stubInputs.push(...input);
             res.writeHead(200, { "Content-Type": "application/json" }).end(
                JSON.stringify({
                   data: input.map((text, index) => ({
@@ -174,6 +177,17 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
 
       env = await setupE2ETestEnvironment();
       mcpClient = env.mcpClient;
+      // The search index is built once for each loaded package and keeps the
+      // embedding provider it was built with. When an earlier spec in the same
+      // process already loaded this package, reload it so its index is built
+      // under the provider configured above.
+      await mcpClient.callTool({
+         name: "reload_package",
+         arguments: {
+            environmentName: ENVIRONMENT_NAME,
+            packageName: PACKAGE_NAME,
+         },
+      });
    });
 
    afterAll(async () => {
@@ -302,15 +316,12 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    );
 
    it(
-      "keeps the warm index across a package reload",
+      "reuses the stored vectors across a package reload",
       async () => {
-         // A reload swaps the Package instance. The vectors never move -- they
-         // are keyed by package name in publisher.db -- but the record that
-         // they were current used to live on the replaced instance, so the
-         // first question after any reload was ranked lexically while the diff
-         // re-discovered that every hash still matched. reload_package,
-         // ?reload=true and every watch-mode save paid that.
-         const before = stubRequests;
+         // A reload swaps in a new Package instance, whose index is built
+         // again. The stored vectors are keyed by content, so the rebuild finds
+         // every one current and embeds only what a question asks about.
+         const before = stubInputs.length;
          const reloaded = (await mcpClient.callTool({
             name: "reload_package",
             arguments: {
@@ -320,18 +331,25 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          })) as { isError?: boolean };
          expect(reloaded.isError).toBeFalsy();
 
-         // The FIRST call after the reload, deliberately without the polling
-         // loop the first test uses: polling here would hide the regression.
-         const payload = await callGetContext({
+         let payload = await callGetContext({
             targetType: "view",
             searchText: "orders by month",
          });
+         for (let i = 0; i < 60 && payload.retrieval !== "semantic"; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            payload = await callGetContext({
+               targetType: "view",
+               searchText: "orders by month",
+            });
+         }
          expect(payload.retrieval).toBe("semantic");
-         // Exactly one stub call, the query embedding. The reload recompiled
-         // the package and re-embedded nothing.
-         expect(stubRequests).toBe(before + 1);
+         // Nothing but the question was sent to the embedding endpoint: the
+         // reload recompiled the package and re-embedded none of its text.
+         const sent = stubInputs.slice(before);
+         expect(sent.length).toBeGreaterThan(0);
+         for (const text of sent) expect(text).toContain("orders by month");
       },
-      { timeout: 60000 },
+      { timeout: 90000 },
    );
 
    // Keep this test LAST: the induced failure starts the provider
