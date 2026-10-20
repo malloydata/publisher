@@ -51,11 +51,15 @@ export interface UseDrillOptions {
     */
    canSelf?: (given: string) => boolean;
    /**
-    * What `to=self` is called in the menu. A notebook filtering itself is not
-    * "this dashboard", and the drill tag: written on a shared model dimension,
-    * cannot know which document the reader is in, so the surface names itself.
+    * What a `to=self` entry starts with, before the `Field: value` it sets.
+    * Defaults to `Filter to`.
     */
    selfLabel?: string;
+   /**
+    * A `to=` destination's title, for its menu entry. Undefined, or no
+    * function, and the entry names the destination's file name instead.
+    */
+   destinationTitle?: (destination: string) => string | undefined;
    /**
     * Show the rows behind a grouped value. With it, a dimension cell whose
     * result names everything its rows query needs (`canShowRows`) offers
@@ -115,26 +119,48 @@ interface DrillMenuState {
 /** A menu item is cut to this width; its full text is its tooltip and accessible name. */
 const MENU_ITEM_MAX_WIDTH = 360;
 
+/** A field as its column header reads: its `# label`, else its name. */
+function fieldLabel(field: DrillField | RowsField | undefined): string {
+   if (!field) return "";
+   const header = (field as { getLabel?: () => string }).getLabel?.();
+   return (
+      header ??
+      (field as DrillField).tag?.text("label") ??
+      (field as RowsField).metadataTag?.text("label") ??
+      field.name
+   );
+}
+
 /**
- * The values the rows behind a click are filtered on, as the rows dialog's
- * title names them: every dimension of the row, or the clicked value alone.
+ * The values the rows behind a click are filtered on, each named by its
+ * column header: `Region: West, Month: 2025-12`, outermost first. Without the
+ * row's clauses, the clicked value alone.
  */
-function rowsValuesLabel(rows: DrillRowsRequest): string {
+function rowsValuesLabel(rows: DrillRowsRequest, field: RowsField): string {
    const parts = rows.drillClauses
       ? drillClauseLabels(rows.drillClauses, rows.timezone)
       : [];
-   return parts.length > 0
-      ? parts.map((part) => part.label).join(", ")
-      : rows.label;
+   if (parts.length === 0) return `${fieldLabel(field)}: ${rows.label}`;
+   const row = rowDimensionsOf(field);
+   return parts
+      .map((part) => {
+         const key = JSON.stringify(part.expression);
+         const match = row.find(
+            (d) => JSON.stringify(d.drillStableExpression) === key,
+         );
+         return `${match ? fieldLabel(match) : part.field}: ${part.label}`;
+      })
+      .join(", ");
 }
 
 /**
  * Click-to-drill for any surface that renders a Malloy result.
  *
  * Every drillable click opens one small menu that says what it can do, even
- * when there is only one thing, each item naming the value it acts on:
- * `Filter this report to West` for a `to=self` drill, `Open Regions for West`
- * for each `to=` report, then `Show rows for West, 2025-12`. A `# drill` tag
+ * when there is only one thing, each item naming the field and value it acts
+ * on: `Filter to Region: West` for a `to=self` drill, `Open Regional review
+ * (Region: West)` for each `to=` report, then `Show rows (Region: West, Month:
+ * 2025-12)`. A field is named as its column header reads. A `# drill` tag
  * adds actions; it never replaces the rows, and a click never acts on a tag
  * the reader cannot see.
  *
@@ -147,7 +173,8 @@ function rowsValuesLabel(rows: DrillRowsRequest): string {
 export function useDrill({
    onNavigate,
    onSelf,
-   selfLabel = "Filter this view",
+   selfLabel = "Filter to",
+   destinationTitle,
    canSelf,
    onRows,
 }: UseDrillOptions): UseDrillResult {
@@ -252,14 +279,19 @@ export function useDrill({
                  (a, b) => Number(b === DRILL_SELF) - Number(a === DRILL_SELF),
               )
             : [];
-         const value = intent?.label ?? drillValueLabel(payload.value);
+         const value = `${fieldLabel(payload.field)}: ${
+            intent?.label ?? drillValueLabel(payload.value)
+         }`;
          const items: DrillMenuItem[] = destinations.map((destination) => ({
             key: `to:${destination}`,
             label:
                destination === DRILL_SELF
-                  ? `${selfLabel} to ${value}`
-                  : // A report's path from the package root; its file name reads as its name.
-                    `Open ${humanizeSlug(destination.split("/").pop() ?? destination)} for ${value}`,
+                  ? `${selfLabel} ${value}`
+                  : // The report's title, else its file name (a path from the package root).
+                    `Open ${
+                       destinationTitle?.(destination) ??
+                       humanizeSlug(destination.split("/").pop() ?? destination)
+                    } (${value})`,
             run: () => {
                if (intent) go(intent, destination, payload.event);
             },
@@ -267,7 +299,7 @@ export function useDrill({
          if (rows)
             items.push({
                key: "rows",
-               label: `Show rows for ${rowsValuesLabel(rows)}`,
+               label: `Show rows (${rowsValuesLabel(rows, payload.field as RowsField)})`,
                run: () => onRows?.(rows),
             });
          if (items.length === 0) return;
@@ -277,7 +309,7 @@ export function useDrill({
             left: payload.event?.clientX ?? 0,
          });
       },
-      [go, honorable, onRows, rowsBehind, selfLabel],
+      [go, honorable, onRows, rowsBehind, selfLabel, destinationTitle],
    );
 
    const canDrillTag = useCallback(

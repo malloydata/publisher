@@ -111,8 +111,8 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(onRows).not.toHaveBeenCalled();
-      expect(menuItems()).toEqual(["Show rows for Jeans"]);
-      pick("Show rows for Jeans");
+      expect(menuItems()).toEqual(["Show rows (cat: Jeans)"]);
+      pick("Show rows (cat: Jeans)");
       expect(onRows).toHaveBeenCalledWith({
          field: "cat",
          rawValue: "Jeans",
@@ -161,7 +161,6 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
       const result = mountDrill({
          onRows,
          onSelf,
-         selfLabel: "Filter this report",
       });
       const cat = {
          ...reported("cat", "products.category"),
@@ -176,10 +175,10 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
       );
       expect(onSelf).not.toHaveBeenCalled();
       expect(menuItems()).toEqual([
-         "Filter this report to Jeans",
-         "Show rows for Jeans",
+         "Filter to cat: Jeans",
+         "Show rows (cat: Jeans)",
       ]);
-      pick("Filter this report to Jeans");
+      pick("Filter to cat: Jeans");
       expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
       expect(onRows).not.toHaveBeenCalled();
    });
@@ -203,11 +202,11 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(menuItems()).toEqual([
-         "Filter this view to Jeans",
-         "Open Category detail for Jeans",
-         "Open Brand review for Jeans",
+         "Filter to cat: Jeans",
+         "Open Category detail (cat: Jeans)",
+         "Open Brand review (cat: Jeans)",
       ]);
-      pick("Open Brand review for Jeans");
+      pick("Open Brand review (cat: Jeans)");
       expect(onNavigate).toHaveBeenCalledWith(
          {
             path: "brand_review",
@@ -230,8 +229,8 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(onSelf).not.toHaveBeenCalled();
-      expect(menuItems()).toEqual(["Filter this view to Jeans"]);
-      pick("Filter this view to Jeans");
+      expect(menuItems()).toEqual(["Filter to cat: Jeans"]);
+      pick("Filter to cat: Jeans");
       expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
    });
 
@@ -248,7 +247,7 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          await new Promise((resolve) => setTimeout(resolve, 0));
       });
       const first = screen.getByRole("menuitem", {
-         name: "Show rows for Jeans",
+         name: "Show rows (cat: Jeans)",
       });
       expect(document.activeElement).toBe(first);
       act(() => {
@@ -267,7 +266,6 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
       const result = mountDrill({
          onRows,
          onSelf,
-         selfLabel: "Filter this report",
       });
       // A two-dimension row: the click is on `region`, the row also has `month`.
       const root = {
@@ -300,7 +298,12 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          root.fields.push(field);
          return field as unknown as DrillField;
       };
-      const region = rowField("region", { to: ["self"], given: "REGION" });
+      // Named as its column header reads: a `# label`, else the field name.
+      const region = {
+         ...(rowField("region", { to: ["self"], given: "REGION" }) as object),
+         getLabel: () => "Region",
+      } as unknown as DrillField;
+      root.fields[0] = region;
       rowField("status");
       const clause = (name: string, value: string) => ({
          filter: {
@@ -320,8 +323,8 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          }),
       );
       expect(menuItems()).toEqual([
-         "Filter this report to West",
-         "Show rows for West, Shipped",
+         "Filter to Region: West",
+         "Show rows (Region: West, status: Shipped)",
       ]);
       // No header or divider: every child of the menu list is an action.
       const list = screen.getByRole("menu");
@@ -331,9 +334,38 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
          ),
       ).toBe(true);
       const rows = screen.getByRole("menuitem", {
-         name: "Show rows for West, Shipped",
+         name: "Show rows (Region: West, status: Shipped)",
       });
-      expect(rows.getAttribute("title")).toBe("Show rows for West, Shipped");
+      expect(rows.getAttribute("title")).toBe(
+         "Show rows (Region: West, status: Shipped)",
+      );
+   });
+
+   it("names a destination report by its title, and by its file name when it has none", () => {
+      const onNavigate = mock(() => {});
+      const result = mountDrill({
+         onNavigate,
+         destinationTitle: (destination) =>
+            destination === "regions/deep_dive"
+               ? "Regional deep dive"
+               : undefined,
+      });
+      act(() =>
+         result.current.drill.onClick({
+            field: {
+               ...dimension("region", {
+                  to: ["regions/deep_dive", "brand_review"],
+                  given: "REGION",
+               }),
+               getLabel: () => "Region",
+            } as DrillField,
+            value: "East",
+         }),
+      );
+      expect(menuItems()).toEqual([
+         "Open Regional deep dive (Region: East)",
+         "Open Brand review (Region: East)",
+      ]);
    });
 
    it("leaves out a destination this surface cannot honour", () => {

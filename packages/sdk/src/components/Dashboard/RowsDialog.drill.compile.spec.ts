@@ -173,7 +173,7 @@ async function clickEveryCell(tile: string, preamble = "") {
          await Promise.resolve();
       });
       const showRows = screen.queryByRole("menuitem", {
-         name: /^Show rows for /,
+         name: /^Show rows \(/,
       });
       if (showRows) {
          act(() => {
@@ -228,6 +228,10 @@ async function expectRowsMatch(
    }
 }
 
+/** The title's field and value pairs, without the expressions they match by. */
+const titleText = (request: Parameters<typeof rowsTitleParts>[0]) =>
+   rowsTitleParts(request).map(({ field, label }) => ({ field, label }));
+
 describe("the rows behind a clicked table row, run on DuckDB", () => {
    it("drills a two-dimension table by both dimensions", async () => {
       const { rows, requests } = await clickEveryCell(
@@ -249,7 +253,7 @@ describe("the rows behind a clicked table row, run on DuckDB", () => {
       );
       // Two dimension cells per row, and no request from a measure or header.
       expect(requests).toHaveLength(rows.length * 2);
-      expect(rowsTitleParts(rowsRequestFor(requests[0])!)).toEqual([
+      expect(titleText(rowsRequestFor(requests[0])!)).toEqual([
          { field: "sales_quarter", label: "2026-Q1" },
          { field: "region", label: "East" },
       ]);
@@ -302,7 +306,7 @@ describe("the rows behind a clicked table row, run on DuckDB", () => {
       const titled = requests.find((r) =>
          JSON.stringify(r.drillClauses).includes("2026-01-15T10:30:15"),
       )!;
-      expect(rowsTitleParts(rowsRequestFor(titled)!)).toEqual([
+      expect(titleText(rowsRequestFor(titled)!)).toEqual([
          { field: "y", label: "2026" },
          { field: "q", label: "2026-Q1" },
          { field: "mo", label: "2026-01" },
