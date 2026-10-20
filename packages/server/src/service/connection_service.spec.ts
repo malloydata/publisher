@@ -7,7 +7,13 @@ import * as os from "os";
 import * as path from "path";
 import sinon from "sinon";
 import { components } from "../api";
-import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
+import {
+   BadRequestError,
+   ConflictError,
+   ConnectionNotFoundError,
+   EnvironmentNotFoundError,
+   FrozenConfigError,
+} from "../errors";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { ConnectionService } from "./connection_service";
 import { Environment } from "./environment";
@@ -261,12 +267,19 @@ describe("service/connection_service", () => {
             null,
          );
 
-         await expect(
-            connectionService.addConnection("non-existent", "new-connection", {
+         const adding = connectionService.addConnection(
+            "non-existent",
+            "new-connection",
+            {
                name: "new-connection",
                type: "postgres",
-            } as ApiConnection),
-         ).rejects.toThrow('Environment "non-existent" not found in database');
+            } as ApiConnection,
+         );
+         await expect(adding).rejects.toThrow(
+            'Environment "non-existent" not found in database',
+         );
+         // The 404 the route declares, not a bare 500.
+         await expect(adding).rejects.toBeInstanceOf(EnvironmentNotFoundError);
       });
 
       it("should throw error when connection already exists", async () => {
@@ -290,18 +303,85 @@ describe("service/connection_service", () => {
             existingConnection,
          );
 
-         await expect(
-            connectionService.addConnection(
-               "test-project",
-               "existing-connection",
-               {
-                  name: "existing-connection",
-                  type: "postgres",
-               } as ApiConnection,
-            ),
-         ).rejects.toThrow(
+         const adding = connectionService.addConnection(
+            "test-project",
+            "existing-connection",
+            {
+               name: "existing-connection",
+               type: "postgres",
+            } as ApiConnection,
+         );
+         await expect(adding).rejects.toThrow(
             'Connection "existing-connection" already exists in environment "test-project"',
          );
+         // The 409 the route declares, not a bare 500.
+         await expect(adding).rejects.toBeInstanceOf(ConflictError);
+      });
+
+      describe("a connection the server will not accept", () => {
+         const proxyFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         afterEach(() => {
+            if (proxyFlag === undefined) {
+               delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+            } else {
+               process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = proxyFlag;
+            }
+         });
+
+         beforeEach(() => {
+            (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves({
+               id: "project-123",
+               name: "test-project",
+            });
+            (mockRepository.getConnectionByName as sinon.SinonStub).resolves(
+               null,
+            );
+            (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves({
+               listApiConnections: sinon.stub().returns([]),
+               updateConnections: sinon.stub(),
+               metadata: { location: "/test/path" },
+            });
+         });
+
+         const proxy: ApiConnection = {
+            name: "warehouse",
+            type: "publisher",
+            publisherConnection: {
+               connectionUri:
+                  "https://org.data.example.com/api/v0/environments/prod/connections/warehouse",
+            },
+         };
+
+         it("answers a publisher proxy on a deployment that disables them as a 400 naming the flag", async () => {
+            // Was an unhandled Error, so the route answered a bare 500 and the
+            // fix it names reached only the server log.
+            delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+            const adding = connectionService.addConnection(
+               "test-project",
+               "warehouse",
+               proxy,
+            );
+            await expect(adding).rejects.toBeInstanceOf(BadRequestError);
+            await expect(adding).rejects.toThrow(
+               "PUBLISHER_ALLOW_PROXY_CONNECTIONS=true",
+            );
+            expect(
+               (mockEnvironmentStore.addConnection as sinon.SinonStub).called,
+            ).toBe(false);
+         });
+
+         it("answers every shape defect config load would reject as a 400, not only the flag", async () => {
+            process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+            await expect(
+               connectionService.addConnection("test-project", "warehouse", {
+                  ...proxy,
+                  publisherConnection: { connectionUri: "not a url" },
+               }),
+            ).rejects.toBeInstanceOf(BadRequestError);
+            expect(
+               (mockEnvironmentStore.addConnection as sinon.SinonStub).called,
+            ).toBe(false);
+         });
       });
 
       it("should add connection to existing connections list", async () => {
@@ -463,6 +543,55 @@ describe("service/connection_service", () => {
                {},
             ),
          ).rejects.toThrow(FrozenConfigError);
+      });
+
+      it("answers an update that leaves the connection unacceptable as a 400, judged on the merged connection", async () => {
+         // The payload alone ({ accessToken }) is no connection at all; the
+         // defect is in what it merges into: a publisher proxy on a deployment
+         // that disables them.
+         const proxyFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         try {
+            const stored: ApiConnection = {
+               name: "warehouse",
+               type: "publisher",
+               publisherConnection: {
+                  connectionUri:
+                     "https://org.data.example.com/api/v0/environments/prod/connections/warehouse",
+               },
+            };
+            sinon.stub(connectionService, "getConnection").resolves({
+               dbEnvironment: { id: "project-123" },
+               dbConnection: { config: stored },
+               repository: mockRepository,
+            } as unknown as Awaited<
+               ReturnType<typeof connectionService.getConnection>
+            >);
+            (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves({
+               listApiConnections: sinon.stub().returns([stored]),
+               updateConnections: sinon.stub(),
+               metadata: { location: "/test/path" },
+            });
+
+            await expect(
+               connectionService.updateConnection("test-project", "warehouse", {
+                  publisherConnection: {
+                     connectionUri: stored.publisherConnection!.connectionUri,
+                     accessToken: "jwt",
+                  },
+               }),
+            ).rejects.toBeInstanceOf(BadRequestError);
+            expect(
+               (mockEnvironmentStore.updateConnection as sinon.SinonStub)
+                  .called,
+            ).toBe(false);
+         } finally {
+            if (proxyFlag === undefined) {
+               delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+            } else {
+               process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = proxyFlag;
+            }
+         }
       });
 
       it("should preserve other connections when updating one", async () => {
