@@ -13,7 +13,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useNearViewport } from "../../hooks/useNearViewport";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
-import { humanizeSlug, type DrillBinding } from "../drill";
+import type { DrillBinding } from "../drill";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
@@ -21,6 +21,7 @@ import { failureCategory, useReportEvents } from "../Report/telemetry";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 import { TileFilterTag } from "./TileFilterTag";
+import { fallbackTileTitle } from "./tileTitle";
 import { isForbidden, RESTRICTED_NOTICE, withPreamble } from "./textSource";
 import {
    TileCard,
@@ -46,6 +47,11 @@ export interface DashboardTileProps {
    annotation?: string;
    /** `# label` on the view the tile names, when it has one. */
    label?: string;
+   /**
+    * The view a named query reads (`source -> view`), when the manifest knows it:
+    * with no `label`, a query the builder named for that view is titled as the view.
+    */
+   titleView?: string;
    /** `# subtitle` on it: a second line under the heading. */
    subtitle?: string;
    /** The heading's text as nodes, which replace `label` and `subtitle` where a surface edits them in place. */
@@ -109,26 +115,6 @@ export interface DashboardTileProps {
 }
 
 /**
- * A composite tile's heading when the view it names carries no `# label`: the
- * last step's name as a sentence, so `scoped_sales -> sales_by_month` is titled
- * "Sales by month".
- *
- * The label itself is the same `# label` a nest gets in the single-query form,
- * read off the view server-side, so one view is titled identically whichever way
- * it is consumed. This derivation is the fallback for an untitled view, so a
- * tile shows a heading rather than code.
- */
-export function tileTitle(tile: string): string {
-   // A refinement (`by_carrier + { where: … }`) filters the view; the title is the view's.
-   const lastStep = (tile.split("->").at(-1)?.trim() ?? tile)
-      .replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "")
-      .trim();
-   // Anything that is not a bare name (an inline `{ … }` stage, say) has no
-   // sensible title to derive, so it keeps the expression as written.
-   return /^[A-Za-z_][\w-]*$/.test(lastStep) ? humanizeSlug(lastStep) : tile;
-}
-
-/**
  * One result panel: run it, render it, and keep its failure to itself.
  *
  * A tile owning its own query is what lets a composite dashboard survive a bad
@@ -144,6 +130,7 @@ export function DashboardTile({
    tile,
    annotation,
    label,
+   titleView,
    subtitle,
    heading,
    borderless,
@@ -244,7 +231,9 @@ export function DashboardTile({
       >
          {tile !== undefined && (
             <TileHeading
-               title={heading?.title ?? label ?? tileTitle(tile)}
+               title={
+                  heading?.title ?? label ?? fallbackTileTitle(tile, titleView)
+               }
                subtitle={heading ? heading.subtitle : subtitle}
                quiet={chrome === "none"}
                // The expression is what actually ran, so it stays reachable as
@@ -256,7 +245,7 @@ export function DashboardTile({
                         <IconButton
                            className="publisher-tile-explore"
                            size="small"
-                           aria-label={`Explore ${label ?? tileTitle(tile)}`}
+                           aria-label={`Explore ${label ?? fallbackTileTitle(tile, titleView)}`}
                            onClick={onExplore}
                            sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
                         >

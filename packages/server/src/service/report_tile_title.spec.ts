@@ -124,3 +124,49 @@ source: flights_tiles is flights extend {
       expect(tiles?.[0]).toMatchObject({ label: "Airlines" });
    });
 });
+
+/**
+ * With no `# label` anywhere, a viewer titles a tile from what it names. A query
+ * of the report's own carries `view`, the view it reads, so a viewer can title
+ * the builder's `<view>_tile` as the view rather than "… tile".
+ */
+describe("the view a query tile reads", () => {
+   const UNLABELLED = `
+source: brands is duckdb.sql("select 'x' as brand, 'y' as region, 1 as n") extend {
+  view: top_brands is { group_by: brand; aggregate: c is count() }
+  view: key_figures is { aggregate: c is count(), total is sum(n) }
+}
+`;
+
+   it("is the view a filtered query refines", async () => {
+      const tiles =
+         await tilesOf(`## artifact { tiles=["top_brands_tile", "top_brands_tile_2"] }
+${UNLABELLED}
+query: top_brands_tile is brands -> top_brands + { where: region = 'y' }
+query: top_brands_tile_2 is brands -> top_brands + { where: region = 'z' }
+`);
+      expect(tiles?.[0]).toMatchObject({
+         query: "top_brands_tile",
+         view: "brands -> top_brands",
+      });
+      expect(tiles?.[1]).toMatchObject({ view: "brands -> top_brands" });
+      expect(tiles?.[0]).not.toHaveProperty("label");
+   });
+
+   it("is absent when the query's outputs are no view's", async () => {
+      const tiles = await tilesOf(`## artifact { tiles=["kpis_tile"] }
+${UNLABELLED}
+query: kpis_tile is brands -> key_figures + { aggregate: most is max(n) }
+`);
+      expect(tiles?.[0]).toMatchObject({ query: "kpis_tile" });
+      expect(tiles?.[0]).not.toHaveProperty("view");
+   });
+
+   it("is absent on a served-view entry", async () => {
+      const tiles =
+         await tilesOf(`## artifact { tiles=["brands -> top_brands"] }
+${UNLABELLED}
+`);
+      expect(tiles?.[0]).not.toHaveProperty("view");
+   });
+});

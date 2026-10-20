@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { tileTitle } from "../Dashboard/DashboardTile";
+import { fallbackTileTitle, tileTitle } from "../Dashboard/tileTitle";
+import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { PackageCatalog } from "./catalog";
 import type { DashboardDocument, QueryTile } from "./document";
 import { catalogViewOfTile } from "./tileCatalogView";
@@ -76,5 +77,48 @@ describe("the catalog view behind a tile", () => {
       expect(catalogViewOfTile(named, document, catalog)?.label).toBe(
          "Key figures",
       );
+   });
+});
+
+describe("a query tile's title with no label", () => {
+   it("is the view's when the builder named the query for it", () => {
+      expect(fallbackTileTitle("top_brands_tile", "orders -> top_brands")).toBe(
+         "Top brands",
+      );
+      expect(
+         fallbackTileTitle("top_brands_tile_2", "orders -> top_brands"),
+      ).toBe("Top brands");
+   });
+
+   it("is the query's own name otherwise", () => {
+      expect(fallbackTileTitle("kpis_tile", "orders -> key_figures")).toBe(
+         "Kpis tile",
+      );
+      expect(
+         fallbackTileTitle("revenue_by_brand", "orders -> top_brands"),
+      ).toBe("Revenue by brand");
+      expect(
+         fallbackTileTitle("top_brands_tile_x", "orders -> top_brands"),
+      ).toBe("Top brands tile x");
+      expect(fallbackTileTitle("top_brands_tile")).toBe("Top brands tile");
+   });
+
+   it("is the same in the builder, and a label always wins", () => {
+      const named = (name: string, from: string, label?: string) =>
+         ({
+            name,
+            source: "orders",
+            declaration: { kind: "named", from },
+            ...(label ? { label } : {}),
+         }) as QueryTile;
+      expect(tileDisplayTitle(named("top_brands_tile", "top_brands"))).toBe(
+         "Top brands",
+      );
+      expect(tileDisplayTitle(named("kpis_tile", "key_figures"))).toBe(
+         "Kpis tile",
+      );
+      expect(
+         tileDisplayTitle(named("top_brands_tile", "top_brands", "Brands")),
+      ).toBe("Brands");
    });
 });

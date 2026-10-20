@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isBuilderTileName } from "../Dashboard/tileTitle";
 import {
    isInlineStage,
    isQueryTile,
@@ -45,7 +46,7 @@ export function needsQuery(tile: QueryTile): boolean {
 /**
  * A name for a new query of the report's own: `<view>_tile`, numbered past any
  * name a tile, source or given already has, since a `query:` shares the file's
- * top-level namespace with all of them.
+ * top-level namespace with all of them. {@link isBuilderTileName} recognizes it.
  */
 export function freeQueryName(
    document: DashboardDocument,
@@ -60,17 +61,6 @@ export function freeQueryName(
    for (let n = 2; taken.has(name); n++) name = `${view}_tile_${n}`;
    return name;
 }
-
-/**
- * Whether a query's name is one {@link freeQueryName} gives: `<view>_tile`, or
- * numbered. A query the author named is theirs, and may be read by more than
- * this report's list, so it is never taken out of the file; it only loses the
- * settings the builder wrote on it.
- */
-const namedByBuilder = (name: string, view: string) =>
-   name === `${view}_tile` ||
-   (name.startsWith(`${view}_tile_`) &&
-      /^\d+$/.test(name.slice(`${view}_tile_`.length)));
 
 /** The `inherited` form of a `named` tile: the view it reads, with no setting of its own, laid out where the tile was. */
 const viewTile = (tile: QueryTile & { source: string }, from: string) =>
@@ -132,7 +122,7 @@ export function normalizeTileForms(
             tile.unmodelled ||
             // An inline stage has no served view to go back to.
             isInlineStage(from) ||
-            !namedByBuilder(tile.name, from) ||
+            !isBuilderTileName(tile.name, from) ||
             needsQuery(tile)
          )
             return;

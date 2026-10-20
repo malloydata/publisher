@@ -399,6 +399,7 @@ export function DashboardView({
                         modelPath={modelPath}
                         tile={tile.query}
                         label={tile.label}
+                        {...(tile.view ? { titleView: tile.view } : {})}
                         subtitle={tile.subtitle}
                         borderless={tile.borderless}
                         givens={applied}

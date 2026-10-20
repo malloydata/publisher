@@ -134,6 +134,14 @@ export interface ReportQueryTileSpec extends ReportTileLayout {
     */
    drill?: Record<string, TileDrill>;
    /**
+    * The view a named-query tile reads, as `source -> view`: the one view of
+    * the query's source whose outputs are exactly the query's. A viewer with no
+    * `label` titles a query the builder named for that view (`top_brands_tile`)
+    * as the view. Absent when the tile is not a named query, or no single view
+    * matches.
+    */
+   view?: string;
+   /**
     * The caller may not read this tile's source. Set only by a compile of
     * caller-submitted text; carries nothing else of the tile, so the answer
     * discloses neither the gated view's layout tags nor the givens it reads.
@@ -690,6 +698,8 @@ export interface ReportModelFacts {
        * source is inlined in the query's own definition, which cannot dangle.
        */
       sourceName?: string;
+      /** See {@link ReportQueryTileSpec.view}. */
+      view?: string;
    }[];
    /**
     * Given declarations this file can actually *bind*, keyed by name: the
@@ -852,6 +862,7 @@ export function readReportModelFacts(
             .map((usage) => registry[usage.id]?.name)
             .filter((name): name is string => name !== undefined),
          sourceName: structRefSourceName(query.structRef),
+         outputs: viewOutputNames(query as unknown as TurtleDef),
       }));
 
    const viewGivens = new Map<string, string[]>();
@@ -914,6 +925,13 @@ export function readReportModelFacts(
       }
    }
 
+   const queryFacts = queries.map(({ outputs, ...query }) => {
+      const view = query.sourceName
+         ? soleViewWithOutputs(query.sourceName, outputs, viewOutputs)
+         : undefined;
+      return view ? { ...query, view } : query;
+   });
+
    const modelNotes = ownModelNoteObjects(modelDef);
    // A tile entry's own click actions, beside the model's tags: the drill
    // lints check both the same way.
@@ -944,7 +962,7 @@ export function readReportModelFacts(
       // describes that include, not everything importing it.
       modelAnnotations: modelNotes.map((note) => note.text),
       descriptionNotes: dashboardDescriptionNotes(modelNotes),
-      queries,
+      queries: queryFacts,
       givens,
       viewGivens,
       viewAnnotations,
@@ -1006,6 +1024,28 @@ function readDrillTag(
  * view that pipes into a later stage. A `fieldref` counts by its last path
  * segment, as its output column is named.
  */
+/**
+ * The one view of `sourceName` whose outputs are exactly `outputs`, as
+ * `source -> view`, or undefined when none or several are. A refinement that
+ * only filters (`+ { where: … }`) keeps the view's outputs, so this finds the
+ * view a builder query reads without parsing its text.
+ */
+function soleViewWithOutputs(
+   sourceName: string,
+   outputs: Set<string> | undefined,
+   viewOutputs: Map<string, Set<string>>,
+): string | undefined {
+   if (!outputs || outputs.size === 0) return undefined;
+   const prefix = `${sourceName} -> `;
+   const matches = [...viewOutputs].filter(
+      ([key, names]) =>
+         key.startsWith(prefix) &&
+         names.size === outputs.size &&
+         [...names].every((name) => outputs.has(name)),
+   );
+   return matches.length === 1 ? matches[0][0] : undefined;
+}
+
 function viewOutputNames(view: TurtleDef): Set<string> | undefined {
    if (view.pipeline.length !== 1) return undefined;
    const names = new Set<string>();
@@ -1279,10 +1319,14 @@ export function buildReportManifest(
          // view's tags are the default for every report that names it.
          const { break: viewBreak, ...viewLayout } =
             resolveTileLayout(query, facts) ?? {};
+         const view = facts.queries.find(
+            (each) => each.name === normalizeTileExpression(query),
+         )?.view;
          return {
             kind: "query",
             query,
             ...(givenNames ? { givenNames } : {}),
+            ...(view ? { view } : {}),
             ...viewLayout,
             ...entryLayoutFields({
                break: viewBreak,

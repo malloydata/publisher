@@ -5360,6 +5360,15 @@ components:
           description: >-
             The grid column the tile's left edge sits in, counted from 1, from
             `col=N` on its entry in `tiles=[…]`. See `row`.
+        view:
+          type: string
+          description: >-
+            The view a tile naming a query reads, as `source -> view`: the one
+            view of the query's source whose outputs are exactly the query's.
+            With no `label`, a viewer titles a query the report builder named
+            for that view (`<view>_tile`, or `<view>_tile_N`) as the view, so
+            adding a filter does not retitle the tile. Absent when the tile
+            does not name a query, or when no single view matches.
         drill:
           type: object
           additionalProperties:
