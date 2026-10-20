@@ -21,6 +21,7 @@ import {
    contentNodeDepth,
    measureContentHeight,
    remeasuresAfterReady,
+   RESULT_SCROLLER_CLASS,
    resultSizing,
    type ResultSizing,
    TIGHT_ATTR,
@@ -565,10 +566,22 @@ function RenderedResultInner({
          // A filled table root is as tall as its box, which would read back as its content.
          const stretched = element.hasAttribute(FILL_ATTR);
          if (stretched) element.removeAttribute(FILL_ATTR);
+         // Measured as if the tile's scroller shows no scrollbar. Its scrollbar
+         // narrows the result, a narrower table can wrap its header onto a
+         // second line, and the taller height reported back is what decides
+         // whether the scroller needs that scrollbar. Measured at whichever
+         // width is on screen, a table at the threshold reports two heights
+         // in turn and its tile grows and shrinks on every frame.
+         const scroller = element.closest<HTMLElement>(
+            `.${RESULT_SCROLLER_CLASS}`,
+         );
+         const scrollerOverflow = scroller?.style.overflowY;
+         if (scroller) scroller.style.overflowY = "hidden";
          const renderedHeight = measureContentHeight(
             root,
             contentNodeDepth(renderAs),
          );
+         if (scroller) scroller.style.overflowY = scrollerOverflow ?? "";
          if (stretched) element.setAttribute(FILL_ATTR, "");
 
          if (renderedHeight > 0) {
