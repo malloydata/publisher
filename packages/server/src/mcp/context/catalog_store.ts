@@ -118,7 +118,7 @@ export function catalogReportLine(report: CatalogReport): string {
          ? `; ${report.joinedCopiesDropped} joined copies left out (searched on their own source, reached by route)`
          : "") +
       (report.unservedCopiesAdded > 0 || report.unservedCopiesCapped > 0
-         ? `; ${report.unservedCopiesAdded} joined copies of unserved fields added beyond the shipped index, ${report.unservedCopiesCapped} left out by the per-field cap, ${report.unservedWalkCapped} join paths stopped at the guard`
+         ? `; ${report.unservedCopiesAdded} joined copies of unserved fields added beyond the entity index, ${report.unservedCopiesCapped} left out by the per-field cap, ${report.unservedWalkCapped} join paths stopped at the guard`
          : "")
    );
 }

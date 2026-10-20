@@ -10,11 +10,9 @@
  * `q3` (generated questions) and `values` (the value list its doc gives). A
  * node's closeness to a phrase is its best row.
  *
- * The sync is the shipped index's rule, applied to its own table: a row whose
- * text hash and embedding model match is reused, everything else is embedded
- * in batches through the configured provider, and rows the package no longer
- * wants are deleted. A separate table, because the shipped sync deletes every
- * row of `entity_embeddings` it did not write.
+ * The sync: a row whose text hash and embedding model match is reused,
+ * everything else is embedded in batches through the configured provider, and
+ * rows the package no longer wants are deleted.
  *
  * The same sync stores the value index's vectors (values_index.ts) in
  * `value_embeddings`, one row per distinct value string; `table` picks which.
@@ -176,7 +174,7 @@ export async function syncVectors(args: {
          out = await provider.embedBatch(
             batch.map(([, r]) => prefix + r.input),
             EMBEDDING_BATCH_TIMEOUT_MS,
-            // The shipped sync's ladder: a 500, a 429 or a timeout from the
+            // The embedding retry ladder: a 500, a 429 or a timeout from the
             // vendor is retried with backoff, not a failed build.
             DEFAULT_EMBEDDING_RETRY,
          );

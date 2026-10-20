@@ -9,7 +9,10 @@
  *
  * Only keys whose code exists are accepted. Any other key is an error naming
  * the valid ones, so a typo (or a key from a later release) does not silently
- * do nothing.
+ * do nothing. The one exception is a key an earlier release read and this one
+ * does not (see {@link IGNORED_RETRIEVAL_KEYS}): it loads, is ignored, and
+ * {@link ignoredRetrievalWarnings} says so, so a package written for the
+ * earlier release keeps serving.
  */
 
 import { createHash } from "crypto";
@@ -23,20 +26,6 @@ import {
    type QuestionsPrompt,
 } from "../prompts/questions";
 
-export const PACKAGE_REPRESENTATIONS = ["single", "facets"] as const;
-export type PackageRepresentation = (typeof PACKAGE_REPRESENTATIONS)[number];
-
-export const KEYPHRASE_MODES = ["auto", "never", "always"] as const;
-export type KeyphraseMode = (typeof KEYPHRASE_MODES)[number];
-
-/** The levels refine rates a candidate at, lowest first. */
-export const REFINE_LEVEL_NAMES = ["LOW", "MEDIUM", "HIGH"] as const;
-export type RefineLevelName = (typeof REFINE_LEVEL_NAMES)[number];
-
-/** Sources rerank keeps when a package does not say. */
-export const DEFAULT_RERANK_TOP_SOURCES = 8;
-export const DEFAULT_REFINE_MIN_LEVEL: RefineLevelName = "MEDIUM";
-
 /**
  * `auto`: on when the operator has an LLM configured, off otherwise.
  * `true`: always on; a package that says so on a server with no LLM does not
@@ -44,32 +33,46 @@ export const DEFAULT_REFINE_MIN_LEVEL: RefineLevelName = "MEDIUM";
  */
 export type StageEnabled = "auto" | boolean;
 
-const RETRIEVAL_KEYS = [
-   "representation",
-   "keyphrases",
-   "refine",
-   "rerank",
-   "sourceMatch",
-   "sourceSummary",
-   "prompts",
-   "engine",
-   "fcj",
-] as const;
+const RETRIEVAL_KEYS = ["sourceSummary", "prompts", "fcj"] as const;
 const PROMPT_KEYS = [
-   "keyphrase",
-   "refine",
-   "rerank",
-   "sourceMatch",
    "sourceSummary",
    "judge",
    "docParts",
    "questions",
 ] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
-const REFINE_KEYS = ["enabled", "minLevel"] as const;
-const RERANK_KEYS = ["enabled", "topSources"] as const;
-const SOURCE_MATCH_KEYS = ["enabled"] as const;
 const SOURCE_SUMMARY_KEYS = ["enabled"] as const;
+
+/**
+ * Keys of `retrieval` that an earlier release read and this one does not: the
+ * search it configured is gone, so there is one engine (`retrieval.fcj`). Each
+ * still loads, whatever its value, and is reported by
+ * {@link ignoredRetrievalWarnings}. The value is the sentence that says what
+ * took its place.
+ */
+const IGNORED_RETRIEVAL_KEYS: Readonly<Record<string, string>> = {
+   engine: "get_context has one search engine now, and every package uses it.",
+   representation:
+      "the search index no longer keeps a per-entity text representation.",
+   keyphrases: "the search index no longer writes keyphrases.",
+   refine:
+      "the engine's judge step replaces it (retrieval.fcj.judge turns that step off).",
+   rerank:
+      "the engine's judge step replaces it (retrieval.fcj.judge turns that step off).",
+   sourceMatch:
+      "the engine's judge step replaces it (retrieval.fcj.judge turns that step off).",
+};
+
+/** Keys of `retrieval.prompts` that an earlier release read and this one does not. */
+const IGNORED_PROMPT_KEYS: Readonly<Record<string, string>> = {
+   keyphrase: "the search index no longer writes keyphrases.",
+   refine:
+      "the refine step is gone; retrieval.prompts.judge replaces the judge's instructions.",
+   rerank:
+      "the rerank step is gone; retrieval.prompts.judge replaces the judge's instructions.",
+   sourceMatch:
+      "the source match step is gone; retrieval.prompts.judge replaces the judge's instructions.",
+};
 
 /** A prompt a package overrides: the text, read at package load. */
 export interface PackagePrompt {
@@ -80,33 +83,9 @@ export interface PackagePrompt {
    hash: string;
 }
 
-export interface RefineSettings {
-   enabled: StageEnabled;
-   /** Candidates rated below this are dropped. */
-   minLevel: RefineLevelName;
-}
-
-export interface RerankSettings {
-   enabled: StageEnabled;
-   /** Cards kept after sorting by relevance; the rest are discarded. */
-   topSources: number;
-}
-
-export interface SourceMatchSettings {
-   enabled: StageEnabled;
-}
-
 export interface SourceSummarySettings {
    enabled: StageEnabled;
 }
-
-/**
- * Which request-time search answers a ranked get_context call. `legacy` is the
- * shipped pipeline (scan, refine, cards, rerank). `fcj` is find, connect,
- * judge (see mcp/context/), which is new and off unless a package asks for it.
- */
-export const RETRIEVAL_ENGINES = ["legacy", "fcj"] as const;
-export type RetrievalEngine = (typeof RETRIEVAL_ENGINES)[number];
 
 /**
  * The knobs of the `fcj` engine, from `retrieval.fcj`. Every key is optional
@@ -161,9 +140,11 @@ export interface FcjSettings {
     */
    collapseCopies: boolean;
    /**
-    * PROVISIONAL, `clusters` by default. `list` skips the cluster filter: the
-    * judge sees every target's find-stage top `listTopK`, grouped by owning
-    * source, plus the structural extras. The baseline a connect rule must beat.
+    * `list` by default: the judge sees every target's find-stage top
+    * `listTopK`, grouped by owning source, plus the structural extras, with no
+    * cluster filter. `clusters` first groups the candidates into at most
+    * `maxClusters` clusters of sources that explain the targets together, and
+    * the judge picks inside each.
     */
    connect: FcjConnect;
    /** With `connect: "list"`: find-stage candidates per target the judge sees. */
@@ -222,7 +203,7 @@ export interface FcjSettings {
     * not served (an unpublished source, or a raw table or SQL join) gets a
     * searchable joined copy on each served source that reaches it, at any
     * depth up to the join walk's guard (8 joins, 1,000 paths per source), at
-    * most this many copies per field, shortest path first. The shipped index
+    * most this many copies per field, shortest path first. The entity index
     * stops at two joins, so a field of an unpublished source three or more
     * joins away cannot be found without it. Fields of served sources keep
     * their behaviour: found once on their own source, reached by routes.
@@ -257,14 +238,15 @@ export interface FcjSettings {
     */
    dateRange: boolean;
    /**
-    * PROVISIONAL, 0 (off) by default; read with `connect: "list"`. Above 0,
-    * the judge's list per target is the fused top `listTopK` plus any find
-    * candidate ranked this high or better in the meaning list or the keyword
-    * list alone. Such a candidate is marked `union` in the connect trace.
+    * 10 by default; read with `connect: "list"`. Above 0, the judge's list per
+    * target is the fused top `listTopK` plus any find candidate ranked this
+    * high or better in the meaning list or the keyword list alone. Such a
+    * candidate is marked `union` in the connect trace. 0 uses the fused top
+    * alone.
     */
    listUnion: number;
    /**
-    * PROVISIONAL, off by default. Adds the readings rule to the judge's
+    * On by default. Adds the readings rule to the judge's
     * instructions, for every target type: a phrase with more than one
     * plausible reading, that the model docs do not settle, gets a field for
     * each reading; a rate or per-unit target also gets the measures it is
@@ -332,7 +314,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    judge: "auto",
    contenderShare: 0,
    collapseCopies: false,
-   connect: "clusters",
+   connect: "list",
    listTopK: 15,
    questionsPrompt: "questions",
    questionsPerNode: DEFAULT_QUESTIONS_PER_NODE,
@@ -345,89 +327,33 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    splitBundles: false,
    splitItemPicks: 0,
    dateRange: false,
-   listUnion: 0,
-   readingsRule: false,
+   listUnion: 10,
+   readingsRule: true,
    twinRule: false,
    judgeLlm: null,
 };
 
 export interface PackageRetrievalSettings {
-   /** Which request-time search answers a ranked call; absent means `legacy`. */
-   engine?: RetrievalEngine;
-   /** The `fcj` engine's knobs; absent means DEFAULT_FCJ_SETTINGS. */
+   /** The engine's knobs; absent means DEFAULT_FCJ_SETTINGS. */
    fcj?: FcjSettings;
-   /** `single`: one row per entity. `facets`: a name row plus doc chunks. */
-   representation: PackageRepresentation;
-   /**
-    * `auto`: a short description is its own keyphrase, anything else gets an
-    * LLM-written one (needs the operator's LLM; otherwise acts as `never`).
-    * `always`: an LLM keyphrase for every entity. `never`: none.
-    */
-   keyphrases: KeyphraseMode;
-   /** Absent means the defaults: `{ enabled: "auto", minLevel: "MEDIUM" }`. */
-   refine?: RefineSettings;
-   /** Absent means the defaults: `{ enabled: "auto", topSources: 8 }`. */
-   rerank?: RerankSettings;
-   /** Absent means the default: `{ enabled: "auto" }`. */
-   sourceMatch?: SourceMatchSettings;
    /**
     * Absent means the default: `{ enabled: "auto" }`. An index-time stage: the
-    * embedding sync writes each source's summary, so it runs only on a server
-    * that has both an LLM and an embedding provider.
+    * search index build writes each source's summary, so it runs only on a
+    * server that has an LLM.
     */
    sourceSummary?: SourceSummarySettings;
    prompts: { [K in PromptKey]?: PackagePrompt };
 }
 
 export const DEFAULT_PACKAGE_RETRIEVAL: PackageRetrievalSettings = {
-   representation: "single",
-   keyphrases: "auto",
    prompts: {},
 };
-
-/** The refine settings in force: the package's, or the defaults. */
-export function refineSettingsOf(
-   retrieval: PackageRetrievalSettings,
-): RefineSettings {
-   return (
-      retrieval.refine ?? {
-         enabled: "auto",
-         minLevel: DEFAULT_REFINE_MIN_LEVEL,
-      }
-   );
-}
-
-/** The rerank settings in force: the package's, or the defaults. */
-export function rerankSettingsOf(
-   retrieval: PackageRetrievalSettings,
-): RerankSettings {
-   return (
-      retrieval.rerank ?? {
-         enabled: "auto",
-         topSources: DEFAULT_RERANK_TOP_SOURCES,
-      }
-   );
-}
-
-/** The source-match settings in force: the package's, or the defaults. */
-export function sourceMatchSettingsOf(
-   retrieval: PackageRetrievalSettings,
-): SourceMatchSettings {
-   return retrieval.sourceMatch ?? { enabled: "auto" };
-}
 
 /** The source-summary settings in force: the package's, or the defaults. */
 export function sourceSummarySettingsOf(
    retrieval: PackageRetrievalSettings,
 ): SourceSummarySettings {
    return retrieval.sourceSummary ?? { enabled: "auto" };
-}
-
-/** The engine in force: the package's, or `legacy`. */
-export function engineOf(
-   retrieval: PackageRetrievalSettings | undefined,
-): RetrievalEngine {
-   return retrieval?.engine ?? "legacy";
 }
 
 /** The fcj knobs in force: the package's, or the defaults. */
@@ -467,7 +393,7 @@ export function stepsOutside(within: string): boolean {
 export function resolvePromptPath(
    packageRoot: string,
    rel: string,
-   promptKey: PromptKey = "keyphrase",
+   promptKey: PromptKey = "judge",
 ): string {
    const key = `retrieval.prompts.${promptKey}`;
    const fix = `Fix: use a path inside the package, e.g. "prompts/${promptKey}.md".`;
@@ -521,61 +447,6 @@ function parseEnabled(value: unknown, key: string): StageEnabled {
       `Invalid publisher.json ${key}: expected "auto", true or false, got ${describe(value)}. ` +
          `Fix: "enabled": "auto" (on when the server has an LLM), true (require one) or false.`,
    );
-}
-
-function parseRefine(raw: unknown): RefineSettings {
-   const obj = objectBlock(
-      raw,
-      "retrieval.refine",
-      REFINE_KEYS,
-      `"refine": { "enabled": "auto", "minLevel": "MEDIUM" }`,
-   );
-   const minLevel = obj.minLevel ?? DEFAULT_REFINE_MIN_LEVEL;
-   if (
-      typeof minLevel !== "string" ||
-      !(REFINE_LEVEL_NAMES as readonly string[]).includes(minLevel)
-   ) {
-      fail(
-         `Invalid publisher.json retrieval.refine.minLevel: expected one of ${REFINE_LEVEL_NAMES.join(", ")}, got ${describe(obj.minLevel)}. ` +
-            `Fix: "minLevel": "MEDIUM" (drop candidates the model rates below it).`,
-      );
-   }
-   return {
-      enabled: parseEnabled(obj.enabled, "retrieval.refine.enabled"),
-      minLevel: minLevel as RefineLevelName,
-   };
-}
-
-function parseRerank(raw: unknown): RerankSettings {
-   const obj = objectBlock(
-      raw,
-      "retrieval.rerank",
-      RERANK_KEYS,
-      `"rerank": { "enabled": "auto", "topSources": ${DEFAULT_RERANK_TOP_SOURCES} }`,
-   );
-   const top = obj.topSources ?? DEFAULT_RERANK_TOP_SOURCES;
-   if (typeof top !== "number" || !Number.isSafeInteger(top) || top <= 0) {
-      fail(
-         `Invalid publisher.json retrieval.rerank.topSources: expected a positive integer, got ${describe(obj.topSources)}. ` +
-            `Fix: "topSources": ${DEFAULT_RERANK_TOP_SOURCES}`,
-      );
-   }
-   return {
-      enabled: parseEnabled(obj.enabled, "retrieval.rerank.enabled"),
-      topSources: top,
-   };
-}
-
-function parseSourceMatch(raw: unknown): SourceMatchSettings {
-   const obj = objectBlock(
-      raw,
-      "retrieval.sourceMatch",
-      SOURCE_MATCH_KEYS,
-      `"sourceMatch": { "enabled": "auto" }`,
-   );
-   return {
-      enabled: parseEnabled(obj.enabled, "retrieval.sourceMatch.enabled"),
-   };
 }
 
 function parseSourceSummary(raw: unknown): SourceSummarySettings {
@@ -758,51 +629,32 @@ function parseFcj(raw: unknown): FcjSettings {
    };
 }
 
-function parseEngine(raw: unknown): RetrievalEngine {
-   if (
-      typeof raw !== "string" ||
-      !(RETRIEVAL_ENGINES as readonly string[]).includes(raw)
-   ) {
-      fail(
-         `Invalid publisher.json retrieval.engine: expected one of ${RETRIEVAL_ENGINES.join(", ")}, got ${describe(raw)}. ` +
-            `Fix: "engine": "legacy" (the shipped search) or "fcj" (find, connect, judge).`,
-      );
-   }
-   return raw as RetrievalEngine;
-}
-
 /**
  * Validate the block's shape and return what it says, with the prompt path
  * still unread. Throws a PackageManifestError (424: the package is not served
- * until the author fixes the file) naming the key and a fix.
+ * until the author fixes the file) naming the key and a fix. A key an earlier
+ * release read ({@link IGNORED_RETRIEVAL_KEYS}) is not validated and never
+ * throws.
  */
 export function parsePackageRetrieval(raw: unknown): {
-   engine?: RetrievalEngine;
    fcj?: FcjSettings;
-   representation: PackageRepresentation;
-   keyphrases: KeyphraseMode;
-   refine?: RefineSettings;
-   rerank?: RerankSettings;
-   sourceMatch?: SourceMatchSettings;
    sourceSummary?: SourceSummarySettings;
    promptPaths: { [K in PromptKey]?: string };
 } {
    if (raw === undefined || raw === null) {
-      return {
-         representation: DEFAULT_PACKAGE_RETRIEVAL.representation,
-         keyphrases: DEFAULT_PACKAGE_RETRIEVAL.keyphrases,
-         promptPaths: {},
-      };
+      return { promptPaths: {} };
    }
    if (typeof raw !== "object" || Array.isArray(raw)) {
       fail(
          `Invalid publisher.json retrieval: expected an object, got ${describe(raw)}. ` +
-            `Fix: "retrieval": { "representation": "single" }`,
+            `Fix: "retrieval": { "fcj": { "perTarget": 30 } }`,
       );
    }
    const obj = raw as Record<string, unknown>;
    const unknown = Object.keys(obj).filter(
-      (k) => !(RETRIEVAL_KEYS as readonly string[]).includes(k),
+      (k) =>
+         !(RETRIEVAL_KEYS as readonly string[]).includes(k) &&
+         !(k in IGNORED_RETRIEVAL_KEYS),
    );
    if (unknown.length > 0) {
       fail(
@@ -811,46 +663,10 @@ export function parsePackageRetrieval(raw: unknown): {
       );
    }
 
-   const representation = obj.representation ?? "single";
-   if (
-      typeof representation !== "string" ||
-      !(PACKAGE_REPRESENTATIONS as readonly string[]).includes(representation)
-   ) {
-      fail(
-         `Invalid publisher.json retrieval.representation: expected one of ${PACKAGE_REPRESENTATIONS.join(", ")}, got ${describe(obj.representation)}. ` +
-            `Fix: "representation": "single" (one row per entity) or "facets" (a name row plus doc chunks).`,
-      );
-   }
-   const keyphrases = obj.keyphrases ?? "auto";
-   if (
-      typeof keyphrases !== "string" ||
-      !(KEYPHRASE_MODES as readonly string[]).includes(keyphrases)
-   ) {
-      fail(
-         `Invalid publisher.json retrieval.keyphrases: expected one of ${KEYPHRASE_MODES.join(", ")}, got ${describe(obj.keyphrases)}. ` +
-            `Fix: "keyphrases": "auto".`,
-      );
-   }
-   const refine =
-      obj.refine === undefined || obj.refine === null
-         ? undefined
-         : parseRefine(obj.refine);
-   const rerank =
-      obj.rerank === undefined || obj.rerank === null
-         ? undefined
-         : parseRerank(obj.rerank);
-   const sourceMatch =
-      obj.sourceMatch === undefined || obj.sourceMatch === null
-         ? undefined
-         : parseSourceMatch(obj.sourceMatch);
    const sourceSummary =
       obj.sourceSummary === undefined || obj.sourceSummary === null
          ? undefined
          : parseSourceSummary(obj.sourceSummary);
-   const engine =
-      obj.engine === undefined || obj.engine === null
-         ? undefined
-         : parseEngine(obj.engine);
    const fcj =
       obj.fcj === undefined || obj.fcj === null ? undefined : parseFcj(obj.fcj);
 
@@ -859,12 +675,14 @@ export function parsePackageRetrieval(raw: unknown): {
       if (typeof obj.prompts !== "object" || Array.isArray(obj.prompts)) {
          fail(
             `Invalid publisher.json retrieval.prompts: expected an object, got ${describe(obj.prompts)}. ` +
-               `Fix: "prompts": { "keyphrase": "prompts/keyphrase.md" }`,
+               `Fix: "prompts": { "judge": "prompts/judge.md" }`,
          );
       }
       const prompts = obj.prompts as Record<string, unknown>;
       const badPrompt = Object.keys(prompts).filter(
-         (k) => !(PROMPT_KEYS as readonly string[]).includes(k),
+         (k) =>
+            !(PROMPT_KEYS as readonly string[]).includes(k) &&
+            !(k in IGNORED_PROMPT_KEYS),
       );
       if (badPrompt.length > 0) {
          fail(
@@ -885,16 +703,41 @@ export function parsePackageRetrieval(raw: unknown): {
       }
    }
    return {
-      ...(engine ? { engine } : {}),
       ...(fcj ? { fcj } : {}),
-      representation: representation as PackageRepresentation,
-      keyphrases: keyphrases as KeyphraseMode,
-      ...(refine ? { refine } : {}),
-      ...(rerank ? { rerank } : {}),
-      ...(sourceMatch ? { sourceMatch } : {}),
       ...(sourceSummary ? { sourceSummary } : {}),
       promptPaths,
    };
+}
+
+/**
+ * One warning for each key of a package's `retrieval` block that an earlier
+ * release read and this one ignores, naming the key and saying it no longer
+ * does anything. Empty for a block with none. Never throws: the block's shape
+ * is checked by {@link parsePackageRetrieval}.
+ */
+export function ignoredRetrievalWarnings(raw: unknown): string[] {
+   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+   const obj = raw as Record<string, unknown>;
+   const warnings: string[] = [];
+   for (const [key, why] of Object.entries(IGNORED_RETRIEVAL_KEYS)) {
+      if (obj[key] !== undefined && obj[key] !== null) {
+         warnings.push(ignoredKeyWarning(`retrieval.${key}`, why));
+      }
+   }
+   const prompts = obj.prompts;
+   if (typeof prompts === "object" && prompts !== null) {
+      for (const [key, why] of Object.entries(IGNORED_PROMPT_KEYS)) {
+         const value = (prompts as Record<string, unknown>)[key];
+         if (value !== undefined && value !== null) {
+            warnings.push(ignoredKeyWarning(`retrieval.prompts.${key}`, why));
+         }
+      }
+   }
+   return warnings;
+}
+
+function ignoredKeyWarning(key: string, why: string): string {
+   return `publisher.json ${key} no longer does anything and is ignored: ${why} Fix: remove the key.`;
 }
 
 async function readPromptFile(
@@ -958,41 +801,28 @@ export async function readPackageRetrieval(
       }
    }
    return {
-      ...(parsed.engine ? { engine: parsed.engine } : {}),
       ...(parsed.fcj ? { fcj: parsed.fcj } : {}),
-      representation: parsed.representation,
-      keyphrases: parsed.keyphrases,
-      ...(parsed.refine ? { refine: parsed.refine } : {}),
-      ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
-      ...(parsed.sourceMatch ? { sourceMatch: parsed.sourceMatch } : {}),
       ...(parsed.sourceSummary ? { sourceSummary: parsed.sourceSummary } : {}),
       prompts,
    };
 }
 
 /**
- * A package that sets a stage to `true` needs the operator's LLM. With none
- * configured the package does not load, with a message that names both fixes,
- * rather than serving answers that quietly skip the stage it asked for.
- * `auto` and `false` never fail here.
+ * A package that sets the summary stage to `true` needs the operator's LLM.
+ * With none configured the package does not load, with a message that names
+ * both fixes, rather than serving answers that quietly skip the stage it
+ * asked for. `auto` and `false` never fail here.
  */
 export function assertRequiredStagesAvailable(
    retrieval: PackageRetrievalSettings,
    llmConfigured: boolean,
 ): void {
    if (llmConfigured) return;
-   for (const [key, stage] of [
-      ["refine", retrieval.refine],
-      ["rerank", retrieval.rerank],
-      ["sourceMatch", retrieval.sourceMatch],
-      ["sourceSummary", retrieval.sourceSummary],
-   ] as const) {
-      if (stage?.enabled === true) {
-         fail(
-            `Invalid publisher.json retrieval.${key}.enabled: true needs an LLM, and this server has none configured. ` +
-               `Fix: set retrieval.llm in publisher.config.json and LLM_API_KEY in the server's environment, ` +
-               `or set "enabled": "auto" (on only when an LLM is configured) or false.`,
-         );
-      }
+   if (retrieval.sourceSummary?.enabled === true) {
+      fail(
+         `Invalid publisher.json retrieval.sourceSummary.enabled: true needs an LLM, and this server has none configured. ` +
+            `Fix: set retrieval.llm in publisher.config.json and LLM_API_KEY in the server's environment, ` +
+            `or set "enabled": "auto" (on only when an LLM is configured) or false.`,
+      );
    }
 }

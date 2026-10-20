@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The answer of the fcj engine, in the shipped response's shape plus three
- * blocks the shipped engine does not have.
+ * The answer of the engine, in the card shape a listing uses plus three
+ * blocks only a ranked answer has.
  *
- * `sources[]` is built from the judge's picks with the shipped card builder,
+ * `sources[]` is built from the judge's picks with the listing's card builder,
  * so a caller that reads cards keeps working. A pick on the home source (or a
  * twin) is on its own card. A field on a source the home reaches by joins is
  * presented on the home's card under every route the home has to it
@@ -24,7 +24,7 @@
  * `clusters` (home, reach, which targets each answers, the picks and the
  * judge's caveats), `coverage` (target by cluster, when there is more than
  * one cluster) and `unresolved_targets` (targets no cluster answered) are
- * this engine's own, and appear only on a package that opted into it.
+ * a ranked answer's own.
  *
  * With the provisional `connect: "list"` there is no home. Every pick is on
  * its own source's card, and `clusters` is read after the judge from the
@@ -47,9 +47,18 @@ import {
    type ValueFetcher,
 } from "../tools/get_context_values";
 import { matchValues } from "../tools/get_context_value_match";
-import { projectEntity, summaryViewFor, toSourceResults, type SourceCard } from "../tools/get_context_response";
+import {
+   projectEntity,
+   summaryViewFor,
+   toSourceResults,
+   type SourceCard,
+} from "../tools/get_context_response";
 import { sourceContextKey } from "../tools/package_entities";
-import { type PackageIndex, type ResolvedRequest, type ResultEntity } from "../tools/get_context_types";
+import {
+   type PackageIndex,
+   type ResolvedRequest,
+   type ResultEntity,
+} from "../tools/get_context_types";
 import type { AlsoLikelyField } from "./also_likely";
 import { nodeKeyOf, type CatalogNode, type CatalogSource } from "./catalog";
 import type { Cluster, ConnectResult, PeerSource } from "./connect";
@@ -114,7 +123,7 @@ export async function respond(args: {
    const rows = new Map<string, ResultEntity>();
    const order: string[] = [];
    // Published relevance: a pick's in-cluster score over the best score of
-   // the request, so the scale reads like the shipped engine's (0 to 1).
+   // the request, so the scale runs from 0 to 1.
    let maxScore = 0;
    for (const c of connected.clusters) {
       for (const list of c.candidates.values()) {

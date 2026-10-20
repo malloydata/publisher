@@ -4,14 +4,12 @@
 /**
  * Stage 3, judge: one chat call per cluster (one call in all when there is one
  * cluster) picks, for each target, which of the cluster's candidates to
- * return, and names the caveats it applied. The same chat model the shipped
- * refine step uses.
+ * return, and names the caveats it applied.
  *
  * The call sees the targets verbatim and in order, whether this cluster
  * covers each, and for each target the cluster's candidates (and the
  * structural extras) with their kind, type, source, route and full `#(doc)`,
- * rules included. Docs are model text, sent today by refine under every
- * egress preset. A stored value is data: under any preset below `full` the
+ * rules included. Docs are model text, sent under every egress preset. A stored value is data: under any preset below `full` the
  * judge is told that a candidate matched the phrase's value and how, never
  * the stored string; authored expressions are not sent at all.
  *

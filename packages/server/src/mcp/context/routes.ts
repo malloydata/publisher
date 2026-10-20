@@ -11,7 +11,7 @@
  * The response lists the routes rather than picking one.
  *
  * How deep a route goes is the catalog's `routeDepth`: two joins with
- * `joinedCopies: "indexed"` (the depth the shipped index gives joined
+ * `joinedCopies: "indexed"` (the depth the entity index gives joined
  * copies), any depth the join walk recorded with `"routes"`. In routes mode a
  * field of a raw-table join on its own source (`date_dim.year` on `orders`)
  * has routes too: `orders.date_dim.year` from a source that reaches `orders`

@@ -285,7 +285,7 @@ type ModelStandIn = {
    getModelDef: () => unknown;
 };
 
-/** Compile the fixture, build the shipped index over it, and the catalog from that. */
+/** Compile the fixture, build the entity index over it, and the catalog from that. */
 export async function compileFcjFixture(
    files: Record<string, string> = FCJ_FILES,
    imports: Record<
@@ -293,10 +293,7 @@ export async function compileFcjFixture(
       Array<{ from: string; source: string }>
    > = FCJ_IMPORTS,
    /** What the package's publisher.json `retrieval` block resolves to. */
-   retrieval: PackageRetrievalSettings = {
-      ...DEFAULT_PACKAGE_RETRIEVAL,
-      engine: "fcj",
-   },
+   retrieval: PackageRetrievalSettings = DEFAULT_PACKAGE_RETRIEVAL,
    /**
     * The model files the package serves; absent means every file. A file left
     * out still compiles, so a served file can import its sources, but they

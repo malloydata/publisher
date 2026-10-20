@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { ResolvedRequest } from "../tools/get_context_types";
@@ -17,7 +17,7 @@ import { respond } from "./respond";
 import { toUnit } from "./vectors";
 
 const SETTINGS = {
-   ...DEFAULT_FCJ_SETTINGS,
+   ...CLUSTER_SETTINGS,
    connect: "list" as const,
    listTopK: 15,
    collapseCopies: true,

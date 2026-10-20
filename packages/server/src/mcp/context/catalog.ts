@@ -6,7 +6,7 @@
  * queryable surface as nodes (sources, fields, views, joins, named queries) and
  * the edges between them (contains, joins, extends, depends on, uses).
  *
- * It is built from what the shipped get_context already collects
+ * It is built from what get_context's entity index already collects
  * (`PackageIndex.directEntities`, the join topology and the per-source
  * context), so hidden fields, deny-all sources and collapsed aliases are
  * handled exactly once, by collectEntities. The compiled model adds the three
@@ -15,7 +15,7 @@
  * extends, and which fields an expression reads.
  *
  * A source's identity is its name plus the file that DEFINES it, read from the
- * compiled `sourceID`. The shipped index keys by (model path, source), so one
+ * compiled `sourceID`. The entity index keys by (model path, source), so one
  * source imported by three files is three cards and its fields compete with
  * themselves; here it is one source with three model paths.
  */
@@ -23,9 +23,19 @@
 import type { ModelDef } from "@malloydata/malloy";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../tools/retrieval_shared";
-import { docOnlyText, docText, enterJoin, modelPathOfUrl, sourceContextKey } from "../tools/package_entities";
+import {
+   docOnlyText,
+   docText,
+   enterJoin,
+   modelPathOfUrl,
+   sourceContextKey,
+} from "../tools/package_entities";
 import { entityId } from "../tools/get_context_response";
-import { type Entity, type JoinTopology, type PackageIndex } from "../tools/get_context_types";
+import {
+   type Entity,
+   type JoinTopology,
+   type PackageIndex,
+} from "../tools/get_context_types";
 
 export type NodeKind = Entity["kind"];
 
@@ -82,7 +92,7 @@ export interface CatalogNode {
     * sources, `twinRule`). Absent on a field with no such twin.
     */
    twinKey?: string;
-   /** One shipped entity per model path, in `modelPaths` order. */
+   /** One entity per model path, in `modelPaths` order. */
    entities: Entity[];
 }
 
@@ -164,7 +174,7 @@ export interface CatalogReport {
    joinedCopiesDropped: number;
    /**
     * With `unservedCopies`: joined copies added for fields of unserved
-    * sources (beyond what the shipped index has), copies left out by the
+    * sources (beyond what the entity index has), copies left out by the
     * per-field cap, and join paths the walk stopped at its guard.
     */
    unservedCopiesAdded: number;
@@ -189,7 +199,7 @@ export interface Catalog {
    routeDepth: number;
    /** The `joinedCopies` mode the catalog was built in. */
    joinedCopies: "indexed" | "routes";
-   /** Source key by sourceContextKey(modelPath, name), for mapping shipped entities in. */
+   /** Source key by sourceContextKey(modelPath, name), for mapping entities in. */
    sourceKeyByContext: Map<string, string>;
    report: CatalogReport;
 }
@@ -203,7 +213,7 @@ export interface CatalogModel {
 }
 
 export interface CatalogInput {
-   /** The shipped index's direct entities: no joined copy assembly would rebuild. */
+   /** The entity index's direct entities: no joined copy assembly would rebuild. */
    entities: readonly Entity[];
    topology: JoinTopology;
    /** Per (model path, source): whether a gate is in force. */
@@ -233,7 +243,7 @@ export interface CatalogInput {
     * table or SQL join) gets a joined copy on each served source that reaches
     * it, at any depth up to JOIN_WALK_MAX_HOPS joins (JOIN_WALK_MAX_PATHS
     * join paths walked per source), at most this many copies per field,
-    * shortest path first. The copies the shipped index already has (two
+    * shortest path first. The copies the entity index already has (two
     * joins deep) are kept and count toward that cap.
     */
    unservedCopies?: number;
@@ -244,7 +254,7 @@ export const JOIN_WALK_MAX_HOPS = 8;
 /** Most paths the join walk records from one source. */
 export const JOIN_WALK_MAX_PATHS = 1_000;
 /**
- * Deepest route listed with `joinedCopies: "indexed"`: the depth the shipped
+ * Deepest route listed with `joinedCopies: "indexed"`: the depth the entity
  * index gives joined copies.
  */
 export const ROUTE_MAX_DEPTH = 2;
@@ -455,7 +465,7 @@ function noteKey(note: { text?: string; at?: CompiledLocation }): string {
 
 /**
  * The `#(doc)` lines an extension writes itself, or undefined when the source
- * extends nothing or its parent cannot be read (the shipped doc then stands).
+ * extends nothing or its parent cannot be read (the doc then stands).
  *
  * The compiler keeps an extension's own notes apart from its parent's
  * (`blockNotes` and `inherits.blockNotes`) only when it has notes of its own.
@@ -765,7 +775,7 @@ interface InfoField {
  *
  * Each field gets at most `cap` copies over all served sources, shortest
  * path first (then source key, then path). The copies the catalog already
- * holds (the shipped index's, two joins deep) are kept and count first. The
+ * holds (the entity index's, two joins deep) are kept and count first. The
  * walk records at most JOIN_WALK_MAX_PATHS join paths per served source.
  */
 function unservedCopies(args: {
@@ -1075,7 +1085,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
    }
 
    // 2b. With `unservedCopies` above 0: joined copies of fields whose own
-   // source is not served, at any depth the join walk allows. The shipped
+   // source is not served, at any depth the join walk allows. The entity
    // index stops at two joins.
    const unserved =
       (input.unservedCopies ?? 0) > 0
@@ -1098,7 +1108,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
    }
    for (const source of sources.values()) source.modelPaths.sort(comparePaths);
 
-   // 3. Joins out of each source, from the shipped topology. Walked to every
+   // 3. Joins out of each source, from the entity index's topology. Walked to every
    // depth in step 4b, once step 4 has added what only the compiled model has.
    const routesMode = input.joinedCopies === "routes";
    let joins = new Map<string, JoinHop[]>();
@@ -1470,7 +1480,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
 }
 
 /**
- * The catalog input for a served package: the shipped index's entities and
+ * The catalog input for a served package: the entity index's entities and
  * topology plus each model's compiled IR and SourceInfo. Read defensively,
  * because a spec's package stand-in implements only the accessors it needs.
  */

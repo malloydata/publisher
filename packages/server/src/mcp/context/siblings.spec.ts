@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { Catalog, CatalogNode } from "./catalog";
@@ -208,7 +208,7 @@ describe("the judge reads each twin source's doc", () => {
    let p: FcjIndexFixture;
    beforeAll(async () => {
       p = await buildFcjIndexFixture(
-         { ...DEFAULT_FCJ_SETTINGS, collapseCopies: true },
+         { ...CLUSTER_SETTINGS, collapseCopies: true },
          FILES,
       );
    });
@@ -237,7 +237,7 @@ describe("the judge reads each twin source's doc", () => {
          index: p.index,
          found,
          queries,
-         settings: { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 5 },
+         settings: { ...CLUSTER_SETTINGS, connect: "list", listTopK: 5 },
          allow: () => true,
       }).clusters[0];
       // A summary that leaves out which rows the source holds.

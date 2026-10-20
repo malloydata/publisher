@@ -11,11 +11,11 @@ import {
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
 import { setRetrievalConfig } from "../../retrieval_config";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import { FCJ_PEERS_FILES } from "../../test_helpers/fcj_fixture";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import {
    embedText,
@@ -65,7 +65,7 @@ function clustersFor(
       index: f.index,
       found,
       queries,
-      settings: DEFAULT_FCJ_SETTINGS,
+      settings: CLUSTER_SETTINGS,
       allow,
    });
 }
@@ -228,7 +228,7 @@ describe("judge reply", () => {
 describe('judge prompt, connect: "list"', () => {
    let p: FcjIndexFixture;
    beforeAll(async () => {
-      p = await buildFcjIndexFixture(DEFAULT_FCJ_SETTINGS, FCJ_PEERS_FILES);
+      p = await buildFcjIndexFixture(CLUSTER_SETTINGS, FCJ_PEERS_FILES);
    });
    afterAll(async () => p.close());
 
@@ -258,7 +258,7 @@ describe('judge prompt, connect: "list"', () => {
          index: p.index,
          found,
          queries,
-         settings: { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 3 },
+         settings: { ...CLUSTER_SETTINGS, connect: "list", listTopK: 3 },
          allow: () => true,
       }).clusters[0];
    };

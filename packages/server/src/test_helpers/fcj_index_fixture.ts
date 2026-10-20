@@ -7,7 +7,23 @@
  * stand-in warehouse for the two `#(index)` dimensions.
  */
 
-import { DEFAULT_FCJ_SETTINGS } from "../service/package_retrieval";
+import {
+   DEFAULT_FCJ_SETTINGS,
+   type FcjSettings,
+} from "../service/package_retrieval";
+
+/**
+ * The engine's settings as most specs below were written against: clusters
+ * (not the list mode that is now the default), no union of the meaning and
+ * keyword lists, and no readings rule. A spec that tests a default says so by
+ * using DEFAULT_FCJ_SETTINGS itself.
+ */
+export const CLUSTER_SETTINGS: FcjSettings = {
+   ...DEFAULT_FCJ_SETTINGS,
+   connect: "clusters",
+   listUnion: 0,
+   readingsRule: false,
+};
 import { createCatalogTables } from "../storage/duckdb/schema";
 import { buildFcjIndex, type FcjIndex } from "../mcp/context/index_build";
 import type { IndexValueFetcher } from "../mcp/context/values_index";
@@ -44,7 +60,7 @@ export interface FcjIndexFixture extends FcjFixture {
 
 /** `files` replaces the default fixture (and its imports) with other model files. */
 export async function buildFcjIndexFixture(
-   settings = DEFAULT_FCJ_SETTINGS,
+   settings = CLUSTER_SETTINGS,
    files?: Record<string, string>,
 ): Promise<FcjIndexFixture> {
    const fixture = files

@@ -9,14 +9,21 @@ import {
    expect,
    it,
 } from "bun:test";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
+import {
+   EmbeddingProvider,
+   _setEmbeddingProviderForTests,
+} from "../../service/embedding_provider";
 import { createCatalogTables } from "../../storage/duckdb/schema";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
 import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
 import {
    callPayload,
+   embedText,
    scriptedChat,
    semanticHarness,
    untilSemantic,
+   useChat,
    type SemanticHarness,
 } from "../../test_helpers/get_context_llm_harness";
 import {
@@ -47,7 +54,7 @@ const full = {
    requestInfo: { headers: { "x-publisher-retrieval-trace": "full" } },
 };
 
-describe("the fcj switch", () => {
+describe("the search engine", () => {
    it("answers a ranked call from the fcj engine once its index is built", async () => {
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
@@ -85,7 +92,7 @@ describe("the fcj switch", () => {
       expect(ids).toContain("measure:flights:flight_count");
    });
 
-   it("leaves a listing on the shipped path", async () => {
+   it("answers a listing from the package's entity index, not from the engine", async () => {
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       const { payload } = await callPayload(handler, {
@@ -93,12 +100,37 @@ describe("the fcj switch", () => {
          scopes,
       });
       expect(payload.engine).toBeUndefined();
-      // The shipped listing: one card per model file a source resolves in,
+      // A listing: one card per model file a source resolves in,
       // so `orders` (shop.malloy, imported by reports.malloy) is two of nine.
       expect(payload.sources.length).toBe(9);
    });
 
-   it("returns what the judge picked, one call for one cluster", async () => {
+   it("by default is in list mode, with the union of the meaning and keyword lists and the readings rule on", async () => {
+      const { pkg } = await compileFcjFixture();
+      const handler = harness.handlerFor(pkg);
+      const { payload } = await untilSemantic(
+         handler,
+         {
+            search_targets: [
+               { target_type: "measure", search_text: "number of flights" },
+               { target_type: "dimension", search_text: "start date" },
+            ],
+            scopes,
+         },
+         full,
+      );
+      // One group of peers, not clusters: the judge saw every source listed.
+      const connect = payload.retrieval_trace_full.fcj.connect;
+      expect(connect.clusters).toHaveLength(1);
+      expect(connect.clusters[0].peers.length).toBeGreaterThan(1);
+      expect(DEFAULT_FCJ_SETTINGS).toMatchObject({
+         connect: "list",
+         listUnion: 10,
+         readingsRule: true,
+      });
+   });
+
+   it("returns what the judge picked, one call for one cluster (connect: clusters)", async () => {
       const chat = scriptedChat(() =>
          JSON.stringify({
             picks: [
@@ -110,7 +142,10 @@ describe("the fcj switch", () => {
       );
       _setChatModelForTests(chat.model);
       try {
-         const { pkg } = await compileFcjFixture();
+         const { pkg } = await compileFcjFixture(undefined, undefined, {
+            ...DEFAULT_PACKAGE_RETRIEVAL,
+            fcj: { ...DEFAULT_FCJ_SETTINGS, connect: "clusters" },
+         });
          const handler = harness.handlerFor(pkg);
          const { payload } = await untilSemantic(
             handler,
@@ -143,6 +178,109 @@ describe("the fcj switch", () => {
       }
    });
 
+   it("carries the stale-package note on a ranked answer", async () => {
+      const { pkg } = await compileFcjFixture();
+      const handler = harness.handlerFor(
+         pkg,
+         new Map([
+            [
+               "fixture",
+               {
+                  message: "line 3: missing ')'",
+                  failedAt: "2026-08-13T00:00:00.000Z",
+               },
+            ],
+         ]),
+      );
+      const { payload } = await untilSemantic(handler, {
+         search_targets: [
+            { target_type: "measure", search_text: "number of flights" },
+         ],
+         scopes,
+      });
+      expect(payload.warnings.join(" ")).toContain("STALE");
+      expect(payload.warnings.join(" ")).toContain("reload_package");
+   });
+
+   it("returns an error, never a keyword answer, when the embedding provider fails after the index is built", async () => {
+      let down = false;
+      _setEmbeddingProviderForTests(
+         new EmbeddingProvider(
+            {
+               apiKey: "test",
+               model: "stub-model",
+               baseUrl: "https://stub.example.com/v1",
+               minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
+            },
+            (async (_url: RequestInfo | URL, init?: RequestInit) => {
+               if (down) return new Response("down", { status: 500 });
+               const body = JSON.parse(String(init?.body)) as {
+                  input: string[];
+               };
+               return new Response(
+                  JSON.stringify({
+                     data: body.input.map((text, index) => ({
+                        index,
+                        embedding: embedText(text),
+                     })),
+                  }),
+                  { status: 200 },
+               );
+            }) as typeof fetch,
+         ),
+      );
+      const { pkg } = await compileFcjFixture();
+      const handler = harness.handlerFor(pkg);
+      const request = {
+         search_targets: [
+            { target_type: "measure", search_text: "number of flights" },
+         ],
+         scopes,
+      };
+      await untilSemantic(handler, request);
+      down = true;
+      const { isError, payload } = await callPayload(handler, request);
+      expect(isError).toBe(true);
+      expect(payload.retrieval).toBe("error");
+      expect(payload.retrieval_reason).toBe("provider-error");
+      expect(payload.sources).toEqual([]);
+   });
+
+   it("stops the judge at maxCallsPerRequest, and sends no call past it", async () => {
+      const chat = scriptedChat(() =>
+         JSON.stringify({ picks: [], caveats: [] }),
+      );
+      useChat(chat.model, { maxCallsPerRequest: 1, concurrency: 1 });
+      try {
+         // Three measures in three unrelated sources: connect: clusters makes
+         // three clusters, and the judge makes one call for each.
+         const { pkg } = await compileFcjFixture(undefined, undefined, {
+            ...DEFAULT_PACKAGE_RETRIEVAL,
+            fcj: { ...DEFAULT_FCJ_SETTINGS, connect: "clusters" },
+         });
+         const handler = harness.handlerFor(pkg);
+         const request = {
+            search_targets: [
+               { target_type: "measure", search_text: "sales amount" },
+               { target_type: "measure", search_text: "number of races" },
+               { target_type: "measure", search_text: "number of flights" },
+            ],
+            scopes,
+         };
+         // The build may have used the chat model; count from here.
+         await pollUntilBuilt(handler, request);
+         const before = chat.prompts.length;
+         const { isError, payload } = await callPayload(handler, request);
+         expect(isError).toBe(true);
+         expect(payload.retrieval_reason).toBe("llm-stage-failed");
+         expect(payload.retrieval_stage).toBe("judge");
+         expect(payload.error).toContain("maxCallsPerRequest");
+         expect(chat.prompts.length - before).toBeLessThanOrEqual(1);
+      } finally {
+         _clearChatModelForTests();
+      }
+   });
+
    it("fails the request, never skips the judge, when judgeLlm has no key", async () => {
       const chat = scriptedChat(() =>
          JSON.stringify({
@@ -157,7 +295,6 @@ describe("the fcj switch", () => {
       try {
          const { pkg } = await compileFcjFixture(undefined, undefined, {
             ...DEFAULT_PACKAGE_RETRIEVAL,
-            engine: "fcj" as const,
             fcj: {
                ...DEFAULT_FCJ_SETTINGS,
                judgeLlm: { provider: "anthropic", model: "claude-haiku-5-5" },
@@ -181,6 +318,19 @@ describe("the fcj switch", () => {
       }
    });
 });
+
+/** Ask until the index is built, whatever the first answers say. */
+async function pollUntilBuilt(
+   handler: ReturnType<SemanticHarness["handlerFor"]>,
+   request: Record<string, unknown>,
+) {
+   for (let i = 0; i < 100; i++) {
+      const { payload } = await callPayload(handler, request);
+      if (payload.retrieval !== "indexing") return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+   }
+   throw new Error("the index was not built in time");
+}
 
 /** Fifteen targets over every island of the fixture. */
 const FIFTEEN = [
@@ -325,7 +475,6 @@ describe("fcj paging", () => {
 describe("splitBundles", () => {
    const listSplit = {
       ...DEFAULT_PACKAGE_RETRIEVAL,
-      engine: "fcj" as const,
       fcj: {
          ...DEFAULT_FCJ_SETTINGS,
          connect: "list" as const,

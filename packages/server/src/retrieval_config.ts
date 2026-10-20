@@ -32,11 +32,11 @@ export type RetrievalLlmConfig = {
    location?: string;
    timeoutMs: number;
    concurrency: number;
-   /** Most chat calls one index sync may make; the spend ceiling. */
+   /** Most chat calls one index build may make; the spend ceiling. */
    maxCallsPerSync: number;
    /**
-    * Most chat calls one `get_context` request may make, counted across refine
-    * and rerank; the request-time spend ceiling. A request that would pass it
+    * Most chat calls one `get_context` request may make (the judge's); the
+    * request-time spend ceiling. A request that would pass it
     * fails with an error that names this setting.
     */
    maxCallsPerRequest: number;

@@ -615,19 +615,11 @@ async function dropPreFacetEntityEmbeddings(
 }
 
 /**
- * Vector cache for semantic `get_context` retrieval (see
- * mcp/tools/embedding_index.ts). One row per (entity, facet): an entity's
- * name is embedded separately from its documentation, and long docs are
- * split across `doc:N` facets, so a hit is scored on its best-matching
- * facet rather than on one averaged vector. That is what stops a long doc
- * from burying the entity's own name — see embedding_index.entityFacets.
- *
- * Rows are content-addressed per facet (`content_hash` plus
- * `embedding_model`), so editing a doc re-embeds only the doc facets; a
- * dimensionality change is healed at query time, and wiping the table only
- * costs re-embedding. `embedding` is searched by brute-force
- * list_cosine_similarity, which at one Publisher's entity counts beats a
- * vector-index extension.
+ * The vector cache of the search an earlier release used for `get_context`:
+ * one row per (entity, facet). Nothing writes it now (the engine's vectors are
+ * in `catalog_embeddings`). The table stays so a database from an earlier
+ * release keeps its shape, and deleting a package or environment clears its
+ * rows (see mcp/tools/embedding_index.ts).
  */
 export async function createEntityEmbeddingsTable(
    db: DuckDBConnection,
@@ -653,16 +645,11 @@ export async function createEntityEmbeddingsTable(
 }
 
 /**
- * LLM-written search phrases for entities (see mcp/tools/keyphrases.ts). One
- * row per entity. A row is reused only while all three of `input_hash` (the
- * fields sent to the model), `prompt_hash` (the instructions in force) and
- * `model` still match, so a keyphrase is regenerated exactly when its inputs,
- * the prompt or the model changed, and an unchanged entity costs no LLM call
- * on a restart, a reload or a republish.
- *
- * `entity_key` is the JSON array [kind, source, name], which cannot collide
- * whatever characters an identifier contains. Losing the table only costs
- * regenerating.
+ * LLM-written search phrases for entities, from an earlier release's search.
+ * Nothing writes it now; it stays so a database from an earlier release keeps
+ * its shape, and deleting a package or environment clears its rows (see
+ * mcp/tools/embedding_index.ts). `entity_key` is the JSON array
+ * [kind, source, name].
  */
 export async function createEntityKeyphrasesTable(
    db: DuckDBConnection,

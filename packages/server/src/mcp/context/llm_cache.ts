@@ -6,15 +6,14 @@
  * steps (splitting docs into parts, writing questions) both send batches of
  * items to the chat model and keep what comes back, and both must not pay
  * again for an item whose input, prompt and model are unchanged. This is the
- * one place that does that, copying the keyphrase cache's rule: a stored row
+ * one place that does that: a stored row
  * is reused only while its `input_hash`, `prompt_hash` and `model` all match.
  *
  * A failed batch does not fail the build. The step stops sending (the
  * provider is down or refusing; more requests would only cost time), keeps
  * what it stored, and reports the failure, and the caller answers without the
- * missing output. That is a deliberate difference from the shipped keyphrase
- * step, which fails its sync: here the output only adds search text, and a
- * catalog without it still answers every question it could answer before.
+ * missing output: the output only adds search text, and a catalog without it
+ * still answers every question it could answer before.
  */
 
 import { createHash } from "crypto";

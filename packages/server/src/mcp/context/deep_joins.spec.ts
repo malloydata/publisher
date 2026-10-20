@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import {
    compileFcjFixture,
    FCJ_DEEP_FILES,
@@ -11,6 +10,7 @@ import {
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { ResolvedRequest } from "../tools/get_context_types";
@@ -266,7 +266,7 @@ describe("join walk on a compiled package", () => {
 
 describe("routes in the judge's list, the response and the trace", () => {
    const SETTINGS = {
-      ...DEFAULT_FCJ_SETTINGS,
+      ...CLUSTER_SETTINGS,
       connect: "list" as const,
       listTopK: 3,
       collapseCopies: true,
