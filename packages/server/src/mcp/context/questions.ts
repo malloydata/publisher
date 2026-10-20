@@ -49,7 +49,8 @@ export function wantsQuestions(node: CatalogNode): boolean {
 }
 
 /** The `questions` variant at three per node; prompts/questions.ts has the others. */
-export const DEFAULT_QUESTIONS_INSTRUCTIONS = questionsInstructions("questions");
+export const DEFAULT_QUESTIONS_INSTRUCTIONS =
+   questionsInstructions("questions");
 
 function questionsReply(perNode: number): string {
    const slots = Array.from({ length: perNode }, () => '"..."').join(", ");

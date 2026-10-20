@@ -2,23 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
-import { HttpRequestError } from "../../service/http_retry";
 import { classifyToolError } from "../handler_utils";
-import { jsonResource, jsonToolError } from "../tool_response";
-import type { SemanticUnavailableReason } from "./embedding_index";
-import { foldRelevance } from "./get_context_assembly";
-import type { StageError } from "./get_context_llm";
-import type {
-   CardState,
-   PipelineContext,
-   Unavailable,
-} from "./get_context_pipeline";
+import { jsonToolError } from "../tool_response";
 import { MAX_LIMIT } from "./get_context_request";
 import type {
    Entity,
+   ListingContext,
    ResolvedRequest,
    ResultEntity,
-   RetrievalReason,
    SourceContextAuthorize,
    SourceContextEntry,
    SourceContextFilter,
@@ -57,19 +48,20 @@ function encodeIdSegment(segment: string): string {
 }
 
 /**
- * The index's internal reasons, mapped to the wire vocabulary. "error" is
- * widened to "provider-error" because from the caller's side that is what it
- * is: the embedding endpoint failed, not this tool.
+ * A card's relevance after reading one more row. A source's own row sets it
+ * outright; any other scored row raises it. Shared with toSourceResults so a
+ * card and its wire form cannot disagree.
  */
-export const REASON_BY_UNAVAILABLE: Record<
-   SemanticUnavailableReason,
-   RetrievalReason
-> = {
-   indexing: "indexing",
-   cooldown: "cooldown",
-   "too-many-entities": "too-many-entities",
-   error: "provider-error",
-};
+export function foldRelevance(
+   current: number | undefined,
+   row: ResultEntity,
+): number | undefined {
+   if (row.score === undefined) return current;
+   if (row.kind === "source") return row.score;
+   // A source with no hit of its own still ranks by its best entity, so a
+   // caller reading source relevance never sees a matched source at null.
+   return current === undefined || row.score > current ? row.score : current;
+}
 
 /**
  * The response shape: source-centric, snake_case, matching a hosted Malloy
@@ -114,7 +106,7 @@ interface SourceCardInfo {
 interface MatchedTarget {
    search_text: string;
    relevance: number;
-   /** Refine's one-sentence reason. Present only when refine ran and gave one. */
+   /** The judge's one-sentence reason. Present only when it gave one. */
    match_reason?: string;
 }
 
@@ -368,30 +360,6 @@ function matchedTargetsFor(
 }
 
 /**
- * The most entities one source card carries per search target: a card is a
- * source to choose, not a schema dump. Per target rather than per card, so a
- * broad target cannot fill a card and hide a narrow one inside it.
- */
-export const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
-
-/**
- * The most dotted index rows (joined fields assembly cannot rebuild) one source
- * contributes per search target, on top of {@link MAX_ENTITIES_PER_SOURCE_TARGET}
- * own fields. A separate window, because sharing one let hundreds of joined
- * rows push a source's own labelled fields out of the card.
- */
-export const MAX_JOINED_ROWS_PER_SOURCE_TARGET = 3;
-
-/** The target index with the highest score, or undefined when there is none. */
-export function bestTargetOf(scores: Map<number, number>): number | undefined {
-   let best: [number, number] | undefined;
-   for (const entry of scores) {
-      if (!best || entry[1] > best[1]) best = entry;
-   }
-   return best?.[0];
-}
-
-/**
  * The fields every retrieval path (browse, semantic, lexical) carries from an
  * indexed entity onto a ranked one, shared so a new field reaches every path.
  *
@@ -422,102 +390,6 @@ export function projectEntity(
 }
 
 /**
- * The largest whole-card prefix of `cards` whose JSON fits in
- * `maxChars - reserveChars`. Keeps at least one card, so a budget smaller
- * than the first card still answers. A null budget returns the input as is.
- * Only ranked responses are fitted; a listing pages by `offset` instead.
- */
-export function fitBudget(
-   cards: SourceCard[],
-   maxChars: number | null,
-   reserveChars: number,
-): { cards: SourceCard[]; dropped: number } {
-   if (maxChars === null) return { cards, dropped: 0 };
-   const room = maxChars - reserveChars;
-   // A JSON array costs 2 for the brackets plus one comma between cards.
-   let used = 2;
-   let keep = 0;
-   for (const card of cards) {
-      used += JSON.stringify(card).length + (keep > 0 ? 1 : 0);
-      if (used > room && keep > 0) break;
-      keep += 1;
-   }
-   return { cards: cards.slice(0, keep), dropped: cards.length - keep };
-}
-
-/**
- * The tail both ranked paths share: page the cards, serialize them, then fit
- * the byte budget.
- *
- * `limit` counts source cards, as the published contract says, so targets do
- * not compete for one entity pool; `totalSources` counts the same unit so
- * `returned` and `total_available` agree. The envelope (`retrieval`,
- * `below_cutoff_count`, `retrieval_reason`) stays with the caller because each
- * field is meaningful on one path only.
- */
-export function shapeCards(
-   state: CardState,
-   ctx: PipelineContext,
-): {
-   sources: SourceCard[];
-   totalSources: number;
-   entitiesDropped: number;
-   budgetDropped: number;
-} {
-   const { request, pkgIndex, settings } = ctx;
-   const paged = state.cards.slice(0, request.limit);
-   // Over ALL the matched cards, not the page: whether a source search matched
-   // one source or many does not depend on how many the caller asked to see.
-   const summaries = summaryViewFor(ctx.sourceSummaries, request, state.cards);
-   const built = toSourceResults(
-      paged.flatMap((card) => card.rows),
-      pkgIndex.sourceContext,
-      request.environmentName,
-      request.packageName,
-      new Map(
-         [...request.searches, ...request.valueSearches].map((search) => [
-            search.targetIndex,
-            search.text,
-         ]),
-      ),
-      request.includeCode,
-      pkgIndex.droppedSources,
-      summaries,
-   );
-   // toSourceResults folds a card's relevance from its rows. After rerank the
-   // card's relevance is the reranker's score, which no row carries, so it is
-   // put back from the draft.
-   const sources = state.reranked
-      ? built.map((card) => {
-           const id = card.source_info.resource_id;
-           const draft = paged.find(
-              (d) => d.key === sourceContextKey(id.model_path, id.source),
-           );
-           return draft?.relevance === undefined
-              ? card
-              : { ...card, relevance: draft.relevance };
-        })
-      : built;
-   const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
-   // Entities cut inside a card the budget then removed are not reported: the
-   // card is not in the answer, and its own cut warning is the budget's.
-   const kept =
-      fitted.dropped > 0
-         ? paged.slice(0, paged.length - fitted.dropped)
-         : paged;
-   return {
-      sources: fitted.cards,
-      // Cards the reranker kept out of its top N still matched, so they count.
-      totalSources: state.cards.length + (state.discarded ?? 0),
-      entitiesDropped: kept.reduce(
-         (sum, card) => sum + card.entitiesDropped,
-         0,
-      ),
-      budgetDropped: fitted.dropped,
-   };
-}
-
-/**
  * An error payload keeps the success shape's empty `sources: []`, so a caller
  * can read it unconditionally. Routed through classifyToolError so each error
  * class carries real remediation (e.g. an unknown package says so).
@@ -534,7 +406,7 @@ export function contextError(uri: string, identifier: string, error: unknown) {
  * The warnings that open every payload, in order: staleness, then the caller's
  * extras, then whatever the path itself adds.
  */
-export function makeWarningsFor(ctx: PipelineContext) {
+export function makeWarningsFor(ctx: Pick<ListingContext, "warnings">) {
    /**
     * Spread into a payload to attach `warnings`; {} when there is nothing to
     * say. A list, not one joined string, because each warning has its own
@@ -557,7 +429,7 @@ const SKILLS_DESCRIPTION_BUDGET = 4000;
  * ranked subset, because ranking could hide the guide that says the question
  * is being asked wrong. Bodies stay behind get_skill.
  */
-export function skillsFor(ctx: Pick<PipelineContext, "pkgIndex">) {
+export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
    // Descriptions are author-written and ride every response, so their total is bounded.
    let budget = SKILLS_DESCRIPTION_BUDGET;
    const skills = ctx.pkgIndex.pkg
@@ -588,20 +460,6 @@ export const truncationWarning = (returned: number, matched: number) =>
       ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
       : undefined;
 
-/** Sources cut by the page size; counted in sources, like the envelope. */
-export const sourceCutWarning = (returned: number, matched: number) =>
-   matched > returned
-      ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
-      : undefined;
-/**
- * Cards the reranker left out because only its top N are ranked. They matched,
- * and `total_available` counts them, but no page size reaches them: the remedy
- * is a narrower question.
- */
-export const rerankCutWarning = (dropped: number, top: number | undefined) =>
-   dropped > 0
-      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} not ranked: only the best ${top ?? "few"} are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
-      : undefined;
 /**
  * A browse that stopped early. Its remedy is paging by `offset`, not raising
  * the limit, which is capped either way.
@@ -610,168 +468,6 @@ export const listingPageWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
       : undefined;
-/**
- * Whole cards left out to stay under the size budget; raising `limit` would
- * not help, so the remedy is a narrower question.
- */
-export const budgetCutWarning = (dropped: number, maxChars: number | null) =>
-   dropped > 0 && maxChars !== null
-      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} left out to keep the response under ${maxChars.toLocaleString("en-US")} characters. Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
-      : undefined;
-export const entityCutWarning = (dropped: number) =>
-   dropped > 0
-      ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
-      : undefined;
-
-/**
- * The answer while a package's semantic index is still building: no sources,
- * `retrieval: "indexing"` and progress. Not an error, because it clears by
- * itself; not a lexical fallback, because that ranking would differ from the
- * finished index's and an agent could not tell them apart.
- */
-export function indexingResponse(
-   uri: string,
-   ctx: PipelineContext,
-   result: Unavailable,
-) {
-   const status = result.status;
-   const progress = status
-      ? { embedded: status.embeddedRows, total: status.totalRows }
-      : undefined;
-   const built = progress
-      ? ` (${progress.embedded} of ${progress.total} vectors built)`
-      : "";
-   return jsonResource(uri, {
-      sources: [],
-      ranking: "relevance" as const,
-      total_available: 0,
-      returned: 0,
-      retrieval: "indexing",
-      ...(progress ? { retrieval_progress: progress } : {}),
-      ...makeWarningsFor(ctx)(
-         `This package's semantic index is still being built${built}, so there are no results yet. ` +
-            `Nothing is wrong: ask the same question again in a few seconds. ` +
-            `It was not answered by keyword search because an embedding provider is configured, ` +
-            `and a keyword ranking would differ from what the finished index returns. ` +
-            `A request with no search_text (a listing) works now.`,
-      ),
-   });
-}
-
-/** The package setting that turns each request-time LLM stage off. */
-const STAGE_SETTING: Readonly<Record<string, string>> = {
-   refine: "retrieval.refine",
-   rerank: "retrieval.rerank",
-   source_match: "retrieval.sourceMatch",
-};
-/**
- * The stage's reason as the MCP caller sees it. A vendor failure is worded
- * without the endpoint (host, project path) and without the rest of the
- * vendor's body: the caller gets the status and the vendor's own message, and
- * the server log keeps the full text.
- */
-function callerReason(error: StageError): string {
-   let cause: unknown = error.cause;
-   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
-      if (cause instanceof HttpRequestError && cause.publicMessage) {
-         return cause.publicMessage;
-      }
-      cause = cause.cause;
-   }
-   return error.reason;
-}
-
-/**
- * The answer when an LLM stage (refine, rerank, source_match) failed after the
- * provider's retries. Never replaced by an unrefined or lexical answer: a
- * ranking that quietly differs is harder to trust than an error.
- */
-export function stageFailureError(
-   uri: string,
-   error: StageError,
-   extra: Record<string, unknown> = {},
-) {
-   return jsonToolError(
-      uri,
-      {
-         message: `get_context failed in the ${error.stage} step: ${callerReason(error)}`,
-         suggestions: [
-            "Ask the same question again; a timeout or a malformed model reply is often transient.",
-            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. " +
-               (STAGE_SETTING[error.stage]
-                  ? `To skip just this step, set the package's ${STAGE_SETTING[error.stage]} to enabled: false in publisher.json. `
-                  : "") +
-               "To search without any LLM step, set the package's retrieval.refine, retrieval.rerank and retrieval.sourceMatch to enabled: false.",
-            "A request with no search_text (a listing) runs no LLM step and still works.",
-         ],
-      },
-      {
-         sources: [],
-         retrieval: "error",
-         retrieval_reason: "llm-stage-failed",
-         retrieval_stage: error.stage,
-         ...extra,
-      },
-   );
-}
-
-/** The answer when a configured server cannot rank a search at all. */
-export function semanticUnavailableError(uri: string, result: Unavailable) {
-   const reason = result.unavailable;
-   const status = result.status;
-   const lastError = status?.lastError;
-   const retryAt = lastError?.retryAt;
-   const listing =
-      "A request with no search_text (a listing) still works; it needs no embeddings.";
-   let message: string;
-   let suggestions: string[];
-   switch (reason) {
-      case "too-many-entities":
-         // The status text already says the count, the cap and the key to raise.
-         message =
-            lastError?.message ??
-            "This package has more entities than the semantic index cap (retrieval.indexing.maxEntities in publisher.config.json).";
-         suggestions = [
-            "Ask the operator to raise retrieval.indexing.maxEntities in publisher.config.json and restart the server.",
-            listing,
-         ];
-         break;
-      case "cooldown":
-      case "provider-error": {
-         const cause = lastError?.message ?? "the embedding provider failed";
-         message =
-            reason === "provider-error"
-               ? `The embedding provider failed to embed the search text: ${cause}`
-               : `Semantic search for this package is paused after an embedding failure: ${cause}`;
-         suggestions = [
-            retryAt
-               ? // No timer fires at retryAt: the retry starts when a question
-                 // arrives after it (see kickSync in embedding_index.ts).
-                 `The next question after ${retryAt} tries again; nothing retries on its own before then.`
-               : reason === "cooldown"
-                 ? // A cool-down always has a retryAt, so none means the vendor
-                   // refused the request itself and nothing will retry it.
-                   "Asking again will not help: this failure is not retried until the package or its retrieval settings change, or the server restarts. The operator should read the server log."
-                 : "Try again in a minute.",
-            "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
-            listing,
-         ];
-         break;
-      }
-      default:
-         message = `Semantic search is unavailable: ${result.detail ?? lastError?.message ?? "the embedding configuration or index storage could not be used"}`;
-         suggestions = [
-            "The operator should check the server log. For an invalid embedding configuration, fix the named variable (EMBEDDING_API_BASE, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS) and restart the server.",
-            listing,
-         ];
-   }
-   return jsonToolError(
-      uri,
-      { message, suggestions },
-      { sources: [], retrieval: "error", retrieval_reason: reason },
-   );
-}
-
 /**
  * A target type this server cannot search, said plainly with the remedy that
  * works. Reached only when value search is turned off

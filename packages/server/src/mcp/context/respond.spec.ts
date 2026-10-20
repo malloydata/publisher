@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import {
-   DEFAULT_FCJ_SETTINGS,
-   DEFAULT_PACKAGE_RETRIEVAL,
-} from "../../service/package_retrieval";
+import { DEFAULT_PACKAGE_RETRIEVAL } from "../../service/package_retrieval";
 import {
    FCJ_PAYMENTS_FILES,
    FCJ_PEERS_FILES,
@@ -13,6 +10,7 @@ import {
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { ResolvedRequest } from "../tools/get_context_types";
@@ -58,7 +56,7 @@ async function answer(
    allow: (n: CatalogNode) => boolean = () => true,
    extra: Partial<Parameters<typeof respond>[0]> = {},
    fx: FcjIndexFixture = f,
-   settings = DEFAULT_FCJ_SETTINGS,
+   settings = CLUSTER_SETTINGS,
 ) {
    const queries = new Map(
       targets.map((x) => [x.index, toUnit(embedText(x.text))]),
@@ -322,7 +320,7 @@ describe("respond", () => {
          () => true,
          {},
          f,
-         { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
+         { ...CLUSTER_SETTINGS, connect: "list" },
       );
       expect(
          (out.sources as Card[]).map((c) => c.source_info.resource_id.source),
@@ -393,7 +391,7 @@ describe("respond", () => {
 describe("respond, a picked source the home reaches by a join", () => {
    let p: FcjIndexFixture;
    beforeAll(async () => {
-      p = await buildFcjIndexFixture(DEFAULT_FCJ_SETTINGS, FCJ_PAYMENTS_FILES);
+      p = await buildFcjIndexFixture(CLUSTER_SETTINGS, FCJ_PAYMENTS_FILES);
    });
    afterAll(async () => p.close());
 
@@ -460,7 +458,7 @@ describe("respond, a picked source the home reaches by a join", () => {
 describe('respond, connect: "list"', () => {
    let p: FcjIndexFixture;
    beforeAll(async () => {
-      p = await buildFcjIndexFixture(DEFAULT_FCJ_SETTINGS, FCJ_PEERS_FILES);
+      p = await buildFcjIndexFixture(CLUSTER_SETTINGS, FCJ_PEERS_FILES);
    });
    afterAll(async () => p.close());
 
@@ -498,7 +496,7 @@ describe('respond, connect: "list"', () => {
             ],
          },
          p,
-         { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 3 },
+         { ...CLUSTER_SETTINGS, connect: "list", listTopK: 3 },
       );
       // No home card: three sources, each holding only what was picked on it.
       expect(
@@ -565,7 +563,7 @@ describe('respond, connect: "list"', () => {
             ],
          },
          p,
-         { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
+         { ...CLUSTER_SETTINGS, connect: "list" },
       );
       expect([out.sources, out.clusters, out.coverage, out.warnings]).toEqual([
          [],

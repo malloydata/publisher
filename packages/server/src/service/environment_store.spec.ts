@@ -26,7 +26,6 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
-import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -2881,12 +2880,10 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
    });
 
    afterEach(() => {
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
       }

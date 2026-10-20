@@ -93,6 +93,7 @@ import {
 } from "../service/package_manifest";
 import {
    type PackageRetrievalSettings,
+   ignoredRetrievalWarnings,
    readPackageRetrieval,
 } from "../service/package_retrieval";
 import {
@@ -761,6 +762,8 @@ async function readPackageMetadata(
          queryMetadata.queryMetadata,
          queryMetadata.home,
       ),
+      // `retrieval` keys an earlier release read: the package loads, they do nothing.
+      ...ignoredRetrievalWarnings(parsed.retrieval),
    ];
    return {
       name: parsed.name,

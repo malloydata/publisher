@@ -7,11 +7,11 @@ import {
    DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
-import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import { FCJ_DEEP_FILES } from "../../test_helpers/fcj_fixture";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
+   CLUSTER_SETTINGS,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { ResolvedRequest } from "../tools/get_context_types";
@@ -38,7 +38,7 @@ import {
 import { toUnit } from "./vectors";
 
 const SETTINGS = {
-   ...DEFAULT_FCJ_SETTINGS,
+   ...CLUSTER_SETTINGS,
    connect: "list" as const,
    listTopK: 3,
    collapseCopies: true,

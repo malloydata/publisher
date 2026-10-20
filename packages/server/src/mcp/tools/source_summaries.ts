@@ -40,7 +40,7 @@ import {
    SyncRequestBudget,
    runPooled,
 } from "./get_context_llm";
-import { scrubForEgress } from "./keyphrases";
+import { scrubForEgress } from "./retrieval_shared";
 
 /** Most fields rendered for one source (and for each joined source). */
 export const SOURCE_SUMMARY_MAX_FIELDS = 200;
@@ -722,7 +722,7 @@ export async function resolveSourceSummaries(args: {
    entities: readonly EmbeddableEntity[];
    settings: SourceSummarySettings;
    /**
-    * The sync's request budget, shared with the keyphrase step. Absent: a
+    * The build's request budget, shared with its other LLM steps. Absent: a
     * fresh one of the settings' `maxCallsPerSync` requests.
     */
    budget?: SyncRequestBudget;

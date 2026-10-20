@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { Package } from "../../service/package";
 import type { SearchTargetType } from "./get_context_request";
@@ -97,39 +96,16 @@ export interface ResultEntity {
     */
    targetScores?: Map<number, number>;
    /**
-    * The target this row is budgeted under in windowBySource: the one that
-    * claimed it best. Set on both ranked paths, since the per-target window is
-    * a budgeting rule, not a scoring one.
-    */
-   bestTarget?: number;
-   /** Set by refine. LOW=1, MEDIUM=2, HIGH=3. */
-   level?: number;
-   /**
-    * Set by refine only: the unpublished score, `level + cosine`, 1 to 4. When
-    * it is set, `score` is this value through the knots (see
-    * get_context_scoring). Assembly damps joined copies on this number, and
-    * rerank sorts cards by the best of it.
-    */
-   raw?: number;
-   /** The per-target version of `raw`, behind `targetScores` as `score` is behind `raw`. */
-   targetRaw?: Map<number, number>;
-   /**
-    * Set by refine: the model's one-sentence reason for each target that
-    * rated this row, behind `matched_targets[].match_reason`. Absent when
-    * refine did not run or the model gave no reason.
+    * The model's one-sentence reason for each target that picked this row,
+    * behind `matched_targets[].match_reason`. Absent when it gave none.
     */
    targetReasons?: Map<number, string>;
-   /** Joins crossed to reach the field, set on assembly's joined copies. */
-   joinHops?: number;
    /**
-    * Set by the values stage on a dimension whose stored strings matched a
-    * `dimensional_value` target, best first. Never copied onto a joined copy:
-    * a value was read under one source's access gate and must not appear on
-    * another source's card.
+    * The dimension's stored strings that matched a `dimensional_value` target,
+    * best first. Never copied onto a joined copy: a value was read under one
+    * source's access gate and must not appear on another source's card.
     */
    values?: Array<{ value: string; score: number; searchText: string }>;
-   /** Set on a row the values stage created, so assembly makes no joined copy of it. */
-   fromValueSearch?: true;
    /**
     * fcj engine, provisional `alsoLikely`: the row is not a judge pick but a
     * field returned beside them, and this is why. Serialized as
@@ -215,18 +191,6 @@ export interface SourceContextAuthorize {
    given_names: string[];
 }
 
-/**
- * Why a server that has an embedding provider could not rank a search.
- * "indexing" is an empty result worth asking again; the rest are errors
- * (retrieval_reason) an immediate retry cannot fix.
- */
-export type RetrievalReason =
-   | "indexing"
-   | "cooldown"
-   | "too-many-entities"
-   | "provider-error"
-   | "unavailable";
-
 /** One search target that carries text, kept with the index it came in at. */
 export interface ResolvedSearch {
    /** Position in the caller's search_targets, reported as matched_targets. */
@@ -294,6 +258,13 @@ export interface ResolvedRequest {
    offset: number;
 }
 
+/** What a listing needs: the request, the package's entity index, and the warnings to lead with. */
+export interface ListingContext {
+   request: ResolvedRequest;
+   pkgIndex: PackageIndex;
+   warnings: string[];
+}
+
 /** One source reachable from a root source by joins. */
 export interface JoinReach {
    /** Name of the source the fields live on. */
@@ -315,15 +286,11 @@ export type JoinTopology = ReadonlyMap<string, readonly JoinReach[]>;
 export interface PackageIndex {
    pkg: Package;
    byId: Map<string, Entity>;
-   /**
-    * `byId`'s values as one frozen array handed to the semantic index. The
-    * same array on every call is what lets the index cache its content
-    * fingerprint (see fingerprintFor in embedding_index).
-    */
+   /** `byId`'s values as one frozen array, the same on every call. */
    retrievalEntities: readonly Entity[];
    /**
     * `retrievalEntities` without the joined copies (those with a joinPath),
-    * frozen once so it can be fingerprinted and cached the same way.
+    * frozen once.
     */
    directEntities: readonly Entity[];
    /**
@@ -332,7 +299,6 @@ export interface PackageIndex {
     * whose model has no compiled IR reaches nothing here.
     */
    topology: JoinTopology;
-   index: lunr.Index;
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
    sourceContext: Map<string, SourceContextEntry>;

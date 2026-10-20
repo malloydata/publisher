@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * get_context_retrievers.ts and get_context_tool.ts import each other. Either
- * must be importable first. Importing the retrievers first used to throw
- * "Cannot access 'semanticRetriever' before initialization", because the tool
- * read both retrievers into a constant while it was still being evaluated.
+ * get_context_tool.ts imports the engine, and the engine imports modules the
+ * tool's own helpers import. Either must be importable first.
  *
  * Each order runs in a fresh process, so a module another spec already loaded
- * cannot hide the problem.
+ * cannot hide a cycle that reads a binding before it is initialised.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -31,8 +29,8 @@ function importInFreshProcess(first: string, second?: string) {
 }
 
 describe("get_context module load order", () => {
-   it("loads the retrievers first", () => {
-      const out = importInFreshProcess("get_context_retrievers.ts");
+   it("loads the engine first", () => {
+      const out = importInFreshProcess("../context/engine.ts");
       expect(out.stderr).not.toContain("before initialization");
       expect(out.code).toBe(0);
    });
@@ -43,9 +41,9 @@ describe("get_context module load order", () => {
       expect(out.code).toBe(0);
    });
 
-   it("loads the retrievers, then the tool", () => {
+   it("loads the engine, then the tool", () => {
       const out = importInFreshProcess(
-         "get_context_retrievers.ts",
+         "../context/engine.ts",
          "get_context_tool.ts",
       );
       expect(out.code).toBe(0);
