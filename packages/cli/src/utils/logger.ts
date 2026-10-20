@@ -134,13 +134,6 @@ export const logInfo = (
   logger.info(message, metadata);
 };
 
-export const logDebug = (
-  message: string,
-  metadata?: Record<string, unknown>,
-) => {
-  logger.debug(message, metadata);
-};
-
 export const logOutput = (content: string) => {
   rawLogger.info(content);
 };
