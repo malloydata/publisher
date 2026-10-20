@@ -134,12 +134,12 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS`        | —                                               | `60000` (1 min)             | How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | —                                               | `10`                        | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `PERSIST_STORAGE_MODE`                                   | —                                               | `off`                       | Controls the `#@ persist storage=<name>` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there — a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: the `storage=` annotation is inert — sources build and serve from their own warehouse exactly as without it. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package — a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `EMBEDDING_API_KEY`                                      | —                                               | _unset_                     | Enables semantic (embedding-based) ranking for `get_context` question retrieval. Sent as a bearer token to the embedding endpoint. Unset: retrieval stays lexical (lunr/BM25), unchanged. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for get_context" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `EMBEDDING_API_KEY`                                      | —                                               | _unset_                     | Turns on embedding closeness in `get_context`'s search, and embedding ranking in `search_database_schema` (see below). Sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "How get_context searches" below. |
 | `LLM_API_KEY`                                            | —                                               | _unset_                     | API key for the chat model named by `retrieval.llm` in `publisher.config.json` (OpenAI, an OpenAI-compatible server, Anthropic or Google; not needed for `ollama` or `vertex`). Used for index-time keyphrases and source summaries. Unset with a keyed provider: every LLM feature is off and nothing errors. Never read from a file, never logged. See "Providers and the retrieval settings" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `EMBEDDING_MODEL`                                        | —                                               | `text-embedding-3-small`    | Embedding model name sent to the endpoint. A `retrieval.embedding.model` in `publisher.config.json` wins over it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `EMBEDDING_API_BASE`                                     | —                                               | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). A `retrieval.embedding.baseUrl` wins over it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `EMBEDDING_DIMENSIONS`                                   | —                                               | _unset_                     | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. A `retrieval.embedding.dimensions` wins over it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `EMBEDDING_MIN_SIMILARITY`                               | —                                               | `0.2`                       | Cosine-similarity floor a match must clear to be returned at all, for both `get_context` and `search_database_schema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `EMBEDDING_MIN_SIMILARITY`                               | —                                               | `0.2`                       | Cosine-similarity floor a table must clear to be returned by `search_database_schema`. `get_context` has no floor. Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. |
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA`                      | —                                               | `false`                     | Allows `search_database_schema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for search_database_schema" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | —                                                        | `--help`, `-h`                                  | —                           | Print the full flag list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
@@ -231,133 +231,77 @@ answer too.
 
 The Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`, since no agent session starts inside a container.
 
-## Semantic retrieval for get_context
+## How get_context searches
 
-By default, `get_context`'s question retrieval is lexical (lunr/BM25) over the model's own
-text, so a query only matches entities that share tokens with it (`departure delay` never finds a
-field named `dep_delay`). Setting `EMBEDDING_API_KEY` switches ranking to embedding similarity:
-each package's entities (source, view, named query, join, dimension, and measure names plus their
-annotation text) are embedded and searched by cosine similarity, so synonyms and `snake_case`
-names match by meaning.
+Every ranked `get_context` request (a target with `search_text`) is answered by one engine, for every
+package. A request with no `search_text` is a listing: it enumerates what its targets name, needs no
+index and no model, and works in every state. The engine answers in four steps:
 
-By default (`retrieval.representation: "single"`) each entity is embedded as **one** row whose text
-is its keyphrase if it has one, else its `#(doc)` text (cut to 1,024 characters), else its
-humanized name; see "Keyphrases" below. A package can ask for `"facets"` instead, in publisher.json:
-an entity's name and its documentation are embedded **separately**, a long doc is split into
-several parts, and an entity scores as its best-matching part. Facets exist because a single
-vector for a long `#(doc)` is dominated by the doc, so the entity stops matching the plain name of
-the concept it described and individual facts inside the doc — the grain caveats and population
-rules modellers write there — could not be found by their own wording either. Scoring on the best
-part means more documentation can add recall but never costs an entity precision on its own name.
-`single` costs about one embedding per entity, which is the cheapest first index; it is the default
-because most descriptions are short and a keyphrase puts the meaning, not the identifier, into the
-vector. Changing the representation re-embeds the package (the old rows are deleted and the new
-ones built); the status reads `indexing` until it is done. See "Providers and the retrieval
-settings" and "Package settings" below.
+1. **Find.** For each target, ranked lists over the whole package are fused by rank: embedding closeness
+   (when an embedding provider is configured), keyword match (BM25), and matches against the stored
+   values of `#(index)` dimensions. The best `fcj.perTarget` candidates per target go on.
+2. **List.** The judge is shown every target's best candidates (`fcj.listTopK`, plus any candidate
+   ranked high in one list alone, `fcj.listUnion`), grouped by the source that owns them, and for each
+   field the join routes by which another listed source reaches it (`fcj.listRoutes`). Set
+   `fcj.connect` to `"clusters"` to group candidates into the few sources whose joins explain the
+   targets together, one judge call per group.
+3. **Judge.** One chat model call per request picks, for each target, which candidates to return, and
+   names the caveats it applied. With no LLM configured, or `fcj.judge: false`, each target gets its
+   best few candidates and the call is skipped.
+4. **Respond.** The picks are returned as source cards with their fields nested in them. Beside
+   `sources` the response carries `clusters` (the sources one query can combine, with what each
+   answers), `coverage` (target by cluster, when there is more than one), `unresolved_targets` and
+   `engine: "fcj"`. An answer longer than one page carries `next_offset`; call again with the same
+   arguments and that `offset` for the next page of the same result (held for 10 minutes).
+
+The engine builds its own index when a package loads (and on reload): a catalog of the package, search
+text for each field, a keyword index, a value index of `#(index)` dimensions and the embedding vectors.
+It is built in the background, one package at a time across the whole server, because the embedding
+provider and its rate limit are shared. A reload does not repeat work: every model call and every
+embedding is stored by content, so a package that changed nothing costs none. A source marked
+`#(agent-hidden)` (or defined in a file marked `##(agent-hidden)`) gets no card of its own; its
+fields are reached through the joins of the sources that are served.
+
+### Embeddings
+
+`EMBEDDING_API_KEY` (or `retrieval.embedding` in `publisher.config.json`) turns the closeness list on, so
+synonyms and `snake_case` names match by meaning (`departure delay` finds `dep_delay`). Without it,
+keyword and value matching still run, so a query only matches entities that share words with it.
 
 What to know before turning it on:
 
-- What leaves the machine: entity names, their annotation text (the `#(doc)` docs, or an entity's
-  other `#` annotation lines when it has no `#(doc)`), and the query strings agents pass to
-  `get_context`. Model source code, data, and query results are never sent. Point
-  `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM) to keep everything
-  on-machine; with a local server, also set `EMBEDDING_MODEL` to a model that server actually
-  serves, since the default names an OpenAI model.
-- Storage: vectors are cached in the server's own `publisher.db`, keyed by a content hash per
-  embedded part, so only new or changed ones re-embed, across restarts too — editing a source's
-  documentation re-embeds that documentation and leaves its name vector alone. `--init` wipes the
-  cache along with the rest of persisted storage; the only cost of a wipe is re-embedding. A server
-  upgrading from a release that embedded one vector per entity discards its cache once, on the
-  first boot after the upgrade, and re-embeds each package as it loads.
-- When indexing starts: the server starts embedding a package in the background as soon as it
-  loads, at boot, on add or install, and on reload, without waiting for a question. Packages are
-  embedded one at a time across the whole server, because the provider and its rate limit are
-  shared. Each batch of up to 512 inputs is saved as it returns, so a failure part-way keeps what
-  was saved and the next try embeds only the rest. A 429, a 5xx or a timeout is retried up to five
-  times with exponential backoff and jitter, honouring `Retry-After`; a rejected key or another 4xx
-  fails at once. When the tries are used up the package waits out a cool-down (60 seconds) before
-  the next try, which a question after the window starts. A reload does not repeat the work:
-  `reload_package`, `?reload=true` and a watch-mode save all keep the warm index as long as the
-  saved files hash the same. An edit re-syncs, and re-embeds only the parts whose text changed.
-- What a search returns while an embedding provider is configured: a semantic answer, an
-  "indexing" answer or an error, never a keyword ranking. A ranking that quietly differs from the
-  one the finished index gives makes results hard to trust. While a package's index is building,
-  the response is a normal result (not an error) with empty `sources`, `retrieval: "indexing"`,
-  `retrieval_progress: { embedded, total }` and a warning that says to ask again in a few
-  seconds. When the index cannot serve, the response is an error whose `retrieval_reason`
-  (`cooldown`, `provider-error`, `too-many-entities` or `unavailable`) names the cause, and which
-  says what to do. A request with no search text (a listing) needs no embeddings and works in
-  every state. With no provider configured nothing changes: ranking is lexical (lunr/BM25) and the
-  response carries no `retrieval` field.
-- Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
-  carries an `embeddingIndex` object with `status` (`lexical` / `indexing` / `ready` / `error`),
-  `embeddedRows` of `totalRows` (progress while indexing), `totalEntities`, `embeddedEntities`,
-  `lastSyncedAt`, `startedAt` (when the running sync began), and, on an error, `reason`
-  (`cooldown` or `too-many-entities`) and `lastError` (`message`, and `retryAt`, the earliest
-  time a retry can start: nothing retries on a timer, the next question after it does; absent
-  when the vendor refused the request itself with a 4xx such as a 400 for a prompt past the
-  context window, because the same request would fail the same way. That sync is not started
-  again until the package's content or its retrieval settings change, or the server restarts;
-  408, 429, 5xx, 401 and 403 keep their cool-down and retry). `cooldown` and `too-many-entities`
-  also remain in the `status` enum of `api-doc.yaml`, deprecated and never sent, so a client built
-  from an earlier spec still understands every value. The message never names the provider's URL;
-  the full error is in the server log only. When one package's sync finds the provider unreachable,
-  the packages queued behind it show the same `cooldown` cause and send no requests until it ends.
-  One package's sync is stopped after 15 minutes; what it saved is kept and it resumes after the
-  cooldown.
-  `lexical` means no embedding provider is configured: that is a mode, not a failure.
-  Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
-  index; there is no need to send a question first, because indexing starts when the package
-  loads. After a restart every package reads `indexing` until its turn in the queue has checked
-  its stored vectors, which is quick when nothing changed. `ready` means the index is warm, so the
-  next question about the package is ranked semantically: it is decided by the same completed sync
-  the search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports `indexing`
-  until it has re-embedded. It describes the index, not the next response — a question whose own
-  query embedding fails still returns an error, with `retrieval_reason: provider-error`. Do not read
-  readiness off `embeddedEntities == totalEntities`: those count coverage by entity name, so they
-  can be equal while a doc edit is still unembedded. Nor off `embeddedRows`, which counts every
-  cached name and doc vector under the current model regardless of its length, so a change to
-  `EMBEDDING_DIMENSIONS` that no question has probed yet still counts the old rows. The first read
-  after a package loads builds that package's entity index and its content fingerprint (in
-  chunks, so other requests are not blocked), which is work a plain metadata read would not
-  otherwise do. After that, a read is two row counts and never waits on a sync, so polling it in a
-  loop is cheap.
-- Failure behavior: if the endpoint is down, times out, or rejects the key, a search returns an
-  error that names the cause (and the server log has the full text) until the cool-down ends, then
-  the next search tries again. With keyphrases on, the same holds when the LLM fails, and the
-  package's status names the `keyphrase` stage (or `source_summary`, when the source summary step is
-  the one that failed).
-- Entity cap (`retrieval.indexing.maxEntities`, default `5000`): a package with more entities than
-  this is not embedded, because its first index would take minutes of provider calls. Raise it in
-  `publisher.config.json` and restart the server:
-
-  ```json
-  { "retrieval": { "indexing": { "maxEntities": 20000 } } }
-  ```
-
-  It must be a positive integer; anything else stops the server at startup with
-  `Invalid retrieval.indexing.maxEntities: expected a positive integer, got X. Fix: set it to e.g.
-20000`. It counts entities, not vectors: a documented entity costs a name vector plus one per
-  chunk of its documentation, so the number of provider calls on a first index is a small multiple
-  of the cap. A higher cap makes that first index take longer in proportion. The server reads the
-  value once, at startup.
-
-- Tuning the floor (`EMBEDDING_MIN_SIMILARITY`, default `0.2`): a match below the floor is dropped
-  rather than returned as a weak hit, which is what lets an empty result mean "this package models
-  nothing like that". The right value is a property of the embedding model, not of Publisher —
-  cosine similarity is not calibrated across models, so a floor that separates signal from noise on
-  one endpoint will not on another, and the default is only known-reasonable for the default model.
-  Every semantic response carries the measurement to tune against: `below_cutoff_count` of
-  `total_entities` says how many entities were weighed and rejected. Ask a question the package
-  genuinely does not model and watch that ratio. It should be all of them; if a wholly unrelated
-  question still returns hits, the floor is too low for your model. Measured against
-  `text-embedding-3-small` on a 52-entity package, on-topic questions scored 0.79–0.88 while
-  wholly unrelated ones still reached 0.23–0.43, so the default is deliberately permissive: it
-  lets a few weak matches through rather than discarding a real one. Raise it if you would rather
-  see nothing than see noise. Changing it costs nothing — the cached vectors are unaffected, since
-  the floor is applied at query time, not at index time.
-- To measure the difference on your own models, see the eval script header in
-  `packages/server/scripts/get_context_eval.ts`.
+- What leaves the machine: for each field, its name, its `#(doc)` text and the sentences derived from
+  them; the values of `#(index)` dimensions on ungated sources (`fcj.valueEmbeddings: false` stops
+  that); and the query strings agents pass to `get_context`. Model source code, other data and query
+  results are never sent. Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM)
+  to keep everything on the machine; with a local server also set `EMBEDDING_MODEL` to a model that
+  server actually serves, since the default names an OpenAI model.
+- Storage: vectors are stored in the server's own `publisher.db`, keyed by a content hash, so only new
+  or changed text is embedded, across restarts too. `--init` wipes them with the rest of persisted
+  storage; the only cost of a wipe is embedding again.
+- When indexing starts: when a package loads, at boot, on add or install, and on reload, without waiting
+  for a question. Each batch of up to 256 rows is saved as it returns, so a failure part-way keeps what
+  was saved. A 429, a 5xx or a timeout is retried up to five times with exponential backoff and jitter,
+  honouring `Retry-After`; a rejected key or another 4xx fails at once. A failed build is tried again by
+  the next question after a 60 second cool-down.
+- What a search returns while the index is building: a normal result (not an error) with empty
+  `sources`, `retrieval: "indexing"` and a warning that says to ask again in a few seconds. A listing
+  works now. When the query text cannot be embedded, or the build cannot finish, the response is an
+  error whose `retrieval_reason` (`provider-error`, `unavailable`) says why. A server with an embedding
+  provider never answers with a ranking that differs from the finished index's.
+- Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}` carries an
+  `embeddingIndex` object. Its `status` is `lexical` (no embedding provider is configured: a mode, not a
+  failure), `indexing`, `ready` or `error`, and its `fcj` object holds the engine's own state, including
+  the build report once built and `lastError.message` after a failed build. The row and entity counts
+  are `0`: the engine keeps no per-entity index to count. Poll until `ready` before measuring retrieval
+  quality. After a restart every package reads `indexing` until its turn in the queue has checked its
+  stored vectors, which is quick when nothing changed.
+- What was removed with the earlier search: `retrieval.indexing.maxEntities` no longer does anything (the
+  server logs a warning if it is set), `EMBEDDING_MIN_SIMILARITY` now applies to `search_database_schema`
+  only, and a response no longer carries `below_cutoff_count` or `total_entities`. The engine has no
+  similarity floor: it returns the best candidates and lets the judge decide, and a target nothing
+  answers is named in `unresolved_targets`.
+- To measure the engine on your own models, use the `eval-loop` skill.
 
 ### Providers and the retrieval settings
 
@@ -387,26 +331,25 @@ credentials, what may leave the machine and the spend ceilings are all in the op
       "queryPrefix": "",
       "documentPrefix": ""
     },
-    "egress": { "preset": "default" },
-    "indexing": { "maxEntities": 5000 }
+    "egress": { "preset": "default" }
   }
 }
 ```
 
-| Key                                                                 | Meaning                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `llm.provider`                                                      | One of `openai`, `openai-compatible`, `ollama`, `anthropic`, `google`, `vertex`. Setting it is what turns LLM features on (see below). Required with `llm.model`.                                                                                |
-| `llm.model`                                                         | The chat model name your provider serves. Required.                                                                                                                                                                                              |
-| `llm.baseUrl`                                                       | Required for `openai-compatible`. Defaults: `openai` `https://api.openai.com/v1`, `ollama` `http://localhost:11434/v1`, `anthropic` `https://api.anthropic.com`, `google` `https://generativelanguage.googleapis.com`.                           |
-| `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                                                  |
-| `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                                              |
-| `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat requests in one index sync, keyphrases and source summaries together (default `300`). A retry and the re-ask that repairs a JSON reply each count, as for `maxCallsPerRequest`. A package cannot raise it. |
-| `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request, counted across source match, refine and rerank (default `20`; a positive integer). A package cannot raise it. See "Refine and rerank".                                 |
-| `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                                    |
-| `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                               |
-| `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                                   |
-| `egress.preset`                                                     | `default`: entity names, `#(doc)` text and schema context may be sent to the LLM. `full`: also the field's code. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that.                        |
-| `indexing.maxEntities`                                              | See "Entity cap" above.                                                                                                                                                                                                                          |
+| Key                                                                 | Meaning                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.provider`                                                      | One of `openai`, `openai-compatible`, `ollama`, `anthropic`, `google`, `vertex`. Setting it is what turns LLM features on (see below). Required with `llm.model`.                                                                      |
+| `llm.model`                                                         | The chat model name your provider serves. Required.                                                                                                                                                                                    |
+| `llm.baseUrl`                                                       | Required for `openai-compatible`. Defaults: `openai` `https://api.openai.com/v1`, `ollama` `http://localhost:11434/v1`, `anthropic` `https://api.anthropic.com`, `google` `https://generativelanguage.googleapis.com`.                 |
+| `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                                        |
+| `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                                    |
+| `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat requests in one index build, across source summaries and the index-time question and doc-part steps (default `300`). A retry and the re-ask that repairs a JSON reply each count. A package cannot raise it. |
+| `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request (default `20`; a positive integer). A package cannot raise it. See "The judge".                                                                              |
+| `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                          |
+| `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
+| `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
+| `egress.preset`                                                     | `default`: entity names, `#(doc)` text and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
+| `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
 
 **Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
 model and `EMBEDDING_API_KEY` for the embedding model (they are separate because the two are often
@@ -417,18 +360,18 @@ an ambient `OPENAI_API_KEY` is never read.
 
 **Precedence.** When a key is set in the file and the matching `EMBEDDING_*` variable
 (`EMBEDDING_MODEL`, `EMBEDDING_API_BASE`, `EMBEDDING_DIMENSIONS`) is also set, the file wins; the
-variable fills in anything the file leaves out. `EMBEDDING_MIN_SIMILARITY` stays a variable.
+variable fills in anything the file leaves out.
 
 **When the LLM is on.** LLM features are on if and only if `retrieval.llm.provider` is set and
 either `LLM_API_KEY` is set or the provider is `ollama` or `vertex`. Otherwise they are all off and
 nothing errors: the server logs a warning if a provider is named without a key, and `get_context`
-behaves as it did before.
+answers without the judge, the index-time questions and the source summaries.
 
 **Validation.** A bad value stops the server at startup with a message that names the key, what
 was expected and a fix, for example `Invalid retrieval.llm.provider: expected one of openai,
 openai-compatible, ollama, anthropic, google, vertex, got "cohere". Fix: ...`. Inside `llm`,
-`embedding`, `egress` and `indexing`, and at the top of the `retrieval` block, an unknown key is an
-error that lists the valid ones, so a typo such as `maxEntitites` stops the server instead of being ignored.
+`embedding`, `egress` and `dimensionValues`, and at the top of the `retrieval` block, an unknown key is an
+error that lists the valid ones, so a typo stops the server instead of being ignored.
 
 **Providers.** Each provider is called directly over HTTPS, with no vendor SDK. Failed calls retry
 the same way for every provider: a 429, 408, 5xx or timeout is retried up to five times with
@@ -463,113 +406,116 @@ on reload (and a reload that changes nothing keeps the warm index):
 {
   "name": "storefront",
   "retrieval": {
-    "representation": "single",
-    "keyphrases": "auto",
-    "refine": { "enabled": "auto", "minLevel": "MEDIUM" },
-    "rerank": { "enabled": "auto", "topSources": 8 },
-    "sourceMatch": { "enabled": "auto" },
+    "fcj": { "perTarget": 30, "listTopK": 15 },
     "sourceSummary": { "enabled": "auto" },
-    "prompts": { "keyphrase": "prompts/keyphrase.md" }
+    "prompts": { "judge": "prompts/judge.md" }
   }
 }
 ```
 
-| Key                                                                                                     | Values                    | Default  | Meaning                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `representation`                                                                                        | `single`, `facets`        | `single` | One row per entity, or a name row plus doc chunks (plus a keyphrase row).                                                                                                       |
-| `keyphrases`                                                                                            | `auto`, `never`, `always` | `auto`   | See "Keyphrases". Without an operator LLM, `auto` and `always` behave as `never`.                                                                                               |
-| `refine.enabled`                                                                                        | `auto`, `true`, `false`   | `auto`   | See "Refine and rerank". `auto`: on when the operator has an LLM configured. `true` with no LLM configured is an error at package load.                                         |
-| `refine.minLevel`                                                                                       | `LOW`, `MEDIUM`, `HIGH`   | `MEDIUM` | Candidates the model rates below this are dropped.                                                                                                                              |
-| `rerank.enabled`                                                                                        | `auto`, `true`, `false`   | `auto`   | As for `refine.enabled`.                                                                                                                                                        |
-| `rerank.topSources`                                                                                     | a positive integer        | `8`      | Sources scored; the rest are dropped from the answer but still counted in `total_available`.                                                                                    |
-| `sourceMatch.enabled`                                                                                   | `auto`, `true`, `false`   | `auto`   | See "Source-target search". As for `refine.enabled`.                                                                                                                            |
-| `sourceSummary.enabled`                                                                                 | `auto`, `true`, `false`   | `auto`   | See "Source summaries". As for `refine.enabled`. It runs in the embedding sync, so it needs an embedding provider as well as an LLM.                                            |
-| `prompts.keyphrase`, `prompts.refine`, `prompts.rerank`, `prompts.sourceMatch`, `prompts.sourceSummary` | a path inside the package | built in | A file holding the instructions the LLM gets for that step. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
+| Key                                                                         | Values                    | Default  | Meaning                                                                                                                                                                         |
+| --------------------------------------------------------------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fcj`                                                                       | an object                 | defaults | The engine's own settings, below. Every key is optional.                                                                                                                        |
+| `sourceSummary.enabled`                                                     | `auto`, `true`, `false`   | `auto`   | See "Source summaries". `auto`: on when the operator has an LLM configured. `true` with no LLM configured is an error at package load.                                          |
+| `prompts.judge`, `prompts.docParts`, `prompts.questions`, `prompts.sourceSummary` | a path inside the package | built in | A file holding the instructions the LLM gets for that step. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
 
 An unknown key is an error that names the valid keys, and the package is not served until it is
 fixed (HTTP 424, like any unusable publisher.json).
 
-### Find, connect, judge (`engine: "fcj"`, experimental)
+**Keys that no longer do anything.** `engine`, `representation`, `keyphrases`, `refine`, `rerank`,
+`sourceMatch`, and the prompts `prompts.keyphrase`, `prompts.refine`, `prompts.rerank` and
+`prompts.sourceMatch` belong to the search that this engine replaced. A package that still sets one
+loads, whatever the value; the key is ignored (a prompt file it names is not read), and the package's
+`warnings` carry one entry for each, naming the key and saying it no longer does anything. Remove them.
+The judge replaces `refine`, `rerank` and `sourceMatch`: turn it off with `fcj.judge: false`, or give
+it other instructions with `prompts.judge`.
 
-`"engine": "fcj"` answers this package's ranked get_context calls with a second search engine
-(`packages/server/src/mcp/context/`); listings and every package without the key keep the shipped one.
-It builds its own index at load (a catalog of the package, derived search text per field, a value
-index of `#(index)` dimensions) and answers in three steps: per target, the best candidates of the
-whole package; the few sources whose joins reach what the targets ask for together; one LLM call per
-such source group to pick what to return. The response adds `clusters`, `coverage` and
-`unresolved_targets` beside `sources`. A source marked `#(agent-hidden)` (or defined in a file marked
-`##(agent-hidden)`) gets no card of its own: its fields are reached only through the joins of the
-sources that are served, as hosted get_context does. The mark is the source's own; a source that extends
-a hidden one is not hidden. When one field name is listed under several sources, the picking call is
-shown the start of each source's own doc beside its fields and told to pick the source whose doc matches
-the population the question asks for. The picking call also names its best pick per target, which is listed first, so its source's card comes first. Its knobs are in `fcj`, all optional:
+The `fcj` keys, with their defaults. Those marked provisional are still being measured and can change
+between releases.
 
-| Key                    | Default | Meaning                                                                                   |
-| ---------------------- | ------- | ----------------------------------------------------------------------------------------- |
-| `fcj.perTarget`        | `30`    | Candidates kept per target after the first step.                                          |
-| `fcj.hopDiscount`      | `0.9`   | Score multiplier per join hop when a field is seen from another source.                   |
-| `fcj.coverFraction`    | `0.5`   | A source answers a target when its best candidate is at least this share of the best.     |
-| `fcj.measureWeight`    | `1.5`   | Weight of a measure target when sources are compared.                                     |
-| `fcj.maxClusters`      | `3`     | Most source groups (and so LLM calls) per request.                                        |
-| `fcj.clusterTopK`      | `10`    | Fields kept per target inside one group.                                                  |
-| `fcj.reachDepth`       | `3`     | Deepest join chain a group follows.                                                       |
-| `fcj.keyword`          | `true`  | Rank by keyword (BM25) beside embedding closeness.                                        |
-| `fcj.values`           | `true`  | Use the value index.                                                                      |
-| `fcj.valueCap`         | `50000` | Most values indexed per dimension, the most frequent kept.                                |
-| `fcj.questions`        | `auto`  | Index-time questions written by the LLM. As for `refine.enabled`.                         |
-| `fcj.docParts`         | `auto`  | Index-time split of long docs by the LLM; by rules otherwise. As for `refine.enabled`.    |
-| `fcj.judge`            | `auto`  | The picking call. `false` returns each group's best few candidates instead.               |
-| `fcj.collapseCopies`   | `false` | Provisional, off by default. A field an extension inherits unchanged is searched once, as the same field on the source it extends, but only when both sources hold the same rows: no `where:` of its own, the same table, SQL or query, the same arguments, no access gate of its own. An extension with other rows is a different source, and the fields it inherits are searched and returned on it. |
-| `fcj.twinRule`         | `false` | Provisional, off by default. After the picking call, among one target's picks that are the same inherited field on near-identical sources (rows that differ by a filter or a population), keep only the call's `best` pick, unless it said the question could mean either. Routes and joined copies are never dropped. |
-| `fcj.contenderShare`   | `0`     | Provisional, off by default. A source scoring at least this share of the best source on the same targets joins its group (up to three), so the picking call chooses between near-tied sources. |
-| `fcj.connect`          | `clusters` | Provisional. `list` skips the source groups: one picking call sees every target's best `fcj.listTopK` candidates from the first step, grouped by source, plus the home source's extras (its dates for a period, a measure's inputs). The home is the source of the first measure target's best candidate. A baseline for comparing connect rules. |
-| `fcj.listTopK`         | `15`    | Provisional. With `fcj.connect: "list"`, candidates per target the picking call sees. |
+| Key                    | Default       | Meaning                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fcj.perTarget`        | `30`          | Candidates kept per target after the find step.                                                                                                                                                                                                                                                                                                      |
+| `fcj.keyword`          | `true`        | Rank by keyword (BM25) beside embedding closeness.                                                                                                                                                                                                                                                                                                   |
+| `fcj.values`           | `true`        | Use the value index of `#(index)` dimensions and the value lists docs give.                                                                                                                                                                                                                                                                          |
+| `fcj.valueCap`         | `50000`       | Most values indexed per dimension, the most frequent kept.                                                                                                                                                                                                                                                                                           |
+| `fcj.valueEmbeddings`  | `true`        | Provisional. Also embed the stored values at index time, so a phrase finds a dimension by the meaning of its values (`sneakers` finds the dimension that stores `Athletic Shoes`). A gated source's values are never embedded.                                                                                                                       |
+| `fcj.connect`          | `list`        | Provisional. `list`: one judge call sees every target's best `fcj.listTopK` candidates, grouped by source. `clusters`: candidates are first grouped into at most `fcj.maxClusters` sources whose joins explain the targets together, and the judge picks inside each group.                                                                           |
+| `fcj.listTopK`         | `15`          | Provisional. With `connect: "list"`, candidates per target the judge sees.                                                                                                                                                                                                                                                                           |
+| `fcj.listUnion`        | `10`          | Provisional. With `connect: "list"`, a candidate ranked this high or better in the meaning list or the keyword list alone is also shown to the judge. `0` shows the fused top alone.                                                                                                                                                                 |
+| `fcj.listRoutes`       | `3`           | Provisional. With `connect: "list"`, routes shown under each candidate field from the other listed sources (shortest first, any depth). A picked route is returned on the joining source's card. `0` shows none.                                                                                                                                      |
+| `fcj.dropRoutesAt`     | `3`           | Provisional. After the judge, when one target's picks hold this many routes beside their own fields, the routes are dropped. `0` keeps every pick.                                                                                                                                                                                                   |
+| `fcj.judge`            | `auto`        | The judge call. `auto`: on when an LLM is configured. `false` returns each target's best few candidates instead.                                                                                                                                                                                                                                      |
+| `fcj.readingsRule`     | `true`        | Provisional. Tells the judge to return a field for each plausible reading of a phrase the model docs do not settle, and the measures a rate is computed from.                                                                                                                                                                                         |
+| `fcj.alsoLikely`       | `auto`        | Provisional. After the judge, also return, marked `also_likely` with a reason, the same-named fields on other sources and the fields the judge's notes name. `auto`: on with `connect: "list"`. `fcj.alsoLikelyTwins` (`2`) caps the same-named fields per pick.                                                                                      |
+| `fcj.joinedCopies`     | `indexed`     | Provisional. `indexed`: a joined field the compiled model copies onto the joining source is a searchable row of its own. `routes`: each field is searched once, on its own source, and shown with its routes.                                                                                                                                        |
+| `fcj.unservedCopies`   | `3`           | Provisional. A field whose own source is not served (an unpublished source, a raw table) gets a searchable joined copy on each served source that reaches it, up to this many per field. `0` turns it off.                                                                                                                                          |
+| `fcj.twinRule`         | `false`       | Provisional. After the judge, among one target's picks that are the same inherited field on near-identical sources, keep only the judge's best pick unless it said the question could mean either.                                                                                                                                                    |
+| `fcj.collapseCopies`   | `false`       | Provisional. A field an extension inherits unchanged is searched once, as the same field on the source it extends, but only when both sources hold the same rows.                                                                                                                                                                                      |
+| `fcj.splitBundles`     | `false`       | Provisional. A target whose `search_text` is a list ("state, city and zip of the venue") is also searched item by item. `fcj.splitItemPicks` (`0`, no cap) caps the picks kept per item.                                                                                                                                                              |
+| `fcj.dateRange`        | `false`       | Provisional. When the request names a date or time range, add up to two date or time fields of each source a returned measure sits on.                                                                                                                                                                                                               |
+| `fcj.questions`        | `auto`        | Index-time questions written by the LLM for each field, embedded as extra rows. As for `sourceSummary.enabled`. `fcj.questionsPrompt` (`questions`, `phrases` or `values`) picks the wording and `fcj.questionsPerNode` (`3`) the count.                                                                                                              |
+| `fcj.docParts`         | `auto`        | Index-time split of long docs by the LLM; by rules otherwise. As for `fcj.questions`.                                                                                                                                                                                                                                                                |
+| `fcj.judgeLlm`         | none          | Provisional. Send the judge's calls to this model (`provider`, `model`, and `baseUrl` or `projectId` and `location`) instead of `retrieval.llm`. A provider that needs a key reads `JUDGE_LLM_API_KEY`, then `LLM_API_KEY`.                                                                                                                           |
+| `fcj.maxClusters`      | `3`           | With `connect: "clusters"`, most source groups (and so judge calls) per request.                                                                                                                                                                                                                                                                     |
+| `fcj.clusterTopK`      | `10`          | With `connect: "clusters"`, fields kept per target inside one group.                                                                                                                                                                                                                                                                                 |
+| `fcj.hopDiscount`, `fcj.coverFraction`, `fcj.measureWeight`, `fcj.reachDepth`, `fcj.contenderShare` | `0.9`, `0.5`, `1.5`, `3`, `0` | With `connect: "clusters"`: score multiplier per join hop; the share of a target's best score a source needs to answer it; the weight of a measure target; the deepest join chain a group follows; and (provisional) the share of the best source's score that puts another source in its group. |
 
-`prompts.judge`, `prompts.docParts` and `prompts.questions` replace those steps' instructions. Stored
-values never leave the process below the `full` egress preset: the judge is told that a value matched,
-not which one.
+### The judge
 
-### Keyphrases
+The judge is one chat call per request (one per group with `connect: "clusters"`). It sees the targets
+verbatim, and for each target the candidates with their kind, type, source, route and full `#(doc)`
+text, rules included. It never sees an access predicate or a field's code (unless `egress.preset` is
+`full`), and a stored value is described as matched, not shown, below the `full` preset. A target
+the judge picks nothing for comes back in `unresolved_targets`, which is the agent's signal to ask or to
+search again.
 
-A keyphrase is a short search phrase for an entity (at most about twelve words), the way a person
-would ask for it. It is written at index time, once, and stored in the `entity_keyphrases` table of
-`publisher.db`. With `keyphrases: "auto"` and an LLM configured:
+`retrieval.llm.maxCallsPerRequest` (default 20) bounds the chat requests one `get_context` call sends.
+It counts HTTP requests to the vendor: a retry after a 429 and the re-ask that repairs a JSON reply each
+count. The check runs before each request, so the one that would pass the limit is not sent. Chat
+requests made while a person waits retry once, after at most one second (a longer `Retry-After` fails
+the call at once); the index build keeps the full retry ladder.
 
-- a description (`#(doc)` text) of 1 to 8 words (1 to 12 for a view) **is** the keyphrase, with no
-  LLM call;
-- an entity with no description, or a longer one, gets an LLM-written keyphrase, ten entities per
-  call.
+**If the judge fails, the call fails.** When the model cannot be reached, or does not return usable JSON
+after the provider layer's retries and its one re-ask, `get_context` returns an error result whose
+message names the step, with `retrieval_stage: "judge"` and `retrieval_reason: "llm-stage-failed"`
+beside it and no sources. It never answers with an unjudged ranking. `fcj.judge: false` answers without
+the judge. A listing runs no LLM step.
 
-`always` sends every entity to the LLM; `never` sends none. The keyphrase step runs before
-embedding, saves each batch as it returns and stops at `retrieval.llm.maxCallsPerSync` requests (a
-JSON repair is a second request; the rest wait for the next sync, which starts on a server restart or after the package's content
-changes; reloading an unchanged package does not start one. The package's status shows
-`keyphraseProgress.capped`).
+**Trace.** A request that carries the header `X-Publisher-Retrieval-Trace: summary` gets a
+`retrieval_trace` block with one row per step (`find`, `connect`, `judge`, `page`); `full` adds what each
+step kept and why. Starting the server with `PUBLISHER_MCP_TRACE=retrieval` writes the same summary to
+the server log, one "Retrieval trace" line per ranked call, and adds nothing to a response. The trace
+holds counts and timings, and the header is a diagnostic only: it changes no result.
 
-A stored keyphrase is reused until the entity's inputs (name, kind, source, data type, doc text; plus
-code under `egress.preset: "full"`), the prompt text or the model change, so a restart, reload or
-republish of an unchanged package makes no LLM calls. Editing the package's prompt file regenerates
-the keyphrases the LLM wrote and leaves description keyphrases alone; the entities whose keyphrase
-text comes back different are then re-embedded and no others. A prompt file replaces the
-**instructions** only: the entity list and the reply format are always added by the server.
+```json
+{
+  "retrieval_trace": {
+    "engine": "fcj",
+    "stages": [
+      {
+        "name": "judge",
+        "status": "ran",
+        "ms": 412,
+        "in": 1,
+        "out": 6,
+        "llm_calls": 1,
+        "tokens": { "input": 4210, "output": 190 }
+      }
+    ]
+  }
+}
+```
 
-What is sent to the LLM: name, kind, source, data type and `#(doc)` text, with every annotation line
-other than the doc removed. Access predicates never leave the process. The entity text is fenced as
-data and the instructions tell the model to ignore anything in it.
-
-If the LLM fails after its retries, the sync stops with the stage named: `GET .../packages/{pkg}`
-shows `embeddingIndex.status: "error"`, `stage: "keyphrase"` and the reason in `lastError`, nothing
-is embedded, and the next question after the cool-down retries from where the saved batches left
-off. There is no quiet fallback to embedding the doc or the name. `embeddingIndex.keyphraseProgress`
-(`done`, `total`) counts the entities that need an LLM keyphrase while the step runs.
+`status` is `ran`, `skipped` (no LLM, or `fcj.judge: false`) or `failed`.
 
 ### Source summaries
 
 A source summary is a paragraph about one source plus a one-line label, written by the LLM at index
-time, once, and stored in the `source_summaries` table of `publisher.db`. It is a step of the
-embedding sync, so it runs only when the server has an LLM **and** an embedding provider. With
-`sourceSummary.enabled: "auto"` (the default) it is on whenever an LLM is configured; `true` with no
-LLM configured stops the package from loading; `false` turns it off.
+time, once, and stored in the `source_summaries` table of `publisher.db`. It is a step of the index
+build, so it runs only when the server has an LLM. With `sourceSummary.enabled: "auto"` (the default)
+it is on whenever an LLM is configured; `true` with no LLM configured stops the package from loading;
+`false` turns it off.
 
 For each source the model gets one call. It is shown the source name, the source's `#(doc)` text (or
 `No source docs.`), and the source's fields in four groups, Dimensions, Measures, Views and Joins,
@@ -583,18 +529,15 @@ entity).
 The reply is `{"summary": "...", "one_line_summary": "..."}`. The summary is prose that names fields in
 backticks; the one-liner is one sentence of at most 120 characters. A source with no `#(doc)` text
 must get exactly ``The `<name>` source.``, so the model cannot invent a purpose. A reply that breaks
-a rule is shown back to the model once with the reason; if it is still wrong, the sync fails.
+a rule is shown back to the model once with the reason; if it is still wrong, the step fails.
 
 A source is identified by its model file and its name, so two files that each define `orders` get
-their own summary, and a join expands the source in the file it names. A request shows a stored
-summary only while it still matches the source as it is now, so a reload that changed a source
-stops its old summary being shown until the sync rewrites it. One field's `#(doc)` is cut to 500
-characters in the prompt, and a prompt over 60,000 characters shows fewer joined sources, then fewer
+their own summary, and a join expands the source in the file it names. One field's `#(doc)` is cut to
+500 characters in the prompt, and a prompt over 60,000 characters shows fewer joined sources, then fewer
 fields, with a line that says what was left out. For a local model (`llm.provider` `ollama`) the cap
-is 6,000 characters, and each stored summary is cut to 300 characters when source matching shows it
-to the model: Ollama's default context window (2,048 to 4,096 tokens) cuts a longer prompt silently,
-so the summary would be written from a partial field list with no error. If you serve a model with a
-larger window you cannot raise these caps; use a hosted model for large packages.
+is 6,000 characters: Ollama's default context window (2,048 to 4,096 tokens) cuts a longer prompt
+silently, so the summary would be written from a partial field list with no error. If you serve a model
+with a larger window you cannot raise this cap; use a hosted model for large packages.
 
 A stored summary is reused until anything the model is shown changes (the source's doc, any field's
 name, type or doc, a join, the joined sources' fields), the prompt text or the model, so a restart,
@@ -603,180 +546,37 @@ sources it touches: editing a field of `customers` rewrites `customers` and ever
 `prompts.sourceSummary` replaces the instructions (a file inside the package); the source, its docs,
 the field list and the reply format are added by the server.
 
-The step runs after keyphrases and before any vector is written. It makes one call per source, up to
-`retrieval.llm.concurrency` at a time, saves each summary as it returns, and shares
-`retrieval.llm.maxCallsPerSync` requests with the keyphrase step (sources left over wait for the next sync, which starts on a server restart or after the package's
-content changes; reloading an unchanged package does not start one;
-`embeddingIndex.sourceSummaryProgress.capped` says so, and a stored summary that is out of date and
-could not be rewritten is deleted, never served). If a call fails after its retries and re-ask, the
-sync stops: `GET .../packages/{pkg}` shows `embeddingIndex.status: "error"`, `stage: "source_summary"`
-and the reason in `lastError`, nothing is embedded, and the next question after the cool-down resumes
-with the sources that have no summary yet. `embeddingIndex.sourceSummaryProgress` (`done`, `total`)
-counts the sources while the step runs.
+The step makes one call per source, up to `retrieval.llm.concurrency` at a time, saves each summary as
+it returns, and counts against `retrieval.llm.maxCallsPerSync` (sources left over wait for the next
+build, which starts on a server restart or after the package's content changes). If a call fails
+after its retries and re-ask, the summaries are skipped for that build with a warning in the server log,
+keeping the ones already saved; a stored summary that is out of date and could not be rewritten is
+deleted, never served.
 
-What a summary changes in a `get_context` answer, when one is stored for the source:
-
-- Every ranked source card (entity search or source search) has `source_info.one_line_summary`, the
-  model's one-liner, in place of the first line of the source's doc.
-- `source_info.summary`, the full text, is added only when the request narrows to that source: its
-  `scopes` pin the source (`source`), or a source search target matched at most one source.
-- The source-target search prompt (see below) shows each candidate's `Summary:` after its
-  `Documentation:` line, whole and on one line. The documentation is still cut to 500 characters.
-
-A source with no stored summary, and any package or server with summaries off, answers exactly as
-before. Listings (a `source` target with no text) are unchanged.
-
-### Refine and rerank
-
-Two LLM steps run on a ranked `get_context` search when the server has an LLM configured and an
-embedding provider (they do not run on the lexical ranking, which has no cosine score to build on).
-With no LLM configured neither runs, and the response is the one the server gave before they
-existed, byte for byte.
-
-**Refine** rates the candidate fields of each entity-search target (`dimension`, `measure`, `view`,
-`join`; not `source`). For each target the server takes the best 13 fields per source by cosine (the 10 a source's own fields get from the
-search, plus 3 joined fields it indexes directly) and
-the best 120 overall, sends them in batches of 15 (up to `retrieval.llm.concurrency` batches at a
-time), and asks the model to rate each `LOW`, `MEDIUM` or `HIGH` against the search text. A field
-rated below `refine.minLevel`, or not returned, is dropped for that target. A survivor's raw score
-is its level (`LOW` 1, `MEDIUM` 2, `HIGH` 3) plus its cosine. The model also gives a one-sentence
-reason for each field it keeps. The reason is trimmed, cut at 200 characters, and sent to the caller as
-`match_reason` on that target's entry in the entity's `matched_targets`
-(`{search_text, relevance, match_reason}`). A reply with no reason is not an error, and the key is
-left out. Without refine (no LLM, or refine off) `matched_targets` has no `match_reason`.
-
-**Scores.** After refine, `relevance` (on entities, on `matched_targets` and on sources) is the raw
-score through a piecewise linear map with knots at 0, 1, 2, 3, 4 and values 0, 0.4, 0.7, 0.9, 1.0,
-rounded to 2 places. A `MEDIUM` field with cosine 0.5 publishes as 0.80, a `HIGH` one with cosine
-0.4 as 0.94. A joined copy of a field (a field reached through a join) is scored as the whole raw
-score times `0.9 ** (hops + 1)`, then mapped: a `HIGH` field one join away loses about a fifth of
-its raw score and can land in the `MEDIUM` band. A source's relevance is its best entity's. A source
-row that no model rated (a source target with source matching off) scores as `MEDIUM` plus its cosine,
-so it publishes between 0.7 and 0.9 and does not rank below a `LOW` field.
-
-**Rerank** scores whole sources in one call. With 0 or 1 sources it is skipped. Otherwise the best
-`rerank.topSources` (default 8) sources by raw relevance go to the model, which scores each 0 to 3.
-The rest are dropped from the answer, but `total_available` still counts them and a warning says so.
-A source's relevance becomes its score plus a tiebreak: within one score, the sources the model
-listed first get larger tiebreaks (`(n - 1 - rank) * 0.1`, with the step shrunk past 10 sources in one
-score so the tiebreak stays under 1). A source the model left out gets 0. A source the model scored
-below 2 is dropped (the cut is on the model's score, not on the tiebreak), unless the request's `scopes[].source` pins one (then nothing is
-dropped). Entity relevances do not change.
-
-**Turning them on and off.** Both default to `auto`: on when `retrieval.llm` is configured (a
-provider with its key, or `ollama` or `vertex`). A package can set `enabled: false` to turn one off.
-`enabled: true` on a server with no LLM configured stops the package from loading, with a message
-that names the fix; use `auto` if the package should work on both kinds of server. The prompts are
-built in. A package can replace the instructions with `prompts.refine` or `prompts.rerank` (a file
-inside the package); the question, the candidates and the reply format are always added by the
-server.
-
-**If a step fails, the call fails.** When the model cannot be reached, or does not return usable
-JSON after the provider layer's retries and its one re-ask, `get_context` returns an error result
-whose message names the step (`refine` or `rerank`) and the reason, with `retrieval_stage` and
-`retrieval_reason: "llm-stage-failed"` beside it and no sources. It never answers with an unrefined
-or keyword ranking. A request with no `search_text` (a listing) runs no LLM step.
-
-**Spend ceiling.** `retrieval.llm.maxCallsPerRequest` (default 20) bounds the chat requests one
-`get_context` call sends across its steps. It counts HTTP requests to the vendor: a retry after a 429
-and the re-ask that repairs a JSON reply each count. The check runs before each request, so the one
-that would pass the limit is not sent; the request fails as above, with a message that names the step
-and this setting. A request makes one refine request per 15 candidates per target and one rerank
-request. Chat requests made while a person waits retry once, after at most one second (a longer
-`Retry-After` fails the call at once); the index sync keeps the full retry ladder.
-
-**What is sent.** Entity names, kinds, data types, source names, model paths, the package name and
-`#(doc)` text (a source's own docs for rerank). Never any other annotation, so an access predicate
-cannot leave the process whatever the egress preset says. Dimension values (the matched strings of a
-`dimensional_value` search, see "Dimension value search" below) are sent, to rerank and to the
-embedding provider, only under `egress.preset: "full"`.
-
-**Trace.** A request that carries the header `X-Publisher-Retrieval-Trace: summary` gets a
-`retrieval_trace` block with one row per stage. Starting the server with `PUBLISHER_MCP_TRACE=retrieval`
-writes the same summary to the server log, one "Retrieval trace" line per ranked call, and adds nothing
-to a response; the eval loop's `serve.py --trace-retrieval` sets it. The trace holds counts and
-timings, not the ranked entities, and `eval-diagnose` does not read it yet:
-
-```json
-{
-  "retrieval_trace": {
-    "stages": [
-      {
-        "name": "refine",
-        "status": "ran",
-        "ms": 412,
-        "in": 36,
-        "out": 14,
-        "llm_calls": 3,
-        "tokens": { "input": 4210, "output": 190 }
-      },
-      {
-        "name": "rerank",
-        "status": "ran",
-        "ms": 280,
-        "in": 4,
-        "out": 2,
-        "llm_calls": 1,
-        "tokens": { "input": 900, "output": 40 }
-      }
-    ]
-  }
-}
-```
-
-`status` is `ran`, `skipped` (off, or not applicable: a lexical ranking, or fewer than two
-sources) or `failed`. `in` and `out` count ranked rows for refine and sources for rerank. The
-header is a diagnostic only: it changes no result, and without it the response has no
-`retrieval_trace` key. It applies to ranked responses and to the error a failed step returns.
-
-### Source-target search
-
-With an LLM configured, a `source` search target that has `search_text` is answered by asking the
-model which sources it means, instead of ranking sources by embedding or keyword. A `source` target
-with no text (a listing), and every entity target, work as before.
-
-The candidates are every source in scope (the request's `scopes`). A source that the package's
-`index.malloy` hides is not an entity, and a source whose `#(authorize)` is an unconditional
-`false` is dropped when the index is built, so neither is ever sent. The server sends them in
-batches of 10, up to `retrieval.llm.concurrency` batches at a time. Each candidate is
-`[i] package/model/source` and a `Documentation:` line: the source's `#(doc)` text on one line, cut
-to 500 characters with `...`, or, if it has none, `Source <name> with joined sources: a, b` (or
-`Source <name> (no joined sources)`). A source that has a stored summary (see "Source summaries") also
-gets a `Summary:` line with the whole summary on one line. The model rates a source `HIGH` when the phrase is about what
-one row of the source is, `MEDIUM` when the source holds a meaningful part of it, and leaves the
-rest out. If more than 8 sources rate `HIGH` for a target, its `MEDIUM` ones are dropped.
-
-A rated source is returned as a source card with no entities, like any matched source. Its raw
-score is 3 (`HIGH`) or 2 (`MEDIUM`), published through the same map as refine: 0.9 and 0.7. Rerank
-and the response size budget apply to these cards as usual. Because the retrievers no longer rank
-the source targets, a request that has only source targets does not wait for the embedding index,
-and `total_entities` in the semantic response counts only the entities the other targets can claim.
-
-`sourceMatch.enabled` follows the same rules as `refine.enabled`: `auto` is on when an LLM is
-configured, `true` with none configured stops the package from loading, `false` turns it off.
-`prompts.sourceMatch` replaces the instructions (a file inside the package, with the same path
-rules); the question, the phrase, the candidates and the reply format are added by the server.
-Calls count against `retrieval.llm.maxCallsPerRequest`, and the trace names the step
-`source_match`. If a call fails after the provider layer's retries and its one re-ask,
-`get_context` returns an error result naming `source_match` with `retrieval_stage: "source_match"`.
-It never falls back to embeddings. The text sent is the same kind as for rerank: names, paths and
-`#(doc)` text only.
+When a summary is stored for a source, its card's `source_info.one_line_summary` is the model's
+one-liner in place of the first line of the source's doc, and the engine searches it as part of the
+source's text. A source with no stored summary, and any package or server with summaries off, answers
+with the first line of its doc. Listings (a `source` target with no text) are unchanged.
 
 ### Dimension value search
 
 A `get_context` target `{"target_type": "dimensional_value", "search_text": "Auto Intenders"}` returns the
 string the data stores for what the user typed (`Auto Intenders (In-Market)`) and the dimension that
 holds it, as `values[]` on that dimension's entity: `{value, relevance, search_text}`, best first, at most
-10 per dimension. It works with no embedding provider and no LLM.
+10 per dimension. A dimension target can carry `example_values`, the literals the user named, to find the
+dimension that stores them.
 
-**It reads the data when asked; nothing is indexed.** For each string dimension in scope (the source's
-own, not joined copies), `get_context` runs `run: source -> { where: dim != null; group_by: dim; limit: N }`
-through the same call `execute_query` uses, then matches the phrase against the strings that come back:
-the same string, the same after case, accents, punctuation and spacing, a partial phrase, and a typo (one
-edit in a word of 4 or 5 letters, two in a longer one). Scope the call to the source that holds the value:
-an unscoped call reads up to `maxDimensions` dimensions, ranked by how well their names and docs match.
+**Which values are searched.** The index build reads the distinct values of `#(index)` dimensions on
+ungated sources, and the value lists a doc gives ("one of DTC, B2B, Amazon"), once, through the same
+call `execute_query` uses, and matches a phrase against them: the same string, the same after case,
+accents, punctuation and spacing, a partial phrase, and a typo (one edit in a word of 4 or 5 letters,
+two in a longer one). With an embedding provider and `fcj.valueEmbeddings` they are also matched by
+meaning. A dimension no one tagged `#(index)` has no stored values to match.
 
-**Access.** Because the read is a query, a gate applies to it as it does to `execute_query`:
+**Access.** A value is data, and a gate applies to it as it does to `execute_query`. A source with
+`#(authorize)` or `#(access_filter)` is never read at index time and its values are never embedded. A
+`dimensional_value` target that pins one of its dimensions reads the values when asked, through the query
+path, with the caller's givens:
 
 - `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
   returns, with its dimensions and no `values`, and a warning says the values were withheld.
@@ -785,47 +585,13 @@ an unscoped call reads up to `maxDimensions` dimensions, ranked by how well thei
 - `get_context` takes an optional `givens` argument, read only by this lookup, with the trust `execute_query`'s
   `givens` has: the caller asserts them. See [authorize.md](authorize.md#security-model).
 
-**Cache.** A dimension's distinct values are kept per package for `cacheTtlMs`. The key holds a hash of the
-givens and `filter_params` sent, so one caller's list is never served to a caller with other givens. A
-package reload empties it.
+A value search that pins no dimension says which gated sources it skipped.
 
-**Meaning matches** ("people about to buy a car" finds `Auto Intenders (In-Market)`) need an embedding
-provider and `retrieval.egress.preset: "full"`, because the values are sent to the provider. Only
-dimensions with at most 500 values are embedded, and a dimension where the phrase's own words already match
-(a spelling score of 0.75 or more) is not embedded at all, so a literal answer gets no meaning guesses beside
-it and its values are not sent. The meaning score is the cosine, with a floor of 0.4: short strings embed
-close to each other, so treat a meaning match as a candidate to confirm, not as a verdict. With the default
-preset nothing is sent, not even the phrase.
-
-**Settings** (`publisher.config.json`; unknown keys fail the start):
-
-```json
-{
-  "retrieval": {
-    "dimensionValues": {
-      "enabled": true,
-      "maxDimensions": 12,
-      "maxValuesPerDimension": 2000,
-      "timeoutMs": 8000,
-      "budgetMs": 15000,
-      "cacheTtlMs": 600000
-    }
-  }
-}
-```
-
-| Key                     | Default  | Meaning                                                                                                                                |
-| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`               | `true`   | `false` makes a `dimensional_value` target answer with the "No index for target_type" warning, as before.                              |
-| `maxDimensions`         | `12`     | String dimensions read for one call. A warning says how many were skipped.                                                             |
-| `maxValuesPerDimension` | `2000`   | Distinct values read from one dimension. A dimension with more is searched again with a text filter on the longest word of the phrase. |
-| `timeoutMs`             | `8000`   | One lookup query. A timeout skips that dimension and warns; it never fails the call.                                                   |
-| `budgetMs`              | `15000`  | The whole value step of one call.                                                                                                      |
-| `cacheTtlMs`            | `600000` | How long a dimension's values are reused. `0` turns the cache off.                                                                     |
-
-**Cost.** One query per dimension read, on a cold cache. On DuckDB that is milliseconds. On a metered
-warehouse it is a scan of one column per dimension, up to `maxDimensions`, so scope the call, or lower
-`maxDimensions`. Each query holds a query slot like `execute_query`.
+**Settings.** `retrieval.dimensionValues.enabled` in `publisher.config.json` (default `true`): `false`
+makes a `dimensional_value` target answer with the "No index for target_type" warning. The other
+`dimensionValues` keys (`maxDimensions`, `maxValuesPerDimension`, `timeoutMs`, `budgetMs`, `cacheTtlMs`)
+belonged to the earlier search, are still accepted so an existing file loads, no longer do anything, and
+are warned about at startup.
 
 ## Semantic ranking for `search_database_schema`
 
