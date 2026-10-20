@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
+import {
+   ConflictError,
+   ConnectionNotFoundError,
+   EnvironmentNotFoundError,
+   FrozenConfigError,
+} from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
+import { assertConnectionShapeOrThrow } from "./connection_config";
 import { mergeConnectionUpdate } from "./connection_public_view";
 import { EnvironmentStore } from "./environment_store";
 
@@ -81,7 +87,7 @@ export class ConnectionService {
          await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
-         throw new Error(
+         throw new EnvironmentNotFoundError(
             `Environment "${environmentName}" not found in database`,
          );
       }
@@ -120,7 +126,7 @@ export class ConnectionService {
          await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
-         throw new Error(
+         throw new EnvironmentNotFoundError(
             `Environment "${environmentName}" not found in database`,
          );
       }
@@ -131,7 +137,7 @@ export class ConnectionService {
       );
 
       if (existingDbConn) {
-         throw new Error(
+         throw new ConflictError(
             `Connection "${connectionName}" already exists in environment "${environmentName}".`,
          );
       }
@@ -142,6 +148,10 @@ export class ConnectionService {
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
          const existingConnections = environment.listApiConnections();
+         // The environment's other connections already passed this check; a
+         // defect here is the request's, so a 400 rather than the bare 500 the
+         // same throw from buildEnvironmentMalloyConfig would be.
+         assertConnectionShapeOrThrow(connection);
          const nextMalloyConfig = buildEnvironmentMalloyConfig(
             [...existingConnections, connection],
             environment.metadata.location || "",
@@ -197,6 +207,8 @@ export class ConnectionService {
             ),
             name: connectionName,
          };
+         // Judged on the merged connection: a partial payload is not one.
+         assertConnectionShapeOrThrow(updatedConnection);
 
          const updatedConnections = existingConnections.map(
             (conn: ApiConnection) =>

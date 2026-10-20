@@ -3,9 +3,9 @@
 
 /**
  * Recognizers for what a database driver's error means, independent of which
- * driver threw it: an unreachable database, or rejected credentials. Matched
- * by error code and name, on the error and its `cause` chain, never by
- * Publisher's own error classes.
+ * driver threw it: an unreachable database, rejected credentials, or a table
+ * the connection may not read. Matched by error code and name, on the error
+ * and its `cause` chain, never by Publisher's own error classes.
  */
 
 /**
@@ -255,4 +255,35 @@ export function isCredentialRejection(error: unknown): boolean {
       if (current.name === "BigQueryAuthenticationError") return true;
    }
    return false;
+}
+
+/**
+ * BigQuery refusing the connection a table the statement names, in both of its
+ * wordings: a query or dry run ("User does not have permission to query table
+ * …, or perhaps it does not exist.") and a table lookup ("Permission
+ * bigquery.tables.get denied on table … (or it may not exist)."). BigQuery opens
+ * the sentence with the table, so it is matched from the start, and a name
+ * quoted later in a message cannot match.
+ *
+ * By text rather than by the ApiError's 403 and `accessDenied` reason, because
+ * on two of the three paths the text is all that arrives: the driver's table
+ * lookup returns the message instead of throwing, and a `publisher` proxy
+ * connection rethrows the remote's message without its status. A project-level
+ * refusal ("Access Denied: Project …: … bigquery.jobs.create …") fails every
+ * statement on the connection, so it is deliberately not matched.
+ */
+const BIGQUERY_TABLE_ACCESS_DENIED = /^Access Denied: Table \S+: /;
+
+/**
+ * The database's sentence refusing the connection a table, from `error` or its
+ * `cause` chain, or undefined. The sentence itself, because it is what the
+ * caller is answered with: it names the table and nothing else.
+ */
+export function tableAccessDenial(error: unknown): string | undefined {
+   for (const current of causeChain(error)) {
+      if (BIGQUERY_TABLE_ACCESS_DENIED.test(current.message)) {
+         return current.message;
+      }
+   }
+   return undefined;
 }

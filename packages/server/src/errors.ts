@@ -9,6 +9,7 @@ import {
    causeChain,
    isConnectionFailure,
    isCredentialRejection,
+   tableAccessDenial,
 } from "./driver_errors";
 import { redactPgSecrets } from "./pg_helpers";
 
@@ -142,9 +143,10 @@ export function filesystemAccessFailure(
 
 /**
  * The error to answer with when a failure is about the connection rather than
- * the statement: 502 for an unreachable database, 424 for rejected credentials
- * or a missing connection. Undefined otherwise, keeping the route's status.
- * Credentials win when an error matches both.
+ * the statement: 502 for an unreachable database, 424 for rejected credentials,
+ * a missing connection, or a table the connection may not read. Undefined
+ * otherwise, keeping the route's status. Credentials win when an error matches
+ * more than one.
  */
 export function databaseAccessFailure(
    error: unknown,
@@ -152,17 +154,21 @@ export function databaseAccessFailure(
    | ConnectionAuthError
    | ConnectionFailedError
    | UnconfiguredConnectionError
+   | TableAccessDeniedError
    | undefined {
    if (
       error instanceof ConnectionAuthError ||
       error instanceof ConnectionFailedError ||
-      error instanceof UnconfiguredConnectionError
+      error instanceof UnconfiguredConnectionError ||
+      error instanceof TableAccessDeniedError
    ) {
       return error;
    }
    const message = error instanceof Error ? error.message : String(error);
    if (isCredentialRejection(error)) return new ConnectionAuthError(message);
    if (isConnectionFailure(error)) return new ConnectionFailedError(message);
+   const denial = tableAccessDenial(error);
+   if (denial !== undefined) return new TableAccessDeniedError(denial);
    return undefined;
 }
 

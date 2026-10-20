@@ -3544,11 +3544,13 @@ components:
       description: |
         The connection is misconfigured, so the query never ran. `reason`
         says how: CONNECTION_AUTH_FAILED (the database rejected the
-        connection's credentials) or CONNECTION_NOT_FOUND (the model names a
-        connection the environment does not have). The query is fine, and a
+        connection's credentials), CONNECTION_NOT_FOUND (the model names a
+        connection the environment does not have), or TABLE_ACCESS_DENIED
+        (the database refused the connection a table the query names). A
         retry fails the same way until the connection is fixed. For
         CONNECTION_AUTH_FAILED the body carries a fixed message, because the
-        driver's text can name a user; it is logged.
+        driver's text can name a user; it is logged. For TABLE_ACCESS_DENIED
+        it carries the database's sentence, which names only the table.
       content:
         application/json:
           schema:
@@ -7461,13 +7463,21 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
+            TABLE_ACCESS_DENIED, on a 424, means the database refused the
+            connection's identity a table the query names (BigQuery's "Access
+            Denied: Table ..."), so the query never ran. BigQuery does not say
+            whether the table is withheld or absent, so it is never
+            TABLE_NOT_FOUND. Whoever manages the connection's grants has to
+            fix it, or the query has to name a table the connection can read;
+            retrying fails the same way.
+
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
             client generated before it -- on the one field whose purpose is to
             grow. Callers must treat an unrecognized value as absent.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, TABLE_ACCESS_DENIED.
         problems:
           type: array
           description: |
