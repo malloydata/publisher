@@ -1423,6 +1423,19 @@ describe("ConnectionController on a table the connection may not read", () => {
       ).rejects.toBeInstanceOf(TableAccessDeniedError);
    });
 
+   it("answers sqlTemporaryTable the same, behind the timeout race", async () => {
+      const controller = controllerOver({
+         manifestTemporaryTable: sinon.stub().rejects(apiError()),
+      });
+      await expect(
+         controller.getConnectionTemporaryTable(
+            "env",
+            "warehouse",
+            "SELECT cost FROM billing.export",
+         ),
+      ).rejects.toBeInstanceOf(TableAccessDeniedError);
+   });
+
    it("answers the table lookup the same, from the text the driver returns instead of throwing", async () => {
       const controller = controllerOver({
          fetchTableSchema: sinon.stub().resolves(lookupDenial),
