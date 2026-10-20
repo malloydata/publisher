@@ -456,27 +456,45 @@ describe("service/package", () => {
             }
          });
 
-         it("still refuses a data file whose name holds `;` or `--`", async () => {
-            // Malloy refuses these in a table path even when quoted, so the
-            // probe throws and the file lists with `error` and no `info`. Pinned
-            // so the day Malloy lifts the limit shows up as a test change.
+         it("refuses a data file whose path holds `;`, `--` or a glob character", async () => {
+            // Malloy refuses `;` and `--` anywhere in a table path, even
+            // quoted, and DuckDB reads `[`, `?` and `*` as a glob. Each file
+            // lists with `error` and no `info`. `a-b.csv` is the control: it
+            // must read, so a checkout path that itself holds `--` can't make
+            // the refusals pass for the wrong reason.
             await fs.mkdir(join(testPackageDirectory, "data"), {
                recursive: true,
             });
             const conn = new DuckDBConnection("duckdb");
-            for (const file of ["a;b.csv", "a--b.csv"]) {
+            const probe = async (file: string, csv: string) => {
                await fs.writeFile(
                   join(testPackageDirectory, "data", file),
-                  "Name,Value\nJohn,10",
+                  csv,
                );
+               // @ts-expect-error Accessing private static method for testing
+               return Package.getDatabaseInfo(
+                  testPackageDirectory,
+                  `data/${file}`,
+                  conn,
+               );
+            };
+            expect(
+               (await probe("a-b.csv", "Name,Value\nJohn,10")).rowCount,
+            ).toBe(1);
+            for (const file of ["a;b.csv", "a--b.csv"]) {
+               await expect(probe(file, "Name,Value\nJohn,10")).rejects.toThrow(
+                  "forbidden character `;` or `--`",
+               );
+            }
+            // A glob would read `x.csv` (1 row) in place of `[x].csv` (2 rows).
+            await fs.writeFile(
+               join(testPackageDirectory, "data", "x.csv"),
+               "Name,Value\nJohn,10",
+            );
+            for (const file of ["[x].csv", "x?.csv", "x*.csv"]) {
                await expect(
-                  // @ts-expect-error Accessing private static method for testing
-                  Package.getDatabaseInfo(
-                     testPackageDirectory,
-                     `data/${file}`,
-                     conn,
-                  ),
-               ).rejects.toThrow("forbidden character `;` or `--`");
+                  probe(file, "Name,Value\nJohn,10\nJane,20"),
+               ).rejects.toThrow("pattern matching other files");
             }
          });
 

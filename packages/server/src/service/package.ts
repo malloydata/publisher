@@ -162,6 +162,7 @@ import {
    type ReportTag,
 } from "./report";
 import { filterFreshManifest } from "./freshness";
+import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
@@ -3325,15 +3326,23 @@ export class Package {
       });
       // Forward slashes work on Windows DuckDB and avoid escaping.
       const normalizedPath = fullPath.replace(/\\/g, "/");
+      // DuckDB reads `[`, `?` and `*` in a table path as a glob, so such a
+      // name would report another file's columns and rows (`[x].csv` reads
+      // `x.csv`). List it as unreadable instead.
+      if (/[[?*]/.test(normalizedPath)) {
+         throw new Error(
+            `Cannot read ${databasePath}: DuckDB reads [, ? and * in a file path as a pattern matching other files. Rename the file without those characters.`,
+         );
+      }
       // DuckDB's table-path check refuses a bare path holding a space or a
       // quote, which left such a file listed as unreadable. So the path goes
-      // in as a single-quoted SQL literal ('' for a quote), which the check
-      // accepts and canonicalizes to the same SQL a bare path gets.
-      const sqlLiteral = `'${normalizedPath.replace(/'/g, "''")}'`;
+      // in as a single-quoted SQL literal, which the check accepts and
+      // canonicalizes to the same SQL a bare path gets.
+      const tableLiteral = `'${sqlLiteral(normalizedPath, "duckdb")}'`;
       // That literal sits in a Malloy double-quoted string, so `\` and `"` are
       // escaped for it. Normalizing above left no backslash, but escaping it
       // keeps this step correct on its own.
-      const malloyString = `"${sqlLiteral.replace(/[\\"]/g, "\\$&")}"`;
+      const malloyString = `"${tableLiteral.replace(/[\\"]/g, "\\$&")}"`;
       const model = runtime.loadModel(
          `source: temp is duckdb.table(${malloyString})`,
       );
