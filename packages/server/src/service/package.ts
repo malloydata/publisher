@@ -3330,9 +3330,10 @@ export class Package {
       // in as a single-quoted SQL literal ('' for a quote), which the check
       // accepts and canonicalizes to the same SQL a bare path gets.
       const sqlLiteral = `'${normalizedPath.replace(/'/g, "''")}'`;
-      // That literal sits in a Malloy double-quoted string. Normalizing left
-      // no backslash, so only `"` needs escaping there.
-      const malloyString = `"${sqlLiteral.replace(/"/g, '\\"')}"`;
+      // That literal sits in a Malloy double-quoted string, so `\` and `"` are
+      // escaped for it. Normalizing above left no backslash, but escaping it
+      // keeps this step correct on its own.
+      const malloyString = `"${sqlLiteral.replace(/[\\"]/g, "\\$&")}"`;
       const model = runtime.loadModel(
          `source: temp is duckdb.table(${malloyString})`,
       );
