@@ -52,6 +52,7 @@ import {
    type ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
+import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import { Environment, PackageStatus } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
@@ -62,47 +63,6 @@ type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
-
-const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
-const AZURE_DATA_EXTENSIONS = [
-   ".parquet",
-   ".csv",
-   ".json",
-   ".jsonl",
-   ".ndjson",
-];
-
-function validateAzureUrl(url: string, fieldName: string): void {
-   if (!AZURE_SUPPORTED_SCHEMES.some((s) => url.startsWith(s))) {
-      throw new BadRequestError(
-         `Azure ${fieldName} must use one of: ${AZURE_SUPPORTED_SCHEMES.join(", ")}`,
-      );
-   }
-   const pathWithoutQuery = url.split("?")[0];
-   const stars = (pathWithoutQuery.match(/\*/g) || []).length;
-
-   if (stars === 0) {
-      const lower = pathWithoutQuery.toLowerCase();
-      if (!AZURE_DATA_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
-         throw new BadRequestError(
-            `Azure ${fieldName}: a single-file URL must end with a data file extension (${AZURE_DATA_EXTENSIONS.join(", ")})`,
-         );
-      }
-   } else if (pathWithoutQuery.endsWith("**")) {
-      // Recursive glob: valid.
-   } else {
-      const lastSegment = pathWithoutQuery.split("/").pop() || "";
-      if (stars !== 1 || !lastSegment.startsWith("*")) {
-         throw new BadRequestError(
-            `Azure ${fieldName}: only three URL patterns are supported:\n` +
-               `  • Single file:    path/file.parquet\n` +
-               `  • Directory glob: path/*.ext  (direct children only)\n` +
-               `  • Recursive:      path/**     (includes all data files in the container and all subdirectories)\n` +
-               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
-         );
-      }
-   }
-}
 
 function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    for (const conn of environment.connections || []) {
@@ -572,7 +532,7 @@ export class EnvironmentStore {
       const label = environmentName ? ` "${environmentName}"` : "";
       logger.error(
          `Error initializing environment${label}; skipping environment`,
-         this.extractErrorDataFromError(error),
+         extractErrorDataFromError(error),
       );
       // Only record an environment that is genuinely absent. A throw from the
       // tail of setup can land here after the environment is live; recording
@@ -776,7 +736,7 @@ export class EnvironmentStore {
          markNotReady();
          // Redacted because initialization errors can carry connection strings.
          this.initError = redactPgSecrets(messageWithFilesystemCause(error));
-         const errorData = this.extractErrorDataFromError(error);
+         const errorData = extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
          try {
             // The failure counterpart of PUBLISHER_READY, so a waiting script
@@ -1875,7 +1835,7 @@ export class EnvironmentStore {
    ): void {
       logger.error(
          `Failed to download or mount location "${location}"`,
-         this.extractErrorDataFromError(error),
+         extractErrorDataFromError(error),
       );
       const message = redactPgSecrets(messageWithFilesystemCause(error));
       for (const packageName of packageNames) {
@@ -2170,7 +2130,7 @@ export class EnvironmentStore {
          logger.info(loader.starting);
          await loader.load();
       } catch (error) {
-         const errorData = this.extractErrorDataFromError(error);
+         const errorData = extractErrorDataFromError(error);
          logger.error(
             `Failed to ${loader.action} "${loader.subject}"`,
             errorData,
@@ -2489,7 +2449,7 @@ export class EnvironmentStore {
                   // so the spew survives there unless stripped too.
                   err.stack = stripGitProgressNoise(err.stack);
                }
-               const errorData = this.extractErrorDataFromError(err);
+               const errorData = extractErrorDataFromError(err);
                logger.error(
                   `Failed to clone GitHub repository "${repoUrl}"`,
                   errorData,
@@ -2545,24 +2505,5 @@ export class EnvironmentStore {
       }
 
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
-   }
-
-   private extractErrorDataFromError(error: unknown): {
-      error: string;
-      stack?: string;
-      task?: unknown;
-   } {
-      const errorMessage =
-         error instanceof Error ? error.message : String(error);
-      const errorData: { error: string; stack?: string; task?: unknown } = {
-         error: errorMessage,
-      };
-      if (error instanceof Error && logger.level === "debug") {
-         errorData.stack = error.stack;
-      }
-      if (error && typeof error === "object" && "task" in error) {
-         errorData.task = (error as { task?: unknown }).task;
-      }
-      return errorData;
    }
 }

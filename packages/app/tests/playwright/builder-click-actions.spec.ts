@@ -76,9 +76,9 @@ test.describe("builder click actions", () => {
          "Choose the filter a Product value sets.",
       );
       await expect(dialog.getByLabel("Preview")).not.toContainText(
-         "Filter this report to",
+         "Filter to ",
       );
-      await expect(dialog).toContainText(/Show rows for /);
+      await expect(dialog).toContainText(/Show rows \(/);
       await dialog.getByRole("button", { name: "Cancel" }).click();
    });
 
@@ -107,7 +107,9 @@ test.describe("builder click actions", () => {
       const value = /Clicking "(.*)" shows:/.exec(first)?.[1] ?? "";
       expect(value).not.toBe("");
       const previewed = await preview.locator("li").allTextContents();
-      expect(previewed[0]).toBe(`Filter this report to ${value}`);
+      // `Filter to <field>: <value>`, the field as its column header reads.
+      expect(previewed[0]).toMatch(/^Filter to .+: /);
+      expect(previewed[0].endsWith(`: ${value}`)).toBe(true);
       await dialog.getByRole("button", { name: "Apply" }).click();
       await saveChanges(page);
 

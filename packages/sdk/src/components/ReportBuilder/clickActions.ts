@@ -28,6 +28,8 @@ export interface ClickDimension {
    name: string;
    /** Its `# label`, else its name made readable: what the dialog calls it. */
    label: string;
+   /** Its `# label`, else its name as written: what its column header, and so the click menu, shows. */
+   header: string;
    /** The model's `# drill` tag on it, which an entry replaces on this tile. */
    modelDrill?: EntryDrill;
    /** Every dimension of the row a click on it filters the rows by, enclosing rows first. */
@@ -189,6 +191,7 @@ export function clickDimensions(
          out.push({
             name: field.name,
             label: tags.label ?? readableName(field.name),
+            header: tags.label ?? field.name,
             ...(kind.endsWith("_type")
                ? { type: kind.slice(0, -"_type".length) }
                : {}),
@@ -232,22 +235,36 @@ export function clickMenuPreview(
       /** Whether the tile offers rows: false for a shape that cannot name them. */
       rows: boolean;
       timezone?: string;
+      /** A row field's column header by its name; the name itself when absent. */
+      headerOf?: (name: string) => string | undefined;
+      /** A destination report's title, as the menu names it; its file name when absent. */
+      titleOf?: (destination: string) => string | undefined;
    },
 ): string[] {
    if (!dimension.clickable) return [];
-   const value = drillValueLabel(dimension.value);
+   const value = `${dimension.header}: ${drillValueLabel(dimension.value)}`;
    const destinations = Array.from(new Set(drill?.to ?? [])).sort(
       (a, b) => Number(b === DRILL_SELF) - Number(a === DRILL_SELF),
    );
    const items = destinations.map((destination) =>
-      drillDestinationLabel(destination, value, options.selfLabel),
+      drillDestinationLabel(
+         destination,
+         value,
+         options.selfLabel,
+         options.titleOf?.(destination),
+      ),
    );
    if (options.rows) {
       const labels = drillClauseLabels(dimension.rowClauses, options.timezone);
       items.push(
          showRowsLabel(
             labels.length > 0
-               ? labels.map((label) => label.label).join(", ")
+               ? labels
+                    .map(
+                       (label) =>
+                          `${options.headerOf?.(label.field) ?? label.field}: ${label.label}`,
+                    )
+                    .join(", ")
                : value,
          ),
       );

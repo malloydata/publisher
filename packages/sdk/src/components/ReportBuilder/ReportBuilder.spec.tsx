@@ -887,7 +887,7 @@ source: a is scoped_orders extend {
          "Every value offers Show rows. Add more choices to the menu that opens.",
       );
       expect(dialog.textContent).toContain('Clicking "Jeans" shows:');
-      expect(dialog.textContent).toContain("Show rows for Jeans");
+      expect(dialog.textContent).toContain("Show rows (Category: Jeans)");
    });
 
    it("asks for a filter before this report can filter by the value", async () => {
@@ -943,8 +943,8 @@ source: a is scoped_orders extend {
       expect(dialog.textContent).toContain(
          "Opens it with Category set to the clicked value.",
       );
-      expect(dialog.textContent).toContain("Filter this report to Jeans");
-      expect(dialog.textContent).toContain("Open Regions for Jeans");
+      expect(dialog.textContent).toContain("Filter to Category: Jeans");
+      expect(dialog.textContent).toContain("Open Regions (Category: Jeans)");
       fireEvent.click(button("Apply"));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(saved).not.toBe(""));
@@ -1001,7 +1001,7 @@ source: a is scoped_orders extend {
       expect(self.disabled).toBe(false);
       expect(self.checked).toBe(true);
       expect(dialog.textContent).not.toContain("to this report first");
-      expect(dialog.textContent).toContain("Filter this report to Jeans");
+      expect(dialog.textContent).toContain("Filter to Category: Jeans");
    });
 
    it("lets the author pick which filter a value sets, among those of its type", async () => {
@@ -1027,7 +1027,7 @@ source: a is scoped_orders extend {
       expect(dialog.textContent).toContain(
          "Choose the filter a Category value sets.",
       );
-      expect(dialog.textContent).not.toContain("Filter this report to Jeans");
+      expect(dialog.textContent).not.toContain("Filter to Category: Jeans");
       const picker = screen.getByLabelText("Filter Category sets");
       fireEvent.mouseDown(
          within(picker.parentElement as HTMLElement).getByRole("combobox", {

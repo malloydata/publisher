@@ -35,7 +35,7 @@ import {
 import { loadMalloyTag } from "./loadMalloy";
 
 /** The click menu's word for filtering this report, as the report's own reader says it. */
-const SELF_LABEL = "Filter this report";
+const SELF_LABEL = "Filter to";
 
 export interface ClickActionsDialogProps {
    open: boolean;
@@ -137,7 +137,15 @@ export function ClickActionsDialog({
               focused,
               entryFor(focused, choices[focused.name], controls, reports) ??
                  focused.modelDrill,
-              { selfLabel: SELF_LABEL, rows: true },
+              {
+                 selfLabel: SELF_LABEL,
+                 rows: true,
+                 headerOf: (name) =>
+                    dimensions.find((d) => d.name === name)?.header,
+                 titleOf: (destination) =>
+                    reports.find((r) => r.path === destination)?.title ||
+                    undefined,
+              },
            )
          : [];
 

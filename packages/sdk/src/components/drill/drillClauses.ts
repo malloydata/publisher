@@ -24,6 +24,8 @@ export type DrillClause = Malloy.DrillOperation;
 export interface DrillClauseLabel {
    field: string;
    label: string;
+   /** The clause's field expression, to find the result field it names. */
+   expression?: Malloy.Expression;
 }
 
 /** The clauses as the dialog title names them, each value as the table showed it. */
@@ -40,7 +42,13 @@ export function drillClauseLabels(
       const label = literalLabel(filter.value, timezone);
       return label === undefined
          ? []
-         : [{ field: filter.expression.name, label }];
+         : [
+              {
+                 field: filter.expression.name,
+                 label,
+                 expression: filter.expression,
+              },
+           ];
    });
 }
 

@@ -42,6 +42,8 @@ import { useReportEvents } from "../Report/telemetry";
 import type { TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
 import { layoutRules } from "../Report/layoutRules";
+import { resolveDrillTarget } from "../Package/documentLocation";
+import { useReportListing } from "../Package/useDocumentLocation";
 import {
    ReportHeader,
    ReportPage,
@@ -251,12 +253,32 @@ export function DashboardView({
       [applied, declaredTypes, tileHostGivens],
    );
 
+   // A `to=` entry names its report by title. The listing is the one drill
+   // navigation resolves against, so it is usually cached already; read only
+   // when a click can navigate.
+   const { reports } = useReportListing(
+      environmentName,
+      packageName,
+      versionId,
+      onNavigate !== undefined,
+   );
+   const destinationTitle = useCallback(
+      (destination: string) => {
+         const target = resolveDrillTarget(destination, reports);
+         if (target.kind !== "path") return undefined;
+         const path = target.report.path;
+         return (
+            reports.find((report) => report.path === path)?.title || undefined
+         );
+      },
+      [reports],
+   );
    const { bindingFor, drillMenu } = useDrill({
       onNavigate,
       onSelf,
       canSelf,
-      selfLabel: "Filter this report",
       onRows,
+      destinationTitle,
    });
    // Each tile's clicks carry the tile they came from. A restricted tile
    // never ran, so it offers no rows; otherwise the tile's shape may rule a

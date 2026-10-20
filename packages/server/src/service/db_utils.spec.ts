@@ -31,6 +31,7 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
    sqlInFilter,
+   validateAzureUrl,
 } from "./db_utils";
 import { components } from "../api";
 
@@ -1751,4 +1752,30 @@ describe("listTablesForSchema: Azure file URLs", () => {
          "acct.blob.core.windows.net/data/sub/x.parquet",
       );
    });
+});
+
+describe("validateAzureUrl", () => {
+   const ok = [
+      "https://acct.blob.core.windows.net/data/x.parquet",
+      "abfss://data@acct.dfs.core.windows.net/sub/x.CSV?sas=1",
+      "az://data/sub/*.parquet",
+      "https://acct.blob.core.windows.net/data/**",
+   ];
+   for (const url of ok) {
+      it(`accepts ${url}`, () => {
+         expect(() => validateAzureUrl(url, "url")).not.toThrow();
+      });
+   }
+
+   const bad = [
+      "ftp://acct/data/x.parquet",
+      "https://acct.blob.core.windows.net/data/x.txt",
+      "https://acct.blob.core.windows.net/data/sub/*/*.parquet",
+      "https://acct.blob.core.windows.net/data/a*b/x.parquet",
+   ];
+   for (const url of bad) {
+      it(`rejects ${url}`, () => {
+         expect(() => validateAzureUrl(url, "url")).toThrow(BadRequestError);
+      });
+   }
 });

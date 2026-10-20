@@ -298,6 +298,7 @@ export function BuilderGrid({
                            {isTextTile(each) ? (
                               <TextTileBody
                                  tile={each}
+                                 sized={each.rowspan !== undefined || placed}
                                  onChange={(markdown) =>
                                     editTile(tileKey(each), (tile) => {
                                        if (isTextTile(tile))

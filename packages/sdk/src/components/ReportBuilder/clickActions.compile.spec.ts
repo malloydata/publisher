@@ -65,7 +65,7 @@ const model = new SingleConnectionRuntime({ connection } as never).loadModel(
 );
 afterAll(() => connection.close());
 
-const SELF_LABEL = "Filter this report";
+const SELF_LABEL = "Filter to";
 
 /**
  * The menu the first click on each field opens, by field name, as the dashboard
@@ -149,7 +149,11 @@ async function expectPreviewMatches(
       const preview = clickMenuPreview(
          dimension,
          entries?.[dimension.name] ?? dimension.modelDrill,
-         { selfLabel: SELF_LABEL, rows: true },
+         {
+            selfLabel: SELF_LABEL,
+            rows: true,
+            headerOf: (name) => dimensions.find((d) => d.name === name)?.header,
+         },
       );
       expect({
          field: dimension.name,

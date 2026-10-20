@@ -636,14 +636,18 @@ test.describe("package-dashboards", () => {
       // doing it, each item naming the value, and the rows behind the value
       // are offered beside it. No header row: every entry is an action.
       await expect(
-         page.getByRole("menuitem", { name: "Open Overview for Nike" }),
+         page.getByRole("menuitem", {
+            name: "Open Business Overview (brand_name: Nike)",
+         }),
       ).toBeVisible({ timeout: 30_000 });
       await expect(
-         page.getByRole("menuitem", { name: /^Show rows for Nike/ }),
+         page.getByRole("menuitem", { name: /^Show rows \(brand_name: Nike/ }),
       ).toBeVisible();
       await expect(page.getByText("Nike →")).toHaveCount(0);
       await page
-         .getByRole("menuitem", { name: "Open Overview for Nike" })
+         .getByRole("menuitem", {
+            name: "Open Business Overview (brand_name: Nike)",
+         })
          .click();
 
       // The slug becomes the route and the clicked value becomes the given.
@@ -660,7 +664,9 @@ test.describe("package-dashboards", () => {
    }) => {
       await openDashboard(page, "combined");
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
-      await page.getByRole("menuitem", { name: /^Show rows for Nike/ }).click();
+      await page
+         .getByRole("menuitem", { name: /^Show rows \(brand_name: Nike/ })
+         .click();
       const dialog = page.getByRole("dialog");
       await expect(dialog.getByText(/Rows where/)).toBeVisible({
          timeout: 30_000,
@@ -710,16 +716,18 @@ test.describe("package-dashboards", () => {
       // `# drill { to=["dashboards/regions", "self"] given=REGION }`: more than one
       // destination is a choice, not a guess.
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
-      // The destination reads as a sentence rather than as a filename, which is
-      // how Malloyyo labels the same menu.
-      await expect(page.getByRole("menuitem", { name: "Regions" })).toBeVisible(
-         {
-            timeout: 30_000,
-         },
-      );
+      // The destination reads by its title (here the doc comment it falls back
+      // to), not its file name.
+      await expect(
+         page.getByRole("menuitem", { name: /^Open Orders by region \(/ }),
+      ).toBeVisible({
+         timeout: 30_000,
+      });
 
       // `self` never leaves the page; it sets the control instead.
-      await page.getByRole("menuitem", { name: "Filter this report" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Filter to region_name: / })
+         .click();
       await expect(page).toHaveURL(/[?&]REGION=EU/);
       await expectFilterValue(page, "Region", "EU");
    });
@@ -735,7 +743,9 @@ test.describe("package-dashboards", () => {
       );
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
-      await page.getByRole("menuitem", { name: "Regions" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Open Orders by region \(/ })
+         .click();
 
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/regions\\?REGION=EU$`),
@@ -770,7 +780,9 @@ test.describe("package-dashboards", () => {
       await closeFilter(page);
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
-      await page.getByRole("menuitem", { name: "Regions" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Open Orders by region \(/ })
+         .click();
 
       const seeded = new RegExp(
          `/${env}/${PKG}/dashboards/regions\\?REGION=EU$`,
@@ -801,7 +813,9 @@ test.describe("package-dashboards", () => {
          .getByText("Nike", { exact: true })
          .first()
          .click({ timeout: 60_000 });
-      await page.getByRole("menuitem", { name: "Open Overview" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Open Business Overview \(/ })
+         .click();
 
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${LINEAR_PKG}/dashboards/overview\\?BRAND=Nike$`),
@@ -896,7 +910,9 @@ test.describe("package-dashboards", () => {
          .getByText("EU", { exact: true })
          .first()
          .click({ timeout: 60_000 });
-      await page.getByRole("menuitem", { name: "Filter this report" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Filter to region_name: / })
+         .click();
 
       // Filtering in place is a URL change, not a navigation: still the
       // report, now with the given set.
@@ -993,11 +1009,9 @@ test.describe("package-dashboards", () => {
       // Enter opens the same menu a click does: the two destinations, then the
       // rows behind the value.
       await expect(page.getByRole("menuitem")).toHaveCount(3);
-      await expect(page.getByRole("menuitem").nth(0)).toHaveText(
-         /^Filter this report to /,
-      );
+      await expect(page.getByRole("menuitem").nth(0)).toHaveText(/^Filter to /);
       await expect(page.getByRole("menuitem").nth(2)).toHaveText(
-         /^Show rows for /,
+         /^Show rows \(/,
       );
    });
 
@@ -1038,7 +1052,7 @@ test.describe("package-dashboards", () => {
       await page.keyboard.press("End");
       await expect(drillCells.nth(total - 1)).toBeFocused();
       await page.keyboard.press("Enter");
-      // Filter this report, Open Regions, Show rows.
+      // Filter to, Open Orders by region, Show rows.
       await expect(page.getByRole("menuitem")).toHaveCount(3);
    });
 
