@@ -30,6 +30,7 @@ import type { EnvironmentStore } from "../service/environment_store";
 import {
    ConnectionController,
    lookupFailureDriverMessage,
+   rawSqlForDriver,
 } from "./connection.controller";
 
 /**
@@ -698,6 +699,110 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
       const signal = seenOptions.value?.abortSignal;
       expect(signal).toBeInstanceOf(AbortSignal);
       expect(signal?.aborted).toBe(false);
+   });
+});
+
+describe("rawSqlForDriver", () => {
+   it("wraps a Postgres statement so the driver's row.row finds its column", () => {
+      expect(rawSqlForDriver("postgres", "SELECT a FROM t")).toBe(
+         'SELECT row_to_json(__q) AS "row" FROM (\nSELECT a FROM t\n) AS __q',
+      );
+   });
+
+   it("drops trailing semicolons and whitespace, which a subquery refuses", () => {
+      expect(rawSqlForDriver("postgres", "SELECT 1 ;\n ;; \n")).toBe(
+         'SELECT row_to_json(__q) AS "row" FROM (\nSELECT 1\n) AS __q',
+      );
+   });
+
+   it("keeps a trailing line comment from swallowing the closing parenthesis", () => {
+      const wrapped = rawSqlForDriver("postgres", "SELECT 1 -- the count");
+      expect(wrapped.endsWith("-- the count\n) AS __q")).toBe(true);
+   });
+
+   it("leaves every other dialect's statement unchanged", () => {
+      for (const dialect of ["duckdb", "snowflake", "standardsql", undefined]) {
+         expect(rawSqlForDriver(dialect, "SELECT 1;")).toBe("SELECT 1;");
+      }
+   });
+});
+
+describe("ConnectionController.getConnectionQueryData on Postgres", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   /**
+    * A connection that reads rows the way the Malloy Postgres driver does:
+    * each result row's `row` column, which only a statement that projects one
+    * has. Raw SQL without the wrapper yields `undefined` for every row.
+    */
+   function postgresLikeController(
+      rows: QueryRecord[],
+      streaming: boolean,
+   ): { controller: ConnectionController; seenSql: string[] } {
+      const seenSql: string[] = [];
+      const projectsRow = (sql: string) =>
+         sql.startsWith('SELECT row_to_json(__q) AS "row" FROM (');
+      const fakeConnection = {
+         dialectName: "postgres",
+         canStream(): boolean {
+            return streaming;
+         },
+         async *runSQLStream(sql: string): AsyncIterableIterator<QueryRecord> {
+            seenSql.push(sql);
+            for (const row of rows) {
+               yield (projectsRow(sql) ? row : undefined) as QueryRecord;
+            }
+         },
+         async runSQL(sql: string) {
+            seenSql.push(sql);
+            const out = rows.map((row) => (projectsRow(sql) ? row : undefined));
+            return { rows: out, totalRows: out.length };
+         },
+      };
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+         }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection as unknown as Connection);
+      return { controller, seenSql };
+   }
+
+   it("returns the rows of raw SQL on the streaming path Postgres takes", async () => {
+      const rows = [{ n: 12 }];
+      const { controller, seenSql } = postgresLikeController(rows, true);
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "materialization_pg",
+         "SELECT count(*) AS n FROM public.orders;",
+         "",
+      );
+      expect(JSON.parse(result.data ?? "").rows).toEqual(rows);
+      expect(seenSql[0]).toBe(
+         'SELECT row_to_json(__q) AS "row" FROM (\nSELECT count(*) AS n FROM public.orders\n) AS __q',
+      );
+   });
+
+   it("returns the rows of raw SQL on the buffered path too", async () => {
+      const rows = [{ id: 1 }, { id: 2 }];
+      const { controller } = postgresLikeController(rows, false);
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "materialization_pg",
+         "SELECT id FROM public.orders",
+         "",
+      );
+      expect(JSON.parse(result.data ?? "").rows).toEqual(rows);
    });
 });
 

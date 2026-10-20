@@ -257,6 +257,29 @@ function sqlRunFailure(error: unknown): Error {
 }
 
 /**
+ * A raw statement, shaped so the connection's driver can read its rows.
+ *
+ * The Malloy Postgres driver hands back `rows[i].row` from both `runSQL` and
+ * `runSQLStream`, because a Malloy Postgres query projects one `row` JSON
+ * column. Raw SQL has no such column, so every row came back `undefined`: a
+ * `null` per row on the buffered path, and a 502 on the streaming path Postgres
+ * takes, where the byte cap measures each row. Wrapping the statement in
+ * `row_to_json` supplies the column, as `probeSelect` and the introspection
+ * queries already do. Trailing semicolons are dropped, and the statement sits
+ * on its own lines so a trailing `--` comment cannot swallow the `)`. Other
+ * dialects return rows as plain objects and get the statement unchanged.
+ */
+export function rawSqlForDriver(
+   dialectName: string | undefined,
+   sqlStatement: string,
+): string {
+   if (dialectName !== "postgres") return sqlStatement;
+   let end = sqlStatement.length;
+   while (end > 0 && /[\s;]/.test(sqlStatement[end - 1])) end -= 1;
+   return `SELECT row_to_json(__q) AS "row" FROM (\n${sqlStatement.slice(0, end)}\n) AS __q`;
+}
+
+/**
  * Schema listing lets most driver failures through as they are (a 500), but
  * an unreachable database or rejected credentials answer the same as on every
  * other route that reaches the database.
@@ -873,6 +896,11 @@ export class ConnectionController {
          );
       }
 
+      const driverSql = rawSqlForDriver(
+         malloyConnection.dialectName,
+         sqlStatement,
+      );
+
       // Streaming connections go through streamSqlWithBudget so the byte cap
       // fires mid-stream; byte counting on the buffered path would be theatre.
       //
@@ -887,7 +915,7 @@ export class ConnectionController {
             try {
                return await streamSqlWithBudget(
                   malloyConnection,
-                  sqlStatement,
+                  driverSql,
                   optionsWithSignal,
                   { maxRows, maxBytes },
                );
@@ -913,10 +941,7 @@ export class ConnectionController {
             abortSignal: signal,
          };
          try {
-            return await malloyConnection.runSQL(
-               sqlStatement,
-               optionsWithSignal,
-            );
+            return await malloyConnection.runSQL(driverSql, optionsWithSignal);
          } catch (error) {
             throw sqlRunFailure(error);
          }
