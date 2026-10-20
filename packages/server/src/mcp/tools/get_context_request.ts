@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod/v3";
-import { entityRowKey } from "./embedding_index";
 import { getDimensionValueSettings } from "../../retrieval_config";
 import type {
-   Entity,
    ResolvedRequest,
    ResolvedSearch,
    ResolvedValueSearch,
@@ -263,26 +261,4 @@ export function matchesScope(
       return false;
    }
    return true;
-}
-
-/**
- * The distinct vector-cache row keys (kind, source, name) the request's scope
- * admits. A row is in scope when any entity sharing it is; the fan-out later
- * keeps only the in-scope model path.
- */
-export function scopeKeysFor(
-   entities: Iterable<Entity>,
-   request: ResolvedRequest,
-): Array<{ kind: string; source: string; name: string }> {
-   const seen = new Set<string>();
-   const keys: Array<{ kind: string; source: string; name: string }> = [];
-   for (const e of entities) {
-      if (!matchesScope(e, request)) continue;
-      const source = e.source ?? "";
-      const key = entityRowKey(e.kind, source, e.name);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      keys.push({ kind: e.kind, source, name: e.name });
-   }
-   return keys;
 }

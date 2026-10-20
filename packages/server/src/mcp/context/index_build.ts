@@ -8,8 +8,8 @@
  *   catalog -> doc parts -> derived text -> value index -> questions ->
  *   vectors -> value vectors -> keyword index
  *
- * The build runs in the same process-wide queue as the shipped embedding
- * sync (one provider, one rate limit) and its result is held per Package
+ * The build runs in a process-wide queue shared by every package (one
+ * provider, one rate limit) and its result is held per Package
  * instance, so a reload builds a new one and the old one is dropped with its
  * Package. Every step that calls a model is cached by content, so a reload
  * that changed nothing costs no model call and no embedding.

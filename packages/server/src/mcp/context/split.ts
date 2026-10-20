@@ -55,6 +55,9 @@ export const MAX_ITEM_WORDS = 8;
 const SENTENCE_START =
    /^(what|which|who|whom|whose|how|when|where|why|is|are|was|were|do|does|did|can|could|should|would|will|has|have|had|between|for|in|across|during|since|from|excluding|including|among|of|on|at|by|after|before|if|given|assuming|compared)\b/i;
 
+/** Marks a protected span while a phrase is split; no phrase contains it. */
+const NUL = String.fromCharCode(0);
+
 const EXAMPLE_TAIL =
    /\b(such as|e\.g\.|eg\.|for example|for instance|including|like)\b/i;
 
@@ -125,13 +128,16 @@ export function splitBundle(
    const kept: string[] = [];
    const protect = (s: string) => {
       kept.push(s);
-      return `\u0000${kept.length - 1}\u0000`;
+      return `${NUL}${kept.length - 1}${NUL}`;
    };
    body = body.replace(/\([^()]*\)/g, protect);
    const tail = EXAMPLE_TAIL.exec(body);
    if (tail) body = body.slice(0, tail.index) + protect(body.slice(tail.index));
    const restore = (s: string) =>
-      s.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+      s.replace(
+         new RegExp(`${NUL}(\\d+)${NUL}`, "g"),
+         (_, i) => kept[Number(i)],
+      );
    if (!/[,;]/.test(body)) return [];
 
    // A prefix before a colon is the subject of every item.

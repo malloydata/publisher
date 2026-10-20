@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Pins the COMPLETE get_context response for each retrieval path, so a
- * refactor of how a request is retrieved and ranked cannot change a byte of
+ * Pins the COMPLETE get_context response for a listing and for a ranked
+ * answer, so a refactor of how a request is answered cannot change a byte of
  * what a caller receives without this file failing.
  *
  * The other get_context specs assert on the field a test is about. This one
@@ -18,11 +18,12 @@
  * then read the diff of the golden file in review. A missing golden fails the
  * run; it is never created silently.
  *
- * Determinism: lunr and the stub embedding provider are deterministic, entity
- * ids come from names, and nothing time-based reaches the payload, so no field
- * needs normalising. The one thing that is timed is the background vector
- * sync, which these tests wait for by polling (see untilSemantic) rather than
- * by sleeping.
+ * Determinism: the stub embedding provider is deterministic, entity ids come
+ * from names, and nothing time-based reaches the payload, so no field needs
+ * normalising. The one thing that is timed is the background index build,
+ * which these tests wait for by polling (see untilSemantic) rather than by
+ * sleeping. No chat model is configured, so a ranked answer is the engine's
+ * own, unjudged.
  */
 
 import {
@@ -35,27 +36,23 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { registerGetContextTool } from "./get_context_tool";
-import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
-import { pollFor } from "../../test_helpers/poll";
-import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { setRetrievalConfig } from "../../retrieval_config";
-import { AccessDeniedError } from "../../errors";
 import {
-   _resetValueCacheForTests,
-   _setValueFetcherForTests,
-} from "./get_context_values";
-import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
-import type { EnvironmentStore } from "../../service/environment_store";
-import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
-import {
-   EmbeddingProvider,
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
+import type { EnvironmentStore } from "../../service/environment_store";
+import { _setFcjValueFetcherForTests } from "../context/engine_state";
+import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
+import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
+import {
+   callPayload,
+   semanticHarness,
+   untilSemantic,
+   type SemanticHarness,
+} from "../../test_helpers/get_context_llm_harness";
 
 const GOLDEN_PATH = path.join(
    __dirname,
@@ -205,26 +202,6 @@ const CUSTOMERS_MODEL = {
    getQueries: () => [],
 };
 
-/** One source with 12 metric_* dimensions: more than the per-source cap. */
-const WIDE_MODEL = {
-   getSourceInfos: () => [
-      {
-         name: "telemetry",
-         annotations: ["#(doc) Device readings."],
-         schema: {
-            fields: Array.from({ length: 12 }, (_, i) =>
-               field(
-                  "dimension",
-                  `metric_${String(i).padStart(2, "0")}`,
-                  "A metric reading.",
-               ),
-            ),
-         },
-      },
-   ],
-   getQueries: () => [],
-};
-
 const packageOf = (models: Record<string, unknown>) => ({
    listSkills: () => [],
    listModels: async () => Object.keys(models).map((p) => ({ path: p })),
@@ -237,25 +214,10 @@ const shop = () =>
       "orders.malloy": ORDERS_MODEL,
       "customers.malloy": CUSTOMERS_MODEL,
    });
-const wide = () => packageOf({ "wide.malloy": WIDE_MODEL });
 const empty = () =>
    packageOf({
       "empty.malloy": { getSourceInfos: () => [], getQueries: () => [] },
    });
-/** More entities than the semantic index will embed. */
-const huge = () =>
-   packageOf({
-      "huge.malloy": {
-         getSourceInfos: () =>
-            Array.from({ length: 5_001 }, (_, i) => ({
-               name: `s${i}`,
-               annotations: [],
-               schema: { fields: [] },
-            })),
-         getQueries: () => [],
-      },
-   });
-
 /** A stale-compile map for the package of that name. */
 const staleFor = (packageName: string) =>
    new Map([
@@ -281,12 +243,11 @@ const target = (target_type: string, search_text?: string) => ({
 // No embedding key configured (the lexical-only server)
 // ---------------------------------------------------------------------------
 
-describe("get_context payload pin: no embedding key configured", () => {
+describe("get_context payload pin: listings", () => {
    // Value search off: these pins are what a server with it turned off answers
    // to a dimensional_value target. The on-mode pins are further down.
    beforeEach(() => {
       _setEmbeddingProviderForTests(null);
-      _resetEmbeddingIndexStateForTests();
       setRetrievalConfig({ dimensionValues: { enabled: false } });
    });
    afterEach(() => setRetrievalConfig(undefined));
@@ -302,7 +263,7 @@ describe("get_context payload pin: no embedding key configured", () => {
                envWith(options.pkg ?? shop(), options.stale),
          });
          const payload = await call(handler, { ...scope(), ...params });
-         // The lexical-only server never advertises a retrieval mode.
+         // A listing never ranks, so it never reports a retrieval mode.
          expect("retrieval" in payload).toBe(false);
          expect("retrieval_reason" in payload).toBe(false);
          pin(`unconfigured/${name}`, payload);
@@ -353,89 +314,14 @@ describe("get_context payload pin: no embedding key configured", () => {
    run("listing: unsupported target type", {
       search_targets: [target("source"), target("dimensional_value", "CA")],
    });
-   run("lexical: single target", {
-      search_targets: [target("dimension", "state")],
-   });
-   run("lexical: multiple targets of different kinds", {
-      search_targets: [
-         target("measure", "revenue"),
-         target("dimension", "state"),
-         target("source", "customer"),
-      ],
-   });
-   run("lexical: scoped to a source", {
-      search_targets: [target("dimension", "state")],
-      ...scope({ source: "customers" }),
-   });
-   run("lexical: scoped to a model path", {
-      search_targets: [target("dimension", "state")],
-      ...scope({ model_path: "customers.malloy" }),
-   });
-   run("lexical: scoped to an entity name", {
-      search_targets: [target("dimension", "state")],
-      ...scope({ entity_name: "state" }),
-   });
-   run("lexical: no match", {
-      search_targets: [target("dimension", "zzzunmatched")],
-   });
-   run("lexical: source cut warning", {
-      search_targets: [target("dimension", "state")],
-      limit: 1,
-   });
-   run(
-      "lexical: per-source entity cut warning",
-      { search_targets: [target("dimension", "metric")] },
-      { pkg: wide() },
-   );
-   run(
-      "lexical: stale package",
-      {
-         search_targets: [target("dimension", "state")],
-      },
-      { stale: STALE },
-   );
-   run("lexical: unsupported target warning", {
-      search_targets: [
-         target("dimension", "state"),
-         target("dimensional_value", "California"),
-      ],
-   });
-   run(
-      "lexical: stale, unsupported and source cut together",
-      {
-         search_targets: [
-            target("dimension", "state"),
-            target("dimensional_value", "California"),
-         ],
-         limit: 1,
-      },
-      { stale: STALE },
-   );
 });
 
 // ---------------------------------------------------------------------------
-// Embedding key configured (semantic, indexing, and every way it errors)
+// A configured server: a listing still carries no retrieval marker
 // ---------------------------------------------------------------------------
 
-describe("get_context payload pin: embedding configured", () => {
-   let tempDir: string;
-   let db: DuckDBConnection;
-
-   beforeAll(async () => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "get-context-pin-"));
-      db = new DuckDBConnection(path.join(tempDir, "pin.db"));
-      await db.initialize();
-      await createEntityEmbeddingsTable(db);
-   });
-
-   afterAll(async () => {
-      await db.close();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-   });
-
+describe("get_context payload pin: a listing on a server with embeddings", () => {
    beforeEach(() => {
-      _setEmbeddingProviderForTests(null);
-      _resetEmbeddingIndexStateForTests();
       setRetrievalConfig({ dimensionValues: { enabled: false } });
    });
    afterEach(() => {
@@ -443,366 +329,83 @@ describe("get_context payload pin: embedding configured", () => {
       setRetrievalConfig(undefined);
    });
 
-   const BUCKETS = 64;
-   /**
-    * A deterministic bag-of-words embedding: each word adds weight to one of
-    * 64 hash buckets and the vector is normalised. Texts that share words are
-    * close, texts that share none are (almost) orthogonal, so scores are
-    * stable without a hand-written text -> vector table.
-    */
-   function embed(text: string): number[] {
-      const v = new Array<number>(BUCKETS).fill(0);
-      for (const word of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
-         let h = 2166136261;
-         for (const ch of word) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
-         v[(h >>> 0) % BUCKETS] += 1;
-      }
-      const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
-      return v.map((x) => x / norm);
-   }
-
-   function stubProvider(
-      fail = false,
-      // Every request waits for this before it answers, so a test can read
-      // the response to a question while the index is provably still empty.
-      hold?: Promise<void>,
-   ): EmbeddingProvider {
-      const fetchStub = (async (
-         _url: RequestInfo | URL,
-         init?: RequestInit,
-      ) => {
-         if (hold) await hold;
-         if (fail) return new Response("down", { status: 500 });
-         const body = JSON.parse(String(init?.body)) as { input: string[] };
-         const data = body.input.map((text, index) => ({
-            index,
-            embedding: embed(text),
-         }));
-         return new Response(JSON.stringify({ data }), { status: 200 });
-      }) as typeof fetch;
-      return new EmbeddingProvider(
-         {
-            apiKey: "test",
-            model: "stub-model",
-            baseUrl: "https://stub.example.com/v1",
-            minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
-         },
-         fetchStub,
-      );
-   }
-
-   const storeFor = (
-      pkg: unknown,
-      stale?: typeof STALE,
-   ): Partial<EnvironmentStore> => ({
-      getEnvironment: async () => envWith(pkg, stale),
-      storageManager: { getDuckDbConnection: () => db } as never,
-   });
-
-   /** Poll until the background vector sync lands; fail loudly if it never does. */
-   async function untilSemantic(
-      handler: Handler,
-      params: Record<string, unknown>,
-   ) {
-      return pollFor(
-         () => call(handler, params),
-         (payload) => payload.retrieval === "semantic",
-         5_000,
-      );
-   }
-
-   /** Run semantic scenarios against a fresh index per scenario name. */
-   const semantic = (
-      name: string,
-      params: Record<string, unknown>,
-      options: { pkg?: () => unknown; stale?: boolean } = {},
-   ) =>
-      it(`semantic ready: ${name}`, async () => {
-         _setEmbeddingProviderForTests(stubProvider());
-         const handler = captureHandler(
-            storeFor(
-               (options.pkg ?? shop)(),
-               options.stale ? staleFor(`sem-${name}`) : undefined,
-            ),
-         );
-         const full = {
-            ...params,
-            scopes: [
-               {
-                  environment: "pin",
-                  package: `sem-${name}`,
-                  ...(
-                     params.scopes as Record<string, unknown>[] | undefined
-                  )?.[0],
-               },
-            ],
-         };
-         const payload = await untilSemantic(handler, full);
-         pin(`semantic/${name}`, payload);
-      });
-
-   // Semantic queries here name the doc text, not just "state". Two sources
-   // declare a `state` dimension whose names embed identically, and the scan
-   // orders an exact score tie in a way DuckDB does not promise, which made
-   // the golden flaky. Each query below has one unique best match.
-   semantic("single target", {
-      search_targets: [target("dimension", "state the customer lives in")],
-   });
-   semantic("multiple targets of different kinds", {
-      search_targets: [
-         target("measure", "sum of order revenue"),
-         target("dimension", "state the order ships to"),
-         target("source", "one row per customer"),
-      ],
-   });
-   semantic("scoped to a source", {
-      search_targets: [target("dimension", "state the order ships to")],
-      scopes: [{ source: "customers" }],
-   });
-   semantic("scoped to a model path", {
-      search_targets: [target("dimension", "state the order ships to")],
-      scopes: [{ model_path: "orders.malloy" }],
-   });
-   semantic("scoped to an entity name", {
-      search_targets: [target("dimension", "state the order ships to")],
-      scopes: [{ entity_name: "state" }],
-   });
-   semantic("query with little overlap", {
-      search_targets: [target("dimension", "zzqx wwvk")],
-   });
-   semantic("source cut warning", {
-      search_targets: [target("dimension", "state the order ships to")],
-      limit: 1,
-   });
-   semantic(
-      "per-source entity cut warning",
-      { search_targets: [target("dimension", "a metric reading")] },
-      { pkg: wide },
-   );
-   semantic(
-      "stale package",
-      { search_targets: [target("dimension", "state the order ships to")] },
-      { stale: true },
-   );
-   semantic("unsupported target warning", {
-      search_targets: [
-         target("dimension", "state the order ships to"),
-         target("dimensional_value", "California"),
-      ],
-   });
-   semantic(
-      "empty package",
-      { search_targets: [target("dimension", "state the order ships to")] },
-      { pkg: empty },
-   );
-
-   // -- Cases a configured server cannot rank, one reason at a time ------
-
-   /**
-    * Ask while the embedding provider is held, so the answer is read with the
-    * index provably empty, then let the sync finish so it cannot hold the
-    * process-wide sync queue against the scenarios after this one.
-    */
-   async function askWhileIndexing(
-      handler: Handler,
-      params: Record<string, unknown>,
-   ) {
-      let release!: () => void;
-      const hold = new Promise<void>((resolve) => {
-         release = resolve;
-      });
-      _setEmbeddingProviderForTests(stubProvider(false, hold));
-      try {
-         return await call(handler, params);
-      } finally {
-         release();
-         await embeddingSyncQueue.idle();
-      }
-   }
-
-   it("fallback: indexing (first call, sync not done)", async () => {
-      const handler = captureHandler(storeFor(shop()));
-      const payload = await askWhileIndexing(handler, {
-         search_targets: [target("dimension", "state the order ships to")],
-         scopes: [{ environment: "pin", package: "fb-indexing" }],
-      });
-      expect(payload.retrieval).toBe("indexing");
-      expect(payload.retrieval_progress.embedded).toBe(0);
-      pin("fallback/indexing", payload);
-   });
-
-   it("fallback: indexing with a stale note", async () => {
-      const handler = captureHandler(storeFor(shop(), staleFor("fb-stale")));
-      const payload = await askWhileIndexing(handler, {
-         search_targets: [target("dimension", "state the order ships to")],
-         scopes: [{ environment: "pin", package: "fb-stale" }],
-      });
-      expect(payload.retrieval).toBe("indexing");
-      pin("fallback/indexing with stale note", payload);
-   });
-
-   it("fallback: provider-error, then cooldown", async () => {
-      const handler = captureHandler(storeFor(shop()));
-      const params = {
-         search_targets: [target("dimension", "state the order ships to")],
-         scopes: [{ environment: "pin", package: "fb-provider" }],
-      };
-      _setEmbeddingProviderForTests(stubProvider());
-      await untilSemantic(handler, params);
-
-      _setEmbeddingProviderForTests(stubProvider(true));
-      // Both errors name the time the next try is allowed, which moves with
-      // the clock. Check it is a time still ahead, then pin the rest.
-      const withoutRetryTime = (payload: unknown) => {
-         const text = JSON.stringify(payload);
-         const retryAt = text.match(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/)?.[0];
-         expect(retryAt).toBeDefined();
-         expect(Date.parse(retryAt as string)).toBeGreaterThan(Date.now());
-         return JSON.parse(text.replace(retryAt as string, "<retry-at>"));
-      };
-
-      const failed = await call(handler, params);
-      expect(failed.retrieval_reason).toBe("provider-error");
-      pin("fallback/provider-error", withoutRetryTime(failed));
-
-      const cooled = await call(handler, params);
-      expect(cooled.retrieval_reason).toBe("cooldown");
-      pin("fallback/cooldown", withoutRetryTime(cooled));
-   });
-
-   it("fallback: too-many-entities", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(storeFor(huge()));
-      const payload = await call(handler, {
-         search_targets: [target("source", "s42")],
-         limit: 3,
-         scopes: [{ environment: "pin", package: "fb-huge" }],
-      });
-      expect(payload.retrieval_reason).toBe("too-many-entities");
-      pin("fallback/too-many-entities", payload);
-   });
-
-   it("fallback: unavailable (malformed embedding configuration)", async () => {
-      const saved = {
-         key: process.env.EMBEDDING_API_KEY,
-         base: process.env.EMBEDDING_API_BASE,
-      };
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_API_BASE = "not a url";
-      _clearEmbeddingProviderForTests();
-      try {
-         const handler = captureHandler(storeFor(shop()));
-         const payload = await call(handler, {
-            search_targets: [target("dimension", "state the order ships to")],
-            scopes: [{ environment: "pin", package: "fb-badcfg" }],
-         });
-         expect(payload.retrieval_reason).toBe("unavailable");
-         pin("fallback/unavailable malformed config", payload);
-      } finally {
-         if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
-         else process.env.EMBEDDING_API_KEY = saved.key;
-         if (saved.base === undefined) delete process.env.EMBEDDING_API_BASE;
-         else process.env.EMBEDDING_API_BASE = saved.base;
-         _clearEmbeddingProviderForTests();
-         _setEmbeddingProviderForTests(null);
-      }
-   });
-
-   it("fallback: unavailable (no storage handle)", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
-      const store = storeFor(shop());
-      delete (store as { storageManager?: unknown }).storageManager;
-      const payload = await call(captureHandler(store), {
-         search_targets: [target("dimension", "state the order ships to")],
-         scopes: [{ environment: "pin", package: "fb-nostorage" }],
-      });
-      expect(payload.retrieval_reason).toBe("unavailable");
-      pin("fallback/unavailable no storage", payload);
-   });
-
    it("configured listing carries no retrieval marker", async () => {
-      // Listing never ranks, so it never reports a retrieval mode.
-      _setEmbeddingProviderForTests(stubProvider());
-      const payload = await call(captureHandler(storeFor(shop())), {
-         search_targets: [target("source")],
-         scopes: [{ environment: "pin", package: "configured-listing" }],
-      });
-      expect("retrieval" in payload).toBe(false);
-      pin("configured/listing", payload);
+      const harness = await semanticHarness();
+      try {
+         harness.reset();
+         const { payload } = await callPayload(harness.handlerFor(shop()), {
+            search_targets: [target("source")],
+            scopes: [{ environment: "pin", package: "configured-listing" }],
+         });
+         expect("retrieval" in payload).toBe(false);
+         pin("configured/listing", payload);
+      } finally {
+         await harness.close();
+      }
    });
 });
 
 // ---------------------------------------------------------------------------
-// Value search on (a stand-in warehouse; the checks against a real model, where
-// the gates are enforced, are in get_context_values.spec.ts)
+// A ranked answer from the engine
 // ---------------------------------------------------------------------------
 
-describe("get_context payload pin: value search", () => {
-   const typed = (kind: string, name: string) => ({
-      kind,
-      name,
-      type: { kind: "string_type" },
-      annotations: [],
+describe("get_context payload pin: ranked answers", () => {
+   let harness: SemanticHarness;
+   beforeAll(async () => {
+      harness = await semanticHarness();
+      _setFcjValueFetcherForTests(fcjValueFetcher);
    });
-   const segments = () =>
-      packageOf({
-         "segments.malloy": {
-            getSourceInfos: () => [
-               {
-                  name: "segments",
-                  annotations: ["#(doc) Audience segments."],
-                  schema: { fields: [typed("dimension", "segment_name")] },
-               },
-               {
-                  name: "locked",
-                  annotations: ["#(doc) A gated source."],
-                  schema: { fields: [typed("dimension", "locked_name")] },
-               },
-            ],
-            getQueries: () => [],
-         },
-      });
-   const stored: Record<string, string[]> = {
-      "segments.segment_name": ["Auto Intenders (In-Market)", "Home Shoppers"],
+   afterAll(async () => {
+      _setFcjValueFetcherForTests(undefined);
+      await harness.close();
+   });
+   beforeEach(() => harness.reset());
+   afterEach(() => _setEmbeddingProviderForTests(null));
+
+   const scopes = [{ environment: "pin", package: "fixture" }];
+   const params = {
+      search_targets: [
+         target("measure", "number of flights"),
+         target("dimension", "start date"),
+      ],
+      scopes,
    };
-   const handlerFor = () =>
-      captureHandler({ getEnvironment: async () => envWith(segments()) });
 
-   beforeEach(() => {
-      _setEmbeddingProviderForTests(null);
-      _resetEmbeddingIndexStateForTests();
-      _resetValueCacheForTests();
-      _setValueFetcherForTests(async (req) => {
-         if (req.source === "locked") throw new AccessDeniedError("denied");
-         return {
-            values: stored[`${req.source}.${req.dimension}`] ?? [],
-            truncated: false,
-         };
-      });
-   });
-   afterEach(() => _setValueFetcherForTests(undefined));
-
-   it("a value hit nests under its dimension", async () => {
-      const payload = await call(handlerFor(), {
-         search_targets: [target("dimensional_value", "auto intender")],
-         scopes: [{ environment: "pin", package: "pkg", source: "segments" }],
-      });
-      pin("values/hit", payload);
+   it("is indexing on the first call, with no results and a way forward", async () => {
+      const { pkg } = await compileFcjFixture();
+      const { payload } = await callPayload(harness.handlerFor(pkg), params);
+      expect(payload.retrieval).toBe("indexing");
+      pin("ranked/indexing", payload);
    });
 
-   it("a gated source answers with its dimensions, no values, and a warning", async () => {
-      const payload = await call(handlerFor(), {
-         search_targets: [target("dimensional_value", "auto intenders")],
-         scopes: [{ environment: "pin", package: "pkg" }],
-      });
-      pin("values/gated source withheld", payload);
+   it("is the engine's own answer once the index is built", async () => {
+      const { pkg } = await compileFcjFixture();
+      const { payload } = await untilSemantic(harness.handlerFor(pkg), params);
+      expect(payload.retrieval).toBe("semantic");
+      expect(payload.engine).toBe("fcj");
+      pin("ranked/answer", payload);
    });
 
-   it("no match says what was searched", async () => {
-      const payload = await call(handlerFor(), {
-         search_targets: [target("dimensional_value", "zzzzzz")],
-         scopes: [{ environment: "pin", package: "pkg", source: "segments" }],
+   it("scoped to a source, keeps to that source", async () => {
+      const { pkg } = await compileFcjFixture();
+      const { payload } = await untilSemantic(harness.handlerFor(pkg), {
+         search_targets: [target("dimension", "start date")],
+         scopes: [{ ...scopes[0], source: "flights" }],
       });
-      pin("values/no match", payload);
+      pin("ranked/scoped to a source", payload);
+   });
+
+   it("says an error when the request is refused", async () => {
+      const { pkg } = await compileFcjFixture();
+      const { payload, isError } = await callPayload(harness.handlerFor(pkg), {
+         search_targets: [target("dimension")],
+         offset: 3,
+         scopes: [{ ...scopes[0], source: "flights" }],
+      });
+      expect(isError).toBe(true);
+      pin(
+         "ranked/offset refused on a listing that is not a source browse",
+         payload,
+      );
    });
 });

@@ -4,10 +4,10 @@
 /**
  * When the fcj index of a package is built, and what a request sees meanwhile.
  *
- * One build per Package instance, queued at load (wired to the same hook as
- * the shipped embedding sync) and, failing that, by the first request. A
- * request that finds the build running answers `retrieval: "indexing"`, as
- * the shipped engine does, and never waits on it. A failed build is retried
+ * One build per Package instance, queued at load (wired to the
+ * package-loaded hook) and, failing that, by the first request. A request
+ * that finds the build running answers `retrieval: "indexing"` and never
+ * waits on it. A failed build is retried
  * by a request that arrives after PROVIDER_FAILURE_COOLDOWN_MS. A reload is a
  * new Package, so it gets a new build; the content caches make that cheap.
  */
@@ -30,7 +30,7 @@ import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
 import { embeddingSyncQueue } from "../tools/embedding_sync_queue";
 import { SyncRequestBudget } from "../tools/get_context_llm";
 import { getPackageIndex } from "../tools/package_entities";
-import { indexSettingsOf } from "../tools/index_settings";
+import { resolveSourceSummarySettings } from "../tools/source_summary_settings";
 import {
    currentSummaryHashes,
    loadSourceSummaries,
@@ -176,10 +176,10 @@ async function buildFor(args: {
    const llmSettings = activeLlmSettings();
    const chat = llmSettings ? fcjChat() : null;
 
-   // Source summaries: written by the shipped step when the package has them
+   // Source summaries: written by the summary step when the package has them
    // on, then read back. A failure to write them is reported, not fatal:
    // a summary only adds a line to a source's search text.
-   const summarySettings = indexSettingsOf(pkg).sourceSummary;
+   const summarySettings = resolveSourceSummarySettings(pkg);
    let storedSummaries;
    if (summarySettings) {
       try {
@@ -241,7 +241,7 @@ async function buildFor(args: {
    });
 }
 
-/** The state as the REST Package resource reports it, beside the shipped status. */
+/** The state as the REST Package resource reports it, under `embeddingIndex.fcj`. */
 export function fcjStatusOf(pkg: Package): Record<string, unknown> {
    const state = states.get(pkg);
    if (!state) return { engine: "fcj", status: "indexing" };

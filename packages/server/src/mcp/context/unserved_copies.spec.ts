@@ -118,12 +118,7 @@ const fieldIds = (c: Catalog, source: string) =>
       .sort();
 
 beforeAll(async () => {
-   f = await compileFcjFixture(
-      FILES,
-      {},
-      { ...DEFAULT_PACKAGE_RETRIEVAL, engine: "fcj" },
-      SERVED,
-   );
+   f = await compileFcjFixture(FILES, {}, DEFAULT_PACKAGE_RETRIEVAL, SERVED);
 });
 
 describe("unservedCopies", () => {
@@ -207,7 +202,7 @@ describe("unservedCopies", () => {
       expect(c.report.unservedCopiesAdded).toBe(0);
       expect(c.report.unservedCopiesCapped).toBe(9);
       expect(catalogReportLine(c.report)).toContain(
-         "; 0 joined copies of unserved fields added beyond the shipped index, 9 left out by the per-field cap, 0 join paths stopped at the guard",
+         "; 0 joined copies of unserved fields added beyond the entity index, 9 left out by the per-field cap, 0 join paths stopped at the guard",
       );
    });
 });
