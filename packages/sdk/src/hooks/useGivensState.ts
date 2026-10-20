@@ -184,6 +184,8 @@ export function useGivensState({
    // that an external push landing in that window whose values happen to equal
    // a report being replaced is taken for the echo — the same values we were
    // just showing, arriving in the few milliseconds before our own URL lands.
+   // A value that repeats while in flight (A, B, A) matches its oldest report,
+   // so B stays in flight until the next report lands.
    const priorReported = useRef<Record<string, string>[]>([]);
 
    // The URL that defines the current starting point. This is `params` EXCEPT
