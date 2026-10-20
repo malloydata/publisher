@@ -84,6 +84,7 @@ describe("service/package", () => {
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
                   setSiblingModelDefResolver: () => {},
+                  setDeclaringFilesResolver: () => {},
                } as unknown as Model,
             ],
             [
@@ -93,6 +94,7 @@ describe("service/package", () => {
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
                   setSiblingModelDefResolver: () => {},
+                  setDeclaringFilesResolver: () => {},
                } as unknown as Model,
             ],
          ]),
@@ -349,6 +351,7 @@ describe("service/package", () => {
                         setDiscoveryCuration: () => {},
                         setQueryBoundary: () => {},
                         setSiblingModelDefResolver: () => {},
+                        setDeclaringFilesResolver: () => {},
                      } as unknown as Model,
                   ],
                   [
@@ -367,6 +370,7 @@ describe("service/package", () => {
                         getNotebookListing: () => ({}),
                         setQueryBoundary: () => {},
                         setSiblingModelDefResolver: () => {},
+                        setDeclaringFilesResolver: () => {},
                      } as unknown as Model,
                   ],
                ]),

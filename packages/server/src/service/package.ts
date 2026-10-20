@@ -163,7 +163,11 @@ import {
 } from "./report";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
-import { Model, type OffSurfaceContext } from "./model";
+import {
+   type DeclaringFilesResolver,
+   Model,
+   type OffSurfaceContext,
+} from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 import {
    applyLoadGates,
@@ -696,8 +700,30 @@ export class Package {
       }
       const resolver = (url: string): ModelDef | undefined =>
          byUrl.get(url)?.getModelDef();
+      const declaringFiles: DeclaringFilesResolver = (name, askingPath) => {
+         const exploreSet = this.exploreSet();
+         const found: ReturnType<DeclaringFilesResolver> = [];
+         for (const [modelPath, model] of this.models) {
+            if (modelPath === askingPath) continue;
+            if (
+               exploreSet &&
+               !exploreSet.has(modelPath) &&
+               !this.isServedReport(modelPath)
+            )
+               continue;
+            const def = model.getModelDef();
+            if (!def?.exports.includes(name) || model.carriesAnyGate())
+               continue;
+            found.push({
+               modelPath,
+               kind: def.contents[name]?.type === "query" ? "query" : "source",
+            });
+         }
+         return found;
+      };
       for (const model of this.models.values()) {
          model.setSiblingModelDefResolver(resolver);
+         model.setDeclaringFilesResolver(declaringFiles);
       }
    }
 
