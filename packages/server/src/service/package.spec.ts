@@ -491,7 +491,12 @@ describe("service/package", () => {
                join(testPackageDirectory, "data", "x.csv"),
                "Name,Value\nJohn,10",
             );
-            for (const file of ["[x].csv", "x?.csv", "x*.csv"]) {
+            // `?` and `*` can't appear in a Windows file name.
+            const globNames = [
+               "[x].csv",
+               ...(process.platform === "win32" ? [] : ["x?.csv", "x*.csv"]),
+            ];
+            for (const file of globNames) {
                await expect(
                   probe(file, "Name,Value\nJohn,10\nJane,20"),
                ).rejects.toThrow("pattern matching other files");
