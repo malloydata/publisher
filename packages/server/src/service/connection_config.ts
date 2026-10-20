@@ -911,6 +911,27 @@ function validateConnectionShape(connection: ApiConnection): void {
 }
 
 /**
+ * Validate one connection a request describes, as config load would, and
+ * refuse a defect as the request's: a `BadRequestError` naming it. Config load
+ * throws the same defects as plain errors because there they fail the
+ * environment; on a request they reached the route unclassified, a bare 500
+ * that read as the server's fault and kept the "Fix:" in the server log.
+ *
+ * The message reaches the caller. As for the storage destination reasons
+ * below, the validator's messages interpolate only a name, a type, or the
+ * offending identifier, never a credential; keep it that way.
+ */
+export function assertConnectionShapeOrThrow(connection: ApiConnection): void {
+   try {
+      validateConnectionShape(connection);
+   } catch (error) {
+      throw new BadRequestError(
+         error instanceof Error ? error.message : String(error),
+      );
+   }
+}
+
+/**
  * Warehouse types a storage destination may be DECLARED as. Deliberately
  * narrower than the connection types: a destination is attached read-write by
  * the build path, and every type admitted here is another way to define a

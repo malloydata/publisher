@@ -101,7 +101,10 @@ Operator prerequisites:
 - Publisher's credential granted `roles/iam.serviceAccountTokenCreator` **on each target
   service account** (a resource-level grant — no project-wide role needed).
 - The target account holds the data-access roles (e.g. `roles/bigquery.dataViewer` plus
-  `roles/bigquery.jobUser` in its project).
+  `roles/bigquery.jobUser` in its project). On any BigQuery connection, a table its account may
+  not read answers **424** with `reason: TABLE_ACCESS_DENIED` and BigQuery's own
+  `Access Denied: Table …` sentence, on the query routes and the table lookup alike. A project it
+  cannot create jobs in still answers 502, since that fails every query on the connection.
 
 Constraints:
 

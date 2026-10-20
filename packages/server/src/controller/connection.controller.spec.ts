@@ -22,6 +22,7 @@ import {
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
+   TableAccessDeniedError,
    TableNotFoundError,
    UnconfiguredConnectionError,
 } from "../errors";
@@ -1353,6 +1354,111 @@ describe("ConnectionController.getConnectionTemporaryTable statement rejection",
             "SELECT sundance_name FROM public.spaces",
          ),
       ).rejects.toBeInstanceOf(InvalidArgumentError);
+   });
+});
+
+describe("ConnectionController on a table the connection may not read", () => {
+   afterEach(() => sinon.restore());
+
+   // Staging 2026-10-20: a BigQuery connection with no grant on the dataset.
+   // The router answered 502 on all three routes, and retried the table
+   // lookup on a second worker, which answered the same.
+   const queryDenial =
+      "Access Denied: Table proj:billing.export: User does not have permission to query table proj:billing.export, or perhaps it does not exist.";
+   const lookupDenial =
+      "Access Denied: Table proj:billing.export: Permission bigquery.tables.get denied on table proj:billing.export (or it may not exist).";
+   const apiError = () =>
+      Object.assign(new Error(queryDenial), {
+         code: 403,
+         errors: [{ domain: "global", reason: "accessDenied" }],
+      });
+
+   // The one driver method a route calls, stubbed; the rest of Connection is
+   // never reached.
+   function controllerOver(connection: Record<string, sinon.SinonStub>) {
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: sinon
+               .stub()
+               .returns({ name: "warehouse", type: "bigquery" }),
+         }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(connection as unknown as Connection);
+      return controller;
+   }
+
+   it("answers sqlQuery with the denial, not an upstream fault", async () => {
+      const controller = controllerOver({
+         runSQL: sinon.stub().rejects(apiError()),
+      });
+      const query = controller.getConnectionQueryData(
+         "env",
+         "warehouse",
+         "SELECT cost FROM billing.export",
+         "",
+      );
+      await expect(query).rejects.toBeInstanceOf(TableAccessDeniedError);
+      await expect(query).rejects.toThrow(queryDenial);
+   });
+
+   it("answers sqlSource the same, from the dry run's rejection", async () => {
+      const controller = controllerOver({
+         fetchSelectSchema: sinon.stub().rejects(apiError()),
+      });
+      await expect(
+         controller.getConnectionSqlSource(
+            "env",
+            "warehouse",
+            "SELECT cost FROM billing.export",
+         ),
+      ).rejects.toBeInstanceOf(TableAccessDeniedError);
+   });
+
+   it("answers sqlTemporaryTable the same, behind the timeout race", async () => {
+      const controller = controllerOver({
+         manifestTemporaryTable: sinon.stub().rejects(apiError()),
+      });
+      await expect(
+         controller.getConnectionTemporaryTable(
+            "env",
+            "warehouse",
+            "SELECT cost FROM billing.export",
+         ),
+      ).rejects.toBeInstanceOf(TableAccessDeniedError);
+   });
+
+   it("answers the table lookup the same, from the text the driver returns instead of throwing", async () => {
+      const controller = controllerOver({
+         fetchTableSchema: sinon.stub().resolves(lookupDenial),
+      });
+      await expect(
+         controller.getTable("env", "warehouse", "billing", "billing.export"),
+      ).rejects.toBeInstanceOf(TableAccessDeniedError);
+   });
+
+   it("answers through a publisher proxy connection, which relays the sentence without its status", async () => {
+      // What a local Publisher sees when the remote dataplane answers the
+      // denial: db-publisher throws `new Error(<remote message>)`.
+      const controller = controllerOver({
+         runSQL: sinon.stub().rejects(new Error(queryDenial)),
+      });
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "warehouse",
+            "SELECT cost FROM billing.export",
+            "",
+         ),
+      ).rejects.toBeInstanceOf(TableAccessDeniedError);
    });
 });
 

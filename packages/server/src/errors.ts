@@ -9,6 +9,7 @@ import {
    causeChain,
    isConnectionFailure,
    isCredentialRejection,
+   tableAccessDenial,
 } from "./driver_errors";
 import { redactPgSecrets } from "./pg_helpers";
 
@@ -106,7 +107,9 @@ export type ErrorReason =
    // 424: the database rejected the connection's credentials.
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
-   | "CONNECTION_NOT_FOUND";
+   | "CONNECTION_NOT_FOUND"
+   // 424: the database refused the connection a table the statement names.
+   | "TABLE_ACCESS_DENIED";
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -140,9 +143,10 @@ export function filesystemAccessFailure(
 
 /**
  * The error to answer with when a failure is about the connection rather than
- * the statement: 502 for an unreachable database, 424 for rejected credentials
- * or a missing connection. Undefined otherwise, keeping the route's status.
- * Credentials win when an error matches both.
+ * the statement: 502 for an unreachable database, 424 for rejected credentials,
+ * a missing connection, or a table the connection may not read. Undefined
+ * otherwise, keeping the route's status. Credentials win when an error matches
+ * more than one.
  */
 export function databaseAccessFailure(
    error: unknown,
@@ -150,17 +154,21 @@ export function databaseAccessFailure(
    | ConnectionAuthError
    | ConnectionFailedError
    | UnconfiguredConnectionError
+   | TableAccessDeniedError
    | undefined {
    if (
       error instanceof ConnectionAuthError ||
       error instanceof ConnectionFailedError ||
-      error instanceof UnconfiguredConnectionError
+      error instanceof UnconfiguredConnectionError ||
+      error instanceof TableAccessDeniedError
    ) {
       return error;
    }
    const message = error instanceof Error ? error.message : String(error);
    if (isCredentialRejection(error)) return new ConnectionAuthError(message);
    if (isConnectionFailure(error)) return new ConnectionFailedError(message);
+   const denial = tableAccessDenial(error);
+   if (denial !== undefined) return new TableAccessDeniedError(denial);
    return undefined;
 }
 
@@ -358,6 +366,11 @@ export function internalErrorToHttpError(
       // connection is the customer's to fix, not our fault.
       logInternal("Connection credentials rejected", error, "warn");
       return httpError(424, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
+   } else if (error instanceof TableAccessDeniedError) {
+      // Unlike rejected credentials the sentence is returned: it names only
+      // the table. warn, for the same reason: the customer's grant to fix.
+      logInternal("Table access denied to the connection", error, "warn");
+      return httpError(424, error.message, "TABLE_ACCESS_DENIED");
    } else if (error instanceof ConnectionFailedError) {
       // Checked ahead of ConnectionError, which it extends: the same 502 and
       // the same logging, plus the reason that says the database is down.
@@ -644,6 +657,21 @@ export class StorageCatalogNotFoundError extends Error {
  * not the query and not a retry.
  */
 export class ConnectionAuthError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * The database refused the connection's identity a table the statement names,
+ * or, as BigQuery words it, the table may not exist. 424 with
+ * `reason: TABLE_ACCESS_DENIED`: the grant is the connection's configuration,
+ * as its credentials are, so the caller cannot fix it and a retry on another
+ * worker fails the same way. The message is the database's own sentence, which
+ * names the table and nothing else. Not {@link AccessDeniedError}, which is this
+ * server's `#(authorize)` refusing the caller.
+ */
+export class TableAccessDeniedError extends Error {
    constructor(message: string) {
       super(message);
    }

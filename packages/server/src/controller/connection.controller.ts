@@ -241,9 +241,10 @@ function classifyDriverFailure(error: unknown): Error {
  * A failure running SQL the caller sent: a 502 with the driver's text logged
  * and generalized, unless the database was unreachable (502 with
  * `reason: CONNECTION_FAILED`), rejected the credentials (424 with
- * `reason: CONNECTION_AUTH_FAILED`), or -- Postgres only -- rejected the
- * statement itself (400 with the driver's message, or 404 for a table it does
- * not have).
+ * `reason: CONNECTION_AUTH_FAILED`), refused the connection a table the
+ * statement names (424 with `reason: TABLE_ACCESS_DENIED`, BigQuery only), or
+ * -- Postgres only -- rejected the statement itself (400 with the driver's
+ * message, or 404 for a table it does not have).
  */
 function sqlRunFailure(error: unknown): Error {
    // Already classified (an exhausted pool), with a message written for the

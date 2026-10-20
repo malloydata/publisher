@@ -95,6 +95,9 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
   - `CONNECTION_AUTH_FAILED`: the database rejected the connection's user, password, key or token.
   - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
     one deleted after the package was loaded.
+  - `TABLE_ACCESS_DENIED`: the database refused the connection a table the query names (BigQuery's
+    `Access Denied: Table …`), and the message is the database's sentence naming that table. Grant
+    the connection's identity read access to it; the query is fine unless it named the wrong table.
 - **502 with `reason: CONNECTION_FAILED`:** the database connection is down: the database could not
   be reached, so the query never ran. The query is fine; retry once, then report it. Without that reason, a 502 is some other
   failure in the database behind the connection.

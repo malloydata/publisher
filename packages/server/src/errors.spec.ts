@@ -30,6 +30,7 @@ import {
    QueryTimeoutError,
    ServiceUnavailableError,
    SkillNotFoundError,
+   TableAccessDeniedError,
 } from "./errors";
 
 describe("internalErrorToHttpError", () => {
@@ -831,6 +832,100 @@ describe("statementRejection", () => {
          "a thrown string",
       ]) {
          expect(statementRejection(error)).toBeUndefined();
+      }
+   });
+});
+
+describe("databaseAccessFailure on a table the connection may not read", () => {
+   // Verbatim from staging 2026-10-20, a BigQuery connection whose service
+   // account had no grant on the dataset a model named. The query path (the
+   // job behind sqlQuery, and the dry run behind sqlSource) and the table
+   // lookup (tables.get) word it differently; both name the table and nothing
+   // else, and both answered 502 "Upstream connection error." with the
+   // sentence only in the worker's log.
+   const queryDenial =
+      "Access Denied: Table ms2-dev-469118:billing_export_dev.gcp_billing_export_resource_v1: User does not have permission to query table ms2-dev-469118:billing_export_dev.gcp_billing_export_resource_v1, or perhaps it does not exist.";
+   const lookupDenial =
+      "Access Denied: Table ms2-dev-469118:billing_export_dev.gcp_billing_export_resource_v1: Permission bigquery.tables.get denied on table ms2-dev-469118:billing_export_dev.gcp_billing_export_resource_v1 (or it may not exist).";
+   // As @google-cloud/common raises it from createQueryJob: an ApiError with
+   // the HTTP status in `code` and BigQuery's own reason in `errors`.
+   const apiError = Object.assign(new Error(queryDenial), {
+      code: 403,
+      errors: [
+         { domain: "global", reason: "accessDenied", message: queryDenial },
+      ],
+   });
+
+   it("answers 424 TABLE_ACCESS_DENIED carrying BigQuery's sentence", () => {
+      // The grant is the connection's, as with rejected credentials (424), so
+      // it is neither the caller's 400 nor a 502 that retries on another
+      // worker and pages for a customer's IAM.
+      const classified = databaseAccessFailure(apiError);
+      expect(classified).toBeInstanceOf(TableAccessDeniedError);
+      expect(isCredentialRejection(apiError)).toBe(false);
+      expect(internalErrorToHttpError(classified!, { log: false })).toEqual({
+         status: 424,
+         json: {
+            code: 424,
+            message: queryDenial,
+            reason: "TABLE_ACCESS_DENIED",
+         },
+      });
+   });
+
+   it("recognizes the table lookup's wording, which the driver returns as text", () => {
+      expect(databaseAccessFailure(new Error(lookupDenial))).toBeInstanceOf(
+         TableAccessDeniedError,
+      );
+   });
+
+   it("recognizes the sentence a publisher proxy connection relays without its status", () => {
+      // db-publisher rethrows the remote's body message as a plain Error and
+      // drops the status, so the text is all the local server receives.
+      expect(databaseAccessFailure(new Error(queryDenial))).toBeInstanceOf(
+         TableAccessDeniedError,
+      );
+   });
+
+   it("follows the cause chain and answers with the sentence that matched, not the wrapper's", () => {
+      const wrapped = new Error("Failed to run SQL", { cause: apiError });
+      const classified = databaseAccessFailure(wrapped);
+      expect(classified).toBeInstanceOf(TableAccessDeniedError);
+      expect(classified!.message).toBe(queryDenial);
+   });
+
+   it("never reads the denial as a missing table, though BigQuery says it may be one", () => {
+      // TABLE_NOT_FOUND tells the router the table is gone. BigQuery does not
+      // say which it is, and the table in the staging case existed.
+      const classified = databaseAccessFailure(new Error(lookupDenial));
+      expect(classified).not.toBeInstanceOf(TableNotFoundError);
+      expect(internalErrorToHttpError(classified!, { log: false }).status).toBe(
+         424,
+      );
+   });
+
+   it("leaves a project-level refusal where it was: it fails every statement, not one table", () => {
+      // A connection that cannot create jobs at all is the connection-wide
+      // case, like a Postgres role without CONNECT, and still answers 502.
+      expect(
+         databaseAccessFailure(
+            Object.assign(
+               new Error(
+                  "Access Denied: Project ms2-staging: User does not have bigquery.jobs.create permission in project ms2-staging.",
+               ),
+               { code: 403 },
+            ),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("matches from the start of the message, so a quoted name cannot", () => {
+      for (const message of [
+         'Syntax error: Unexpected string literal "Access Denied: Table a:b.c: x" at [1:8]',
+         "Permission denied while getting table proj:ds",
+         "Access Denied: Table",
+      ]) {
+         expect(databaseAccessFailure(new Error(message))).toBeUndefined();
       }
    });
 });
