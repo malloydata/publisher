@@ -30,7 +30,7 @@ import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { logger } from "../../logger";
 import { humanizeName } from "../tools/embedding_index";
 import { SyncRequestBudget } from "../tools/get_context_llm";
-import type { PackageIndex } from "../tools/get_context_tool";
+import type { PackageIndex } from "../tools/get_context_types";
 import type { StoredSourceSummary } from "../tools/source_summaries";
 import { summaryKey } from "../tools/source_summaries";
 import {

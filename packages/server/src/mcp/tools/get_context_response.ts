@@ -557,7 +557,7 @@ const SKILLS_DESCRIPTION_BUDGET = 4000;
  * ranked subset, because ranking could hide the guide that says the question
  * is being asked wrong. Bodies stay behind get_skill.
  */
-export function skillsFor(ctx: PipelineContext) {
+export function skillsFor(ctx: Pick<PipelineContext, "pkgIndex">) {
    // Descriptions are author-written and ride every response, so their total is bounded.
    let budget = SKILLS_DESCRIPTION_BUDGET;
    const skills = ctx.pkgIndex.pkg
