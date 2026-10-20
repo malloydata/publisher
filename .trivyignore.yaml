@@ -49,6 +49,16 @@
 #     @grafana/openapi-to-k6 release that supports orval 8.
 #   packages/server/k6-tests/package.json  "js-yaml": "^4.3.2"
 #     orval 7.21.0 exact-pins js-yaml 4.1.1. Retire with the orval entries.
+#   package.json  "concurrently": "^10.0.6"
+#     @openapitools/openapi-generator-cli admits ^10.0.3, in range; 10.0.6 is the first
+#     release that exact-pins shell-quote past the 1.11.0 fix. Retire when the lockfile
+#     resolves it without the entry.
+#   package.json  "source-map-js": "^1.2.2", examples/data-app/package.json same
+#     In range for postcss; only moves the lockfile. Retire at the next refresh.
+#   package.json  "undici": "^6.27.0"
+#     openapi-typescript 6.7.6 (build-time generate-api-types) declares ^5.28.4 and uses
+#     undici only to fetch remote specs; ours is local, and the generated src/api.ts is
+#     byte-identical on 6.x. Retire when openapi-typescript moves to 7.x, which drops it.
 vulnerabilities:
   # Eleven CRITICALs and one HIGH in orval 7.21.0, reached as k6-tests -> @grafana/openapi-to-k6 ->
   # orval. The fix is 8.21.0-only (no 7.x backport), and no @grafana/openapi-to-k6
@@ -463,17 +473,14 @@ vulnerabilities:
       library. Debian has published no fix.
   # CVE-2026-41907 is rated MEDIUM by the uuid advisory; GitHub surfaces it as high.
   # The nested uuid 8.3.2 and 9.0.1 copies come from parent ranges that stop below 11
-  # (node-cron 3.0.3 pins uuid 8.3.2 exactly; snowflake-sdk and @azure/msal-node
-  # declare ^8; gaxios, teeny-request, @google-cloud/bigquery and @databricks/sql
-  # declare ^9), and Bun has no nested overrides. The server's own direct dependency is uuid ^11, which
-  # is past the fix. Retire as the parents move to uuid 11.1.1 or later.
+  # (snowflake-sdk declares ^8; gaxios, teeny-request, @google-cloud/bigquery and
+  # @databricks/sql declare ^9), and Bun has no nested overrides. Retire as the
+  # parents move to uuid 11.1.1 or later.
   - id: CVE-2026-41907
     paths:
-      - "publisher/node_modules/@azure/msal-node/node_modules/uuid/package.json"
       - "publisher/node_modules/@databricks/sql/node_modules/uuid/package.json"
       - "publisher/node_modules/@google-cloud/bigquery/node_modules/uuid/package.json"
       - "publisher/node_modules/gaxios/node_modules/uuid/package.json"
-      - "publisher/node_modules/node-cron/node_modules/uuid/package.json"
       - "publisher/node_modules/snowflake-sdk/node_modules/uuid/package.json"
       - "publisher/node_modules/teeny-request/node_modules/uuid/package.json"
       - "packages/server/k6-tests/bun.lock"
@@ -485,5 +492,21 @@ vulnerabilities:
       v4() and v7() already throw on out-of-range writes. A search of each parent's
       installed sources finds no v3(), v5() or v6() call, only v4(). Fixed in uuid
       11.1.1, 12.0.1 and 13.0.1, majors the parents do not admit.
+  # HIGH, no fixed version: braces 3.0.3 is the latest release and the advisory covers
+  # "through 3.0.3". Reached through micromatch 4.0.8 from fast-glob (lint and build
+  # tooling) and http-proxy-middleware.
+  - id: CVE-2026-93687
+    paths:
+      - "bun.lock"
+      - "packages/server/k6-tests/bun.lock"
+      - "publisher/node_modules/braces/package.json"
+    expired_at: 2027-01-31
+    statement: >
+      braces 3.0.3. Stack overflow on deeply nested brace patterns in a recursive
+      walker. Every caller passes a pattern this repository wrote: fast-glob in
+      lint and build tooling, and http-proxy-middleware, whose only use is the
+      dev-mode Vite proxy in packages/server/src/server.ts with a `pathFilter`
+      function rather than a glob, so no request input reaches a brace pattern.
+      Retire when braces publishes a release past 3.0.3.
 misconfigurations: []
 secrets: []
