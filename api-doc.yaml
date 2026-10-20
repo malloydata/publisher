@@ -7990,17 +7990,18 @@ components:
     BuildPlan:
       type: object
       description: |
-        The package's persist build plan. Mirrors Malloy's native build plan plus
-        the minimal per-source detail a caller needs to assign
-        identity/naming/realization. Lineage, policy, and connection capability
-        are intentionally omitted until they carry real data.
+        The package's persist build plan, from Malloy's build targets: the order
+        its persist sources build in, the tables each reads, and the minimal
+        per-source detail a caller needs to assign identity/naming/realization.
+        Policy and connection capability are intentionally omitted until they
+        carry real data.
       required: [graphs, sources]
       properties:
         graphs:
           type: array
           description: >-
             Dependency-ordered build graphs. One per connection per model, not one
-            per connection: a model contributes a graph for each connection its ROOT
+            per connection: a model contributes a graph for each connection its
             persist sources use, and a package's plan concatenates every model's, so
             the same source appears in the graph of every model that imports it.
           items:
@@ -8143,8 +8144,9 @@ components:
         nodes:
           type: array
           description:
-            Leveled build nodes; each inner array is one parallelizable level,
-            levels run in order.
+            A single level holding every persist source of the graph, in build
+            order. Each node's `dependsOn` names every source on every table it
+            reads, so the edges are complete without walking anything.
           items:
             type: array
             items:
@@ -8159,7 +8161,9 @@ components:
           description: "sourceName@modelURL"
         dependsOn:
           type: array
-          description: Upstream sourceIDs in this graph.
+          description: >-
+            sourceIDs of the sources on the tables this source reads. Sources on
+            one table (a source and its extensions) read none of each other.
           items:
             type: string
 

@@ -17,6 +17,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { components } from "../api";
+import { plannedSources } from "./build_plan";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -45,7 +46,7 @@ async function persisted(model: string): Promise<PersistSource> {
    const compiled = await runtime
       .loadModel(new URL(`${ROOT}m.malloy`), { importBaseURL: new URL(ROOT) })
       .getModel();
-   const sources = Object.values(compiled.getBuildPlan().sources);
+   const sources = plannedSources(await runtime.getBuildTargets(compiled));
    expect(sources.length).toBe(1);
    return sources[0];
 }

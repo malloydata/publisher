@@ -322,7 +322,7 @@ export class Package {
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
-   // `#@ persist` sources getBuildPlan() did not treat as build roots, which
+   // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
    // Which sources may be served from a materialized table, decided at compile
@@ -1783,8 +1783,8 @@ export class Package {
    }
 
    /**
-    * Warnings for `#@ persist` sources getBuildPlan() did not treat as build
-    * roots (e.g. a filtered pass-through), which would otherwise silently serve
+    * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
+    * a filtered pass-through), which would otherwise silently serve
     * live. Independent of {@link buildPlan}: a package whose only persist
     * source is dropped has no plan.
     */

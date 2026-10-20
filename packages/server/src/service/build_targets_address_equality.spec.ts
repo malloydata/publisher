@@ -12,15 +12,18 @@
 // once, silently: the tables still exist, nothing looks up their new keys, and
 // each source re-seeds forever.
 //
-// So, for every target `getBuildTargets` returns and every source that mapped
-// onto it:
+// So, for every target `getBuildTargets` returns and every unpartitioned source
+// that mapped onto it:
 //
 //     target.buildId === computeSourceEntityId(source, connectionDigests)
 //
 // `BuildTarget.buildId` is documented as "a hash of the connection digest and
 // `sql`" over a fully-inlined, substitution-free `sql`; `computeSourceEntityId`
 // is `source.makeBuildId(digest, source.getSQL())` under the same no-options
-// invariant. This asserts they are in fact the same number.
+// invariant. This asserts they are in fact the same number. A `partition=`
+// layout is folded into the address alone, so for a partitioned source it is
+// `compilerBuildId` that equals the target's, and the builder addresses each
+// source itself.
 //
 // Kept permanently rather than run once and deleted. It is cheap, and a later
 // compiler bump is exactly the event that could move an address without anything
@@ -35,7 +38,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { FixedConnectionMap } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { computeSourceEntityId } from "./build_plan";
+import { compilerBuildId, computeSourceEntityId } from "./build_plan";
 import {
    duckdbTestConnections,
    loadTestRuntime,
@@ -157,6 +160,30 @@ describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
             .map((t) => t.buildId),
       );
       expect([...fromTargets].sort()).toEqual([...fromPlan].sort());
+   });
+
+   it("a partition= layout moves the address but not the buildId", async () => {
+      // `getSQL()` carries no annotation bytes, so the compiler keys a
+      // partitioned source's table exactly as the unpartitioned one. The
+      // address folds the layout in, so a layout change rebuilds the table.
+      // The two keys therefore differ here, and a builder must address each
+      // source itself rather than adopt `target.buildId`.
+      const { connections: builds } =
+         await buildTargets(`##! experimental.persistence
+source: base is duckdb.sql("""${BASE_ROWS}""")
+
+#@ persist storage=lake partition="category"
+source: by_category is base -> {
+  group_by: category
+  aggregate: total is amount.sum()
+}
+`);
+      const [target] = builds.flatMap((b) => b.targets);
+      const [source] = target.sources;
+      expect(computeSourceEntityId(source, connectionDigests)).not.toBe(
+         target.buildId,
+      );
+      expect(compilerBuildId(source, connectionDigests)).toBe(target.buildId);
    });
 
    it("throws without ##! experimental.persistence, exactly as getBuildPlan does", async () => {
