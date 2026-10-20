@@ -100,7 +100,6 @@ describe("dateRangeFields", () => {
          from: "flights@travel.malloy",
          path: ["race"],
          node: RACES,
-         fanout: "one",
       });
       const out = dateRangeFields({
          index: f.index,

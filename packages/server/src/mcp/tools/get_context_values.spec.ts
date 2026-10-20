@@ -266,6 +266,7 @@ function stubPackage() {
       getQueries: () => [],
    };
    return {
+      listSkills: () => [],
       listModels: async () => [{ path: "m.malloy" }],
       getModel: (p: string) => (p === "m.malloy" ? model : undefined),
    };
@@ -727,6 +728,7 @@ describe("get_context value search over a real model (gates are the query path's
          (model as unknown as { compilationError?: Error }).compilationError,
       ).toBeUndefined();
       const pkg = {
+         listSkills: () => [],
          listModels: async () => [{ path: "m.malloy" }],
          getModel: (p: string) => (p === "m.malloy" ? model : undefined),
       };

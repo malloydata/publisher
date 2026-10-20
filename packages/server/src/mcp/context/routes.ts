@@ -19,7 +19,7 @@
  */
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
-import { entityId } from "../tools/get_context_tool";
+import { entityId } from "../tools/get_context_response";
 import { ROUTE_MAX_DEPTH, type Catalog, type CatalogNode } from "./catalog";
 
 export { ROUTE_MAX_DEPTH };
