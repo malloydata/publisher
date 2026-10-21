@@ -717,7 +717,14 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 - **`to=self`** filters wherever the click came from, without leaving the page. Under `autorun=false` it
   stages the value as a draft: neither the page nor the URL changes until Apply is pressed, while the same
   menu's `to=<path>` entry navigates and arrives already applied.
-- **More than one destination pops a menu**, because a choice is not a guess.
+- **A click always opens a small menu that says what it will do**, even when there is only one thing to do.
+  It has no header: each entry names the field and value it acts on, the field as its column header
+  reads, in this order: `Filter to Region: EU` for `to=self`, `Open Regional review (Region: EU)` for
+  each `to=<path>` (the report's title, else its file name humanized), and
+  `Show rows (Region: EU, Month: 2025-12)` (every value of the clicked row) when the rows behind the value can be
+  shown (below). A `# drill` tag adds entries to the menu; it never replaces
+  the rows, and a click never acts on a tag the reader cannot see. A cell is marked clickable exactly when
+  its menu would list something.
 - **The value is written as filter syntax**, because a click cannot know what it is aiming at, so the
   destination's given should be a `filter<…>`. Seeding a plain `string` given across reports delivers the
   escaped spelling (`Ben\ &\ Jerry` for a cell reading `Ben & Jerry`), which matches nothing. `to=self` is
@@ -732,11 +739,31 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 `overview.malloy`, never a report called `overview` elsewhere. Write `to="sales/overview"` for
 `sales/overview.malloy`.
 
-**The rows behind a value.** On a tile layout every grouped value is clickable. A value whose dimension
-carries a `# drill` does what the tag says. A value with no drill opens the rows behind it: Malloy's
-`drill:` through the tile's view
-(`run: <source> -> { drill: <view>.<field> = <value>; select: *; limit: 200 }`), so the tile's own `where:`
-and the applied controls both hold.
+**The rows behind a value.** On a tile layout a grouped value in a table offers **Show rows** in its menu,
+whether or not its dimension carries a `# drill`. Picking it opens the rows behind the value: the tile's
+source filtered by everything the value was filtered by, read from the result itself
+(`run: <source> -> { where: <the tile's filters>, <each dimension of the row> = <its value>; select: *; limit: 200 }`).
+The tile's own `where:`, any refinement's, an enclosing nest's and the applied controls all hold, and every
+dimension of the clicked row goes in, enclosing rows included. A null dimension filters as `is null`, and a
+view with its own `timezone:` is filtered in that zone.
+
+That works for any tile shape that runs one stage: `"<source> -> <view>"`, a refined view
+(`"<source> -> <view> + { where: … }"`), a tile naming a `query:`, an inline query, a view grouped by a
+joined field (`customers.name`). Two shapes offer no rows, and their values are not marked: a view of more
+than one stage (`view: v is { … } -> { … }`), whose later dimensions are an earlier stage's outputs that the
+source cannot be filtered by, and a source with parameters.
+
+**Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
+`limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,
+and saves the result as `<source>_rows_<values>.csv`. When that cap cut the result short, the file name ends
+`_first_<N>_rows_server_limit` and the button's tooltip says `First N rows (server limit)`. A text value that a
+spreadsheet would run as a formula (one starting `=`, `+`, `-` or `@`) is written with a leading `'`; numbers are
+written as they are.
+
+A host replaces that button with its own through `rowsActions` on `Report` or `DashboardView`: a function given
+the unlimited query, the environment, package, model path and version, the givens the dialog sends, the
+preamble in text-source mode, and a suggested file name, which returns what to draw in the dialog's title row
+(`null` for nothing).
 
 Declaring it on the dimension is what makes it work everywhere: any result that groups by that dimension
 is clickable, in a grid tile and in a linear report's tile or cell alike, with no per-report wiring. So when
@@ -747,7 +774,8 @@ and numbers, and carries the tag.
 **What a reader sees.** Cells in a drillable **table** column take a pointer cursor, and turn blue and
 underlined under the pointer. They carry a button role and are reachable from the keyboard: one tab stop
 per drillable column, ArrowDown and ArrowUp to step a row, Home and End to jump to the ends, and Enter or
-Space to fire. A chart's bars, lines and points do not respond to a click at all, because the renderer
+Space to open the menu. Focus moves into the menu, and Escape closes it without acting. A measure cell
+and a column header open no menu. A chart's bars, lines and points do not respond to a click at all, because the renderer
 reports clicks on table cells only, so a report meant to be drilled wants at least one untagged (table)
 tile.
 

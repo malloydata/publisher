@@ -221,10 +221,12 @@ dimension: region is regions.region
 ```
 
 - **`to=<path>`** navigates to a report, of either layout, by its package path without `.malloy`, read from the package root: `to=category` is `category.malloy` at the root, `to="regions/west"` is `regions/west.malloy`. Quote a path with a `/`. **Always write the path from the package root**: a bare name is a root file, never a report of that name elsewhere.
-- **`to=self`** filters in place; two or more destinations pop a menu.
+- **`to=self`** filters in place.
+- **A click always opens a menu that says what it will do**, even with one entry, each entry naming the field (as its column header reads) and value: `Filter to Region: EU` (`to=self`), `Open <report title> (Region: EU)` (each `to=<path>`; the file name when the report has no title), then `Show rows (Region: EU, Month: 2025-12)` (every value of the row). A tag adds entries; it never replaces the rows.
 - **Always write `given=`.** Without it the given is the dimension name verbatim, so `dimension: category` seeds `category`, not `CATEGORY`. `to=self` survives that (it folds case); `to=<path>` does not, and lands on an unfiltered page with nothing erroring.
 - **The destination needs a control for the given**, declared as `filter<T>`. No lint checks that half, so click it and look.
 - **Only table cells are marked drillable.** A report meant to be drilled wants at least one untagged (table) tile, grouped by the tagged dimension. A column whose rendered header another, non-drillable tile also shows loses its marking: give the two different `# label=`s.
+- **Every value offers `Show rows`**, tagged or not: the tile's source, filtered by the tile's own `where:` (its control bindings included) and every dimension of the clicked row. That works for every one-stage tile: `"source -> view"`, a refined view, a tile naming a `query:`, an inline query, a view grouped by a joined field, a null value. **A view of more than one stage (`{ … } -> { … }`) opens no rows**, and its cells are not marked: a later stage's dimension is an earlier output the source cannot be filtered by. Keep a table tile meant to show its rows to one stage, and put the second stage in its own tile. A source with parameters opens no rows either.
 
 ## Read the lint
 

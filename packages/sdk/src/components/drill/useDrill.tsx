@@ -1,9 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { ListSubheader, Menu, MenuItem } from "@mui/material";
+import { Menu, MenuItem } from "@mui/material";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { drillClauseLabels } from "./drillClauses";
 import type { DrillField } from "./resolveDrill";
+import {
+   canShowRows,
+   dimensionCode,
+   rowDimensionsOf,
+   rowsDimensions,
+   rowsTargetOf,
+   type RowsDimension,
+   type RowsField,
+} from "./rowsTarget";
 import {
    DRILL_SELF,
    drillDestinations,
@@ -41,18 +51,21 @@ export interface UseDrillOptions {
     */
    canSelf?: (given: string) => boolean;
    /**
-    * What `to=self` is called in the menu. A notebook filtering itself is not
-    * "this dashboard", and the drill tag: written on a shared model dimension,
-    * cannot know which document the reader is in, so the surface names itself.
+    * What a `to=self` entry starts with, before the `Field: value` it sets.
+    * Defaults to `Filter to`.
     */
    selfLabel?: string;
    /**
-    * Show the rows behind a grouped value. With it, EVERY dimension cell is
-    * clickable: one with no `# drill` this surface can honour opens the rows;
-    * one with a drill behaves exactly as it does without this option, since a
-    * drill is the author's own instruction for that value. Omitted on a
-    * surface with nowhere to show them, and cells then click only where a tag
-    * says so.
+    * A `to=` destination's title, for its menu entry. Undefined, or no
+    * function, and the entry names the destination's file name instead.
+    */
+   destinationTitle?: (destination: string) => string | undefined;
+   /**
+    * Show the rows behind a grouped value. With it, a dimension cell whose
+    * result names everything its rows query needs (`canShowRows`) offers
+    * "Show rows" in its menu, beside any `# drill` actions. Omitted on a
+    * surface with nowhere to show them, and cells then offer only what a tag
+    * says.
     */
    onRows?: (request: DrillRowsRequest) => void;
 }
@@ -77,21 +90,79 @@ export interface DrillBinding {
 export interface UseDrillResult {
    /** Hand to `ResultContainer`'s (or `RenderedResult`'s) `drill` prop. */
    drill: DrillBinding;
-   /** Render anywhere in the subtree: the menu a multi-destination drill opens. */
+   /**
+    * The binding for one result on a surface with several, such as a
+    * dashboard's tiles: its clicks carry `context`, and a field opens rows
+    * only where `rowsGate` also says so. `rowsGate: false` turns rows off for
+    * that result, leaving its tag drills.
+    */
+   bindingFor: (
+      context: string | undefined,
+      rowsGate: ((field: DrillField) => boolean) | false,
+   ) => DrillBinding;
+   /** Render anywhere in the subtree: the menu every drillable click opens. */
    drillMenu: ReactNode;
 }
 
+interface DrillMenuItem {
+   key: string;
+   label: string;
+   run: () => void;
+}
+
 interface DrillMenuState {
-   intent?: DrillIntent;
-   destinations: string[];
-   event?: MouseEvent;
+   items: DrillMenuItem[];
    top: number;
    left: number;
-   label: string;
+}
+
+/** A menu item is cut to this width; its full text is its tooltip and accessible name. */
+const MENU_ITEM_MAX_WIDTH = 360;
+
+/** A field as its column header reads: its `# label`, else its name. */
+function fieldLabel(field: DrillField | RowsField | undefined): string {
+   if (!field) return "";
+   const header = (field as { getLabel?: () => string }).getLabel?.();
+   return (
+      header ??
+      (field as DrillField).tag?.text("label") ??
+      (field as RowsField).metadataTag?.text("label") ??
+      field.name
+   );
+}
+
+/**
+ * The values the rows behind a click are filtered on, each named by its
+ * column header: `Region: West, Month: 2025-12`, outermost first. Without the
+ * row's clauses, the clicked value alone.
+ */
+function rowsValuesLabel(rows: DrillRowsRequest, field: RowsField): string {
+   const parts = rows.drillClauses
+      ? drillClauseLabels(rows.drillClauses, rows.timezone)
+      : [];
+   if (parts.length === 0) return `${fieldLabel(field)}: ${rows.label}`;
+   const row = rowDimensionsOf(field);
+   return parts
+      .map((part) => {
+         const key = JSON.stringify(part.expression);
+         const match = row.find(
+            (d) => JSON.stringify(d.drillStableExpression) === key,
+         );
+         return `${match ? fieldLabel(match) : part.field}: ${part.label}`;
+      })
+      .join(", ");
 }
 
 /**
  * Click-to-drill for any surface that renders a Malloy result.
+ *
+ * Every drillable click opens one small menu that says what it can do, even
+ * when there is only one thing, each item naming the field and value it acts
+ * on: `Filter to Region: West` for a `to=self` drill, `Open Regional review
+ * (Region: West)` for each `to=` report, then `Show rows (Region: West, Month:
+ * 2025-12)`. A field is named as its column header reads. A `# drill` tag
+ * adds actions; it never replaces the rows, and a click never acts on a tag
+ * the reader cannot see.
  *
  * Shared between the dashboard viewer and notebook cells on purpose: `# drill`
  * is declared on a model *dimension*, so it fires wherever that dimension is
@@ -102,7 +173,8 @@ interface DrillMenuState {
 export function useDrill({
    onNavigate,
    onSelf,
-   selfLabel = "Filter this view",
+   selfLabel = "Filter to",
+   destinationTitle,
    canSelf,
    onRows,
 }: UseDrillOptions): UseDrillResult {
@@ -143,21 +215,51 @@ export function useDrill({
       [onNavigate, onSelf],
    );
 
-   // The rows behind this click, when the surface shows rows and the click is
-   // on a grouped value. A header names the field and has no value; a measure
-   // has no rows of its own; an empty cell is more likely a misclick.
+   // The rows behind this click, when the surface shows rows and the result
+   // names everything the query needs (`canShowRows`). A header names the
+   // field and has no value; a measure has no rows of its own. Without the
+   // row's clauses the clicked value is the whole filter, so an empty cell is
+   // refused as a likely misclick.
    const rowsBehind = useCallback(
       (payload: DrillClickPayload): DrillRowsRequest | undefined => {
-         if (!onRows || payload.isHeader || !payload.field) return undefined;
-         if (!(payload.field.wasDimension?.() ?? false)) return undefined;
-         if (drillValueToFilter(payload.value) === undefined) return undefined;
+         if (!onRows || payload.noRows || payload.isHeader || !payload.field)
+            return undefined;
+         const field = payload.field as RowsField;
+         if (!canShowRows(field)) return undefined;
+         const target = rowsTargetOf(field);
+         if (target === undefined) return undefined;
+         const clauses = payload.drillClauses;
+         // With the row: every dimension of it. Without one (a click the
+         // renderer reports no row for), the clicked value alone, which names
+         // the rows only when it is the row's one dimension.
+         let rows: { dimensions: RowsDimension[] } | { code: string };
+         if (clauses !== undefined) {
+            const dimensions = rowsDimensions(field, clauses);
+            if (dimensions === undefined) return undefined;
+            rows = { dimensions };
+         } else {
+            const code = dimensionCode(field);
+            if (
+               code === undefined ||
+               rowDimensionsOf(field).length !== 1 ||
+               drillValueToFilter(payload.value) === undefined
+            )
+               return undefined;
+            rows = { code };
+         }
          return {
             field: payload.field.name,
             rawValue: payload.value,
             label: drillValueLabel(payload.value),
+            target,
+            ...rows,
             ...(payload.context === undefined
                ? {}
                : { context: payload.context }),
+            ...(clauses === undefined ? {} : { drillClauses: clauses }),
+            ...(payload.timezone === undefined
+               ? {}
+               : { timezone: payload.timezone }),
          };
       },
       [onRows],
@@ -168,46 +270,93 @@ export function useDrill({
          // Runs on every cell click, so "not a drill" is the ordinary answer.
          const intent = resolveDrill(payload);
          const rows = rowsBehind(payload);
-         // Offer only what this surface can actually do, so a menu never lists a
-         // destination that would be a no-op when picked.
-         const destinations = intent ? honorable(intent.to, intent.given) : [];
-         if (destinations.length === 0) {
-            if (rows) onRows?.(rows);
-            return;
-         }
-         if (destinations.length === 1 && intent) {
-            go(intent, destinations[0], payload.event);
-            return;
-         }
+         // Offer only what this surface can actually do, so the menu never lists
+         // an action that would be a no-op when picked. Deduplicated: `# drill
+         // { to=[overview, overview] }` is a typo rather than a request for two
+         // identical rows. `to=self` first, then reports in the tag's order.
+         const destinations = intent
+            ? Array.from(new Set(honorable(intent.to, intent.given))).sort(
+                 (a, b) => Number(b === DRILL_SELF) - Number(a === DRILL_SELF),
+              )
+            : [];
+         const value = `${fieldLabel(payload.field)}: ${
+            intent?.label ?? drillValueLabel(payload.value)
+         }`;
+         const items: DrillMenuItem[] = destinations.map((destination) => ({
+            key: `to:${destination}`,
+            label:
+               destination === DRILL_SELF
+                  ? `${selfLabel} ${value}`
+                  : // The report's title, else its file name (a path from the package root).
+                    `Open ${
+                       destinationTitle?.(destination) ??
+                       humanizeSlug(destination.split("/").pop() ?? destination)
+                    } (${value})`,
+            run: () => {
+               if (intent) go(intent, destination, payload.event);
+            },
+         }));
+         if (rows)
+            items.push({
+               key: "rows",
+               label: `Show rows (${rowsValuesLabel(rows, payload.field as RowsField)})`,
+               run: () => onRows?.(rows),
+            });
+         if (items.length === 0) return;
          setMenu({
-            ...(intent ? { intent } : {}),
-            destinations,
-            event: payload.event,
+            items,
             top: payload.event?.clientY ?? 0,
             left: payload.event?.clientX ?? 0,
-            label: intent?.label ?? rows?.label ?? "",
          });
       },
-      [go, honorable, onRows, rowsBehind],
+      [go, honorable, onRows, rowsBehind, selfLabel, destinationTitle],
    );
 
-   const canDrill = useCallback(
+   const canDrillTag = useCallback(
       (field: DrillField) =>
-         honorable(drillDestinations(field), drillGivenName(field)).length >
-            0 ||
-         (onRows !== undefined && (field.wasDimension?.() ?? false)),
-      [honorable, onRows],
+         honorable(drillDestinations(field), drillGivenName(field)).length > 0,
+      [honorable],
+   );
+   const canDrillRows = useCallback(
+      (field: DrillField) =>
+         onRows !== undefined && canShowRows(field as RowsField),
+      [onRows],
    );
 
    const drill = useMemo<DrillBinding>(
-      () => ({ onClick, canDrill }),
-      [onClick, canDrill],
+      () => ({
+         onClick,
+         canDrill: (field) => canDrillTag(field) || canDrillRows(field),
+      }),
+      [onClick, canDrillTag, canDrillRows],
+   );
+
+   const bindingFor = useCallback(
+      (
+         context: string | undefined,
+         rowsGate: ((field: DrillField) => boolean) | false,
+      ): DrillBinding => ({
+         canDrill: (field) =>
+            canDrillTag(field) ||
+            (rowsGate !== false && rowsGate(field) && canDrillRows(field)),
+         onClick: (payload) =>
+            onClick({
+               ...payload,
+               ...(context === undefined ? {} : { context }),
+               ...(rowsGate === false ||
+               (payload.field !== undefined && !rowsGate(payload.field))
+                  ? { noRows: true }
+                  : {}),
+            }),
+      }),
+      [onClick, canDrillTag, canDrillRows],
    );
 
    const close = useCallback(() => setMenu(null), []);
 
    return {
       drill,
+      bindingFor,
       drillMenu: (
          <Menu
             open={menu !== null}
@@ -215,29 +364,30 @@ export function useDrill({
             anchorReference="anchorPosition"
             anchorPosition={{ top: menu?.top ?? 0, left: menu?.left ?? 0 }}
          >
-            <ListSubheader sx={{ lineHeight: "32px" }}>
-               {menu ? `${menu.label} →` : ""}
-            </ListSubheader>
-            {/* Deduplicated: `# drill { to=[overview, overview] }` is a typo
-                rather than a request for two identical rows, and React keys
-                these by destination, so the duplicate warned as well as
-                rendered twice. */}
-            {Array.from(new Set(menu?.destinations ?? [])).map(
-               (destination) => (
-                  <MenuItem
-                     key={destination}
-                     onClick={() => {
-                        close();
-                        if (menu?.intent)
-                           go(menu.intent, destination, menu.event);
+            {/* Only actions: each item names the value it acts on, so there is
+                no header row that reads like an item and does nothing. */}
+            {(menu?.items ?? []).map((item) => (
+               <MenuItem
+                  key={item.key}
+                  title={item.label}
+                  aria-label={item.label}
+                  onClick={() => {
+                     close();
+                     item.run();
+                  }}
+                  sx={{ maxWidth: MENU_ITEM_MAX_WIDTH }}
+               >
+                  <span
+                     style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
                      }}
                   >
-                     {destination === DRILL_SELF
-                        ? selfLabel
-                        : humanizeSlug(destination)}
-                  </MenuItem>
-               ),
-            )}
+                     {item.label}
+                  </span>
+               </MenuItem>
+            ))}
          </Menu>
       ),
    };
