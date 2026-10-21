@@ -142,8 +142,9 @@ export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
  * disconnects mid-compile holds its slot until the compile finishes.
  *
  * It does NOT queue: a queue hides load and inflates p99, while failing fast
- * lets the load balancer retry on a less-loaded pod. A response that never
- * emits `finish`/`close` leaks its slot until restart.
+ * lets the load balancer retry on a less-loaded pod. A response the handler
+ * never ends, and that never emits `finish`/`close`, leaks its slot until
+ * restart.
  */
 export function queryConcurrencyMiddleware(
    req: Request,
@@ -163,6 +164,17 @@ export function queryConcurrencyMiddleware(
    // release is idempotent.
    res.on("finish", handle.release);
    res.on("close", handle.release);
+   // Bun 1.3.13 emits neither event on a response whose client went away
+   // mid-request: not at the disconnect, and not when the handler later writes
+   // its answer to the dead socket, which still reads as open. Released only on
+   // those, every abandoned query kept its slot until restart. `end()` is the
+   // call the handler makes on every runtime once its work is done, so the slot
+   // goes back there too, before the bytes are flushed.
+   const end = res.end;
+   res.end = function (this: Response, ...args: unknown[]) {
+      handle.release();
+      return (end as (...a: unknown[]) => Response).apply(this, args);
+   } as Response["end"];
    next();
 }
 
