@@ -232,23 +232,30 @@ describe("applySessionResourceLimits", () => {
          expect(() => assertDuckDBResourceConfig()).not.toThrow();
       });
 
-      it("fails on an existing directory it cannot write to", () => {
-         // The common Kubernetes shape: a volume mounted with the wrong
-         // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
-         // existing directory whatever its mode, so without the explicit access
-         // check this surfaced only at the first spill.
-         const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
-         chmodSync(dir, 0o500);
-         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
-         try {
-            expect(() => assertDuckDBResourceConfig()).toThrow(
-               /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
-            );
-         } finally {
-            chmodSync(dir, 0o700);
-            rmSync(dir, { recursive: true, force: true });
-         }
-      });
+      // POSIX mode bits do not restrict on Windows; ACLs would. Node's (and,
+      // from 1.4, Bun's) access(W_OK) ignores a directory's read-only bit, so
+      // the chmod below leaves the directory writable there. Root ignores the
+      // bits everywhere.
+      it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+         "fails on an existing directory it cannot write to",
+         () => {
+            // The common Kubernetes shape: a volume mounted with the wrong
+            // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
+            // existing directory whatever its mode, so without the explicit access
+            // check this surfaced only at the first spill.
+            const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
+            chmodSync(dir, 0o500);
+            process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+            try {
+               expect(() => assertDuckDBResourceConfig()).toThrow(
+                  /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
+               );
+            } finally {
+               chmodSync(dir, 0o700);
+               rmSync(dir, { recursive: true, force: true });
+            }
+         },
+      );
 
       it("creates a missing spill directory rather than failing at first spill", () => {
          const base = mkdtempSync(path.join(os.tmpdir(), "spillbase-"));
