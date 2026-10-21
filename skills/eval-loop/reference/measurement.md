@@ -198,8 +198,9 @@ delivered means returned as a ranked entity, under a sibling source, or named
 in a returned source's documentation). It is measured on the agent's real
 search text against real questions, so it needs no hand-written terms. Read
 it within an arm, to attribute a failure; it moves with the answerer, so a
-cross-arm comparison of retrieval *itself* is not this loop's job -- that is
-the engine-side `eval-retrieval` skill, which ships to no customer.
+cross-arm comparison of retrieval *itself* is not what an answer run is for.
+To compare retrieval on fixed requests, with no answerer, replay them:
+`retrieval-replay.md`, beside this file.
 Coverage (can the model answer this at all) is a property of the model and its
 data and is never reported under a retrieval heading.
 
