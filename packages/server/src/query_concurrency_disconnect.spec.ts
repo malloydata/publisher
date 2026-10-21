@@ -113,9 +113,10 @@ describe("query concurrency slot after the client disconnects", () => {
    });
 
    it("is released when the query fails after the client left", async () => {
-      // The shape seen in production: the warehouse cancels the statement
-      // after the caller has given up, and the route answers the error to a
-      // socket nobody is reading.
+      // The shape seen in production: the connection's own statement timeout
+      // cancels the query after the caller has given up, the driver reports
+      // it as an error, and the route answers that error to a socket nobody
+      // is reading.
       process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
       const hold = deferred();
       const server = await abandonQuery(hold.promise);
