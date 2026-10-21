@@ -23,7 +23,10 @@ import { DatabaseController } from "./controller/database.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { LegacyReportController } from "./controller/legacy_report.controller";
 import { ModelController } from "./controller/model.controller";
-import { PackageController } from "./controller/package.controller";
+import {
+   PackageController,
+   setPackagePatchDeprecationHeaders,
+} from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import {
    BadRequestError,
@@ -461,7 +464,8 @@ export function registerLegacyRoutes(
 
    app.patch(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      apiRoute(async (req) => {
+      apiRoute(async (req, res) => {
+         setPackagePatchDeprecationHeaders(res);
          return packageController.updatePackage(
             req.params.projectName,
             req.params.packageName,

@@ -8,6 +8,8 @@ import {
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
 import { getVersionPromotionMode, isVersioningEnabled } from "../config";
+import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
+import type { HeaderSetter } from "../filter_deprecation";
 import {
    BadRequestError,
    FrozenConfigError,
@@ -77,10 +79,41 @@ export function warnVersioningOff(packageName: string): void {
    );
 }
 
+/**
+ * Say, on a `PATCH …/packages/{pkg}`, that the route is deprecated and what
+ * replaces it. It keeps working so that callers which predate versions do not
+ * break. PackageController says it once per package (see warnedPackagePatch),
+ * so a caller that rebinds routinely does not repeat it; every request is
+ * still counted in `publisher_deprecated_usage_total`.
+ */
+export function warnPackagePatchDeprecated(
+   environmentName: string,
+   packageName: string,
+): void {
+   logger.warn(
+      `PATCH .../packages/${packageName} is deprecated and will be removed. To rebind a published version to a build manifest, use PUT .../packages/${packageName}/versions/{version}/manifest; to change a package's content, publish it again, as a new version when versioning is on.`,
+      { environmentName, packageName },
+   );
+}
+
+/**
+ * Mark a `PATCH …/packages/{pkg}` response deprecated (RFC 8594), linking the
+ * version routes that replace it, as the `#(filter)` fields are marked.
+ */
+export function setPackagePatchDeprecationHeaders(res: HeaderSetter): void {
+   res.setHeader("Deprecation", "true");
+   res.setHeader(
+      "Link",
+      '<https://github.com/malloydata/publisher/blob/main/docs/package-versions.md>; rel="deprecation"; type="text/markdown"',
+   );
+}
+
 export class PackageController {
    private environmentStore: EnvironmentStore;
    /** Packages (`env/pkg`) already warned that versioning is off, this run. */
    private warnedVersioningOff = new Set<string>();
+   /** Packages (`env/pkg`) already warned that their PATCH is deprecated, this run. */
+   private warnedPackagePatch = new Set<string>();
 
    constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
@@ -471,6 +504,14 @@ export class PackageController {
       packageName: string,
       body: ApiPackage,
    ) {
+      // Deprecated, and kept working for callers that predate versions: count
+      // every request, whatever it answers, and warn once per package.
+      recordDeprecatedUsage("package_patch");
+      const warnKey = `${environmentName}/${packageName}`;
+      if (!this.warnedPackagePatch.has(warnKey)) {
+         this.warnedPackagePatch.add(warnKey);
+         warnPackagePatchDeprecated(environmentName, packageName);
+      }
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }

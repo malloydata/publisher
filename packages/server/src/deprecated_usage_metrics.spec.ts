@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import express from "express";
 import request from "supertest";
+import { PackageController } from "./controller/package.controller";
 import { resetDeprecatedUsageMetricsForTest } from "./deprecated_usage_metrics";
 import { EnvironmentNotFoundError, ServiceUnavailableError } from "./errors";
 import {
@@ -35,6 +36,7 @@ import {
 import type { Model } from "./service/model";
 import type { Package } from "./service/package";
 import { linesMentioning } from "./test_helpers/log_lines";
+import { buildRouteApp } from "./test_helpers/route_app";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -215,6 +217,71 @@ describe("publisher_deprecated_usage_total", () => {
          expect(isLegacyReportAlias(pkg, "dashboards/sales")).toBe(true);
          expect(isLegacyReportAlias(pkg, "dashboards/q3")).toBe(false);
          expect(await used("console_alias")).toBe(0);
+      });
+   });
+
+   describe("the package PATCH", () => {
+      /** Both PATCH paths over a real PackageController; every environment is missing. */
+      const app = () => {
+         const store = {
+            publisherConfigIsFrozen: false,
+            getEnvironment: async (name: string) => {
+               throw new EnvironmentNotFoundError(
+                  `Environment ${name} does not exist`,
+               );
+            },
+         } as unknown as EnvironmentStore;
+         return buildRouteApp({
+            environmentStore: store,
+            packageController: new PackageController(store),
+         });
+      };
+
+      it("counts each request on both paths, whatever it answers, and marks it deprecated", async () => {
+         const server = app();
+         const answers = [
+            await request(server)
+               .patch("/api/v0/environments/env/packages/pkg")
+               .send({ description: "d" }),
+            await request(server)
+               .patch("/api/v0/projects/env/packages/pkg")
+               .send({ description: "d" }),
+         ];
+
+         for (const res of answers) {
+            expect(res.status).toBe(404);
+            expect(res.headers["deprecation"]).toBe("true");
+            expect(res.headers["link"]).toContain(
+               'docs/package-versions.md>; rel="deprecation"',
+            );
+         }
+         expect(await used("package_patch")).toBe(2);
+      });
+
+      it("warns once per package, naming the route that replaces it", async () => {
+         const probe = "package-patch-probe";
+         const warn = spyOn(logger, "warn");
+         try {
+            const server = app();
+            for (const name of ["pkg", "pkg", "other"]) {
+               await request(server)
+                  .patch(`/api/v0/environments/${probe}/packages/${name}`)
+                  .send({});
+            }
+            const deprecations = linesMentioning(warn, probe).filter(
+               ([message]) => String(message).includes("is deprecated"),
+            );
+            expect(deprecations.map(([, fields]) => fields)).toEqual([
+               { environmentName: probe, packageName: "pkg" },
+               { environmentName: probe, packageName: "other" },
+            ]);
+            expect(String(deprecations[0][0])).toContain(
+               "PUT .../packages/pkg/versions/{version}/manifest",
+            );
+         } finally {
+            warn.mockRestore();
+         }
+         expect(await used("package_patch")).toBe(3);
       });
    });
 
