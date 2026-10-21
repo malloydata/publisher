@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "bun:test";
+import { StrictMode } from "react";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import { useGivensState } from "./useGivensState";
 
 const TYPES = new Map<string, string | undefined>([
@@ -643,6 +644,110 @@ describe("useGivensState: clearing a given that has a starting value", () => {
       // Back button to the URL that carried East: a starting point, not an echo.
       rerender({ params: { REGION: "East" } });
       expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   it("keeps the newest edit when a URL two reports old arrives late", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "dashboard",
+               autorun: true,
+            }),
+         { initialProps: { params: url } },
+      );
+
+      const reportedUrls: Record<string, string>[] = [];
+      for (const typed of ["F", "Fo", "For"]) {
+         act(() => result.current.setGiven("REGION", typed));
+         reportedUrls.push(url);
+      }
+
+      // The host delivers them late and in order, the oldest first.
+      for (const arriving of reportedUrls) {
+         rerender({ params: arriving });
+         expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+      }
+   });
+
+   it("keeps the newest edit through repeated renders at a stale URL", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "dashboard",
+               autorun: true,
+            }),
+         { initialProps: { params: url }, wrapper: StrictMode },
+      );
+
+      const reportedUrls: Record<string, string>[] = [];
+      for (const typed of ["F", "Fo", "For"]) {
+         act(() => result.current.setGiven("REGION", typed));
+         reportedUrls.push(url);
+      }
+
+      // The first report lands, and the host re-renders for its own reasons
+      // before the next one does.
+      for (let i = 0; i < 3; i++) {
+         rerender({ params: reportedUrls[0] });
+         expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+      }
+      rerender({ params: reportedUrls[1] });
+      rerender({ params: reportedUrls[1] });
+      expect(entries(result.current.applied)).toEqual({ REGION: "For" });
+   });
+
+   describe("a report that was replaced before its URL landed", () => {
+      afterEach(() => setSystemTime());
+
+      const mount = (documentKey = "dashboard") => {
+         let url: Record<string, string> = {};
+         const view = renderHook(
+            (props: { params: Record<string, string>; documentKey: string }) =>
+               useGivensState({
+                  declaredTypes: TYPES,
+                  params: props.params,
+                  onParamsChange: (next) => {
+                     url = next;
+                  },
+                  documentKey: props.documentKey,
+                  autorun: true,
+               }),
+            { initialProps: { params: url, documentKey } },
+         );
+         // Set, then cleared, before the URL for the first lands.
+         act(() => view.result.current.setGiven("REGION", "F"));
+         act(() => view.result.current.setGiven("REGION", null));
+         return view;
+      };
+
+      it("stops reading a later push that repeats it as an echo", () => {
+         setSystemTime(1_000_000);
+         const { result, rerender } = mount();
+         rerender({ params: {}, documentKey: "dashboard" });
+         setSystemTime(1_005_000);
+         rerender({ params: { REGION: "F" }, documentKey: "dashboard" });
+         expect(entries(result.current.applied)).toEqual({ REGION: "F" });
+      });
+
+      it("is forgotten when the document changes", () => {
+         setSystemTime(1_000_000);
+         const { result, rerender } = mount();
+         rerender({ params: {}, documentKey: "other" });
+         rerender({ params: { REGION: "F" }, documentKey: "other" });
+         expect(entries(result.current.applied)).toEqual({ REGION: "F" });
+      });
    });
 
    it("Reset after a clear restores the starting value and runs once", () => {
