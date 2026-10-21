@@ -15,12 +15,14 @@
  * All reuse {@link assertFilterConditionBindsToDeclaringSource}.
  *
  * "Identical field" means same `name`, `type`, and deep-equal `e`, ignoring
- * `annotations`, `accessModifier`, and `location`/`at` when the value is a
- * real `DocumentLocation` (both are also legal author names). A join hop also
- * requires the same `join` relationship and deep-equal `onExpression`,
- * `filterList`, `parameters` and `arguments`, since same-table sources share
- * a `name` and differ in rows only through those. Fields are looked up by
- * ACTIVE name ({@link activeName}).
+ * `annotations`, `accessModifier`, and `location`/`at`/`referencedAt` when the
+ * value is a real `DocumentLocation` (all are also legal author names), and a
+ * query source's per-compile `QuerySource-<uuid>` name. A join hop also
+ * requires the same `join` and `matrixOperation` and deep-equal `onExpression`,
+ * `filterList`, `parameters`, `arguments`, a query source's `query` and a
+ * composite's `sources`, since same-table sources share a `name` and differ in
+ * rows only through those. Fields are looked up by ACTIVE name
+ * ({@link activeName}).
  *
  * **The default is DENY.** Failing to resolve a declaring source or a field,
  * or hitting a walk bound, means "cannot prove this binds correctly". A
@@ -101,10 +103,29 @@ function activeName(f: { name: string; as?: string }): string {
  *  (`parameters`/`arguments`/a record-literal's `kids`) anywhere in the IR. */
 const IGNORED_KEYS_BY_NAME = new Set(["annotations", "accessModifier"]);
 
-/** Stripped only when the VALUE is a `DocumentLocation`: `location` and `at`
- *  are also legal author parameter/record-field names, and stripping those
- *  by key would make two different bindings compare equal. */
-const SHAPE_CHECKED_KEYS = new Set(["location", "at"]);
+/** Stripped only when the VALUE is a `DocumentLocation`: these are also legal
+ *  author parameter/record-field names, and stripping those by key would make
+ *  two different bindings compare equal. */
+const SHAPE_CHECKED_KEYS = new Set(["location", "at", "referencedAt"]);
+
+/** Records keyed by the author's own names, whose KEYS {@link strip} must keep. */
+const NAME_KEYED_RECORD_KEYS = new Set([
+   "parameters",
+   "arguments",
+   "sourceArguments",
+]);
+
+/** Malloy mints a fresh name for each compile of a query source. */
+const MINTED_QUERY_SOURCE_NAME = /^QuerySource-[0-9a-f-]{36}$/;
+
+function hasMintedQuerySourceName(v: unknown): boolean {
+   const o = v as { type?: unknown; name?: unknown } | undefined;
+   return (
+      o?.type === "query_source" &&
+      typeof o.name === "string" &&
+      MINTED_QUERY_SOURCE_NAME.test(o.name)
+   );
+}
 
 /** Structural match for `DocumentLocation`; no Expr or Parameter matches it. */
 function isDocumentLocation(v: unknown): boolean {
@@ -122,54 +143,90 @@ function isDocumentLocation(v: unknown): boolean {
    return isPosition(range.start) && isPosition(range.end);
 }
 
-/** Joined-struct properties, beyond `name`, that decide which rows the join reaches. */
-const JOINED_STRUCT_ROW_KEYS = ["filterList", "parameters", "arguments"];
-
-/** Name-keyed records, compared entry-by-entry so a parameter named
- *  `location`/`annotations`/etc. is not stripped by {@link strip}. */
-const NAME_KEYED_RECORD_KEYS = new Set(["parameters", "arguments"]);
+const strippedJsonCache = new WeakMap<object, string>();
 
 /** Structural equality ignoring metadata keys. A key-order mismatch reads as
  *  "different", which fails closed, so it is not chased. */
 function deepEqualIgnoring(a: unknown, b: unknown): boolean {
-   return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+   return strippedJson(a) === strippedJson(b);
 }
 
-/** Entry-by-entry equality for a record keyed by the author's own names. */
-function recordEntriesEqual(a: unknown, b: unknown): boolean {
-   const ao = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
-   const bo = (b && typeof b === "object" ? b : {}) as Record<string, unknown>;
-   const aKeys = Object.keys(ao);
-   const bKeys = Object.keys(bo);
-   if (aKeys.length !== bKeys.length) return false;
-   return aKeys.every((k) => k in bo && deepEqualIgnoring(ao[k], bo[k]));
+function strippedJson(value: unknown): string {
+   if (!value || typeof value !== "object") {
+      return JSON.stringify(strip(value));
+   }
+   let json = strippedJsonCache.get(value);
+   if (json === undefined) {
+      json = JSON.stringify(strip(value));
+      strippedJsonCache.set(value, json);
+   }
+   return json;
 }
 
 function strip(value: unknown): unknown {
    if (Array.isArray(value)) return value.map(strip);
    if (value && typeof value === "object") {
       const obj = value as Record<string, unknown>;
+      const mintedName = hasMintedQuerySourceName(obj);
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(obj)) {
-         // A record literal's `kids` is keyed by the author's own field
-         // names, so its entries must never be stripped by key.
-         if (k === "kids" && obj.node === "recordLiteral") {
-            const kids = (v && typeof v === "object" ? v : {}) as Record<
+         if (
+            NAME_KEYED_RECORD_KEYS.has(k) ||
+            (k === "kids" && obj.node === "recordLiteral")
+         ) {
+            const record = (v && typeof v === "object" ? v : {}) as Record<
                string,
                unknown
             >;
             out[k] = Object.fromEntries(
-               Object.entries(kids).map(([kk, kv]) => [kk, strip(kv)]),
+               Object.entries(record).map(([rk, rv]) => [rk, strip(rv)]),
             );
             continue;
          }
          if (IGNORED_KEYS_BY_NAME.has(k)) continue;
+         if (k === "name" && mintedName) continue;
          if (SHAPE_CHECKED_KEYS.has(k) && isDocumentLocation(v)) continue;
          out[k] = strip(v);
       }
       return out;
    }
    return value;
+}
+
+type JoinedLike = Record<string, unknown>;
+
+/** Keys the join (not the joined struct) contributes, so they differ between
+ *  a declared composite and the member Malloy resolved it to. */
+const JOIN_OWN_KEYS = [
+   "as",
+   "join",
+   "onExpression",
+   "matrixOperation",
+   "refSummary",
+   "filterList",
+];
+
+/** The member of the declared joined `composite` that Malloy resolved it to
+ *  for the query (`resolved`), if any. */
+function matchingCompositeMember(
+   composite: SourceDef,
+   resolved: SourceDef,
+): SourceDef | undefined {
+   const core = (s: SourceDef) => {
+      const copy = { ...(s as unknown as JoinedLike) };
+      for (const key of JOIN_OWN_KEYS) delete copy[key];
+      return strippedJson(copy);
+   };
+   const resolvedCore = core(resolved);
+   return compositeMembers(composite).find(
+      (member) =>
+         !isComposite(member) &&
+         core(member) === resolvedCore &&
+         deepEqualIgnoring(
+            (member as { filterList?: unknown }).filterList ?? [],
+            (resolved as { filterList?: unknown }).filterList ?? [],
+         ),
+   );
 }
 
 /** Whether `a` and `b` are the same field (see the module doc). An
@@ -179,31 +236,52 @@ function fieldsIdentical(
    b: FieldDef | undefined,
 ): boolean {
    if (!a || !b) return false;
-   if (a.type !== b.type) return false;
+   const ja = a as unknown as JoinedLike;
+   const jb = b as unknown as JoinedLike;
+   const joined = isJoined(a) || isJoined(b);
+   if (joined && (!isJoined(a) || !isJoined(b))) return false;
+   // A joined composite reads as its resolved member on the executed side.
+   const resolvedMember =
+      joined &&
+      isComposite(a as SourceDef) !== isComposite(b as SourceDef) &&
+      !!(isComposite(a as SourceDef)
+         ? matchingCompositeMember(a as SourceDef, b as SourceDef)
+         : matchingCompositeMember(b as SourceDef, a as SourceDef));
+   if (!resolvedMember) {
+      if (a.type !== b.type) return false;
+      if (
+         a.name !== b.name &&
+         !(hasMintedQuerySourceName(a) && hasMintedQuerySourceName(b))
+      ) {
+         return false;
+      }
+   }
    if (!deepEqualIgnoring((a as { e?: unknown }).e, (b as { e?: unknown }).e))
       return false;
-   if (isJoined(a) && isJoined(b) && a.type === "query_source") {
-      // Malloy names a query source's joined struct `QuerySource-<uuid>` afresh
-      // per compile, so identity is the alias plus the query it wraps.
-      if (a.as !== b.as) return false;
-      const qa = (a as unknown as { query?: unknown }).query;
-      const qb = (b as unknown as { query?: unknown }).query;
-      if (!deepEqualIgnoring(qa, qb)) return false;
-   } else if (a.name !== b.name) {
-      return false;
-   }
-   if (isJoined(a) || isJoined(b)) {
-      if (!isJoined(a) || !isJoined(b)) return false;
-      if (a.join !== b.join) return false;
-      if (!deepEqualIgnoring(a.onExpression, b.onExpression)) return false;
+   if (joined) {
+      if (ja.join !== jb.join) return false;
+      if (!resolvedMember && ja.matrixOperation !== jb.matrixOperation) {
+         return false;
+      }
+      if (!deepEqualIgnoring(ja.onExpression, jb.onExpression)) return false;
       // A same-table sibling (`where:`, or different parameter bindings) keeps the joined struct's `name`.
-      const ja = a as unknown as Record<string, unknown>;
-      const jb = b as unknown as Record<string, unknown>;
-      for (const key of JOINED_STRUCT_ROW_KEYS) {
-         const equal = NAME_KEYED_RECORD_KEYS.has(key)
-            ? recordEntriesEqual(ja[key], jb[key])
-            : deepEqualIgnoring(ja[key], jb[key]);
-         if (!equal) return false;
+      const rows = (j: JoinedLike) => ({
+         filterList: j.filterList ?? [],
+         parameters: j.parameters ?? {},
+         arguments: j.arguments ?? {},
+         sourceArguments: j.sourceArguments ?? {},
+      });
+      if (!deepEqualIgnoring(rows(ja), rows(jb))) return false;
+      // A query source's name is minted per compile, so its `query` is its identity.
+      if (a.type === "query_source" && !deepEqualIgnoring(ja.query, jb.query)) {
+         return false;
+      }
+      if (
+         isComposite(a as SourceDef) &&
+         isComposite(b as SourceDef) &&
+         !deepEqualIgnoring(ja.sources, jb.sources)
+      ) {
+         return false;
       }
    }
    return true;
@@ -261,8 +339,14 @@ function fieldPathIdentical(
          if (!dField || !isJoined(dField) || !eField || !isJoined(eField)) {
             return false;
          }
-         dCur = dField as unknown as SourceDef;
-         eCur = eField as unknown as SourceDef;
+         const declared = dField as unknown as SourceDef;
+         const executedJoin = eField as unknown as SourceDef;
+         // Its composite placeholder fields only resolve through the member.
+         dCur =
+            isComposite(declared) && !isComposite(executedJoin)
+               ? matchingCompositeMember(declared, executedJoin)
+               : declared;
+         eCur = executedJoin;
       }
    }
    return true;
@@ -349,8 +433,15 @@ function fieldUsageClosure(
    return { paths, truncated: false };
 }
 
+/** A composite's stand-in for a member's field: a `compositeField` expression,
+ *  or, for a join, an empty composite carrying `onCompositeFieldUsage`. */
 function isCompositePlaceholder(field: FieldDef): boolean {
-   return (field as { e?: { node?: unknown } }).e?.node === "compositeField";
+   return (
+      (field as { e?: { node?: unknown } }).e?.node === "compositeField" ||
+      (isComposite(field as SourceDef) &&
+         (field as { onCompositeFieldUsage?: unknown })
+            .onCompositeFieldUsage !== undefined)
+   );
 }
 
 function isComposite(struct: SourceDef | undefined): boolean {
@@ -386,14 +477,11 @@ function withCompositeMembersResolved(
    const declared = new Set(
       compositeMembers(declaring)
          .filter(leaf)
-         .map((member) => JSON.stringify(strip(member))),
+         .map((member) => strippedJson(member)),
    );
    const memberFields = new Set(
       compositeMembers(composite)
-         .filter(
-            (member) =>
-               leaf(member) && declared.has(JSON.stringify(strip(member))),
-         )
+         .filter((member) => leaf(member) && declared.has(strippedJson(member)))
          .flatMap((member) => member.fields ?? []),
    );
    let resolved = false;
@@ -863,6 +951,27 @@ function firstFieldUsageLocation(
    return first?.at;
 }
 
+/** Same declaration, not merely the same object: a registry-reference copy
+ *  shares its original's `sourceID`, location, `filterList` and `fields`
+ *  elements, while any modification replaces or adds at least one of them. */
+export function isSameDeclaration(a: SourceDef, b: SourceDef): boolean {
+   if (a === b) return true;
+   const sameElements = (x?: readonly unknown[], y?: readonly unknown[]) =>
+      (x?.length ?? 0) === (y?.length ?? 0) &&
+      (x ?? []).every((e, i) => e === (y as readonly unknown[])[i]);
+   const sourceId = (s: SourceDef) => (s as { sourceID?: string }).sourceID;
+   return (
+      sourceId(a) !== undefined &&
+      sourceId(a) === sourceId(b) &&
+      !!a.location &&
+      !!b.location &&
+      a.location.url === b.location.url &&
+      JSON.stringify(a.location.range) === JSON.stringify(b.location.range) &&
+      sameElements(a.filterList, b.filterList) &&
+      sameElements(a.fields, b.fields)
+   );
+}
+
 /**
  * The farthest ancestor of `struct` whose own `filterList` still contains
  * `condition` BY REFERENCE. Malloy never mutates a `FilterCondition` (an
@@ -870,6 +979,11 @@ function firstFieldUsageLocation(
  * copy. Links tried per step: {@link nextDerivationLink}, then
  * {@link findConditionOriginByLocation} for a modified, unannotated
  * derivation (Malloy clears `referenceID` on any modification).
+ *
+ * `struct`'s own twin ({@link isSameDeclaration}) and a non-composite
+ * `unresolved` (`struct` before its joined composites were resolved) are walked
+ * through but never returned: they carry the same joins as `struct`, so
+ * comparing against them proves nothing.
  *
  * Returns `struct` itself when nothing resolves, including the sibling
  * compile; the caller treats that as "cannot prove", not "nothing to check".
@@ -879,23 +993,41 @@ function findFilterOrigin(
    condition: FilterCondition,
    modelDef: ModelDef | undefined,
    resolveSibling?: SiblingModelDefResolver,
+   unresolved?: SourceDef,
 ): SourceDef {
    let origin = struct;
    let current = struct;
+   let twin: SourceDef | undefined;
+   let ancestorUnresolved = false;
    const seen = new Set<SourceDef>([struct]);
    for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
       let next: SourceDef | undefined = modelDef
          ? nextDerivationLink(current, modelDef, seen)
          : undefined;
-      if (!next && modelDef) {
+      // A derivation link can name the wrong ancestor (a query source's base),
+      // so the span of the condition's own text is tried whenever it fails.
+      if (modelDef && !next?.filterList?.includes(condition)) {
          const at = firstFieldUsageLocation(condition);
-         if (at) {
-            const candidate = findConditionOriginByLocation(modelDef, at);
-            if (candidate && !seen.has(candidate)) next = candidate;
+         const candidate = at && findConditionOriginByLocation(modelDef, at);
+         if (candidate && !seen.has(candidate)) {
+            next ??= candidate;
+            if (candidate.filterList?.includes(condition)) next = candidate;
          }
       }
-      if (!next || !next.filterList?.includes(condition)) break;
-      origin = next;
+      if (!next || !next.filterList?.includes(condition)) {
+         ancestorUnresolved = !next;
+         break;
+      }
+      if (
+         !isSameDeclaration(next, struct) &&
+         (!unresolved ||
+            !isSameDeclaration(next, unresolved) ||
+            isComposite(unresolved))
+      ) {
+         origin = next;
+      } else {
+         twin ??= next;
+      }
       seen.add(next);
       current = next;
    }
@@ -907,6 +1039,8 @@ function findFilterOrigin(
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return sibling;
       }
+      // With no ancestor in sight the twin is the declaration that holds the filter.
+      if (twin && ancestorUnresolved) return twin;
    }
    return origin;
 }
@@ -978,11 +1112,12 @@ function isOwnFreshFilter(
 /**
  * Assert every INHERITED entry in `struct.filterList` (an inherited `where:`
  * or a grafted condition) still binds as where it was declared, then recurse
- * into every joined source. Only a condition that reads no field or is
- * proven fresh is skipped; an unresolvable origin DENIES, since a
- * caller-modified struct could otherwise exploit "can't tell" reading as
- * "fine". Runs for every executed struct, gated or not: a plain filtered
- * source is just as misbindable.
+ * into every joined source, a query source's base, and every join a query
+ * stage (`pipeline`, or a query source's own) adds. Only a condition that
+ * reads no field or is proven fresh is skipped; an unresolvable origin
+ * DENIES, since a caller-modified struct could otherwise exploit "can't tell"
+ * reading as "fine". Runs for every executed struct, gated or not: a plain
+ * filtered source is just as misbindable.
  *
  * `visited` ends a cycle silently (already checked). Exhausting `depth`
  * THROWS: a struct beyond the bound was never checked.
@@ -997,6 +1132,8 @@ export function assertInheritedSourceFiltersBind(
    alreadyProven: ReadonlySet<FilterCondition> = new Set(),
    // `struct` before composite resolution, from the same compile.
    unresolved: SourceDef | undefined = undefined,
+   // The run query's own stages, whose `extend:` joins hang off no struct.
+   pipeline: readonly StageLike[] | undefined = undefined,
 ): void {
    if (visited.has(struct)) return;
    if (depth > MAX_JOIN_RECURSION_DEPTH) {
@@ -1021,6 +1158,7 @@ export function assertInheritedSourceFiltersBind(
          condition,
          modelDef,
          resolveSibling,
+         unresolved,
       );
       if (origin !== struct) {
          assertFilterConditionBindsToDeclaringSource(
@@ -1049,6 +1187,17 @@ export function assertInheritedSourceFiltersBind(
          "a row-security filter's declaring source could not be resolved",
       );
    }
+   const descend = (next: SourceDef, nextUnresolved?: SourceDef) =>
+      assertInheritedSourceFiltersBind(
+         next,
+         modelDef,
+         freshness,
+         resolveSibling,
+         depth + 1,
+         visited,
+         alreadyProven,
+         nextUnresolved,
+      );
    // No `fields` means not a real compiled struct (e.g. a test double):
    // nothing to walk, and the filter check above already denies as needed.
    for (const field of struct.fields ?? []) {
@@ -1056,18 +1205,57 @@ export function assertInheritedSourceFiltersBind(
          const unresolvedJoin = unresolved?.fields?.find(
             (f) => isJoined(f) && activeName(f) === activeName(field),
          );
-         assertInheritedSourceFiltersBind(
+         descend(
             field as unknown as SourceDef,
-            modelDef,
-            freshness,
-            resolveSibling,
-            depth + 1,
-            visited,
-            alreadyProven,
             unresolvedJoin as unknown as SourceDef | undefined,
          );
       }
    }
+   // A query source's rows come from its base and stages, none of which are in `fields`.
+   if ((struct as { type?: string }).type === "query_source") {
+      const base = resolveQuerySourceBase(struct, modelDef);
+      if (!base) {
+         throw new Error("a query source's base could not be resolved");
+      }
+      const resolvedBase = resolveCompositeResolvedBase(struct);
+      descend(resolvedBase ?? base, resolvedBase ? base : undefined);
+      const own = (struct as { query?: { pipeline?: readonly StageLike[] } })
+         .query;
+      stageJoins(own?.pipeline).forEach((join) => descend(join));
+   }
+   stageJoins(pipeline).forEach((join) => descend(join));
+}
+
+/** Duck-typed query stage: only the parts that can carry a join. */
+export interface StageLike {
+   extendSource?: readonly FieldDef[];
+   queryFields?: readonly { type?: string; pipeline?: readonly StageLike[] }[];
+}
+
+/** Every source joined by `extend:` in `pipeline`, including inside nests. */
+function stageJoins(
+   pipeline: readonly StageLike[] | undefined,
+   depth = 0,
+): SourceDef[] {
+   if (depth > MAX_JOIN_RECURSION_DEPTH) {
+      throw new Error(
+         "row-security filter recursion exceeded the join-depth resolution bound",
+      );
+   }
+   const joins: SourceDef[] = [];
+   for (const stage of pipeline ?? []) {
+      for (const field of stage.extendSource ?? []) {
+         if (isJoined(field) && isSourceDef(field)) {
+            joins.push(field as unknown as SourceDef);
+         }
+      }
+      for (const field of stage.queryFields ?? []) {
+         if (field.type === "turtle") {
+            joins.push(...stageJoins(field.pipeline, depth + 1));
+         }
+      }
+   }
+   return joins;
 }
 
 /** Exported for tests. */

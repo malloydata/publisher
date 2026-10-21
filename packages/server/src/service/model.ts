@@ -183,6 +183,7 @@ import {
    findFilterAnnotationDeclaringSource,
    type DocumentLocationLike,
    type SiblingModelDefResolver,
+   type StageLike,
 } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
 // methods of the same names; without the alias, converting one of them to an
@@ -2517,14 +2518,16 @@ export class Model {
          );
       }
       const rowLevel = [...entryPointRowLevel, ...callerJoinRowLevel];
-      if (rowLevel.length === 0) {
-         // No gate anywhere: still prove no inherited filter came unbound, as
-         // every exit does.
-         await this.assertNoMisboundInheritedFilters(runnable);
-         return runnable;
-      }
       const siteOf = (graft: RowLevelGraftEntry): AuthorizeGateSite =>
          graft.callerJoinPath ? "caller_join" : "entry_point";
+      // Before any exit, `checkOnly` included: `/compile` must refuse what the
+      // query route refuses. A grafted runnable is checked again below.
+      await this.assertNoMisboundInheritedFilters(
+         runnable,
+         new Set(),
+         rowLevel.length > 0 ? siteOf(rowLevel[0]) : undefined,
+      );
+      if (rowLevel.length === 0) return runnable;
 
       if (!options?.recompile) {
          // Without `recompile` the filter cannot attach, so a caller that will
@@ -2625,6 +2628,7 @@ export class Model {
       compositeResolvedSourceDef: SourceDef | undefined;
       compiledUrl: string | undefined;
       queryLocation: DocumentLocationLike | undefined;
+      pipeline: readonly StageLike[] | undefined;
    }> {
       try {
          const prepared = (await runnable.getPreparedQuery()) as {
@@ -2632,6 +2636,7 @@ export class Model {
                structRef?: unknown;
                compositeResolvedSourceDef?: SourceDef;
                location?: DocumentLocationLike;
+               pipeline?: readonly StageLike[];
             };
             _modelDef?: ModelDef;
          };
@@ -2643,6 +2648,7 @@ export class Model {
                compositeResolvedSourceDef: undefined,
                compiledUrl: undefined,
                queryLocation: undefined,
+               pipeline: undefined,
             };
          const structRef = prepared._query?.structRef;
          const struct =
@@ -2663,6 +2669,7 @@ export class Model {
                   ? prepared._query.location.url
                   : undefined,
             queryLocation: prepared._query?.location,
+            pipeline: prepared._query?.pipeline,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -2674,6 +2681,7 @@ export class Model {
             compositeResolvedSourceDef: undefined,
             compiledUrl: undefined,
             queryLocation: undefined,
+            pipeline: undefined,
          };
       }
    }
@@ -3014,6 +3022,7 @@ export class Model {
          compositeResolvedSourceDef,
          compiledUrl,
          queryLocation,
+         pipeline,
       } = await this.resolveRunTargetStruct(runnable);
       const target = compositeResolvedSourceDef ?? struct;
       if (!target) return;
@@ -3027,6 +3036,7 @@ export class Model {
             undefined,
             alreadyProven,
             struct,
+            pipeline,
          );
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", site);
