@@ -142,9 +142,11 @@ export function tryAcquireQuerySlot(routeLabel: string): QuerySlotHandle {
  * disconnects mid-compile holds its slot until the compile finishes.
  *
  * It does NOT queue: a queue hides load and inflates p99, while failing fast
- * lets the load balancer retry on a less-loaded pod. A response the handler
- * never ends, and that never emits `finish`/`close`, leaks its slot until
- * restart.
+ * hands the caller a 503 it can retry. Where several replicas sit behind a
+ * load balancer, the retry can land on a less-loaded one; a standalone server
+ * has only itself, so its caller retries once in-flight queries complete. A
+ * response the handler never ends, and that never emits `finish`/`close`,
+ * leaks its slot until restart.
  */
 export function queryConcurrencyMiddleware(
    req: Request,
