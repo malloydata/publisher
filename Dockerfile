@@ -5,7 +5,7 @@
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
-FROM oven/bun:1.3.13-slim AS base-deps
+FROM oven/bun:1.4.3-slim AS base-deps
 
 # `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
 # the date that tag was published. Without it every image built from the same tag
@@ -81,7 +81,7 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
 # the shim at runtime, where only smoke-test 4b would notice. Change both or
 # neither -- including the `apt-get upgrade`, which is why this stage reads
 # APT_REFRESH too.
-FROM oven/bun:1.3.13-slim AS adbc-driver
+FROM oven/bun:1.4.3-slim AS adbc-driver
 ARG ADBC_SNOWFLAKE_VERSION=1.12.0
 ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
 ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
@@ -124,7 +124,7 @@ RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
 # straight into prod-deps would change its cache key there, before any step
 # could pin them. The workspaces listed here match the builder's and the final
 # stage's lists.
-FROM oven/bun:1.3.13-slim AS prod-manifests
+FROM oven/bun:1.4.3-slim AS prod-manifests
 WORKDIR /publisher
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
@@ -140,7 +140,7 @@ RUN bun scripts/set-version.mjs 0.0.0 packages/*/package.json
 # sit after the dist/ copies and on top of base-deps (which APT_REFRESH rebuilds
 # daily), so it would rerun, and its layer re-ship, on every release. The final
 # stage ships the real package.json files from the builder.
-FROM oven/bun:1.3.13-slim AS prod-deps
+FROM oven/bun:1.4.3-slim AS prod-deps
 WORKDIR /publisher
 COPY package.json bun.lock ./
 COPY patches/ ./patches/
@@ -178,7 +178,7 @@ WORKDIR /publisher/packages/server
 RUN HOME=/root DUCKDB_BAKE_STRICT=1 bun scripts/bake-duckdb-extensions.js
 
 # Builder stage
-FROM oven/bun:1.3.13-slim AS builder
+FROM oven/bun:1.4.3-slim AS builder
 COPY --from=java-base /usr/lib/jvm /usr/lib/jvm
 ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH
