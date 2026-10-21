@@ -130,6 +130,11 @@ function sameDeclaredParams(
    return true;
 }
 
+/** Bounds the reports remembered as in flight when a host never echoes them. */
+const MAX_IN_FLIGHT_REPORTS = 32;
+// How long a superseded report can still be told apart from a push that repeats it.
+const IN_FLIGHT_REPORT_MS = 1500;
+
 /** Same entries, same values: enough for state whose values are primitives. */
 function sameParams(
    a: Record<string, string>,
@@ -163,7 +168,7 @@ export function useGivensState({
    // mount reads as an echo.
    const lastReported = useRef<Record<string, string> | null>(null);
 
-   // The report BEFORE `lastReported`, kept only until the newer one is seen
+   // The reports BEFORE `lastReported`, kept only until the newer one is seen
    // coming back.
    //
    // A report does not reach `params` in the same tick: the host navigates, the
@@ -175,12 +180,18 @@ export function useGivensState({
    // the edits were discarded, and `initial` put the value the reader had just
    // cleared straight back into the control, and into the URL after it.
    //
-   // Narrow by construction: it holds one report, only while that report is in
-   // flight, and is dropped the moment the newer one is observed. The cost is
+   // Narrow by construction: it holds the reports still in flight (several when
+   // a control reports faster than the URL lands), and drops each as the URL
+   // moves past it. The cost is
    // that an external push landing in that window whose values happen to equal
-   // the report being replaced is taken for the echo — the same values we were
+   // a report being replaced is taken for the echo — the same values we were
    // just showing, arriving in the few milliseconds before our own URL lands.
-   const priorReported = useRef<Record<string, string> | null>(null);
+   // A value that repeats while in flight (A, B, A) matches its oldest report,
+   // so B stays in flight until the next report lands.
+   const priorReported = useRef<
+      { params: Record<string, string>; at: number }[]
+   >([]);
+   const lastReportedAt = useRef(0);
 
    // The URL that defines the current starting point. This is `params` EXCEPT
    // when `params` is our own report arriving back through the host, which is
@@ -211,17 +222,32 @@ export function useGivensState({
    const echoes = (reported: Record<string, string> | null) =>
       reported !== null &&
       sameDeclaredParams(params ?? {}, reported, declaredTypes);
-   // The newest report has arrived, so the one it replaced is no longer in
-   // flight and stops counting as an echo.
-   if (echoes(lastReported.current)) priorReported.current = null;
+   // The oldest report still in flight that `params` matches. Reports are
+   // delivered in order, so those before it are gone for good and it stays
+   // until the URL moves past it: a re-render at the same URL is idempotent.
+   // An entry older than the window is dropped: a URL that repeats it then is
+   // a push (Back, a drill), not a straggler.
+   const now = Date.now();
+   priorReported.current = priorReported.current.filter(
+      (r) => now - r.at < IN_FLIGHT_REPORT_MS,
+   );
+   const inFlight =
+      lastReported.current === null
+         ? priorReported.current.map((r) => r.params)
+         : [
+              ...priorReported.current.map((r) => r.params),
+              lastReported.current,
+           ];
+   const arrived = inFlight.findIndex(echoes);
+   if (anchor.current.documentKey !== documentKey) priorReported.current = [];
    if (
       anchor.current.documentKey !== documentKey ||
-      (!sameParams(params ?? {}, anchor.current.params ?? {}) &&
-         !echoes(lastReported.current) &&
-         !echoes(priorReported.current))
+      (!sameParams(params ?? {}, anchor.current.params ?? {}) && arrived < 0)
    ) {
       anchor.current = { documentKey, params };
    }
+   if (arrived > 0)
+      priorReported.current = priorReported.current.slice(arrived);
    const anchorParams = anchor.current.params;
    const startingValuesKey = JSON.stringify(startingValues);
    const anchorParamsKey = JSON.stringify(anchorParams);
@@ -363,7 +389,10 @@ export function useGivensState({
       () => givensToParams(applied, declaredTypes),
       [applied, declaredTypes],
    );
-   if (lastReported.current === null) lastReported.current = appliedParams;
+   if (lastReported.current === null) {
+      lastReported.current = appliedParams;
+      lastReportedAt.current = Date.now();
+   }
    // Recorded only when the report is actually DELIVERED. A surface withholds
    // the callback while it is still loading — `Notebook` passes undefined until
    // the document has arrived, so that a report made in the window where it
@@ -384,8 +413,14 @@ export function useGivensState({
    useEffect(() => {
       if (!onParamsChange) return;
       if (sameParams(lastReported.current ?? {}, appliedParams)) return;
-      priorReported.current = lastReported.current;
+      if (lastReported.current !== null) {
+         priorReported.current = [
+            ...priorReported.current.slice(-MAX_IN_FLIGHT_REPORTS + 1),
+            { params: lastReported.current, at: lastReportedAt.current },
+         ];
+      }
       lastReported.current = appliedParams;
+      lastReportedAt.current = Date.now();
       onParamsChange(appliedParams);
    }, [appliedParams, onParamsChange]);
 

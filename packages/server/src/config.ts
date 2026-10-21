@@ -1614,30 +1614,6 @@ export const isMcpIncludeHiddenFilesAndSources = (
    }
 };
 
-export const getConnectionsFromPublisherConfig = (
-   serverRoot: string,
-   environmentName: string,
-): Connection[] => {
-   try {
-      const publisherConfig = getPublisherConfig(serverRoot);
-      if (!Array.isArray(publisherConfig.environments)) {
-         return [];
-      }
-      const environment = publisherConfig.environments.find(
-         (e) => e && e.name === environmentName,
-      );
-      return Array.isArray(environment?.connections)
-         ? environment.connections
-         : [];
-   } catch (error) {
-      logger.error(
-         `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
-         { error: error instanceof Error ? error.message : String(error) },
-      );
-      return [];
-   }
-};
-
 export const convertConnectionsToApiConnections = (
    connections: Connection[],
 ): ApiConnection[] => {

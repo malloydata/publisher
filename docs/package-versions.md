@@ -103,7 +103,7 @@ A `versionId` on a static file pins only a version the package has; anything els
 
 ### The deprecated PATCH, on a versioned package
 
-`PATCH …/packages/{pkg}` is deprecated. On a versioned package it keeps working for the changes that are not content, for clients that rebind through it:
+`PATCH …/packages/{pkg}` is deprecated, and kept working so that callers which predate versions do not break. Every response carries `Deprecation: true` and a `Link` here, every request is counted in `publisher_deprecated_usage_total` (`feature` `package_patch`), and the server logs a warning, once per package per run, naming the route that replaces it. A caller should move to `PUT …/versions/{version}/manifest` to rebind a version, and publish a new version to change content. On a versioned package it keeps working for the changes that are not content, for clients that rebind through it:
 
 - A `manifestLocation` URI binds the package's `latest` version, as `PUT …/versions/{latest}/manifest` would. A null or empty one is unset, like any other field sent back unset, so it leaves the binding as it is; to serve `latest` live, clear its binding with `PUT …/versions/{latest}/manifest`.
 - `description` sets the package's own description. It reads back on the package and in listings; with none set, a package reads as its `latest` version's description, and a description that only echoes what the package reads as now sets nothing. A package that was unversioned gives up the description its old tree had at its first versioned publish. Each version keeps its own.

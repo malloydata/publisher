@@ -1638,6 +1638,12 @@ paths:
         `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
         change content.
 
+        It keeps working, so that callers which predate versions do not break, and says it is
+        deprecated: every response carries `Deprecation: true` and a `Link` to the package
+        versions reference, every request is counted in `publisher_deprecated_usage_total`
+        (`feature` `package_patch`), and the server logs a warning, once per package per run,
+        naming the route that replaces it.
+
         Updates the configuration and metadata of an existing package. This allows you to
         modify package settings, update the description, change the location, or update other
         package-level properties. The package must exist and be accessible.

@@ -92,12 +92,12 @@ export interface CellReportProps {
     *
     * That is every committed change. Under `## autorun=false` a change is
     * committed on Apply, so reports are batched; otherwise every change is
-    * committed and typing in a text control reports per keystroke. It does NOT
-    * run per keystroke: a changed value waits `GIVEN_SETTLE_MS` before
-    * anything is dispatched, so a burst of typing produces one run. A run that
-    * does start supersedes and aborts the one before it. The REPORTS are still
-    * per keystroke, so a host doing something expensive per call should
-    * debounce.
+    * committed. A changed value waits `GIVEN_SETTLE_MS` before anything is
+    * dispatched, so a burst of changes produces one run. A run that
+    * does start supersedes and aborts the one before it. A text, number, date
+    * or slider control commits once it settles, so typed text runs after both
+    * waits; the wait here still covers pickers, keyboard slider steps, drill
+    * and Reset, which commit at once.
     *
     * `managed` names every given this report declares, set or not. A host
     * writing to a shared query string needs it: `givens` alone says which

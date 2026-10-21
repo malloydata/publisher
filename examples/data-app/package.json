@@ -45,6 +45,7 @@
   },
   "resolutions": {
     "seroval": "^1.6.3",
-    "seroval-plugins": "^1.6.3"
+    "seroval-plugins": "^1.6.3",
+    "source-map-js": "^1.2.2"
   }
 }

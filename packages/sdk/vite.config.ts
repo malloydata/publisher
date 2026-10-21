@@ -70,10 +70,8 @@ export default ({ mode }) => {
                "@mui/material",
                "@mui/icons-material",
                "@mui/system",
-               "@mui/x-tree-view",
 
                // Other large React libraries
-               "@react-spring/web",
                "@tanstack/react-query",
 
                // Malloy dependencies (should be provided by host)
