@@ -7,6 +7,7 @@ import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { validateRenderTags } from "@malloydata/render-validator";
 import { getQueryTimeoutMs } from "../../config";
+import { DeclaredElsewhereError } from "../../errors";
 import { logger } from "../../logger";
 import {
    tryAcquireQuerySlot,
@@ -233,6 +234,7 @@ export function registerExecuteQueryTool(
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
                pkg.getModel(modelPath)?.carriesReportTag() ?? false,
+               result,
             );
 
             const resultUri = buildMalloyUri(
@@ -287,7 +289,10 @@ export function registerExecuteQueryTool(
             // An undefined name is also what an author gets after saving a new
             // source or view without reloading, so point at the reload too.
             const suggestions = [...errorDetails.suggestions];
-            if (isUndefinedNameError(errorDetails.message)) {
+            if (
+               !(queryError instanceof DeclaredElsewhereError) &&
+               isUndefinedNameError(errorDetails.message)
+            ) {
                suggestions.push(
                   "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
                );

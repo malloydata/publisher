@@ -126,6 +126,22 @@ export interface ReportQueryTileSpec extends ReportTileLayout {
    row?: number;
    col?: number;
    /**
+    * `drill { <dimension> { to=… given=… } }` on the tile's entry: the click
+    * actions this tile offers on a value of that dimension. An entry's drill
+    * replaces the model's `# drill` tag for the dimension it names, on this
+    * tile only; a dimension the entry does not name keeps the model's tag.
+    * Only the entry sets it.
+    */
+   drill?: Record<string, TileDrill>;
+   /**
+    * The view a named-query tile reads, as `source -> view`: the one view of
+    * the query's source whose outputs are exactly the query's. A viewer with no
+    * `label` titles a query the builder named for that view (`top_brands_tile`)
+    * as the view. Absent when the tile is not a named query, or no single view
+    * matches.
+    */
+   view?: string;
+   /**
     * The caller may not read this tile's source. Set only by a compile of
     * caller-submitted text; carries nothing else of the tile, so the answer
     * discloses neither the gated view's layout tags nor the givens it reads.
@@ -223,10 +239,20 @@ export interface ServedReportManifest {
  * (`docs/malloyyo-dashboards-design.md` §Follow-ups).
  */
 //
-// `theme` is the per-chart theme (`# theme.palette.series=[…]`), which the SDK
-// reads off the result to colour that one chart; the report builder writes it
-// for a tile's colour, so without it every coloured tile warned.
-const PUBLISHER_OWNED_TAGS = ["artifact", "drill", "theme"];
+// `theme.palette.series` is the per-chart series list the SDK reads off the
+// result; the report builder writes a one-colour line of it for a tile's
+// colour, so without this every coloured tile warned. Only that path: a
+// `theme.*` typo (`# theme.palete.series`) is the author's mistake and stays.
+const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
+const PUBLISHER_OWNED_PATHS = ["theme.palette.series"];
+
+/** A tag Publisher owns: a whole root (`artifact`, `drill`) or one exact path. */
+function isPublisherOwnedTag(tag: string): boolean {
+   if (PUBLISHER_OWNED_TAGS.includes(tag.split(".")[0])) return true;
+   return PUBLISHER_OWNED_PATHS.some(
+      (path) => tag === path || tag.startsWith(`${path}.`),
+   );
+}
 
 /**
  * The renderer's own per-child dashboard tags, which Publisher also reads for a
@@ -298,17 +324,32 @@ export function tileTarget(
 export function dropGridTileLayoutFindings<T extends { message?: string }>(
    warnings: T[],
    isGridTile: (warning: T) => boolean,
+   /**
+    * Whether a finding's subject is a tile of any report, linear included: a
+    * linear report's tile reads `# subtitle` and `# borderless` as a grid's
+    * does, so those two are dropped there too. Absent, grid tiles only.
+    */
+   isAnyTile: (warning: T) => boolean = isGridTile,
 ): T[] {
-   return warnings.filter(
-      (warning) =>
-         !(isTileLayoutTagOnRoot(warning.message) && isGridTile(warning)),
-   );
+   return warnings.filter((warning) => {
+      if (!isTileLayoutTagOnRoot(warning.message)) return true;
+      const tag = UNKNOWN_RENDER_TAG.exec(warning.message ?? "")?.[1] ?? "";
+      return !(
+         isGridTile(warning) ||
+         (TILE_PRESENTATION_TAGS.includes(tag.split(".")[0]) &&
+            isAnyTile(warning))
+      );
+   });
 }
+
+/** The per-tile tags read in either layout; `colspan` and `break` are a grid's only. */
+const TILE_PRESENTATION_TAGS = ["subtitle", "borderless"];
 
 /**
  * Drop "unknown render tag" complaints about tags Publisher owns, leaving every
- * other render finding intact. Matches on the tag's root property, so nested
- * paths (`artifact.title`) are covered too.
+ * other render finding intact. `artifact` and `drill` match on the tag's root,
+ * so nested paths (`artifact.title`) are covered too. `theme` matches only
+ * `theme.palette.series`, so a typo such as `theme.palete.series` is kept.
  */
 export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    logs: T[],
@@ -316,13 +357,53 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
     * (`Model.carriesReportTag`). Required so a new call site cannot silently
     * widen the suppression to every query. */
    couldBeATile: boolean,
+   /** The Malloy result the logs are about, whose own tags say what a bare `theme` finding refers to. */
+   result: unknown,
 ): T[] {
+   const themeOwned = themeIsPublisherOwned(result);
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
-      if (PUBLISHER_OWNED_TAGS.includes(match[1].split(".")[0])) return false;
+      if (isPublisherOwnedTag(match[1])) return false;
+      // The renderer names only the root of a path it does not read, so the
+      // colour line Publisher writes (`# theme.palette.series=[…]`) comes back
+      // as `theme`. It is Publisher's when every `theme.` path in the result's
+      // own tags is that one; a typo beside it (`theme.palete.series`) keeps
+      // the finding.
+      if (match[1] === "theme" && themeOwned) return false;
       return !(couldBeATile && isTileLayoutTagOnRoot(log.message));
    });
+}
+
+/**
+ * Whether every `theme.` path in a result's own tags is the one Publisher
+ * reads (`theme.palette.series`), and there is at least one.
+ */
+function themeIsPublisherOwned(result: unknown): boolean {
+   const notes = (
+      (result as { annotations?: Array<{ value?: string }> } | undefined)
+         ?.annotations ?? []
+   ).map((note) => note.value ?? "");
+   const paths: string[] = [];
+   for (const note of notes) {
+      if (
+         !note.trimStart().startsWith("#") ||
+         note.trimStart().startsWith("#(")
+      )
+         continue;
+      for (const hit of note.matchAll(
+         /(?<![\w.])theme((?:\.[A-Za-z_][\w]*)*)/g,
+      ))
+         paths.push(`theme${hit[1]}`);
+   }
+   return (
+      paths.length > 0 &&
+      paths.every((path) =>
+         PUBLISHER_OWNED_PATHS.some(
+            (owned) => path === owned || path.startsWith(`${owned}.`),
+         ),
+      )
+   );
 }
 
 /**
@@ -378,10 +459,25 @@ interface EntryLayout {
    rowspan?: number;
    row?: number;
    col?: number;
+   drill?: Record<string, TileDrill & { missingTo?: true }>;
+}
+
+/** One dimension's click actions on a tile's entry: `<dimension> { to=… given=… }` under `drill`. */
+export interface TileDrill {
+   /**
+    * Destinations: a report path each, or the literal `self`. Empty when the
+    * entry writes `to=[]`, which turns the model's tag off on this tile: the
+    * value then offers its rows alone.
+    */
+   to: string[];
+   /** The given a click seeds; absent means the dimension's own name. */
+   given?: string;
 }
 
 /** The properties an entry's layout is written with, and so the only ones the lint lets an entry carry. */
 const ENTRY_LAYOUT_PROPERTIES = ["row", "col", "colspan", "rowspan", "break"];
+/** What a query tile's entry may carry besides its layout. */
+const QUERY_ENTRY_PROPERTIES = [...ENTRY_LAYOUT_PROPERTIES, "drill"];
 
 /**
  * Rows a tile with no `rowspan` takes on a placed report, whose rows are fixed
@@ -401,13 +497,44 @@ function readEntryLayout(entry: Tag): EntryLayout {
    const rowspan = positiveInteger(tagNumeric(entry, "rowspan"));
    const row = positiveInteger(tagNumeric(entry, "row"));
    const col = positiveInteger(tagNumeric(entry, "col"));
+   const drill = readEntryDrill(entry);
    return {
       ...(colspan !== undefined && { colspan }),
       ...(entry.has("break") && { break: tagText(entry, "break") !== "false" }),
       ...(rowspan !== undefined && { rowspan }),
       ...(row !== undefined && { row }),
       ...(col !== undefined && { col }),
+      ...(drill !== undefined && { drill }),
    };
+}
+
+/**
+ * `drill { region { to=self given=REGION } product { to="sales/detail" } }` on
+ * an entry, by dimension. Read like a model's `# drill` tag ({@link readDrillTag}):
+ * one destination may be written unbracketed, and `to=[]` turns the model's tag
+ * off on this tile. A dimension with no `to` at all is marked `missingTo`, so
+ * the lint can report it and the manifest can leave it out.
+ */
+function readEntryDrill(
+   entry: Tag,
+): Record<string, TileDrill & { missingTo?: true }> | undefined {
+   const drill = entry.tag("drill");
+   if (!drill) return undefined;
+   const out: Record<string, TileDrill & { missingTo?: true }> = {};
+   for (const dimension of Object.keys(drill.dict ?? {})) {
+      const spec = drill.tag(dimension);
+      if (!spec) continue;
+      const missingTo = !spec.has("to");
+      const to =
+         tagTextArray(spec, "to") ?? [tagText(spec, "to")].filter(isString);
+      const given = tagText(spec, "given");
+      out[dimension] = {
+         to,
+         ...(given !== undefined && { given }),
+         ...(missingTo && { missingTo: true as const }),
+      };
+   }
+   return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** The layout fields a tile spec carries from its entry: a `break` that is off is no field at all. */
@@ -425,6 +552,17 @@ function entryLayoutFields(layout: EntryLayout): {
       ...(layout.row !== undefined && { row: layout.row }),
       ...(layout.col !== undefined && { col: layout.col }),
    };
+}
+
+/** A query tile's click actions from its entry; a dimension written with no `to` is the lint's and left off. */
+function entryDrillField(layout: EntryLayout): {
+   drill?: Record<string, TileDrill>;
+} {
+   const usable = Object.entries(layout.drill ?? {}).flatMap(
+      ([dimension, { missingTo, ...spec }]) =>
+         missingTo ? [] : [[dimension, spec] as const],
+   );
+   return usable.length > 0 ? { drill: Object.fromEntries(usable) } : {};
 }
 
 /** The `artifact` sub-tag read into the manifest fields it contributes. */
@@ -543,6 +681,14 @@ export interface ReportModelFacts {
    queries: {
       name: string;
       annotations: string[];
+      /**
+       * The tags of the view the query reads, which Malloy keeps under
+       * `annotations.inherits` once the query has tags of its own: a builder
+       * query (`by_carrier_tile is flights -> by_carrier + { … }`) with its
+       * `# viz` keeps the view's `# label`. Outermost first; the query's own
+       * lines come after, so they win.
+       */
+      inherited?: string[];
       /** Names of the givens this query references. */
       givens: string[];
       /**
@@ -552,6 +698,8 @@ export interface ReportModelFacts {
        * source is inlined in the query's own definition, which cannot dangle.
        */
       sourceName?: string;
+      /** See {@link ReportQueryTileSpec.view}. */
+      view?: string;
    }[];
    /**
     * Given declarations this file can actually *bind*, keyed by name: the
@@ -590,11 +738,17 @@ export interface ReportModelFacts {
     */
    sourceFields: Map<string, Set<string>>;
    /**
-    * Every `# drill` tag reachable in this file, one per tagged dimension. Drill
-    * is declared on model dimensions rather than on a dashboard, so a file's
-    * drills come from the sources it imports.
+    * Every `# drill` tag reachable in this file, one per tagged dimension, then
+    * every `drill { … }` on this file's own tile entries (those carry `tile`).
     */
    drills: ReportDrill[];
+   /**
+    * The output field names of each one-stage source view, nests included,
+    * keyed like {@link ReportModelFacts.viewGivens}: what a tile entry's
+    * `drill { <dimension> … }` can name on a plain `source -> view` tile.
+    * Absent for a multi-stage view, whose names the lint does not check.
+    */
+   viewOutputs?: Map<string, Set<string>>;
    /**
     * Which givens a `suggest` needs in its request: the source's own `where:`
     * and effective `#(authorize)` references, or a named query's plus its
@@ -619,6 +773,12 @@ export interface CompiledTileGivens {
 export interface ReportDrill {
    source: string;
    dimension: string;
+   /**
+    * Set when the drill is a tile entry's (`drill { … }` in `tiles=[…]`)
+    * rather than a dimension's `# drill` tag: the tile's run expression. Its
+    * `source` is then that expression too.
+    */
+   tile?: string;
    /** Destinations: a dashboard slug each, or the literal `self`. */
    to: string[];
    /** Overrides the given name, which is otherwise the dimension name
@@ -697,16 +857,18 @@ export function readReportModelFacts(
             ...(query.annotations?.blockNotes ?? []),
             ...(query.annotations?.notes ?? []),
          ].map((note) => note.text),
+         inherited: inheritedNotes(query.annotations),
          givens: (query.givenUsage ?? [])
             .map((usage) => registry[usage.id]?.name)
             .filter((name): name is string => name !== undefined),
-         sourceName:
-            typeof query.structRef === "string" ? query.structRef : undefined,
+         sourceName: structRefSourceName(query.structRef),
+         outputs: viewOutputNames(query as unknown as TurtleDef),
       }));
 
    const viewGivens = new Map<string, string[]>();
    const viewAnnotations = new Map<string, string[]>();
    const sourceFields = new Map<string, Set<string>>();
+   const viewOutputs = new Map<string, Set<string>>();
    const drills: ReportDrill[] = [];
    for (const obj of Object.values(modelDef.contents)) {
       if (!isSourceDef(obj)) continue;
@@ -737,13 +899,18 @@ export function readReportModelFacts(
                `${sourceName} -> ${fieldName}`,
             );
             viewGivens.set(key, Array.from(refs));
-            viewAnnotations.set(
-               key,
-               [
+            const outputs = viewOutputNames(field as TurtleDef);
+            if (outputs) viewOutputs.set(key, outputs);
+            // A view that renames another and adds a tag of its own keeps the
+            // other's tags under `inherits`, as a query does: read them first so
+            // its own `# label` still wins.
+            viewAnnotations.set(key, [
+               ...inheritedNotes(field.annotations),
+               ...[
                   ...(field.annotations?.blockNotes ?? []),
                   ...(field.annotations?.notes ?? []),
                ].map((note) => note.text),
-            );
+            ]);
             continue;
          }
          const drill = readDrillTag(
@@ -758,19 +925,50 @@ export function readReportModelFacts(
       }
    }
 
+   const queryFacts = queries.map(({ outputs, ...query }) => {
+      const view = query.sourceName
+         ? soleViewWithOutputs(query.sourceName, outputs, viewOutputs)
+         : undefined;
+      return view ? { ...query, view } : query;
+   });
+
    const modelNotes = ownModelNoteObjects(modelDef);
+   // A tile entry's own click actions, beside the model's tags: the drill
+   // lints check both the same way.
+   const ownArtifact = motlyTag(modelNotes.map((note) => note.text))?.tag(
+      "artifact",
+   );
+   for (const entry of ownArtifact
+      ? (readTileEntries(ownArtifact) ?? [])
+      : []) {
+      if (entry.kind !== "query") continue;
+      for (const [dimension, { missingTo, ...spec }] of Object.entries(
+         entry.layout.drill ?? {},
+      )) {
+         // `to=[]` turns the model's tag off: nothing to check. No `to` at all
+         // is a broken entry, which the target lint reports as one.
+         if (spec.to.length === 0 && !missingTo) continue;
+         drills.push({
+            ...spec,
+            source: entry.expression,
+            dimension,
+            tile: entry.expression,
+         });
+      }
+   }
    return {
       modelPath,
       // This file's own `##` only. An `## artifact` in a shared include
       // describes that include, not everything importing it.
       modelAnnotations: modelNotes.map((note) => note.text),
       descriptionNotes: dashboardDescriptionNotes(modelNotes),
-      queries,
+      queries: queryFacts,
       givens,
       viewGivens,
       viewAnnotations,
       sourceFields,
       drills,
+      viewOutputs,
       suggestGivens: suggestGivenLookup(
          modelDef,
          (source) => gatesBySource?.get(source),
@@ -819,6 +1017,59 @@ function readDrillTag(
       tagTextArray(drill, "to") ?? [tagText(drill, "to")].filter(isString);
    const given = tagText(drill, "given");
    return given === undefined ? { to } : { to, given };
+}
+
+/**
+ * A one-stage view's output names, nests' own included, or undefined for a
+ * view that pipes into a later stage. A `fieldref` counts by its last path
+ * segment, as its output column is named.
+ */
+/**
+ * The one view of `sourceName` whose outputs are exactly `outputs`, as
+ * `source -> view`, or undefined when none or several are. A refinement that
+ * only filters (`+ { where: … }`) keeps the view's outputs, so this finds the
+ * view a builder query reads without parsing its text.
+ */
+function soleViewWithOutputs(
+   sourceName: string,
+   outputs: Set<string> | undefined,
+   viewOutputs: Map<string, Set<string>>,
+): string | undefined {
+   if (!outputs || outputs.size === 0) return undefined;
+   const prefix = `${sourceName} -> `;
+   const matches = [...viewOutputs].filter(
+      ([key, names]) =>
+         key.startsWith(prefix) &&
+         names.size === outputs.size &&
+         [...names].every((name) => outputs.has(name)),
+   );
+   return matches.length === 1 ? matches[0][0] : undefined;
+}
+
+function viewOutputNames(view: TurtleDef): Set<string> | undefined {
+   if (view.pipeline.length !== 1) return undefined;
+   const names = new Set<string>();
+   const walk = (fields: readonly unknown[]) => {
+      for (const field of fields) {
+         const f = field as {
+            type?: string;
+            path?: string[];
+            name?: string;
+            as?: string;
+            pipeline?: Array<{ queryFields?: unknown[] }>;
+         };
+         if (f.type === "fieldref" && f.path?.length) {
+            names.add(f.path[f.path.length - 1]);
+         } else if (f.type === "turtle") {
+            if (f.as || f.name) names.add((f.as || f.name) as string);
+            for (const stage of f.pipeline ?? []) walk(stage.queryFields ?? []);
+         } else if (f.as || f.name) {
+            names.add((f.as || f.name) as string);
+         }
+      }
+   };
+   walk((view.pipeline[0] as { queryFields?: unknown[] }).queryFields ?? []);
+   return names;
 }
 
 function isString(value: string | undefined): value is string {
@@ -877,15 +1128,51 @@ function resolveTileLayout(
    return annotations && readTileLayout(annotations);
 }
 
+/**
+ * The annotation texts a query, or a view that renames another, inherits from
+ * what it reads, outermost first: the `inherits` chain Malloy keeps once it
+ * carries tags of its own.
+ */
+function inheritedNotes(
+   annotation: NamedQueryDef["annotations"] | undefined,
+): string[] {
+   const chain: string[][] = [];
+   for (let at = annotation?.inherits; at; at = at.inherits)
+      chain.unshift(
+         [...(at.blockNotes ?? []), ...(at.notes ?? [])].map(
+            (note) => note.text,
+         ),
+      );
+   return chain.flat();
+}
+
+/**
+ * `orders -> by_month + { where: … }` -> `orders -> by_month`: a refinement
+ * filters the view, so the tile is presented as the view is. Undefined for
+ * any other shape. Linear: a prefix test on the last step, no backtracking.
+ */
+function refinedViewExpression(normalized: string): string | undefined {
+   const at = normalized.lastIndexOf(" -> ");
+   if (at === -1) return undefined;
+   const step = normalized.slice(at + 4);
+   const plus = step.indexOf(" + {");
+   if (plus === -1 || !/^[A-Za-z_][\w]*$/.test(step.slice(0, plus)))
+      return undefined;
+   return normalized.slice(0, at + 4) + step.slice(0, plus);
+}
+
 /** The annotations on whatever a tile expression names, for the two readers of them. */
 function tileAnnotations(
    tile: string,
    facts: ReportModelFacts,
 ): string[] | undefined {
    const normalized = normalizeTileExpression(tile);
+   const query = facts.queries.find((each) => each.name === normalized);
+   const refined = refinedViewExpression(normalized);
    return (
       facts.viewAnnotations.get(normalized) ??
-      facts.queries.find((query) => query.name === normalized)?.annotations
+      (query && [...(query.inherited ?? []), ...query.annotations]) ??
+      (refined !== undefined ? facts.viewAnnotations.get(refined) : undefined)
    );
 }
 
@@ -1032,15 +1319,20 @@ export function buildReportManifest(
          // view's tags are the default for every report that names it.
          const { break: viewBreak, ...viewLayout } =
             resolveTileLayout(query, facts) ?? {};
+         const view = facts.queries.find(
+            (each) => each.name === normalizeTileExpression(query),
+         )?.view;
          return {
             kind: "query",
             query,
             ...(givenNames ? { givenNames } : {}),
+            ...(view ? { view } : {}),
             ...viewLayout,
             ...entryLayoutFields({
                break: viewBreak,
                ...entry.layout,
             }),
+            ...entryDrillField(entry.layout),
          };
       });
       const queries = queryTiles(tiles).filter((tile) => !tile.restricted);
@@ -1160,16 +1452,20 @@ export function lintReport(
    for (const entry of artifactTag?.array("tiles") ?? []) {
       const kind = tagText(entry, "kind");
       const label = tagText(entry) ?? "a tile";
+      const readable =
+         kind === "text" ? ENTRY_LAYOUT_PROPERTIES : QUERY_ENTRY_PROPERTIES;
       const carried = Object.keys(entry.dict ?? {}).filter(
          (property) =>
-            !ENTRY_LAYOUT_PROPERTIES.includes(property) &&
+            !readable.includes(property) &&
             !(property === "kind" && (kind === "text" || kind === "query")),
       );
       if (carried.length > 0) {
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
             `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
-               `a tile's entry reads only \`row\`, \`col\`, \`colspan\`, \`rowspan\` and \`break\`.` +
+               (kind === "text"
+                  ? `a text tile's entry reads only \`row\`, \`col\`, \`colspan\`, \`rowspan\` and \`break\`.`
+                  : `a tile's entry reads only \`row\`, \`col\`, \`colspan\`, \`rowspan\`, \`break\` and \`drill\`.`) +
                (kind === "text"
                   ? ""
                   : ` The rest of its presentation goes on the view the tile names ` +
@@ -1177,6 +1473,20 @@ export function lintReport(
          );
       }
       const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
+      // A dimension the tile's view does not output never gets a click, so its
+      // drill is inert. Checked only on a plain one-stage `source -> view`,
+      // whose outputs the model states; any other tile is the reader's to judge.
+      if (kind !== "text") {
+         const outputs = facts.viewOutputs?.get(normalizeTileExpression(label));
+         const named = Object.keys(entry.tag("drill")?.dict ?? {});
+         for (const dimension of outputs ? named : []) {
+            if (outputs?.has(dimension)) continue;
+            add(
+               `\`drill\` on ${tile} names \`${dimension}\`, which that view does not output, so no click offers it. ` +
+                  `Fix: name one of its fields (${Array.from(outputs ?? []).join(", ")}).`,
+            );
+         }
+      }
       for (const property of ["row", "col", "colspan", "rowspan"]) {
          if (
             entry.has(property) &&
@@ -1464,6 +1774,78 @@ export function lintReport(
       }
    }
 
+   findings.push(...lintMissingSharedFilter(facts, manifest));
+   return findings;
+}
+
+/**
+ * The source a query reads, by the name the file knows it by. Malloy gives a
+ * source defined in this file as its name, and one this file imports as the
+ * source itself, carrying the name in `as`. An inline table has no name: its
+ * `name` is Malloy's internal `sql://…` key, never a source a reader wrote, so
+ * it reads as no source.
+ */
+function structRefSourceName(structRef: unknown): string | undefined {
+   if (typeof structRef === "string") return structRef;
+   const as = (structRef as { as?: unknown } | undefined)?.as;
+   return typeof as === "string" ? as : undefined;
+}
+
+/**
+ * A filter most of a report's tiles apply, missing from one of them.
+ *
+ * A report's filter is a given its tiles bind one by one, each in its own
+ * `+ { where: … }`. A tile that leaves it out is not filtered by the control
+ * while the rest of the page is, and nothing on the page says so. Narrow on
+ * purpose: tiles are compared only with tiles reading the same source (a tile
+ * over another source may have no field the filter could compare), only for a
+ * given the report can bind, read by at least two of them and by more than
+ * half, and only where every tile's reads are known.
+ */
+export function lintMissingSharedFilter(
+   facts: ReportModelFacts,
+   manifest: ServedReportManifest,
+): ReportLintFinding[] {
+   const sourceOf = (query: string) => {
+      const [left, right] = normalizeTileExpression(query).split(" -> ");
+      return right !== undefined
+         ? left
+         : facts.queries.find((q) => q.name === left)?.sourceName;
+   };
+   const bySource = new Map<
+      string,
+      Array<{ query: string; reads: string[] }>
+   >();
+   for (const { query } of queryTiles(manifest.tiles)) {
+      const source = sourceOf(query);
+      const reads = referencedTileGivens(query, facts);
+      if (source === undefined || reads === undefined) continue;
+      bySource.set(source, [...(bySource.get(source) ?? []), { query, reads }]);
+   }
+   const findings: ReportLintFinding[] = [];
+   for (const [source, tiles] of bySource) {
+      const counts = new Map<string, number>();
+      for (const { reads } of tiles)
+         for (const name of new Set(reads))
+            if (facts.givens.has(name))
+               counts.set(name, (counts.get(name) ?? 0) + 1);
+      for (const [given, count] of counts) {
+         if (count < 2 || count * 2 <= tiles.length) continue;
+         for (const { query, reads } of tiles) {
+            if (reads.includes(given)) continue;
+            findings.push({
+               subject: manifest.name,
+               severity: "warn",
+               message:
+                  `"${query}" does not filter on $${given}, which ${count} of ` +
+                  `this report's ${tiles.length} tiles over "${source}" do, so ` +
+                  `that control leaves it unfiltered. If it should follow the ` +
+                  `control, bind it in its query: ` +
+                  `\`+ { where: <field> ~ $${given} }\`.`,
+            });
+         }
+      }
+   }
    return findings;
 }
 
@@ -1671,11 +2053,12 @@ export function lintDrillTargets(
    const findings = new Map<string, ReportLintFinding>();
    for (const file of facts) {
       for (const drill of file.drills) {
-         const where = `${drill.source}.${drill.dimension}`;
+         const where = drillSubject(drill);
+         const what = drillPhrase(drill);
          if (drill.to.length === 0) {
             findings.set(where, {
                subject: where,
-               message: `# drill on ${where} names no destination (to=…).`,
+               message: `${what} names no destination (to=…).`,
                severity: "error",
             });
             continue;
@@ -1686,12 +2069,12 @@ export function lintDrillTargets(
             findings.set(`${where}|${destination}`, {
                subject: where,
                message: resolved.malformed
-                  ? `# drill on ${where} targets "${destination}", which is not ` +
+                  ? `${what} targets "${destination}", which is not ` +
                     `a package path (a path from the package root with no "." ` +
                     `or ".." segment, no empty segment and no leading "/"), so ` +
                     `it resolves to no report. Fix: write the report's path ` +
                     `from the package root, such as to="sales/overview".`
-                  : `# drill on ${where} targets "${destination}", which is not ` +
+                  : `${what} targets "${destination}", which is not ` +
                     `a report in this package.`,
                severity: "error",
             });
@@ -1710,6 +2093,20 @@ export function lintDrillTargets(
  */
 function drillGivenName(drill: ReportDrill): string {
    return drill.given ?? drill.dimension;
+}
+
+/** Where a drill is declared, as a finding's subject: `source.dimension`, or the dimension on a tile. */
+function drillSubject(drill: ReportDrill): string {
+   return drill.tile === undefined
+      ? `${drill.source}.${drill.dimension}`
+      : `${drill.dimension} on ${drill.tile}`;
+}
+
+/** The drill as a finding's sentence names it. */
+function drillPhrase(drill: ReportDrill): string {
+   return drill.tile === undefined
+      ? `# drill on ${drill.source}.${drill.dimension}`
+      : `The \`drill\` for \`${drill.dimension}\` on tile \`${drill.tile}\``;
 }
 
 /**
@@ -1739,11 +2136,11 @@ export function lintSelfDrills(
          if (!drill.to.includes("self")) continue;
          const given = drillGivenName(drill);
          if (surfaced.has(given.toLowerCase())) continue;
-         const where = `${drill.source}.${drill.dimension}`;
+         const where = drillSubject(drill);
          findings.set(where, {
             subject: where,
             message:
-               `# drill on ${where} has to=self, but no model in this ` +
+               `${drillPhrase(drill)} has to=self, but no model in this ` +
                `package declares a given "${given}" for the clicked value to ` +
                `filter on, so the drill cannot fire anywhere. Declare it, or ` +
                `point the tag at a given that exists with given=.`,
@@ -1794,12 +2191,7 @@ export async function compileTileGivens(
       const reads = usage
          .map((given) => registry[given.id]?.name)
          .filter((name): name is string => name !== undefined);
-      const target = prepared._query?.structRef;
-      const sourceName =
-         typeof target === "string"
-            ? target
-            : (target as { as?: string; name?: string } | undefined)?.as ||
-              (target as { name?: string } | undefined)?.name;
+      const sourceName = structRefSourceName(prepared._query?.structRef);
       const gateReads = new Set<string>();
       for (const expr of sourceName ? (gatesOf(sourceName) ?? []) : []) {
          for (const name of referencedGivenNames(expr)) gateReads.add(name);

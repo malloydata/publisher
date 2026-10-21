@@ -47,19 +47,18 @@ describe("a dashboard with an explicit, empty tile list", () => {
       expect(readFailed(result)).toBe(true);
    });
 
-   it("takes its first tile, creating the extension", async () => {
+   it("takes its first tile, naming the served view and declaring no source", async () => {
       const out = await spliced(EMPTY, (d) => {
-         d.sources.push({ name: "one_tiles", base: "one" });
          d.tiles.push({
-            name: "vx_tile",
-            source: "one_tiles",
-            declaration: { kind: "reference", from: "vx" },
-            colspan: 6,
+            name: "vx",
+            source: "one",
+            declaration: { kind: "inherited" },
          });
       });
-      expect(out).toContain('tiles=["one_tiles -> vx_tile" { colspan=6 }]');
+      expect(out).toContain('tiles=["one -> vx"]');
+      expect(out).not.toContain("source:");
       const back = await openDocument(out);
-      expect(back.tiles.map(tileKey)).toEqual(["one_tiles.vx_tile"]);
+      expect(back.tiles.map(tileKey)).toEqual(["one.vx"]);
    });
 
    it("refuses to remove the last tile, because an empty file is not served", async () => {

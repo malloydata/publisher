@@ -171,7 +171,8 @@ describe("NewDocumentDialog", () => {
       const [path, source] = write.mock.calls[0];
       expect(path).toBe("sales-by-region.malloy");
       expect(source).toContain("layout=grid");
-      expect(source).toContain('"order_items_tiles -> by_brand_tile"');
+      expect(source).toContain('"order_items -> by_brand"');
+      expect(source).not.toContain("extend {");
       expect(source).toContain(
          'import { order_items } from "storefront.malloy"',
       );
@@ -210,7 +211,7 @@ describe("NewDocumentDialog", () => {
       expect(path).toBe("by-category.malloy");
       expect(source).toContain("layout=linear");
       expect(source).not.toContain("kind=notebook");
-      expect(source).toContain("view: by_category_tile is by_category");
+      expect(source).toContain('"order_items -> by_category"');
    });
 
    it("switches layout in place, keeping the choices already read, and writes it", async () => {

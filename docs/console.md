@@ -97,9 +97,13 @@ is a Console convenience.
   instead** puts a text tile there). Add filters from **Add** or with **+ Filter** on the filter row:
   pick the field (its type is shown), the control from five pictured kinds (a kind the field cannot
   take is greyed, with why), and, under **Choose tiles**, which tiles it applies to; a preview shows
-  its button. **Clickable cells** is a switch per dimension, with where a click opens and which filter
-  it sets. It applies to table cells: a chart's bars, lines and points do not respond to a click, and
-  the menu says so on a chart tile. Clicks work in the report, not in the builder, where a click
+  its button. **What clicking a value does…** lists each dimension the tile groups by, by its label,
+  with two choices beside the Show rows every value has: **Filter this report by …** (greyed until
+  the report has a filter for it) and **Link to another report:**, which lists only the package's
+  reports with a filter that value can set. The model's `# drill` is the starting point, marked **From
+  the model**, and a preview shows the exact menu a click on the tile's first value opens. It is
+  written on the tile's entry in `tiles=[…]`. It applies to table cells: a chart's bars, lines and
+  points do not respond to a click, and the menu says so on a chart tile. Clicks work in the report, not in the builder, where a click
   selects the tile. Titles,
   descriptions and text tiles are edited where they are shown: under the pointer they take a faint
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
@@ -108,6 +112,9 @@ is a Console convenience.
   tile's **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map,
   Segment map and Bar and line; a choice the view cannot render stays in the list, greyed, with its reason under it.
   **Color** sets a chart's color from the theme's series, or any other, as a `# theme.palette.series` line.
+  A tile names a served view until it is given a title, width, chart, color or filter of its own; then it
+  is a `query:` in the report carrying those settings (a chart as `# viz=…`), and it names the view again
+  when they are all back to the view's. The builder declares no source and never writes a model file.
   The layout is the file's: the builder draws the report as its `layout=` says and never rewrites
   it. Adding a tile
   offers every source the package publishes; when the file cannot already see the chosen source,

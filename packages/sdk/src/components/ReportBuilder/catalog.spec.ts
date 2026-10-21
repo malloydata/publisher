@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { CompiledModel } from "../../client";
 import {
+   authorPaletteOf,
    buildCatalog,
    chartOf,
    docOf,
@@ -84,6 +85,47 @@ describe("reading raw annotations", () => {
       expect(chartOf(["# -bar_chart\n"])).toBeUndefined();
       expect(chartOf(["# -bar_chart -viz line_chart\n"])).toBe("line_chart");
       expect(chartOf(["# colspan=6\n", '# label="x"\n'])).toBeUndefined();
+   });
+
+   it("marks a multi-colour series palette, and not a one-colour line", () => {
+      expect(
+         authorPaletteOf(['# theme.palette.series=["#ff0080", "#ff6b00"]\n']),
+      ).toBe(true);
+      expect(
+         authorPaletteOf([
+            '# theme { palette.series=["#ff0080", "#ff6b00"] }\n',
+         ]),
+      ).toBe(true);
+      expect(
+         authorPaletteOf(['# theme.palette.series=["#1f6aa8"]\n']),
+      ).toBeUndefined();
+      expect(authorPaletteOf(["# bar_chart\n"])).toBeUndefined();
+   });
+
+   it("reads an escaped quote inside a colour, and a palette after an unrelated one", () => {
+      expect(
+         authorPaletteOf(['# theme.palette.series=["a\\"b", \'c\']\n']),
+      ).toBe(true);
+      expect(
+         authorPaletteOf([
+            '# theme.palette.series=["#1f6aa8"] theme.palette.series = [ "#a", "#b" ]\n',
+         ]),
+      ).toBe(true);
+      expect(
+         authorPaletteOf(['# theme.palette.series=["#a", "#b"\n']),
+      ).toBeUndefined();
+   });
+
+   // Author text: the shapes a backtracking pattern takes quadratic time on.
+   it("reads a long malformed palette in linear time", () => {
+      const started = performance.now();
+      expect(
+         authorPaletteOf([`# theme ${"palette.series=[\\".repeat(50_000)}`]),
+      ).toBeUndefined();
+      expect(
+         authorPaletteOf([`# theme.palette.series=[${'\\"'.repeat(50_000)}]`]),
+      ).toBeUndefined();
+      expect(performance.now() - started).toBeLessThan(1_000);
    });
 });
 

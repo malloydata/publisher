@@ -11,6 +11,7 @@ import {
    UnconfiguredConnectionError,
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
+   DeclaredElsewhereError,
    InvalidArgumentError,
    PackageNotFoundError,
    ModelNotFoundError,
@@ -72,6 +73,15 @@ export function classifyToolError(
          suggestions: [
             "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
             "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof DeclaredElsewhereError) {
+      // Before the not-found branch, which would drop the file this names.
+      return {
+         message: error.message,
+         suggestions: [
+            "The name is real; it is declared in a different file of this package. Call execute_query again with the modelPath the message names, and the same query.",
          ],
       } satisfies ErrorDetails;
    }

@@ -38,7 +38,11 @@ before this convention existed.
   file still compiles for import and join resolution, but is hidden. `GET .../models/{path}` for a
   hidden file answers 404, with the same message a query to it gets. For a file it does return,
   the response lists only the names that file publishes, and `sourceText` is left out when the file
-  text names a source it does not publish. A join to a hidden source keeps only its name and the
+  text names a source it does not publish. A grid report's text is always returned, because its
+  editor saves through it. A notebook's text — a `.malloynb`, or a linear `.malloy` report — is
+  returned when every source it names is one it may read: a source the surface serves, one its cells
+  build on such a source, or one of its own `given:` declarations. Otherwise it is left out, and the
+  notebook editor asks again with `?includeHiddenFilesAndSources=true`. A join to a hidden source keeps only its name and the
   names and types of its fields, which is what querying through it needs; the hidden source's table,
   SQL and connection are left out.
 
@@ -59,9 +63,14 @@ before this convention existed.
   sources on the surface, and a tile over a hidden source answers 404. The package load warns about
   each one; see [reports.md](reports.md#what-publisher-checks-at-load).
 
-  A report reads the surface and never adds to it. So a model that `index.malloy` imports, or that
-  `explores` lists, stops contributing to the surface the moment it carries an artifact tag, and
-  the package warns (`report-on-surface`) naming the importer.
+  A report reads the surface and does not add sources to it: its own `export { … }` publishes
+  nothing other files can query. A source it declares on a surface source
+  (`source: big is orders extend { … }`) is queryable by name when the query is addressed to that
+  report, and it keeps the base's `#(authorize)` and `#(access_filter)`. A caller that lock refuses
+  gets **403**, not 404. The report is already listed, so the 403 does not reveal a hidden name. A
+  source the report declares that is not built on a surface source stays **404**. A model that
+  `index.malloy` imports, or that `explores` lists, stops contributing to the surface the moment it
+  carries an artifact tag, and the package warns (`report-on-surface`) naming the importer.
 
 - **Within a file — `export { … }`.** The discovery accessors list only the model's re-export
   closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model

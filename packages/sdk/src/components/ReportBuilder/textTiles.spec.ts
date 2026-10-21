@@ -300,12 +300,12 @@ describe("spliceDashboardDocument: text tiles", () => {
       const { document } = await writes(DASHBOARD, (d) => {
          d.tiles.push({ kind: "text", name: "note", markdown: "A note." });
          d.tiles.push({
-            name: "y",
+            name: "vy",
             source: "a_tiles",
-            declaration: { kind: "reference", from: "vy" },
+            declaration: { kind: "inherited" },
          });
       });
-      expect(document.tiles.map((t) => t.name)).toEqual(["x", "note", "y"]);
+      expect(document.tiles.map((t) => t.name)).toEqual(["x", "note", "vy"]);
    });
 
    it("removes a text tile with its entry and its block, and nothing else", async () => {

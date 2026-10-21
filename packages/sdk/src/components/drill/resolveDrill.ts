@@ -27,6 +27,8 @@ import {
    filterInnerType,
    isFilterType,
 } from "../given/filterValue";
+import type { DrillClause } from "./drillClauses";
+import type { RowsDimension, RowsTarget } from "./rowsTarget";
 
 /**
  * The parsed-tag surface this module reads, structurally typed.
@@ -40,6 +42,63 @@ export interface DrillTagReader {
    tag(...at: string[]): DrillTagReader | undefined;
    text(...at: string[]): string | undefined;
    textArray(...at: string[]): string[] | undefined;
+}
+
+/**
+ * One dimension's click actions from a tile's entry in `tiles=[…]`
+ * (`drill { <dimension> { to=… given=… } }`): the manifest tile's `drill`.
+ * `to` empty turns the model's tag off on that tile.
+ */
+export interface EntryDrill {
+   to: string[];
+   given?: string;
+}
+
+/**
+ * `field` as a tile reads it: the tile entry's drill for this dimension in
+ * place of the field's own `# drill` tag, or the field unchanged when the entry
+ * names none. Built once per tile and field, so {@link drillDestinations} and
+ * {@link drillGivenName} need no notion of entries: the entry simply is the
+ * tag. The entry wins for the dimension it names; every other tag the field
+ * carries still reads through.
+ */
+export function withEntryDrill(
+   field: DrillField,
+   entries: Readonly<Record<string, EntryDrill>> | undefined,
+): DrillField {
+   const entry = entries?.[field.name];
+   if (!entry) return field;
+   const own = field.tag;
+   const drill: DrillTagReader = {
+      tag: () => undefined,
+      text: (...at) =>
+         at[0] === "to"
+            ? entry.to[0]
+            : at[0] === "given"
+              ? entry.given
+              : undefined,
+      textArray: (...at) => (at[0] === "to" ? [...entry.to] : undefined),
+   };
+   const tag: DrillTagReader = {
+      tag: (...at) =>
+         at[0] === "drill"
+            ? at.length === 1
+               ? drill
+               : undefined
+            : own?.tag(...at),
+      text: (...at) => (at[0] === "drill" ? undefined : own?.text(...at)),
+      textArray: (...at) =>
+         at[0] === "drill" ? undefined : own?.textArray(...at),
+   };
+   // A proxy, not a copy: the renderer's field is a class whose methods read
+   // its own private state, so they must still run against the original.
+   return new Proxy(field, {
+      get(target, property) {
+         if (property === "tag") return tag;
+         const value = Reflect.get(target, property, target) as unknown;
+         return typeof value === "function" ? value.bind(target) : value;
+      },
+   });
 }
 
 /** The clicked field, as much of it as drill reads. */
@@ -79,6 +138,19 @@ export interface DrillClickPayload {
     * this value" runs against is read from here.
     */
    context?: string;
+   /**
+    * Every dimension of the clicked row, enclosing rows included, as the
+    * renderer's `onDrill` reports them. Set by `RenderedResult` for a table
+    * cell; absent for a click the renderer reports no row for.
+    */
+   drillClauses?: readonly DrillClause[];
+   /** The query timezone, which a truncated timestamp in a clause is read in. */
+   timezone?: string;
+   /**
+    * Set by a host that shows no rows for this click's tile (a restricted
+    * one, or one whose shape cannot name its rows). Tag drills still apply.
+    */
+   noRows?: boolean;
 }
 
 /**
@@ -93,6 +165,16 @@ export interface DrillRowsRequest {
    label: string;
    /** {@link DrillClickPayload.context}, when the host set one. */
    context?: string;
+   /** {@link DrillClickPayload.drillClauses}: the whole row, not just `field`. */
+   drillClauses?: readonly DrillClause[];
+   /** {@link DrillClickPayload.timezone}. */
+   timezone?: string;
+   /** The source and filters the rows run with, from the result's metadata. */
+   target?: RowsTarget;
+   /** The row's dimensions as code with their values, from `drillClauses`. */
+   dimensions?: readonly RowsDimension[];
+   /** The clicked field's code, for a click that came with no row. */
+   code?: string;
 }
 
 /** The literal `to=self`: filter the current view instead of leaving it. */

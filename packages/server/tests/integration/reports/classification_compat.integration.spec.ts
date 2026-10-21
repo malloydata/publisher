@@ -87,8 +87,10 @@ const MALLOYYO_CELL_FILES = [
  * - A linear `.malloy` report written as `run:` cells, the retired format, is
  *   no report; it is reported as `report-cells-removed`.
  *
- * `rewritten` files were moved off the cell format onto tiles, so they are
- * still linear reports but their cells, listing and findings are new: they
+ * `rewritten` files were moved off the cell format onto tiles, or (storefront's
+ * `overview.malloy` and `overview-story.malloy`) off a `<source>_tiles`
+ * extension onto named queries, so
+ * they keep their layout but their tiles, listing and findings are new: they
  * are left out of every comparison but their layout.
  *
  * `removed` files were deleted with the form they tested: the
@@ -120,7 +122,14 @@ const DELIBERATE: Record<
       becameModels: [],
       rewritten: ["notebooks/cells.malloy", "notebooks/local.malloy"],
    },
-   storefront: { becameModels: [], rewritten: ["category-review.malloy"] },
+   storefront: {
+      becameModels: [],
+      rewritten: [
+         "category-review.malloy",
+         "overview.malloy",
+         "overview-story.malloy",
+      ],
+   },
 };
 
 /** Files left out of the comparison of everything but their layout. */
@@ -216,6 +225,22 @@ const lf = (value: unknown): unknown =>
             )
           : value;
 
+/**
+ * A response with the fields added since the baseline removed, so an old
+ * client's view of it can be compared: a named-query tile's `view` (the view
+ * it reads, for its fallback title).
+ */
+const withoutAdded = (value: unknown): unknown =>
+   Array.isArray(value)
+      ? value.map(withoutAdded)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+             Object.entries(value)
+                .filter(([k]) => !(k === "view" && "query" in value))
+                .map(([k, v]) => [k, withoutAdded(v)]),
+          )
+        : value;
+
 describe("Report classification compatibility (E2E)", () => {
    let env: PackageEnv;
    const expected = baseline as unknown as Baseline;
@@ -241,29 +266,41 @@ describe("Report classification compatibility (E2E)", () => {
             const before: Record<string, string> = {};
             for (const d of was.dashboards) before[d.path as string] = "grid";
             for (const n of was.notebooks) before[n.path as string] = "linear";
-            for (const p of rewrittenIn(pkg)) before[p] = "linear";
+            // A rewritten file keeps the layout of the kind it had.
+            const wasDashboard = new Set(
+               expected[pkg].dashboards.map((d) => d.path as string),
+            );
+            for (const p of rewrittenIn(pkg)) {
+               before[p] = wasDashboard.has(p) ? "grid" : "linear";
+            }
             expect(layouts).toEqual(before);
          });
 
          it("answers the deprecated routes as before", async () => {
             const was = expectedFor(pkg, expected[pkg]);
+            const rewritten = rewrittenIn(pkg);
             const dashboards = await get<Record<string, unknown>[]>(
                api(pkg, "/dashboards"),
             );
-            expect(lf(dashboards.map((d) => without(d, "resource")))).toEqual(
-               was.dashboards,
-            );
+            expect(
+               lf(
+                  dashboards
+                     .filter((d) => !rewritten.has(d.path as string))
+                     .map((d) => without(d, "resource")),
+               ),
+            ).toEqual(was.dashboards);
             for (const [name, manifest] of Object.entries(was.manifests)) {
                const now = await get<Record<string, unknown>>(
                   api(pkg, `/dashboards/${encodeURIComponent(name)}`),
                );
                expect(now.layout).toBe("grid");
-               expect(lf(without(now, "resource", "layout"))).toEqual(manifest);
+               expect(
+                  withoutAdded(lf(without(now, "resource", "layout"))),
+               ).toEqual(manifest);
             }
             const notebooks = await get<Record<string, unknown>[]>(
                api(pkg, "/notebooks"),
             );
-            const rewritten = rewrittenIn(pkg);
             expect(
                lf(
                   notebooks

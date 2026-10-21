@@ -5174,6 +5174,15 @@ components:
           description: >-
             Whether the builder opens it as it is: true for a `.malloy` report,
             false for a `.malloynb`.
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: >-
+            The givens this report shows a control for, by name: what a click
+            on another report can set when it opens this one (`# drill { to=…
+            given=… }`). Absent for a `.malloynb` and for a report that did not
+            build.
         error:
           type: string
           description: >-
@@ -5351,6 +5360,48 @@ components:
           description: >-
             The grid column the tile's left edge sits in, counted from 1, from
             `col=N` on its entry in `tiles=[…]`. See `row`.
+        view:
+          type: string
+          description: >-
+            The view a tile naming a query reads, as `source -> view`: the one
+            view of the query's source whose outputs are exactly the query's.
+            With no `label`, a viewer titles a query the report builder named
+            for that view (`<view>_tile`, or `<view>_tile_N`) as the view, so
+            adding a filter does not retitle the tile. Absent when the tile
+            does not name a query, or when no single view matches.
+        drill:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/TileDrill"
+          description: >-
+            What clicking a value offers on this tile, by dimension, from
+            `drill { <dimension> { to=… given=… } }` on its entry in
+            `tiles=[…]`. For a dimension it names, it replaces the model's
+            `# drill` tag on that dimension, on this tile only; a dimension it
+            does not name keeps the model's tag. "Show rows" is offered on every
+            value either way. Absent on a text tile and on a restricted tile.
+
+    TileDrill:
+      type: object
+      description: >-
+        One dimension's click actions on a tile entry: the same `to` and
+        `given` a `# drill` tag carries.
+      required:
+        - to
+      properties:
+        to:
+          type: array
+          items:
+            type: string
+          description: >-
+            Destinations: `self` filters this report, anything else is a report
+            path from the package root to open. Empty when the entry writes
+            `to=[]`, which turns the model's `# drill` tag off on this tile.
+        given:
+          type: string
+          description: >-
+            The given the clicked value is written into. Absent means the
+            dimension's own name.
 
     ReportCells:
       type: object

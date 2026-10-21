@@ -16,6 +16,7 @@ import { legacyEditBase, withEdit } from "../../common/documentRoutes";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import ReportPage from "../ReportPage/ReportPage";
 import LegacyAliasRoute from "./LegacyAliasRoute";
+import OlderNotebookNotice from "./OlderNotebookNotice";
 import { PAGE_FRAME_SX } from "../pageFrame";
 
 /**
@@ -64,7 +65,12 @@ export default function RoutedDocument({
    );
    const { search } = useLocation();
    const path = `${routePath}.malloy`;
-   const report = settled ? locateReport(path, reports) : undefined;
+   // A route with no `.malloy` report may name an older `.malloynb` of the same
+   // name: `/q3` opens `q3.malloynb` when there is no `q3.malloy`.
+   const report = settled
+      ? (locateReport(path, reports) ??
+        locateReport(`${routePath}.malloynb`, reports))
+      : undefined;
    // "No report at this path" is read only from a listing no request is
    // refreshing: right after a create invalidates it, the cached copy predates
    // the file this route was opened for. Once a current listing has been seen
@@ -126,6 +132,14 @@ export default function RoutedDocument({
       );
    if (!decided) return <Loading text={LOADING_COPY.opening()} />;
 
+   if (report && edit && report.path.endsWith(".malloynb"))
+      return (
+         <OlderNotebookNotice
+            environmentName={environmentName}
+            packageName={packageName}
+            path={report.path}
+         />
+      );
    if (report)
       return (
          <ReadAndEdit

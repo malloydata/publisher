@@ -36,20 +36,20 @@ For every rule, the linked instruction-skill section is the canonical source for
 
 ---
 
-## R-03: Sparklines on `# big_value` need both the `sparkline=` reference and a matching `# hidden` nested view
+## R-03: A `# big_value` sparkline goes on a measure and names a `size=spark` nest
 
 - **Severity:** major (blocking) · **Category:** rendering · machine-checkable
-- **Detection:** AST, `sparkline=` is a `# big_value` property; sparklines aren't a generic chart feature, and `sparkline=` on any other view tag is silently ignored by the renderer. For any view tagged `# big_value` with `sparkline=<name>`, verify the view contains a `nest:` whose alias matches `<name>` and whose tag block carries both a chart tag (e.g. `# line_chart`, `# bar_chart`) and `# hidden`.
-- **Fix:** put `# hidden` on the nested chart view, and make sure the nested view's name matches the `sparkline=<name>` reference on the parent.
+- **Detection:** AST. `sparkline=` is a per-measure `# big_value` option. It is valid only as `# big_value { sparkline=<name> }` on a measure inside a view tagged plain `# big_value`. Flag it in three cases: (1) it sits on the `# big_value` view line itself or on a `nest:`, which the renderer rejects with `Tag 'big_value' on field 'X' is only valid on basic fields inside big_value`; (2) the view has no `nest:` whose name matches `<name>`; (3) that nest's chart tag lacks `size=spark` (`# line_chart { size=spark }` or `# bar_chart { size=spark }`), so no sparkline is drawn.
+- **Fix:** tag the view plain `# big_value`, move `# big_value { sparkline=<name> }` to the line above the measure, and give the matching nest `# line_chart { size=spark }`. The nest needs no `# hidden`: it is never drawn as a card, and the renderer warns about `# hidden` there.
 - **See:** `skill:malloy-charts` § Sparklines in KPI Cards
 
 ---
 
-## R-04: `# big_value` comparison deltas need `comparison_label` to pair with `comparison_field`
+## R-04: `# big_value` comparison deltas go on the comparison measure, with a `comparison_label`
 
-- **Severity:** minor (non-blocking) · **Category:** rendering · machine-checkable
-- **Detection:** regex, `comparison_field` and `comparison_label` are `# big_value` properties (along with `down_is_good` and the sparkline pair from R-03); they aren't a generic chart feature. For any view tagged `# big_value` whose tag block contains a `comparison_field=` property, verify a `comparison_label=` is also present in the same tag block (multi-line braced form counts).
-- **Fix:** add `comparison_label="..."` with a human-readable description (e.g., `"vs Last Month"`).
+- **Severity:** minor (non-blocking), major (blocking) when the options sit on the view line · **Category:** rendering · machine-checkable
+- **Detection:** regex. `comparison_field`, `comparison_label`, `comparison_format` and `down_is_good` are per-measure `# big_value` options, like `sparkline` in R-03. They are valid only as `# big_value { comparison_field=<shown measure> ... }` on the comparison measure inside a view tagged plain `# big_value`. On the view line or a `nest:` they fail with `Tag 'big_value' on field 'X' is only valid on basic fields inside big_value` (blocking). Where they are placed correctly, verify `comparison_label=` is in the same tag block as `comparison_field=` (multi-line braced form counts).
+- **Fix:** move the options to the line above the comparison measure (e.g. `prior_month`), set `comparison_field` to the measure the card shows (e.g. `revenue`), and add `comparison_label="..."` with a human-readable description (e.g., `"vs Last Month"`). The comparison measure needs no `# hidden`: the renderer already leaves it off the cards.
 - **See:** `skill:malloy-charts` § KPIs with Comparison Deltas
 
 ---
@@ -94,9 +94,9 @@ For every rule, the linked instruction-skill section is the canonical source for
 ## R-08: Don't use `# hidden` as a model-visibility mechanism
 
 - **Severity:** nit (non-blocking) · **Category:** rendering · LLM-judgment
-- **What `# hidden` is.** A Malloy *renderer* tag, cosmetic output suppression. Legitimately used inside `# dashboard` and `# big_value` views: hiding the `nest:` that only exists to feed a sparkline, hiding the `prior_month` aggregate that backs a comparison delta, hiding a tile from a dashboard layout. It does NOT remove a field from the source's API surface, the field is still queryable, still appears in source metadata, still a valid `group_by` / `aggregate` reference. See `skill:malloy-charts` § Utility Tags.
+- **What `# hidden` is.** A Malloy *renderer* tag, cosmetic output suppression. Legitimately used inside views, for example hiding a tile from a `# dashboard` layout. Inside a `# big_value` view it is not needed: a sparkline nest and a comparison measure are already left off the cards (see R-03 and R-04). It does NOT remove a field from the source's API surface, the field is still queryable, still appears in source metadata, still a valid `group_by` / `aggregate` reference. See `skill:malloy-charts` § Utility Tags.
 - **The mistake this rule catches.** `# hidden` placed on a `dimension:` or `measure:` declaration inside a source's `extend {}` block (not inside a view), used as if it were an access modifier. It isn't. If the goal is "remove from the source's public API," the right tools are `internal:` (or `private:` for sensitive data) in an `include {}` block, see `malloy-model/reference/access-modifiers.md`. The malloy-lookml-review skill calls this out explicitly: "LookML `hidden: yes` ≈ Malloy `# hidden` (cosmetic). LookML `fields` exclusion ≈ Malloy `internal:` (structural). Do NOT map `hidden: yes` directly to `internal:`."
-- **Detection (LLM-judgment).** Flag `# hidden` on a `dimension:` or `measure:` inside a source's `extend {}` block. `# hidden` *inside a view*, on a `nest:` for sparklines, on a comparison aggregate inside `# big_value`, on a tile in `# dashboard`, is correct and must not be flagged.
+- **Detection (LLM-judgment).** Flag `# hidden` on a `dimension:` or `measure:` inside a source's `extend {}` block. `# hidden` *inside a view*, such as on a tile in `# dashboard`, is out of scope for this rule and must not be flagged.
 - **Fix:** classify intent first.
   - **"Remove from the API surface"** → move the column to `include { internal: <col> }` (or `private:` for sensitive) and drop the `# hidden`.
   - **"Suppress in a specific view's rendered output"** → drop `# hidden` from the `extend {}` declaration and re-add it inside the specific view that needs the suppression.

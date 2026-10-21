@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { usePlacementNote } from "./PlacementNote";
+import type { LinkTarget } from "./clickActions";
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography, useMediaQuery } from "@mui/material";
@@ -123,6 +125,8 @@ export interface ReportBuilderProps {
       /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
+   /** The title a tile with none of its own is drawn under, which the host may know from what it serves; absent, one derived from its view's name. */
+   titleOf?: (tile: QueryTile) => string;
    /** A view picked in Add a tile, run as the tile it would add; absent, the picker says what will run. */
    renderViewPreview?: (view: ViewPreview) => ReactNode;
    /**
@@ -227,6 +231,17 @@ export interface ReportBuilderProps {
     */
    takenGivenNames?: readonly string[];
    /**
+    * The package's other reports, each with the filters it shows: what a
+    * click on a value can open with that value set ("What clicking a value
+    * does"). Absent, `dashboards` is offered, with its filters unchecked.
+    */
+   linkTargets?: readonly LinkTarget[];
+   /**
+    * A tile's last result as the host's canvas ran it, by tile key: where
+    * "What clicking a value does" reads the tile's dimensions and first row.
+    */
+   tileResult?: (tile: string) => string | undefined;
+   /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
     */
@@ -261,6 +276,7 @@ export function ReportBuilder({
    onDirtyChange,
    onExit,
    renderTile,
+   titleOf,
    renderViewPreview,
    controls,
    givens,
@@ -277,6 +293,8 @@ export function ReportBuilder({
    fixedFilters,
    onOpenModel,
    takenGivenNames,
+   linkTargets,
+   tileResult,
    onControlsChange,
    draftKey,
 }: ReportBuilderProps) {
@@ -366,11 +384,13 @@ export function ReportBuilder({
    // edges set width and height, the left and top move those edges (placing a
    // report that flows, as a move does), a corner both at once. Written once,
    // on release, and on a placed report whatever it now covers moves down.
+   const placementNote = usePlacementNote();
    const edging = useEdgeResize({
       tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
+      onPlaceAll: placementNote.warn,
       commit: ({ index, edges, shape, placed, placedAll }) => {
          const all = placedAll ?? editor.document.tiles;
          const tile = all[index];
@@ -401,7 +421,7 @@ export function ReportBuilder({
       catalog,
    });
    const { filterDialog, setFilterDialog } = bindings;
-   // The clickable-cells window, for one tile's source.
+   // "What clicking a value does", for one tile, by its key.
    const [drillSource, setDrillSource] = useState<string | undefined>(
       undefined,
    );
@@ -753,7 +773,22 @@ export function ReportBuilder({
                <BuilderGrid
                   editor={editor}
                   arrange={arrange}
-                  reorder={reorder}
+                  reorder={
+                     editor.document.layout === "grid" &&
+                     editor.document.tiles.length > 1 &&
+                     !isPlaced(editor.document.tiles)
+                        ? {
+                             ...reorder,
+                             // The first move places every tile: say so as it begins.
+                             onDragStart: (
+                                ...args: Parameters<typeof reorder.onDragStart>
+                             ) => {
+                                placementNote.warn();
+                                return reorder.onDragStart(...args);
+                             },
+                          }
+                        : reorder
+                  }
                   edging={edging}
                   place={place}
                   gridBox={gridBox}
@@ -779,20 +814,25 @@ export function ReportBuilder({
                   openAdd={openAdd}
                   editTile={tiles.editTile}
                   {...(renderTile ? { renderTile } : {})}
+                  {...(titleOf ? { titleOf } : {})}
                />
                <BuilderDialogs
                   editor={editor}
+                  {...(titleOf ? { titleOf } : {})}
                   catalog={catalog}
                   columns={columns}
                   dashboards={dashboards}
                   bindings={bindings}
                   tiles={tiles}
                   drillSource={drillSource}
+                  {...(linkTargets ? { linkTargets } : {})}
+                  {...(tileResult ? { tileResult } : {})}
                   setDrillSource={setDrillSource}
                   exitDialog={session.exitGuard.dialog}
                   {...(renderViewPreview ? { renderViewPreview } : {})}
                   {...(takenGivenNames ? { takenGivenNames } : {})}
                />
+               {placementNote.note}
             </ReportPage>
          </Stack>
       </OpenDraftContext.Provider>

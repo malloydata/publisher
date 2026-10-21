@@ -123,6 +123,7 @@ export class QueryController {
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
             p.getModel(modelPath)?.carriesReportTag() ?? false,
+            result,
          );
          return {
             // Serialized by the model: re-stringifying here would copy the

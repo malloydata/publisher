@@ -4,7 +4,7 @@
 import { ListItemText, MenuItem, TextField } from "@mui/material";
 import { useId } from "react";
 import type { CatalogView } from "./catalog";
-import type { ChartPick, ChartState } from "./chartLine";
+import { drawsAs, type ChartPick, type ChartState } from "./chartLine";
 import { chartShapeGap } from "../RenderedResult/chartShapeProblem";
 
 export interface ChartChoice {
@@ -34,6 +34,14 @@ const LABELS: Record<ChartPick, string> = {
    combo_chart: "Bar and line",
 };
 
+/** A view's own chart, as a reason names it. */
+const VIEW_CHART_LABEL = (chart: string | undefined) =>
+   chart === "big_value"
+      ? "big numbers"
+      : chart && chart in LABELS
+        ? `a ${LABELS[chart as ChartPick].toLowerCase()} chart`
+        : "its own chart";
+
 /**
  * Every chart a cell can be set to; one the view cannot render is listed disabled with its reason, so it is discoverable rather than missing.
  * Whatever the cell has now stays selectable, so the select never shows a value it does not offer.
@@ -52,11 +60,19 @@ export function chartChoices(
              ? "Not in the model's list, so its shape is unknown"
              : undefined;
    const shape = view?.shape;
+   // A pick is a line merged over the view's own tags, taking the view's
+   // chart off first only where the renderer would still draw it
+   // ({@link chartResetFor}), so every pick draws ({@link drawsAs}). This is
+   // kept as a check against the renderer's rule, not a rule of its own.
+   const overridden = (pick: ChartPick | "none"): string | undefined =>
+      view === undefined || current === pick || drawsAs(pick, view.chart)
+         ? undefined
+         : `This view is drawn as ${VIEW_CHART_LABEL(view.chart)} in the model, which a report tile cannot switch to ${pick === "none" ? "a table" : `a ${LABELS[pick].toLowerCase()} chart`}`;
    const reasonFor = (pick: ChartPick): string | undefined => {
       if (current === pick) return undefined;
       if (pick === "big_value")
          return view?.aggregateOnly === true
-            ? undefined
+            ? overridden(pick)
             : shape && shape.groupBys > 0
               ? "This view has a group by, so it is more than one row; big numbers need a view of totals only"
               : (unknown ?? "Needs results that are only totals (no group by)");
@@ -65,6 +81,8 @@ export function chartChoices(
             ? undefined
             : (unknown ?? "Needs a map chart set in the model");
       if (view?.chart === pick) return undefined;
+      const drawnOver = overridden(pick);
+      if (drawnOver) return drawnOver;
       // The charts that plot rows, by the same rule the result panel applies.
       // An unknown shape leaves them pickable, since nothing says they cannot
       // draw, except a bar and line chart, which few views can fill: a bare
@@ -96,9 +114,14 @@ export function chartChoices(
       "segment_map",
       "combo_chart",
    ];
+   const tableReason = overridden("none");
    return [
       { value: "default", label: "Default", hint: "As set in the model" },
-      { value: "none", label: "Table" },
+      {
+         value: "none",
+         label: "Table",
+         ...(tableReason ? { disabled: true, reason: tableReason } : {}),
+      },
       ...picks.map((pick): ChartChoice => {
          const reason = reasonFor(pick);
          return {
