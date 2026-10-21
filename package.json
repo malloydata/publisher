@@ -78,21 +78,17 @@
     "@types/react-dom": "^19.1.6",
     "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
-    "gts": "^6.0.2",
     "@malloydata/malloy-filter": "^0.0.435",
     "esbuild": "0.25.9",
     "happy-dom": "^20.11.1",
     "prettier": "^3.0.0",
     "rimraf": "^5.0.1",
     "rollup": "4.63.5",
-    "sinon": "^19.0.4",
-    "speccy": "^0.11.0"
+    "sinon": "^19.0.4"
   },
   "dependencies": {
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.0",
-    "fn": "^0.2.0",
-    "prettier-plugin-terraform-formatter": "^1.2.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "ssh2": "^1.17.0"
@@ -107,6 +103,9 @@
     "@malloydata/malloy-tag": "^0.0.435",
     "basic-ftp": "^5.3.1",
     "protobufjs": "^7.5.5",
+    "concurrently": "^10.0.6",
+    "source-map-js": "^1.2.2",
+    "undici": "^6.27.0",
     "fast-xml-parser": "^5.5.6",
     "axios": "^1.20.0",
     "proxy-addr": "^2.0.8",

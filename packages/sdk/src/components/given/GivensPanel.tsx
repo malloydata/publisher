@@ -132,8 +132,20 @@ export function GivensPanel({
                variant="contained"
                size="small"
                disableElevation
-               onClick={apply.onApply}
-               disabled={!apply.pending}
+               onClick={() => apply.pending && apply.onApply()}
+               // Not `disabled`: a disabled button swallows the mousedown, so a
+               // click right after typing lands on the panel once blur enables it.
+               aria-disabled={!apply.pending}
+               sx={{
+                  "&[aria-disabled='true']": {
+                     cursor: "default",
+                     color: "action.disabled",
+                     backgroundColor: "action.disabledBackground",
+                     "&:hover": {
+                        backgroundColor: "action.disabledBackground",
+                     },
+                  },
+               }}
             >
                Apply
             </Button>

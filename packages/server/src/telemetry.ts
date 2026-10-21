@@ -11,7 +11,6 @@ import {
    type Tracer,
    type Histogram,
    type Meter,
-   type UpDownCounter,
 } from "@opentelemetry/api";
 
 /**
@@ -63,15 +62,6 @@ export function lazyCounter(
          description,
          ...(unit ? { unit } : {}),
       }),
-   );
-}
-
-export function lazyUpDownCounter(
-   name: string,
-   description: string,
-): () => UpDownCounter {
-   return lazyInstrument(() =>
-      publisherMeter().createUpDownCounter(name, { description }),
    );
 }
 
