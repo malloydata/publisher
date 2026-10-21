@@ -15,6 +15,13 @@ import { labelOf } from "./viewAnnotations";
  * pieces the builder's title is made of when the served manifest has none.
  */
 describe("a tile's title, when nothing serves one", () => {
+   it("stays fast on text built to make a backtracking pattern slow", () => {
+      const started = performance.now();
+      tileTitle(`a${"\t".repeat(50_000)}`);
+      tileTitle(`a${"+{{".repeat(20_000)}`);
+      expect(performance.now() - started).toBeLessThan(100);
+   });
+
    it("is the view's name, not a refinement's text", () => {
       expect(tileTitle("flights -> by_carrier + { where: carrier ~ $C }")).toBe(
          "By carrier",

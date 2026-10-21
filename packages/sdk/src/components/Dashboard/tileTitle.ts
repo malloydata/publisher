@@ -14,13 +14,26 @@ import { humanizeSlug } from "../drill";
  * tile shows a heading rather than code.
  */
 export function tileTitle(tile: string): string {
-   // A refinement (`by_carrier + { where: … }`) filters the view; the title is the view's.
-   const lastStep = (tile.split("->").at(-1)?.trim() ?? tile)
-      .replace(/\s*\+\s*\{[\s\S]*\}\s*$/, "")
-      .trim();
+   const lastStep = withoutRefinement(
+      tile.split("->").at(-1)?.trim() ?? tile,
+   ).trim();
    // Anything that is not a bare name (an inline `{ … }` stage, say) has no
    // sensible title to derive, so it keeps the expression as written.
    return /^[A-Za-z_][\w-]*$/.test(lastStep) ? humanizeSlug(lastStep) : tile;
+}
+
+/**
+ * A step with its refinement cut off: `by_carrier + { where: … }` filters the
+ * view, so the title is the view's. Index arithmetic, not a regex, since the
+ * text comes from the report and a backtracking pattern can be made slow.
+ */
+function withoutRefinement(step: string): string {
+   const plus = step.indexOf("+");
+   if (plus < 0) return step;
+   const rest = step.slice(plus + 1).trim();
+   return rest.startsWith("{") && rest.endsWith("}")
+      ? step.slice(0, plus)
+      : step;
 }
 
 /**
