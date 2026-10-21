@@ -1501,6 +1501,39 @@ describe("getQueryTimeoutMs", () => {
    });
 });
 
+describe("getServerSocketTimeoutMs", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   });
+
+   it("keeps the default socket timeout when the query timeout is under it", async () => {
+      const { getServerSocketTimeoutMs } = await import("./config");
+      const { DEFAULT_SOCKET_TIMEOUT_MS } = await import("./constants");
+      expect(getServerSocketTimeoutMs()).toBe(DEFAULT_SOCKET_TIMEOUT_MS);
+      expect(getServerSocketTimeoutMs(30_000)).toBe(DEFAULT_SOCKET_TIMEOUT_MS);
+   });
+
+   it("outlasts a query timeout longer than the default, so the query's 504 is written first", async () => {
+      // 50 minutes, as a deployment that serves long warehouse scans sets it.
+      // A 10-minute socket timeout would drop those connections at 10.
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "3000000";
+      const { getServerSocketTimeoutMs } = await import("./config");
+      const { SOCKET_TIMEOUT_GRACE_MS } = await import("./constants");
+      expect(getServerSocketTimeoutMs()).toBe(
+         3_000_000 + SOCKET_TIMEOUT_GRACE_MS,
+      );
+   });
+
+   it("is 0 (no limit) when the query timeout is disabled", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "0";
+      const { getServerSocketTimeoutMs } = await import("./config");
+      expect(getServerSocketTimeoutMs()).toBe(0);
+   });
+});
+
 describe("getMaxConcurrentQueries", () => {
    beforeEach(() => {
       delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;

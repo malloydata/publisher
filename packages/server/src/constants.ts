@@ -78,6 +78,18 @@ export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
  */
 export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
 /**
+ * Idle-socket timeout (ms) for the REST and MCP servers while the query
+ * timeout is under it. A socket that sends nothing this long is destroyed,
+ * even mid-request, so a longer configured query timeout raises it (see
+ * `getServerSocketTimeoutMs`).
+ */
+export const DEFAULT_SOCKET_TIMEOUT_MS = 600_000;
+/**
+ * How long the socket outlives the query timeout, so the timeout's 504 is
+ * written before the socket is torn down.
+ */
+export const SOCKET_TIMEOUT_GRACE_MS = 60_000;
+/**
  * Concurrent query requests per pod; excess requests get a 503 so the load
  * balancer can shed load (`PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables).
  * Bounds aggregate memory at ~32x {@link DEFAULT_MAX_RESPONSE_BYTES}.

@@ -53,6 +53,7 @@ import {
    getQueryMetadataMode,
    embeddingStartupNotices,
    getRetrievalConfig,
+   getServerSocketTimeoutMs,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
@@ -377,7 +378,10 @@ app.use(unhandledErrorMiddleware);
 
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
-mainServer.timeout = 600000;
+// Outlasts the query timeout, so a long query ends in its 504 rather than a
+// dropped connection. Only this one of the three cuts a request in flight.
+const socketTimeoutMs = getServerSocketTimeoutMs();
+mainServer.timeout = socketTimeoutMs;
 mainServer.keepAliveTimeout = 600000;
 mainServer.headersTimeout = 600000;
 
@@ -520,7 +524,7 @@ mcpServer.on(
    fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
 );
 
-mcpServer.timeout = 600000;
+mcpServer.timeout = socketTimeoutMs;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 

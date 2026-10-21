@@ -13,7 +13,9 @@ import {
    DEFAULT_POSTGRES_POOL_MAX,
    DEFAULT_QUERY_ROW_LIMIT,
    DEFAULT_QUERY_TIMEOUT_MS,
+   DEFAULT_SOCKET_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
+   SOCKET_TIMEOUT_GRACE_MS,
 } from "./constants";
 import { logger } from "./logger";
 import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
@@ -870,6 +872,28 @@ export const getQueryTimeoutMs = (): number => {
       );
    }
    return raw;
+};
+
+/**
+ * `server.timeout` for the REST and MCP servers: how long a socket may send
+ * nothing before it is destroyed. That includes the wait for a query's answer,
+ * so it has to outlast the query timeout, or a query that runs past it ends in
+ * a dropped connection instead of the timeout's 504. Node has always enforced
+ * it; Bun did not before 1.4.
+ *
+ * {@link DEFAULT_SOCKET_TIMEOUT_MS}, or the query timeout plus
+ * {@link SOCKET_TIMEOUT_GRACE_MS} when that is longer. `0` (no limit) when the
+ * query timeout is disabled, since a query allowed to run indefinitely must
+ * not be cut off by its socket instead.
+ */
+export const getServerSocketTimeoutMs = (
+   queryTimeoutMs: number = getQueryTimeoutMs(),
+): number => {
+   if (queryTimeoutMs === 0) return 0;
+   return Math.max(
+      DEFAULT_SOCKET_TIMEOUT_MS,
+      queryTimeoutMs + SOCKET_TIMEOUT_GRACE_MS,
+   );
 };
 
 /**
