@@ -320,12 +320,17 @@ function resolveFieldByPath(
  * Every hop is checked, not just the leaf: a join swapped partway down the
  * path is a divergence even when the leaf matches. `executedUnresolved` is
  * `executed` before Malloy resolved its joined composites to members.
+ * `sameDefinition` also requires each hop to be declared at the same location
+ * (the same compile): an equal expression redefined in a derivation is not
+ * the field the condition read. A resolved composite member carries its
+ * member's location, and a nested member has none, so neither is compared.
  */
 function fieldPathIdentical(
    declaring: SourceDef,
    executed: SourceDef,
    path: readonly string[],
    executedUnresolved?: SourceDef,
+   sameDefinition = false,
 ): boolean {
    let dCur: SourceDef | undefined = declaring;
    let eCur: SourceDef | undefined = executed;
@@ -337,6 +342,14 @@ function fieldPathIdentical(
       const uField = uCur?.fields?.find((f) => activeName(f) === name);
       const resolvedMember = isMalloyResolvedMember(dField, eField, uField);
       if (!fieldsIdentical(dField, eField, resolvedMember)) return false;
+      if (
+         sameDefinition &&
+         !resolvedMember &&
+         dField?.location &&
+         !sameLocation(dField.location, eField?.location)
+      ) {
+         return false;
+      }
       if (i < path.length - 1) {
          if (!dField || !isJoined(dField) || !eField || !isJoined(eField)) {
             return false;
@@ -521,6 +534,7 @@ export function assertFilterConditionBindsToDeclaringSource(
    executedStruct: SourceDef,
    condition: FilterCondition,
    executedUnresolved: SourceDef | undefined = undefined,
+   sameDefinition = false,
 ): void {
    const declaringStruct = withCompositeMembersResolved(
       declaringStructAsWritten,
@@ -548,6 +562,7 @@ export function assertFilterConditionBindsToDeclaringSource(
             executedStruct,
             path,
             executedUnresolved,
+            sameDefinition,
          )
       ) {
          throw new Error(
@@ -872,20 +887,6 @@ function samePosition(a: NoteLike["at"] & {}, b: NoteLike["at"] & {}): boolean {
    );
 }
 
-/** Whether `filters` is `base`'s own filters, by identity, plus `condition` last. */
-function holdsAllButLast(
-   filters: readonly FilterCondition[] | undefined,
-   base: readonly FilterCondition[] | undefined,
-   condition: FilterCondition,
-): boolean {
-   return (
-      !!filters &&
-      filters.length === (base?.length ?? 0) + 1 &&
-      filters[filters.length - 1] === condition &&
-      (base ?? []).every((f, i) => f === filters[i])
-   );
-}
-
 function sameLocation(
    a: DocumentLocationLike | undefined,
    b: DocumentLocationLike | undefined,
@@ -1042,6 +1043,8 @@ export function isSameDeclaration(a: SourceDef, b: SourceDef): boolean {
  *
  * Returns `struct` itself when nothing resolves, including the sibling
  * compile; the caller treats that as "cannot prove", not "nothing to check".
+ * `inlineBase` marks an origin found as the base an inline `where:` was
+ * written on, which shares this compile with `struct`.
  */
 function findFilterOrigin(
    struct: SourceDef,
@@ -1050,7 +1053,7 @@ function findFilterOrigin(
    resolveSibling?: SiblingModelDefResolver,
    unresolved?: SourceDef,
    virtualUrl?: string,
-): SourceDef {
+): { origin: SourceDef; inlineBase: boolean } {
    let origin = struct;
    let current = struct;
    let twin: SourceDef | undefined;
@@ -1093,24 +1096,18 @@ function findFilterOrigin(
          resolveSibling,
       );
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
-         return sibling;
+         return { origin: sibling, inlineBase: false };
       }
-      // An inline `X extend { where: }` carries X's location and `extends` names X's sourceID, so X (without the new where:) is the struct the where: was written against; aliased copies of X are one declaration.
-      const bases = Object.values(modelDef?.contents ?? {}).filter(
+      // An inline `X extend { where: }` keeps X's location; `source: a is X` gets its own. Same-location aliases are one declaration, so the first stands in.
+      const inlineBase = Object.values(modelDef?.contents ?? {}).find(
          (v): v is SourceDef =>
             isSourceDef(v) &&
             v !== struct &&
-            v.sourceID !== undefined &&
-            v.sourceID === (struct as { extends?: string }).extends &&
             sameLocation(v.location, struct.location) &&
-            holdsAllButLast(struct.filterList, v.filterList, condition),
+            // This is what makes it "X without the new where:".
+            !v.filterList?.includes(condition),
       );
-      if (
-         bases.length > 0 &&
-         bases.every((v) => isSameDeclaration(v, bases[0]))
-      ) {
-         return bases[0];
-      }
+      if (inlineBase) return { origin: inlineBase, inlineBase: true };
       // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
       const at = firstFieldUsageLocation(condition);
       const inVirtualFile =
@@ -1118,10 +1115,10 @@ function findFilterOrigin(
          !!virtualUrl &&
          canonicalUrl(at.url) === canonicalUrl(virtualUrl);
       if (twin && ancestorUnresolved && (!resolveSibling || inVirtualFile)) {
-         return twin;
+         return { origin: twin, inlineBase: false };
       }
    }
-   return origin;
+   return { origin, inlineBase: false };
 }
 
 /**
@@ -1155,22 +1152,22 @@ function conditionReadsNoField(condition: FilterCondition): boolean {
  * POSITIVE signals that a condition is fresh (see {@link isOwnFreshFilter}).
  * `queryLocation` (`prepared._query.location`, set for every run) covers a
  * named query's inline extend, which may carry its base's `.location`.
- * `compiledUrl` is the synthetic `internal://` URL of a caller or cell
- * compile; undefined for a named run. `virtualUrl` is the `/compile` check
+ * `callerText` is where the caller's own request text sits (never a cell's or
+ * a named run's, which are the author's); `virtualUrl` is the `/compile` check
  * file that re-translates the author's own model text for this one request, so
  * no sibling compile exists for what it holds.
  */
 export interface FreshnessContext {
-   compiledUrl?: string;
+   callerText?: { url: string; fromLine: number };
    queryLocation?: DocumentLocationLike;
    virtualUrl?: string;
 }
 
 /**
  * Whether `condition` is PROVEN to be `struct`'s own fresh filter, by its
- * parse location lying in `struct`'s span or `queryLocation`, or in
- * `compiledUrl`. Being unrecognized is not proof: an inherited condition
- * from a narrower compile is unrecognized too.
+ * parse location lying in `struct`'s span or `queryLocation`. Being
+ * unrecognized is not proof: an inherited condition from a narrower compile
+ * is unrecognized too.
  */
 function isOwnFreshFilter(
    struct: SourceDef,
@@ -1182,13 +1179,23 @@ function isOwnFreshFilter(
    const structLocation = (struct as { location?: DocumentLocationLike })
       .location;
    if (structLocation && locationContains(structLocation, at)) return true;
-   if (
-      freshness.queryLocation &&
-      locationContains(freshness.queryLocation, at)
-   ) {
-      return true;
-   }
-   return !!freshness.compiledUrl && at.url === freshness.compiledUrl;
+   return (
+      !!freshness.queryLocation && locationContains(freshness.queryLocation, at)
+   );
+}
+
+/** Whether the caller wrote `condition` itself, which is not a row-security control. */
+function isCallerWritten(
+   condition: FilterCondition,
+   callerText: FreshnessContext["callerText"],
+): boolean {
+   const at = firstFieldUsageLocation(condition);
+   return (
+      !!at &&
+      !!callerText &&
+      canonicalUrl(at.url) === canonicalUrl(callerText.url) &&
+      at.range.start.line >= callerText.fromLine
+   );
 }
 
 /**
@@ -1231,11 +1238,12 @@ export function assertInheritedSourceFiltersBind(
       // (`assertGraftedGateBindsToDeclaringSource`).
       if (alreadyProven.has(condition)) continue;
       if (conditionReadsNoField(condition)) continue;
+      if (isCallerWritten(condition, freshness.callerText)) continue;
       // Before the fresh-filter check: an inline `extend {}` may carry its
       // base's `.location`, which would wrongly "prove" an inherited
       // condition fresh. A non-`struct` origin is always a genuine ancestor
       // holding this exact condition object.
-      const origin = findFilterOrigin(
+      const { origin, inlineBase } = findFilterOrigin(
          struct,
          condition,
          modelDef,
@@ -1249,6 +1257,7 @@ export function assertInheritedSourceFiltersBind(
             struct,
             condition,
             unresolved,
+            inlineBase,
          );
          continue;
       }

@@ -673,37 +673,183 @@ export { s }`,
    }
 });
 
-describe("I2: decoy sources sharing the inline base's location", () => {
-   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+describe("I4: an inline where: over any base, in any chain", () => {
+   const PB = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const PB_TRUE = `source: deals_incl is ${DEAL} extend { dimension: is_open is true  measure: n is count() }\n`;
+   const CSV = "deal_id,is_deleted\n1,false\n2,false\n3,true\n";
+   const PT = `source: deals_incl is duckdb.table('deals.csv') extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const CMP = `${COMPOSITES}
+source: m1 is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
+source: m2 is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count()  dimension: other is 1 }
+source: deals_incl is compose(m1, m2)
+`;
    const REBIND =
       " extend { except: is_open } extend { dimension: is_open is true }";
-   const DECOYS: Record<string, string> = {
-      rebound: `source: a is deals_incl${REBIND}\n`,
-      plain: "source: a is deals_incl\n",
-      extended: "source: a is deals_incl extend { dimension: z is 1 }\n",
-   };
-   const S = (r: string) =>
-      `source: s is deals_incl extend { where: is_open }${r} -> { group_by: deal_id }\nexport { s }\n`;
-   for (const [kind, decoy] of Object.entries(DECOYS)) {
-      for (const order of ["before", "after"]) {
-         const text = (r: string) =>
-            order === "before" ? BASE + decoy + S(r) : BASE + S(r) + decoy;
-         it(`I2-${kind}-${order}-honest`, async () => {
-            await serve(
-               `I2-${kind}-${order}-honest`,
-               { "index.malloy": text("") },
-               "run: s -> { aggregate: n is count() }",
-            );
-         });
-         it(`I2-${kind}-${order}-misbound`, async () => {
-            await serve(
-               `I2-${kind}-${order}-misbound`,
-               { "index.malloy": text(REBIND) },
-               "run: s -> { aggregate: n is count() }",
-            );
-         });
+   const AS_SOURCE = (chain: string) =>
+      `source: s is ${chain} -> { group_by: deal_id }\nexport { s }\n`;
+   const AS_QUERY = (chain: string) =>
+      `query: q is ${chain} -> { aggregate: n is count() }\n`;
+   const FORMS = [
+      ["source", AS_SOURCE],
+      ["named", AS_QUERY],
+   ] as const;
+   const RUN = "run: s -> { aggregate: n is count() }";
+   /** Serve `chain` as a declared source or as a named query, expecting `kind`. */
+   async function serveChain(
+      id: string,
+      kind: Kind,
+      form: (typeof FORMS)[number],
+      decl: string,
+      chain: string,
+      extra: Record<string, string> = {},
+   ): Promise<void> {
+      EXPECTED[id] = kind;
+      await serve(
+         id,
+         { "index.malloy": decl + form[1](chain), ...extra },
+         form[0] === "named" ? "" : RUN,
+         {},
+         {},
+         form[0] === "named" ? "q" : undefined,
+      );
+   }
+   const bases: [string, string, Record<string, string>][] = [
+      ["table", PT, { "deals.csv": CSV }],
+      ["compose", CMP, {}],
+   ];
+   const chains: [string, string][] = [
+      ["one", "deals_incl extend { where: is_open }"],
+      ["two", "deals_incl extend { where: is_open, deal_id > 0 }"],
+      [
+         "chained",
+         "deals_incl extend { where: is_open } extend { where: deal_id > 0 }",
+      ],
+   ];
+
+   for (const [baseName, decl, extra] of bases) {
+      for (const [chainName, chain] of chains) {
+         for (const form of FORMS) {
+            const id = `I4-${baseName}-${chainName}-${form[0]}`;
+            it(`${id}-honest`, async () => {
+               await serveChain(
+                  `${id}-honest`,
+                  "SERVED",
+                  form,
+                  decl,
+                  chain,
+                  extra,
+               );
+            });
+            // Malloy cannot compile a named query that rebinds a composite's field.
+            if (baseName === "compose" && form[0] === "named") continue;
+            it(`${id}-misbound`, async () => {
+               await serveChain(
+                  `${id}-misbound`,
+                  "DENIED",
+                  form,
+                  decl,
+                  chain + REBIND,
+                  extra,
+               );
+            });
+         }
       }
    }
+
+   for (const form of FORMS) {
+      it(`I4-plain-one-${form[0]}-honest`, async () => {
+         await serveChain(
+            `I4-plain-one-${form[0]}-honest`,
+            "SERVED",
+            form,
+            PB,
+            chains[0][1],
+         );
+      });
+   }
+   for (const [chainName, chain] of chains.slice(1)) {
+      it(`I4-plain-${chainName}-named-misbound`, async () => {
+         await serveChain(
+            `I4-plain-${chainName}-named-misbound`,
+            "DENIED",
+            FORMS[1],
+            PB,
+            chain + REBIND,
+         );
+      });
+   }
+
+   const RESTORE =
+      "deals_incl extend { except: is_open } extend { dimension: is_open is not is_deleted } extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true }";
+   for (const form of FORMS) {
+      it(`I4-restore-${form[0]}: a field redefined to the base's own expression is not the one the where: read`, async () => {
+         await serveChain(
+            `I4-restore-${form[0]}`,
+            "DENIED",
+            form,
+            PB_TRUE,
+            RESTORE,
+         );
+      });
+   }
+
+   it("I4-struct-honest: a where: on a STRUCT column's member is served", async () => {
+      const decl = `source: deals_incl is duckdb.sql("select 1 as deal_id, {'city': 'nyc'} as addr union all select 2, {'city': 'nyc'} union all select 3, {'city': 'sf'}") extend { measure: n is count() }\n`;
+      await serveChain(
+         "I4-struct-honest",
+         "SERVED",
+         FORMS[0],
+         decl,
+         "deals_incl extend { where: addr.city = 'nyc' }",
+      );
+   });
+
+   it("I4-joined-composite-honest: a where: reading through a joined composite is served", async () => {
+      const decl = `${COMPOSITES}
+source: m1 is ${CLOSE} extend { primary_key: deal_id }
+source: m2 is ${CLOSE} extend { primary_key: deal_id; dimension: other is 1 }
+source: cmp is compose(m1, m2)
+source: deals_incl is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: is_open is cmp.close_type is null
+   measure: n is count()
+}
+`;
+      await serveChain(
+         "I4-joined-composite-honest",
+         "SERVED",
+         FORMS[0],
+         decl,
+         "deals_incl extend { where: is_open }",
+      );
+   });
+});
+
+describe("I5: the caller's own where: is not a row-security control", () => {
+   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\nexport { deals_incl }\n`;
+   it("I5-adhoc-dim-where: a where: on a field the caller defines is served", async () => {
+      EXPECTED["I5-adhoc-dim-where"] = "SERVED";
+      await serve(
+         "I5-adhoc-dim-where",
+         { "index.malloy": BASE },
+         "run: deals_incl extend { dimension: z is not is_deleted; where: z } -> { aggregate: n is count() }",
+      );
+   });
+   it("I5-adhoc-where: a where: on the base's own field is served", async () => {
+      EXPECTED["I5-adhoc-where"] = "SERVED";
+      await serve(
+         "I5-adhoc-where",
+         { "index.malloy": BASE },
+         "run: deals_incl extend { where: is_open } -> { aggregate: n is count() }",
+      );
+   });
+   it("I5-cell-misbound: a cell that declares a where: and rebinds its field is refused", async () => {
+      EXPECTED["I5-cell-misbound"] = "DENIED";
+      await serveCell(
+         "I5-cell-misbound",
+         `>>>malloy\n${BASE}\n>>>malloy\nrun: deals_incl extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true } -> { aggregate: n is count() }\n`,
+      );
+   });
 });
 
 describe("I3: an aliased import of the inline base", () => {
@@ -1985,18 +2131,6 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
 };
 
 const EXPECTED: Record<string, Kind> = {
-   "I2-rebound-before-honest": "SERVED",
-   "I2-rebound-before-misbound": "DENIED",
-   "I2-rebound-after-honest": "SERVED",
-   "I2-rebound-after-misbound": "DENIED",
-   "I2-plain-before-honest": "SERVED",
-   "I2-plain-before-misbound": "DENIED",
-   "I2-plain-after-honest": "SERVED",
-   "I2-plain-after-misbound": "DENIED",
-   "I2-extended-before-honest": "SERVED",
-   "I2-extended-before-misbound": "DENIED",
-   "I2-extended-after-honest": "SERVED",
-   "I2-extended-after-misbound": "DENIED",
    "I3-alias-first-honest": "SERVED",
    "I3-alias-first-misbound": "DENIED",
    "I3-alias-last-honest": "SERVED",

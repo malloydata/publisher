@@ -2465,7 +2465,12 @@ export class Model {
             "runnable",
             await this.resolveAuthorizeSourceFromRunnable(runnable),
          );
-         await this.assertNoMisboundInheritedFilters(runnable);
+         await this.assertNoMisboundInheritedFilters(
+            runnable,
+            new Set(),
+            "entry_point",
+            options?.callerJoins?.region,
+         );
          return runnable;
       }
 
@@ -2526,9 +2531,7 @@ export class Model {
          runnable,
          new Set(),
          rowLevel.length > 0 ? siteOf(rowLevel[0]) : undefined,
-         options?.callerJoins?.region.kind === "span"
-            ? options.callerJoins.region.url
-            : undefined,
+         options?.callerJoins?.region,
       );
       if (rowLevel.length === 0) return runnable;
 
@@ -2593,6 +2596,7 @@ export class Model {
             recompiled,
             new Set(rowLevel.map((r) => r.condition)),
             siteOf(rowLevel[0]),
+            options?.callerJoins?.region,
          );
          this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
          return recompiled;
@@ -2610,8 +2614,8 @@ export class Model {
 
    /**
     * Resolve the run-target `SourceDef`/`ModelDef`, the composite member it
-    * resolved to, and two signals `isOwnFreshFilter` (`./filter_binding_guard`)
-    * uses to identify a condition parsed from THIS request's own text:
+    * resolved to, and two signals `./filter_binding_guard` uses to identify a
+    * condition parsed from THIS request's own text:
     *
     * - `compiledUrl`: the synthetic `internal://` URL of the request's text.
     *   `undefined` for a named run, whose URL is the model file's — a misbind
@@ -3018,7 +3022,7 @@ export class Model {
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
       site: AuthorizeGateSite = "entry_point",
-      virtualUrl?: string,
+      callerRegion?: CallerRegion,
    ): Promise<void> {
       const {
          struct,
@@ -3034,7 +3038,20 @@ export class Model {
          assertInheritedSourceFiltersBind(
             target,
             modelDef,
-            { compiledUrl, queryLocation, virtualUrl },
+            {
+               callerText:
+                  callerRegion?.kind === "span"
+                     ? {
+                          url: callerRegion.url,
+                          fromLine: callerRegion.fromLine,
+                       }
+                     : callerRegion && compiledUrl
+                       ? { url: compiledUrl, fromLine: 0 }
+                       : undefined,
+               queryLocation,
+               virtualUrl:
+                  callerRegion?.kind === "span" ? callerRegion.url : undefined,
+            },
             this.siblingModelDefResolver,
             undefined,
             undefined,
