@@ -100,6 +100,7 @@
       "lunr": "^2.3.6",
       "recursive-readdir": "^2.2.3",
       "simple-git": "^4.0.2",
+      "snowflake-sdk": "2.3.1",
       "winston": "^3.17.0"
    },
    "devDependencies": {

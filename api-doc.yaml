@@ -1978,6 +1978,262 @@ paths:
         "504":
           $ref: "#/components/responses/GatewayTimeout"
 
+  /environments/{environmentName}/packages/{packageName}/models/{path}/query-jobs:
+    post:
+      tags:
+        - models
+      operationId: create-query-job
+      summary: Submit a Malloy query as a query job (Snowflake)
+      description: |
+        Compiles the query exactly as `execute-query-model` does, with the same
+        gates, then submits its SQL to Snowflake without waiting for it to run
+        and answers 202 with a job id. The result stays in Snowflake (24 hours)
+        and is read back by row range from `get-query-job-rows`, so no request
+        is held open for the length of the query and any server can answer for
+        the job. Only for queries whose connection is a Snowflake connection;
+        any other connection, or a query answered from storage, is a 400.
+
+        The query's row limit is its own `limit:` only: the server's default
+        row cap and maximum row count do not apply, because the result is read
+        in pages rather than returned whole.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+        - name: path
+          in: path
+          description: Path to the model within the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+      responses:
+        "202":
+          description: The query was accepted by Snowflake and is running
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/QueryJob"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /environments/{environmentName}/packages/{packageName}/models/{path}/query-jobs/{jobId}:
+    get:
+      tags:
+        - models
+      operationId: get-query-job
+      summary: Get a query job's status
+      description: |
+        The job's state, and its row count once it has succeeded. A job id that
+        is malformed, altered, or was issued for another model is a 404.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+        - name: path
+          in: path
+          description: Path to the model within the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+        - name: jobId
+          in: path
+          description: The job id `create-query-job` returned
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The job's status
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/QueryJobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+    delete:
+      tags:
+        - models
+      operationId: cancel-query-job
+      summary: Cancel a query job
+      description: |
+        Asks Snowflake to cancel the job's query. The job then reads
+        `cancelled`; a job that had already finished keeps its state.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+        - name: path
+          in: path
+          description: Path to the model within the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+        - name: jobId
+          in: path
+          description: The job id `create-query-job` returned
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The cancel was sent
+          content:
+            "application/json":
+              schema:
+                type: object
+                properties:
+                  jobId:
+                    type: string
+                  cancelRequested:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+
+  /environments/{environmentName}/packages/{packageName}/models/{path}/query-jobs/{jobId}/rows:
+    get:
+      tags:
+        - models
+      operationId: get-query-job-rows
+      summary: Read a row range of a finished query job
+      description: |
+        Rows `offset` to `offset + limit - 1` of the job's result, in the
+        query's order, written as they are read from Snowflake. Only the result
+        chunks that overlap the range are fetched, and no SQL runs. A range past
+        the end returns no rows. 409 until the job has succeeded.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+        - name: path
+          in: path
+          description: Path to the model within the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+        - name: jobId
+          in: path
+          description: The job id `create-query-job` returned
+          required: true
+          schema:
+            type: string
+        - name: offset
+          in: query
+          description: Index of the first row to return (0-based)
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          description: How many rows to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000000
+            default: 10000
+      responses:
+        "200":
+          description: The rows of the range
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/QueryJobRows"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The job has not succeeded (it is running, failed, or was cancelled)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+
   /environments/{environmentName}/packages/{packageName}/models/{path}/compile:
     post:
       tags:
@@ -6503,6 +6759,101 @@ components:
             query is indistinguishable here from a backend that cannot say. Free
             and unknown are the same value, and a savings calculation built on
             this will treat free queries as unmeasured rather than as free.
+
+    QueryJob:
+      type: object
+      description: A query job Snowflake has accepted
+      required:
+        - jobId
+        - state
+        - snowflakeQueryId
+        - resource
+      properties:
+        jobId:
+          type: string
+          description: |
+            Names the job in the status, rows and cancel calls. Signed by the
+            server and bound to the environment, package and model it was
+            issued for.
+        state:
+          type: string
+          enum: [running, succeeded, failed, cancelled]
+        snowflakeQueryId:
+          type: string
+          description: Snowflake's own id for the query, as QUERY_HISTORY shows it
+        queryCorrelationId:
+          type: string
+          nullable: true
+          description: The `query_id` in the statement's QUERY_TAG, as on `QueryResult`
+        resource:
+          type: string
+          description: The job's status path
+
+    QueryJobStatus:
+      type: object
+      required:
+        - jobId
+        - state
+        - snowflakeQueryId
+        - snowflakeStatus
+      properties:
+        jobId:
+          type: string
+        state:
+          type: string
+          enum: [running, succeeded, failed, cancelled]
+          description: |
+            `cancelled` only for an explicit cancel; a statement that hit the
+            connection's timeout is `failed`.
+        snowflakeQueryId:
+          type: string
+        snowflakeStatus:
+          type: string
+          description: Snowflake's own status (QUEUED, RUNNING, SUCCESS, FAILED_WITH_ERROR, ...)
+        totalRows:
+          type: integer
+          description: The result's row count, once the job has succeeded
+        error:
+          type: object
+          description: Why the job failed or was cancelled
+          properties:
+            code:
+              type: string
+              description: Snowflake's error code, e.g. `000604` for a cancel
+            message:
+              type: string
+
+    QueryJobRows:
+      type: object
+      required:
+        - totalRows
+        - offset
+        - columns
+        - rows
+        - rowCount
+      properties:
+        totalRows:
+          type: integer
+          description: The whole result's row count
+        offset:
+          type: integer
+          description: Index of the first row returned
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          type: array
+          description: |
+            One object per row, keyed by column. An integer is a number when it
+            is exact and its digits as a string when it is not; a date or
+            timestamp is ISO 8601 text.
+          items:
+            type: object
+            additionalProperties: true
+        rowCount:
+          type: integer
+          description: How many rows this response holds
 
     LogMessage:
       type: object
