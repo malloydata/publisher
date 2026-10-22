@@ -673,6 +673,68 @@ export { s }`,
    }
 });
 
+describe("I2: decoy sources sharing the inline base's location", () => {
+   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const REBIND =
+      " extend { except: is_open } extend { dimension: is_open is true }";
+   const DECOYS: Record<string, string> = {
+      rebound: `source: a is deals_incl${REBIND}\n`,
+      plain: "source: a is deals_incl\n",
+      extended: "source: a is deals_incl extend { dimension: z is 1 }\n",
+   };
+   const S = (r: string) =>
+      `source: s is deals_incl extend { where: is_open }${r} -> { group_by: deal_id }\nexport { s }\n`;
+   for (const [kind, decoy] of Object.entries(DECOYS)) {
+      for (const order of ["before", "after"]) {
+         const text = (r: string) =>
+            order === "before" ? BASE + decoy + S(r) : BASE + S(r) + decoy;
+         it(`I2-${kind}-${order}-honest`, async () => {
+            await serve(
+               `I2-${kind}-${order}-honest`,
+               { "index.malloy": text("") },
+               "run: s -> { aggregate: n is count() }",
+            );
+         });
+         it(`I2-${kind}-${order}-misbound`, async () => {
+            await serve(
+               `I2-${kind}-${order}-misbound`,
+               { "index.malloy": text(REBIND) },
+               "run: s -> { aggregate: n is count() }",
+            );
+         });
+      }
+   }
+});
+
+describe("I3: an aliased import of the inline base", () => {
+   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const REBIND =
+      " extend { except: is_open } extend { dimension: is_open is true }";
+   const IMPORTS: Record<string, string> = {
+      "alias-first": `import { b is deals_incl, deals_incl } from "base.malloy"\n`,
+      "alias-last": `import { deals_incl, b is deals_incl } from "base.malloy"\n`,
+   };
+   for (const [order, imp] of Object.entries(IMPORTS)) {
+      const text = (r: string) =>
+         `${imp}source: s is deals_incl extend { where: is_open }${r} -> { group_by: deal_id }\nexport { s }\n`;
+      const RUN = "run: s -> { aggregate: n is count() }";
+      it(`I3-${order}-honest: copies of one declaration are one base`, async () => {
+         await serve(
+            `I3-${order}-honest`,
+            { "base.malloy": BASE, "index.malloy": text("") },
+            RUN,
+         );
+      });
+      it(`I3-${order}-misbound`, async () => {
+         await serve(
+            `I3-${order}-misbound`,
+            { "base.malloy": BASE, "index.malloy": text(REBIND) },
+            RUN,
+         );
+      });
+   }
+});
+
 // -------------- P: an imported named query over a query source built on a rebound source
 
 describe("P: a named query imported from a file", () => {
@@ -1923,6 +1985,22 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
 };
 
 const EXPECTED: Record<string, Kind> = {
+   "I2-rebound-before-honest": "SERVED",
+   "I2-rebound-before-misbound": "DENIED",
+   "I2-rebound-after-honest": "SERVED",
+   "I2-rebound-after-misbound": "DENIED",
+   "I2-plain-before-honest": "SERVED",
+   "I2-plain-before-misbound": "DENIED",
+   "I2-plain-after-honest": "SERVED",
+   "I2-plain-after-misbound": "DENIED",
+   "I2-extended-before-honest": "SERVED",
+   "I2-extended-before-misbound": "DENIED",
+   "I2-extended-after-honest": "SERVED",
+   "I2-extended-after-misbound": "DENIED",
+   "I3-alias-first-honest": "SERVED",
+   "I3-alias-first-misbound": "DENIED",
+   "I3-alias-last-honest": "SERVED",
+   "I3-alias-last-misbound": "DENIED",
    "I-direct-honest": "SERVED",
    "I-direct-misbound": "DENIED",
    "I-joined-honest": "SERVED",

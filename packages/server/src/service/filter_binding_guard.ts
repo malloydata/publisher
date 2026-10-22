@@ -872,6 +872,20 @@ function samePosition(a: NoteLike["at"] & {}, b: NoteLike["at"] & {}): boolean {
    );
 }
 
+/** Whether `filters` is `base`'s own filters, by identity, plus `condition` last. */
+function holdsAllButLast(
+   filters: readonly FilterCondition[] | undefined,
+   base: readonly FilterCondition[] | undefined,
+   condition: FilterCondition,
+): boolean {
+   return (
+      !!filters &&
+      filters.length === (base?.length ?? 0) + 1 &&
+      filters[filters.length - 1] === condition &&
+      (base ?? []).every((f, i) => f === filters[i])
+   );
+}
+
 function sameLocation(
    a: DocumentLocationLike | undefined,
    b: DocumentLocationLike | undefined,
@@ -1081,16 +1095,22 @@ function findFilterOrigin(
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return sibling;
       }
-      // An inline `X extend { where: }` carries X's location, so X (which does not hold the new where:) is the struct whose fields the where: was written against.
-      const inlineBase = Object.values(modelDef?.contents ?? {}).find(
-         (v) =>
+      // An inline `X extend { where: }` carries X's location and `extends` names X's sourceID, so X (without the new where:) is the struct the where: was written against; aliased copies of X are one declaration.
+      const bases = Object.values(modelDef?.contents ?? {}).filter(
+         (v): v is SourceDef =>
             isSourceDef(v) &&
             v !== struct &&
-            !isSameDeclaration(v, struct) &&
-            !v.filterList?.includes(condition) &&
-            sameLocation(v.location, struct.location),
+            v.sourceID !== undefined &&
+            v.sourceID === (struct as { extends?: string }).extends &&
+            sameLocation(v.location, struct.location) &&
+            holdsAllButLast(struct.filterList, v.filterList, condition),
       );
-      if (inlineBase) return inlineBase as SourceDef;
+      if (
+         bases.length > 0 &&
+         bases.every((v) => isSameDeclaration(v, bases[0]))
+      ) {
+         return bases[0];
+      }
       // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
       const at = firstFieldUsageLocation(condition);
       const inVirtualFile =
