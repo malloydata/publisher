@@ -30,6 +30,7 @@ import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { pathToFileURL } from "url";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
 import { Environment } from "../../src/service/environment";
@@ -191,7 +192,7 @@ async function withPackage<T>(
       for (const [name, text] of Object.entries(files)) {
          await fs.writeFile(
             path.join(staging, name),
-            text.replaceAll("OUTSIDE/", `file://${outDir}/`),
+            text.replaceAll("OUTSIDE/", `${pathToFileURL(outDir).href}/`),
          );
       }
    });
