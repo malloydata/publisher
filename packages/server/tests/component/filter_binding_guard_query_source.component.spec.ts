@@ -41,15 +41,34 @@ import {
 import type { Package } from "../../src/service/package";
 
 const DENY_MESSAGE = "Inherited source filter binding check failed; denying";
+/** The guard could not find where a filter was declared, so it refuses rather than guess. */
+const UNRESOLVED_REASON = "declaring source could not be resolved";
 const COMPARATOR_REASON =
    "resolves to a different field on the executed source";
 
 interface Outcome {
-   kind: "SERVED" | "DENIED" | "INVALID";
+   kind: "SERVED" | "DENIED" | "REFUSED" | "INVALID";
    detail: string;
 }
 
 type Kind = Outcome["kind"];
+
+/** Honest row count of a served id (see the header); a served control with any other count answered wrong rows. */
+const HONEST_COUNT_OVERRIDES: Record<string, string> = {
+   "B7-nest-honest": 'row={"v":{"n":2}}',
+   "B7-query-source-honest": 'row={"m":3}',
+   "C-givens": "n=3",
+   "G1-honest": "n=1",
+   "B2b-op-same": "n=3",
+};
+
+function checkRows(id: string, outcome: Outcome): void {
+   if (outcome.kind !== "SERVED") return;
+   expect({ id, detail: outcome.detail }).toEqual({
+      id,
+      detail: HONEST_COUNT_OVERRIDES[id] ?? "n=2",
+   });
+}
 
 /** Assert `outcome` is what `EXPECTED` says for `id`; the detail rides along for the failure diff. */
 function check(id: string, outcome: Outcome): Outcome {
@@ -60,10 +79,12 @@ function check(id: string, outcome: Outcome): Outcome {
    return outcome;
 }
 
-/** Only a denial carrying the comparator reason is DENIED; anything else means the probe is invalid. */
+/** A denial is DENIED (comparator reason) or REFUSED (unresolvable origin); anything else means the probe is invalid. */
 function classifyDenial(reasons: string[]): Outcome {
    const comparator = reasons.find((r) => r.includes(COMPARATOR_REASON));
    if (comparator) return { kind: "DENIED", detail: comparator };
+   const unresolved = reasons.find((r) => r.includes(UNRESOLVED_REASON));
+   if (unresolved) return { kind: "REFUSED", detail: unresolved };
    return {
       kind: "INVALID",
       detail: `denied for another reason: ${reasons.join(" | ") || "<no guard debug reason>"}`,
@@ -126,13 +147,22 @@ interface Served {
    pkg: Package;
 }
 
-/** Install `files` as package `pkg` (compiled by the real load path) and run `use`. */
+/**
+ * Install `files` as package `pkg` (compiled by the real load path) and run
+ * `act`. `outside` files sit beside the package, imported as `OUTSIDE/<name>`.
+ */
 async function withPackage<T>(
    files: Record<string, string>,
    act: (served: Served) => Promise<T>,
+   outside: Record<string, string> = {},
 ): Promise<T> {
    const root = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-probe-"));
    roots.push(root);
+   const outDir = path.join(root, "outside");
+   await fs.mkdir(outDir, { recursive: true });
+   for (const [name, text] of Object.entries(outside)) {
+      await fs.writeFile(path.join(outDir, name), text);
+   }
    const envPath = path.join(root, "env");
    await fs.mkdir(envPath, { recursive: true });
    const env = await Environment.create("probeEnv", envPath, []);
@@ -143,7 +173,10 @@ async function withPackage<T>(
          JSON.stringify({ name: "pkg" }),
       );
       for (const [name, text] of Object.entries(files)) {
-         await fs.writeFile(path.join(staging, name), text);
+         await fs.writeFile(
+            path.join(staging, name),
+            text.replaceAll("OUTSIDE/", `file://${outDir}/`),
+         );
       }
    });
    return act({ env, pkg });
@@ -158,39 +191,51 @@ async function serve(
    files: Record<string, string>,
    query: string,
    givens: Record<string, GivenValue> = {},
+   outside: Record<string, string> = {},
 ): Promise<{ query: Outcome; compile: Outcome }> {
    let result: { query: Outcome; compile: Outcome };
    try {
-      result = await withPackage(files, async ({ env, pkg }) => {
-         const ran = await withDenialSpy(async () => {
-            const r = await pkg
-               .getModel("index.malloy")!
-               .getQueryResults(undefined, undefined, query, {}, true, givens);
-            return {
-               kind: "SERVED",
-               detail: firstValue(
-                  r.compactResult as unknown as Record<string, unknown>[],
-               ),
-            };
-         });
-         const compiled = await withDenialSpy(async () => {
-            const { problems } = await env.compileSource(
-               "pkg",
-               "index.malloy",
-               query,
-               false,
-               givens,
-               "append",
-            );
-            if (problems.length > 0) {
-               return invalid(
-                  new Error(problems.map((p) => p.message).join("; ")),
+      result = await withPackage(
+         files,
+         async ({ env, pkg }) => {
+            const ran = await withDenialSpy(async () => {
+               const r = await pkg
+                  .getModel("index.malloy")!
+                  .getQueryResults(
+                     undefined,
+                     undefined,
+                     query,
+                     {},
+                     true,
+                     givens,
+                  );
+               return {
+                  kind: "SERVED",
+                  detail: firstValue(
+                     r.compactResult as unknown as Record<string, unknown>[],
+                  ),
+               };
+            });
+            const compiled = await withDenialSpy(async () => {
+               const { problems } = await env.compileSource(
+                  "pkg",
+                  "index.malloy",
+                  query,
+                  false,
+                  givens,
+                  "append",
                );
-            }
-            return { kind: "SERVED", detail: "compile-ok" };
-         });
-         return { query: ran, compile: compiled };
-      });
+               if (problems.length > 0) {
+                  return invalid(
+                     new Error(problems.map((p) => p.message).join("; ")),
+                  );
+               }
+               return { kind: "SERVED", detail: "compile-ok" };
+            });
+            return { query: ran, compile: compiled };
+         },
+         outside,
+      );
    } catch (e) {
       result = {
          query: invalid(e),
@@ -198,6 +243,7 @@ async function serve(
       };
    }
    check(id, result.query);
+   checkRows(id, result.query);
    // `/compile` runs nothing, so it must never be more permissive than the query route.
    if (!(id in COMPILE_DIVERGENCE_ALLOWED)) {
       expect({ id, compile: result.compile }).toMatchObject({
@@ -225,7 +271,9 @@ async function serveCell(id: string, notebook: string): Promise<Outcome> {
    } catch (e) {
       outcome = invalid(e);
    }
-   return check(id, outcome);
+   check(id, outcome);
+   checkRows(id, outcome);
+   return outcome;
 }
 
 // ---------------------------------------------------------------- fixtures
@@ -458,6 +506,141 @@ source: twin_src is compose(tm1, tm2)`;
    it("B2: caller-side alias re-joined to a different composite (end to end)", async () => {
       await serve("B2", familyFiles(family, true), RUN_PIPELINE);
    });
+});
+
+// ------------------- B2b: a caller rejoins a composite alias to a member Malloy would not pick
+
+describe("B2b: rejoining a joined composite alias", () => {
+   const rejoin = (to: string, op = "") =>
+      `run: deals extend { rename: old_cmp is cmp } extend { join_one: cmp is ${to} ${op} on deal_id = cmp.deal_id } -> { aggregate: n is count() }`;
+   const HONEST = "run: deals -> { aggregate: n is count() }";
+
+   describe("members in another order, split across files", () => {
+      const close = `${COMPOSITES}
+source: m1 is ${CLOSE} extend { primary_key: deal_id }
+source: m2 is ${NULLS} extend { primary_key: deal_id }
+source: cmp is compose(m1, m2)
+source: cmp_rev is compose(m2, m1)
+`;
+      const files = {
+         "close.malloy": close,
+         "deals.malloy": `${COMPOSITES}
+import "close.malloy"
+source: deals_incl is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: is_open is cmp.close_type is null
+   measure: n is count()
+}
+source: deals is deals_incl extend { where: is_open }
+`,
+         "index.malloy": `${COMPOSITES}\nimport "close.malloy"\nimport "deals.malloy"\nexport { deals, cmp, cmp_rev }`,
+      };
+      it("B2b-split-honest: untouched", async () => {
+         await serve("B2b-split-honest", files, HONEST);
+      });
+      it("B2b-split-same: re-joined to the same composite", async () => {
+         await serve("B2b-split-same", files, rejoin("cmp"));
+      });
+      it("B2b-split-reordered: re-joined to a composite of the same members in another order", async () => {
+         await serve("B2b-split-reordered", files, rejoin("cmp_rev"));
+      });
+   });
+
+   describe("a member with the same fields", () => {
+      const files = {
+         "index.malloy": `${COMPOSITES}
+source: m1 is ${CLOSE} extend { primary_key: deal_id }
+source: m2 is ${NULLS} extend { primary_key: deal_id }
+source: cmp is compose(m1, m2)
+source: deals_incl is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: is_open is cmp.close_type is null
+   measure: n is count()
+}
+source: deals is deals_incl extend { where: is_open }
+export { deals, cmp, m1, m2 }`,
+      };
+      it("B2b-member-m2: re-joined directly to a member that reads other rows", async () => {
+         await serve("B2b-member-m2", files, rejoin("m2"));
+      });
+      it("B2b-member-m1: re-joined directly to a member, even the one Malloy would pick", async () => {
+         await serve("B2b-member-m1", files, rejoin("m1"));
+      });
+   });
+
+   describe("another join type", () => {
+      const H = "##! experimental { composite_sources, join_types }";
+      const DEAL4 = `duckdb.sql("select 1 as deal_id, false as is_deleted union all select 2, false union all select 3, true union all select 4, false")`;
+      const CLOSE5 = `duckdb.sql("select 1 as deal_id, cast(null as integer) as close_type union all select 2, 7 union all select 3, cast(null as integer) union all select 5, cast(null as integer)")`;
+      const files = {
+         "deals.malloy": `${H}
+source: m1 is ${CLOSE5} extend { primary_key: deal_id }
+source: m2 is ${CLOSE5} extend { primary_key: deal_id; dimension: other is 1 }
+source: cmp is compose(m1, m2)
+source: deals_incl is ${DEAL4} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: is_open is cmp.close_type is null
+   measure: n is count()
+}
+source: deals is deals_incl extend { where: is_open }
+`,
+         "pipeline.malloy": `${H}\nimport "deals.malloy"\nsource: pipeline_now is deals extend { dimension: x is 1 }`,
+         "index.malloy": `${H}\nimport "deals.malloy"\nimport "pipeline.malloy"\nexport { deals, pipeline_now, cmp, m1, m2 }`,
+      };
+      const run = (to: string, op: string) =>
+         `run: pipeline_now extend { rename: old_cmp is cmp } extend { join_one: cmp is ${to} ${op} on deal_id = cmp.deal_id } -> { aggregate: n is count() }`;
+      it("B2b-op-same: composite re-joined with its own join type", async () => {
+         await serve("B2b-op-same", files, run("cmp", ""));
+      });
+      for (const [to, op] of [
+         ["cmp", "full"],
+         ["cmp", "inner"],
+         ["m1", "full"],
+         ["m1", "inner"],
+         ["m1", "right"],
+      ]) {
+         it(`B2b-op-${to}-${op}`, async () => {
+            await serve(`B2b-op-${to}-${op}`, files, run(to, op));
+         });
+      }
+   });
+});
+
+// ------------------------------- X: the declaring file sits outside the package
+
+describe("X: a source derived from a file outside the package", () => {
+   const SHARED = `
+source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
+source: deals is deals_incl extend { where: is_open }
+`;
+   const MIS = "except: is_open } extend { dimension: is_open is true";
+   const RUN = "run: pipeline_now -> { aggregate: n is count() }";
+   const cases: [string, string][] = [
+      [
+         "X1-misbound",
+         `import "OUTSIDE/shared.malloy"\nsource: pipeline_now is deals extend { ${MIS} }`,
+      ],
+      [
+         "X3-query-source-misbound",
+         `import "OUTSIDE/shared.malloy"
+source: deals_x is deals extend { ${MIS} }
+source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: deal_id }`,
+      ],
+   ];
+   for (const [id, pipeline] of cases) {
+      it(`${id}: refused on both routes`, async () => {
+         await serve(
+            id,
+            {
+               "pipeline.malloy": pipeline,
+               "index.malloy": `import "pipeline.malloy"\nexport { pipeline_now }`,
+            },
+            RUN,
+            {},
+            { "shared.malloy": SHARED },
+         );
+      });
+   }
 });
 
 // ------------------------------------------------------ A6: query-source target
@@ -994,13 +1177,19 @@ async function compare(
 }
 
 /** The comparator throws a plain Error, so classify its message directly. */
-function compareStructs(id: string, d: SourceDef, e: SourceDef): Outcome {
+function compareStructs(
+   id: string,
+   d: SourceDef,
+   e: SourceDef,
+   unresolved?: SourceDef,
+): Outcome {
    let outcome: Outcome;
    try {
       assertFilterConditionBindsToDeclaringSource(
          d,
          e,
          d.filterList![0] as FilterCondition,
+         unresolved,
       );
       outcome = { kind: "SERVED", detail: "BINDS" };
    } catch (err) {
@@ -1132,12 +1321,14 @@ run: deals_x -> { aggregate: n is count() }
          ).toEqual([]);
       });
       it(`${scope}: a rebound derivation in unsaved text is refused`, async () => {
-         await expect(
-            compileProblems(
+         const outcome = await withDenialSpy(async () => {
+            await compileProblems(
                model("except: is_open } extend { dimension: is_open is true"),
                scope,
-            ),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+            );
+            return { kind: "SERVED", detail: "compile-ok" };
+         });
+         expect(outcome.kind).toBe("DENIED");
       });
    }
 });
@@ -1267,7 +1458,7 @@ source: deals is deals_incl extend { where: is_open }
       );
       expect(joinedType(declared)).toBe("composite");
       expect(joinedType(resolved)).not.toBe("composite");
-      compareStructs("A5-resolved-ctl", declared, resolved!);
+      compareStructs("A5-resolved-ctl", declared, resolved!, declared);
    });
 });
 
@@ -1316,6 +1507,35 @@ source: deals is deals_incl extend { where: is_open }
    }
 });
 
+describe("comparator: named arguments are unordered", () => {
+   const PARAM = "##! experimental { parameters }";
+   const files = (args: string): Record<string, string> => ({
+      "m.malloy": `${PARAM}
+source: base(a::number, b::number) is duckdb.sql("${CLOSE_ROWS}") extend { where: deal_id >= a and deal_id <= b }
+source: dfc is base(${args}) -> { group_by: deal_id, close_type } extend { primary_key: deal_id }
+source: deals_incl is duckdb.sql("select 1 as deal_id") extend {
+   join_one: dfc on deal_id = dfc.deal_id
+   dimension: is_open is dfc.close_type is null
+}
+source: deals is deals_incl extend { where: is_open }
+`,
+   });
+   it("B8-order-reordered: the same arguments in another order", async () => {
+      await compare(
+         "B8-order-reordered",
+         files("a is 1, b is 2"),
+         files("b is 2, a is 1"),
+      );
+   });
+   it("B8-order-swapped: the same values bound to the other names", async () => {
+      await compare(
+         "B8-order-swapped",
+         files("a is 1, b is 2"),
+         files("a is 2, b is 1"),
+      );
+   });
+});
+
 describe("comparator: matrixOperation (experimental join_types)", () => {
    const text = (mop: string) => ({
       "m.malloy": `##! experimental { join_types }
@@ -1348,6 +1568,21 @@ source: deals is deals_incl extend { where: is_open }
 const COMPILE_DIVERGENCE_ALLOWED: Record<string, string> = {};
 
 const EXPECTED: Record<string, Kind> = {
+   "B8-order-reordered": "SERVED",
+   "B8-order-swapped": "DENIED",
+   "B2b-split-honest": "SERVED",
+   "B2b-split-same": "SERVED",
+   "B2b-split-reordered": "DENIED",
+   "B2b-member-m2": "DENIED",
+   "B2b-member-m1": "DENIED",
+   "B2b-op-same": "SERVED",
+   "B2b-op-cmp-full": "DENIED",
+   "B2b-op-cmp-inner": "DENIED",
+   "B2b-op-m1-full": "DENIED",
+   "B2b-op-m1-inner": "DENIED",
+   "B2b-op-m1-right": "DENIED",
+   "X1-misbound": "REFUSED",
+   "X3-query-source-misbound": "REFUSED",
    "G1-misbound": "DENIED",
    "G1-honest": "SERVED",
    "CAL-C": "SERVED",

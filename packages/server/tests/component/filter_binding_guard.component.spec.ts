@@ -2138,7 +2138,7 @@ export { pipeline_now, deals }
       }
    });
 
-   it("still denies a caller extend that redefines a field the where: reads", async () => {
+   it("still denies a caller extend that drops a field the where: reads", async () => {
       const { pkg, cleanup } = await createPackageWithFiles(
          files("", "is_open"),
       );

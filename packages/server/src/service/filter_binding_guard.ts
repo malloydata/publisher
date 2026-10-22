@@ -21,7 +21,10 @@
  * requires the same `join` and `matrixOperation` and deep-equal `onExpression`,
  * `filterList`, `parameters`, `arguments`, a query source's `query` and a
  * composite's `sources`, since same-table sources share a `name` and differ in
- * rows only through those. Fields are looked up by ACTIVE name
+ * rows only through those. A joined composite that Malloy resolved to one
+ * member is accepted only when the executed struct's own pre-resolution join
+ * is that same composite ({@link isMalloyResolvedMember}); a member the caller
+ * joined directly is refused. Fields are looked up by ACTIVE name
  * ({@link activeName}).
  *
  * **The default is DENY.** Failing to resolve a declaring source or a field,
@@ -143,10 +146,12 @@ function isDocumentLocation(v: unknown): boolean {
    return isPosition(range.start) && isPosition(range.end);
 }
 
+// Keyed on IR objects, which are never mutated in place (every graft clones first); an in-place edit would leave stale JSON.
 const strippedJsonCache = new WeakMap<object, string>();
 
-/** Structural equality ignoring metadata keys. A key-order mismatch reads as
- *  "different", which fails closed, so it is not chased. */
+/** Structural equality ignoring metadata keys. Name-keyed records are compared
+ *  in sorted key order; any other key-order mismatch reads as "different",
+ *  which fails closed, so it is not chased. */
 function deepEqualIgnoring(a: unknown, b: unknown): boolean {
    return strippedJson(a) === strippedJson(b);
 }
@@ -178,8 +183,11 @@ function strip(value: unknown): unknown {
                string,
                unknown
             >;
+            // Sorted: argument order is not meaning (`f(a is 1, b is 2)`).
             out[k] = Object.fromEntries(
-               Object.entries(record).map(([rk, rv]) => [rk, strip(rv)]),
+               Object.entries(record)
+                  .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))
+                  .map(([rk, rv]) => [rk, strip(rv)]),
             );
             continue;
          }
@@ -195,37 +203,26 @@ function strip(value: unknown): unknown {
 
 type JoinedLike = Record<string, unknown>;
 
-/** Keys the join (not the joined struct) contributes, so they differ between
- *  a declared composite and the member Malloy resolved it to. */
-const JOIN_OWN_KEYS = [
-   "as",
-   "join",
-   "onExpression",
-   "matrixOperation",
-   "refSummary",
-   "filterList",
-];
-
-/** The member of the declared joined `composite` that Malloy resolved it to
- *  for the query (`resolved`), if any. */
-function matchingCompositeMember(
-   composite: SourceDef,
-   resolved: SourceDef,
-): SourceDef | undefined {
-   const core = (s: SourceDef) => {
-      const copy = { ...(s as unknown as JoinedLike) };
-      for (const key of JOIN_OWN_KEYS) delete copy[key];
-      return strippedJson(copy);
-   };
-   const resolvedCore = core(resolved);
-   return compositeMembers(composite).find(
-      (member) =>
-         !isComposite(member) &&
-         core(member) === resolvedCore &&
-         deepEqualIgnoring(
-            (member as { filterList?: unknown }).filterList ?? [],
-            (resolved as { filterList?: unknown }).filterList ?? [],
-         ),
+/** Whether `executed` is the member Malloy picked for the declared joined
+ *  `composite`, not one the caller joined: the executed struct's own
+ *  pre-resolution join (`unresolved`) is still that same composite. */
+function isMalloyResolvedMember(
+   composite: FieldDef | undefined,
+   executed: FieldDef | undefined,
+   unresolved: FieldDef | undefined,
+): boolean {
+   if (!composite || !executed || !unresolved) return false;
+   const c = composite as unknown as JoinedLike;
+   const u = unresolved as unknown as JoinedLike;
+   return (
+      isJoined(composite) &&
+      isJoined(unresolved) &&
+      isComposite(composite as SourceDef) &&
+      !isComposite(executed as SourceDef) &&
+      c.join === u.join &&
+      // Malloy drops a resolved composite join's type, so it can only be read here.
+      c.matrixOperation === u.matrixOperation &&
+      deepEqualIgnoring(c.sources, u.sources)
    );
 }
 
@@ -234,19 +231,13 @@ function matchingCompositeMember(
 function fieldsIdentical(
    a: FieldDef | undefined,
    b: FieldDef | undefined,
+   resolvedMember = false,
 ): boolean {
    if (!a || !b) return false;
    const ja = a as unknown as JoinedLike;
    const jb = b as unknown as JoinedLike;
    const joined = isJoined(a) || isJoined(b);
    if (joined && (!isJoined(a) || !isJoined(b))) return false;
-   // A joined composite reads as its resolved member on the executed side.
-   const resolvedMember =
-      joined &&
-      isComposite(a as SourceDef) !== isComposite(b as SourceDef) &&
-      !!(isComposite(a as SourceDef)
-         ? matchingCompositeMember(a as SourceDef, b as SourceDef)
-         : matchingCompositeMember(b as SourceDef, a as SourceDef));
    if (!resolvedMember) {
       if (a.type !== b.type) return false;
       if (
@@ -260,6 +251,7 @@ function fieldsIdentical(
       return false;
    if (joined) {
       if (ja.join !== jb.join) return false;
+      // A resolved member has lost its join type; it was checked against the pre-resolution join.
       if (!resolvedMember && ja.matrixOperation !== jb.matrixOperation) {
          return false;
       }
@@ -321,31 +313,38 @@ function resolveFieldByPath(
 /**
  * Whether `path` resolves to the same field in `declaring` as in `executed`.
  * Every hop is checked, not just the leaf: a join swapped partway down the
- * path is a divergence even when the leaf matches.
+ * path is a divergence even when the leaf matches. `executedUnresolved` is
+ * `executed` before Malloy resolved its joined composites to members.
  */
 function fieldPathIdentical(
    declaring: SourceDef,
    executed: SourceDef,
    path: readonly string[],
+   executedUnresolved?: SourceDef,
 ): boolean {
    let dCur: SourceDef | undefined = declaring;
    let eCur: SourceDef | undefined = executed;
+   let uCur: SourceDef | undefined = executedUnresolved;
    for (let i = 0; i < path.length; i++) {
       const name = path[i];
       const dField = dCur?.fields?.find((f) => activeName(f) === name);
       const eField = eCur?.fields?.find((f) => activeName(f) === name);
-      if (!fieldsIdentical(dField, eField)) return false;
+      const uField = uCur?.fields?.find((f) => activeName(f) === name);
+      const resolvedMember = isMalloyResolvedMember(dField, eField, uField);
+      if (!fieldsIdentical(dField, eField, resolvedMember)) return false;
       if (i < path.length - 1) {
          if (!dField || !isJoined(dField) || !eField || !isJoined(eField)) {
             return false;
          }
          const declared = dField as unknown as SourceDef;
          const executedJoin = eField as unknown as SourceDef;
-         // Its composite placeholder fields only resolve through the member.
-         dCur =
-            isComposite(declared) && !isComposite(executedJoin)
-               ? matchingCompositeMember(declared, executedJoin)
-               : declared;
+         uCur =
+            uField && isJoined(uField)
+               ? (uField as unknown as SourceDef)
+               : undefined;
+         dCur = resolvedMember
+            ? withCompositeMembersResolved(declared, executedJoin, uCur)
+            : declared;
          eCur = executedJoin;
       }
    }
@@ -516,12 +515,12 @@ export function assertFilterConditionBindsToDeclaringSource(
    declaringStructAsWritten: SourceDef,
    executedStruct: SourceDef,
    condition: FilterCondition,
-   executedComposite: SourceDef | undefined = undefined,
+   executedUnresolved: SourceDef | undefined = undefined,
 ): void {
    const declaringStruct = withCompositeMembersResolved(
       declaringStructAsWritten,
       executedStruct,
-      executedComposite,
+      executedUnresolved,
    );
    const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
@@ -538,7 +537,14 @@ export function assertFilterConditionBindsToDeclaringSource(
       );
    }
    for (const path of paths) {
-      if (!fieldPathIdentical(declaringStruct, executedStruct, path)) {
+      if (
+         !fieldPathIdentical(
+            declaringStruct,
+            executedStruct,
+            path,
+            executedUnresolved,
+         )
+      ) {
          throw new Error(
             `a row-security filter references \`${path.join(".")}\`, which resolves to a different field on the executed source`,
          );
@@ -1039,8 +1045,8 @@ function findFilterOrigin(
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return sibling;
       }
-      // With no ancestor in sight the twin is the declaration that holds the filter.
-      if (twin && ancestorUnresolved) return twin;
+      // Without a package resolver (a bare model) no ancestor can ever resolve, so the twin is the best declaration there is.
+      if (twin && ancestorUnresolved && !resolveSibling) return twin;
    }
    return origin;
 }
@@ -1165,7 +1171,7 @@ export function assertInheritedSourceFiltersBind(
             origin,
             struct,
             condition,
-            composite,
+            unresolved,
          );
          continue;
       }
@@ -1232,7 +1238,7 @@ export interface StageLike {
    queryFields?: readonly { type?: string; pipeline?: readonly StageLike[] }[];
 }
 
-/** Every source joined by `extend:` in `pipeline`, including inside nests. */
+/** Every source joined by `extend:` in `pipeline`, including inside nests; unlike `collectCallerJoins`' pipeline walk, regardless of who wrote it. */
 function stageJoins(
    pipeline: readonly StageLike[] | undefined,
    depth = 0,
