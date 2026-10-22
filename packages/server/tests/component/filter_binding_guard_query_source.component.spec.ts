@@ -63,6 +63,9 @@ const HONEST_COUNT_OVERRIDES: Record<string, string> = {
    "B7-nest-honest": 'row={"v":{"n":2}}',
    "B7-query-source-honest": 'row={"m":3,"s":2}',
    "G1-honest": "n=1",
+   "I4-chain-cross-join-honest-source": "n=3",
+   "I4-chain-cross-join-honest-named": "n=3",
+   "I5-caller-where-before-dim-gated": "n=1",
    "U6-a1malloy-gate-honest": "n=1",
    "U6-dealsv2malloy-gate-honest": "n=1",
    "B2b-op-same": "n=3",
@@ -853,6 +856,20 @@ source: closes is ${CLOSE} extend { primary_key: deal_id; join_one: lvl2 on deal
 `;
       const JOIN = "extend { join_one: d is closes on deal_id = d.deal_id }";
       const LOCAL = 'import "closes.malloy"\n';
+      const MANY = Array.from(
+         { length: 8 },
+         (_, k) =>
+            `dimension: t${k} is ${Array.from({ length: 40 }, (_x, i) => `pick 'v${i}' when deal_id = ${100 + i}`).join(" ")} else 'x'`,
+      ).join("  ");
+      const PB_MANY = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  ${MANY}  dimension: ok is is_open and ${Array.from({ length: 8 }, (_, k) => `t${k} = 'x'`).join(" and ")}  measure: n is count() }\n`;
+      const PSWX = `source: closes is ${CLOSE} extend { primary_key: deal_id  dimension: open is close_type is null }
+source: closes_evil is ${CLOSE} extend { primary_key: deal_id  dimension: open is true }
+source: deals_incl is ${DEAL} extend { join_cross: d is closes  dimension: is_open is not is_deleted  measure: n is count() }
+`;
+      const PSW = `source: closes is ${CLOSE} extend { primary_key: deal_id  dimension: open is close_type is null }
+source: closes_evil is ${CLOSE} extend { primary_key: deal_id  dimension: open is true }
+source: deals_incl is ${DEAL} extend { join_one: d is closes on deal_id = d.deal_id  dimension: is_open is not is_deleted  measure: n is count() }
+`;
       const cases: [string, Kind, string, string, Record<string, string>][] = [
          [
             "dim-honest",
@@ -953,6 +970,48 @@ source: closes is ${CLOSE} extend { primary_key: deal_id; join_one: lvl2 on deal
             {},
          ],
          [
+            "many-dims-honest",
+            "SERVED",
+            PB_MANY,
+            "deals_incl extend { where: ok }",
+            {},
+         ],
+         [
+            "rejoin-same-table-honest",
+            "SERVED",
+            PSW,
+            "deals_incl extend { where: d.open }",
+            {},
+         ],
+         [
+            "rejoin-same-table-after",
+            "DENIED",
+            PSW,
+            "deals_incl extend { where: d.open } extend { except: d } extend { join_one: d is closes_evil on deal_id = d.deal_id }",
+            {},
+         ],
+         [
+            "cross-join-honest",
+            "SERVED",
+            PSWX,
+            "deals_incl extend { where: d.open }",
+            {},
+         ],
+         [
+            "cross-join-swapped",
+            "DENIED",
+            PSWX,
+            "deals_incl extend { where: d.open } extend { except: d } extend { join_cross: d is closes_evil }",
+            {},
+         ],
+         [
+            "rejoin-same-table-restore",
+            "DENIED",
+            PSW,
+            "deals_incl extend { except: d } extend { join_one: d is closes_evil on deal_id = d.deal_id } extend { where: d.open } extend { except: d } extend { join_one: d is closes on deal_id = d.deal_id }",
+            {},
+         ],
+         [
             "join-other-file-honest",
             "SERVED",
             LOCAL + PB,
@@ -974,7 +1033,6 @@ source: closes is ${CLOSE} extend { primary_key: deal_id; join_one: lvl2 on deal
 describe("I5: the caller's own where: is not a row-security control", () => {
    const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\nexport { deals_incl }\n`;
    it("I5-adhoc-dim-where: a where: on a field the caller defines is served", async () => {
-      EXPECTED["I5-adhoc-dim-where"] = "SERVED";
       await serve(
          "I5-adhoc-dim-where",
          { "index.malloy": BASE },
@@ -982,15 +1040,66 @@ describe("I5: the caller's own where: is not a row-security control", () => {
       );
    });
    it("I5-adhoc-where: a where: on the base's own field is served", async () => {
-      EXPECTED["I5-adhoc-where"] = "SERVED";
       await serve(
          "I5-adhoc-where",
          { "index.malloy": BASE },
          "run: deals_incl extend { where: is_open } -> { aggregate: n is count() }",
       );
    });
+   // A caller-written where: is never a row-security control, even when it precedes the dimension it reads.
+   const CALLER_Z =
+      "run: deals_incl extend { where: z; dimension: z is not is_deleted } -> { aggregate: n is count() }";
+   it("I5-caller-where-before-dim: served on both routes", async () => {
+      await serve(
+         "I5-caller-where-before-dim",
+         { "index.malloy": BASE },
+         CALLER_Z,
+      );
+   });
+   it("I5-caller-where-before-dim-gated: served over a row-gated source", async () => {
+      await serve(
+         "I5-caller-where-before-dim-gated",
+         {
+            "index.malloy": `##! experimental { givens }
+given:
+  LIM :: number
+#(access_filter) deal_id = $LIM
+${BASE}`,
+         },
+         CALLER_Z,
+         { LIM: 1 },
+      );
+   });
+   it("I5-caller-where-before-dim-bypass: served on the trusted path", async () => {
+      const id = "I5-caller-where-before-dim-bypass";
+      const outcome = await withPackage({ "index.malloy": BASE }, ({ pkg }) =>
+         withDenialSpy(async () => {
+            const r = await pkg
+               .getModel("index.malloy")!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  CALLER_Z,
+                  {},
+                  undefined,
+                  {},
+                  undefined,
+                  undefined,
+                  "full",
+                  true,
+               );
+            return {
+               kind: "SERVED",
+               detail: firstValue(
+                  r.compactResult as unknown as Record<string, unknown>[],
+               ),
+            };
+         }),
+      );
+      check(id, outcome);
+      checkRows(id, outcome);
+   });
    it("I5-cell-misbound: a cell that declares a where: and rebinds its field is refused", async () => {
-      EXPECTED["I5-cell-misbound"] = "DENIED";
       await serveCell(
          "I5-cell-misbound",
          `>>>malloy\n${BASE}\n>>>malloy\nrun: deals_incl extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true } -> { aggregate: n is count() }\n`,
@@ -2351,6 +2460,12 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
 };
 
 const EXPECTED: Record<string, Kind> = {
+   "I5-adhoc-dim-where": "SERVED",
+   "I5-adhoc-where": "SERVED",
+   "I5-cell-misbound": "DENIED",
+   "I5-caller-where-before-dim": "SERVED",
+   "I5-caller-where-before-dim-gated": "SERVED",
+   "I5-caller-where-before-dim-bypass": "SERVED",
    "I6-honest": "SERVED",
    "I6-query-source-honest": "SERVED",
    "I6-chain-field-honest": "SERVED",

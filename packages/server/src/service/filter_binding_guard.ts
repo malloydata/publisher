@@ -322,7 +322,7 @@ function resolveFieldByPath(
  * path is a divergence even when the leaf matches. `executedUnresolved` is
  * `executed` before Malloy resolved its joined composites to members.
  * `sameDefinition` also requires each hop to be declared at the same location
- * (the same compile): an equal expression redefined in a derivation is not
+ * (url and range): an equal expression redefined in a derivation is not
  * the field the condition read. A resolved composite member carries its
  * member's location, and a nested member has none, so neither is compared.
  */
@@ -414,9 +414,7 @@ function chainDefinedFrom(
          fieldsIdentical(dField, eField) &&
          (!dField.location || sameLocation(dField.location, eField.location));
       if (!declared) {
-         return definedBefore(eField, at) && resolveFieldByPath(executed, path)
-            ? i
-            : undefined;
+         return definedBefore(eField, at) ? i : undefined;
       }
       if (i < path.length - 1) {
          if (!isJoined(dField) || !isJoined(eField)) return undefined;
@@ -464,13 +462,14 @@ function fieldUsageClosure(
       const item = queue.shift();
       if (!item) break;
       const { path, at } = item;
-      const key = `${path.join("\u0000")}@${executed ? JSON.stringify(at) : ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      paths.push(path);
       const from = executed
          ? chainDefinedFrom(declaring, executed, path, at)
          : undefined;
+      // Only a chain-defined read is judged per usage site; the rest dedups by path so the bound counts fields.
+      const key = `${path.join("\u0000")}@${from !== undefined ? JSON.stringify(at) : ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(path);
       if (from !== undefined) ordered.set(path, from);
       const structAt = (i: number) =>
          from !== undefined && i >= from ? executed : declaring;
@@ -1136,7 +1135,7 @@ export function isSameDeclaration(a: SourceDef, b: SourceDef): boolean {
  * Returns `struct` itself when nothing resolves, including the sibling
  * compile; the caller treats that as "cannot prove", not "nothing to check".
  * `inlineBase` marks an origin found as the base an inline `where:` was
- * written on, which shares this compile with `struct`.
+ * written on, which may come from a sibling compile of its file.
  */
 function findFilterOrigin(
    struct: SourceDef,

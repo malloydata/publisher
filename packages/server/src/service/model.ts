@@ -2617,9 +2617,10 @@ export class Model {
     * resolved to, and two signals `./filter_binding_guard` uses to identify a
     * condition parsed from THIS request's own text:
     *
-    * - `compiledUrl`: the synthetic `internal://` URL of the request's text.
-    *   `undefined` for a named run, whose URL is the model file's — a misbind
-    *   baked into a declared query must not claim freshness by sharing it.
+    * - `compiledUrl`: the synthetic `internal://` URL of the request's text,
+    *   which locates the caller-written span. `undefined` for a named run,
+    *   whose URL is the model file's — a misbind baked into a declared query
+    *   must not be taken for caller text by sharing it.
     * - `queryLocation`: `prepared._query.location`. Needed because `query: q2
     *   is X extend { where: … }` can leave the struct carrying X's location,
     *   so q2's own filter sits outside the struct's span.
