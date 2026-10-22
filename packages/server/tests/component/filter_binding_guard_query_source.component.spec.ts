@@ -998,6 +998,80 @@ describe("I5: the caller's own where: is not a row-security control", () => {
    });
 });
 
+describe("I6: a source built over an inline where:, imported selectively", () => {
+   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const REBIND =
+      " extend { except: is_open } extend { dimension: is_open is true }";
+   const RUN = "run: s -> { aggregate: n is count() }";
+   const imported = (id: string, mid: string, index: string, run = RUN) =>
+      serve(
+         id,
+         {
+            "base.malloy": BASE,
+            "mid.malloy": `import "base.malloy"\n${mid}`,
+            "index.malloy": index,
+         },
+         run,
+      );
+   const INDEX = `import { s } from "mid.malloy"\nexport { s }\n`;
+   const MID = `source: s is deals_incl extend { where: is_open }\n`;
+   const RUN_T = "run: t -> { aggregate: n is count() }";
+   it("I6-honest: the imported source serves", async () => {
+      await imported("I6-honest", MID, INDEX);
+   });
+   it("I6-query-source-honest: a query source over the inline where: serves", async () => {
+      await imported(
+         "I6-query-source-honest",
+         `source: s is deals_incl extend { where: is_open } -> { group_by: deal_id }\n`,
+         INDEX,
+      );
+   });
+   it("I6-chain-field-honest: a field defined before the where: in the importing file's chain serves", async () => {
+      await imported(
+         "I6-chain-field-honest",
+         `source: s is deals_incl extend { dimension: z is not is_deleted; where: z }\n`,
+         INDEX,
+      );
+   });
+   it("I6-order-honest: a field defined before the where: in a query source over it serves", async () => {
+      await imported(
+         "I6-order-honest",
+         `source: s is deals_incl extend { dimension: z is is_open; where: z } -> { group_by: deal_id }\n`,
+         INDEX,
+      );
+   });
+   it("I6-order-misbound: a field the where:'s field reads is rebound after it", async () => {
+      await imported(
+         "I6-order-misbound",
+         `source: s is deals_incl extend { dimension: z is is_open; where: z }${REBIND} -> { group_by: deal_id }\n`,
+         INDEX,
+      );
+   });
+   it("I6-misbound-importer: the importer rebinds the field the where: reads", async () => {
+      await imported(
+         "I6-misbound-importer",
+         MID,
+         `import { s } from "mid.malloy"\nsource: t is s${REBIND}\nexport { t }\n`,
+         RUN_T,
+      );
+   });
+   it("I6-misbound-importer-query: the same rebind, then a query stage", async () => {
+      await imported(
+         "I6-misbound-importer-query",
+         MID,
+         `import { s } from "mid.malloy"\nsource: t is s${REBIND} -> { group_by: deal_id }\nexport { t }\n`,
+         RUN_T,
+      );
+   });
+   it("I6-misbound-mid: the imported file's query source rebinds after the where:", async () => {
+      await imported(
+         "I6-misbound-mid",
+         `source: s is deals_incl extend { where: is_open }${REBIND} -> { group_by: deal_id }\n`,
+         INDEX,
+      );
+   });
+});
+
 describe("I3: an aliased import of the inline base", () => {
    const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
    const REBIND =
@@ -2277,6 +2351,14 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
 };
 
 const EXPECTED: Record<string, Kind> = {
+   "I6-honest": "SERVED",
+   "I6-query-source-honest": "SERVED",
+   "I6-chain-field-honest": "SERVED",
+   "I6-order-honest": "SERVED",
+   "I6-order-misbound": "DENIED",
+   "I6-misbound-importer": "DENIED",
+   "I6-misbound-importer-query": "DENIED",
+   "I6-misbound-mid": "DENIED",
    "I3-alias-first-honest": "SERVED",
    "I3-alias-first-misbound": "DENIED",
    "I3-alias-last-honest": "SERVED",

@@ -1183,6 +1183,33 @@ function findFilterOrigin(
       current = next;
    }
    if (origin === struct) {
+      // An inline `X extend { where: }` keeps X's location; `source: a is X` gets its own. Same-location aliases are one declaration, so the first stands in.
+      const sameLocationBase = (
+         contents: ModelDef["contents"],
+         lacksCondition: (v: SourceDef) => boolean,
+      ) =>
+         Object.values(contents).find(
+            (v): v is SourceDef =>
+               isSourceDef(v) &&
+               sameLocation(v.location, struct.location) &&
+               lacksCondition(v),
+         );
+      const inlineBase =
+         sameLocationBase(
+            modelDef?.contents ?? {},
+            // This is what makes it "X without the new where:".
+            (v) => v !== struct && !v.filterList?.includes(condition),
+         ) ??
+         // A selective import leaves X out of this compile; its own file's compile has it, and identity does not cross compiles. A resolved composite member's filter was grafted from the composite, not written on the member.
+         sameLocationBase(
+            (!isComposite(unresolved) &&
+               struct.location &&
+               resolveSibling?.(canonicalUrl(struct.location.url))?.contents) ||
+               {},
+            (v) => !siblingCandidateOwnsCondition(v, condition),
+         );
+      // Ahead of the sibling-owner leg, which would settle for the struct's own twin in the sibling compile.
+      if (inlineBase) return { origin: inlineBase, inlineBase: true };
       const sibling = findSiblingDeclaringSource(
          firstFieldUsageLocation(condition),
          resolveSibling,
@@ -1190,16 +1217,6 @@ function findFilterOrigin(
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return { origin: sibling, inlineBase: false };
       }
-      // An inline `X extend { where: }` keeps X's location; `source: a is X` gets its own. Same-location aliases are one declaration, so the first stands in.
-      const inlineBase = Object.values(modelDef?.contents ?? {}).find(
-         (v): v is SourceDef =>
-            isSourceDef(v) &&
-            v !== struct &&
-            sameLocation(v.location, struct.location) &&
-            // This is what makes it "X without the new where:".
-            !v.filterList?.includes(condition),
-      );
-      if (inlineBase) return { origin: inlineBase, inlineBase: true };
       // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
       const at = firstFieldUsageLocation(condition);
       const inVirtualFile =
