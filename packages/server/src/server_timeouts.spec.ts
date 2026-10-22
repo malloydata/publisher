@@ -68,28 +68,30 @@ async function get(
    return { data, closedByServer };
 }
 
-/** Answers `/slow` after `?ms=` milliseconds, sending nothing before then. */
+const SLOW_HANDLER_MS = 600;
+
+/** Answers `/slow` after {@link SLOW_HANDLER_MS}, sending nothing before then. */
 function slowApp(): express.Express {
    const app = express();
-   app.get("/slow", (req, res) => {
+   app.get("/slow", (_req, res) => {
       setTimeout(() => {
          if (!res.writableEnded) res.status(200).send("done");
-      }, Number(req.query.ms));
+      }, SLOW_HANDLER_MS);
    });
    return app;
 }
 
 describe("applyServerTimeouts", () => {
    it("cuts a request that outlives the socket timeout", async () => {
-      const port = await listen(slowApp(), 300);
-      const { data, closedByServer } = await get(port, "/slow?ms=600", 1500);
+      const port = await listen(slowApp(), SLOW_HANDLER_MS / 2);
+      const { data, closedByServer } = await get(port, "/slow", 1500);
       expect(closedByServer).toBe(true);
       expect(data).not.toContain("200");
    });
 
    it("answers the same request once the timeout is raised past it", async () => {
-      const port = await listen(slowApp(), 1000);
-      const { data } = await get(port, "/slow?ms=600", 1500);
+      const port = await listen(slowApp(), SLOW_HANDLER_MS * 2);
+      const { data } = await get(port, "/slow", 1500);
       expect(data).toStartWith("HTTP/1.1 200");
    });
 
