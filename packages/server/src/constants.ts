@@ -78,10 +78,10 @@ export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
  */
 export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
 /**
- * Idle-socket timeout (ms) for the REST and MCP servers while the query
- * timeout is under it. A socket that sends nothing this long is destroyed,
- * even mid-request, so a longer configured query timeout raises it (see
- * `getServerSocketTimeoutMs`).
+ * Socket timeout (ms) for the REST and MCP servers while the query timeout is
+ * under it. It cuts a request even mid-flight (Node when the socket has sent
+ * nothing this long, Bun 1.4 this long after the request started), so a longer
+ * configured query timeout raises it (see `getServerSocketTimeoutMs`).
  */
 export const DEFAULT_SOCKET_TIMEOUT_MS = 600_000;
 /**
@@ -89,6 +89,12 @@ export const DEFAULT_SOCKET_TIMEOUT_MS = 600_000;
  * written before the socket is torn down.
  */
 export const SOCKET_TIMEOUT_GRACE_MS = 60_000;
+/**
+ * The largest socket timeout (ms): a timer's 32-bit limit. A longer
+ * configured query timeout is capped here rather than left to each runtime's
+ * handling of an overflowing timer.
+ */
+export const MAX_SOCKET_TIMEOUT_MS = 2_147_483_647;
 /**
  * Concurrent query requests per pod; excess requests get a 503 so the load
  * balancer can shed load (`PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables).

@@ -1532,6 +1532,37 @@ describe("getServerSocketTimeoutMs", () => {
       const { getServerSocketTimeoutMs } = await import("./config");
       expect(getServerSocketTimeoutMs()).toBe(0);
    });
+
+   it("switches from the default to query timeout plus grace exactly where they meet", async () => {
+      const { getServerSocketTimeoutMs } = await import("./config");
+      const { DEFAULT_SOCKET_TIMEOUT_MS, SOCKET_TIMEOUT_GRACE_MS } =
+         await import("./constants");
+      const meet = DEFAULT_SOCKET_TIMEOUT_MS - SOCKET_TIMEOUT_GRACE_MS;
+      expect(getServerSocketTimeoutMs(meet)).toBe(DEFAULT_SOCKET_TIMEOUT_MS);
+      expect(getServerSocketTimeoutMs(meet + 1)).toBe(
+         DEFAULT_SOCKET_TIMEOUT_MS + 1,
+      );
+   });
+
+   it("caps a query timeout past a timer's 32-bit limit at that limit", async () => {
+      const { getServerSocketTimeoutMs } = await import("./config");
+      const { MAX_SOCKET_TIMEOUT_MS } = await import("./constants");
+      expect(getServerSocketTimeoutMs(2 ** 31)).toBe(MAX_SOCKET_TIMEOUT_MS);
+      expect(getServerSocketTimeoutMs(MAX_SOCKET_TIMEOUT_MS)).toBe(
+         MAX_SOCKET_TIMEOUT_MS,
+      );
+   });
+
+   it.each(["-1", "5m"])(
+      "throws on a PUBLISHER_QUERY_TIMEOUT_MS of %p, so the server fails at boot",
+      async (value) => {
+         process.env.PUBLISHER_QUERY_TIMEOUT_MS = value;
+         const { getServerSocketTimeoutMs } = await import("./config");
+         expect(() => getServerSocketTimeoutMs()).toThrow(
+            "PUBLISHER_QUERY_TIMEOUT_MS",
+         );
+      },
+   );
 });
 
 describe("getMaxConcurrentQueries", () => {

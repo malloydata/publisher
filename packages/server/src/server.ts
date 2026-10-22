@@ -71,6 +71,7 @@ import {
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
 import { registerLegacyRoutes } from "./server-old";
+import { applyServerTimeouts } from "./server_timeouts";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
@@ -379,11 +380,10 @@ app.use(unhandledErrorMiddleware);
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
 // Outlasts the query timeout, so a long query ends in its 504 rather than a
-// dropped connection. Only this one of the three cuts a request in flight.
+// dropped connection. Read at boot, so a malformed PUBLISHER_QUERY_TIMEOUT_MS
+// stops the server here instead of failing each query.
 const socketTimeoutMs = getServerSocketTimeoutMs();
-mainServer.timeout = socketTimeoutMs;
-mainServer.keepAliveTimeout = 600000;
-mainServer.headersTimeout = 600000;
+applyServerTimeouts(mainServer, socketTimeoutMs);
 
 // The .mcp.json write waits on this, so a process whose REST port fails to
 // bind never leaves a .mcp.json pointing at a server about to exit.
@@ -524,9 +524,7 @@ mcpServer.on(
    fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
 );
 
-mcpServer.timeout = socketTimeoutMs;
-mcpServer.keepAliveTimeout = 600000;
-mcpServer.headersTimeout = 600000;
+applyServerTimeouts(mcpServer, socketTimeoutMs);
 
 registerSignalHandlers(
    mainServer,
