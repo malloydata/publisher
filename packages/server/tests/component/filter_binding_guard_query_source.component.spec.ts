@@ -823,6 +823,152 @@ source: deals_incl is ${DEAL} extend {
          "deals_incl extend { where: is_open }",
       );
    });
+
+   it("I4-joined-composite-swapped: a composite re-joined in the chain is not the one the where: read", async () => {
+      const decl = `${COMPOSITES}
+source: m1 is ${CLOSE} extend { primary_key: deal_id }
+source: m2 is ${CLOSE} extend { primary_key: deal_id; dimension: other is 1 }
+source: m3 is ${NULLS} extend { primary_key: deal_id }
+source: m4 is ${NULLS} extend { primary_key: deal_id; dimension: other is 1 }
+source: cmp is compose(m1, m2)
+source: deals_incl is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: is_open is cmp.close_type is null
+   measure: n is count()
+}
+`;
+      await serveChain(
+         "I4-joined-composite-swapped",
+         "DENIED",
+         FORMS[0],
+         decl,
+         "deals_incl extend { where: is_open } extend { except: cmp } extend { join_one: cmp is compose(m3, m4) on deal_id = cmp.deal_id }",
+      );
+   });
+
+   describe("a where: reading a field defined earlier in the chain", () => {
+      const CLOSES = `source: closes is ${CLOSE} extend { primary_key: deal_id }\n`;
+      const LVL2 = `source: lvl2 is ${CLOSE} extend { primary_key: deal_id }
+source: closes is ${CLOSE} extend { primary_key: deal_id; join_one: lvl2 on deal_id = lvl2.deal_id }
+`;
+      const JOIN = "extend { join_one: d is closes on deal_id = d.deal_id }";
+      const LOCAL = 'import "closes.malloy"\n';
+      const cases: [string, Kind, string, string, Record<string, string>][] = [
+         [
+            "dim-honest",
+            "SERVED",
+            PB,
+            "deals_incl extend { dimension: z is not is_deleted; where: z }",
+            {},
+         ],
+         [
+            "redefine-honest",
+            "SERVED",
+            PB_TRUE,
+            "deals_incl extend { except: is_open } extend { dimension: is_open is not is_deleted } extend { where: is_open }",
+            {},
+         ],
+         [
+            "transitive-rebound",
+            "DENIED",
+            PB,
+            "deals_incl extend { dimension: w is is_deleted } extend { dimension: z is not w } extend { where: z } extend { except: w } extend { dimension: w is true }",
+            {},
+         ],
+         [
+            "nested-honest",
+            "SERVED",
+            PB,
+            "deals_incl extend { dimension: w is is_deleted } extend { dimension: z is not w } extend { where: z }",
+            {},
+         ],
+         [
+            "nested-rebound-between",
+            "DENIED",
+            PB,
+            "deals_incl extend { dimension: w is is_deleted } extend { dimension: z is not w } extend { except: w } extend { dimension: w is true } extend { where: z }",
+            {},
+         ],
+         [
+            "join-nested-honest",
+            "SERVED",
+            LVL2 + PB,
+            `deals_incl ${JOIN} extend { where: d.lvl2.close_type is null }`,
+            {},
+         ],
+         [
+            "join-on-rebound-between",
+            "DENIED",
+            CLOSES + PB,
+            `deals_incl ${JOIN} extend { except: deal_id } extend { dimension: deal_id is 1 } extend { where: d.close_type is null }`,
+            {},
+         ],
+         [
+            "one-field-two-sites",
+            "DENIED",
+            PB,
+            "deals_incl extend { dimension: z is not is_deleted } extend { except: is_deleted } extend { dimension: is_deleted is true } extend { dimension: y is is_deleted } extend { where: y and z }",
+            {},
+         ],
+         [
+            "one-field-two-sites-swapped",
+            "DENIED",
+            PB,
+            "deals_incl extend { dimension: z is not is_deleted } extend { except: is_deleted } extend { dimension: is_deleted is true } extend { dimension: y is is_deleted } extend { where: z and y }",
+            {},
+         ],
+         [
+            "where-before-dimension",
+            "DENIED",
+            PB,
+            "deals_incl extend { where: z; dimension: z is not is_deleted }",
+            {},
+         ],
+         [
+            "same-statement-misbind",
+            "DENIED",
+            PB,
+            "deals_incl extend { dimension: p is not is_deleted; where: p } extend { except: p } extend { dimension: p is true }",
+            {},
+         ],
+         [
+            "m1-read-rebound",
+            "DENIED",
+            PB_TRUE,
+            "deals_incl extend { except: is_open } extend { dimension: is_open is not is_deleted } extend { where: is_open } extend { except: is_deleted } extend { dimension: is_deleted is true }",
+            {},
+         ],
+         [
+            "join-on-honest",
+            "SERVED",
+            CLOSES + PB,
+            `deals_incl ${JOIN} extend { where: d.close_type is null }`,
+            {},
+         ],
+         [
+            "join-on-rebound",
+            "DENIED",
+            CLOSES + PB,
+            `deals_incl ${JOIN} extend { where: d.close_type is null } extend { except: deal_id } extend { dimension: deal_id is 1 }`,
+            {},
+         ],
+         [
+            "join-other-file-honest",
+            "SERVED",
+            LOCAL + PB,
+            `deals_incl ${JOIN} extend { where: d.close_type is null }`,
+            { "closes.malloy": CLOSES },
+         ],
+      ];
+      for (const form of FORMS) {
+         for (const [name, kind, decl, chain, extra] of cases) {
+            const id = `I4-chain-${name}-${form[0]}`;
+            it(id, async () => {
+               await serveChain(id, kind, form, decl, chain, extra);
+            });
+         }
+      }
+   });
 });
 
 describe("I5: the caller's own where: is not a row-security control", () => {

@@ -89,6 +89,7 @@ function nextDerivationLink(
 /** Duck-typed: Malloy does not re-export `RefSummary` from its root. */
 interface FieldUsageEntryLike {
    path: readonly string[];
+   at?: DocumentLocationLike;
 }
 interface RefSummaryLike {
    fieldUsage?: readonly FieldUsageEntryLike[];
@@ -369,6 +370,63 @@ function fieldPathIdentical(
    return true;
 }
 
+/** Whether `field` is located in `at`'s file and ends before `at` starts (a join's own ON may also contain it). */
+function definedBefore(
+   field: FieldDef | undefined,
+   at: DocumentLocationLike | undefined,
+): boolean {
+   const loc = (field as { location?: DocumentLocationLike } | undefined)
+      ?.location;
+   if (!loc || !at || canonicalUrl(loc.url) !== canonicalUrl(at.url)) {
+      return false;
+   }
+   return (
+      !isEarlierPosition(at.range.start, loc.range.end) ||
+      (isJoined(field as FieldDef) && locationContains(loc, at))
+   );
+}
+
+/**
+ * Where `path` first stops being the declaring struct's own definition but is
+ * a field the executed chain defined before the usage `at`. A top-level field
+ * comes from the declaring source (and keeps its location) or from a layer of
+ * this chain, and `except:` never brings one back, so a definition located
+ * before `at` is the one the `where:` read. Hops after a join accepted this
+ * way are not compared: a later `extend` can drop a joined field, never
+ * replace one.
+ */
+function chainDefinedFrom(
+   declaring: SourceDef,
+   executed: SourceDef,
+   path: readonly string[],
+   at: DocumentLocationLike | undefined,
+): number | undefined {
+   let dCur: SourceDef | undefined = declaring;
+   let eCur: SourceDef | undefined = executed;
+   for (let i = 0; i < path.length; i++) {
+      const dField = dCur?.fields?.find((f) => activeName(f) === path[i]);
+      const eField = eCur?.fields?.find((f) => activeName(f) === path[i]);
+      if (!eField) return undefined;
+      // Malloy resolves a declared composite to a member, which only the full path check can tell from a swapped one.
+      if (dField && isComposite(dField as SourceDef)) return undefined;
+      const declared =
+         !!dField &&
+         fieldsIdentical(dField, eField) &&
+         (!dField.location || sameLocation(dField.location, eField.location));
+      if (!declared) {
+         return definedBefore(eField, at) && resolveFieldByPath(executed, path)
+            ? i
+            : undefined;
+      }
+      if (i < path.length - 1) {
+         if (!isJoined(dField) || !isJoined(eField)) return undefined;
+         dCur = dField as unknown as SourceDef;
+         eCur = eField as unknown as SourceDef;
+      }
+   }
+   return undefined;
+}
+
 /**
  * Every field-usage path reachable from `refSummary`, resolved TRANSITIVELY
  * through `declaring`, following: a dimension's own expression (a filter on
@@ -377,25 +435,50 @@ function fieldPathIdentical(
  * {@link MAX_CLOSURE_SIZE}, or `unrecordedJoin` for a join whose ON or
  * `where:` reads fields without a `refSummary`; the caller must deny on
  * either.
+ *
+ * With `executed`, a path whose hop `declaring` lacks or defines differently is
+ * followed through the executed struct when {@link chainDefinedFrom} accepts it
+ * (`ordered` maps that path to the first such hop), so the reads of a field
+ * the chain defined are checked too, each against its own usage site.
  */
 function fieldUsageClosure(
    declaring: SourceDef,
    refSummary: RefSummaryLike | undefined,
-): { paths: string[][]; truncated: boolean; unrecordedJoin?: string } {
+   executed?: SourceDef,
+): {
+   paths: string[][];
+   ordered: Map<string[], number>;
+   truncated: boolean;
+   unrecordedJoin?: string;
+} {
    const seen = new Set<string>();
    const paths: string[][] = [];
-   const queue: string[][] = (refSummary?.fieldUsage ?? []).map(
-      (u: FieldUsageEntryLike) => [...u.path],
-   );
+   const ordered = new Map<string[], number>();
+   const queue: { path: string[]; at?: DocumentLocationLike }[] = (
+      refSummary?.fieldUsage ?? []
+   ).map((u: FieldUsageEntryLike) => ({ path: [...u.path], at: u.at }));
    while (queue.length > 0) {
-      if (paths.length >= MAX_CLOSURE_SIZE) return { paths, truncated: true };
-      const path = queue.shift();
-      if (!path) break;
-      const key = path.join("\u0000");
+      if (paths.length >= MAX_CLOSURE_SIZE) {
+         return { paths, ordered, truncated: true };
+      }
+      const item = queue.shift();
+      if (!item) break;
+      const { path, at } = item;
+      const key = `${path.join("\u0000")}@${executed ? JSON.stringify(at) : ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       paths.push(path);
-      const field = resolveFieldByPath(declaring, path);
+      const from = executed
+         ? chainDefinedFrom(declaring, executed, path, at)
+         : undefined;
+      if (from !== undefined) ordered.set(path, from);
+      const structAt = (i: number) =>
+         from !== undefined && i >= from ? executed : declaring;
+      // Past an accepted join the joined struct is unchanged, so only a leaf accepted this way has reads of its own.
+      const field =
+         from === undefined || from === path.length - 1
+            ? resolveFieldByPath(structAt(path.length - 1), path)
+            : undefined;
       const nested = (field as { refSummary?: RefSummaryLike } | undefined)
          ?.refSummary;
       // A nested usage path is relative to the struct `field` lives on (the
@@ -403,13 +486,14 @@ function fieldUsageClosure(
       // queued path is `declaring`-relative.
       const prefix = path.slice(0, -1);
       for (const u of nested?.fieldUsage ?? []) {
-         queue.push([...prefix, ...u.path]);
+         queue.push({ path: [...prefix, ...u.path], at: u.at });
       }
       // Each join on the way also reads its ON (relative to the struct that
       // declares it) and its own `where:` (relative to the joined struct):
       // rebinding either moves the row the path reaches without touching it.
       for (let i = 0; i < path.length - 1; i++) {
-         const join = resolveFieldByPath(declaring, path.slice(0, i + 1)) as
+         if (from !== undefined && i > from) break;
+         const join = resolveFieldByPath(structAt(i), path.slice(0, i + 1)) as
             | {
                  onExpression?: unknown;
                  refSummary?: RefSummaryLike;
@@ -426,28 +510,33 @@ function fieldUsageClosure(
          ) {
             return {
                paths,
+               ordered,
                truncated: false,
                unrecordedJoin: path.slice(0, i + 1).join("."),
             };
          }
          for (const u of join?.refSummary?.fieldUsage ?? []) {
-            queue.push([...path.slice(0, i), ...u.path]);
+            queue.push({ path: [...path.slice(0, i), ...u.path], at: u.at });
          }
          for (const condition of join?.filterList ?? []) {
             if (!condition.refSummary && expressionReadsField(condition.e)) {
                return {
                   paths,
+                  ordered,
                   truncated: false,
                   unrecordedJoin: path.slice(0, i + 1).join("."),
                };
             }
             for (const u of condition.refSummary?.fieldUsage ?? []) {
-               queue.push([...path.slice(0, i + 1), ...u.path]);
+               queue.push({
+                  path: [...path.slice(0, i + 1), ...u.path],
+                  at: u.at,
+               });
             }
          }
       }
    }
-   return { paths, truncated: false };
+   return { paths, ordered, truncated: false };
 }
 
 /** A composite's stand-in for a member's field: a `compositeField` expression,
@@ -541,9 +630,10 @@ export function assertFilterConditionBindsToDeclaringSource(
       executedStruct,
       executedUnresolved,
    );
-   const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
+   const { paths, ordered, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
       condition.refSummary,
+      sameDefinition ? executedStruct : undefined,
    );
    if (truncated) {
       throw new Error(
@@ -556,6 +646,8 @@ export function assertFilterConditionBindsToDeclaringSource(
       );
    }
    for (const path of paths) {
+      // The closure already compared the hops before an accepted one, as the declaring source's own.
+      if (ordered.has(path)) continue;
       if (
          !fieldPathIdentical(
             declaringStruct,
