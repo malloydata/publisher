@@ -24,9 +24,9 @@
  * rows only through those. A joined composite that Malloy resolved to one
  * member is accepted only when the executed struct's own pre-resolution join
  * is that same composite ({@link isMalloyResolvedMember}); a member the caller
- * joined directly is refused; that applies to inherited `where:`, a grafted
- * gate on the run target and a `#(filter)` dimension alike, but not to a gate
- * on a caller join, which has no pre-resolution struct. Locations from
+ * joined directly is refused. That acceptance is for inherited `where:` only: a
+ * row-level gate or `#(filter)` dimension read through a joined composite stays
+ * refused, because the member Malloy resolves depends on the caller's query. Locations from
  * different compiles are compared by canonical URL ({@link canonicalUrl}).
  * Fields are looked up by ACTIVE name ({@link activeName}).
  *
@@ -51,6 +51,7 @@ import {
    resolveDeclaredSource,
    resolveQuerySourceBase,
 } from "./gate_registry_walk";
+import { fileURLToPath, pathToFileURL } from "url";
 import { findSourceByOwnAnnotationIdentity } from "./gate_classification";
 import { parseAuthorizeAnnotation } from "./authorize";
 import { sameNotePosition } from "./annotations";
@@ -566,7 +567,6 @@ export function assertFilterDimensionBindsToDeclaringSource(
    declaringStruct: SourceDef,
    executedStruct: SourceDef,
    dimension: string,
-   executedUnresolved?: SourceDef,
 ): void {
    const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
@@ -583,14 +583,7 @@ export function assertFilterDimensionBindsToDeclaringSource(
       );
    }
    for (const path of paths) {
-      if (
-         !fieldPathIdentical(
-            declaringStruct,
-            executedStruct,
-            path,
-            executedUnresolved,
-         )
-      ) {
+      if (!fieldPathIdentical(declaringStruct, executedStruct, path)) {
          throw new Error(
             `a #(filter) dimension references \`${path.join(".")}\`, which resolves to a different field on the executed source`,
          );
@@ -829,7 +822,6 @@ export function assertGraftedGateBindsToDeclaringSource(
    condition: FilterCondition,
    modelDef: ModelDef,
    resolveSibling?: SiblingModelDefResolver,
-   executedUnresolved?: SourceDef,
 ): void {
    if (!entryPointStruct) {
       throw new Error(
@@ -850,7 +842,6 @@ export function assertGraftedGateBindsToDeclaringSource(
       declaring,
       executedStruct,
       condition,
-      executedUnresolved,
    );
 }
 
@@ -863,10 +854,12 @@ export interface DocumentLocationLike {
    };
 }
 
-/** Malloy records an imported file's URL as written (`my deals.malloy`) but its own compile percent-encodes it, so cross-compile comparisons need one spelling. */
+/** Malloy records an imported file's URL as written (`a[1].malloy`) but the package's own compile percent-encodes it by `pathToFileURL`'s rules, so cross-compile comparisons need that one spelling. */
 function canonicalUrl(url: string): string {
    try {
-      return new URL(url).href;
+      return url.startsWith("file:")
+         ? pathToFileURL(fileURLToPath(url)).href
+         : new URL(url).href;
    } catch {
       return url;
    }
@@ -876,6 +869,18 @@ function samePosition(a: NoteLike["at"] & {}, b: NoteLike["at"] & {}): boolean {
    return sameNotePosition(
       { ...a, url: canonicalUrl(a.url) },
       { ...b, url: canonicalUrl(b.url) },
+   );
+}
+
+function sameLocation(
+   a: DocumentLocationLike | undefined,
+   b: DocumentLocationLike | undefined,
+): boolean {
+   return (
+      !!a &&
+      !!b &&
+      canonicalUrl(a.url) === canonicalUrl(b.url) &&
+      JSON.stringify(a.range) === JSON.stringify(b.range)
    );
 }
 
@@ -1030,7 +1035,7 @@ function findFilterOrigin(
    modelDef: ModelDef | undefined,
    resolveSibling?: SiblingModelDefResolver,
    unresolved?: SourceDef,
-   queryUrl?: string,
+   virtualUrl?: string,
 ): SourceDef {
    let origin = struct;
    let current = struct;
@@ -1076,11 +1081,23 @@ function findFilterOrigin(
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return sibling;
       }
-      // A twin proves nothing, so it stands in only where no sibling compile could hold the declaring text: a model with no resolver, or text compiled with the query itself.
+      // An inline `X extend { where: }` carries X's location, so X (which does not hold the new where:) is the struct whose fields the where: was written against.
+      const inlineBase = Object.values(modelDef?.contents ?? {}).find(
+         (v) =>
+            isSourceDef(v) &&
+            v !== struct &&
+            !isSameDeclaration(v, struct) &&
+            !v.filterList?.includes(condition) &&
+            sameLocation(v.location, struct.location),
+      );
+      if (inlineBase) return inlineBase as SourceDef;
+      // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
       const at = firstFieldUsageLocation(condition);
-      const inQueryCompile =
-         !!at && !!queryUrl && canonicalUrl(at.url) === canonicalUrl(queryUrl);
-      if (twin && ancestorUnresolved && (!resolveSibling || inQueryCompile)) {
+      const inVirtualFile =
+         !!at &&
+         !!virtualUrl &&
+         canonicalUrl(at.url) === canonicalUrl(virtualUrl);
+      if (twin && ancestorUnresolved && (!resolveSibling || inVirtualFile)) {
          return twin;
       }
    }
@@ -1119,11 +1136,14 @@ function conditionReadsNoField(condition: FilterCondition): boolean {
  * `queryLocation` (`prepared._query.location`, set for every run) covers a
  * named query's inline extend, which may carry its base's `.location`.
  * `compiledUrl` is the synthetic `internal://` URL of a caller or cell
- * compile; undefined for a named run.
+ * compile; undefined for a named run. `virtualUrl` is the `/compile` check
+ * file that re-translates the author's own model text for this one request, so
+ * no sibling compile exists for what it holds.
  */
 export interface FreshnessContext {
    compiledUrl?: string;
    queryLocation?: DocumentLocationLike;
+   virtualUrl?: string;
 }
 
 /**
@@ -1201,7 +1221,7 @@ export function assertInheritedSourceFiltersBind(
          modelDef,
          resolveSibling,
          unresolved,
-         freshness.queryLocation?.url,
+         freshness.virtualUrl,
       );
       if (origin !== struct) {
          assertFilterConditionBindsToDeclaringSource(

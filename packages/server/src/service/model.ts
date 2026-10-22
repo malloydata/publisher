@@ -2526,6 +2526,9 @@ export class Model {
          runnable,
          new Set(),
          rowLevel.length > 0 ? siteOf(rowLevel[0]) : undefined,
+         options?.callerJoins?.region.kind === "span"
+            ? options.callerJoins.region.url
+            : undefined,
       );
       if (rowLevel.length === 0) return runnable;
 
@@ -2945,7 +2948,6 @@ export class Model {
    ): Promise<void> {
       // Resolved lazily: a caller-join-only `rowLevel` never reads it.
       let executedStruct: SourceDef | undefined;
-      let unresolvedStruct: SourceDef | undefined;
       let preparedForCallerJoins: PreparedQueryIr | undefined;
       for (const { graftTarget, condition, callerJoinPath } of rowLevel) {
          const entryPointStruct = graftScope.modelDef.contents[graftTarget];
@@ -2977,7 +2979,6 @@ export class Model {
                const { struct, compositeResolvedSourceDef } =
                   await this.resolveRunTargetStruct(recompiled);
                executedStruct = compositeResolvedSourceDef ?? struct;
-               unresolvedStruct = struct;
                // Unlike `assertNoMisboundInheritedFilters`, this IS the
                // authoritative proof for a grafted gate, so unresolvable
                // must deny rather than skip.
@@ -2995,7 +2996,6 @@ export class Model {
             condition,
             graftScope.modelDef,
             this.siblingModelDefResolver,
-            callerJoinPath ? undefined : unresolvedStruct,
          );
       }
    }
@@ -3018,6 +3018,7 @@ export class Model {
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
       site: AuthorizeGateSite = "entry_point",
+      virtualUrl?: string,
    ): Promise<void> {
       const {
          struct,
@@ -3033,7 +3034,7 @@ export class Model {
          assertInheritedSourceFiltersBind(
             target,
             modelDef,
-            { compiledUrl, queryLocation },
+            { compiledUrl, queryLocation, virtualUrl },
             this.siblingModelDefResolver,
             undefined,
             undefined,
@@ -3530,7 +3531,6 @@ export class Model {
                declaringStruct,
                executedStruct,
                filter.dimension,
-               struct,
             );
          }
       } catch (err) {

@@ -63,6 +63,8 @@ const HONEST_COUNT_OVERRIDES: Record<string, string> = {
    "B7-nest-honest": 'row={"v":{"n":2}}',
    "B7-query-source-honest": 'row={"m":3,"s":2}',
    "G1-honest": "n=1",
+   "U6-a1malloy-gate-honest": "n=1",
+   "U6-dealsv2malloy-gate-honest": "n=1",
    "B2b-op-same": "n=3",
 };
 
@@ -89,6 +91,13 @@ function classifyDenial(reasons: string[]): Outcome {
    if (comparator) return { kind: "DENIED", detail: comparator };
    const unresolved = reasons.find((r) => r.includes(UNRESOLVED_REASON));
    if (unresolved) return { kind: "REFUSED", detail: unresolved };
+   // A gate that cannot name its member refuses before the binding guard logs anything.
+   if (reasons.length === 0) {
+      return {
+         kind: "REFUSED",
+         detail: "refused by the gate, no guard reason",
+      };
+   }
    return {
       kind: "INVALID",
       detail: `denied for another reason: ${reasons.join(" | ") || "<no guard debug reason>"}`,
@@ -196,6 +205,7 @@ async function serve(
    query: string,
    givens: Record<string, GivenValue> = {},
    outside: Record<string, string> = {},
+   namedQuery?: string,
 ): Promise<{ query: Outcome; compile: Outcome }> {
    let result: { query: Outcome; compile: Outcome };
    try {
@@ -207,8 +217,8 @@ async function serve(
                   .getModel("index.malloy")!
                   .getQueryResults(
                      undefined,
-                     undefined,
-                     query,
+                     namedQuery,
+                     namedQuery ? undefined : query,
                      {},
                      true,
                      givens,
@@ -224,7 +234,7 @@ async function serve(
                const { problems } = await env.compileSource(
                   "pkg",
                   "index.malloy",
-                  query,
+                  namedQuery ? `run: ${namedQuery}` : query,
                   false,
                   givens,
                   "append",
@@ -249,7 +259,12 @@ async function serve(
    check(id, result.query);
    checkRows(id, result.query);
    // `/compile` runs nothing, so it must never be more permissive than the query route.
-   if (!(id in COMPILE_DIVERGENCE_ALLOWED)) {
+   if (id in COMPILE_DIVERGENCE_ALLOWED) {
+      expect({ id, compile: result.compile }).toMatchObject({
+         id,
+         compile: { kind: COMPILE_DIVERGENCE_ALLOWED[id].compile },
+      });
+   } else {
       expect({ id, compile: result.compile }).toMatchObject({
          id,
          compile: { kind: result.query.kind },
@@ -610,6 +625,92 @@ source: deals is deals_incl extend { where: is_open }
    });
 });
 
+// ------------------- I: a query source over a base that carries its own inline where:
+
+describe("I: a query source over an inline extend { where: }", () => {
+   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const REBIND =
+      " extend { except: is_open } extend { dimension: is_open is true }";
+   const shapes: [string, (rebind: string) => string, string][] = [
+      [
+         "direct",
+         (r) =>
+            `source: s is deals_incl extend { where: is_open }${r} -> { group_by: deal_id }\nexport { s }`,
+         "run: s -> { aggregate: n is count() }",
+      ],
+      [
+         "joined",
+         (r) =>
+            `source: s is deals_incl extend { where: is_open }${r} -> { group_by: deal_id }
+source: p is ${DEAL} extend { join_one: s on deal_id = s.deal_id }
+export { p }`,
+         "run: p -> { aggregate: n is s.count() }",
+      ],
+      [
+         "named-query",
+         (r) =>
+            `query: q0 is deals_incl extend { where: is_open }${r} -> { group_by: deal_id }
+source: s is q0 extend { primary_key: deal_id }
+export { s }`,
+         "run: s -> { aggregate: n is count() }",
+      ],
+   ];
+   for (const [shape, body, query] of shapes) {
+      it(`I-${shape}-honest: served`, async () => {
+         await serve(
+            `I-${shape}-honest`,
+            { "index.malloy": BASE + body("") },
+            query,
+         );
+      });
+      it(`I-${shape}-misbound: refused with the comparator reason`, async () => {
+         await serve(
+            `I-${shape}-misbound`,
+            { "index.malloy": BASE + body(REBIND) },
+            query,
+         );
+      });
+   }
+});
+
+// -------------- P: an imported named query over a query source built on a rebound source
+
+describe("P: a named query imported from a file", () => {
+   const EXT = (derive: string) => `
+source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
+source: f is deals_incl extend { where: is_open }
+source: x is f extend { ${derive} }
+source: y is x -> { group_by: deal_id } extend { primary_key: deal_id }
+query: q is y -> { aggregate: n is count() }
+`;
+   const MIS = "except: is_open } extend { dimension: is_open is true";
+   const run = (id: string, derive: string, outside: boolean) =>
+      serve(
+         id,
+         {
+            "index.malloy": `import { x, y, q } from "${outside ? "OUTSIDE/" : ""}ext.malloy"\nexport { x, y, q }`,
+            ...(outside ? {} : { "ext.malloy": EXT(derive) }),
+         },
+         "",
+         {},
+         outside ? { "ext.malloy": EXT(derive) } : {},
+         "q",
+      );
+   it("P-inpackage-honest: served", async () => {
+      await run("P-inpackage-honest", "dimension: t is 1", false);
+   });
+   it("P-inpackage-misbound: refused with the comparator reason", async () => {
+      await run("P-inpackage-misbound", MIS, false);
+   });
+   // The declaring file's own URL is the named query's location, so it is no proof of a request-only compile.
+   it("P-outside-honest: refused, no compile of the outside file exists", async () => {
+      await run("P-outside-honest", "dimension: t is 1", true);
+   });
+   it("P-outside-misbound: refused", async () => {
+      await run("P-outside-misbound", MIS, true);
+   });
+});
+
 // ------------------------------- X: the declaring file sits outside the package
 
 // Even an untouched derivation is refused here: no compile of the outside file exists to prove the filter bound.
@@ -681,8 +782,68 @@ source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: d
    });
 });
 
+// Malloy records an imported file's URL as written, the package's own compile encodes it by `pathToFileURL`; both spellings must meet.
+describe.each(["a[1].malloy", "deals~v2.malloy"])(
+   "U6: a declaring file named %s",
+   (name) => {
+      const tag = name.replace(/[^a-z0-9]/gi, "");
+      const SHARED = `
+source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
+source: deals is deals_incl extend { where: is_open }
+`;
+      const files = (derive: string) => ({
+         [name]: SHARED,
+         "pipeline.malloy": `import "${name}"
+source: deals_x is deals extend { ${derive} }
+source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: deal_id }`,
+         "index.malloy": `import "pipeline.malloy"\nexport { pipeline_now }`,
+      });
+      const RUN = "run: pipeline_now -> { aggregate: n is count() }";
+      it("inherited where: untouched, served", async () => {
+         await serve(`U6-${tag}-honest`, files("dimension: x is 1"), RUN);
+      });
+      it("inherited where: rebound, refused with the comparator reason", async () => {
+         await serve(
+            `U6-${tag}-misbound`,
+            files("except: is_open } extend { dimension: is_open is true"),
+            RUN,
+         );
+      });
+      const gated = (derive: string) => ({
+         [name]: `##! experimental { givens }
+given:
+  LIM :: number
+source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
+#(access_filter) deal_id = $LIM
+source: deals is deals_incl extend { where: is_open }
+`,
+         "index.malloy": `##! experimental { givens }
+import "${name}"
+source: deals_x is deals extend { ${derive} }
+export { deals_x }`,
+      });
+      const GRUN = "run: deals_x -> { aggregate: n is count() }";
+      it("gate annotation: untouched, served", async () => {
+         await serve(
+            `U6-${tag}-gate-honest`,
+            gated("dimension: tag is 1"),
+            GRUN,
+            { LIM: 1 },
+         );
+      });
+      it("gate annotation: rebound, refused", async () => {
+         await serve(
+            `U6-${tag}-gate-misbound`,
+            gated("except: deal_id } extend { dimension: deal_id is 7"),
+            GRUN,
+            { LIM: 1 },
+         );
+      });
+   },
+);
+
 describe("M1: a composite member that filters its own rows", () => {
-   it("M1-member-where: refused on both routes, as before this branch", async () => {
+   it("M1-member-where: a composite member with its own where: is refused on both routes", async () => {
       await serve(
          "M1-member-where",
          {
@@ -1341,36 +1502,68 @@ export { deals_x }`;
    });
 });
 
-describe("G2: a row-level gate reading through a joined composite", () => {
-   const files = {
-      "index.malloy": `##! experimental { composite_sources, givens }
+// A gate reading a composite field is refused: the member Malloy resolves depends on the caller's query, so no member can be proven to be the gated one.
+describe("G2: a row-level gate reading through a composite is refused", () => {
+   const M = (extra: string, k: string) =>
+      `duckdb.sql("select 1 as deal_id, ${k} as k${extra ? `, '${extra}' as ${extra === "x" ? "extra" : "extra3"}` : ""} union all select 2, ${k === "1" ? "1" : "2"}${extra ? `, '${extra}'` : ""} union all select 3, ${k === "1" ? "1" : "3"}${extra ? `, '${extra}'` : ""}")`;
+   const HDR = `##! experimental { composite_sources, givens }
 given: CTS :: number[]
-source: m1 is duckdb.sql("select 1 as deal_id, 1 as k union all select 2, 2 union all select 3, 3") extend { primary_key: deal_id }
-source: m2 is duckdb.sql("select 1 as deal_id, 1 as k union all select 2, 1 union all select 3, 1") extend { primary_key: deal_id }
+source: m1 is ${M("", "1")} extend { primary_key: deal_id }
+source: m2 is ${M("x", "1")} extend { primary_key: deal_id }
+source: m3 is ${M("y", "1")} extend { primary_key: deal_id }
+source: other is ${DEAL} extend { primary_key: deal_id }`;
+   const flat = {
+      "index.malloy": `${HDR}
 source: cmp is compose(m1, m2)
 #(access_filter) cmp.k in $CTS
-source: deals is ${DEAL} extend {
-   join_one: cmp on deal_id = cmp.deal_id
-   measure: n is count()
-}
-export { deals, cmp, m2 }`,
+source: deals is ${DEAL} extend { join_one: cmp on deal_id = cmp.deal_id  measure: n is count() }
+export { deals, cmp, m1, m2, other }`,
    };
-   it("G2-honest: the composite untouched", async () => {
-      await serve(
-         "G2-honest",
-         files,
-         "run: deals -> { aggregate: n is count() }",
-         { CTS: [1, 2] },
-      );
-   });
-   it("G2-rejoin-m2: the composite alias re-joined to a member", async () => {
-      await serve(
+   const nested = {
+      "index.malloy": `${HDR}
+source: inr is compose(m1, m2)
+source: cmp is compose(inr, m3)
+#(access_filter) cmp.k in $CTS
+source: deals is ${DEAL} extend { join_one: cmp on deal_id = cmp.deal_id  measure: n is count() }
+export { deals, cmp, m1, m2, m3, inr, other }`,
+   };
+   const top = {
+      "index.malloy": `${HDR}
+#(access_filter) k in $CTS
+source: cmpg is compose(m1, m2)
+export { cmpg, other, m1, m2 }`,
+   };
+   const HONEST = "run: deals -> { aggregate: n is count() }";
+   const cases: [string, Record<string, string>, string][] = [
+      ["G2-honest", flat, HONEST],
+      [
+         "G2-steer-m2",
+         flat,
+         "run: deals -> { aggregate: n is count(), e is cmp.extra.max() }",
+      ],
+      [
          "G2-rejoin-m2",
-         files,
+         flat,
          "run: deals extend { rename: oc is cmp } extend { join_one: cmp is m2 on deal_id = cmp.deal_id } -> { aggregate: n is count() }",
-         { CTS: [1, 2] },
-      );
-   });
+      ],
+      ["G2-nested-honest", nested, HONEST],
+      [
+         "G2-nested-steer-m3",
+         nested,
+         "run: deals -> { aggregate: n is count(), e is cmp.extra3.max() }",
+      ],
+      ["G2-top-honest", top, "run: cmpg -> { aggregate: n is count() }"],
+      [
+         "G2-top-steer-m2",
+         top,
+         "run: cmpg -> { aggregate: n is count(), e is extra.max() }",
+      ],
+   ];
+   for (const [id, files, query] of cases) {
+      it(`${id}: refused`, async () => {
+         await serve(id, files, query, { CTS: [1, 2] });
+      });
+   }
 });
 
 // `#(filter)` is deprecated; its dimension proof shares the composite hop rule.
@@ -1400,7 +1593,7 @@ source: deals_rj is deals extend { rename: oc is cmp } extend { join_one: cmp is
       return check(id, result);
    };
    const body = "group_by: ck";
-   it("F-honest: the composite untouched", async () => {
+   it("F-honest: refused even untouched, as the resolved member depends on the caller's query", async () => {
       const { declared, resolved } = await resolvedTarget(
          files,
          "m.malloy",
@@ -1408,12 +1601,7 @@ source: deals_rj is deals extend { rename: oc is cmp } extend { join_one: cmp is
          body,
       );
       verdict("F-honest", () =>
-         assertFilterDimensionBindsToDeclaringSource(
-            declared,
-            resolved!,
-            "ck",
-            declared,
-         ),
+         assertFilterDimensionBindsToDeclaringSource(declared, resolved!, "ck"),
       );
    });
    it("F-rejoin-m2: the composite alias re-joined to a member", async () => {
@@ -1424,7 +1612,6 @@ source: deals_rj is deals extend { rename: oc is cmp } extend { join_one: cmp is
             declared,
             rj.resolved!,
             "ck",
-            rj.declared,
          ),
       );
    });
@@ -1714,19 +1901,57 @@ source: deals is deals_incl extend { where: is_open }
    });
 });
 
-/** Ids whose `/compile` verdict may differ from the query route, each with why. */
-const COMPILE_DIVERGENCE_ALLOWED: Record<string, string> = {
-   "G2-rejoin-m2":
-      "/compile grafts no gate, so a grafted gate's binding proof never runs there",
+const NO_GATE_GRAFT =
+   "/compile grafts no gate, so a gate's binding proof never runs there";
+
+/** Ids whose `/compile` verdict may differ from the query route: what it must be instead, and why. */
+const COMPILE_DIVERGENCE_ALLOWED: Record<
+   string,
+   { compile: Kind; why: string }
+> = {
+   "G2-honest": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "U6-a1malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "U6-dealsv2malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "U6-a1malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "U6-dealsv2malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "G2-steer-m2": { compile: "REFUSED", why: NO_GATE_GRAFT },
+   "G2-rejoin-m2": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "G2-nested-honest": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "G2-nested-steer-m3": { compile: "REFUSED", why: NO_GATE_GRAFT },
+   "G2-top-honest": { compile: "SERVED", why: NO_GATE_GRAFT },
+   "G2-top-steer-m2": { compile: "SERVED", why: NO_GATE_GRAFT },
 };
 
 const EXPECTED: Record<string, Kind> = {
-   "F-honest": "SERVED",
+   "I-direct-honest": "SERVED",
+   "I-direct-misbound": "DENIED",
+   "I-joined-honest": "SERVED",
+   "I-joined-misbound": "DENIED",
+   "I-named-query-honest": "SERVED",
+   "I-named-query-misbound": "DENIED",
+   "P-inpackage-honest": "SERVED",
+   "P-inpackage-misbound": "DENIED",
+   "P-outside-honest": "REFUSED",
+   "P-outside-misbound": "REFUSED",
+   "F-honest": "DENIED",
    "F-rejoin-m2": "DENIED",
-   "G2-honest": "SERVED",
+   "G2-honest": "DENIED",
+   "G2-steer-m2": "DENIED",
+   "G2-nested-honest": "DENIED",
+   "G2-nested-steer-m3": "DENIED",
+   "G2-top-honest": "DENIED",
+   "G2-top-steer-m2": "DENIED",
    "G2-rejoin-m2": "DENIED",
    "U5-honest": "SERVED",
    "U5-misbound": "DENIED",
+   "U6-a1malloy-honest": "SERVED",
+   "U6-a1malloy-misbound": "DENIED",
+   "U6-a1malloy-gate-honest": "SERVED",
+   "U6-a1malloy-gate-misbound": "DENIED",
+   "U6-dealsv2malloy-honest": "SERVED",
+   "U6-dealsv2malloy-misbound": "DENIED",
+   "U6-dealsv2malloy-gate-honest": "SERVED",
+   "U6-dealsv2malloy-gate-misbound": "DENIED",
    "M1-member-where": "DENIED",
    "B8-order-reordered": "SERVED",
    "B8-order-swapped": "DENIED",
