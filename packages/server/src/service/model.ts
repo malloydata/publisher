@@ -2945,6 +2945,7 @@ export class Model {
    ): Promise<void> {
       // Resolved lazily: a caller-join-only `rowLevel` never reads it.
       let executedStruct: SourceDef | undefined;
+      let unresolvedStruct: SourceDef | undefined;
       let preparedForCallerJoins: PreparedQueryIr | undefined;
       for (const { graftTarget, condition, callerJoinPath } of rowLevel) {
          const entryPointStruct = graftScope.modelDef.contents[graftTarget];
@@ -2976,6 +2977,7 @@ export class Model {
                const { struct, compositeResolvedSourceDef } =
                   await this.resolveRunTargetStruct(recompiled);
                executedStruct = compositeResolvedSourceDef ?? struct;
+               unresolvedStruct = struct;
                // Unlike `assertNoMisboundInheritedFilters`, this IS the
                // authoritative proof for a grafted gate, so unresolvable
                // must deny rather than skip.
@@ -2993,6 +2995,7 @@ export class Model {
             condition,
             graftScope.modelDef,
             this.siblingModelDefResolver,
+            callerJoinPath ? undefined : unresolvedStruct,
          );
       }
    }
@@ -3527,6 +3530,7 @@ export class Model {
                declaringStruct,
                executedStruct,
                filter.dimension,
+               struct,
             );
          }
       } catch (err) {

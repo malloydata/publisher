@@ -35,12 +35,17 @@ import { logger } from "../../src/logger";
 import { Environment } from "../../src/service/environment";
 import {
    assertFilterConditionBindsToDeclaringSource,
+   assertFilterDimensionBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
    isSameDeclaration,
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
 
-const DENY_MESSAGE = "Inherited source filter binding check failed; denying";
+/** The guard logs its reason under one of these: the inherited-filter walk, or a grafted gate's proof. */
+const DENY_MESSAGES = [
+   "Inherited source filter binding check failed; denying",
+   "Row-level authorize attach failed; denying",
+];
 /** The guard could not find where a filter was declared, so it refuses rather than guess. */
 const UNRESOLVED_REASON = "declaring source could not be resolved";
 const COMPARATOR_REASON =
@@ -56,8 +61,7 @@ type Kind = Outcome["kind"];
 /** Honest row count of a served id (see the header); a served control with any other count answered wrong rows. */
 const HONEST_COUNT_OVERRIDES: Record<string, string> = {
    "B7-nest-honest": 'row={"v":{"n":2}}',
-   "B7-query-source-honest": 'row={"m":3}',
-   "C-givens": "n=3",
+   "B7-query-source-honest": 'row={"m":3,"s":2}',
    "G1-honest": "n=1",
    "B2b-op-same": "n=3",
 };
@@ -110,7 +114,7 @@ async function withDenialSpy(act: () => Promise<Outcome>): Promise<Outcome> {
       if (e instanceof AccessDeniedError) {
          return classifyDenial(
             debug.mock.calls
-               .filter((c) => String(c[0]) === DENY_MESSAGE)
+               .filter((c) => DENY_MESSAGES.includes(String(c[0])))
                .map((c) =>
                   String(
                      ((c as unknown[])[1] as { error?: string } | undefined)
@@ -608,6 +612,7 @@ source: deals is deals_incl extend { where: is_open }
 
 // ------------------------------- X: the declaring file sits outside the package
 
+// Even an untouched derivation is refused here: no compile of the outside file exists to prove the filter bound.
 describe("X: a source derived from a file outside the package", () => {
    const SHARED = `
 source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
@@ -616,6 +621,12 @@ source: deals is deals_incl extend { where: is_open }
    const MIS = "except: is_open } extend { dimension: is_open is true";
    const RUN = "run: pipeline_now -> { aggregate: n is count() }";
    const cases: [string, string][] = [
+      [
+         "X3-query-source-honest",
+         `import "OUTSIDE/shared.malloy"
+source: deals_x is deals extend { dimension: x is 1 }
+source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: deal_id }`,
+      ],
       [
          "X1-misbound",
          `import "OUTSIDE/shared.malloy"\nsource: pipeline_now is deals extend { ${MIS} }`,
@@ -641,6 +652,55 @@ source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: d
          );
       });
    }
+});
+
+// ----------------------------- U5: a declaring file whose URL needs percent-encoding
+
+describe("U5: a declaring file with a space in its name", () => {
+   const SHARED = `
+source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
+source: deals is deals_incl extend { where: is_open }
+`;
+   const files = (derive: string) => ({
+      "my deals.malloy": SHARED,
+      "pipeline.malloy": `import "my deals.malloy"
+source: deals_x is deals extend { ${derive} }
+source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: deal_id }`,
+      "index.malloy": `import "pipeline.malloy"\nexport { pipeline_now }`,
+   });
+   const RUN = "run: pipeline_now -> { aggregate: n is count() }";
+   it("U5-honest: untouched, served", async () => {
+      await serve("U5-honest", files("dimension: x is 1"), RUN);
+   });
+   it("U5-misbound: rebound, refused with the comparator reason", async () => {
+      await serve(
+         "U5-misbound",
+         files("except: is_open } extend { dimension: is_open is true"),
+         RUN,
+      );
+   });
+});
+
+describe("M1: a composite member that filters its own rows", () => {
+   it("M1-member-where: refused on both routes, as before this branch", async () => {
+      await serve(
+         "M1-member-where",
+         {
+            "index.malloy": `${COMPOSITES}
+source: m1 is ${CLOSE} extend { primary_key: deal_id; where: deal_id > 0 }
+source: m2 is ${NULLS} extend { primary_key: deal_id }
+source: cmp is compose(m1, m2)
+source: deals_incl is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: is_open is cmp.close_type is null
+   measure: n is count()
+}
+source: deals is deals_incl extend { where: is_open }
+export { deals }`,
+         },
+         "run: deals -> { aggregate: n is count() }",
+      );
+   });
 });
 
 // ------------------------------------------------------ A6: query-source target
@@ -905,7 +965,7 @@ source: pipeline_now is deals extend { dimension: x is 1 }
    shapes.push([
       "query-source",
       (s) =>
-         `run: deals_incl extend { join_one: q is deals_incl -> { extend: { ${JOIN(s)} }; group_by: deal_id; aggregate: n is d.count() } on deal_id = q.deal_id } -> { aggregate: m is q.count() }`,
+         `run: deals_incl extend { join_one: q is deals_incl -> { extend: { ${JOIN(s)} }; group_by: deal_id; aggregate: n is d.count() } on deal_id = q.deal_id } -> { aggregate: m is q.count(), s is q.n.sum() }`,
    ]);
    for (const [shape, text] of shapes) {
       for (const [label, src] of [
@@ -1048,12 +1108,12 @@ source: dfc is ${CLOSE} -> { where: deal_id = $LIM; group_by: deal_id, close_typ
    };
    it("C-givens: cross-translation control with a given in the pipeline", async () => {
       await serve("C-givens", familyFiles(family, false), RUN_PIPELINE, {
-         LIM: 3,
+         LIM: 2,
       });
    });
    it("C-givens-twin: alias re-bound", async () => {
       await serve("C-givens-twin", familyFiles(family, true), RUN_PIPELINE, {
-         LIM: 3,
+         LIM: 2,
       });
    });
 });
@@ -1138,6 +1198,7 @@ async function resolvedTarget(
    files: Record<string, string>,
    entry: string,
    name: string,
+   body = "aggregate: n is count()",
 ): Promise<{ declared: SourceDef; resolved: SourceDef | undefined }> {
    const conn = new DuckDBConnection("duckdb", ":memory:");
    try {
@@ -1150,7 +1211,7 @@ async function resolvedTarget(
          }
       )._modelDef.contents[name];
       const prepared = (await materializer
-         .loadQuery(`run: ${name} -> { aggregate: n is count() }`)
+         .loadQuery(`run: ${name} -> { ${body} }`)
          .getPreparedQuery()) as unknown as {
          _query?: { compositeResolvedSourceDef?: SourceDef };
       };
@@ -1276,6 +1337,95 @@ export { deals_x }`;
          { "index.malloy": body("dimension: tag is 1") },
          RUN,
          { LIM: 1 },
+      );
+   });
+});
+
+describe("G2: a row-level gate reading through a joined composite", () => {
+   const files = {
+      "index.malloy": `##! experimental { composite_sources, givens }
+given: CTS :: number[]
+source: m1 is duckdb.sql("select 1 as deal_id, 1 as k union all select 2, 2 union all select 3, 3") extend { primary_key: deal_id }
+source: m2 is duckdb.sql("select 1 as deal_id, 1 as k union all select 2, 1 union all select 3, 1") extend { primary_key: deal_id }
+source: cmp is compose(m1, m2)
+#(access_filter) cmp.k in $CTS
+source: deals is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   measure: n is count()
+}
+export { deals, cmp, m2 }`,
+   };
+   it("G2-honest: the composite untouched", async () => {
+      await serve(
+         "G2-honest",
+         files,
+         "run: deals -> { aggregate: n is count() }",
+         { CTS: [1, 2] },
+      );
+   });
+   it("G2-rejoin-m2: the composite alias re-joined to a member", async () => {
+      await serve(
+         "G2-rejoin-m2",
+         files,
+         "run: deals extend { rename: oc is cmp } extend { join_one: cmp is m2 on deal_id = cmp.deal_id } -> { aggregate: n is count() }",
+         { CTS: [1, 2] },
+      );
+   });
+});
+
+// `#(filter)` is deprecated; its dimension proof shares the composite hop rule.
+describe("F: a #(filter) dimension reading through a joined composite", () => {
+   const files = {
+      "m.malloy": `##! experimental { composite_sources }
+source: m1 is duckdb.sql("select 1 as deal_id, 1 as k union all select 2, 2 union all select 3, 3") extend { primary_key: deal_id }
+source: m2 is duckdb.sql("select 1 as deal_id, 1 as k union all select 2, 1 union all select 3, 1") extend { primary_key: deal_id }
+source: cmp is compose(m1, m2)
+source: deals is ${DEAL} extend {
+   join_one: cmp on deal_id = cmp.deal_id
+   dimension: ck is cmp.k
+}
+source: deals_rj is deals extend { rename: oc is cmp } extend { join_one: cmp is m2 on deal_id = cmp.deal_id }
+`,
+   };
+   const verdict = (id: string, outcome: () => void): Outcome => {
+      let result: Outcome = { kind: "SERVED", detail: "BINDS" };
+      try {
+         outcome();
+      } catch (err) {
+         const message = (err as Error).message;
+         result = message.includes(COMPARATOR_REASON)
+            ? { kind: "DENIED", detail: message }
+            : invalid(err);
+      }
+      return check(id, result);
+   };
+   const body = "group_by: ck";
+   it("F-honest: the composite untouched", async () => {
+      const { declared, resolved } = await resolvedTarget(
+         files,
+         "m.malloy",
+         "deals",
+         body,
+      );
+      verdict("F-honest", () =>
+         assertFilterDimensionBindsToDeclaringSource(
+            declared,
+            resolved!,
+            "ck",
+            declared,
+         ),
+      );
+   });
+   it("F-rejoin-m2: the composite alias re-joined to a member", async () => {
+      const { declared } = await resolvedTarget(files, "m.malloy", "deals");
+      const rj = await resolvedTarget(files, "m.malloy", "deals_rj", body);
+      verdict("F-rejoin-m2", () =>
+         assertFilterDimensionBindsToDeclaringSource(
+            declared,
+            rj.resolved!,
+            "ck",
+            rj.declared,
+         ),
       );
    });
 });
@@ -1565,9 +1715,19 @@ source: deals is deals_incl extend { where: is_open }
 });
 
 /** Ids whose `/compile` verdict may differ from the query route, each with why. */
-const COMPILE_DIVERGENCE_ALLOWED: Record<string, string> = {};
+const COMPILE_DIVERGENCE_ALLOWED: Record<string, string> = {
+   "G2-rejoin-m2":
+      "/compile grafts no gate, so a grafted gate's binding proof never runs there",
+};
 
 const EXPECTED: Record<string, Kind> = {
+   "F-honest": "SERVED",
+   "F-rejoin-m2": "DENIED",
+   "G2-honest": "SERVED",
+   "G2-rejoin-m2": "DENIED",
+   "U5-honest": "SERVED",
+   "U5-misbound": "DENIED",
+   "M1-member-where": "DENIED",
    "B8-order-reordered": "SERVED",
    "B8-order-swapped": "DENIED",
    "B2b-split-honest": "SERVED",
@@ -1582,6 +1742,7 @@ const EXPECTED: Record<string, Kind> = {
    "B2b-op-m1-inner": "DENIED",
    "B2b-op-m1-right": "DENIED",
    "X1-misbound": "REFUSED",
+   "X3-query-source-honest": "REFUSED",
    "X3-query-source-misbound": "REFUSED",
    "G1-misbound": "DENIED",
    "G1-honest": "SERVED",

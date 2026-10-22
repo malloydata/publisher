@@ -24,8 +24,11 @@
  * rows only through those. A joined composite that Malloy resolved to one
  * member is accepted only when the executed struct's own pre-resolution join
  * is that same composite ({@link isMalloyResolvedMember}); a member the caller
- * joined directly is refused. Fields are looked up by ACTIVE name
- * ({@link activeName}).
+ * joined directly is refused; that applies to inherited `where:`, a grafted
+ * gate on the run target and a `#(filter)` dimension alike, but not to a gate
+ * on a caller join, which has no pre-resolution struct. Locations from
+ * different compiles are compared by canonical URL ({@link canonicalUrl}).
+ * Fields are looked up by ACTIVE name ({@link activeName}).
  *
  * **The default is DENY.** Failing to resolve a declaring source or a field,
  * or hitting a walk bound, means "cannot prove this binds correctly". A
@@ -222,6 +225,7 @@ function isMalloyResolvedMember(
       c.join === u.join &&
       // Malloy drops a resolved composite join's type, so it can only be read here.
       c.matrixOperation === u.matrixOperation &&
+      // `sources` is undefined on a non-composite `unresolved`, so this also requires it to be a composite.
       deepEqualIgnoring(c.sources, u.sources)
    );
 }
@@ -562,6 +566,7 @@ export function assertFilterDimensionBindsToDeclaringSource(
    declaringStruct: SourceDef,
    executedStruct: SourceDef,
    dimension: string,
+   executedUnresolved?: SourceDef,
 ): void {
    const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
@@ -578,7 +583,14 @@ export function assertFilterDimensionBindsToDeclaringSource(
       );
    }
    for (const path of paths) {
-      if (!fieldPathIdentical(declaringStruct, executedStruct, path)) {
+      if (
+         !fieldPathIdentical(
+            declaringStruct,
+            executedStruct,
+            path,
+            executedUnresolved,
+         )
+      ) {
          throw new Error(
             `a #(filter) dimension references \`${path.join(".")}\`, which resolves to a different field on the executed source`,
          );
@@ -817,6 +829,7 @@ export function assertGraftedGateBindsToDeclaringSource(
    condition: FilterCondition,
    modelDef: ModelDef,
    resolveSibling?: SiblingModelDefResolver,
+   executedUnresolved?: SourceDef,
 ): void {
    if (!entryPointStruct) {
       throw new Error(
@@ -837,6 +850,7 @@ export function assertGraftedGateBindsToDeclaringSource(
       declaring,
       executedStruct,
       condition,
+      executedUnresolved,
    );
 }
 
@@ -849,12 +863,28 @@ export interface DocumentLocationLike {
    };
 }
 
+/** Malloy records an imported file's URL as written (`my deals.malloy`) but its own compile percent-encodes it, so cross-compile comparisons need one spelling. */
+function canonicalUrl(url: string): string {
+   try {
+      return new URL(url).href;
+   } catch {
+      return url;
+   }
+}
+
+function samePosition(a: NoteLike["at"] & {}, b: NoteLike["at"] & {}): boolean {
+   return sameNotePosition(
+      { ...a, url: canonicalUrl(a.url) },
+      { ...b, url: canonicalUrl(b.url) },
+   );
+}
+
 /** Whether `outer` fully contains `inner`, in the same file. */
 function locationContains(
    outer: DocumentLocationLike,
    inner: DocumentLocationLike,
 ): boolean {
-   if (outer.url !== inner.url) return false;
+   if (canonicalUrl(outer.url) !== canonicalUrl(inner.url)) return false;
    if (isEarlierPosition(inner.range.start, outer.range.start)) return false;
    if (isEarlierPosition(outer.range.end, inner.range.end)) return false;
    return true;
@@ -916,7 +946,7 @@ function findSiblingDeclaringSource(
    resolveSibling: SiblingModelDefResolver | undefined,
 ): SourceDef | undefined {
    if (!at || !resolveSibling) return undefined;
-   const siblingModelDef = resolveSibling(at.url);
+   const siblingModelDef = resolveSibling(canonicalUrl(at.url));
    if (!siblingModelDef) return undefined;
    return findConditionOriginByLocation(siblingModelDef, at);
 }
@@ -932,12 +962,12 @@ function findSiblingAnnotationDeclaringSource(
    resolveSibling: SiblingModelDefResolver | undefined,
 ): SourceDef | undefined {
    if (!note?.at || !resolveSibling) return undefined;
-   const siblingModelDef = resolveSibling(note.at.url);
+   const siblingModelDef = resolveSibling(canonicalUrl(note.at.url));
    if (!siblingModelDef) return undefined;
    for (const value of Object.values(siblingModelDef.contents)) {
       if (!isSourceDef(value)) continue;
       for (const candidate of ownLevelNotes(value.annotations)) {
-         if (candidate.at && sameNotePosition(candidate.at, note.at)) {
+         if (candidate.at && samePosition(candidate.at, note.at)) {
             return value;
          }
       }
@@ -1000,6 +1030,7 @@ function findFilterOrigin(
    modelDef: ModelDef | undefined,
    resolveSibling?: SiblingModelDefResolver,
    unresolved?: SourceDef,
+   queryUrl?: string,
 ): SourceDef {
    let origin = struct;
    let current = struct;
@@ -1045,8 +1076,13 @@ function findFilterOrigin(
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return sibling;
       }
-      // Without a package resolver (a bare model) no ancestor can ever resolve, so the twin is the best declaration there is.
-      if (twin && ancestorUnresolved && !resolveSibling) return twin;
+      // A twin proves nothing, so it stands in only where no sibling compile could hold the declaring text: a model with no resolver, or text compiled with the query itself.
+      const at = firstFieldUsageLocation(condition);
+      const inQueryCompile =
+         !!at && !!queryUrl && canonicalUrl(at.url) === canonicalUrl(queryUrl);
+      if (twin && ancestorUnresolved && (!resolveSibling || inQueryCompile)) {
+         return twin;
+      }
    }
    return origin;
 }
@@ -1066,7 +1102,7 @@ function siblingCandidateOwnsCondition(
    return !!candidate.filterList?.some((c) => {
       if (c.code !== condition.code) return false;
       const candidateAt = firstFieldUsageLocation(c);
-      return !!candidateAt && sameNotePosition(candidateAt, at);
+      return !!candidateAt && samePosition(candidateAt, at);
    });
 }
 
@@ -1165,6 +1201,7 @@ export function assertInheritedSourceFiltersBind(
          modelDef,
          resolveSibling,
          unresolved,
+         freshness.queryLocation?.url,
       );
       if (origin !== struct) {
          assertFilterConditionBindsToDeclaringSource(
