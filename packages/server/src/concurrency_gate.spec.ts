@@ -189,6 +189,9 @@ describe("the concurrency gate guards exactly the routes that do database work",
             // across a full reload. Its GET twin reads and is ungated.
             `PUT ${pkg}/models/*?`,
             `POST ${pkg}/models/*?/query`,
+            // Compiles and submits to the warehouse. Its status, rows and
+            // cancel routes run no SQL and are ungated.
+            `POST ${pkg}/models/*?/query-jobs`,
             `POST ${pkg}/models/*?/compile`,
             `GET ${pkg}/notebooks/*/cells/:cellIndex`,
             `GET ${project}/connections/:connectionName/queryData`,

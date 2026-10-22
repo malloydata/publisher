@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   type Connection,
    GivenValue,
    isSourceDef,
    MalloyConfig,
@@ -5408,6 +5409,12 @@ export class Model {
        * still apply: this lifts curation, never the lock.
        */
       includeHiddenFilesAndSources = false,
+      /**
+       * Run the prepared query through this connection instead of the
+       * runtime's: a query job's submitting connection (see
+       * `snowflake_query_jobs.ts`). Every gate before the run is unchanged.
+       */
+      connectionOverride?: (connectionName: string) => Connection,
    ): Promise<{
       result: Malloy.Result;
       /**
@@ -6017,6 +6024,7 @@ export class Model {
                      // it actually reads.
                      compiledSource ?? earlySource,
                   ),
+               connection: connectionOverride,
             },
          );
          // AFTER run(), so it includes the warehouse round trip.

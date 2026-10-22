@@ -12,7 +12,9 @@
 import { withSpan } from "../telemetry";
 import {
    API,
+   Malloy as MalloyRuntime,
    MalloyError,
+   type Connection,
    type QueryMaterializer,
    type Result,
 } from "@malloydata/malloy";
@@ -61,6 +63,12 @@ export async function prepareAndRun(
       queryMetadata: (
          connectionName: string,
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+      /**
+       * Runs the prepared query through this connection instead of the
+       * runtime's (a query job's submitting connection). Unset for every
+       * ordinary query.
+       */
+      connection?: (connectionName: string) => Connection;
    },
 ): Promise<PreparedRun> {
    return withSpan("publisher.query.execute", {}, () =>
@@ -77,6 +85,7 @@ async function prepareAndRunUntraced(
       queryMetadata: (
          connectionName: string,
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+      connection?: (connectionName: string) => Connection;
    },
 ): Promise<PreparedRun> {
    const prepared = await runnable.getPreparedResult(options);
@@ -87,12 +96,21 @@ async function prepareAndRunUntraced(
       maxRows: run.maxRows,
    });
    const queryMetadata = await run.queryMetadata(prepared.connectionName);
-   const result = await runnable.run({
+   const runOptions = {
       rowLimit,
       ...options,
       abortSignal: run.abortSignal,
       queryMetadata,
-   });
+   };
+   // The already-prepared result runs as is through a caller's connection;
+   // `runnable.run` would prepare it a second time.
+   const result = run.connection
+      ? await MalloyRuntime.run({
+           preparedResult: prepared,
+           connection: run.connection(prepared.connectionName),
+           options: runOptions,
+        })
+      : await runnable.run(runOptions);
    return { result, rowLimit, rowLimitSource, queryMetadata };
 }
 

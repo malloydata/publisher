@@ -25,6 +25,7 @@ import type { ThemeController } from "../controller/theme.controller";
 import type { WatchModeController } from "../controller/watch-mode.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
+import { bigIntReplacer } from "../json_utils";
 import { logger, redactSensitive } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import { queryConcurrency } from "../query_concurrency";
@@ -521,6 +522,133 @@ function registerPackageRoutes(
          );
       }),
    );
+
+   // Snowflake query jobs (service/snowflake_query_jobs.ts). Registered ahead of
+   // `GET models/*?`, which would otherwise take `<model>/query-jobs/<id>` as a
+   // model path.
+   app.post(
+      `${pkg}/models/*?/query-jobs`,
+      queryConcurrency(),
+      async (req, res) => {
+         const includeHiddenFilesAndSources = booleanParamOr400(
+            req,
+            res,
+            "includeHiddenFilesAndSources",
+         );
+         if (includeHiddenFilesAndSources === undefined) return;
+         const disconnected = new AbortController();
+         res.on("close", () => {
+            if (!res.writableFinished)
+               disconnected.abort(new Error("client disconnected"));
+         });
+         try {
+            const job = await c.queryController.submitQueryJob(
+               req.params.environmentName,
+               req.params.packageName,
+               wildcardParam(req),
+               req.body.sourceName as string,
+               req.body.queryName as string,
+               req.body.query as string,
+               req.body.filterParams as Record<string, string | string[]>,
+               req.body.bypassFilters === true ? true : undefined,
+               req.body.givens as Record<string, GivenValue> | undefined,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
+               readBypassAuthorize(req),
+               includeHiddenFilesAndSources,
+               disconnected.signal,
+            );
+            res.status(202).json(job);
+         } catch (error) {
+            if (disconnected.signal.aborted) return;
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+         }
+      },
+   );
+   app.get(
+      `${pkg}/models/*?/query-jobs/:jobId`,
+      jsonRoute((req) =>
+         c.queryController.getQueryJob(
+            req.params.environmentName,
+            req.params.packageName,
+            wildcardParam(req),
+            req.params.jobId,
+         ),
+      ),
+   );
+   app.delete(
+      `${pkg}/models/*?/query-jobs/:jobId`,
+      jsonRoute((req) =>
+         c.queryController.cancelQueryJob(
+            req.params.environmentName,
+            req.params.packageName,
+            wildcardParam(req),
+            req.params.jobId,
+         ),
+      ),
+   );
+   app.get(`${pkg}/models/*?/query-jobs/:jobId/rows`, async (req, res) => {
+      const offset = Number(req.query.offset ?? 0);
+      const limit = Number(req.query.limit ?? 10000);
+      if (
+         !Number.isSafeInteger(offset) ||
+         offset < 0 ||
+         !Number.isSafeInteger(limit) ||
+         limit < 1 ||
+         limit > 1_000_000
+      ) {
+         res.status(400).json({
+            code: 400,
+            message: "offset must be a whole number >= 0, limit 1 to 1000000",
+         });
+         return;
+      }
+      let closed = false;
+      res.on("close", () => (closed = true));
+      const params = req.params as Record<string, string>;
+      try {
+         const page = await c.queryController.getQueryJobPage(
+            params.environmentName,
+            params.packageName,
+            wildcardParam(req),
+            params.jobId,
+            offset,
+            limit,
+         );
+         // Written as the rows arrive: the page is never held whole.
+         res.status(200).type("application/json");
+         res.write(
+            `{"totalRows":${page.totalRows},"offset":${page.offset},"columns":${JSON.stringify(page.columns)},"rows":[`,
+         );
+         let count = 0;
+         for await (const row of page.rows) {
+            if (closed) return;
+            const chunk =
+               (count === 0 ? "" : ",") + JSON.stringify(row, bigIntReplacer);
+            count += 1;
+            if (!res.write(chunk)) {
+               await new Promise((resolve) => {
+                  res.once("drain", resolve);
+                  res.once("close", resolve);
+               });
+            }
+         }
+         res.end(`],"rowCount":${count}}`);
+      } catch (error) {
+         if (res.headersSent) {
+            res.destroy(error as Error);
+            return;
+         }
+         sendRouteError(res, error as Error, logRefusal(req, error as Error));
+      }
+   });
+
    app.get(
       `${pkg}/models/*?`,
       jsonRoute((req, res) => {
