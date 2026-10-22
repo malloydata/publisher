@@ -2449,8 +2449,6 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
    "G2-honest": { compile: "SERVED", why: NO_GATE_GRAFT },
    "U6-a1malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
    "U6-dealsv2malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
-   "U6-a1malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
-   "U6-dealsv2malloy-gate-misbound": { compile: "SERVED", why: NO_GATE_GRAFT },
    "G2-steer-m2": { compile: "REFUSED", why: NO_GATE_GRAFT },
    "G2-rejoin-m2": { compile: "SERVED", why: NO_GATE_GRAFT },
    "G2-nested-honest": { compile: "SERVED", why: NO_GATE_GRAFT },

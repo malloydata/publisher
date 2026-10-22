@@ -148,7 +148,11 @@ async function expectBindingDeniedViaPackage(
                String(c[0]) ===
                "Inherited source filter binding check failed; denying",
          )
-         .map((c) => String((c[1] as { error?: string } | undefined)?.error));
+         .map((c) =>
+            String(
+               ((c as unknown[])[1] as { error?: string } | undefined)?.error,
+            ),
+         );
       expect(reasons.join("\n")).toContain(
          "resolves to a different field on the executed source",
       );
