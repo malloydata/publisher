@@ -1,0 +1,920 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * A ranked get_context request answered by find, connect, judge: the only
+ * engine for a request with search text. A listing (no search text) is
+ * answered from the package's entity index in get_context_tool.ts.
+ *
+ *   find (Stage 1)    per target, the N best nodes of the whole catalog
+ *   connect (Stage 2) the sources the judge is shown: a list of every
+ *                     target's best candidates grouped by source (the
+ *                     default), or the few sources whose reach explains the
+ *                     targets together
+ *   judge (Stage 3)   one model call picks what to return
+ *
+ * Each stage is timed and traced, so the
+ * `X-Publisher-Retrieval-Trace: summary` header gives a block of stage rows,
+ * and `full` adds what each stage kept and why.
+ *
+ * The stages return the complete result, and only the response is paged
+ * (pages.ts): a result longer than one page carries `next_offset`, and a
+ * call with the same arguments and that `offset` gets the next page of the
+ * same held result, with no stage run again. When the held result is gone
+ * (held 10 minutes, or the index was rebuilt), the stages run again and a
+ * warning says the page is from a new run.
+ */
+
+import {
+   EMBEDDING_QUERY_TIMEOUT_MS,
+   embeddingConfigured,
+} from "../../service/embedding_provider";
+import type { EnvironmentStore } from "../../service/environment_store";
+import { alsoLikelyOn, fcjSettingsOf } from "../../service/package_retrieval";
+import { logger } from "../../logger";
+import { activeLlmSettings } from "../../providers/active";
+import type { ChatModel } from "../../providers/types";
+import { LlmMeter } from "../tools/get_context_llm";
+import { jsonResource, jsonToolError } from "../tool_response";
+import { projectEntity, skillsFor } from "../tools/get_context_response";
+import {
+   type PackageIndex,
+   type ResolvedRequest,
+   type ResultEntity,
+} from "../tools/get_context_types";
+import { alsoLikelyFields } from "./also_likely";
+import { dateRangeFields } from "./date_range";
+import type { CatalogNode } from "./catalog";
+import { fcjJudgeChat, fcjStateOf, kickFcjBuild } from "./engine_state";
+import {
+   find,
+   KINDS_BY_FIND_TARGET,
+   meaningPhrasesOf,
+   type FindResult,
+   type FindTarget,
+} from "./find";
+import type { FcjIndex } from "./index_build";
+import { connect, type ConnectResult } from "./connect";
+import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
+import {
+   FCJ_MAX_CHARS,
+   FCJ_RESERVE_CHARS,
+   FCJ_RESULT_TTL_MS,
+   heldResults,
+   pageAt,
+   resultKey,
+   type HeldResult,
+} from "./pages";
+import { respond } from "./respond";
+import { optionId, routesOf } from "./routes";
+import { toUnit } from "./vectors";
+import { phraseCheckerOf } from "./split";
+import {
+   capItemPicks,
+   forConnect,
+   fusedFound,
+   mergeConnected,
+   mergeVerdicts,
+   planSplit,
+   splitTrace,
+   type SplitPlan,
+} from "./split_targets";
+
+/** Per index, whether the package uses a phrase as written (split.ts). */
+const phraseCheckers = new WeakMap<FcjIndex, (phrase: string) => boolean>();
+function knownPhraseOf(index: FcjIndex): (phrase: string) => boolean {
+   let check = phraseCheckers.get(index);
+   if (!check) {
+      check = phraseCheckerOf(
+         [...index.catalog.nodes.values()].flatMap((n) => [n.name, n.doc]),
+      );
+      phraseCheckers.set(index, check);
+   }
+   return check;
+}
+
+export type TraceMode = "none" | "summary" | "full";
+
+/**
+ * `PUBLISHER_MCP_TRACE=retrieval` writes each ranked call's stage summary to
+ * the server log, one line per call, and adds nothing to any response. Read on
+ * each call so a test can change it.
+ */
+export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
+
+function traceToLog(): boolean {
+   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+}
+
+/** One row of the stage trace. */
+interface StageRow {
+   name: string;
+   status: "ran" | "skipped" | "failed";
+   ms: number;
+   in: number;
+   out: number;
+   llm_calls: number;
+   tokens: { input: number; output: number };
+}
+
+/** The targets the engine works on, from the resolved request, in the caller's order. */
+export function findTargetsOf(request: ResolvedRequest): FindTarget[] {
+   const targets: FindTarget[] = [
+      ...request.searches.map((s) => ({
+         index: s.targetIndex,
+         type: s.targetType as FindTarget["type"],
+         text: s.text,
+         kinds: KINDS_BY_FIND_TARGET[s.targetType as FindTarget["type"]],
+         ...(request.exampleValues?.get(s.targetIndex)
+            ? { exampleValues: request.exampleValues.get(s.targetIndex) }
+            : {}),
+      })),
+      ...request.valueSearches.map((s) => ({
+         index: s.targetIndex,
+         type: "dimensional_value" as const,
+         text: s.text,
+         kinds: KINDS_BY_FIND_TARGET.dimensional_value,
+         ...(request.exampleValues?.get(s.targetIndex)
+            ? { exampleValues: request.exampleValues.get(s.targetIndex) }
+            : {}),
+      })),
+   ];
+   return targets.sort((a, b) => a.index - b.index);
+}
+
+/** Whether a node survives the request's model, source and entity scope. */
+export function inScope(request: ResolvedRequest) {
+   return (node: CatalogNode): boolean => {
+      if (request.modelPath && !node.modelPaths.includes(request.modelPath)) {
+         return false;
+      }
+      if (request.sourceName && node.source !== request.sourceName)
+         return false;
+      if (
+         request.entityName &&
+         node.kind !== "source" &&
+         node.name !== request.entityName
+      ) {
+         return false;
+      }
+      return true;
+   };
+}
+
+/**
+ * Embed every target's text, and with `valueEmbeddings` every value phrase
+ * that is not a target's text (meaningPhrasesOf), in one call. Empty maps
+ * with no provider.
+ */
+async function embedTargets(
+   index: FcjIndex,
+   targets: readonly FindTarget[],
+   valuePhrases: boolean,
+): Promise<{
+   queries: Map<number, Float32Array>;
+   phrases: Map<string, Float32Array> | undefined;
+}> {
+   const queries = new Map<number, Float32Array>();
+   const provider = index.provider;
+   if (!provider || targets.length === 0)
+      return { queries, phrases: undefined };
+   const withPhrases = valuePhrases && index.values.embedded > 0;
+   const texts = new Set(targets.map((t) => t.text));
+   const extra: string[] = [];
+   if (withPhrases) {
+      for (const t of targets) {
+         for (const p of meaningPhrasesOf(t, (term) =>
+            index.keyword.hasTerm(term),
+         )) {
+            if (!texts.has(p) && !extra.includes(p)) extra.push(p);
+         }
+      }
+   }
+   const vectors = await provider.embedBatch(
+      [...targets.map((t) => t.text), ...extra].map(
+         (x) => (provider.queryPrefix ?? "") + x,
+      ),
+      EMBEDDING_QUERY_TIMEOUT_MS,
+   );
+   targets.forEach((t, i) => queries.set(t.index, toUnit(vectors[i])));
+   if (!withPhrases) return { queries, phrases: undefined };
+   const phrases = new Map<string, Float32Array>();
+   extra.forEach((p, i) => phrases.set(p, toUnit(vectors[targets.length + i])));
+   return { queries, phrases };
+}
+
+/** A node as the card builder wants it, under one of its model paths. */
+export function resultRowOf(
+   node: CatalogNode,
+   request: ResolvedRequest,
+   score: number | undefined,
+   targetScores?: Map<number, number>,
+): ResultEntity {
+   const entity =
+      node.entities.find((e) => e.modelPath === request.modelPath) ??
+      node.entities[0];
+   return {
+      ...projectEntity(entity, request.environmentName, request.packageName),
+      ...(score !== undefined
+         ? { score: Math.round(score * 10_000) / 10_000, rawScore: score }
+         : {}),
+      ...(targetScores ? { targetScores } : {}),
+   };
+}
+
+/** The find stage's part of the full trace. */
+export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
+   return results.map((r) => ({
+      target_index: r.target.index,
+      target_type: r.target.type,
+      text: r.target.text,
+      lists: r.lists,
+      value_phrases: r.valuePhrases,
+      ...(r.meaningPhrases.length > 0
+         ? { meaning_phrases: r.meaningPhrases }
+         : {}),
+      candidates: r.candidates.map((c, rank) => {
+         const node = index.catalog.nodes.get(c.key)!;
+         return {
+            rank: rank + 1,
+            id: node.id,
+            key: c.key,
+            score: Math.round(c.score * 1e6) / 1e6,
+            ranks: c.ranks,
+            ...(c.cosine !== undefined
+               ? { cosine: c.cosine, facet: c.facet }
+               : {}),
+            ...(c.bm25 !== undefined ? { bm25: c.bm25 } : {}),
+            ...(c.values
+               ? { values: c.values.slice(0, 3).map((v) => v.value) }
+               : {}),
+            routes: routesOf(index.catalog, node),
+         };
+      }),
+   }));
+}
+
+export async function runFcjQuery(args: {
+   request: ResolvedRequest;
+   environmentStore: EnvironmentStore;
+   pkgIndex: PackageIndex;
+   uri: string;
+   warnings: string[];
+   traceMode: TraceMode;
+}): Promise<ReturnType<typeof jsonResource>> {
+   const { request, environmentStore, pkgIndex, uri, traceMode } = args;
+   const pkg = pkgIndex.pkg;
+   const state = fcjStateOf(pkg);
+   if (!state || state.status !== "ready") {
+      kickFcjBuild({
+         environmentStore,
+         environmentName: request.environmentName,
+         packageName: request.packageName,
+         pkg,
+      });
+      if (state?.status === "error") {
+         return jsonToolError(
+            uri,
+            {
+               message: `The fcj search index for this package could not be built: ${state.message}`,
+               suggestions: [
+                  "Ask again in a minute; the build is retried by the next question after a short cool-down.",
+                  "The operator should read the server log.",
+               ],
+            },
+            {
+               sources: [],
+               retrieval: "error",
+               retrieval_reason: "unavailable",
+            },
+         );
+      }
+      return jsonResource(uri, {
+         sources: [],
+         ranking: "relevance" as const,
+         total_available: 0,
+         returned: 0,
+         retrieval: "indexing",
+         ...skillsFor({ pkgIndex }),
+         warnings: [
+            ...args.warnings,
+            "This package's search index is still being built, so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. A request with no search_text (a listing) works now.",
+         ],
+      });
+   }
+   const index = state.index;
+   const held = heldResults;
+   const key = resultKey(request);
+   const leading = [...args.warnings];
+   if (request.offset > 0) {
+      const kept = held.get(key, index);
+      if (kept) {
+         return pageResponse({
+            uri,
+            pkgIndex,
+            result: kept,
+            request,
+            leading,
+            traceMode,
+         });
+      }
+      leading.push(
+         `No held result matched this offset, so the search ran again. A result is held for ${FCJ_RESULT_TTL_MS / 60_000} minutes, for the same arguments and givens only. This page is from the new run and can differ from pages you already have; for a consistent set, start again without offset.`,
+      );
+   }
+   const settings = fcjSettingsOf(pkg.getRetrievalSettings?.());
+   const stages: StageRow[] = [];
+   const targets = findTargetsOf(request);
+   const allow = inScope(request);
+   // `splitBundles`: a list target is also searched item by item.
+   const plan: SplitPlan | undefined = settings.splitBundles
+      ? planSplit(targets, settings.listTopK, knownPhraseOf(index))
+      : undefined;
+   const split = plan && plan.items.size > 0 ? plan : undefined;
+   const searched = split ? split.targets : targets;
+
+   // Stage 1.
+   let started = performance.now();
+   let queries = new Map<number, Float32Array>();
+   let phraseVectors: Map<string, Float32Array> | undefined;
+   try {
+      if (embeddingConfigured()) {
+         const embedded = await embedTargets(
+            index,
+            searched,
+            settings.values && settings.valueEmbeddings,
+         );
+         queries = embedded.queries;
+         phraseVectors = embedded.phrases;
+      }
+   } catch (error) {
+      logger.warn("[get_context fcj] The search text could not be embedded", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return jsonToolError(
+         uri,
+         {
+            message: `The embedding provider failed to embed the search text: ${error instanceof Error ? error.message : String(error)}`,
+            suggestions: ["Try again in a minute."],
+         },
+         {
+            sources: [],
+            retrieval: "error",
+            retrieval_reason: "provider-error",
+         },
+      );
+   }
+   const foundAll = withPinnedDimensions(
+      index,
+      find({
+         index,
+         targets: searched,
+         queries,
+         ...(phraseVectors ? { phraseVectors } : {}),
+         perTarget: settings.perTarget,
+         keyword: settings.keyword,
+         values: settings.values,
+         allow,
+         unionTopK: settings.connect === "list" ? settings.listUnion : 0,
+      }),
+      request,
+      allow,
+   );
+   // The caller's targets' lists (a split one fused with its items') and the
+   // lists connect reads (each item's cut to its cap).
+   const found = split ? fusedFound(split, foundAll) : foundAll;
+   const foundForConnect = split ? forConnect(split, foundAll) : foundAll;
+   const gatedWarning = gatedValueWarning(index, request, targets, allow);
+   stages.push({
+      name: "find",
+      status: "ran",
+      ms: Math.round(performance.now() - started),
+      in: searched.length,
+      out: foundAll.reduce((n, r) => n + r.candidates.length, 0),
+      llm_calls: 0,
+      tokens: { input: 0, output: 0 },
+   });
+
+   // Stage 2.
+   started = performance.now();
+   const connectedAll = connect({
+      index,
+      found: foundForConnect,
+      queries,
+      ...(phraseVectors ? { phraseVectors } : {}),
+      settings,
+      allow,
+   });
+   stages.push({
+      name: "connect",
+      status: "ran",
+      ms: Math.round(performance.now() - started),
+      in: foundForConnect.reduce((n, r) => n + r.candidates.length, 0),
+      out: connectedAll.clusters.length,
+      llm_calls: 0,
+      tokens: { input: 0, output: 0 },
+   });
+
+   // Stage 3.
+   started = performance.now();
+   const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
+   let chat: ChatModel | null = null;
+   if (settings.judge !== false && activeLlmSettings()) {
+      try {
+         chat = fcjJudgeChat(settings.judgeLlm);
+      } catch (error) {
+         logger.warn("[get_context fcj] The judge model could not be built", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return judgeFailure(uri, error, stages);
+      }
+   }
+   let verdicts: JudgeVerdict[];
+   const used = meter.snapshot();
+   if (chat && connectedAll.clusters.length > 0) {
+      try {
+         verdicts = await judge({
+            index,
+            clusters: connectedAll.clusters,
+            targets: searched,
+            chat: meter.wrap(chat),
+            ...(pkg.getRetrievalSettings?.()?.prompts.judge
+               ? {
+                    instructions:
+                       pkg.getRetrievalSettings().prompts.judge!.text,
+                 }
+               : {}),
+            concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
+            listRoutes: settings.listRoutes,
+            // Only a request with a list target reads the split rules, so
+            // every other request's judge prompt is the same text as before.
+            splitRules: split !== undefined,
+            itemPicks: settings.splitItemPicks,
+            readingsRule: settings.readingsRule,
+         });
+      } catch (error) {
+         logger.warn("[get_context fcj] The judge failed", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return judgeFailure(uri, error, stages);
+      }
+      verdicts = dropBesideRoutes(
+         verdicts,
+         settings.dropRoutesAt,
+         (key) => optionId(index.catalog, key),
+         new Set(
+            foundAll.flatMap((r) =>
+               r.candidates
+                  .map((c) => index.catalog.nodes.get(c.key)?.id)
+                  .filter((id): id is string => id !== undefined),
+            ),
+         ),
+      );
+      verdicts = dropTwins(verdicts, settings.twinRule, (key) =>
+         index.catalog.nodes.get(key),
+      );
+      if (split) {
+         verdicts = capItemPicks(split, verdicts, settings.splitItemPicks);
+      }
+      const now = meter.snapshot();
+      stages.push({
+         name: "judge",
+         status: "ran",
+         ms: Math.round(performance.now() - started),
+         in: connectedAll.clusters.length,
+         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
+         llm_calls: now.calls - used.calls,
+         tokens: {
+            input: now.inputTokens - used.inputTokens,
+            output: now.outputTokens - used.outputTokens,
+         },
+      });
+   } else {
+      verdicts = unjudged(connectedAll, searched);
+      stages.push({
+         name: "judge",
+         status: "skipped",
+         ms: 0,
+         in: connectedAll.clusters.length,
+         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
+         llm_calls: 0,
+         tokens: { input: 0, output: 0 },
+      });
+   }
+
+   // A split target's items fold back into it: respond and the response see
+   // only the caller's targets.
+   const itemVerdicts = verdicts;
+   if (split) verdicts = mergeVerdicts(split, verdicts);
+   const connected = split ? mergeConnected(split, connectedAll) : connectedAll;
+
+   // "Also likely" fields: after the judge only, since they read its picks
+   // and its notes.
+   const judged = stages.some((s) => s.name === "judge" && s.status === "ran");
+   const alsoLikely =
+      judged && alsoLikelyOn(settings)
+         ? alsoLikelyFields({
+              index,
+              found,
+              connected,
+              verdicts,
+              twins: settings.alsoLikelyTwins ?? 2,
+              ignoreAbsence: split !== undefined,
+           })
+         : [];
+   // The "date or time range" rule: after the judge and "also likely",
+   // since it reads which measures came back.
+   const dateRange =
+      judged && settings.dateRange
+         ? dateRangeFields({
+              index,
+              texts: targets.map((t) => t.text),
+              verdicts,
+              alsoLikely,
+           })
+         : [];
+
+   started = performance.now();
+   const answer = await respond({
+      index,
+      request,
+      pkgIndex,
+      connected,
+      verdicts,
+      targets,
+      environmentStore,
+      alsoLikely: [...alsoLikely, ...dateRange],
+   });
+   stages.push({
+      name: "respond",
+      status: "ran",
+      ms: Math.round(performance.now() - started),
+      in: verdicts.reduce((n, v) => n + v.picks.length, 0),
+      out: answer.sources.length,
+      llm_calls: 0,
+      tokens: { input: 0, output: 0 },
+   });
+   const result: HeldResult = {
+      cards: answer.sources,
+      clusters: answer.clusters,
+      ...(answer.coverage ? { coverage: answer.coverage } : {}),
+      unresolved_targets: answer.unresolved_targets,
+      warnings: [
+         ...(gatedWarning ? [gatedWarning] : []),
+         ...answer.warnings,
+         ...(answer.unresolved_targets.length > 0
+            ? [
+                 `No source in this package answered ${answer.unresolved_targets.length} target(s); see unresolved_targets. Rephrase them, ask the user, or answer without them.`,
+              ]
+            : []),
+      ],
+   };
+   return pageResponse({
+      uri,
+      pkgIndex,
+      result,
+      request,
+      leading,
+      traceMode,
+      stages,
+      // Held only when there is a page to come back for.
+      hold: (paged) => {
+         if (paged) held.set(key, index, result);
+      },
+      ...(traceMode === "full"
+         ? {
+              full: {
+                 fcj: {
+                    find: findTrace(index, found),
+                    ...(split
+                       ? {
+                            split: splitTrace(
+                               split,
+                               foundAll,
+                               itemVerdicts,
+                               (k) => optionId(index.catalog, k),
+                            ),
+                         }
+                       : {}),
+                    connect: connectTrace(index, connected),
+                    ...(chat
+                       ? { judge_model: `${chat.provider}/${chat.model}` }
+                       : {}),
+                    judge: verdicts.map((v) => ({
+                       cluster: v.cluster,
+                       picks: v.picks.map((p) => ({
+                          target_index: p.target,
+                          // A picked route has the id it has on the joining source.
+                          ids: p.keys.map((k) => optionId(index.catalog, k)),
+                          ...(p.reason ? { reason: p.reason } : {}),
+                          ...(p.droppedRoutes
+                             ? {
+                                  dropped_routes: p.droppedRoutes.map((k) =>
+                                     optionId(index.catalog, k),
+                                  ),
+                               }
+                             : {}),
+                          ...(p.best
+                             ? { best: optionId(index.catalog, p.best) }
+                             : {}),
+                          ...(p.readings ? { readings: true } : {}),
+                          ...(p.droppedTwins
+                             ? {
+                                  dropped_twins: p.droppedTwins.map((k) =>
+                                     optionId(index.catalog, k),
+                                  ),
+                               }
+                             : {}),
+                       })),
+                       caveats: v.caveats,
+                       ...(v.routeOptions !== undefined
+                          ? { route_options: v.routeOptions }
+                          : {}),
+                       ...(v.jsonRepaired ? { json_repaired: true } : {}),
+                    })),
+                    also_likely: alsoLikely.map((a) => ({
+                       id: a.id,
+                       rule: a.rule,
+                       ...(a.of ? { of: a.of } : {}),
+                       reason: a.reason,
+                    })),
+                    // Fields the "date or time range" rule added (dateRange).
+                    ...(settings.dateRange
+                       ? {
+                            date_range: dateRange.map((a) => ({
+                               id: a.id,
+                               of: a.of,
+                               reason: a.reason,
+                            })),
+                         }
+                       : {}),
+                 },
+              },
+           }
+         : {}),
+   });
+}
+
+/**
+ * One page of a complete result, in the card shape of a listing plus
+ * `next_offset` when more pages remain. `total_available` counts every card
+ * of the result. The clusters, coverage and unresolved targets describe the
+ * whole result and ride on every page. A page served from a held result
+ * runs no stage, so its trace has only the page row.
+ */
+function pageResponse(args: {
+   uri: string;
+   pkgIndex: PackageIndex;
+   result: HeldResult;
+   request: ResolvedRequest;
+   /** The request's warnings, ahead of the result's own. */
+   leading: string[];
+   traceMode: TraceMode;
+   stages?: StageRow[];
+   full?: unknown;
+   hold?: (paged: boolean) => void;
+}): ReturnType<typeof jsonResource> {
+   const { result, request, traceMode } = args;
+   const started = performance.now();
+   const total = result.cards.length;
+   const page = pageAt(result.cards, request.offset, {
+      maxChars: FCJ_MAX_CHARS,
+      reserveChars: FCJ_RESERVE_CHARS,
+      limit: request.limit,
+   });
+   args.hold?.(page.nextOffset !== undefined);
+   const stages: StageRow[] = [
+      ...(args.stages ?? []),
+      {
+         name: "page",
+         status: "ran",
+         ms: Math.round(performance.now() - started),
+         in: total,
+         out: page.cards.length,
+         llm_calls: 0,
+         tokens: { input: 0, output: 0 },
+      },
+   ];
+   const first = request.offset + 1;
+   const last = request.offset + page.cards.length;
+   const warnings = [
+      ...args.leading,
+      ...result.warnings,
+      ...(page.nextOffset !== undefined
+         ? [
+              `This page holds sources ${first} to ${last} of ${total}; nothing was cut from the result. For the rest, call get_context again with the same arguments and offset: ${page.nextOffset} (next_offset), until a response has no next_offset.`,
+           ]
+         : []),
+      ...(request.offset > 0 && page.cards.length === 0
+         ? [
+              `offset ${request.offset} is past the end of this result, which has ${total} source(s).`,
+           ]
+         : []),
+      ...(page.trimmed > 0
+         ? [
+              `One source card is larger than a page by itself, so ${page.trimmed} of its descriptions were shortened (marked …). Every picked field is still on it.${page.oversized ? ` It is still over ${FCJ_MAX_CHARS} characters.` : ""}`,
+           ]
+         : []),
+   ];
+   if (traceToLog()) {
+      logger.info("[MCP Tool getContext] Retrieval trace", {
+         environmentName: request.environmentName,
+         packageName: request.packageName,
+         retrieval_trace: { engine: "fcj", stages },
+      });
+   }
+   return jsonResource(args.uri, {
+      sources: page.cards,
+      ranking: "relevance" as const,
+      total_available: total,
+      returned: page.cards.length,
+      ...(page.nextOffset !== undefined
+         ? { next_offset: page.nextOffset }
+         : {}),
+      retrieval: "semantic",
+      engine: "fcj",
+      clusters: result.clusters,
+      ...(result.coverage ? { coverage: result.coverage } : {}),
+      unresolved_targets: result.unresolved_targets,
+      ...skillsFor({ pkgIndex: args.pkgIndex }),
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(traceMode !== "none"
+         ? { retrieval_trace: { engine: "fcj", stages } }
+         : {}),
+      ...(traceMode === "full" && args.full
+         ? { retrieval_trace_full: args.full }
+         : {}),
+   });
+}
+
+/**
+ * The column-known value search: a `dimensional_value` target on a request
+ * whose scope pins one dimension (`scopes[].entity_name`) is that dimension,
+ * whether or not the value index holds its values. A gated source's values
+ * are never in the index, so this is the only way its dimension becomes a
+ * candidate; respond then reads its values through the query path with the
+ * caller's givens.
+ */
+export function withPinnedDimensions(
+   index: FcjIndex,
+   found: FindResult[],
+   request: ResolvedRequest,
+   allow: (node: CatalogNode) => boolean,
+): FindResult[] {
+   if (!request.entityName) return found;
+   return found.map((r) => {
+      if (r.target.type !== "dimensional_value" || r.candidates.length > 0) {
+         return r;
+      }
+      const pinned = [...index.catalog.nodes.values()].filter(
+         (n) => n.kind === "dimension" && !n.joinPath && allow(n),
+      );
+      return {
+         ...r,
+         candidates: pinned.map((n) => ({
+            key: n.key,
+            score: 1 / 61,
+            ranks: {},
+         })),
+      };
+   });
+}
+
+/**
+ * The warning when a value target was searched without a pinned dimension
+ * and the scope holds gated sources: their values were not searched.
+ */
+export function gatedValueWarning(
+   index: FcjIndex,
+   request: ResolvedRequest,
+   targets: readonly FindTarget[],
+   allow: (node: CatalogNode) => boolean,
+): string | undefined {
+   if (request.entityName) return undefined;
+   if (!targets.some((t) => t.type === "dimensional_value")) return undefined;
+   const gated = [...index.catalog.sources.values()]
+      .filter((s) => s.gated && allow(s.node))
+      .map((s) => s.name);
+   if (gated.length === 0) return undefined;
+   return `The values of ${gated.length} source(s) with an access gate were not searched (${gated.slice(0, 5).join(", ")}${gated.length > 5 ? ", ..." : ""}). To search one, scope the target to its dimension (scopes[].source and entity_name) and send the givens its gate needs.`;
+}
+
+/** Candidates a cluster returns per covered target when no judge picks. */
+export function unjudgedPicks(type: FindTarget["type"] | undefined): number {
+   if (type === "measure") return 2;
+   if (type === "dimension") return 5;
+   return 3;
+}
+
+/**
+ * The verdicts when no judge runs (`retrieval.fcj.judge: false`, or no LLM):
+ * each cluster answers each target it covers with its best few in-cluster
+ * candidates, and names no caveat.
+ */
+export function unjudged(
+   connected: ConnectResult,
+   targets: readonly FindTarget[],
+): JudgeVerdict[] {
+   const typeOf = new Map(targets.map((t) => [t.index, t.type]));
+   return connected.clusters.map((cluster) => ({
+      cluster: cluster.home,
+      picks: cluster.covers.map((t) => ({
+         target: t,
+         keys: (cluster.candidates.get(t) ?? [])
+            .slice(0, unjudgedPicks(typeOf.get(t)))
+            .map((c) => c.key),
+      })),
+      caveats: [],
+   }));
+}
+
+/** The error result when the judge failed after the provider's retries. */
+function judgeFailure(uri: string, error: unknown, stages: StageRow[]) {
+   const reason = error instanceof Error ? error.message : String(error);
+   return jsonToolError(
+      uri,
+      {
+         message: `get_context failed in the judge step: ${reason}`,
+         suggestions: [
+            "Ask the same question again; a timeout or a malformed model reply is often transient.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json) and the server log. To search without the judge, set the package's retrieval.fcj.judge to false in publisher.json.",
+         ],
+      },
+      {
+         sources: [],
+         retrieval: "error",
+         retrieval_reason: "llm-stage-failed",
+         retrieval_stage: "judge",
+         retrieval_trace: { engine: "fcj", stages },
+      },
+   );
+}
+
+/** The connect stage's part of the full trace. */
+export function connectTrace(index: FcjIndex, connected: ConnectResult) {
+   const describe = (key: string) => {
+      const node = index.catalog.nodes.get(key)!;
+      // A folded copy shown in a cluster is also the field it copies.
+      const rep = node.copyOf
+         ? index.catalog.nodes.get(node.copyOf)
+         : undefined;
+      return {
+         id: node.id,
+         key,
+         routes: [
+            ...routesOf(index.catalog, node),
+            ...(rep ? [rep.id, ...routesOf(index.catalog, rep)] : []),
+         ],
+      };
+   };
+   return {
+      considered: connected.considered.map((s) => ({
+         source: s.source,
+         score: Math.round(s.score * 1e6) / 1e6,
+         covers: s.covers,
+         best: Object.fromEntries(
+            [...s.best].map(([t, b]) => [
+               t,
+               { id: index.catalog.nodes.get(b.key)?.id, hops: b.hops },
+            ]),
+         ),
+      })),
+      unresolved: connected.unresolved,
+      clusters: connected.clusters.map((c) => ({
+         home: c.home,
+         home_source: index.catalog.sources.get(c.home)?.name,
+         score: Math.round(c.score * 1e6) / 1e6,
+         covers: c.covers,
+         newly_covers: c.newlyCovers,
+         twins: c.twins,
+         contenders: c.contenders,
+         // In a list, `home` is only the anchor; the peers are the sources.
+         ...(c.peers
+            ? {
+                 peers: c.peers.map((p) => ({
+                    source: p.source,
+                    reaches: p.reaches.map((r) => r.source),
+                 })),
+              }
+            : {}),
+         reach: [...c.reach.values()].map((r) => ({
+            source: r.source,
+            hops: r.hops,
+         })),
+         candidates: [
+            ...[...c.candidates].flatMap(([t, list]) =>
+               list.map((x) => ({
+                  target_index: t,
+                  rank: x.rank,
+                  score: Math.round(x.score * 1e6) / 1e6,
+                  hops: x.hops,
+                  // In the judge's list only by `listUnion`: which find list ranks it high.
+                  ...(x.union ? { union: x.union } : {}),
+                  ...describe(x.key),
+               })),
+            ),
+            ...c.extras.map((e) => ({ extra: e.reason, ...describe(e.key) })),
+         ],
+      })),
+   };
+}

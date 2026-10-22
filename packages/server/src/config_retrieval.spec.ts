@@ -35,7 +35,7 @@ describe("retrieval.indexing.maxEntities", () => {
       expect(() =>
          parseRetrievalConfig({ embeding: { provider: "openai" } }),
       ).toThrow(
-         "Invalid retrieval: unknown key 'embeding'. Valid keys: indexing, llm, embedding, egress.",
+         "Invalid retrieval: unknown key 'embeding'. Valid keys: indexing, llm, embedding, egress, dimensionValues.",
       );
       expect(() =>
          parseRetrievalConfig({ indexing: { maxEntitites: 7 } }),

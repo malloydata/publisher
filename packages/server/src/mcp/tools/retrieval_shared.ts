@@ -49,3 +49,21 @@ export function compareText(a: string, b: string): number {
 export function round4(x: number): number {
    return Math.round(x * 10_000) / 10_000;
 }
+
+/**
+ * Drop everything an access predicate could ride on. Doc text reaches here
+ * already limited to `#(doc)` lines; this removes any other annotation that
+ * got into it (a `#(access_filter)` or `#(authorize)` predicate, a persist
+ * line) from its marker to the end of that line.
+ */
+export function scrubForEgress(text: string): string {
+   return text
+      .split(/\r?\n/)
+      .map((line) => {
+         const marker = /(^|\s)(#\((?!doc\))[^)]*\)|#@)/.exec(line);
+         return marker ? line.slice(0, marker.index) : line;
+      })
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+}
