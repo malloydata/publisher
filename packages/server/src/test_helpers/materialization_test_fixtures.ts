@@ -30,6 +30,7 @@ export function makeMaterialization(
       completedAt: null,
       error: null,
       metadata: null,
+      version: null,
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),
       ...overrides,

@@ -16,6 +16,8 @@ import {
    getProcessedPublisherConfig,
    getPublisherConfigDir,
    getUnresolvedPublisherConfigPath,
+   getVersionPromotionMode,
+   isVersioningEnabled,
    isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
@@ -56,6 +58,8 @@ import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import { Environment, PackageStatus } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
+import { VersionStore } from "./versions/version_store";
+import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 type ApiEnvironment = components["schemas"]["Environment"];
@@ -414,6 +418,23 @@ export class EnvironmentStore {
    private packageLoadedHook:
       | ((environmentName: string, pkg: Package) => void)
       | null = null;
+   // Called when a version is archived. Set once at server start; each
+   // Environment picks it up when its version registry is bound.
+   private versionArchivedHook:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => void)
+      | null = null;
+   // Awaited before a version is deleted; picked up like versionArchivedHook.
+   private versionDeletingHook:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => Promise<void>)
+      | null = null;
 
    /**
     * Environments (from `PUBLISHER_WATCH`) whose package directories under
@@ -482,6 +503,66 @@ export class EnvironmentStore {
       for (const env of this.environments.values()) {
          this.attachPackageLoadedHook(env);
       }
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback run when a version is
+    * archived, which reclaims the tables that version alone owns. Remembered,
+    * so Environments bound after this call also use it.
+    */
+   public setVersionArchivedHook(
+      hook:
+         | ((
+              environmentName: string,
+              packageName: string,
+              versionId: string,
+           ) => void)
+         | null,
+   ): void {
+      this.versionArchivedHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachVersionArchivedHook(env);
+      }
+   }
+
+   private attachVersionArchivedHook(env: Environment): void {
+      const hook = this.versionArchivedHook;
+      env.setVersionArchivedHook(
+         hook
+            ? (packageName, versionId) =>
+                 hook(env.getEnvironmentName(), packageName, versionId)
+            : null,
+      );
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback awaited before a version is
+    * deleted, which drops the tables that version alone owns. Remembered, so
+    * Environments bound after this call also use it.
+    */
+   public setVersionDeletingHook(
+      hook:
+         | ((
+              environmentName: string,
+              packageName: string,
+              versionId: string,
+           ) => Promise<void>)
+         | null,
+   ): void {
+      this.versionDeletingHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachVersionDeletingHook(env);
+      }
+   }
+
+   private attachVersionDeletingHook(env: Environment): void {
+      const hook = this.versionDeletingHook;
+      env.setVersionDeletingHook(
+         hook
+            ? (packageName, versionId) =>
+                 hook(env.getEnvironmentName(), packageName, versionId)
+            : null,
+      );
    }
 
    private attachPackageLoadedHook(env: Environment): void {
@@ -644,20 +725,14 @@ export class EnvironmentStore {
          }
          environmentInstance.setMemoryGovernor(this.memoryGovernor);
          this.attachPackageLoadedHook(environmentInstance);
-         // Re-establish serve routing from each package's latest successful
-         // materialization, so serving survives a restart. The environment
-         // splits the entries by tier in rebindServeBindingsFromLocalStore.
-         const envId = dbEnvironment.id;
-         environmentInstance.setStorageBindingResolver(async (packageName) => {
-            const runs = await repository.listMaterializations(
-               envId,
-               packageName,
-            );
-            const latest = runs.find(
-               (m) => m.status === "MANIFEST_FILE_READY" && m.manifest?.entries,
-            );
-            return latest?.manifest?.entries ?? {};
-         });
+         // Its version rules, with the storage-binding resolver every package
+         // here restores its serve bindings through.
+         await this.bindVersionRegistry(environmentInstance, dbEnvironment.id);
+         // Reloaded from the database: its unversioned packages restore their
+         // serve bindings from the local store on load, so serving survives a
+         // restart. The only path that did so before versions existed;
+         // environments created at runtime still do not.
+         environmentInstance.restoreUnversionedBindingsFromLocalStore();
 
          const packages = await repository.listPackages(dbEnvironment.id);
          packages.forEach((pkg) => {
@@ -681,6 +756,12 @@ export class EnvironmentStore {
 
       try {
          await this.storageManager.initialize(reInit);
+
+         // Read both versioning settings now, so a value outside the set fails
+         // initialization naming the setting, rather than surfacing at the first
+         // publish that reads it.
+         isVersioningEnabled();
+         getVersionPromotionMode(this.serverRootPath);
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
@@ -812,6 +893,141 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Give an environment its version rules, backed by its registry rows.
+    * Idempotent. The first bind of an environment also settles what a crash
+    * may have left on disk, before anything of it loads: version folders no
+    * row owns, and unversioned trees a first versioned publish moved aside.
+    */
+   private async bindVersionRegistry(
+      environment: Environment,
+      environmentId: string,
+   ): Promise<void> {
+      const repository = this.storageManager.getRepository();
+      const environmentName = environment.getEnvironmentName();
+      const alreadyBound = environment.getVersionService() !== null;
+      // Re-establish serve routing when a package loads, from its latest
+      // successful materialization — so serving survives a restart, not only
+      // a fresh build. The full entry map is returned; the environment splits
+      // it by tier (colocated + storage=) in rebindServeBindingsFromLocalStore.
+      // A version of a `scope: version` package reads only its own runs;
+      // everything else reads the package's shared runs.
+      environment.setStorageBindingResolver(
+         storageBindingResolverFor(repository, environmentId),
+      );
+      this.attachVersionArchivedHook(environment);
+      this.attachVersionDeletingHook(environment);
+      environment.bindVersions(repository, environmentId, {
+         downloaderFor: (packageName, location) => (stagingPath) =>
+            this.downloadPackageInto(
+               environmentName,
+               packageName,
+               location,
+               stagingPath,
+            ),
+         ensurePackageRecord: async (packageName, description) => {
+            const existing = await repository.getPackageByName(
+               environmentId,
+               packageName,
+            );
+            if (!existing) {
+               await repository.createPackage({
+                  environmentId,
+                  name: packageName,
+                  description: description ?? undefined,
+                  manifestPath: "",
+                  metadata: {},
+               });
+               return true;
+            }
+            if (
+               description !== undefined &&
+               description !== (existing.description ?? null)
+            ) {
+               await repository.updatePackage(existing.id, { description });
+            }
+            return false;
+         },
+         removePackageRecord: async (packageName) => {
+            const existing = await repository.getPackageByName(
+               environmentId,
+               packageName,
+            );
+            // The row only: what is keyed by the package's name (an
+            // unversioned package's runs and ledger) predates this publish.
+            if (existing) await repository.deletePackageRecord(existing.id);
+         },
+      });
+      if (alreadyBound) return;
+      try {
+         const owned = new Map<string, Set<string>>();
+         for (const version of await repository.listVersionsByEnvironment(
+            environmentId,
+         )) {
+            const dirs = owned.get(version.packageName) ?? new Set<string>();
+            dirs.add(version.dirName);
+            owned.set(version.packageName, dirs);
+         }
+         await new VersionStore(environment.getEnvironmentPath()).cleanup(
+            owned,
+         );
+      } catch (error) {
+         logger.warn("Could not clean up package version folders", {
+            environmentName,
+            error,
+         });
+      }
+   }
+
+   /**
+    * Fetch a package location into `targetPath`: a GitHub URL, a gs:// or
+    * s3:// prefix (or .zip), or a local directory or .zip. Callers pass a
+    * staging folder, so a long download holds no lock.
+    */
+   public async downloadPackageInto(
+      environmentName: string,
+      packageName: string,
+      packageLocation: string,
+      targetPath: string,
+   ): Promise<void> {
+      const isCompressedFile = packageLocation.endsWith(".zip");
+      if (
+         packageLocation.startsWith("https://") ||
+         packageLocation.startsWith("git@")
+      ) {
+         await this.downloadGitHubDirectory(packageLocation, targetPath);
+      } else if (packageLocation.startsWith("gs://")) {
+         await this.downloadGcsDirectory(
+            packageLocation,
+            environmentName,
+            targetPath,
+            isCompressedFile,
+         );
+      } else if (packageLocation.startsWith("s3://")) {
+         await this.downloadS3Directory(
+            packageLocation,
+            environmentName,
+            targetPath,
+            isCompressedFile,
+         );
+      }
+
+      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
+         // Absolute paths from the publisher.config could be placed outside of
+         // /etc/publisher, so they are mounted in the right place.
+         // `path.isAbsolute` is what catches a Windows drive-letter path
+         // (`D:\pkgs\sales`), which no other branch claims either; without it
+         // the install stages nothing and fails with a bare ENOENT rename.
+         // Same pairing as isLocalPath.
+         await this.mountLocalDirectory(
+            packageLocation,
+            targetPath,
+            environmentName,
+            packageName,
+         );
+      }
+   }
+
    public async addEnvironmentToDatabase(
       environment: Environment,
    ): Promise<void> {
@@ -831,6 +1047,11 @@ export class EnvironmentStore {
          environment,
          repository,
       );
+      // Its version rules as soon as it has a row: the environment is already
+      // served, and a publish to it needs them. A sync below that fails must
+      // not leave it without them.
+      await this.bindVersionRegistry(environment, dbEnvironment.id);
+
       await this.addConnections(environment, dbEnvironment.id, repository);
       await this.syncStorageDestinations(
          environment,
@@ -911,9 +1132,28 @@ export class EnvironmentStore {
             logger.warn("Skipping package with undefined name");
             continue;
          }
-
-         await this.addPackage(pkg, environmentId, repository);
+         const name = pkg.name;
+         // Under the package's lock, so a first versioned publish (which
+         // takes it) cannot commit between the check and the write.
+         await environment.withPackageLock(name, async () => {
+            if (await this.isVersionedPackage(environment, name)) return;
+            await this.addPackage(pkg, environmentId, repository);
+         });
       }
+   }
+
+   /**
+    * Whether a package has published versions. Its row is the version
+    * registry's (its `latest` pointer, and the description a request set),
+    * so a sync from the listing, which shows its latest version, must not
+    * write over it.
+    */
+   private async isVersionedPackage(
+      environment: Environment,
+      packageName: string,
+   ): Promise<boolean> {
+      const versions = environment.getVersionService();
+      return versions !== null && (await versions.isVersioned(packageName));
    }
 
    private async addPackage(
@@ -1154,6 +1394,7 @@ export class EnvironmentStore {
          logger.warn(`Package "${packageName}" not found in environment`);
          return;
       }
+      if (await this.isVersionedPackage(environment, packageName)) return;
 
       await this.addPackage(pkg, dbEnvironment.id, repository);
       logger.info(`Synced package "${packageName}" to database`);
@@ -1195,7 +1436,7 @@ export class EnvironmentStore {
     * the package's sync mutex, which a bulk embed can hold for minutes. An
     * orphaned row is inert, so failure is logged, never propagated.
     */
-   private cleanupPackageEmbeddings(
+   public cleanupPackageEmbeddings(
       environmentName: string,
       packageName: string,
    ): void {
@@ -1312,6 +1553,8 @@ export class EnvironmentStore {
          frozenConfig: boolean;
          operationalState: components["schemas"]["ServerStatus"]["operationalState"];
          version: string;
+         packageVersioning?: components["schemas"]["ServerStatus"]["packageVersioning"];
+         versionPromotion?: components["schemas"]["ServerStatus"]["versionPromotion"];
          emptyReason?: string;
          initError?: string;
          loadErrors?: LoadError[];
@@ -1323,13 +1566,38 @@ export class EnvironmentStore {
          operationalState,
          version: SERVER_VERSION,
       };
+      // Whether a publish from a location publishes versions, so an
+      // orchestrator mid-rollout can tell. A server from before versions sends
+      // no field, which means "off".
+      status.packageVersioning = versioningEnabledForStatus() ? "on" : "off";
+      // A malformed value failed initialization, which this reports.
+      try {
+         status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
+      } catch {
+         // Left absent.
+      }
 
       const environments = await this.listEnvironments(true, options);
 
       await Promise.all(
          environments.map(async (environment) => {
             try {
-               const packages = environment.packages;
+               // A versioned package is listed once per version it holds (each
+               // with its own versionId), not once as its latest.
+               const versionEntries =
+                  (await this.environments
+                     .get(environment.name ?? "")
+                     ?.listVersionEntries()) ?? new Map();
+               const packages =
+                  versionEntries.size === 0
+                     ? environment.packages
+                     : [
+                          ...(environment.packages ?? []).filter(
+                             (p) => !versionEntries.has(p.name ?? ""),
+                          ),
+                          ...[...versionEntries.values()].flat(),
+                       ];
+               environment.packages = packages;
                const connections = environment.connections;
 
                logger.debug(`Environment ${environment.name} status:`, {
@@ -2505,5 +2773,18 @@ export class EnvironmentStore {
       }
 
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
+   }
+}
+
+/**
+ * The versioning flag for /status, which must answer even when the flag's
+ * value is malformed: that failed initialization, and /status is where the
+ * failure is reported.
+ */
+function versioningEnabledForStatus(): boolean {
+   try {
+      return isVersioningEnabled();
+   } catch {
+      return false;
    }
 }
