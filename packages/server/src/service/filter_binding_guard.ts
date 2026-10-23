@@ -34,7 +34,8 @@
  * or hitting a walk bound, means "cannot prove this binds correctly". A
  * condition skips the check only when PROVEN to read no field
  * ({@link conditionReadsNoField}) or PROVEN to be the executed struct's own
- * fresh filter ({@link isOwnFreshFilter}).
+ * fresh filter ({@link isOwnFreshFilter}), including an inline `where:` of the
+ * query that built an anonymous query-source base.
  */
 
 import {
@@ -1268,14 +1269,20 @@ function conditionReadsNoField(condition: FilterCondition): boolean {
 export interface FreshnessContext {
    callerText?: { url: string; fromLine: number };
    queryLocation?: DocumentLocationLike;
+   // The span of the query that built a query source's base; set only on that base's descent.
+   enclosing?: DocumentLocationLike;
    virtualUrl?: string;
 }
 
 /**
  * Whether `condition` is PROVEN to be `struct`'s own fresh filter, by its
- * parse location lying in `struct`'s span or `queryLocation`. Being
- * unrecognized is not proof: an inherited condition from a narrower compile
- * is unrecognized too.
+ * parse location lying in `struct`'s span or `queryLocation`. Also fresh when
+ * `enclosing` holds both the condition and `struct`'s own location: an
+ * anonymous query-source base (`duckdb.sql(...)`) shares no location with a
+ * named source, so only the query's span proves its inline `where:` fresh; a
+ * named base keeps its declaration's location, outside the span, and stays
+ * refused. Being unrecognized is not proof: an inherited condition from a
+ * narrower compile is unrecognized too.
  */
 function isOwnFreshFilter(
    struct: SourceDef,
@@ -1287,6 +1294,15 @@ function isOwnFreshFilter(
    const structLocation = (struct as { location?: DocumentLocationLike })
       .location;
    if (structLocation && locationContains(structLocation, at)) return true;
+   const { enclosing } = freshness;
+   if (
+      enclosing &&
+      structLocation &&
+      locationContains(enclosing, at) &&
+      locationContains(enclosing, structLocation)
+   ) {
+      return true;
+   }
    return (
       !!freshness.queryLocation && locationContains(freshness.queryLocation, at)
    );
@@ -1387,11 +1403,15 @@ export function assertInheritedSourceFiltersBind(
          "a row-security filter's declaring source could not be resolved",
       );
    }
-   const descend = (next: SourceDef, nextUnresolved?: SourceDef) =>
+   const descend = (
+      next: SourceDef,
+      nextUnresolved?: SourceDef,
+      enclosing?: DocumentLocationLike,
+   ) =>
       assertInheritedSourceFiltersBind(
          next,
          modelDef,
-         freshness,
+         { ...freshness, enclosing },
          resolveSibling,
          depth + 1,
          visited,
@@ -1418,9 +1438,20 @@ export function assertInheritedSourceFiltersBind(
          throw new Error("a query source's base could not be resolved");
       }
       const resolvedBase = resolveCompositeResolvedBase(struct);
-      descend(resolvedBase ?? base, resolvedBase ? base : undefined);
-      const own = (struct as { query?: { pipeline?: readonly StageLike[] } })
-         .query;
+      const own = (
+         struct as {
+            query?: {
+               location?: DocumentLocationLike;
+               pipeline?: readonly StageLike[];
+            };
+         }
+      ).query;
+      // `query.location` survives the alias/extend/join re-stamping of `struct.location`.
+      descend(
+         resolvedBase ?? base,
+         resolvedBase ? base : undefined,
+         own?.location,
+      );
       stageJoins(own?.pipeline).forEach((join) => descend(join));
    }
    stageJoins(pipeline).forEach((join) => descend(join));

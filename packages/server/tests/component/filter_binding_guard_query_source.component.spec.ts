@@ -1182,6 +1182,163 @@ describe("I6: a source built over an inline where:, imported selectively", () =>
    });
 });
 
+describe("R: a query source over an anonymous base's inline where:", () => {
+   const W = `${DEAL} extend { where: not is_deleted }`;
+   const QS = `source: qs is ${W} -> { select: * }\n`;
+   const RUN = "run: qs -> { aggregate: n is count() }";
+   const JOIN = (src: string, kind = "join_one") =>
+      `source: p is ${DEAL} extend { ${kind}: ${src} on deal_id = qs.deal_id }\nexport { p }\n`;
+   const RUN_P = "run: p -> { aggregate: n is qs.count() }";
+   const CSV = "deal_id,is_deleted\n1,false\n2,false\n3,true\n";
+   const MID = (body: string) => ({
+      "mid.malloy": body,
+      "index.malloy": `import { qs } from "mid.malloy"\nexport { qs }\n`,
+   });
+   const cases: [string, Record<string, string>, string][] = [
+      ["sql", { "index.malloy": `${QS}export { qs }` }, RUN],
+      [
+         "table",
+         {
+            "deals.csv": CSV,
+            "index.malloy": `source: qs is duckdb.table('deals.csv') extend { where: not is_deleted } -> { select: * }\nexport { qs }`,
+         },
+         RUN,
+      ],
+      [
+         "group-by",
+         {
+            "index.malloy": `source: qs is ${W} -> { select: * } -> { group_by: deal_id }\nexport { qs }`,
+         },
+         RUN,
+      ],
+      [
+         "extend-dimension",
+         {
+            "index.malloy": `${QS.trimEnd()} extend { dimension: x is 1 }\nexport { qs }`,
+         },
+         RUN,
+      ],
+      [
+         "derived-query",
+         {
+            "index.malloy": `${QS}source: qs2 is qs -> { select: * }\nexport { qs2 }`,
+         },
+         "run: qs2 -> { aggregate: n is count() }",
+      ],
+      [
+         "alias",
+         { "index.malloy": `${QS}source: qs4 is qs\nexport { qs4 }` },
+         "run: qs4 -> { aggregate: n is count() }",
+      ],
+      [
+         "alias-extend",
+         {
+            "index.malloy": `${QS}source: qs3 is qs extend { dimension: x is 1 }\nexport { qs3 }`,
+         },
+         "run: qs3 -> { aggregate: n is count() }",
+      ],
+      ["joined-by-name", { "index.malloy": QS + JOIN("qs") }, RUN_P],
+      [
+         "joined-inline",
+         { "index.malloy": JOIN(`qs is ${W} -> { select: * }`) },
+         RUN_P,
+      ],
+      ["joined-many", { "index.malloy": QS + JOIN("qs", "join_many") }, RUN_P],
+      [
+         "joined-alias",
+         {
+            "index.malloy":
+               QS + JOIN("qs2 is qs").replace("qs.deal_id", "qs2.deal_id"),
+         },
+         "run: p -> { aggregate: n is qs2.count() }",
+      ],
+      [
+         "caller-joined",
+         { "index.malloy": `${QS}source: o is ${DEAL}\nexport { o, qs }` },
+         "run: o extend { join_many: qs on deal_id = qs.deal_id } -> { aggregate: n is qs.count() }",
+      ],
+      ["imported", MID(`${QS}`), RUN],
+      [
+         "imported-alias-only",
+         {
+            "mid.malloy": `${QS}source: qs4 is qs\n`,
+            "index.malloy": `import { qs4 } from "mid.malloy"\nexport { qs4 }\n`,
+         },
+         "run: qs4 -> { aggregate: n is count() }",
+      ],
+      [
+         "persist",
+         {
+            "index.malloy": `##! experimental.persistence\n#@ persist name="qs"\nsource: qs is ${W} -> { select: * }\nexport { qs }`,
+         },
+         RUN,
+      ],
+      [
+         "named-query-source",
+         {
+            "index.malloy": `query: q0 is ${W} -> { select: * }\nsource: s is q0 extend { primary_key: deal_id }\nexport { s }`,
+         },
+         "run: s -> { aggregate: n is count() }",
+      ],
+   ];
+   for (const [name, files, query] of cases) {
+      it(`R-${name}: served on both routes`, async () => {
+         EXPECTED[`R-${name}`] = "SERVED";
+         await serve(`R-${name}`, files, query);
+      });
+   }
+
+   // The compiled struct records no extend-block boundary, so a one-block where-before-dimension is indistinguishable from a restore.
+   it("R-where-before-dim-anon: over an anonymous base the one-block form serves", async () => {
+      EXPECTED["R-where-before-dim-anon"] = "SERVED";
+      await serve(
+         "R-where-before-dim-anon",
+         {
+            "index.malloy": `source: qs is ${DEAL} extend { where: z; dimension: z is not is_deleted } -> { select: * }\nexport { qs }`,
+         },
+         RUN,
+      );
+   });
+   it("R-where-before-dim-named: over a named base the one-block form is refused", async () => {
+      EXPECTED["R-where-before-dim-named"] = "DENIED";
+      await serve(
+         "R-where-before-dim-named",
+         {
+            "index.malloy": `source: deals_incl is ${DEAL}\nsource: qs is deals_incl extend { where: z; dimension: z is not is_deleted } -> { select: * }\nexport { qs }`,
+         },
+         RUN,
+      );
+   });
+
+   // Named bases keep the base's own declaration location, so the span rule never reaches them.
+   const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
+   const outside = (body: string) => ({
+      "ext.malloy": `${BASE}${body}`,
+   });
+   const importS = {
+      "index.malloy": `import { s } from "OUTSIDE/ext.malloy"\nexport { s }`,
+   };
+   const RESTORE =
+      "deals_incl extend { except: is_open } extend { dimension: is_open is not is_deleted } extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true }";
+   const PLAIN =
+      "deals_incl extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true }";
+   for (const [name, chain] of [
+      ["restore", RESTORE],
+      ["rebind", PLAIN],
+   ]) {
+      it(`R-outside-${name}: a named base imported selectively from outside the package stays refused`, async () => {
+         EXPECTED[`R-outside-${name}`] = "REFUSED";
+         await serve(
+            `R-outside-${name}`,
+            importS,
+            "run: s -> { aggregate: n is count() }",
+            {},
+            outside(`source: s is ${chain} -> { group_by: deal_id }\n`),
+         );
+      });
+   }
+});
+
 describe("I3: an aliased import of the inline base", () => {
    const BASE = `source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }\n`;
    const REBIND =
