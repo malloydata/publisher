@@ -23,9 +23,11 @@ function makeReq(path = "/api/v0/test"): Request {
 
 /**
  * Minimal Response stub: just needs `on` to capture the release
- * listeners and `emit` for tests to fire them. Wraps an
- * EventEmitter so the on/emit semantics match real Express
- * responses (multiple listeners, listener order, etc.).
+ * listeners, `emit` for tests to fire them, and an `end` for the
+ * middleware to wrap. Wraps an EventEmitter so the on/emit semantics
+ * match real Express responses (multiple listeners, listener order,
+ * etc.). `end` emits nothing, as on a runtime that never reports the
+ * response finishing.
  */
 function makeRes(): Response & {
    fireFinish: () => void;
@@ -42,6 +44,7 @@ function makeRes(): Response & {
    res.fireClose = (): void => {
       ee.emit("close");
    };
+   res.end = (() => res) as unknown as typeof res.end;
    return res;
 }
 
@@ -139,6 +142,27 @@ describe("queryConcurrencyMiddleware", () => {
       const second = makeRes();
       const { error } = callMiddleware(makeReq(), second);
       expect(error.value).toBeUndefined();
+      expect(getActiveQueryCount()).toBe(1);
+   });
+
+   it("decrements when the handler ends the response, even if neither 'finish' nor 'close' follows", () => {
+      // Bun 1.3.13 emits neither event on a response whose client went
+      // away mid-request -- not at the disconnect, and not when the
+      // handler later writes its answer to the dead socket. `end()` is
+      // the call every handler makes on every runtime once its work is
+      // done, so it is what must give the slot back.
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1";
+      const res = makeRes();
+      callMiddleware(makeReq(), res);
+      res.end();
+      expect(getActiveQueryCount()).toBe(0);
+
+      // On a runtime that does report the finish, the events that follow
+      // the `end()` must not release a second time.
+      res.fireFinish();
+      res.fireClose();
+      const second = callMiddleware(makeReq(), makeRes());
+      expect(second.error.value).toBeUndefined();
       expect(getActiveQueryCount()).toBe(1);
    });
 
