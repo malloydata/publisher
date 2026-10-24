@@ -232,10 +232,12 @@ describe("applySessionResourceLimits", () => {
          expect(() => assertDuckDBResourceConfig()).not.toThrow();
       });
 
-      // POSIX mode bits do not restrict on Windows; ACLs would. Node's (and,
-      // from 1.4, Bun's) access(W_OK) ignores a directory's read-only bit, so
-      // the chmod below leaves the directory writable there. Root ignores the
-      // bits everywhere.
+      // On Windows the chmod below only sets the directory's read-only
+      // attribute, which Windows does not enforce on a directory, so the
+      // directory stays writable and the check is right to pass. Bun 1.3 failed
+      // it anyway: its recursive mkdir did not count a read-only directory as a
+      // directory and answered EEXIST. Bun 1.4, like Node, does. Root ignores
+      // the mode bits everywhere.
       it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
          "fails on an existing directory it cannot write to",
          () => {
