@@ -3,9 +3,10 @@
 
 name: App Playwright E2E
 
+# Every pull request, whatever its base, as build.yml does: a PR stacked on
+# another PR's branch changes the Console as much as one into main.
 on:
   pull_request:
-    branches: [main]
 
 env:
   BUN_VERSION: 1.3.13
@@ -111,4 +112,30 @@ jobs:
         with:
           name: playwright-test-results
           path: packages/app/test-results
+          retention-days: 7
+
+      # The suite above runs against a server with package versioning off, so
+      # package-versions.spec.ts skips itself there. Run that spec again
+      # against a server of its own with versioning on: the playwright.config.ts
+      # webServer inherits this step's environment, and the server the step
+      # above started has stopped with it. EXPECT_PACKAGE_VERSIONING makes the
+      # spec fail rather than skip if the server reports versioning off.
+      - name: Run the package-versions spec with versioning on
+        id: package-versions
+        working-directory: packages/app
+        run: bunx playwright test --config=playwright.config.ts --output=test-results-versions tests/playwright/package-versions.spec.ts
+        env:
+          CI: "true"
+          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_PACKAGE_VERSIONING: "on"
+          EXPECT_PACKAGE_VERSIONING: "on"
+
+      - name: Upload the package-versions report and results
+        if: failure() && steps.package-versions.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-package-versions
+          path: |
+            packages/app/playwright-report
+            packages/app/test-results-versions
           retention-days: 7

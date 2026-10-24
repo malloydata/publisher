@@ -11,6 +11,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { loadBuilder } from "../pages/DashboardEditPage/loadBuilder";
 import { isEditSearch, withEdit, withoutEdit } from "./documentRoutes";
+import { usePackageRoute } from "./usePackageRoute";
 import { useEditPageMounted } from "../pages/DashboardEditPage/editPageMounted";
 
 /**
@@ -39,11 +40,14 @@ export function DocumentModeButton() {
    const editPageMounted = useEditPageMounted();
    const environmentName = params.environmentName ?? "";
    const packageName = params.packageName ?? "";
-   const splat = params["*"] ?? "";
+   // A published version is immutable: its reports are read, never edited.
+   const route = usePackageRoute();
+   const splat = route.path ?? "";
    const routeShaped =
       environmentName !== "" &&
       packageName !== "" &&
       splat !== "" &&
+      !route.versioned &&
       !FILE_ROUTE.test(splat);
    const { reports, settled } = useReportListing(
       environmentName,

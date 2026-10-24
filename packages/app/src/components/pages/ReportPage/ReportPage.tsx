@@ -20,6 +20,8 @@ import { useDrawn } from "../useDrawn";
 interface ReportPageProps {
    environmentName: string;
    packageName: string;
+   /** The version to read, for a pinned version; absent means `latest`. */
+   versionId?: string;
    /** The report's package path, `sales/q3.malloy` (or a legacy `.malloynb`). */
    path: string;
    /** Whether the builder opens it, so its chunk is worth warming. Default true for a `.malloy`. */
@@ -40,6 +42,7 @@ interface ReportPageProps {
 export default function ReportPage({
    environmentName,
    packageName,
+   versionId,
    path,
    editable = path.endsWith(".malloy"),
    onReady,
@@ -85,6 +88,7 @@ export default function ReportPage({
                   environmentName,
                   packageName,
                   modelPath: path,
+                  versionId,
                })}
                givens={givens}
                onGivensChange={onGivensChange}
@@ -94,7 +98,11 @@ export default function ReportPage({
             />
          ) : (
             <Report
-               resourceUri={encodeResourceUri({ environmentName, packageName })}
+               resourceUri={encodeResourceUri({
+                  environmentName,
+                  packageName,
+                  versionId,
+               })}
                path={path}
                givens={givens}
                onGivensChange={onGivensChange}
