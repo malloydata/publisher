@@ -673,6 +673,8 @@ export class Environment {
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             this.destinations,
             destinationRoot,
+            false,
+            { origin: "storage-destination" },
          );
       } catch (error) {
          logger.error(
@@ -682,6 +684,8 @@ export class Environment {
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             [],
             storageDestinationRoot(this.environmentPath),
+            false,
+            { origin: "storage-destination" },
          );
       }
       if (previous && previous !== this.destinationMalloyConfig) {

@@ -7039,7 +7039,11 @@ components:
             rather than as a misconfiguration.
         endpoint:
           type: string
-          description: Custom S3-compatible endpoint URL (optional, for MinIO, etc.)
+          description: >-
+            Custom S3-compatible endpoint (optional, for MinIO, etc.), as
+            `host[:port][/path]`. The scheme is optional and defaults to
+            HTTPS; `http://` selects plain HTTP. A query string or fragment is
+            rejected.
         sessionToken:
           type: string
           description: AWS session token for temporary credentials (optional)
