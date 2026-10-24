@@ -3,7 +3,7 @@
 
 /**
  * A query whose client goes away before the answer must still give back its
- * concurrency slot.
+ * concurrency slot, and must be cancelled rather than left running.
  *
  * This drives the real `/models/*?/query` route over a real socket, because the
  * failure is in what the runtime emits rather than in the route. On Bun 1.3.13 a
@@ -11,7 +11,9 @@
  * `finish` -- not at the disconnect, and not when the handler later writes its
  * answer to the dead socket. A slot released only on those events stayed held
  * until the process restarted, one per abandoned query, until the pod refused
- * every query at PUBLISHER_MAX_CONCURRENT_QUERIES.
+ * every query at PUBLISHER_MAX_CONCURRENT_QUERIES. And the signal the route
+ * aborts on `close` never fired, so the query ran on the warehouse until it
+ * ended on its own. Bun 1.4 emits `close` at the disconnect, as Node does.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -51,25 +53,37 @@ function deferred(): {
    return { promise, resolve, reject };
 }
 
-/** Polls until the slot count reaches `count`, or gives up after `ms`. */
-async function slotsReach(count: number, ms = 2000): Promise<number> {
+/** Polls `predicate` until it holds, or gives up after `ms`. */
+async function eventually(
+   predicate: () => boolean,
+   ms = 2000,
+): Promise<boolean> {
    const deadline = Date.now() + ms;
-   while (getActiveQueryCount() !== count && Date.now() < deadline) {
+   while (!predicate() && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 10));
    }
+   return predicate();
+}
+
+/** Polls until the slot count reaches `count`, or gives up after `ms`. */
+async function slotsReach(count: number, ms = 2000): Promise<number> {
+   await eventually(() => getActiveQueryCount() === count, ms);
    return getActiveQueryCount();
 }
 
 /**
- * Serves the real route table with the query parked on `hold`, sends one query
- * over a raw socket, and drops the socket once the route holds its slot -- the
- * way a caller that hit its own timeout lets go.
+ * Serves the real route table with the query parked on `query`, which is handed
+ * the signal the route aborts when its client leaves. Sends one query over a
+ * raw socket and drops the socket once the route holds its slot -- the way a
+ * caller that hit its own timeout lets go.
  */
-async function abandonQuery(hold: Promise<void>): Promise<Server> {
+async function abandonQuery(
+   query: (signal: AbortSignal) => Promise<void>,
+): Promise<Server> {
    const server = buildRouteApp({
       queryController: {
-         getQuery: async () => {
-            await hold;
+         getQuery: async (...args: unknown[]) => {
+            await query(args[args.length - 1] as AbortSignal);
             return { result: "[]" } as never;
          },
       },
@@ -103,7 +117,7 @@ describe("query concurrency slot after the client disconnects", () => {
    it("is released when the query answers after the client left", async () => {
       process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
       const hold = deferred();
-      const server = await abandonQuery(hold.promise);
+      const server = await abandonQuery(() => hold.promise);
       try {
          hold.resolve();
          expect(await slotsReach(0)).toBe(0);
@@ -119,9 +133,34 @@ describe("query concurrency slot after the client disconnects", () => {
       // is reading.
       process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
       const hold = deferred();
-      const server = await abandonQuery(hold.promise);
+      const server = await abandonQuery(() => hold.promise);
       try {
          hold.reject(new Error("SQL execution canceled"));
+         expect(await slotsReach(0)).toBe(0);
+      } finally {
+         server.close();
+      }
+   });
+});
+
+describe("query cancellation when the client disconnects", () => {
+   it("aborts the signal the route handed the query", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
+      let signal: AbortSignal | undefined;
+      // A query that only ends when it is cancelled.
+      const server = await abandonQuery(
+         (received) =>
+            new Promise((_, reject) => {
+               signal = received;
+               received.addEventListener(
+                  "abort",
+                  () => reject(received.reason),
+                  { once: true },
+               );
+            }),
+      );
+      try {
+         expect(await eventually(() => signal?.aborted === true)).toBe(true);
          expect(await slotsReach(0)).toBe(0);
       } finally {
          server.close();

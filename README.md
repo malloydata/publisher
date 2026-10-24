@@ -62,7 +62,7 @@ but looks plausible — and the same question returns the same numbers tomorrow.
 ## Requirements
 
 Node.js 20 or newer (the server refuses to start on anything older and says so). Building from a clone
-also needs [Bun](https://bun.sh/) 1.3.13+. The Docker image carries its own runtime and needs neither.
+also needs [Bun](https://bun.sh/) 1.4.4+. The Docker image carries its own runtime and needs neither.
 
 ## Quick start
 

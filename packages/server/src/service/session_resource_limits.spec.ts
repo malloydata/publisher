@@ -232,23 +232,32 @@ describe("applySessionResourceLimits", () => {
          expect(() => assertDuckDBResourceConfig()).not.toThrow();
       });
 
-      it("fails on an existing directory it cannot write to", () => {
-         // The common Kubernetes shape: a volume mounted with the wrong
-         // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
-         // existing directory whatever its mode, so without the explicit access
-         // check this surfaced only at the first spill.
-         const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
-         chmodSync(dir, 0o500);
-         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
-         try {
-            expect(() => assertDuckDBResourceConfig()).toThrow(
-               /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
-            );
-         } finally {
-            chmodSync(dir, 0o700);
-            rmSync(dir, { recursive: true, force: true });
-         }
-      });
+      // On Windows the chmod below only sets the directory's read-only
+      // attribute, which Windows does not enforce on a directory, so the
+      // directory stays writable and the check is right to pass. Bun 1.3 failed
+      // it anyway: its recursive mkdir did not count a read-only directory as a
+      // directory and answered EEXIST. Bun 1.4, like Node, does. Root ignores
+      // the mode bits everywhere.
+      it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+         "fails on an existing directory it cannot write to",
+         () => {
+            // The common Kubernetes shape: a volume mounted with the wrong
+            // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
+            // existing directory whatever its mode, so without the explicit access
+            // check this surfaced only at the first spill.
+            const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
+            chmodSync(dir, 0o500);
+            process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+            try {
+               expect(() => assertDuckDBResourceConfig()).toThrow(
+                  /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
+               );
+            } finally {
+               chmodSync(dir, 0o700);
+               rmSync(dir, { recursive: true, force: true });
+            }
+         },
+      );
 
       it("creates a missing spill directory rather than failing at first spill", () => {
          const base = mkdtempSync(path.join(os.tmpdir(), "spillbase-"));
