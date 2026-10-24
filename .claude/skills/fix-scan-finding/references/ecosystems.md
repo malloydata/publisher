@@ -14,7 +14,7 @@ Run every build, image build, and test command with `run_in_background: true`.
 
 The root `package.json` declares `workspaces: ["packages/*"]`, so one root `bun.lock` covers
 `packages/server`, `packages/app`, `packages/sdk`, and the rest. Every command below was run against
-this repository with Bun 1.3.13, and the `--lockfile-only` install and update re-checked with Bun 1.4.3.
+this repository with Bun 1.3.13, and the `--lockfile-only` install and update re-checked with Bun 1.4.4.
 
 Check the manifest before deciding anything -- often the range already permits the fix and only the
 lockfile is stale:

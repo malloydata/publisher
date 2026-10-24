@@ -21,9 +21,9 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Runs on Bun 1.4.3, and a query whose client leaves is cancelled
+## [Unreleased] — Runs on Bun 1.4.4, and a query whose client leaves is cancelled
 
-Publisher now requires Bun 1.4.3 or later (`engines.bun`), in the Docker image and when building from a clone. On 1.4.3, a query whose client disconnects is cancelled at the warehouse instead of running on.
+Publisher now requires Bun 1.4.4 or later (`engines.bun`), in the Docker image and when building from a clone. 1.4.4 fixes three high-severity Bun advisories, two of which also cover the 1.3.13 the previous image ran: an out-of-bounds write in the bundled brotli decoder (GHSA-663w-cv8g-jj2p, CVE-2026-111497), root certificates that still trusted compromised eMudhra intermediate CAs (GHSA-26q8-h657-pf84), and an HTTP/3 QPACK amplification (GHSA-cf8x-9m69-3gg3, 1.3.14 onward). On 1.4, a query whose client disconnects is cancelled at the warehouse instead of running on.
 
 Bun 1.4 also enforces the servers' socket timeout, which 1.3 ignored. That timeout now follows `PUBLISHER_QUERY_TIMEOUT_MS`: 10 minutes while the query timeout is under that, otherwise the query timeout plus one minute, so a long query ends with its 504 rather than a dropped connection. `PUBLISHER_QUERY_TIMEOUT_MS=0` now removes the socket limit too. A malformed value such as `5m` or `-1` now stops the server at startup, where before it failed each query. The dashboards' live-reload stream stays open past the timeout.
 

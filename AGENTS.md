@@ -34,7 +34,7 @@ All of it runs against a local server you start in step 1 and reach over MCP in 
 
 The MCP tools talk to a running server, so nothing works until it is up.
 
-**Requirements.** Node.js 20 or newer for `npx` and for a clone. Building from a clone also needs [Bun](https://bun.sh/) 1.4.3 or newer. The Docker image carries its own runtime and needs neither. The bundled example packages are all DuckDB-backed, so no database credentials are needed for anything in this file.
+**Requirements.** Node.js 20 or newer for `npx` and for a clone. Building from a clone also needs [Bun](https://bun.sh/) 1.4.4 or newer. The Docker image carries its own runtime and needs neither. The bundled example packages are all DuckDB-backed, so no database credentials are needed for anything in this file.
 
 **Package names.** Everything here is scoped: the server is `@malloy-publisher/server`, the scaffolder `@malloy-publisher/create-malloy-package`, and the language itself `@malloydata/malloy`. The unscoped `malloy` on npm is an unrelated logging library, so `npm install malloy` installs nothing you want.
 

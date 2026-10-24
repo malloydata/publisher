@@ -9,7 +9,7 @@ on:
   pull_request:
 
 env:
-  BUN_VERSION: 1.4.3
+  BUN_VERSION: 1.4.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # self contained tests

@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 env:
-  BUN_VERSION: 1.4.3
+  BUN_VERSION: 1.4.4
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
 # declares it itself.
