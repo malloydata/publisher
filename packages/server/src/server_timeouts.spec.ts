@@ -9,7 +9,7 @@
  * still writing; Node waits for the socket to go quiet. So the limit has to
  * outlast the slowest answer (`getServerSocketTimeoutMs` derives it from the
  * query timeout), and the `/events` stream, which stays open by design, has to
- * opt out. Without the opt-out the stream test fails on Bun 1.4.3: the server
+ * opt out. Without the opt-out the stream test fails on Bun 1.4: the server
  * closes the stream at the limit.
  */
 
@@ -91,6 +91,14 @@ describe("applyServerTimeouts", () => {
 
    it("answers the same request once the timeout is raised past it", async () => {
       const port = await listen(slowApp(), SLOW_HANDLER_MS * 2);
+      const { data } = await get(port, "/slow", 1500);
+      expect(data).toStartWith("HTTP/1.1 200");
+   });
+
+   it("cuts nothing when the timeout is 0", async () => {
+      // `getServerSocketTimeoutMs` returns 0 when PUBLISHER_QUERY_TIMEOUT_MS
+      // disables the query timeout. Read as 0 ms, it would cut every request.
+      const port = await listen(slowApp(), 0);
       const { data } = await get(port, "/slow", 1500);
       expect(data).toStartWith("HTTP/1.1 200");
    });
