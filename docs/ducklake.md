@@ -161,7 +161,9 @@ default) unless the orchestrator has decided who may write through the connectio
 **Persist from the catalog into itself.** A `#@ persist storage=<dest>` source on that connection reads
 the catalog it is built into. When the connection and the destination are the same catalog — decided by
 the catalog database, metadata schema and data path, never by name — the build is a plain CTAS on one
-read-write attach, with no federation and no egress. That session can write the catalog, so it runs
+read-write attach, with no federation and no egress. The attach takes the connection's name, so the
+connection and the destination may be named differently and a table path written for the connection
+still resolves. That session can write the catalog, so it runs
 only SQL Malloy generated: a source carrying an `.sql()` source or a `sql_*` expression anywhere beneath
 it is refused, as every DuckLake source was before.
 

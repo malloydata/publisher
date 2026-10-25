@@ -938,8 +938,14 @@ export async function buildSourceIntoStorage(params: {
  * generated: a source whose compiled definition carries author SQL (an `.sql()`
  * source, a `sql_number()` and its kind) is refused, as every DuckLake source
  * was before, which keeps the invariant the build path has always held: no
- * user SQL runs on a read-write lake session. The compiled SQL names its tables
- * bare, so the session's search path is the catalog's `main`.
+ * user SQL runs on a read-write lake session.
+ *
+ * The catalog is attached under the SOURCE connection's name, not the
+ * destination's: the two may differ (sameness is decided by catalog identity),
+ * and the compiled SQL names tables as that connection resolves them, either
+ * bare (a managed connection, so the session's search path is its `main`) or
+ * qualified with the connection's own name. The target is written under the
+ * same alias, so it lands in the one attached catalog either way.
  *
  * Always a full build: an incremental refresh is offered only to a passthrough
  * source, so `incremental` is not consulted here.
@@ -947,6 +953,7 @@ export async function buildSourceIntoStorage(params: {
 async function buildSameCatalogIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
+   sourceConnection: ApiConnection;
    buildSQL: string;
    sourceCarriesAuthorSql?: boolean;
    physicalTableName: string;
@@ -954,6 +961,7 @@ async function buildSameCatalogIntoStorage(params: {
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
+   const alias = params.sourceConnection.name || destinationName;
    if (params.sourceCarriesAuthorSql !== false) {
       throw new BadRequestError(
          `Cannot materialize a source that reads storage destination ` +
@@ -969,16 +977,16 @@ async function buildSameCatalogIntoStorage(params: {
       await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
-         destinationName,
+         alias,
          destinationConnection,
          params.environmentPath,
       );
       await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       await pinSessionToUTC(session);
-      await session.runSQL(managedSearchPathSql(destinationName));
+      await session.runSQL(managedSearchPathSql(alias));
       const target = quoteManifestTablePath(
          storageTablePath(
-            destinationName,
+            alias,
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
