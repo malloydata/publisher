@@ -13,7 +13,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { components } from "../api";
@@ -23,11 +23,14 @@ type ApiConnection = components["schemas"]["Connection"];
 
 const ROOT = "file:///same/";
 let connections: FixedConnectionMap;
+let csvPath = "";
 
 beforeAll(async () => {
    const dir = mkdtempSync(join(tmpdir(), "same-catalog-"));
    const lake = new DuckDBConnection("lake", join(dir, "lake.duckdb"));
    await lake.runSQL("CREATE TABLE orders AS SELECT 1 AS id, 10 AS amount");
+   csvPath = join(dir, "outside.csv");
+   writeFileSync(csvPath, "id,amount\n1,10\n");
    connections = new FixedConnectionMap(new Map([["lake", lake]]), "lake");
 });
 
@@ -80,6 +83,19 @@ source: orders is lake.table('orders') extend {
 #@ persist name="daily"
 source: daily is orders -> { group_by: extra.tag }`);
       expect(carriesAuthorSql(s._sourceDef)).toBe(true);
+   });
+
+   it("is true for a table read from a file or URL, false for a catalog table path", async () => {
+      const fromFile = await persisted(`##! experimental.persistence
+source: orders is lake.table('${csvPath}')
+#@ persist name="daily"
+source: daily is orders -> { group_by: id }`);
+      expect(carriesAuthorSql(fromFile._sourceDef)).toBe(true);
+      const qualified = await persisted(`##! experimental.persistence
+source: orders is lake.table('main.orders')
+#@ persist name="daily"
+source: daily is orders -> { group_by: id }`);
+      expect(carriesAuthorSql(qualified._sourceDef)).toBe(false);
    });
 
    it("fails closed on an unreadable definition", () => {

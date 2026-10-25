@@ -6288,21 +6288,6 @@ export class Model {
       };
    }
 
-   /**
-    * The per-query metadata for one model query: the executing connection's
-    * default, the caller's request override, and the server's context (which
-    * package, which model, which class of work), merged most-specific-wins.
-    *
-    * The author-declared layers are included, composed as the build path
-    * composes them ({@link composeDeclaredQueryMetadata}): they describe the
-    * SOURCE (team, cost centre, tier), which is as true of a query as of a
-    * build. Build-identifying properties (`run_id`, `trigger`, `source`,
-    * `class`) come from the per-statement context layer, so a served query is
-    * never mistaken for a build.
-    *
-    * Fails open: an unreadable connection config or an unparseable annotation
-    * contributes no layer rather than failing the query.
-    */
    /** The usage hook for a statement, when its caller says which connections are metered. */
    private static statementUsage(
       input: ModelQueryMetadataInput | undefined,
@@ -6322,6 +6307,21 @@ export class Model {
       };
    }
 
+   /**
+    * The per-query metadata for one model query: the executing connection's
+    * default, the caller's request override, and the server's context (which
+    * package, which model, which class of work), merged most-specific-wins.
+    *
+    * The author-declared layers are included, composed as the build path
+    * composes them ({@link composeDeclaredQueryMetadata}): they describe the
+    * SOURCE (team, cost centre, tier), which is as true of a query as of a
+    * build. Build-identifying properties (`run_id`, `trigger`, `source`,
+    * `class`) come from the per-statement context layer, so a served query is
+    * never mistaken for a build.
+    *
+    * Fails open: an unreadable connection config or an unparseable annotation
+    * contributes no layer rather than failing the query.
+    */
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,

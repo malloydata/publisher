@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import type { WatchModeController } from "./controller/watch-mode.controller";
 import { createAdminApp } from "./routes/admin";
 import { buildRouteApp, registeredRoutes } from "./test_helpers/route_app";
 
@@ -68,7 +69,9 @@ describe("admin route parity with admin-api-doc.yaml", () => {
       resolve(REPO_ROOT, "admin-api-doc.yaml"),
       "utf8",
    );
-   const served = registeredRoutes(createAdminApp(null))
+   const served = registeredRoutes(
+      createAdminApp(null, {} as WatchModeController),
+   )
       .filter((route) => route.path.startsWith("/api/v0/"))
       .map((route) => `${route.method} ${shape(route.path)}`)
       .sort();

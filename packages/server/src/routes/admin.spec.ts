@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import type express from "express";
 import request from "supertest";
+import type { WatchModeController } from "../controller/watch-mode.controller";
 import {
    type CatalogAdmin,
    CatalogAdminError,
@@ -14,6 +16,14 @@ import { createAdminApp, resolveAdminHost, resolveAdminPort } from "./admin";
 
 const catalogs = (over: Partial<CatalogAdmin>): CatalogAdmin =>
    over as unknown as CatalogAdmin;
+
+const watch = {
+   getWatchStatus: async (_req: unknown, res: express.Response) => {
+      res.json({ enabled: false, environmentName: "", watchingPath: null });
+   },
+   startWatching: async () => undefined,
+   stopWatchMode: async () => undefined,
+} as unknown as WatchModeController;
 
 describe("the admin listener", () => {
    it("is off unless a port is given, and refuses one that is not a port", () => {
@@ -34,7 +44,9 @@ describe("the admin listener", () => {
    });
 
    it("answers 503 on every catalog route when no catalog database is configured", async () => {
-      const res = await request(createAdminApp(null)).get("/api/v0/catalogs");
+      const res = await request(createAdminApp(null, watch)).get(
+         "/api/v0/catalogs",
+      );
       expect(res.status).toBe(503);
       expect(res.body.reason).toBe("CATALOG_DATABASE_NOT_CONFIGURED");
    });
@@ -46,6 +58,7 @@ describe("the admin listener", () => {
                throw new CatalogAdminError(404, "CATALOG_NOT_FOUND", "no");
             },
          }),
+         watch,
       );
       const res = await request(app).get("/api/v0/catalogs/ds_x");
       expect(res.status).toBe(404);
@@ -76,6 +89,7 @@ describe("the admin listener", () => {
                };
             },
          }),
+         watch,
       );
       expect(
          (await request(app).post("/api/v0/catalogs").send({})).status,
@@ -92,13 +106,27 @@ describe("the admin listener", () => {
    });
 
    it("refuses a snapshot delete without a valid olderThan", async () => {
-      const app = createAdminApp(catalogs({}));
+      const app = createAdminApp(catalogs({}), watch);
       const res = await request(app).delete("/api/v0/catalogs/ds_x/snapshots");
       expect(res.status).toBe(400);
       expect(res.body.reason).toBe("INVALID_REQUEST");
    });
 
-   it("leaves the main API the three deprecated storage routes, marked", async () => {
+   it("serves watch mode, which the main API still answers, marked deprecated", async () => {
+      const admin = await request(createAdminApp(null, watch)).get(
+         "/api/v0/watch-mode/status",
+      );
+      expect(admin.status).toBe(200);
+      expect(admin.body.enabled).toBe(false);
+      expect(admin.headers.deprecation).toBeUndefined();
+      const main = await request(
+         buildRouteApp({ watchModeController: watch }),
+      ).get("/api/v0/watch-mode/status");
+      expect(main.status).toBe(200);
+      expect(main.headers.deprecation).toBe("true");
+   });
+
+   it("still serves the main API's deprecated storage routes, marked", async () => {
       const app = buildRouteApp({
          storageDestinationController: {
             listTables: async () => [{ name: "t" }],
@@ -109,10 +137,6 @@ describe("the admin listener", () => {
       );
       expect(listed.status).toBe(200);
       expect(listed.headers.deprecation).toBe("true");
-      const boot = await request(app)
-         .post("/api/v0/environments/e/storageDestinations/lake/bootstraps")
-         .send({});
-      expect(boot.status).toBe(404);
    });
 });
 
@@ -169,5 +193,33 @@ describe("the admin listener's configuration", () => {
          connectionStringAsRole("postgres://a@h/db?sslmode=require", "ds_x"),
       ).toBe("postgres://a@h/db?sslmode=require&options=-crole%3Dds_x");
       expect(connectionStringAsRole("host=h", undefined)).toBe("host=h");
+   });
+
+   it("refuses to act as an owner whose name would re-point the connection", () => {
+      for (const hostile of [
+         "x host=evil.example",
+         "x options=-cfoo",
+         "a'b",
+         "a b",
+         "a&host=evil",
+      ]) {
+         expect(() => connectionStringAsRole("host=h user=a", hostile)).toThrow(
+            CatalogAdminError,
+         );
+      }
+      expect(connectionStringAsRole("host=h", "x-ducklake")).toBe(
+         "host=h options=-crole=x-ducklake",
+      );
+   });
+
+   it("refuses a configured connection string that sets its own options", () => {
+      for (const db of [
+         "host=h options=-cstatement_timeout=5s",
+         "postgres://a@h/db?options=-cfoo",
+      ]) {
+         expect(() =>
+            catalogAdminConfigFromEnv({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
+         ).toThrow(/must not set `options`/);
+      }
    });
 });

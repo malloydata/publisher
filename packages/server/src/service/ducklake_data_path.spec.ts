@@ -10,7 +10,7 @@ import { describe, expect, it } from "bun:test";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../api";
 import {
-   attachDuckLakeForBootstrap,
+   attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    dataPathClauses,
@@ -90,9 +90,9 @@ describe("a DuckLake attach's data path", () => {
       expect(r.attach()).not.toContain("CREATE_IF_NOT_EXISTS");
    });
 
-   it("creates on a bootstrap, which always names its path", async () => {
+   it("creates on a catalog create, which always names its path", async () => {
       const r = recorder();
-      await attachDuckLakeForBootstrap(r.conn, "lake", withPath(), {
+      await attachDuckLakeForCreate(r.conn, "lake", withPath(), {
          encrypted: true,
       });
       expect(r.attach()).toContain("DATA_PATH '/tmp/lake'");

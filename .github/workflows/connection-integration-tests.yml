@@ -166,6 +166,16 @@ jobs:
           cd packages/server
           bun test --timeout 100000 ./src/service/connection.spec.ts
 
+      # The admin API's catalogs against a real catalog database: creates,
+      # loads, ownership through the owner role, error reasons, snapshot
+      # deletion. Skipped everywhere this variable is not set.
+      - name: Run admin catalog integration tests
+        env:
+          PUBLISHER_TEST_ADMIN_SUPERUSER: "host=localhost port=5432 user=postgres password=postgres"
+        run: |
+          cd packages/server
+          bun test --timeout 120000 ./tests/integration/admin_catalogs
+
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a
       # parentJobId listing finds, and the anonymous result table it names. Those

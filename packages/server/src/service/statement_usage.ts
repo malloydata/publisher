@@ -5,7 +5,7 @@ import { logger } from "../logger";
 import { lazyCounter } from "../telemetry";
 
 /** Where a metered statement ran. */
-export type UsageSurface = "serve" | "sql" | "build" | "load";
+export type UsageSurface = "serve" | "build" | "load";
 
 /**
  * One statement on a metered connection: a storage destination, or a connection
@@ -60,15 +60,9 @@ export async function withStatementUsage<T>(
    rowsOf?: (result: T) => number | undefined,
 ): Promise<T> {
    const start = performance.now();
+   let result: T;
    try {
-      const result = await body();
-      emitStatementUsage({
-         ...base,
-         durationMs: performance.now() - start,
-         rows: rowsOf?.(result),
-         status: "ok",
-      });
-      return result;
+      result = await body();
    } catch (error) {
       emitStatementUsage({
          ...base,
@@ -77,4 +71,19 @@ export async function withStatementUsage<T>(
       });
       throw error;
    }
+   // Outside the body's try: reading the row count is metering's own work, so
+   // a failure there is a record without rows, never a failed statement.
+   let rows: number | undefined;
+   try {
+      rows = rowsOf?.(result);
+   } catch {
+      rows = undefined;
+   }
+   emitStatementUsage({
+      ...base,
+      durationMs: performance.now() - start,
+      rows,
+      status: "ok",
+   });
+   return result;
 }

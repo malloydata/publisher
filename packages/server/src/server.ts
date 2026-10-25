@@ -544,13 +544,13 @@ mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 
-// Orchestrator operations on a storage destination's catalog and bucket
-// (admin-api-doc.yaml). A file load or a cleanup can run for minutes, hence the
-// same long timeouts as the main API.
+// The admin API (admin-api-doc.yaml): the DuckLake catalogs in the configured
+// catalog database, and controls of this process an operator uses. A file load
+// or a snapshot delete can run for minutes, hence the main API's long timeouts.
 const adminServer =
    ADMIN_PORT === null
       ? null
-      : createAdminApp(ADMIN_CATALOGS).listen(
+      : createAdminApp(ADMIN_CATALOGS, watchModeController).listen(
            ADMIN_PORT,
            ADMIN_HOST,
            function (this: import("net").Server) {

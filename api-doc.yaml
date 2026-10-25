@@ -3084,8 +3084,13 @@ paths:
       tags:
         - watch-mode
       operationId: get-watch-status
+      deprecated: true
       summary: Get watch mode status
       description: |
+        **DEPRECATED**: use the admin API's `GET /watch-mode/status` (`admin-api-doc.yaml`); watch
+        mode is an operator's control, not part of serving. This route is removed in a
+        later release.
+
         Retrieves the current status of the file watching system. This includes whether watch mode
         is enabled, which environment is being watched, and the path being monitored. Useful for
         monitoring the development workflow and ensuring file changes are being detected.
@@ -3108,8 +3113,13 @@ paths:
       tags:
         - watch-mode
       operationId: start-watching
+      deprecated: true
       summary: Start file watching
       description: |
+        **DEPRECATED**: use the admin API's `POST /watch-mode/start` (`admin-api-doc.yaml`); watch
+        mode is an operator's control, not part of serving. This route is removed in a
+        later release.
+
         Initiates file watching for the specified environment. This enables real-time monitoring of
         file changes within the environment directory, allowing for automatic reloading and updates
         during development. Only one environment can be watched at a time.
@@ -3134,8 +3144,13 @@ paths:
       tags:
         - watch-mode
       operationId: stop-watching
+      deprecated: true
       summary: Stop file watching
       description: |
+        **DEPRECATED**: use the admin API's `POST /watch-mode/stop` (`admin-api-doc.yaml`); watch
+        mode is an operator's control, not part of serving. This route is removed in a
+        later release.
+
         Stops the current file watching session. This disables real-time monitoring of file changes
         and releases system resources. Use this when development is complete or when switching
         to a different environment.
@@ -7172,9 +7187,10 @@ components:
                 schema; a database-per-catalog remains the strongest separation.
 
                 Setting this on a catalog whose metadata already lives elsewhere
-                does not move it: a read-write attach CREATES a new empty catalog
-                in the named schema (and materializes into it), while a read-only
-                attach fails because there is nothing there yet. Must be a plain
+                does not move it: a read-write attach with a configured
+                `storage.bucketUrl` CREATES a new empty catalog in the named
+                schema (and materializes into it), while any other attach fails
+                because there is nothing there yet. Must be a plain
                 identifier (`[A-Za-z_][A-Za-z0-9_]*`) — the value reaches both a
                 quoted string literal in the ATTACH and an identifier position in
                 the catalog-format preflight, so it is validated at config load
@@ -7191,16 +7207,24 @@ components:
             layout. The schema must already exist in the catalog: a build does not
             create it. A `#@ persist name=` that already names a schema keeps that
             schema. Must be a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+            Serving reads the schema configured now, not the one a table was
+            built into, so changing it on a destination re-points every bound
+            table at once: rebuild or rebind as you change it.
         readOnly:
           type: boolean
           default: true
           description: >
             Whether the serve-path attach is read-only. Absent or true keeps the
-            pre-existing read-only attach, which every customer-registered
-            DuckLake connection should keep. False attaches read-write, for an
-            orchestrator that provisions the catalog and decides who may write
-            through it. A storage destination's build sessions attach
-            read-write regardless; this field governs only the connection.
+            pre-existing read-only attach, which every DuckLake connection a
+            person registers should keep. False attaches the connection
+            read-write, and then everything that runs on it runs read-write:
+            every query, `.sql()` source, `sql_*` expression and the
+            connection's SQL endpoints can create, drop and overwrite tables,
+            write files with the storage credential (`COPY … TO`) and change the
+            catalog's settings. Set it only where something else decides who may
+            run SQL on the connection. A storage destination's build sessions
+            attach read-write regardless; this field governs only the
+            connection.
       required:
         - catalog
 

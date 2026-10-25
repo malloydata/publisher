@@ -60,6 +60,22 @@ describe("statement usage records", () => {
       ).rejects.toBe(boom);
       expect(records()[0].status).toBe("error");
    });
+
+   it("returns the result when reading its row count throws, and records no rows", async () => {
+      const { spy, records } = captureUsage();
+      restore = () => spy.mockRestore();
+      const result = await withStatementUsage(
+         { environment: "e", connection: "c", surface: "serve" },
+         async () => "answer",
+         () => {
+            throw new Error("no rowCount here");
+         },
+      );
+      expect(result).toBe("answer");
+      expect(records()).toHaveLength(1);
+      expect(records()[0].status).toBe("ok");
+      expect(records()[0].rows).toBeUndefined();
+   });
 });
 
 describe("which connections are metered", () => {

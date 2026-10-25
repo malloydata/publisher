@@ -14,6 +14,9 @@ type ApiConnection = components["schemas"]["Connection"];
  * in it. The data path is recorded in the catalog, so it is compared only when
  * both configs state one: two configs that state different paths would write
  * the one catalog's files to two places, and are not treated as the same.
+ * Only the discrete `host`/`port`/`databaseName` fields are compared: a
+ * `connectionString` config never matches, which fails closed (the build is
+ * refused as an unsupported source, never run on the wrong catalog).
  */
 export function isSameCatalog(
    source: ApiConnection | undefined,
@@ -43,14 +46,20 @@ export function isSameCatalog(
    );
 }
 
+/** A catalog table path: dot-separated plain identifiers, nothing a reader resolves. */
+const CATALOG_TABLE_PATH =
+   /^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*$/;
+
 /** Max IR depth to walk; deep enough for real sources, a hang backstop. */
 const MAX_DEPTH = 200;
 
 /**
- * Whether a compiled source definition carries SQL its author wrote: an
- * `.sql()` source (`type: 'sql_select'`) or a raw SQL expression
- * (`node: 'genericSQLExpr'`, which `sql_number()` and its siblings compile to),
- * anywhere beneath it, joins and query-source pipelines included.
+ * Whether a compiled source definition carries SQL its author wrote, or reads
+ * something other than the catalog's own tables: an `.sql()` source
+ * (`type: 'sql_select'`), a raw SQL expression (`node: 'genericSQLExpr'`, which
+ * `sql_number()` and its siblings compile to), or a table whose path is a file
+ * or URL rather than a dotted identifier, anywhere beneath it, joins and
+ * query-source pipelines included.
  *
  * A same-catalog build runs on a READ-WRITE session on the catalog, so it may run
  * only SQL Malloy generated; this is what keeps author text off that session.
@@ -69,6 +78,17 @@ export function carriesAuthorSql(def: unknown): boolean {
       }
       const record = node as Record<string, unknown>;
       if (record.type === "sql_select" || record.node === "genericSQLExpr") {
+         return true;
+      }
+      // DuckDB reads a file or URL named as a table (`lake.table('/x.csv')`,
+      // `lake.table('s3://other/y.parquet')`), which on this session would run
+      // with the destination's storage credential: only a catalog table, a
+      // dotted identifier path, is Malloy reading the catalog.
+      if (
+         record.type === "table" &&
+         typeof record.tablePath === "string" &&
+         !CATALOG_TABLE_PATH.test(record.tablePath)
+      ) {
          return true;
       }
       return Object.values(record).some((child) => walk(child, depth + 1));

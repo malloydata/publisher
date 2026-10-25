@@ -1696,11 +1696,6 @@ export class Package {
    }
 
    /**
-    * Set the connections serve shapes compile against: the environment's
-    * storage destinations. Kept apart from {@link malloyConfig} so no author
-    * model can reach a destination. Absent ⇒ queries serve live.
-    */
-   /**
     * How a serve binding names a destination's schema, so it reads the table
     * where the build wrote it (storageTablePath). Absent, every destination is
     * `main`, the pre-existing layout.
@@ -1711,6 +1706,11 @@ export class Package {
       this.serveDestinationSchema = resolver;
    }
 
+   /**
+    * Set the connections serve shapes compile against: the environment's
+    * storage destinations. Kept apart from {@link malloyConfig} so no author
+    * model can reach a destination. Absent ⇒ queries serve live.
+    */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.serveDestinationConfig = provider;
       this.pushServeDestinationConfigToModels();

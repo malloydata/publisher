@@ -43,7 +43,10 @@ async function superuserSql(sql: string, database = "postgres"): Promise<void> {
    await c.close();
 }
 
-async function superuserQuery(sql: string): Promise<Record<string, unknown>[]> {
+async function superuserQuery(
+   sql: string,
+   database = DB,
+): Promise<Record<string, unknown>[]> {
    const c = new DuckDBConnection(
       "su",
       ":memory:",
@@ -51,7 +54,7 @@ async function superuserQuery(sql: string): Promise<Record<string, unknown>[]> {
    );
    await c.runSQL("INSTALL postgres; LOAD postgres;");
    await c.runSQL(
-      `ATTACH '${SUPERUSER} dbname=${DB}' AS su (TYPE postgres, READ_ONLY)`,
+      `ATTACH '${SUPERUSER} dbname=${database}' AS su (TYPE postgres, READ_ONLY)`,
    );
    const r = (await c.runSQL(
       `SELECT * FROM postgres_query('su', '${sql.replace(/'/g, "''")}')`,
@@ -81,6 +84,18 @@ describe.skipIf(!SUPERUSER)(
       };
 
       beforeAll(async () => {
+         // Postgres 16 split membership into SET and INHERIT; before it, a plain
+         // grant already lets the member act as the role.
+         const version = Number(
+            (
+               await superuserQuery(
+                  "SELECT current_setting('server_version_num')::int AS server_version_num",
+                  "postgres",
+               )
+            )[0]?.server_version_num,
+         );
+         const membership =
+            version >= 160000 ? " WITH SET TRUE, INHERIT TRUE" : "";
          await superuserSql(`DROP DATABASE IF EXISTS ${DB}`);
          await superuserSql(`CREATE DATABASE ${DB}`);
          for (const stmt of [
@@ -88,7 +103,7 @@ describe.skipIf(!SUPERUSER)(
             `DROP ROLE IF EXISTS ${DB}_owner`,
             `CREATE ROLE ${DB}_admin LOGIN PASSWORD '${PASSWORD}'`,
             `CREATE ROLE ${DB}_owner NOLOGIN`,
-            `GRANT ${DB}_owner TO ${DB}_admin WITH SET TRUE, INHERIT TRUE`,
+            `GRANT ${DB}_owner TO ${DB}_admin${membership}`,
             `GRANT CREATE, CONNECT ON DATABASE ${DB} TO ${DB}_admin`,
          ]) {
             await superuserSql(stmt);

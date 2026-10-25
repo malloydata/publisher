@@ -14,6 +14,7 @@ import express from "express";
 import { registerHealthEndpoints } from "../health";
 import { httpMetricsMiddleware } from "../instrumentation";
 import { loggerMiddleware } from "../logger";
+import type { WatchModeController } from "../controller/watch-mode.controller";
 import { type CatalogAdmin, CatalogAdminError } from "../service/catalog_admin";
 import {
    logRefusal,
@@ -189,14 +190,39 @@ export function registerAdminRoutes(
    );
 }
 
+/**
+ * Watch mode: the operator's control of this process's file watching, for local
+ * development. The live-reload event stream a dashboard listens to stays on the
+ * main API.
+ */
+export function registerWatchModeRoutes(
+   app: express.Express,
+   apiPrefix: string,
+   watchMode: WatchModeController,
+): void {
+   app.get(`${apiPrefix}/watch-mode/status`, (req, res, next) =>
+      watchMode.getWatchStatus(req, res, next),
+   );
+   app.post(`${apiPrefix}/watch-mode/start`, (req, res, next) =>
+      watchMode.startWatching(req, res, next),
+   );
+   app.post(`${apiPrefix}/watch-mode/stop`, (req, res, next) =>
+      watchMode.stopWatchMode(req, res, next),
+   );
+}
+
 /** The admin app; `catalogs` is null when no catalog database is configured. */
-export function createAdminApp(catalogs: CatalogAdmin | null): express.Express {
+export function createAdminApp(
+   catalogs: CatalogAdmin | null,
+   watchMode: WatchModeController,
+): express.Express {
    const adminApp = express();
    registerHealthEndpoints(adminApp);
    adminApp.use(loggerMiddleware);
    adminApp.use(httpMetricsMiddleware);
    adminApp.use(bodyParser.json({ limit: "1mb" }));
    registerAdminRoutes(adminApp, ADMIN_API_PREFIX, catalogs);
+   registerWatchModeRoutes(adminApp, ADMIN_API_PREFIX, watchMode);
    adminApp.use(unhandledErrorMiddleware);
    return adminApp;
 }

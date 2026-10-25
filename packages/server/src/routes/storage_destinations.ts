@@ -12,13 +12,7 @@
 
 import type express from "express";
 import type { StorageDestinationController } from "../controller/storage_destination.controller";
-import { apiRoute } from "./json_route";
-
-/** Marks a response from a route the admin listener now serves. */
-const deprecatedOnPublic: express.RequestHandler = (_req, res, next) => {
-   res.set("Deprecation", "true");
-   next();
-};
+import { apiRoute, markDeprecated } from "./json_route";
 
 export function registerStorageDestinationRoutes(
    app: express.Express,
@@ -26,7 +20,7 @@ export function registerStorageDestinationRoutes(
    controller: StorageDestinationController,
 ): void {
    const destination = `${apiPrefix}/environments/:environmentName/storageDestinations/:destinationName`;
-   const before = [deprecatedOnPublic];
+   const before = [markDeprecated];
 
    app.get(
       `${destination}/schemas/:schemaName/tables`,

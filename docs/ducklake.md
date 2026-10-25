@@ -91,7 +91,9 @@ enough to honor it.
 ## How Publisher attaches a DuckLake catalog
 
 **Read-only to serve.** Serving a query attaches the catalog `READ_ONLY`: it reads tables and never
-writes catalog metadata. The lakehouse's own client owns writes.
+writes catalog metadata. The lakehouse's own client owns writes. The one exception is a connection
+configured with `ducklakeConnection.readOnly: false`, which attaches read-write and runs everything on
+it read-write, user SQL included; set it only where something else decides who may run SQL there.
 
 **Read-write only to build, and only for the build.** A `#@ persist storage=<destination>` source
 materializes into the catalog, which needs a read-write attach. That attach is confined to a
@@ -182,9 +184,11 @@ that have been retired longer than the catalog's `fileDeletionGrace` (`1 day` if
 reader mid-scan is never cut off; files it retires go on a later call. It deletes only files the catalog
 recorded, never an untracked file under the data path.
 
-**Ownership.** When the configured role is not a catalog schema's owner, every session acts as the owner
-(libpq `options=-crole=<owner>`), so a catalog an orchestrator provisioned with its own role keeps that
-role's ownership and grants however it is managed.
+**Ownership.** When the admin API's configured role is not a catalog schema's owner, every admin-API
+session on that catalog acts as the owner (libpq `options=-crole=<owner>`), so a catalog an orchestrator
+provisioned with its own role keeps that role's ownership and grants however it is managed. The owner
+must be a plain role name (letters, digits, `_`, `-`); any other answers `409 CATALOG_OWNER_UNSUPPORTED`.
+The configured connection string must not set `options` itself.
 
 ## A catalog created elsewhere, served and built into
 
@@ -210,12 +214,14 @@ decided who may write through the connection.
 
 **Persist from the catalog into itself.** A `#@ persist storage=<dest>` source on that connection reads
 the catalog it is built into. When the connection and the destination are the same catalog — the same
-catalog database and metadata schema (and the same data path, when both state one), never decided by
-name — the build is a plain CTAS on one read-write attach, with no federation and no egress. The attach
+catalog database (given as `host`, `port` and `databaseName`; a `connectionString` config is never
+matched) and metadata schema (and the same data path, when both state one), never decided by name — the
+build is a plain CTAS on one read-write attach, with no federation and no egress. The attach
 takes the connection's name, so the two may be named differently and a table path written for the
 connection still resolves. That session can write the catalog, so it runs only SQL Malloy generated: a
 source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it is refused, as every
-DuckLake source was before.
+DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
+which that session would read with the destination's storage credential.
 
 **Meter it.** Each statement on a storage destination or a `managed` connection, and each admin-API load,
 emits one log record, `statement_usage`, with the environment (empty for an admin load), connection or

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import path from "path";
 import { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
 import {
@@ -84,12 +85,33 @@ export function readerSql(
  * that location's credential, and a load may read nothing else. A sibling
  * prefix that merely shares the string (`…/ds_a` vs `…/ds_ab`) is outside.
  */
-function assertUnderDataPath(uri: string, dataPath: string): void {
+export function assertUnderDataPath(uri: string, dataPath: string): void {
    const root = dataPath.replace(/\/+$/, "");
-   if (!root || !uri.startsWith(`${root}/`)) {
-      throw new BadRequestError(
+   const outside = () =>
+      new BadRequestError(
          `The object must sit under the catalog's data path (${root}/).`,
       );
+   if (!root || !uri.startsWith(`${root}/`)) throw outside();
+   // A prefix match is only a containment check when nothing in the rest can
+   // climb or fan out: DuckDB resolves `..` in a local path, and its readers
+   // expand glob patterns, so either would read outside the prefix through a
+   // string that starts inside it.
+   const rest = uri.slice(root.length + 1);
+   if (
+      rest.length === 0 ||
+      /[\\*?[\]{}]/.test(rest) ||
+      rest
+         .split("/")
+         .some((part) => part === "" || part === "." || part === "..")
+   ) {
+      throw outside();
+   }
+   // A local path is also resolved, so no spelling of it lands elsewhere.
+   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) {
+      const resolved = path.resolve(uri);
+      if (!resolved.startsWith(`${path.resolve(root)}${path.sep}`)) {
+         throw outside();
+      }
    }
 }
 

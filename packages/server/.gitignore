@@ -2,7 +2,6 @@ node_modules
 dist
 k6-tests/packages
 src/api.ts
-src/admin_api.ts
 publisher.db
 publisher.db.wal
 publisher_data

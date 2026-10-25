@@ -5,14 +5,23 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Admin API
   description: |
-    The DuckLake catalogs in one Postgres database, as resources: a catalog, the
-    tables in its schemas, and its snapshots. Use it to create a catalog
-    deliberately (encrypted, with the schemas you want), load a file into a
-    table, see what a catalog holds and how much, drop tables, and reclaim the
-    storage behind its history. It never touches this server's environments,
-    packages or connections; a model reads a catalog through a DuckLake
-    connection, and a build writes one through a storage destination, in the main
-    API (`api-doc.yaml`).
+    The operator's surface. It holds two kinds of thing, neither of which a user
+    of a running server should call: the DuckLake catalogs in one Postgres
+    database, as resources (a catalog, the tables in its schemas, and its
+    snapshots), and controls of this server's own process that only an operator
+    or a local developer uses (watch mode).
+
+    **Catalogs** are resources the server manages but does not own. Create a
+    catalog deliberately (encrypted, with the schemas you want), load a file into
+    a table, see what a catalog holds and how much, drop tables, and reclaim the
+    storage behind its history. None of this touches this server's environments,
+    packages or connections: a model reads a catalog through a DuckLake
+    connection, and a build writes one through a storage destination, in the
+    main API (`api-doc.yaml`).
+
+    **Watch mode** is for local development; `--watch-env` at boot is the usual
+    way to turn it on. The live-reload event stream an open dashboard listens to
+    stays on the main API.
 
     **Configuration, not requests, says where the catalogs are.** The listener
     starts only when `PUBLISHER_ADMIN_PORT` is set. `PUBLISHER_ADMIN_CATALOG_DATABASE`
@@ -42,6 +51,8 @@ tags:
     description: The tables in a catalog's schemas
   - name: snapshots
     description: A catalog's history, and the storage behind it
+  - name: watch-mode
+    description: File watching for local development, an operator's control of this process
 
 paths:
   /catalogs:
@@ -116,6 +127,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "503":
@@ -170,6 +183,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/TableSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "503":
@@ -194,6 +209,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "503":
@@ -266,6 +283,8 @@ paths:
       responses:
         "204":
           description: The table is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "503":
@@ -344,6 +363,57 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /watch-mode/status:
+    get:
+      tags: [watch-mode]
+      operationId: get-watch-status
+      summary: Get watch mode status
+      description: |
+        Whether file watching is on, which environment it watches, and the path
+        it monitors. Watch mode is for local development: `--watch-env` at boot is
+        the usual way to turn it on.
+      responses:
+        "200":
+          description: The current watch mode status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchStatus"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /watch-mode/start:
+    post:
+      tags: [watch-mode]
+      operationId: start-watching
+      summary: Start file watching
+      description: |
+        Watches the named environment's package directories and reloads a package
+        when its files change. One environment at a time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartWatchRequest"
+      responses:
+        "200":
+          description: Watch mode started
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /watch-mode/stop:
+    post:
+      tags: [watch-mode]
+      operationId: stop-watching
+      summary: Stop file watching
+      description: Stops file watching and releases its resources.
+      responses:
+        "200":
+          description: Watch mode stopped
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   parameters:
     catalogName:
@@ -370,7 +440,7 @@ components:
 
   responses:
     BadRequest:
-      description: The request is malformed (`INVALID_REQUEST`), or names an object outside the catalog's data path (`OBJECT_OUTSIDE_DATA_PATH`)
+      description: The request is malformed, including a catalog, schema or table name that is not a plain identifier (`INVALID_REQUEST`), or names an object outside the catalog's data path (`OBJECT_OUTSIDE_DATA_PATH`)
       content:
         application/json:
           schema:
@@ -563,6 +633,28 @@ components:
         filesDeleted:
           type: integer
 
+    WatchStatus:
+      type: object
+      description: Current file watching status
+      required: [enabled, environmentName, watchingPath]
+      properties:
+        enabled:
+          type: boolean
+        environmentName:
+          type: string
+          description: The environment being watched
+        watchingPath:
+          type: string
+          description: The path being monitored, null when not watching
+
+    StartWatchRequest:
+      type: object
+      required: [environmentName]
+      properties:
+        environmentName:
+          type: string
+          description: The environment to watch
+
     Error:
       type: object
       required: [code, message]
@@ -576,6 +668,7 @@ components:
           type: string
           description: |
             Machine-readable: CATALOG_NOT_FOUND, CATALOG_EXISTS,
-            CATALOG_DATABASE_NOT_CONFIGURED, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
+            CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
+            CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH, INVALID_REQUEST. Treat an
             unrecognized value as absent.

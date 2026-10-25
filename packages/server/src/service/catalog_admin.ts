@@ -18,10 +18,11 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../api";
+import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
 import {
    applySessionResourceLimits,
-   attachDuckLakeForBootstrap,
+   attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -46,17 +47,12 @@ type DucklakeStorage = NonNullable<
 >;
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** A role name safe in a libpq `options=-crole=` value, hyphens included (`<prefix>-ducklake`). */
+const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
-const UNIT_MS: Record<string, number> = {
-   second: 1_000,
-   minute: 60_000,
-   hour: 3_600_000,
-   day: 86_400_000,
-   week: 604_800_000,
-};
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
-export const DEFAULT_FILE_DELETION_GRACE = "1 day";
+const DEFAULT_FILE_DELETION_GRACE = "1 day";
 
 /** An admin refusal: its HTTP status and the machine-readable `reason`. */
 export class CatalogAdminError extends Error {
@@ -96,6 +92,13 @@ export function catalogAdminConfigFromEnv(
 ): CatalogAdminConfig | null {
    const catalogDatabase = env.PUBLISHER_ADMIN_CATALOG_DATABASE?.trim();
    if (!catalogDatabase) return null;
+   // A session acts as each catalog's owner through libpq `options`, which would
+   // silently replace options given here; refuse them rather than drop them.
+   if (/(^|[\s?&])options=/i.test(catalogDatabase)) {
+      throw new Error(
+         "PUBLISHER_ADMIN_CATALOG_DATABASE must not set `options`: the admin API sets the session role per catalog. Set server parameters on the role or database instead (ALTER ROLE … SET).",
+      );
+   }
    const provider = env.PUBLISHER_ADMIN_STORAGE_PROVIDER?.trim() ?? "";
    const keyId = env.PUBLISHER_ADMIN_STORAGE_KEY_ID;
    const secret = env.PUBLISHER_ADMIN_STORAGE_SECRET;
@@ -181,12 +184,26 @@ export function connectionStringAsRole(
    role: string | undefined,
 ): string {
    if (!role) return connectionString;
+   // The owner comes from pg_namespace, and a Postgres role name may hold a
+   // space or `=`: spliced unquoted, `x host=elsewhere` would re-point the
+   // connection, credential and all. Only a role name that needs no quoting in
+   // either connection-string form is acted as.
+   if (!ROLE.test(role)) {
+      throw new CatalogAdminError(
+         409,
+         "CATALOG_OWNER_UNSUPPORTED",
+         `The catalog's owner role '${role}' is not a plain name (letters, digits, '_' or '-'), so no session can act as it.`,
+      );
+   }
    if (/^postgres(ql)?:\/\//i.test(connectionString)) {
       const sep = connectionString.includes("?") ? "&" : "?";
       return `${connectionString}${sep}options=${encodeURIComponent(`-crole=${role}`)}`;
    }
    return `${connectionString} options=-crole=${role}`;
 }
+
+/** A Postgres string literal, for SQL sent through `postgres_query`. */
+const pgLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
 /** Postgres's own identifier quoting, for SQL sent through `postgres_query`. */
 const pgIdent = (name: string) => `"${name.replace(/"/g, '""')}"`;
@@ -202,9 +219,21 @@ export class CatalogAdmin {
          )) as { name: string }[];
          const catalogs: Catalog[] = [];
          // One catalog at a time, on the one connection: N catalogs never become
-         // N concurrent queries on the catalog database.
+         // N concurrent queries on the catalog database. A schema whose name no
+         // route could address is not listed, and one that holds a table named
+         // ducklake_metadata without being a catalog is skipped, not fatal.
          for (const { name } of names) {
-            catalogs.push(await this.describe(pg, name));
+            if (!IDENT.test(name)) continue;
+            try {
+               catalogs.push(await this.describe(pg, name));
+            } catch (error) {
+               logger.warn("Skipped a schema that does not read as a DuckLake catalog", {
+                  catalog: name,
+                  error: redactPgSecrets(
+                     error instanceof Error ? error.message : String(error),
+                  ),
+               });
+            }
          }
          return catalogs;
       });
@@ -268,7 +297,7 @@ export class CatalogAdmin {
       );
       try {
          await applySessionResourceLimits(session, { tempDirectory: workDir });
-         await attachDuckLakeForBootstrap(
+         await attachDuckLakeForCreate(
             session,
             name,
             this.ducklake(name, owner, dataPath),
@@ -404,15 +433,9 @@ export class CatalogAdmin {
          await this.requireCatalog(pg, name);
          return this.schemaOwner(pg, name);
       });
-      const existing = await this.listTables(name, schema).catch((error) => {
-         if (
-            error instanceof CatalogAdminError &&
-            error.reason === "SCHEMA_NOT_FOUND"
-         ) {
-            return [];
-         }
-         throw error;
-      });
+      // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
+      // before anything is read.
+      const existing = await this.listTables(name, schema);
       const exists = existing.some((t) => t.name === table);
       if (exists && ifAbsent) {
          throw new CatalogAdminError(
@@ -439,6 +462,15 @@ export class CatalogAdmin {
             (r) => r.rowCount,
          );
       } catch (error) {
+         // Another create-only PUT won the race between the existence check
+         // and the load: the same answer as if it had come first.
+         if (ifAbsent && error instanceof ConflictError) {
+            throw new CatalogAdminError(
+               412,
+               "TABLE_EXISTS",
+               `Table '${schema}.${table}' already exists in catalog '${name}'.`,
+            );
+         }
          throw this.redacted(error);
       }
       logger.info("Loaded a table into a DuckLake catalog", {
@@ -511,15 +543,30 @@ export class CatalogAdmin {
       name: string,
       olderThan: Date,
    ): Promise<{ snapshotsExpired: number; filesDeleted: number }> {
-      const { owner, settings } = await this.withCatalogDatabase(async (pg) => {
-         await this.requireCatalog(pg, name);
-         return {
-            owner: await this.schemaOwner(pg, name),
-            settings: await this.metadata(pg, name),
-         };
-      });
-      const grace = settings.delete_older_than ?? DEFAULT_FILE_DELETION_GRACE;
-      const filesOlderThan = new Date(Date.now() - intervalMs(grace));
+      const { owner, filesOlderThan } = await this.withCatalogDatabase(
+         async (pg) => {
+            await this.requireCatalog(pg, name);
+            const settings = await this.metadata(pg, name);
+            const grace =
+               settings.delete_older_than ?? DEFAULT_FILE_DELETION_GRACE;
+            // Postgres computes the cutoff, so any interval DuckLake records is
+            // understood (`1 week 2 days`, `00:30:00`), not only the spellings
+            // the API accepts on input.
+            const cutoff = (await pg(
+               `SELECT extract(epoch FROM now() - ${pgLiteral(grace)}::interval)::float8 AS t`,
+            ).catch(() => {
+               throw new CatalogAdminError(
+                  409,
+                  "CATALOG_SETTING_UNREADABLE",
+                  `The catalog's file-deletion grace '${grace}' is not an interval; set it with PATCH.`,
+               );
+            })) as { t: unknown }[];
+            return {
+               owner: await this.schemaOwner(pg, name),
+               filesOlderThan: new Date(Number(cutoff[0].t) * 1000),
+            };
+         },
+      );
       try {
          const result = await cleanupStorageFiles({
             destinationName: name,
@@ -634,7 +681,7 @@ export class CatalogAdmin {
    ): Promise<boolean> {
       const found = await pg(
          "SELECT 1 FROM information_schema.tables WHERE table_name = 'ducklake_metadata' " +
-            `AND table_schema = '${name}'`,
+            `AND table_schema = '${escapeSQL(name)}'`,
       );
       return found.length > 0;
    }
@@ -658,7 +705,7 @@ export class CatalogAdmin {
    ): Promise<string | undefined> {
       const found = (await pg(
          "SELECT pg_get_userbyid(nspowner) AS owner, current_user AS me " +
-            `FROM pg_namespace WHERE nspname = '${name}'`,
+            `FROM pg_namespace WHERE nspname = '${escapeSQL(name)}'`,
       )) as { owner: string; me: string }[];
       const row = found[0];
       if (!row || row.owner === row.me) return undefined;
@@ -675,7 +722,11 @@ export class CatalogAdmin {
       return Object.fromEntries(found.map((r) => [r.key, String(r.value)]));
    }
 
-   /** What a catalog records, and the bytes it holds (docs: database-design §8.1). */
+   /**
+    * What a catalog records, and the bytes it holds: every data and delete file
+    * it records, live or retired but not yet deleted, plus rows inlined in the
+    * catalog database.
+    */
    private async describe(
       pg: (sql: string) => Promise<Record<string, unknown>[]>,
       name: string,
@@ -693,7 +744,7 @@ export class CatalogAdmin {
          )) as { table_name: string }[];
          for (const { table_name } of tables) {
             const size = (await pg(
-               `SELECT pg_total_relation_size('${pgIdent(name)}.${pgIdent(table_name).replace(/'/g, "''")}') AS n`,
+               `SELECT pg_total_relation_size(${pgLiteral(`${pgIdent(name)}.${pgIdent(table_name)}`)}) AS n`,
             )) as { n: unknown }[];
             inlined += Number(size[0]?.n ?? 0);
          }
@@ -721,11 +772,16 @@ export class CatalogAdmin {
       if (error instanceof CatalogAdminError) return error;
       const message = error instanceof Error ? error.message : String(error);
       const safe = redactPgSecrets(message);
-      if (/does not exist/i.test(safe) && /DuckLake/i.test(safe)) {
+      if (/Existing DuckLake at metadata catalog .* does not exist/i.test(safe)) {
          return new CatalogAdminError(404, "CATALOG_NOT_FOUND", safe);
       }
       if (/must sit under the catalog's data path/.test(safe)) {
          return new CatalogAdminError(400, "OBJECT_OUTSIDE_DATA_PATH", safe);
+      }
+      // A request the load path refused (a reader option it cannot use):
+      // a 400 with a reason, like every other admin refusal.
+      if (error instanceof BadRequestError) {
+         return new CatalogAdminError(400, "INVALID_REQUEST", safe);
       }
       if (error instanceof Error && error.message !== safe) {
          const copy = new Error(safe);
@@ -796,14 +852,6 @@ function optionalGrace(value: unknown): string | undefined {
       );
    }
    return value.trim();
-}
-
-export function intervalMs(interval: string): number {
-   const match = INTERVAL.exec(interval.trim());
-   if (!match) {
-      throw new Error(`Not an interval DuckLake records: '${interval}'.`);
-   }
-   return Number(match[1]) * UNIT_MS[match[2]];
 }
 
 async function setOptions(

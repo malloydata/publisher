@@ -1074,7 +1074,8 @@ async function attachDuckLakeWithMode(
       skipIfAbsent?: boolean;
       /**
        * First-attach settings, which DuckLake fixes in the catalog when it creates
-       * it and ignores on a catalog that already exists. Only a bootstrap sets them.
+       * it and ignores on a catalog that already exists. Only a catalog create
+       * (the admin API's POST /catalogs) sets them.
        */
       encrypted?: boolean;
       dataInliningRowLimit?: number;
@@ -1146,13 +1147,15 @@ async function attachDuckLakeWithMode(
          return false;
       }
       // Normal before the first read-write attach, but also what a mistyped
-      // schema looks like, and neither attach mode says so (read-write creates an
-      // empty catalog; read-only fails without naming the schema).
+      // schema looks like, and no attach mode says so (a read-write attach with
+      // a data path creates an empty catalog; the others fail without naming the
+      // schema).
       logger.warn(
-         "No DuckLake catalog found in the configured metadata schema. This is " +
-            "expected the first time a catalog is created there: a read-write " +
-            "attach will create it, and a read-only attach will fail until it " +
-            "exists. Otherwise check the schema name against the configuration.",
+         "No DuckLake catalog found in the configured metadata schema. With a " +
+            "configured data path this is expected before the first build, which " +
+            "creates it; without one, every attach fails until the catalog is " +
+            "created (the admin API's POST /catalogs). Otherwise check the schema " +
+            "name against the configuration.",
          { dbName, metadataSchema },
       );
    }
@@ -1272,12 +1275,12 @@ export function firstAttachClauses(options: {
 }
 
 /**
- * The first attach of a catalog an orchestrator provisioned: read-write, with
- * encryption, which DuckLake records in the catalog at its creation. The
- * inlining limit is an ATTACH option for this session only; the bootstrap
- * records it in the catalog with `set_option`.
+ * The attach that creates a catalog (the admin API's POST /catalogs): read-write,
+ * with encryption, which DuckLake records in the catalog at its creation. The
+ * inlining limit is an ATTACH option for this session only; the create records it
+ * in the catalog with `set_option`.
  */
-export async function attachDuckLakeForBootstrap(
+export async function attachDuckLakeForCreate(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],

@@ -45,6 +45,7 @@ import {
    sendRouteError,
    setVersionIdError,
    wildcardParam,
+   markDeprecated,
 } from "./json_route";
 import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
@@ -148,12 +149,22 @@ function registerWatchModeRoutes(
    pkg: string,
    { environmentStore, watchModeController }: ApiControllers,
 ): void {
+   // Deprecated here: the admin API serves watch mode, an operator's control.
    app.get(
       `${apiPrefix}/watch-mode/status`,
+      markDeprecated,
       watchModeController.getWatchStatus,
    );
-   app.post(`${apiPrefix}/watch-mode/start`, watchModeController.startWatching);
-   app.post(`${apiPrefix}/watch-mode/stop`, watchModeController.stopWatchMode);
+   app.post(
+      `${apiPrefix}/watch-mode/start`,
+      markDeprecated,
+      watchModeController.startWatching,
+   );
+   app.post(
+      `${apiPrefix}/watch-mode/stop`,
+      markDeprecated,
+      watchModeController.stopWatchMode,
+   );
 
    // Live-reload SSE for in-package HTML dashboards. It never starts watch
    // mode, so an arbitrary fetch cannot mutate global watch state; it reports
