@@ -28,8 +28,12 @@ function destination(destinationSchema?: string): ApiConnection {
 describe("storageTablePath", () => {
    it("keeps the two-part path for a destination that declares no schema or main", () => {
       expect(storageTablePath("lake", "daily_g003")).toBe("lake.daily_g003");
-      expect(storageTablePath("lake", "daily_g003", "main")).toBe("lake.daily_g003");
-      expect(storageTablePath("lake", "daily_g003", "")).toBe("lake.daily_g003");
+      expect(storageTablePath("lake", "daily_g003", "main")).toBe(
+         "lake.daily_g003",
+      );
+      expect(storageTablePath("lake", "daily_g003", "")).toBe(
+         "lake.daily_g003",
+      );
    });
 
    it("puts the table in the destination's schema", () => {
@@ -46,7 +50,9 @@ describe("storageTablePath", () => {
 
    it("reads the schema off a destination, defaulting to main", () => {
       expect(destinationSchemaOf(destination())).toBe("main");
-      expect(destinationSchemaOf(destination("materialized"))).toBe("materialized");
+      expect(destinationSchemaOf(destination("materialized"))).toBe(
+         "materialized",
+      );
       expect(destinationSchemaOf(undefined)).toBe("main");
    });
 });
@@ -104,9 +110,17 @@ describe("the build, the drop and the binding name the same table", () => {
 describe("destinationSchema validation", () => {
    it("accepts a plain identifier and refuses anything else", () => {
       expect(() =>
-         assembleEnvironmentConnections([destination("materialized")], "/tmp/env"),
+         assembleEnvironmentConnections(
+            [destination("materialized")],
+            "/tmp/env",
+         ),
       ).not.toThrow();
-      for (const bad of ['x"; DROP', "dotted.name", "", true as unknown as string]) {
+      for (const bad of [
+         'x"; DROP',
+         "dotted.name",
+         "",
+         true as unknown as string,
+      ]) {
          expect(() =>
             assembleEnvironmentConnections([destination(bad)], "/tmp/env"),
          ).toThrow(/destinationSchema must be a plain identifier/);

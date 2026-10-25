@@ -1956,6 +1956,7 @@ export class MaterializationService {
             // Reported when the build does not stack on a parent.
             baseReuse: reuse.fields,
             queryMetadata: runOptions.queryMetadata,
+            packageName: buildMetadata?.context.package,
             incremental,
             contentSourceEntityId,
             planFacts,
@@ -2129,6 +2130,8 @@ export class MaterializationService {
       dependsOnStorageUpstream: boolean;
       /** Applied by the passthrough itself (see {@link buildSourceIntoStorage}). */
       queryMetadata?: QueryMetadata;
+      /** The package being built, for the build's statement_usage record. */
+      packageName?: string;
       /** Present when any source in the run declared an incremental refresh. */
       incremental?: IncrementalRunContext;
       /** The source's CONTENT address — see buildOneSource's parameter of the same name. */
@@ -2311,17 +2314,19 @@ export class MaterializationService {
          try {
             const build = () =>
                buildSourceIntoStorage({
-               destinationName,
-               destinationConnection,
-               sourceConnection,
-               buildSQL: params.publicBuildSQL,
-               sourceCarriesAuthorSql: carriesAuthorSql(persistSource._sourceDef),
-               physicalTableName,
-               partitionColumns: partitionColumnsForBuild(persistSource),
-               environmentPath: environment.getEnvironmentPath(),
-               queryMetadata,
-               incremental: refresh,
-            });
+                  destinationName,
+                  destinationConnection,
+                  sourceConnection,
+                  buildSQL: params.publicBuildSQL,
+                  sourceCarriesAuthorSql: carriesAuthorSql(
+                     persistSource._sourceDef,
+                  ),
+                  physicalTableName,
+                  partitionColumns: partitionColumnsForBuild(persistSource),
+                  environmentPath: environment.getEnvironmentPath(),
+                  queryMetadata,
+                  incremental: refresh,
+               });
             // A same-catalog build reads and writes only the store, so its seconds
             // are the store's; a passthrough build's are mostly the warehouse's.
             result = isSameCatalog(sourceConnection, destinationConnection)
@@ -2330,7 +2335,8 @@ export class MaterializationService {
                        environment: environment.getEnvironmentName?.() ?? "",
                        connection: destinationName,
                        surface: "build",
-                       package: params.incremental?.packageName,
+                       package:
+                          params.packageName ?? params.incremental?.packageName,
                     },
                     build,
                  )
@@ -2530,7 +2536,9 @@ export class MaterializationService {
          aliasesForBinding,
          (name) => {
             try {
-               return destinationSchemaOf(environment.getStorageDestination(name));
+               return destinationSchemaOf(
+                  environment.getStorageDestination(name),
+               );
             } catch {
                return undefined;
             }

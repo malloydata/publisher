@@ -6040,7 +6040,10 @@ export class Model {
             {
                abortSignal,
                maxRows,
-               usage: Model.statementUsage(queryMetadataInput, this.packageName),
+               usage: Model.statementUsage(
+                  queryMetadataInput,
+                  this.packageName,
+               ),
                queryMetadata: (connectionName) =>
                   this.resolveQueryMetadata(
                      queryMetadataInput,
@@ -6152,7 +6155,10 @@ export class Model {
                {
                   abortSignal,
                   maxRows,
-                  usage: Model.statementUsage(queryMetadataInput, this.packageName),
+                  usage: Model.statementUsage(
+                     queryMetadataInput,
+                     this.packageName,
+                  ),
                   // Re-resolved: the first bag was for the STORAGE connection.
                   // The correlation id rides in the input, so it is kept.
                   queryMetadata: (connectionName) =>
@@ -6302,7 +6308,11 @@ export class Model {
       input: ModelQueryMetadataInput | undefined,
       packageName: string,
    ):
-      | { metered: (connectionName: string) => boolean; environment: string; package: string }
+      | {
+           metered: (connectionName: string) => boolean;
+           environment: string;
+           package: string;
+        }
       | undefined {
       if (!input?.meteredConnection || !input.environment) return undefined;
       return {
@@ -6994,7 +7004,10 @@ export class Model {
                {
                   abortSignal,
                   maxRows: cellMaxRows,
-                  usage: Model.statementUsage(queryMetadataInput, this.packageName),
+                  usage: Model.statementUsage(
+                     queryMetadataInput,
+                     this.packageName,
+                  ),
                   queryMetadata: async (connectionName) => {
                      // The compiled run target, as in getQueryResults.
                      const cellCompiledSource =

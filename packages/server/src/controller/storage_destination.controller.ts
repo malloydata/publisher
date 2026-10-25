@@ -168,7 +168,10 @@ export class StorageDestinationController {
          );
       }
       const schemas = body.schemas === undefined ? [] : body.schemas;
-      if (!Array.isArray(schemas) || !schemas.every((x) => typeof x === "string")) {
+      if (
+         !Array.isArray(schemas) ||
+         !schemas.every((x) => typeof x === "string")
+      ) {
          throw new BadRequestError("'schemas' must be a list of names.");
       }
       for (const schema of schemas as string[]) {
@@ -235,7 +238,11 @@ export class StorageDestinationController {
       }
       const uri = source.uri;
       const result = await withStatementUsage(
-         { environment: environmentName, connection: destinationName, surface: "load" },
+         {
+            environment: environmentName,
+            connection: destinationName,
+            surface: "load",
+         },
          () =>
             loadStorageTable({
                destinationName,

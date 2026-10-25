@@ -19,7 +19,9 @@ describe("managed attach search path", () => {
    afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
    it("quotes the alias as an identifier inside the setting's string literal", () => {
-      expect(managedSearchPathSql("sales")).toBe(`SET search_path = '"sales".main'`);
+      expect(managedSearchPathSql("sales")).toBe(
+         `SET search_path = '"sales".main'`,
+      );
       expect(managedSearchPathSql(`we"ird'name`)).toBe(
          `SET search_path = '"we""ird''name".main'`,
       );

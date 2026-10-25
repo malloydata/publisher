@@ -10,9 +10,9 @@ import { emitStatementUsage, withStatementUsage } from "./statement_usage";
 function captureUsage() {
    const spy = spyOn(logger, "info");
    const records = () =>
-      spy.mock.calls
+      (spy.mock.calls as unknown as [unknown, Record<string, unknown>][])
          .filter((c) => c[0] === "statement_usage")
-         .map((c) => c[1] as Record<string, unknown>);
+         .map((c) => c[1]);
    return { spy, records };
 }
 
@@ -51,9 +51,12 @@ describe("statement usage records", () => {
       restore = () => spy.mockRestore();
       const boom = new Error("boom");
       await expect(
-         withStatementUsage({ environment: "e", connection: "c", surface: "load" }, async () => {
-            throw boom;
-         }),
+         withStatementUsage(
+            { environment: "e", connection: "c", surface: "load" },
+            async () => {
+               throw boom;
+            },
+         ),
       ).rejects.toBe(boom);
       expect(records()[0].status).toBe("error");
    });
@@ -90,7 +93,10 @@ describe("which connections are metered", () => {
 describe("prepareAndRun emits usage only for a metered connection", () => {
    const runnable = (connectionName: string) =>
       ({
-         getPreparedResult: async () => ({ connectionName, resultExplore: { limit: undefined } }),
+         getPreparedResult: async () => ({
+            connectionName,
+            resultExplore: { limit: undefined },
+         }),
          run: async () => ({ data: { rowCount: 2 } }),
       }) as never;
 
@@ -101,15 +107,27 @@ describe("prepareAndRun emits usage only for a metered connection", () => {
       it(`${name}: ${expected} record`, async () => {
          const { spy, records } = captureUsage();
          try {
-            await prepareAndRun(runnable(name), {}, {
-               abortSignal: undefined,
-               maxRows: 10,
-               queryMetadata: () => undefined,
-               usage: { metered: (n) => n === "sales", environment: "e", package: "p" },
-            });
+            await prepareAndRun(
+               runnable(name),
+               {},
+               {
+                  abortSignal: undefined,
+                  maxRows: 10,
+                  queryMetadata: () => undefined,
+                  usage: {
+                     metered: (n) => n === "sales",
+                     environment: "e",
+                     package: "p",
+                  },
+               },
+            );
             expect(records().length).toBe(expected);
             if (expected) {
-               expect(records()[0]).toMatchObject({ connection: "sales", surface: "serve", rows: 2 });
+               expect(records()[0]).toMatchObject({
+                  connection: "sales",
+                  surface: "serve",
+                  rows: 2,
+               });
             }
          } finally {
             spy.mockRestore();
@@ -118,17 +136,21 @@ describe("prepareAndRun emits usage only for a metered connection", () => {
    }
 
    it("a metering check that throws never fails the query", async () => {
-      const result = await prepareAndRun(runnable("sales"), {}, {
-         abortSignal: undefined,
-         maxRows: 10,
-         queryMetadata: () => undefined,
-         usage: {
-            metered: () => {
-               throw new Error("lookup failed");
+      const result = await prepareAndRun(
+         runnable("sales"),
+         {},
+         {
+            abortSignal: undefined,
+            maxRows: 10,
+            queryMetadata: () => undefined,
+            usage: {
+               metered: () => {
+                  throw new Error("lookup failed");
+               },
+               environment: "e",
             },
-            environment: "e",
          },
-      });
+      );
       expect(result.result).toEqual({ data: { rowCount: 2 } } as never);
    });
 });

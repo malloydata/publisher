@@ -17,9 +17,12 @@ export function isSameCatalog(
    source: ApiConnection | undefined,
    destination: ApiConnection | undefined,
 ): boolean {
-   const a = source?.type === "ducklake" ? source.ducklakeConnection : undefined;
+   const a =
+      source?.type === "ducklake" ? source.ducklakeConnection : undefined;
    const b =
-      destination?.type === "ducklake" ? destination.ducklakeConnection : undefined;
+      destination?.type === "ducklake"
+         ? destination.ducklakeConnection
+         : undefined;
    if (!a || !b) return false;
    const pa = a.catalog?.postgresConnection;
    const pb = b.catalog?.postgresConnection;

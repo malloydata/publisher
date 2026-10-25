@@ -290,7 +290,9 @@ export class Package {
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
    /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
-   private serveDestinationSchema?: (destinationName: string) => string | undefined;
+   private serveDestinationSchema?: (
+      destinationName: string,
+   ) => string | undefined;
    // Bound build manifest (sourceEntityId -> { tableName }): routes persist
    // sources to their materialized tables for served queries and the /compile
    // preview alike, so previewed SQL matches executed SQL. Surfaced on /status

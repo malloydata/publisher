@@ -7,7 +7,11 @@
 // let author SQL onto a read-write lake session.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { PersistSource } from "@malloydata/malloy";
-import { FixedConnectionMap, InMemoryURLReader, Runtime } from "@malloydata/malloy";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   Runtime,
+} from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +32,9 @@ beforeAll(async () => {
 });
 
 async function persisted(model: string): Promise<PersistSource> {
-   const urlReader = new InMemoryURLReader(new Map([[`${ROOT}m.malloy`, model]]));
+   const urlReader = new InMemoryURLReader(
+      new Map([[`${ROOT}m.malloy`, model]]),
+   );
    const runtime = new Runtime({ urlReader, connections });
    const compiled = await runtime
       .loadModel(new URL(`${ROOT}m.malloy`), { importBaseURL: new URL(ROOT) })
@@ -85,7 +91,13 @@ source: daily is orders -> { group_by: extra.tag }`);
 describe("isSameCatalog decides by catalog identity, never by name", () => {
    const lake = (
       name: string,
-      over: { host?: string; port?: number; db?: string; schema?: string; bucket?: string } = {},
+      over: {
+         host?: string;
+         port?: number;
+         db?: string;
+         schema?: string;
+         bucket?: string;
+      } = {},
    ): ApiConnection =>
       ({
          name,
@@ -106,20 +118,38 @@ describe("isSameCatalog decides by catalog identity, never by name", () => {
 
    it("is the same catalog under two names", () => {
       expect(isSameCatalog(lake("sales"), lake("credible"))).toBe(true);
-      expect(isSameCatalog(lake("a"), lake("a", { bucket: "gs://b/ds_x/", port: 5432 }))).toBe(true);
+      expect(
+         isSameCatalog(
+            lake("a"),
+            lake("a", { bucket: "gs://b/ds_x/", port: 5432 }),
+         ),
+      ).toBe(true);
    });
 
    it("is not the same catalog under one name", () => {
-      expect(isSameCatalog(lake("sales"), lake("sales", { schema: "ds_y" }))).toBe(false);
-      expect(isSameCatalog(lake("sales"), lake("sales", { bucket: "gs://b/ds_y" }))).toBe(false);
-      expect(isSameCatalog(lake("sales"), lake("sales", { host: "other" }))).toBe(false);
-      expect(isSameCatalog(lake("sales"), lake("sales", { port: 6543 }))).toBe(false);
-      expect(isSameCatalog(lake("sales"), lake("sales", { db: "other" }))).toBe(false);
+      expect(
+         isSameCatalog(lake("sales"), lake("sales", { schema: "ds_y" })),
+      ).toBe(false);
+      expect(
+         isSameCatalog(lake("sales"), lake("sales", { bucket: "gs://b/ds_y" })),
+      ).toBe(false);
+      expect(
+         isSameCatalog(lake("sales"), lake("sales", { host: "other" })),
+      ).toBe(false);
+      expect(isSameCatalog(lake("sales"), lake("sales", { port: 6543 }))).toBe(
+         false,
+      );
+      expect(isSameCatalog(lake("sales"), lake("sales", { db: "other" }))).toBe(
+         false,
+      );
    });
 
    it("is never true for a non-DuckLake side", () => {
       expect(
-         isSameCatalog({ name: "sales", type: "postgres" } as ApiConnection, lake("sales")),
+         isSameCatalog(
+            { name: "sales", type: "postgres" } as ApiConnection,
+            lake("sales"),
+         ),
       ).toBe(false);
       expect(isSameCatalog(lake("sales"), undefined)).toBe(false);
    });

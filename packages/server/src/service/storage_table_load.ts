@@ -42,8 +42,13 @@ export function readerSql(
          args.push(`header = ${options.header ? "true" : "false"}`);
       }
       if (options.delimiter !== undefined) {
-         if (typeof options.delimiter !== "string" || options.delimiter.length !== 1) {
-            throw new BadRequestError("'delimiter' must be a single character.");
+         if (
+            typeof options.delimiter !== "string" ||
+            options.delimiter.length !== 1
+         ) {
+            throw new BadRequestError(
+               "'delimiter' must be a single character.",
+            );
          }
          args.push(`delim = '${escapeSQL(options.delimiter)}'`);
       }
@@ -96,16 +101,26 @@ export async function loadStorageTable(params: {
    options?: LoadOptions;
    mode: "create" | "replace";
 }): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
-   const { destinationName, destinationConnection, schemaName, tableName } = params;
-   if (destinationConnection.type !== "ducklake" || !destinationConnection.ducklakeConnection) {
+   const { destinationName, destinationConnection, schemaName, tableName } =
+      params;
+   if (
+      destinationConnection.type !== "ducklake" ||
+      !destinationConnection.ducklakeConnection
+   ) {
       throw new BadRequestError(
          `Storage destination '${destinationName}' is not DuckLake; only a DuckLake catalog takes a load.`,
       );
    }
    if (!IDENT.test(schemaName) || !IDENT.test(tableName)) {
-      throw new BadRequestError("Schema and table names must be plain identifiers.");
+      throw new BadRequestError(
+         "Schema and table names must be plain identifiers.",
+      );
    }
-   const bucketUrl = destinationConnection.ducklakeConnection.storage.bucketUrl.replace(/\/+$/, "");
+   const bucketUrl =
+      destinationConnection.ducklakeConnection.storage.bucketUrl.replace(
+         /\/+$/,
+         "",
+      );
    if (!params.uri.startsWith(`${bucketUrl}/`)) {
       throw new BadRequestError(
          `The object must sit under the destination's storage location (${bucketUrl}/).`,
@@ -147,7 +162,9 @@ export async function loadStorageTable(params: {
          }
          throw error;
       }
-      const counted = rows(await session.runSQL(`SELECT count(*) AS n FROM ${target}`));
+      const counted = rows(
+         await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
+      );
       const described = rows(await session.runSQL(`DESCRIBE ${target}`));
       return {
          rowCount: Number(counted[0]?.n ?? 0),
@@ -162,6 +179,8 @@ export async function loadStorageTable(params: {
 }
 
 function rows(result: unknown): Record<string, unknown>[] {
-   const r = result as { rows?: Record<string, unknown>[] } | Record<string, unknown>[];
+   const r = result as
+      | { rows?: Record<string, unknown>[] }
+      | Record<string, unknown>[];
    return Array.isArray(r) ? r : (r?.rows ?? []);
 }

@@ -60,10 +60,7 @@ import {
    assertServesInDuckDB,
    type ServeBinding,
 } from "./materialization_serve_transform";
-import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "./storage_table_path";
+import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
 import { isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -994,7 +991,11 @@ async function buildSameCatalogIntoStorage(params: {
          params.partitionColumns ?? [],
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
-      return { storageDestinationName: destinationName, schema, readCost: null };
+      return {
+         storageDestinationName: destinationName,
+         schema,
+         readCost: null,
+      };
    } finally {
       await dispose();
    }

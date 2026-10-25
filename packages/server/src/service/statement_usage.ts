@@ -70,7 +70,11 @@ export async function withStatementUsage<T>(
       });
       return result;
    } catch (error) {
-      emitStatementUsage({ ...base, durationMs: performance.now() - start, status: "error" });
+      emitStatementUsage({
+         ...base,
+         durationMs: performance.now() - start,
+         status: "error",
+      });
       throw error;
    }
 }
