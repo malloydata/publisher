@@ -6656,8 +6656,8 @@ components:
           type: boolean
           default: false
           description: >
-            Serve this DuckLake connection as a catalog of its own tables, the
-            way a data store is served. Two effects. Its session gets
+            Serve this DuckLake connection as a catalog of its own tables, as an
+            orchestrator that provisions catalogs does. Two effects. Its session gets
             `SET search_path = '<name>.main'` after the attach, so a model's
             `<name>.table('t')`, which compiles to the bare table name, resolves
             inside the catalog: DuckDB does not search an attached catalog for
