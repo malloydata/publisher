@@ -17,6 +17,8 @@ describe("applyCliArgs", () => {
       ["--config", "PUBLISHER_CONFIG_PATH"],
       ["--mcp_port", "MCP_PORT"],
       ["--mcp_host", "MCP_HOST"],
+      ["--admin_port", "PUBLISHER_ADMIN_PORT"],
+      ["--admin_host", "PUBLISHER_ADMIN_HOST"],
       ["--shutdown_drain_duration_seconds", "SHUTDOWN_DRAIN_DURATION_SECONDS"],
       [
          "--shutdown_graceful_close_timeout_seconds",

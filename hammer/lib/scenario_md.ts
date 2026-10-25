@@ -2002,7 +2002,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       const serverFor = async (pub?: string, env?: string): Promise<Rest> => {
          const base = pub ? ctx.restOf(pub) : await active();
          const target = ctx.envFor(env ?? PRIMARY_ENV);
-         return target === base.env ? base : new Rest(base.baseUrl, target);
+         return target === base.env
+            ? base
+            : new Rest(base.baseUrl, target, base.adminUrl);
       };
       const modelPath = (pkg?: string, env?: string): string =>
          primaryModel.get(

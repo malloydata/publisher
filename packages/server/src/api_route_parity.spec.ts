@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import type { StorageDestinationController } from "./controller/storage_destination.controller";
+import { createAdminApp } from "./routes/admin";
 import { buildRouteApp, registeredRoutes } from "./test_helpers/route_app";
 
 /**
@@ -59,5 +61,30 @@ describe("REST route parity with api-doc.yaml", () => {
    it("no /pages listing path or operationId survives in the spec", () => {
       expect(apiDoc).not.toContain("/pages:");
       expect(apiDoc).not.toContain("operationId: list-pages");
+   });
+});
+
+describe("admin route parity with admin-api-doc.yaml", () => {
+   const adminDoc = readFileSync(
+      resolve(REPO_ROOT, "admin-api-doc.yaml"),
+      "utf8",
+   );
+   const adminApp = createAdminApp({} as StorageDestinationController);
+   const served = registeredRoutes(adminApp)
+      .filter((route) => route.path.startsWith("/api/v0/"))
+      .map((route) => `${route.method} ${shape(route.path)}`)
+      .sort();
+
+   it("serves exactly the operations the admin spec declares", () => {
+      expect(served).toEqual(specOperations(adminDoc));
+   });
+
+   it("serves every deprecated storage-destination route at the same path", () => {
+      const apiDoc = readFileSync(resolve(REPO_ROOT, "api-doc.yaml"), "utf8");
+      const publicStorage = specOperations(apiDoc).filter((op) =>
+         op.includes("/storageDestinations/"),
+      );
+      expect(publicStorage.length).toBe(3);
+      for (const op of publicStorage) expect(served).toContain(op);
    });
 });

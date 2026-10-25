@@ -1,7 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { components as adminComponents } from "../admin_api";
 import type { components } from "../api";
+
+type AdminSchemas = adminComponents["schemas"];
 import {
    BadRequestError,
    DestinationNotFoundError,
@@ -26,10 +29,10 @@ import {
 import { withStatementUsage } from "../service/statement_usage";
 
 type ApiConnection = components["schemas"]["Connection"];
-type ApiStorageTable = components["schemas"]["StorageTable"];
-type ApiStorageFileCleanup = components["schemas"]["StorageFileCleanup"];
-type ApiStorageBootstrap = components["schemas"]["StorageBootstrap"];
-type ApiStorageTableLoad = components["schemas"]["StorageTableLoad"];
+type ApiStorageTable = AdminSchemas["StorageTable"];
+type ApiStorageFileCleanup = AdminSchemas["StorageFileCleanup"];
+type ApiStorageBootstrap = AdminSchemas["StorageBootstrap"];
+type ApiStorageTableLoad = AdminSchemas["StorageTableLoad"];
 
 /**
  * The same shape the spec declares for every identifier in these paths. Checked

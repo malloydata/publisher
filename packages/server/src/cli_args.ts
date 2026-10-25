@@ -34,6 +34,12 @@ export function applyCliArgs(
       } else if (arg === "--mcp_host" && args[i + 1]) {
          env.MCP_HOST = args[i + 1];
          i++;
+      } else if (arg === "--admin_port" && args[i + 1]) {
+         env.PUBLISHER_ADMIN_PORT = args[i + 1];
+         i++;
+      } else if (arg === "--admin_host" && args[i + 1]) {
+         env.PUBLISHER_ADMIN_HOST = args[i + 1];
+         i++;
       } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
          env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
          i++;
@@ -78,6 +84,12 @@ export function applyCliArgs(
          );
          console.log(
             "  --mcp_port <number>    Port for MCP server (default: 4040)",
+         );
+         console.log(
+            "  --admin_port <number>  Port for the admin API, an orchestrator's catalog operations (default: off)",
+         );
+         console.log(
+            "  --admin_host <string>  Host to bind the admin API to (default: 127.0.0.1; not moved by --host)",
          );
          console.log(
             "  --shutdown_drain_duration_seconds <number>  Time in seconds to keep service in draining state before closing servers (default: 0)",

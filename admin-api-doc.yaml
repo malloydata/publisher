@@ -1,0 +1,521 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+openapi: 3.1.0
+info:
+  title: Malloy Publisher - Admin API
+  description: |
+    Operations an orchestrator runs on a DuckLake storage destination's catalog
+    and bucket: create the catalog, load a file into a table, list and drop
+    tables, and reclaim retired files. None of them changes this server's own
+    state (environments, packages, connections, materializations, bindings), and
+    a standalone server has no use for them, so they are served on their own
+    listener, separate from the semantic model serving API in `api-doc.yaml`.
+
+    The listener starts only when `PUBLISHER_ADMIN_PORT` (or `--admin_port`) is
+    set. It is unauthenticated, like the main API, and binds loopback unless
+    `PUBLISHER_ADMIN_HOST` says otherwise: expose it only inside the network the
+    orchestrator runs in, never through a public ingress.
+  version: v0
+servers:
+  - url: http://localhost:4050/api/v0
+    description: Admin listener (PUBLISHER_ADMIN_PORT)
+
+tags:
+  - name: storage-destinations
+    description: A DuckLake storage destination's catalog and bucket
+
+paths:
+  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables:
+    get:
+      tags:
+        - storage-destinations
+      operationId: list-storage-destination-tables
+      summary: List tables in a storage destination
+      description: |
+        Lists the tables in one schema of a storage destination, in name order.
+        Storage destinations are never reachable through the connection routes, so
+        this is how an orchestrator finds tables it has lost track of. A DuckLake
+        destination is attached read-only for the listing.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+      responses:
+        "200":
+          description: The tables in the schema
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StorageTable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-table
+      summary: Load an object from the destination's bucket into a table
+      description: |
+        For an orchestrator that stages a file in a DuckLake destination's own
+        bucket and wants it as a table there. The object must sit under the
+        destination's `storage.bucketUrl`, the only location the session can read. The bytes are rewritten as the catalog's own Parquet,
+        never registered in place, so an encrypted catalog stays encrypted. One
+        DuckLake transaction: a reader sees the old table or the new one, never
+        neither. `mode: create` refuses a table that exists with 409; `replace`
+        swaps it.
+
+        The destination travels in the body, as for `bootstraps`, and its name
+        must equal the path's. Reader options are an allowlist of typed values.
+
+        Synchronous: it answers when the table is written.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageTableLoadRequest"
+      responses:
+        "201":
+          description: The table is written
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageTableLoad"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The table exists and `mode` is `create`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables/{tableName}:
+    delete:
+      tags:
+        - storage-destinations
+      operationId: delete-storage-destination-table
+      summary: Drop a table from a storage destination
+      description: |
+        Drops one named table from a storage destination. Idempotent: a table that
+        does not exist answers 204 as well, so a retried drop is free.
+
+        For a DuckLake destination this retires the table in the catalog; its data
+        files stay in storage until a file cleanup reclaims them (see
+        `create-storage-destination-file-cleanup`), which is also the window in
+        which the table can still be read at an earlier snapshot.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+        - name: tableName
+          in: path
+          required: true
+          description: Name of the table
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "204":
+          description: The table is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /environments/{environmentName}/storageDestinations/{destinationName}/fileCleanups:
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-file-cleanup
+      summary: Reclaim storage behind dropped tables in a DuckLake destination
+      description: |
+        Reclaims the object-storage bytes that dropped and rewritten tables leave
+        behind in a DuckLake destination. Runs, in order:
+
+        1. `ducklake_expire_snapshots(older_than => snapshotsOlderThan)` — forgets
+           snapshots older than the cutoff (never the latest) and schedules for
+           deletion the files only they referenced. Snapshots that remain are what
+           time travel can still read, so this cutoff is the recovery window for a
+           dropped table.
+        2. `ducklake_cleanup_old_files(older_than => filesOlderThan)` — deletes the
+           files scheduled for deletion before the cutoff. The age counts from when
+           step 1 scheduled the file, so this protects readers still scanning a
+           file from a snapshot that was just expired.
+
+        Only files the catalog itself recorded and then retired are deleted. It
+        does not run `CHECKPOINT` or `ducklake_delete_orphaned_files`, which also
+        delete untracked files — another catalog's, when two share a data path, or
+        a concurrent build's not-yet-committed output.
+
+        Synchronous. Refused with 400 for a destination that is not DuckLake.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageFileCleanupRequest"
+      responses:
+        "201":
+          description: The cleanup ran; what it reclaimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageFileCleanup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /environments/{environmentName}/storageDestinations/{destinationName}/bootstraps:
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-bootstrap
+      summary: Create a DuckLake destination's catalog with its first attach
+      description: |
+        For an orchestrator that provisions a DuckLake catalog itself (a Postgres
+        role and metadata schema it created) and must decide how the catalog is
+        created before anything else attaches it. Attaches the catalog read-write
+        with `ENCRYPTED`, which DuckLake records at the catalog's creation and
+        ignores afterwards; records the inlining limit given with `set_option`;
+        then creates each schema named. Idempotent: on a catalog that already
+        exists encryption is unchanged, the limit is set again, and the schemas
+        already exist.
+
+        The request carries the destination's configuration in its body, so it
+        works for a catalog this server has not been given as a destination, and
+        never resolves `{destinationName}` from the environment's list; the body's
+        `destination.name` must equal it. The answer is what the catalog records,
+        read back, so a caller learns when a catalog created earlier without
+        encryption was handed to it.
+
+        Synchronous. Refused with 400 for a destination that is not DuckLake.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageBootstrapRequest"
+      responses:
+        "201":
+          description: The catalog exists; what it records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageBootstrap"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  responses:
+    BadRequest:
+      description:
+        The request was malformed or cannot be performed given the current
+        state of the system
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: The specified resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalServerError:
+      description: The server encountered an internal error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  parameters:
+    environmentName:
+      name: environmentName
+      in: path
+      required: true
+      description: Name of the environment
+      schema:
+        type: string
+    destinationName:
+      name: destinationName
+      in: path
+      required: true
+      description: Name of a storage destination
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
+    storageSchemaName:
+      name: schemaName
+      in: path
+      required: true
+      description: |
+        Schema within the storage destination. A table built from a bare
+        physical name lives in `main`.
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
+
+  schemas:
+    IdentifierPattern:
+      type: string
+      pattern: "^[a-zA-Z0-9_-]+$"
+      description: Standard identifier pattern for resource names
+
+    StorageDestinationConfig:
+      type: object
+      additionalProperties: true
+      description: >-
+        A storage destination's configuration: an entry of an environment's
+        `storageDestinations`, in the `Connection` shape of the main API
+        (`api-doc.yaml`), credentials included. It must be `type: ducklake`,
+        and it is validated as `storageDestinations` validates an entry.
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+
+    StorageTable:
+      type: object
+      description: A table in a storage destination
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Table name, unqualified
+
+    StorageTableLoadRequest:
+      type: object
+      required:
+        - destination
+        - tableName
+        - source
+      properties:
+        destination:
+          $ref: "#/components/schemas/StorageDestinationConfig"
+          description: The destination's configuration, as for `bootstraps`.
+        tableName:
+          type: string
+          description: The table to write, a plain identifier.
+        mode:
+          type: string
+          enum: [create, replace]
+          default: create
+        source:
+          type: object
+          required:
+            - uri
+            - format
+          properties:
+            uri:
+              type: string
+              description: The object, under the destination's `storage.bucketUrl`.
+            format:
+              type: string
+              enum: [csv, parquet, xlsx, json]
+            options:
+              type: object
+              description: Reader options; each is typed and applies only to the formats named.
+              properties:
+                header:
+                  type: boolean
+                  description: csv and xlsx.
+                delimiter:
+                  type: string
+                  description: csv; one character.
+                sheet:
+                  type: string
+                  description: xlsx; the sheet to read.
+                skip:
+                  type: integer
+                  minimum: 0
+                  description: csv; lines to skip before the header.
+
+    StorageTableLoad:
+      type: object
+      description: The table a load wrote
+      required:
+        - rowCount
+        - columns
+      properties:
+        rowCount:
+          type: integer
+        columns:
+          type: array
+          items:
+            type: object
+            required: [name, type]
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+
+    StorageBootstrapRequest:
+      type: object
+      required:
+        - destination
+      properties:
+        destination:
+          $ref: "#/components/schemas/StorageDestinationConfig"
+          description: >-
+            The destination's configuration, credentials included, in the shape
+            `storageDestinations` takes. Its `name` must equal the path's
+            `destinationName`, and its `type` must be `ducklake`.
+        encrypted:
+          type: boolean
+          default: true
+          description: Create the catalog with DuckLake's encryption at rest.
+        dataInliningRowLimit:
+          type: integer
+          minimum: 0
+          description: >-
+            DuckLake's data inlining row limit, recorded in the catalog with
+            `set_option` so every later attach reads it. Absent leaves DuckLake's
+            default.
+        schemas:
+          type: array
+          description: >-
+            Schemas to create in the catalog, each a plain identifier. Absent
+            creates none beyond DuckLake's `main`.
+          items:
+            type: string
+
+    StorageBootstrap:
+      type: object
+      description: What a bootstrapped catalog records
+      required:
+        - encrypted
+        - schemas
+      properties:
+        encrypted:
+          type: boolean
+          description: Whether the catalog records encryption at rest.
+        schemas:
+          type: array
+          description: Every schema in the catalog after the bootstrap.
+          items:
+            type: string
+
+    StorageFileCleanupRequest:
+      type: object
+      required:
+        - snapshotsOlderThan
+        - filesOlderThan
+      properties:
+        snapshotsOlderThan:
+          type: string
+          format: date-time
+          description: |
+            Expire snapshots older than this. Sets how long a dropped table stays
+            recoverable.
+        filesOlderThan:
+          type: string
+          format: date-time
+          description: |
+            Delete files scheduled for deletion before this. Must outlast the
+            longest query reading the destination.
+
+    StorageFileCleanup:
+      type: object
+      description: What one file cleanup reclaimed
+      required:
+        - snapshotsOlderThan
+        - filesOlderThan
+        - expiredSnapshots
+        - deletedFiles
+      properties:
+        snapshotsOlderThan:
+          type: string
+          format: date-time
+        filesOlderThan:
+          type: string
+          format: date-time
+        expiredSnapshots:
+          type: integer
+          description: Snapshots this cleanup expired
+        deletedFiles:
+          type: integer
+          description: Data and delete files this cleanup removed from storage
+
+    Error:
+      type: object
+      description: Standard error response format
+      properties:
+        code:
+          type: integer
+          description: HTTP status code, repeated in the body for convenience
+        message:
+          type: string
+          description: Human-readable error message describing what went wrong
+        details:
+          type: string
+          description: Additional error details or context
+        reason:
+          type: string
+          description: |
+            Machine-readable discriminator, for callers that must branch on
+            which error they got rather than on prose. Absent unless a caller is
+            expected to act on it, so treat absence as "no special handling".
+
+            TABLE_NOT_FOUND distinguishes a table that is not in the database
+            from the other conditions that also answer 404 on these routes --
+            an environment or connection this server does not host. The former
+            says nothing about whether the caller reached the right server; the
+            latter is a routing problem worth retrying elsewhere.
+
+            CONNECTION_FAILED, on a 502, means the database could not be
+            reached (the connection was refused, reset or timed out, or the
+            server closed it), so the query never ran. The query and the model
+            are fine; retrying elsewhere will not help, and neither will
+            rewriting the query.
+
+            CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
+            connection's credentials (a wrong password, an invalid key, an
+            expired token), so the query never ran. Whoever configures the
+            connection has to fix it; retrying fails the same way.
+
+            CONNECTION_NOT_FOUND, on a 424, means the model names a connection
+            the environment does not have, usually one deleted after the
+            package was loaded.
+
+            Deliberately an open string rather than an enum. Generators render
+            an enum closed, so adding a second value here would break every
+            client generated before it -- on the one field whose purpose is to
+            grow. Callers must treat an unrecognized value as absent.
+
+            Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
+      required:
+        - message

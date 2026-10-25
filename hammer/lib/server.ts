@@ -74,6 +74,8 @@ export interface ServerOptions {
    configPath: string;
    port: number;
    mcpPort: number;
+   /** The admin listener's port, where the storage-destination routes are served. */
+   adminPort: number;
    mode: PersistStorageMode;
    /**
     * Extra environment variables for the spawned server, beyond
@@ -92,6 +94,7 @@ export interface ServerOptions {
 export interface ServerHandle {
    baseUrl: string;
    mcpUrl: string;
+   adminUrl: string;
    mode: PersistStorageMode;
    stop(): Promise<void>;
 }
@@ -100,6 +103,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    const serverDir = path.join(opts.repoRoot, "packages", "server");
    const baseUrl = `http://127.0.0.1:${opts.port}`;
    const mcpUrl = `http://127.0.0.1:${opts.mcpPort}/mcp`;
+   const adminUrl = `http://127.0.0.1:${opts.adminPort}`;
 
    const args = [
       "bun",
@@ -113,6 +117,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       String(opts.port),
       "--mcp_port",
       String(opts.mcpPort),
+      "--admin_port",
+      String(opts.adminPort),
    ];
    if (opts.init !== false) args.push("--init");
 
@@ -209,5 +215,5 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    void poll.catch(() => undefined);
 
    log.ok(`server serving (mode=${opts.mode})`);
-   return { baseUrl, mcpUrl, mode: opts.mode, stop };
+   return { baseUrl, mcpUrl, adminUrl, mode: opts.mode, stop };
 }

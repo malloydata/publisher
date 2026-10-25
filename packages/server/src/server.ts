@@ -81,6 +81,11 @@ import {
    registerDataAppListRoute,
    registerDataAppStaticRoutes,
 } from "./routes/data_apps";
+import {
+   createAdminApp,
+   resolveAdminHost,
+   resolveAdminPort,
+} from "./routes/admin";
 import { createMcpApp, resolveMcpHost } from "./routes/mcp";
 import { registerSpaFallback } from "./routes/spa";
 import {
@@ -119,6 +124,10 @@ const MCP_PORT = Number(process.env.MCP_PORT || 4040);
 // loopback by default. Precedence: MCP_HOST, an explicit PUBLISHER_HOST (so
 // `--host` moves both listeners), then loopback.
 const MCP_HOST = resolveMcpHost(process.env);
+// The admin listener (routes/admin.ts) is off unless a port is given. Resolved
+// here so a malformed port fails startup before anything binds.
+const ADMIN_PORT = resolveAdminPort(process.env);
+const ADMIN_HOST = resolveAdminHost(process.env);
 // Resolved at module scope, not in the listen callback: it throws on a typo,
 // and a throw there would be an uncaughtException after both ports are bound.
 const MCP_CONFIG_ENABLED = mcpConfigEnabled();
@@ -524,9 +533,40 @@ mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 
+// Orchestrator operations on a storage destination's catalog and bucket
+// (admin-api-doc.yaml). A file load or a cleanup can run for minutes, hence the
+// same long timeouts as the main API.
+const adminServer =
+   ADMIN_PORT === null
+      ? null
+      : createAdminApp(storageDestinationController).listen(
+           ADMIN_PORT,
+           ADMIN_HOST,
+           function (this: import("net").Server) {
+              const bound = this.address();
+              const host =
+                 typeof bound === "object" && bound
+                    ? bound.address
+                    : ADMIN_HOST;
+              logger.info(
+                 `Admin server listening at http://${host.includes(":") ? `[${host}]` : host}:${resolveBoundPort(bound, ADMIN_PORT)}`,
+              );
+           },
+        );
+if (adminServer) {
+   adminServer.on(
+      "error",
+      fatalListenError("Admin", ADMIN_PORT!, "--admin_port", mainServer),
+   );
+   adminServer.timeout = 600000;
+   adminServer.keepAliveTimeout = 600000;
+   adminServer.headersTimeout = 600000;
+}
+
 registerSignalHandlers(
    mainServer,
    mcpServer,
    SHUTDOWN_DRAIN_DURATION_SECONDS,
    SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
+   adminServer ? [adminServer] : [],
 );

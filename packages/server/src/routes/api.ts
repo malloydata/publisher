@@ -46,6 +46,7 @@ import {
    setVersionIdError,
    wildcardParam,
 } from "./json_route";
+import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 
 export interface ApiControllers {
@@ -83,7 +84,15 @@ export function registerApiRoutes(
    registerConnectionRoutes(app, apiPrefix, env, pkg, c);
    registerPackageRoutes(app, apiPrefix, env, pkg, c);
    registerQueryRoutes(app, pkg, c);
-   registerMaterializationRoutes(app, env, pkg, c);
+   registerMaterializationRoutes(app, pkg, c);
+   // An orchestrator's operations on a storage destination's catalog and bucket.
+   // The admin listener serves them; the three served here are deprecated.
+   registerStorageDestinationRoutes(
+      app,
+      apiPrefix,
+      c.storageDestinationController,
+      "public",
+   );
 }
 
 function registerStatusAndThemeRoutes(
@@ -731,9 +740,8 @@ function registerQueryRoutes(
 
 function registerMaterializationRoutes(
    app: express.Express,
-   env: string,
    pkg: string,
-   { materializationController, storageDestinationController }: ApiControllers,
+   { materializationController }: ApiControllers,
 ): void {
    // Package-scoped: a materialization is a run of one package's persist
    // sources and cannot exist without a package.
@@ -804,70 +812,5 @@ function registerMaterializationRoutes(
          );
          res.status(204).send();
       }),
-   );
-
-   // Table lifecycle inside an environment's storage destinations, for an
-   // orchestrator that assigns its own physical table names. Destinations are
-   // never reachable through the connection routes, so these are the only way
-   // to drop, enumerate, or reclaim the storage behind a table in one.
-   const destination = `${env}/storageDestinations/:destinationName`;
-   app.get(
-      `${destination}/schemas/:schemaName/tables`,
-      apiRoute((req) =>
-         storageDestinationController.listTables(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-         ),
-      ),
-   );
-   app.post(
-      `${destination}/schemas/:schemaName/tables`,
-      apiRoute(
-         (req) =>
-            storageDestinationController.createTable(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.params.schemaName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
-   );
-   app.delete(
-      `${destination}/schemas/:schemaName/tables/:tableName`,
-      apiRoute(async (req, res) => {
-         await storageDestinationController.dropTable(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-            req.params.tableName,
-         );
-         res.status(204).send();
-      }),
-   );
-   app.post(
-      `${destination}/bootstraps`,
-      apiRoute(
-         (req) =>
-            storageDestinationController.createBootstrap(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
-   );
-   app.post(
-      `${destination}/fileCleanups`,
-      apiRoute(
-         (req) =>
-            storageDestinationController.createFileCleanup(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
    );
 }

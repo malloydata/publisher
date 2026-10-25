@@ -3328,8 +3328,13 @@ paths:
       tags:
         - storage-destinations
       operationId: list-storage-destination-tables
+      deprecated: true
       summary: List tables in a storage destination
       description: |
+        **DEPRECATED**: served on the admin listener (`admin-api-doc.yaml`,
+        `PUBLISHER_ADMIN_PORT`) at the same path; this public route is removed
+        in a later release.
+
         Lists the tables in one schema of a storage destination, in name order.
         Storage destinations are never reachable through the connection routes, so
         this is how an orchestrator finds tables it has lost track of. A DuckLake
@@ -3354,60 +3359,18 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-    post:
-      tags:
-        - storage-destinations
-      operationId: create-storage-destination-table
-      summary: Load an object from the destination's bucket into a table
-      description: |
-        For an orchestrator that stages a file in a DuckLake destination's own
-        bucket and wants it as a table there. The object must sit under the
-        destination's `storage.bucketUrl`, the only location the session can read. The bytes are rewritten as the catalog's own Parquet,
-        never registered in place, so an encrypted catalog stays encrypted. One
-        DuckLake transaction: a reader sees the old table or the new one, never
-        neither. `mode: create` refuses a table that exists with 409; `replace`
-        swaps it.
-
-        The destination travels in the body, as for `bootstraps`, and its name
-        must equal the path's. Reader options are an allowlist of typed values.
-
-        Synchronous: it answers when the table is written.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-        - $ref: "#/components/parameters/storageSchemaName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/StorageTableLoadRequest"
-      responses:
-        "201":
-          description: The table is written
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageTableLoad"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: The table exists and `mode` is `create`
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
   /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables/{tableName}:
     delete:
       tags:
         - storage-destinations
       operationId: delete-storage-destination-table
+      deprecated: true
       summary: Drop a table from a storage destination
       description: |
+        **DEPRECATED**: served on the admin listener (`admin-api-doc.yaml`,
+        `PUBLISHER_ADMIN_PORT`) at the same path; this public route is removed
+        in a later release.
+
         Drops one named table from a storage destination. Idempotent: a table that
         does not exist answers 204 as well, so a retried drop is free.
 
@@ -3440,8 +3403,13 @@ paths:
       tags:
         - storage-destinations
       operationId: create-storage-destination-file-cleanup
+      deprecated: true
       summary: Reclaim storage behind dropped tables in a DuckLake destination
       description: |
+        **DEPRECATED**: served on the admin listener (`admin-api-doc.yaml`,
+        `PUBLISHER_ADMIN_PORT`) at the same path; this public route is removed
+        in a later release.
+
         Reclaims the object-storage bytes that dropped and rewritten tables leave
         behind in a DuckLake destination. Runs, in order:
 
@@ -3477,53 +3445,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StorageFileCleanup"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /environments/{environmentName}/storageDestinations/{destinationName}/bootstraps:
-    post:
-      tags:
-        - storage-destinations
-      operationId: create-storage-destination-bootstrap
-      summary: Create a DuckLake destination's catalog with its first attach
-      description: |
-        For an orchestrator that provisions a DuckLake catalog itself (a Postgres
-        role and metadata schema it created) and must decide how the catalog is
-        created before anything else attaches it. Attaches the catalog read-write
-        with `ENCRYPTED`, which DuckLake records at the catalog's creation and
-        ignores afterwards; records the inlining limit given with `set_option`;
-        then creates each schema named. Idempotent: on a catalog that already
-        exists encryption is unchanged, the limit is set again, and the schemas
-        already exist.
-
-        The request carries the destination's configuration in its body, so it
-        works for a catalog this server has not been given as a destination, and
-        never resolves `{destinationName}` from the environment's list; the body's
-        `destination.name` must equal it. The answer is what the catalog records,
-        read back, so a caller learns when a catalog created earlier without
-        encryption was handed to it.
-
-        Synchronous. Refused with 400 for a destination that is not DuckLake.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/StorageBootstrapRequest"
-      responses:
-        "201":
-          description: The catalog exists; what it records
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageBootstrap"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -3686,119 +3607,6 @@ components:
         name:
           type: string
           description: Table name, unqualified
-
-    StorageTableLoadRequest:
-      type: object
-      required:
-        - destination
-        - tableName
-        - source
-      properties:
-        destination:
-          $ref: "#/components/schemas/Connection"
-          description: The destination's configuration, as for `bootstraps`.
-        tableName:
-          type: string
-          description: The table to write, a plain identifier.
-        mode:
-          type: string
-          enum: [create, replace]
-          default: create
-        source:
-          type: object
-          required:
-            - uri
-            - format
-          properties:
-            uri:
-              type: string
-              description: The object, under the destination's `storage.bucketUrl`.
-            format:
-              type: string
-              enum: [csv, parquet, xlsx, json]
-            options:
-              type: object
-              description: Reader options; each is typed and applies only to the formats named.
-              properties:
-                header:
-                  type: boolean
-                  description: csv and xlsx.
-                delimiter:
-                  type: string
-                  description: csv; one character.
-                sheet:
-                  type: string
-                  description: xlsx; the sheet to read.
-                skip:
-                  type: integer
-                  minimum: 0
-                  description: csv; lines to skip before the header.
-
-    StorageTableLoad:
-      type: object
-      description: The table a load wrote
-      required:
-        - rowCount
-        - columns
-      properties:
-        rowCount:
-          type: integer
-        columns:
-          type: array
-          items:
-            type: object
-            required: [name, type]
-            properties:
-              name:
-                type: string
-              type:
-                type: string
-
-    StorageBootstrapRequest:
-      type: object
-      required:
-        - destination
-      properties:
-        destination:
-          $ref: "#/components/schemas/Connection"
-          description: >-
-            The destination's configuration, credentials included, in the shape
-            `storageDestinations` takes. Its `name` must equal the path's
-            `destinationName`, and its `type` must be `ducklake`.
-        encrypted:
-          type: boolean
-          default: true
-          description: Create the catalog with DuckLake's encryption at rest.
-        dataInliningRowLimit:
-          type: integer
-          minimum: 0
-          description: >-
-            DuckLake's data inlining row limit, recorded in the catalog with
-            `set_option` so every later attach reads it. Absent leaves DuckLake's
-            default.
-        schemas:
-          type: array
-          description: >-
-            Schemas to create in the catalog, each a plain identifier. Absent
-            creates none beyond DuckLake's `main`.
-          items:
-            type: string
-
-    StorageBootstrap:
-      type: object
-      description: What a bootstrapped catalog records
-      required:
-        - encrypted
-        - schemas
-      properties:
-        encrypted:
-          type: boolean
-          description: Whether the catalog records encryption at rest.
-        schemas:
-          type: array
-          description: Every schema in the catalog after the bootstrap.
-          items:
-            type: string
 
     StorageFileCleanupRequest:
       type: object
@@ -6848,14 +6656,15 @@ components:
           type: boolean
           default: false
           description: >
-            Set by an orchestrator on a connection it provisions and owns (a
-            managed DuckLake catalog, for example), never by a person. A
-            managed DuckLake connection's session gets
-            `SET search_path = '<name>.main'` after its attach, so a model's
-            `<name>.table('t')`, which compiles to the bare table name,
-            resolves inside the catalog: DuckDB does not search an attached
-            catalog for an unqualified name otherwise. Absent or false is the
-            pre-existing behavior.
+            Serve this DuckLake connection as a catalog of its own tables, the
+            way a data store is served. Two effects. Its session gets
+            `SET search_path = '<name>.main'` after the attach, so a model's
+            `<name>.table('t')`, which compiles to the bare table name, resolves
+            inside the catalog: DuckDB does not search an attached catalog for
+            an unqualified name otherwise. And each statement run on it emits a
+            `statement_usage` log record and counts in
+            `publisher_statement_usage_total`, for whoever meters the catalog.
+            Absent or false is the pre-existing behavior.
         fingerprint:
           type: string
           description: >
@@ -7394,7 +7203,7 @@ components:
             Absent or true is the pre-existing behavior: the first build into a
             destination creates its catalog, with that attach's settings. False
             is for an orchestrator that creates the catalog itself, through the
-            destination's `bootstraps` route: every other read-write attach, on
+            admin API's `bootstraps` route (admin-api-doc.yaml): every other read-write attach, on
             a build, a load or a read-write connection, then refuses a missing
             catalog rather than creating one, so a catalog is never created
             unencrypted or owned by whichever role wrote first. A read-only

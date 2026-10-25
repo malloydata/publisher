@@ -48,6 +48,8 @@ export function registerSignalHandlers(
    mcpServer: Server,
    shutdownDrainDurationSeconds: number = 0,
    shutdownGracefulCloseTimeoutSeconds: number = 0,
+   /** Further listeners closed with the two above (the admin listener). */
+   otherServers: Server[] = [],
 ): void {
    // K8s sends SIGKILL after terminationGracePeriodSeconds if this has not exited.
    process.once("SIGTERM", async () => {
@@ -69,6 +71,7 @@ export function registerSignalHandlers(
          server,
          mcpServer,
          shutdownGracefulCloseTimeoutSeconds,
+         otherServers,
       );
    });
 }
@@ -83,6 +86,7 @@ export async function performGracefulShutdownAfterDrain(
    server: Server,
    mcpServer: Server,
    shutdownGracefulCloseTimeoutSeconds: number,
+   otherServers: Server[] = [],
 ): Promise<void> {
    const closeServer = (server: Server, name: string) =>
       new Promise<void>((resolve) => {
@@ -103,6 +107,7 @@ export async function performGracefulShutdownAfterDrain(
    await Promise.all([
       closeServer(server, "Main server"),
       closeServer(mcpServer, "MCP server"),
+      ...otherServers.map((s) => closeServer(s, "Admin server")),
    ]);
 
    try {

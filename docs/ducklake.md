@@ -130,8 +130,14 @@ Everything above is for a catalog someone else owns. An orchestrator that provis
 builds into it as a storage destination — has five more pieces. Each is additive; a configuration that
 uses none of them behaves as before.
 
+The routes among them (bootstrap and file loads here, and the table listing, drop and file cleanup an
+orchestrator's garbage collection uses) are on the **admin API** (`admin-api-doc.yaml`), a separate
+listener that starts only when `PUBLISHER_ADMIN_PORT` is set and binds loopback unless
+`PUBLISHER_ADMIN_HOST` says otherwise. Paths are the same as they would be on the main API. The listing,
+drop and file cleanup are also still on the main API, deprecated, and will be removed there.
+
 **Bootstrap the catalog before anything else attaches it.** DuckLake records encryption at a catalog's
-creation and ignores it afterwards, so whichever attach comes first decides. `POST
+creation and ignores it afterwards, so whichever attach comes first decides. The admin API's `POST
 /environments/{env}/storageDestinations/{dest}/bootstraps` is that first attach: read-write, with
 `ENCRYPTED` (on unless the request says otherwise), the inlining limit recorded with `set_option` so
 every later attach reads it (an `ATTACH` option lasts one session), and the schemas named created. The
@@ -147,7 +153,7 @@ destination puts every table a build writes in that schema (`materialized`, say)
 the serve binding reads it from there. People's own tables stay in `main`, and the orchestrator's
 reclaimer sweeps only the schema it owns. A `#@ persist name=` that already names a schema keeps it.
 
-**Load a file into a table.** `POST /environments/{env}/storageDestinations/{dest}/schemas/{schema}/tables`
+**Load a file into a table.** The admin API's `POST /environments/{env}/storageDestinations/{dest}/schemas/{schema}/tables`
 reads one object from the destination's own bucket (`csv`, `parquet`, `xlsx` or `json`, with a short
 allowlist of typed reader options) and writes it as a table in one DuckLake transaction. The object must
 sit under the destination's `bucketUrl`; nothing else is readable. The bytes are rewritten as the
