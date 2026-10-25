@@ -3437,6 +3437,53 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /environments/{environmentName}/storageDestinations/{destinationName}/bootstraps:
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-bootstrap
+      summary: Create a DuckLake destination's catalog with its first attach
+      description: |
+        For an orchestrator that provisions a DuckLake catalog itself (a Postgres
+        role and metadata schema it created) and must decide how the catalog is
+        created before anything else attaches it. Attaches the catalog read-write
+        with `ENCRYPTED`, which DuckLake records at the catalog's creation and
+        ignores afterwards; records the inlining limit given with `set_option`;
+        then creates each schema named. Idempotent: on a catalog that already
+        exists encryption is unchanged, the limit is set again, and the schemas
+        already exist.
+
+        The request carries the destination's configuration in its body, so it
+        works for a catalog this server has not been given as a destination, and
+        never resolves `{destinationName}` from the environment's list; the body's
+        `destination.name` must equal it. The answer is what the catalog records,
+        read back, so a caller learns when a catalog created earlier without
+        encryption was handed to it.
+
+        Synchronous. Refused with 400 for a destination that is not DuckLake.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageBootstrapRequest"
+      responses:
+        "201":
+          description: The catalog exists; what it records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageBootstrap"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   responses:
     BadRequest:
@@ -3592,6 +3639,52 @@ components:
         name:
           type: string
           description: Table name, unqualified
+
+    StorageBootstrapRequest:
+      type: object
+      required:
+        - destination
+      properties:
+        destination:
+          $ref: "#/components/schemas/Connection"
+          description: >-
+            The destination's configuration, credentials included, in the shape
+            `storageDestinations` takes. Its `name` must equal the path's
+            `destinationName`, and its `type` must be `ducklake`.
+        encrypted:
+          type: boolean
+          default: true
+          description: Create the catalog with DuckLake's encryption at rest.
+        dataInliningRowLimit:
+          type: integer
+          minimum: 0
+          description: >-
+            DuckLake's data inlining row limit, recorded in the catalog with
+            `set_option` so every later attach reads it. Absent leaves DuckLake's
+            default.
+        schemas:
+          type: array
+          description: >-
+            Schemas to create in the catalog, each a plain identifier. Absent
+            creates none beyond DuckLake's `main`.
+          items:
+            type: string
+
+    StorageBootstrap:
+      type: object
+      description: What a bootstrapped catalog records
+      required:
+        - encrypted
+        - schemas
+      properties:
+        encrypted:
+          type: boolean
+          description: Whether the catalog records encryption at rest.
+        schemas:
+          type: array
+          description: Every schema in the catalog after the bootstrap.
+          items:
+            type: string
 
     StorageFileCleanupRequest:
       type: object

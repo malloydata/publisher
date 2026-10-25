@@ -834,6 +834,18 @@ function registerMaterializationRoutes(
       }),
    );
    app.post(
+      `${destination}/bootstraps`,
+      apiRoute(
+         (req) =>
+            storageDestinationController.createBootstrap(
+               req.params.environmentName,
+               req.params.destinationName,
+               req.body ?? {},
+            ),
+         { status: 201 },
+      ),
+   );
+   app.post(
       `${destination}/fileCleanups`,
       apiRoute(
          (req) =>

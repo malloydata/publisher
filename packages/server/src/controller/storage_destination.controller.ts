@@ -10,8 +10,10 @@ import {
 import { logger } from "../logger";
 import { recordDropTables } from "../materialization_metrics";
 import type { Environment } from "../service/environment";
+import { validateStorageDestinations } from "../service/connection_config";
 import { EnvironmentStore } from "../service/environment_store";
 import {
+   bootstrapStorageCatalog,
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
@@ -20,6 +22,7 @@ import {
 type ApiConnection = components["schemas"]["Connection"];
 type ApiStorageTable = components["schemas"]["StorageTable"];
 type ApiStorageFileCleanup = components["schemas"]["StorageFileCleanup"];
+type ApiStorageBootstrap = components["schemas"]["StorageBootstrap"];
 
 /**
  * The same shape the spec declares for every identifier in these paths. Checked
@@ -125,6 +128,82 @@ export class StorageDestinationController {
          filesOlderThan: filesOlderThan.toISOString(),
          ...result,
       };
+   }
+
+   /**
+    * The first attach of a catalog the caller provisioned. The destination is
+    * the body's, validated as `storageDestinations` validates an entry, and never
+    * resolved from the environment's list: the caller may not have distributed it
+    * yet, and a same-named configured destination is a different catalog.
+    */
+   async createBootstrap(
+      environmentName: string,
+      destinationName: string,
+      body: Record<string, unknown>,
+   ): Promise<ApiStorageBootstrap> {
+      assertIdentifier("storage destination", destinationName);
+      // The environment must exist, as for every route under it.
+      await this.environmentStore.getEnvironment(environmentName, false);
+      const raw = body?.destination as ApiConnection | undefined;
+      if (!raw || typeof raw !== "object") {
+         throw new BadRequestError("'destination' is required.");
+      }
+      if (raw.name !== destinationName) {
+         throw new BadRequestError(
+            `The body's destination is named '${raw.name}', not '${destinationName}'.`,
+         );
+      }
+      if (raw.type !== "ducklake") {
+         throw new BadRequestError(
+            `Only a DuckLake destination is bootstrapped; '${destinationName}' is '${raw.type}'.`,
+         );
+      }
+      const { accepted, rejected } = validateStorageDestinations([raw]);
+      if (accepted.length !== 1) {
+         throw new BadRequestError(
+            `Storage destination '${destinationName}' is not valid: ${rejected
+               .map((r) => r.reason)
+               .join("; ")}`,
+         );
+      }
+      const encrypted = body.encrypted === undefined ? true : body.encrypted;
+      if (typeof encrypted !== "boolean") {
+         throw new BadRequestError("'encrypted' must be a boolean.");
+      }
+      const limit = body.dataInliningRowLimit;
+      if (
+         limit !== undefined &&
+         !(typeof limit === "number" && Number.isInteger(limit) && limit >= 0)
+      ) {
+         throw new BadRequestError(
+            "'dataInliningRowLimit' must be a non-negative integer.",
+         );
+      }
+      const schemas = body.schemas === undefined ? [] : body.schemas;
+      if (!Array.isArray(schemas) || !schemas.every((x) => typeof x === "string")) {
+         throw new BadRequestError("'schemas' must be a list of names.");
+      }
+      for (const schema of schemas as string[]) {
+         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+            throw new BadRequestError(
+               `Invalid schema name '${schema}': expected a plain identifier.`,
+            );
+         }
+      }
+      const result = await bootstrapStorageCatalog({
+         destinationName,
+         destinationConnection: accepted[0],
+         encrypted,
+         dataInliningRowLimit: limit as number | undefined,
+         schemas: schemas as string[],
+      });
+      logger.info("Bootstrapped a storage destination catalog", {
+         environmentName,
+         destinationName,
+         encrypted: result.encrypted,
+         schemas: result.schemas,
+      });
+      return result;
    }
 
    private async resolve(

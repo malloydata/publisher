@@ -1069,7 +1069,16 @@ async function attachDuckLakeWithMode(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
-   options: { readOnly: boolean; skipIfAbsent?: boolean },
+   options: {
+      readOnly: boolean;
+      skipIfAbsent?: boolean;
+      /**
+       * First-attach settings, which DuckLake fixes in the catalog when it creates
+       * it and ignores on a catalog that already exists. Only a bootstrap sets them.
+       */
+      encrypted?: boolean;
+      dataInliningRowLimit?: number;
+   },
 ): Promise<boolean> {
    // Never implicitly auto-install, whatever the policy: the DuckLake stack is
    // installed explicitly below.
@@ -1153,7 +1162,7 @@ async function attachDuckLakeWithMode(
    const metadataSchemaClause = metadataSchema
       ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
       : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause}${firstAttachClauses(options)});`;
    logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
@@ -1180,6 +1189,47 @@ async function attachDuckLakeWithMode(
       }
    }
    return true;
+}
+
+/**
+ * ATTACH options a catalog takes only at its creation. Integers and booleans
+ * only, so nothing here is spliced from text.
+ */
+export function firstAttachClauses(options: {
+   encrypted?: boolean;
+   dataInliningRowLimit?: number;
+}): string {
+   let clauses = "";
+   if (options.encrypted === true) {
+      clauses += ", ENCRYPTED true";
+   }
+   if (
+      options.dataInliningRowLimit !== undefined &&
+      Number.isInteger(options.dataInliningRowLimit) &&
+      options.dataInliningRowLimit >= 0
+   ) {
+      clauses += `, DATA_INLINING_ROW_LIMIT ${options.dataInliningRowLimit}`;
+   }
+   return clauses;
+}
+
+/**
+ * The first attach of a catalog an orchestrator provisioned: read-write, with
+ * encryption, which DuckLake records in the catalog at its creation. The
+ * inlining limit is an ATTACH option for this session only; the bootstrap
+ * records it in the catalog with `set_option`.
+ */
+export async function attachDuckLakeForBootstrap(
+   connection: DuckDBConnection,
+   dbName: string,
+   ducklakeConfig: components["schemas"]["DucklakeConnection"],
+   settings: { encrypted: boolean; dataInliningRowLimit?: number },
+): Promise<void> {
+   await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
+      readOnly: false,
+      encrypted: settings.encrypted,
+      dataInliningRowLimit: settings.dataInliningRowLimit,
+   });
 }
 
 async function attachDuckLake(
