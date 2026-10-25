@@ -35,6 +35,7 @@ export type ConnectionConfig =
               };
            };
            storage: { bucketUrl: string };
+           createIfNotExists?: boolean;
         };
      }
    | {
@@ -92,6 +93,7 @@ export function ducklakeDest(
    catalogDb: string,
    storageDir: string,
    metadataSchema?: string,
+   createIfNotExists?: boolean,
 ): ConnectionConfig {
    return {
       name,
@@ -108,6 +110,7 @@ export function ducklakeDest(
             ...(metadataSchema ? { metadataSchema } : {}),
          },
          storage: { bucketUrl: storageDir },
+         ...(createIfNotExists !== undefined ? { createIfNotExists } : {}),
       },
    };
 }

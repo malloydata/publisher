@@ -40,6 +40,8 @@ export interface ConnectionDecl {
    kind: "postgres" | "ducklake" | "duckdb";
    /** ducklake only: the catalog's `catalog.metadataSchema`, as a per-tenant catalog sets it. */
    metadataSchema?: string;
+   /** ducklake only: `createIfNotExists: false`, so no build creates the catalog. */
+   createIfNotExists?: boolean;
 }
 
 /** Controls the server lifecycle a scenario runs against. */

@@ -1078,6 +1078,12 @@ async function attachDuckLakeWithMode(
        */
       encrypted?: boolean;
       dataInliningRowLimit?: number;
+      /**
+       * False refuses a missing catalog on a read-write attach instead of
+       * creating it. Callers pass the configuration's `createIfNotExists`;
+       * only a bootstrap creates regardless.
+       */
+      createIfNotExists?: boolean;
    },
 ): Promise<boolean> {
    // Never implicitly auto-install, whatever the policy: the DuckLake stack is
@@ -1159,10 +1165,15 @@ async function attachDuckLakeWithMode(
    }
    // Read-write omits the flag: DuckLake's default is writable.
    const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
+   // A read-only attach never creates a catalog, so the flag matters only here.
+   const createClause =
+      !options.readOnly && options.createIfNotExists === false
+         ? ", CREATE_IF_NOT_EXISTS false"
+         : "";
    const metadataSchemaClause = metadataSchema
       ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
       : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause}${firstAttachClauses(options)});`;
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${createClause}${metadataSchemaClause}${firstAttachClauses(options)});`;
    logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
@@ -1227,6 +1238,8 @@ export async function attachDuckLakeForBootstrap(
 ): Promise<void> {
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: false,
+      // The one attach that creates an orchestrator-provisioned catalog.
+      createIfNotExists: true,
       encrypted: settings.encrypted,
       dataInliningRowLimit: settings.dataInliningRowLimit,
    });
@@ -1241,6 +1254,7 @@ async function attachDuckLake(
    // null and anything but `false` keep the pre-existing read-only attach.
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: ducklakeConfig.readOnly !== false,
+      createIfNotExists: ducklakeConfig.createIfNotExists !== false,
    });
 }
 
@@ -1301,6 +1315,7 @@ export async function attachDuckLakeReadWrite(
 ): Promise<void> {
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: false,
+      createIfNotExists: ducklakeConfig.createIfNotExists !== false,
    });
 }
 

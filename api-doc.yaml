@@ -7386,6 +7386,19 @@ components:
             orchestrator that provisions the catalog and decides who may write
             through it. A storage destination's build sessions attach
             read-write regardless; this field governs only the connection.
+        createIfNotExists:
+          type: boolean
+          default: true
+          description: >
+            Whether a read-write attach creates the catalog when there is none.
+            Absent or true is the pre-existing behavior: the first build into a
+            destination creates its catalog, with that attach's settings. False
+            is for an orchestrator that creates the catalog itself, through the
+            destination's `bootstraps` route: every other read-write attach, on
+            a build, a load or a read-write connection, then refuses a missing
+            catalog rather than creating one, so a catalog is never created
+            unencrypted or owned by whichever role wrote first. A read-only
+            attach never creates a catalog either way.
       required:
         - storage
         - catalog

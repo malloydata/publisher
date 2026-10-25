@@ -768,6 +768,17 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          );
       }
    }
+   const createIfNotExists = connection.ducklakeConnection.createIfNotExists;
+   if (
+      createIfNotExists !== undefined &&
+      createIfNotExists !== null &&
+      typeof createIfNotExists !== "boolean"
+   ) {
+      throw new Error(
+         `DuckLake createIfNotExists must be a boolean, got ` +
+            `'${String(createIfNotExists)}' for connection: ${connection.name}`,
+      );
+   }
 }
 
 function validateTrinoShape(connection: ApiConnection): void {

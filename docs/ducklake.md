@@ -137,7 +137,10 @@ creation and ignores it afterwards, so whichever attach comes first decides. `PO
 every later attach reads it (an `ATTACH` option lasts one session), and the schemas named created. The
 destination travels in the request body, so the route works before the destination is distributed,
 and it answers what the catalog records, read back: a catalog created earlier without encryption
-reports `encrypted: false`. Idempotent.
+reports `encrypted: false`. Idempotent. Set `ducklakeConnection.createIfNotExists: false` on the
+destination and on any read-write connection to the same catalog, so the bootstrap is the only attach
+that can create it: a build, a load or a read-write connection then refuses a missing catalog
+(`Existing DuckLake … does not exist`) instead of creating one with its own settings.
 
 **Keep built tables apart from people's.** `ducklakeConnection.destinationSchema` on a storage
 destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and

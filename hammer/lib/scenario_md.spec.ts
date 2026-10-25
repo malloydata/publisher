@@ -139,6 +139,33 @@ status: 404
       ).toThrow(/not both/);
    });
 
+   it("parses createIfNotExists on a ducklake connection, and only there", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Connection nb (type=ducklake, createIfNotExists=false)\n`,
+         "t",
+      );
+      expect(parsed.connectionDecls).toEqual([
+         {
+            env: "default",
+            name: "nb",
+            kind: "ducklake",
+            createIfNotExists: false,
+         },
+      ]);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection pg2 (type=postgres, createIfNotExists=false)\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to type=ducklake/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection nb (type=ducklake, createIfNotExists=no)\n`,
+            "t",
+         ),
+      ).toThrow(/must be true or false/);
+   });
+
    it("rejects a metadataSchema on anything but a ducklake connection", () => {
       expect(() =>
          parseMarkdownForTest(

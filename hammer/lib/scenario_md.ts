@@ -372,7 +372,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    sql: {},
    operator: {},
    connection: {
-      attrs: ["type", "refused", "rows", "metadataschema"],
+      attrs: ["type", "refused", "rows", "metadataschema", "createifnotexists"],
       keys: ["cites"],
    },
    rejected: { keys: ["cites"] },
@@ -944,11 +944,25 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   throw new Error(
                      `## Connection ${arg}: metadataSchema must be a plain identifier, got ${metadataSchema}`,
                   );
+               const createRaw = attrs.createifnotexists;
+               if (createRaw !== undefined) {
+                  if (kind !== "ducklake")
+                     throw new Error(
+                        `## Connection ${arg}: createIfNotExists applies only to type=ducklake`,
+                     );
+                  if (createRaw !== "true" && createRaw !== "false")
+                     throw new Error(
+                        `## Connection ${arg}: createIfNotExists must be true or false, got ${String(createRaw)}`,
+                     );
+               }
                connectionDecls.push({
                   env,
                   name: arg.trim(),
                   kind,
                   ...(metadataSchema ? { metadataSchema } : {}),
+                  ...(createRaw !== undefined
+                     ? { createIfNotExists: createRaw === "true" }
+                     : {}),
                });
                break;
             }
