@@ -227,12 +227,15 @@ export class CatalogAdmin {
             try {
                catalogs.push(await this.describe(pg, name));
             } catch (error) {
-               logger.warn("Skipped a schema that does not read as a DuckLake catalog", {
-                  catalog: name,
-                  error: redactPgSecrets(
-                     error instanceof Error ? error.message : String(error),
-                  ),
-               });
+               logger.warn(
+                  "Skipped a schema that does not read as a DuckLake catalog",
+                  {
+                     catalog: name,
+                     error: redactPgSecrets(
+                        error instanceof Error ? error.message : String(error),
+                     ),
+                  },
+               );
             }
          }
          return catalogs;
@@ -772,7 +775,9 @@ export class CatalogAdmin {
       if (error instanceof CatalogAdminError) return error;
       const message = error instanceof Error ? error.message : String(error);
       const safe = redactPgSecrets(message);
-      if (/Existing DuckLake at metadata catalog .* does not exist/i.test(safe)) {
+      if (
+         /Existing DuckLake at metadata catalog .* does not exist/i.test(safe)
+      ) {
          return new CatalogAdminError(404, "CATALOG_NOT_FOUND", safe);
       }
       if (/must sit under the catalog's data path/.test(safe)) {
