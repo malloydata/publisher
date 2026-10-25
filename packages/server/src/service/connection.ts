@@ -1187,9 +1187,29 @@ async function attachDuckLake(
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
 ): Promise<void> {
+   // Read-only unless the connection says otherwise in so many words: absent,
+   // null and anything but `false` keep the pre-existing read-only attach.
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
-      readOnly: true,
+      readOnly: ducklakeConfig.readOnly !== false,
    });
+}
+
+/**
+ * After a managed DuckLake attach, make the catalog's `main` the session's
+ * search path: DuckDB never searches an attached catalog for an unqualified
+ * table name, and `<name>.table('t')` compiles to the bare name. The alias is
+ * quoted as an identifier inside the string literal the setting takes.
+ */
+export function managedSearchPathSql(dbName: string): string {
+   const alias = `"${dbName.replace(/"/g, '""')}"`;
+   return `SET search_path = '${`${alias}.main`.replace(/'/g, "''")}'`;
+}
+
+async function setManagedSearchPath(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   await connection.runSQL(managedSearchPathSql(dbName));
 }
 
 /**
@@ -2701,6 +2721,9 @@ export function buildEnvironmentMalloyConfig(
                      name!,
                      metadata.apiConnection.ducklakeConnection!,
                   );
+                  if (metadata.apiConnection.managed === true) {
+                     await setManagedSearchPath(connection, name!);
+                  }
                }
                return connection;
             }
