@@ -123,6 +123,54 @@ timeout, an unreachable catalog — is logged and falls through to the normal at
 the source of truth for unrelated errors. The preflight only ever _adds_ a clearer error; it never
 introduces a new failure of its own.
 
+## A catalog an orchestrator provisions and serves
+
+Everything above is for a catalog someone else owns. An orchestrator that provisions catalogs itself
+— creates the database role and metadata schema, then serves the catalog to models as a connection and
+builds into it as a storage destination — has five more pieces. Each is additive; a configuration that
+uses none of them behaves as before.
+
+**Bootstrap the catalog before anything else attaches it.** DuckLake records encryption at a catalog's
+creation and ignores it afterwards, so whichever attach comes first decides. `POST
+/environments/{env}/storageDestinations/{dest}/bootstraps` is that first attach: read-write, with
+`ENCRYPTED` (on unless the request says otherwise), the inlining limit recorded with `set_option` so
+every later attach reads it (an `ATTACH` option lasts one session), and the schemas named created. The
+destination travels in the request body, so the route works before the destination is distributed,
+and it answers what the catalog records, read back: a catalog created earlier without encryption
+reports `encrypted: false`. Idempotent.
+
+**Keep built tables apart from people's.** `ducklakeConnection.destinationSchema` on a storage
+destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and
+the serve binding reads it from there. People's own tables stay in `main`, and the orchestrator's
+reclaimer sweeps only the schema it owns. A `#@ persist name=` that already names a schema keeps it.
+
+**Load a file into a table.** `POST /environments/{env}/storageDestinations/{dest}/schemas/{schema}/tables`
+reads one object from the destination's own bucket (`csv`, `parquet`, `xlsx` or `json`, with a short
+allowlist of typed reader options) and writes it as a table in one DuckLake transaction. The object must
+sit under the destination's `bucketUrl`; nothing else is readable. The bytes are rewritten as the
+catalog's Parquet rather than registered in place, so an encrypted catalog stays encrypted. `mode:
+create` refuses an existing table with 409; `replace` swaps it, and readers see the old table or the new
+one.
+
+**Serve the catalog to models.** Give the same catalog a `connections` entry too, with `managed: true`.
+Publisher then sets the session's search path to the catalog's `main` after the attach, so
+`sales.table('orders')`, which compiles to the bare table name, resolves: DuckDB never searches an
+attached catalog for an unqualified name otherwise. `ducklakeConnection.readOnly` stays `true` (the
+default) unless the orchestrator has decided who may write through the connection.
+
+**Persist from the catalog into itself.** A `#@ persist storage=<dest>` source on that connection reads
+the catalog it is built into. When the connection and the destination are the same catalog — decided by
+the catalog database, metadata schema and data path, never by name — the build is a plain CTAS on one
+read-write attach, with no federation and no egress. That session can write the catalog, so it runs
+only SQL Malloy generated: a source carrying an `.sql()` source or a `sql_*` expression anywhere beneath
+it is refused, as every DuckLake source was before.
+
+**Meter it.** Each statement on a storage destination or a `managed` connection emits one log record,
+`statement_usage`, with the environment, connection, surface (`serve`, `load`, `build`), package,
+duration, rows and status, and increments `publisher_statement_usage_total`. The record names no sink;
+a log collector maps it. Only a same-catalog build is recorded: a passthrough build's time is mostly the
+source warehouse's.
+
 ## Catalog-format compatibility
 
 A DuckLake catalog records the on-disk **format version** it was written at. The `ducklake`
