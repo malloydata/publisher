@@ -11,6 +11,11 @@ import { logger } from "../logger";
 import { recordDropTables } from "../materialization_metrics";
 import type { Environment } from "../service/environment";
 import { validateStorageDestinations } from "../service/connection_config";
+import {
+   loadStorageTable,
+   type LoadFormat,
+   type LoadOptions,
+} from "../service/storage_table_load";
 import { EnvironmentStore } from "../service/environment_store";
 import {
    bootstrapStorageCatalog,
@@ -23,6 +28,7 @@ type ApiConnection = components["schemas"]["Connection"];
 type ApiStorageTable = components["schemas"]["StorageTable"];
 type ApiStorageFileCleanup = components["schemas"]["StorageFileCleanup"];
 type ApiStorageBootstrap = components["schemas"]["StorageBootstrap"];
+type ApiStorageTableLoad = components["schemas"]["StorageTableLoad"];
 
 /**
  * The same shape the spec declares for every identifier in these paths. Checked
@@ -141,31 +147,12 @@ export class StorageDestinationController {
       destinationName: string,
       body: Record<string, unknown>,
    ): Promise<ApiStorageBootstrap> {
-      assertIdentifier("storage destination", destinationName);
-      // The environment must exist, as for every route under it.
-      await this.environmentStore.getEnvironment(environmentName, false);
-      const raw = body?.destination as ApiConnection | undefined;
-      if (!raw || typeof raw !== "object") {
-         throw new BadRequestError("'destination' is required.");
-      }
-      if (raw.name !== destinationName) {
-         throw new BadRequestError(
-            `The body's destination is named '${raw.name}', not '${destinationName}'.`,
-         );
-      }
-      if (raw.type !== "ducklake") {
-         throw new BadRequestError(
-            `Only a DuckLake destination is bootstrapped; '${destinationName}' is '${raw.type}'.`,
-         );
-      }
-      const { accepted, rejected } = validateStorageDestinations([raw]);
-      if (accepted.length !== 1) {
-         throw new BadRequestError(
-            `Storage destination '${destinationName}' is not valid: ${rejected
-               .map((r) => r.reason)
-               .join("; ")}`,
-         );
-      }
+      const destination = await this.bodyDestination(
+         environmentName,
+         destinationName,
+         body,
+      );
+      const accepted = [destination];
       const encrypted = body.encrypted === undefined ? true : body.encrypted;
       if (typeof encrypted !== "boolean") {
          throw new BadRequestError("'encrypted' must be a boolean.");
@@ -204,6 +191,105 @@ export class StorageDestinationController {
          schemas: result.schemas,
       });
       return result;
+   }
+
+   /** Loads an object from the destination's own bucket into a table. */
+   async createTable(
+      environmentName: string,
+      destinationName: string,
+      schemaName: string,
+      body: Record<string, unknown>,
+   ): Promise<ApiStorageTableLoad> {
+      assertIdentifier("schema", schemaName);
+      const destination = await this.bodyDestination(
+         environmentName,
+         destinationName,
+         body,
+      );
+      const tableName = body.tableName;
+      if (typeof tableName !== "string") {
+         throw new BadRequestError("'tableName' is required.");
+      }
+      const mode = body.mode === undefined ? "create" : body.mode;
+      if (mode !== "create" && mode !== "replace") {
+         throw new BadRequestError("'mode' must be 'create' or 'replace'.");
+      }
+      const source = body.source as
+         | { uri?: unknown; format?: unknown; options?: unknown }
+         | undefined;
+      if (!source || typeof source.uri !== "string") {
+         throw new BadRequestError("'source.uri' is required.");
+      }
+      if (!["csv", "parquet", "xlsx", "json"].includes(String(source.format))) {
+         throw new BadRequestError(
+            "'source.format' must be csv, parquet, xlsx or json.",
+         );
+      }
+      const options = (source.options ?? {}) as LoadOptions;
+      const allowed = new Set(["header", "delimiter", "sheet", "skip"]);
+      for (const key of Object.keys(options)) {
+         if (!allowed.has(key)) {
+            throw new BadRequestError(`Unknown reader option '${key}'.`);
+         }
+      }
+      const result = await loadStorageTable({
+         destinationName,
+         destinationConnection: destination,
+         schemaName,
+         tableName,
+         uri: source.uri,
+         format: source.format as LoadFormat,
+         options,
+         mode,
+      });
+      logger.info("Loaded a table into a storage destination", {
+         environmentName,
+         destinationName,
+         schemaName,
+         tableName,
+         format: source.format,
+         mode,
+         rowCount: result.rowCount,
+      });
+      return result;
+   }
+
+   /**
+    * A destination carried in a request body, for a catalog the caller may not
+    * have distributed: validated as a `storageDestinations` entry, never
+    * resolved from the environment's list.
+    */
+   private async bodyDestination(
+      environmentName: string,
+      destinationName: string,
+      body: Record<string, unknown>,
+   ): Promise<ApiConnection> {
+      assertIdentifier("storage destination", destinationName);
+      // The environment must exist, as for every route under it.
+      await this.environmentStore.getEnvironment(environmentName, false);
+      const raw = body?.destination as ApiConnection | undefined;
+      if (!raw || typeof raw !== "object") {
+         throw new BadRequestError("'destination' is required.");
+      }
+      if (raw.name !== destinationName) {
+         throw new BadRequestError(
+            `The body's destination is named '${raw.name}', not '${destinationName}'.`,
+         );
+      }
+      if (raw.type !== "ducklake") {
+         throw new BadRequestError(
+            `Only a DuckLake destination is taken here; '${destinationName}' is '${raw.type}'.`,
+         );
+      }
+      const { accepted, rejected } = validateStorageDestinations([raw]);
+      if (accepted.length !== 1) {
+         throw new BadRequestError(
+            `Storage destination '${destinationName}' is not valid: ${rejected
+               .map((r) => r.reason)
+               .join("; ")}`,
+         );
+      }
+      return accepted[0];
    }
 
    private async resolve(

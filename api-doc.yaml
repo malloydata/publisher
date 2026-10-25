@@ -3354,6 +3354,54 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-table
+      summary: Load an object from the destination's bucket into a table
+      description: |
+        For an orchestrator that stages a file in a DuckLake destination's own
+        bucket and wants it as a table there (Credible's data stores). The object
+        must sit under the destination's `storage.bucketUrl`, the only location the
+        session can read. The bytes are rewritten as the catalog's own Parquet,
+        never registered in place, so an encrypted catalog stays encrypted. One
+        DuckLake transaction: a reader sees the old table or the new one, never
+        neither. `mode: create` refuses a table that exists with 409; `replace`
+        swaps it.
+
+        The destination travels in the body, as for `bootstraps`, and its name
+        must equal the path's. Reader options are an allowlist of typed values.
+
+        Synchronous: it answers when the table is written.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageTableLoadRequest"
+      responses:
+        "201":
+          description: The table is written
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageTableLoad"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The table exists and `mode` is `create`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables/{tableName}:
     delete:
       tags:
@@ -3639,6 +3687,73 @@ components:
         name:
           type: string
           description: Table name, unqualified
+
+    StorageTableLoadRequest:
+      type: object
+      required:
+        - destination
+        - tableName
+        - source
+      properties:
+        destination:
+          $ref: "#/components/schemas/Connection"
+          description: The destination's configuration, as for `bootstraps`.
+        tableName:
+          type: string
+          description: The table to write, a plain identifier.
+        mode:
+          type: string
+          enum: [create, replace]
+          default: create
+        source:
+          type: object
+          required:
+            - uri
+            - format
+          properties:
+            uri:
+              type: string
+              description: The object, under the destination's `storage.bucketUrl`.
+            format:
+              type: string
+              enum: [csv, parquet, xlsx, json]
+            options:
+              type: object
+              description: Reader options; each is typed and applies only to the formats named.
+              properties:
+                header:
+                  type: boolean
+                  description: csv and xlsx.
+                delimiter:
+                  type: string
+                  description: csv; one character.
+                sheet:
+                  type: string
+                  description: xlsx; the sheet to read.
+                skip:
+                  type: integer
+                  minimum: 0
+                  description: csv; lines to skip before the header.
+
+    StorageTableLoad:
+      type: object
+      description: The table a load wrote
+      required:
+        - rowCount
+        - columns
+      properties:
+        rowCount:
+          type: integer
+        columns:
+          type: array
+          items:
+            type: object
+            required: [name, type]
+            properties:
+              name:
+                type: string
+              type:
+                type: string
 
     StorageBootstrapRequest:
       type: object

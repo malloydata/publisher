@@ -61,7 +61,7 @@ describe("createBootstrap refuses a request it cannot trust", () => {
    it("bootstraps only DuckLake", async () => {
       expect(
          await refused({ destination: { name: "sales", type: "duckdb" } }),
-      ).toContain("Only a DuckLake destination");
+      ).toContain("Only a DuckLake destination is taken here");
    });
 
    it("refuses a schema that is not a plain identifier, and a bad limit", async () => {

@@ -821,6 +821,19 @@ function registerMaterializationRoutes(
          ),
       ),
    );
+   app.post(
+      `${destination}/schemas/:schemaName/tables`,
+      apiRoute(
+         (req) =>
+            storageDestinationController.createTable(
+               req.params.environmentName,
+               req.params.destinationName,
+               req.params.schemaName,
+               req.body ?? {},
+            ),
+         { status: 201 },
+      ),
+   );
    app.delete(
       `${destination}/schemas/:schemaName/tables/:tableName`,
       apiRoute(async (req, res) => {
