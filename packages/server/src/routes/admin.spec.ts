@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type express from "express";
 import request from "supertest";
 import type { WatchModeController } from "../controller/watch-mode.controller";
+import { EnvironmentNotFoundError } from "../errors";
 import {
    type CatalogAdmin,
    CatalogAdminError,
@@ -17,13 +18,34 @@ import { createAdminApp, resolveAdminHost, resolveAdminPort } from "./admin";
 const catalogs = (over: Partial<CatalogAdmin>): CatalogAdmin =>
    over as unknown as CatalogAdmin;
 
+const watched = { environmentName: "" };
 const watch = {
+   current: () => ({
+      enabled: !!watched.environmentName,
+      environmentName: watched.environmentName,
+      watchingPath: watched.environmentName
+         ? `/srv/${watched.environmentName}`
+         : "",
+   }),
+   watch: async (name: string) => {
+      if (name === "missing") {
+         throw new EnvironmentNotFoundError(`Environment ${name} not found`);
+      }
+      watched.environmentName = name;
+      return watch.current();
+   },
+   unwatch: async () => {
+      watched.environmentName = "";
+   },
+   // The main API's deprecated handlers.
    getWatchStatus: async (_req: unknown, res: express.Response) => {
-      res.json({ enabled: false, environmentName: "", watchingPath: null });
+      res.json(watch.current());
    },
    startWatching: async () => undefined,
    stopWatchMode: async () => undefined,
-} as unknown as WatchModeController;
+} as unknown as WatchModeController & {
+   current: () => { enabled: boolean };
+};
 
 describe("the admin listener", () => {
    it("is off unless a port is given, and refuses one that is not a port", () => {
@@ -112,13 +134,37 @@ describe("the admin listener", () => {
       expect(res.body.reason).toBe("INVALID_REQUEST");
    });
 
-   it("serves watch mode, which the main API still answers, marked deprecated", async () => {
-      const admin = await request(createAdminApp(null, watch)).get(
-         "/api/v0/watch-mode/status",
+   it("serves watch mode as one resource: read, set, turn off", async () => {
+      const app = createAdminApp(null, watch);
+      const off = await request(app).get("/api/v0/watch-mode");
+      expect([off.status, off.body.enabled]).toEqual([200, false]);
+      const on = await request(app)
+         .put("/api/v0/watch-mode")
+         .send({ environmentName: "local" });
+      expect(on.status).toBe(200);
+      expect(on.body).toMatchObject({
+         enabled: true,
+         environmentName: "local",
+      });
+      expect(
+         (await request(app).put("/api/v0/watch-mode").send({})).status,
+      ).toBe(400);
+      expect(
+         (
+            await request(app)
+               .put("/api/v0/watch-mode")
+               .send({ environmentName: "missing" })
+         ).status,
+      ).toBe(404);
+      expect((await request(app).delete("/api/v0/watch-mode")).status).toBe(
+         204,
       );
-      expect(admin.status).toBe(200);
-      expect(admin.body.enabled).toBe(false);
-      expect(admin.headers.deprecation).toBeUndefined();
+      expect((await request(app).get("/api/v0/watch-mode")).body.enabled).toBe(
+         false,
+      );
+   });
+
+   it("still answers the main API's deprecated watch-mode status, marked", async () => {
       const main = await request(
          buildRouteApp({ watchModeController: watch }),
       ).get("/api/v0/watch-mode/status");

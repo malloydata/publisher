@@ -16,7 +16,9 @@ import { httpMetricsMiddleware } from "../instrumentation";
 import { loggerMiddleware } from "../logger";
 import type { WatchModeController } from "../controller/watch-mode.controller";
 import { type CatalogAdmin, CatalogAdminError } from "../service/catalog_admin";
+import { BadRequestError } from "../errors";
 import {
+   apiRoute,
    logRefusal,
    sendRouteError,
    unhandledErrorMiddleware,
@@ -191,23 +193,37 @@ export function registerAdminRoutes(
 }
 
 /**
- * Watch mode: the operator's control of this process's file watching, for local
- * development. The live-reload event stream a dashboard listens to stays on the
- * main API.
+ * Watch mode, one resource: what this process watches for local development.
+ * GET reads it, PUT sets the watched environment (turning it on, or moving it),
+ * DELETE turns it off. The live-reload event stream a dashboard listens to stays
+ * on the main API.
  */
 export function registerWatchModeRoutes(
    app: express.Express,
    apiPrefix: string,
    watchMode: WatchModeController,
 ): void {
-   app.get(`${apiPrefix}/watch-mode/status`, (req, res, next) =>
-      watchMode.getWatchStatus(req, res, next),
+   const path = `${apiPrefix}/watch-mode`;
+   app.get(
+      path,
+      apiRoute(async () => watchMode.current()),
    );
-   app.post(`${apiPrefix}/watch-mode/start`, (req, res, next) =>
-      watchMode.startWatching(req, res, next),
+   app.put(
+      path,
+      apiRoute(async (req) => {
+         const environmentName = req.body?.environmentName;
+         if (typeof environmentName !== "string" || !environmentName) {
+            throw new BadRequestError("'environmentName' is required.");
+         }
+         return watchMode.watch(environmentName);
+      }),
    );
-   app.post(`${apiPrefix}/watch-mode/stop`, (req, res, next) =>
-      watchMode.stopWatchMode(req, res, next),
+   app.delete(
+      path,
+      apiRoute(async (_req, res) => {
+         await watchMode.unwatch();
+         res.status(204).send();
+      }),
    );
 }
 

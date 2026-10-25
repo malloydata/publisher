@@ -363,54 +363,67 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /watch-mode/status:
+  /watch-mode:
     get:
       tags: [watch-mode]
-      operationId: get-watch-status
-      summary: Get watch mode status
+      operationId: get-watch-mode
+      summary: Get watch mode
       description: |
-        Whether file watching is on, which environment it watches, and the path
-        it monitors. Watch mode is for local development: `--watch-env` at boot is
-        the usual way to turn it on.
+        What this process watches for local development: whether watching is on,
+        the environment, and the path it monitors. `--watch-env` at boot is the
+        usual way to turn it on.
       responses:
         "200":
-          description: The current watch mode status
+          description: Watch mode
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WatchStatus"
+                $ref: "#/components/schemas/WatchMode"
         "500":
           $ref: "#/components/responses/InternalServerError"
-
-  /watch-mode/start:
-    post:
+    put:
       tags: [watch-mode]
-      operationId: start-watching
-      summary: Start file watching
+      operationId: put-watch-mode
+      summary: Set the watched environment
       description: |
         Watches the named environment's package directories and reloads a package
-        when its files change. One environment at a time.
+        when its files change, replacing any other watch: one environment at a
+        time.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/StartWatchRequest"
+              $ref: "#/components/schemas/WatchModeUpdate"
       responses:
         "200":
-          description: Watch mode started
+          description: Watch mode, now watching the environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchMode"
+        "400":
+          description: No environment name, or one that is not a safe name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such environment, or one with no packages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
-
-  /watch-mode/stop:
-    post:
+    delete:
       tags: [watch-mode]
-      operationId: stop-watching
-      summary: Stop file watching
-      description: Stops file watching and releases its resources.
+      operationId: delete-watch-mode
+      summary: Turn watch mode off
+      description: Stops watching and releases its resources. Idempotent.
       responses:
-        "200":
-          description: Watch mode stopped
+        "204":
+          description: Watch mode is off
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -633,21 +646,21 @@ components:
         filesDeleted:
           type: integer
 
-    WatchStatus:
+    WatchMode:
       type: object
-      description: Current file watching status
+      description: What this process watches for local development
       required: [enabled, environmentName, watchingPath]
       properties:
         enabled:
           type: boolean
         environmentName:
           type: string
-          description: The environment being watched
+          description: The environment being watched; empty when off
         watchingPath:
           type: string
-          description: The path being monitored, null when not watching
+          description: The path being monitored; empty when off
 
-    StartWatchRequest:
+    WatchModeUpdate:
       type: object
       required: [environmentName]
       properties:

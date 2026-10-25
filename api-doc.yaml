@@ -3087,7 +3087,7 @@ paths:
       deprecated: true
       summary: Get watch mode status
       description: |
-        **DEPRECATED**: use the admin API's `GET /watch-mode/status` (`admin-api-doc.yaml`); watch
+        **DEPRECATED**: use the admin API's `GET /watch-mode` (`admin-api-doc.yaml`); watch
         mode is an operator's control, not part of serving. This route is removed in a
         later release.
 
@@ -3116,7 +3116,7 @@ paths:
       deprecated: true
       summary: Start file watching
       description: |
-        **DEPRECATED**: use the admin API's `POST /watch-mode/start` (`admin-api-doc.yaml`); watch
+        **DEPRECATED**: use the admin API's `PUT /watch-mode` (`admin-api-doc.yaml`); watch
         mode is an operator's control, not part of serving. This route is removed in a
         later release.
 
@@ -3147,7 +3147,7 @@ paths:
       deprecated: true
       summary: Stop file watching
       description: |
-        **DEPRECATED**: use the admin API's `POST /watch-mode/stop` (`admin-api-doc.yaml`); watch
+        **DEPRECATED**: use the admin API's `DELETE /watch-mode` (`admin-api-doc.yaml`); watch
         mode is an operator's control, not part of serving. This route is removed in a
         later release.
 
