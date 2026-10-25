@@ -58,6 +58,10 @@ import {
    assertServesInDuckDB,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "./storage_table_path";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -803,7 +807,11 @@ export async function buildSourceIntoStorage(params: {
       // renders the path (an already-quoted name passes through). A mismatch
       // surfaces only at run time, past the live fallback, and 400s every query.
       const target = quoteManifestTablePath(
-         `${destinationName}.${physicalTableName}`,
+         storageTablePath(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
          STORAGE_TARGET_DIALECT,
       );
 
@@ -1032,7 +1040,11 @@ export async function buildDownstreamIntoStorage(params: {
 
       // Quoted as in buildSourceIntoStorage, to match the serve side.
       const target = quoteManifestTablePath(
-         `${destinationName}.${physicalTableName}`,
+         storageTablePath(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
          STORAGE_TARGET_DIALECT,
       );
       const schema = await createTableAndDescribe(
@@ -1065,6 +1077,8 @@ export async function buildDownstreamIntoStorage(params: {
  */
 export async function assertStorageServeShapeCompiles(params: {
    destinationName: string;
+   /** The destination's schema (see storageTablePath); absent is `main`. */
+   destinationSchema?: string;
    sourceName: string;
    virtualHandle: string;
    physicalTableName: string;
@@ -1078,7 +1092,11 @@ export async function assertStorageServeShapeCompiles(params: {
       sourceName,
       destinationName,
       virtualHandle,
-      tablePath: `${destinationName}.${physicalTableName}`,
+      tablePath: storageTablePath(
+         destinationName,
+         physicalTableName,
+         params.destinationSchema,
+      ),
       schema: params.schema
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string })),
@@ -1113,10 +1131,11 @@ export async function assertStorageServeShapeCompiles(params: {
 export function dropStorageTableSql(
    destinationName: string,
    physicalTableName: string,
+   schema?: string,
 ): string {
    // Must name the table the way the build CREATEd it (see the CTAS sites).
    return `DROP TABLE IF EXISTS ${quoteManifestTablePath(
-      `${destinationName}.${physicalTableName}`,
+      storageTablePath(destinationName, physicalTableName, schema),
       STORAGE_TARGET_DIALECT,
    )}`;
 }
@@ -1158,7 +1177,11 @@ export async function dropStorageTable(params: {
          environmentPath,
       );
       await session.runSQL(
-         dropStorageTableSql(destinationName, physicalTableName),
+         dropStorageTableSql(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
       );
    } finally {
       await dispose();

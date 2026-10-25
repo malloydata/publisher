@@ -172,6 +172,7 @@ const DUCKLAKE: PublicShape = {
       metadataSchema: "scalar",
    },
    readOnly: "scalar",
+   destinationSchema: "scalar",
 };
 
 const PUBLIC_CONNECTION: PublicShape = {

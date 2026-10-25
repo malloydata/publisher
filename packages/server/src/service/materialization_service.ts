@@ -151,6 +151,7 @@ import {
    type InstructedRun,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
+import { destinationSchemaOf } from "./storage_table_path";
 
 /**
  * Orchestrates single-call materialization builds.
@@ -2214,6 +2215,7 @@ export class MaterializationService {
                  persistSource,
                  instruction,
                  destinationName,
+                 destinationSchema: destinationSchemaOf(destinationConnection),
                  physicalTableName,
                  buildSQL: params.buildSQL,
                  queryMetadata,
@@ -2355,6 +2357,7 @@ export class MaterializationService {
       try {
          await assertStorageServeShapeCompiles({
             destinationName,
+            destinationSchema: destinationSchemaOf(destinationConnection),
             sourceName: persistSource.name,
             virtualHandle: sourceEntityId,
             physicalTableName,
@@ -2508,6 +2511,13 @@ export class MaterializationService {
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
          aliasesForBinding,
+         (name) => {
+            try {
+               return destinationSchemaOf(environment.getStorageDestination(name));
+            } catch {
+               return undefined;
+            }
+         },
       )
          .filter((b) => b.destinationName === destinationName)
          // A rollup is never an upstream (its synthesized name is in no model

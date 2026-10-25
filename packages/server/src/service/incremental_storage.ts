@@ -21,6 +21,7 @@ import type { FederatedSourceType } from "./connection";
 import type { QueryMetadata } from "./query_metadata";
 import { quoteIdentifier } from "./quoting";
 import { errMessage } from "../utils";
+import { storageTablePath } from "./storage_table_path";
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the
@@ -54,6 +55,8 @@ export function storageDeltaTarget(params: {
    /** The per-engine passthrough handle `federateSourceForPassthrough` established. */
    handle: string;
    destinationName: string;
+   /** The destination's schema (see storageTablePath); absent is `main`. */
+   destinationSchema?: string;
    /** Logical, unquoted physical table name, WITHOUT the destination catalog. */
    physicalTableName: string;
    /**
@@ -83,7 +86,11 @@ export function storageDeltaTarget(params: {
       quotedTablePath,
    } = params;
    const sourceDialect = persistSource.dialectName;
-   const logicalTablePath = `${destinationName}.${params.physicalTableName}`;
+   const logicalTablePath = storageTablePath(
+      destinationName,
+      params.physicalTableName,
+      params.destinationSchema,
+   );
    let readCost: BuildReadCost | null = null;
 
    return {

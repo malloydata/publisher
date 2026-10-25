@@ -753,6 +753,21 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          );
       }
    }
+   // destinationSchema becomes part of every stored table's path, quoted as an
+   // identifier by quoteTablePath; a plain identifier keeps that one grammar.
+   const destinationSchema = connection.ducklakeConnection.destinationSchema;
+   if (destinationSchema !== undefined && destinationSchema !== null) {
+      if (
+         typeof destinationSchema !== "string" ||
+         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
+      ) {
+         throw new Error(
+            `DuckLake destinationSchema must be a plain identifier ` +
+               `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
+               `${connection.name}`,
+         );
+      }
+   }
 }
 
 function validateTrinoShape(connection: ApiConnection): void {
