@@ -85,13 +85,11 @@ export function registerApiRoutes(
    registerPackageRoutes(app, apiPrefix, env, pkg, c);
    registerQueryRoutes(app, pkg, c);
    registerMaterializationRoutes(app, pkg, c);
-   // An orchestrator's operations on a storage destination's catalog and bucket.
-   // The admin listener serves them; the three served here are deprecated.
+   // Deprecated: the admin API's catalog resources replace them.
    registerStorageDestinationRoutes(
       app,
       apiPrefix,
       c.storageDestinationController,
-      "public",
    );
 }
 

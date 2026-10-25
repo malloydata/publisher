@@ -126,6 +126,20 @@ describe("isSameCatalog decides by catalog identity, never by name", () => {
       ).toBe(true);
    });
 
+   it("is the same catalog when either config leaves the data path to the catalog", () => {
+      const noPath = (name: string): ApiConnection => {
+         const c = lake(name);
+         delete c.ducklakeConnection!.storage;
+         return c;
+      };
+      expect(isSameCatalog(noPath("sales"), lake("analytics"))).toBe(true);
+      expect(isSameCatalog(lake("sales"), noPath("analytics"))).toBe(true);
+      expect(isSameCatalog(noPath("sales"), noPath("analytics"))).toBe(true);
+      expect(
+         isSameCatalog(noPath("sales"), lake("other", { schema: "ds_y" })),
+      ).toBe(false);
+   });
+
    it("is not the same catalog under one name", () => {
       expect(
          isSameCatalog(lake("sales"), lake("sales", { schema: "ds_y" })),

@@ -8,6 +8,7 @@ import {
    attachDuckLakeReadWrite,
    escapeSQL,
    installAndLoadExtension,
+   recordedCatalogSettings,
 } from "./connection";
 import { createIsolatedBuildSession } from "./materialization_build_session";
 import { quoteIdentifier } from "./quoting";
@@ -79,6 +80,20 @@ export function readerSql(
 }
 
 /**
+ * Refuses an object outside the catalog's data path: the session holds only
+ * that location's credential, and a load may read nothing else. A sibling
+ * prefix that merely shares the string (`…/ds_a` vs `…/ds_ab`) is outside.
+ */
+function assertUnderDataPath(uri: string, dataPath: string): void {
+   const root = dataPath.replace(/\/+$/, "");
+   if (!root || !uri.startsWith(`${root}/`)) {
+      throw new BadRequestError(
+         `The object must sit under the catalog's data path (${root}/).`,
+      );
+   }
+}
+
+/**
  * Loads one object into a table of a DuckLake destination, for an orchestrator
  * that stages a file in the destination's own bucket.
  *
@@ -116,15 +131,12 @@ export async function loadStorageTable(params: {
          "Schema and table names must be plain identifiers.",
       );
    }
-   const bucketUrl =
-      destinationConnection.ducklakeConnection.storage.bucketUrl.replace(
-         /\/+$/,
-         "",
-      );
-   if (!params.uri.startsWith(`${bucketUrl}/`)) {
-      throw new BadRequestError(
-         `The object must sit under the destination's storage location (${bucketUrl}/).`,
-      );
+   // A configured data path is checked before anything attaches; with none,
+   // the catalog's recorded path is checked once it is attached.
+   const configuredPath =
+      destinationConnection.ducklakeConnection.storage?.bucketUrl;
+   if (configuredPath) {
+      assertUnderDataPath(params.uri, configuredPath);
    }
    const reader = readerSql(params.uri, params.format, params.options);
 
@@ -138,6 +150,14 @@ export async function loadStorageTable(params: {
          destinationName,
          destinationConnection.ducklakeConnection,
       );
+      if (!configuredPath) {
+         const recorded = await recordedCatalogSettings(
+            session,
+            destinationName,
+            destinationConnection.ducklakeConnection.catalog?.metadataSchema,
+         );
+         assertUnderDataPath(params.uri, recorded.data_path ?? "");
+      }
       // Rows go to Parquet, never into the catalog database.
       await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
       if (params.format === "xlsx") {

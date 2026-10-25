@@ -46,7 +46,6 @@ import { recordAttributionSkipped } from "../materialization_metrics";
 import type { QueryMetadata } from "./query_metadata";
 import {
    applySessionResourceLimits,
-   attachDuckLakeForBootstrap,
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -1287,84 +1286,6 @@ export async function dropStorageTable(params: {
  * ({@link StorageCatalogNotFoundError}), not empty: an empty listing invites a
  * follow-up drop or cleanup, and those attach read-write, creating the catalog.
  */
-/**
- * The first attach of a catalog an orchestrator provisioned: read-write, with the encryption and inlining settings DuckLake fixes
- * when it creates the catalog, then each named schema created. Idempotent: on a
- * catalog that already exists the first-attach settings are ignored and the
- * schemas already exist.
- *
- * Runs on a transient session with the build session's teardown, so it strands
- * no catalog backend. Answers what the catalog actually records, read back
- * rather than echoed from the request, so a caller learns when a catalog
- * created earlier, unencrypted, was handed to it.
- */
-export async function bootstrapStorageCatalog(params: {
-   destinationName: string;
-   destinationConnection: ApiConnection;
-   encrypted: boolean;
-   dataInliningRowLimit?: number;
-   schemas: string[];
-}): Promise<{ encrypted: boolean; schemas: string[] }> {
-   const { destinationName, destinationConnection } = params;
-   if (destinationConnection.type !== "ducklake") {
-      throw new BadRequestError(
-         `Storage destination '${destinationName}' is not DuckLake; only a DuckLake catalog is bootstrapped.`,
-      );
-   }
-   const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `bootstrap_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
-      await attachDuckLakeForBootstrap(session, destinationName, cfg, {
-         encrypted: params.encrypted,
-         dataInliningRowLimit: params.dataInliningRowLimit,
-      });
-      const alias = quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT);
-      // An ATTACH option lasts one session; set_option records the limit in the
-      // catalog, where every later attach reads it.
-      if (
-         params.dataInliningRowLimit !== undefined &&
-         Number.isInteger(params.dataInliningRowLimit) &&
-         params.dataInliningRowLimit >= 0
-      ) {
-         await session.runSQL(
-            `CALL ${alias}.set_option('data_inlining_row_limit', ${params.dataInliningRowLimit})`,
-         );
-      }
-      for (const schema of params.schemas) {
-         await session.runSQL(
-            `CREATE SCHEMA IF NOT EXISTS ${alias}.${quoteIdentifier(schema, STORAGE_TARGET_DIALECT)}`,
-         );
-      }
-      // The metadata tables live in the catalog's metadata schema when one is
-      // configured, and in its default schema otherwise.
-      const metadataCatalog = [
-         `__ducklake_metadata_${destinationName}`,
-         ...(cfg.catalog?.metadataSchema ? [cfg.catalog.metadataSchema] : []),
-      ]
-         .map((part) => quoteIdentifier(part, STORAGE_TARGET_DIALECT))
-         .join(".");
-      const encryptedRows = resultRows(
-         await session.runSQL(
-            `SELECT value FROM ${metadataCatalog}.ducklake_metadata WHERE key = 'encrypted'`,
-         ),
-      );
-      const recorded = encryptedRows.some((r) => str(r.value) === "true");
-      const schemaList = resultRows(
-         await session.runSQL(
-            `SELECT schema_name FROM duckdb_schemas() WHERE database_name = '${escapeSQL(destinationName)}' ORDER BY schema_name`,
-         ),
-      )
-         .map((r) => str(r.schema_name))
-         .filter((name): name is string => !!name);
-      return { encrypted: recorded, schemas: schemaList };
-   } finally {
-      await dispose();
-   }
-}
-
 export async function listStorageTables(params: {
    destinationName: string;
    destinationConnection: ApiConnection;

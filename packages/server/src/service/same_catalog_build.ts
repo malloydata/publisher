@@ -9,9 +9,11 @@ type ApiConnection = components["schemas"]["Connection"];
  * Whether a source's connection and a storage destination are the SAME DuckLake
  * catalog, decided by what locates the catalog, never by name: a connection and
  * a destination may share a name and mean different catalogs (the namespaces are
- * separate on purpose), and two names may reach one catalog. Equal when the
- * catalog database (host, port, database), its metadata schema and its data path
- * all match.
+ * separate on purpose), and two names may reach one catalog. A catalog is its
+ * metadata: the catalog database (host, port, database) and the metadata schema
+ * in it. The data path is recorded in the catalog, so it is compared only when
+ * both configs state one: two configs that state different paths would write
+ * the one catalog's files to two places, and are not treated as the same.
  */
 export function isSameCatalog(
    source: ApiConnection | undefined,
@@ -28,6 +30,8 @@ export function isSameCatalog(
    const pb = b.catalog?.postgresConnection;
    if (!pa || !pb) return false;
    const path = (url: string | undefined) => (url ?? "").replace(/\/+$/, "");
+   const pathA = path(a.storage?.bucketUrl);
+   const pathB = path(b.storage?.bucketUrl);
    return (
       !!pa.host &&
       pa.host === pb.host &&
@@ -35,8 +39,7 @@ export function isSameCatalog(
       !!pa.databaseName &&
       pa.databaseName === pb.databaseName &&
       (a.catalog.metadataSchema ?? "") === (b.catalog.metadataSchema ?? "") &&
-      path(a.storage?.bucketUrl) !== "" &&
-      path(a.storage?.bucketUrl) === path(b.storage?.bucketUrl)
+      (pathA === "" || pathB === "" || pathA === pathB)
    );
 }
 

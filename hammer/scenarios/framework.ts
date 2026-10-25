@@ -40,8 +40,8 @@ export interface ConnectionDecl {
    kind: "postgres" | "ducklake" | "duckdb";
    /** ducklake only: the catalog's `catalog.metadataSchema`, as a per-tenant catalog sets it. */
    metadataSchema?: string;
-   /** ducklake only: `createIfNotExists: false`, so no build creates the catalog. */
-   createIfNotExists?: boolean;
+   /** ducklake only: no `storage.bucketUrl`, so the recorded data path is used and no build creates the catalog. */
+   recordedDataPath?: boolean;
 }
 
 /** Controls the server lifecycle a scenario runs against. */

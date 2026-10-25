@@ -5,247 +5,390 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Admin API
   description: |
-    Operations an orchestrator runs on a DuckLake storage destination's catalog
-    and bucket: create the catalog, load a file into a table, list and drop
-    tables, and reclaim retired files. None of them changes this server's own
-    state (environments, packages, connections, materializations, bindings), and
-    a standalone server has no use for them, so they are served on their own
-    listener, separate from the semantic model serving API in `api-doc.yaml`.
+    The DuckLake catalogs in one Postgres database, as resources: a catalog, the
+    tables in its schemas, and its snapshots. Use it to create a catalog
+    deliberately (encrypted, with the schemas you want), load a file into a
+    table, see what a catalog holds and how much, drop tables, and reclaim the
+    storage behind its history. It never touches this server's environments,
+    packages or connections; a model reads a catalog through a DuckLake
+    connection, and a build writes one through a storage destination, in the main
+    API (`api-doc.yaml`).
 
-    The listener starts only when `PUBLISHER_ADMIN_PORT` (or `--admin_port`) is
-    set. It is unauthenticated, like the main API, and binds loopback unless
-    `PUBLISHER_ADMIN_HOST` says otherwise: expose it only inside the network the
-    orchestrator runs in, never through a public ingress.
+    **Configuration, not requests, says where the catalogs are.** The listener
+    starts only when `PUBLISHER_ADMIN_PORT` is set. `PUBLISHER_ADMIN_CATALOG_DATABASE`
+    is a libpq connection string for the Postgres database holding the catalogs,
+    and `PUBLISHER_ADMIN_STORAGE_*` is the credential for their data paths. No
+    request carries a credential and no response returns one.
+
+    **A catalog is found, not registered.** Every schema of the catalog database
+    that holds DuckLake's `ducklake_metadata` table is a catalog, named by that
+    schema. Its data path, encryption, format version and settings are what it
+    recorded at its creation. When the configured role is not the schema's
+    owner, every session acts as the owner (libpq `options=-crole=<owner>`), so
+    tables keep the ownership and grants their catalog was set up with.
+
+    **Security.** The listener is unauthenticated and binds loopback unless
+    `PUBLISHER_ADMIN_HOST` widens it, which `PUBLISHER_HOST` does not do. It can
+    drop tables, so keep it on loopback or behind an authenticating proxy.
   version: v0
 servers:
   - url: http://localhost:4050/api/v0
     description: Admin listener (PUBLISHER_ADMIN_PORT)
 
 tags:
-  - name: storage-destinations
-    description: A DuckLake storage destination's catalog and bucket
+  - name: catalogs
+    description: DuckLake catalogs and their settings
+  - name: tables
+    description: The tables in a catalog's schemas
+  - name: snapshots
+    description: A catalog's history, and the storage behind it
 
 paths:
-  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables:
+  /catalogs:
     get:
-      tags:
-        - storage-destinations
-      operationId: list-storage-destination-tables
-      summary: List tables in a storage destination
+      tags: [catalogs]
+      operationId: list-catalogs
+      summary: List the catalogs in the catalog database
       description: |
-        Lists the tables in one schema of a storage destination, in name order.
-        Storage destinations are never reachable through the connection routes, so
-        this is how an orchestrator finds tables it has lost track of. A DuckLake
-        destination is attached read-only for the listing.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-        - $ref: "#/components/parameters/storageSchemaName"
+        Every DuckLake catalog in the configured catalog database, in name order,
+        with what each records and the bytes it holds. One catalog is read at a
+        time, so a long list never becomes many concurrent queries on the
+        catalog database.
       responses:
         "200":
-          description: The tables in the schema
+          description: The catalogs
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/StorageTable"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                  $ref: "#/components/schemas/Catalog"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
         "500":
           $ref: "#/components/responses/InternalServerError"
-
     post:
-      tags:
-        - storage-destinations
-      operationId: create-storage-destination-table
-      summary: Load an object from the destination's bucket into a table
+      tags: [catalogs]
+      operationId: create-catalog
+      summary: Create a catalog
       description: |
-        For an orchestrator that stages a file in a DuckLake destination's own
-        bucket and wants it as a table there. The object must sit under the
-        destination's `storage.bucketUrl`, the only location the session can read. The bytes are rewritten as the catalog's own Parquet,
-        never registered in place, so an encrypted catalog stays encrypted. One
-        DuckLake transaction: a reader sees the old table or the new one, never
-        neither. `mode: create` refuses a table that exists with 409; `replace`
-        swaps it.
-
-        The destination travels in the body, as for `bootstraps`, and its name
-        must equal the path's. Reader options are an allowlist of typed values.
-
-        Synchronous: it answers when the table is written.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-        - $ref: "#/components/parameters/storageSchemaName"
+        Creates a DuckLake catalog in the schema `name`, with its data under
+        `dataPath`. Encryption is fixed now and cannot be changed later; the
+        inlining limit and file-deletion grace are recorded in the catalog and
+        can be changed with PATCH. Each schema named is created. The schema may
+        already exist, empty (created by whoever provisioned its owner role); the
+        catalog's tables are then owned by that role. `409 CATALOG_EXISTS` when a
+        catalog is already there.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/StorageTableLoadRequest"
+              $ref: "#/components/schemas/CatalogCreate"
       responses:
         "201":
-          description: The table is written
+          description: The catalog, as it records itself
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StorageTableLoad"
+                $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [catalogs]
+      operationId: get-catalog
+      summary: Get a catalog
+      description: What the catalog records, the bytes it holds, and its schemas.
+      responses:
+        "200":
+          description: The catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [catalogs]
+      operationId: update-catalog
+      summary: Change a catalog's settings
+      description: |
+        Records a new inlining limit or file-deletion grace in the catalog, where
+        every later attach reads it. Encryption and the data path are fixed at
+        creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CatalogUpdate"
+      responses:
+        "200":
+          description: The catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          description: The table exists and `mode` is `create`
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+    get:
+      tags: [tables]
+      operationId: list-tables
+      summary: List the tables in a schema
+      description: The schema's tables in name order, each with the bytes its live files hold.
+      responses:
+        "200":
+          description: The tables
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TableSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+      - $ref: "#/components/parameters/tableName"
+    get:
+      tags: [tables]
+      operationId: get-table
+      summary: Get a table
+      description: The table's columns, and its row count when the catalog records one.
+      responses:
+        "200":
+          description: The table
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      tags: [tables]
+      operationId: put-table
+      summary: Create or replace a table from a source
+      description: |
+        Writes the table from `source`: one CSV, Parquet, Excel or JSON object
+        under the catalog's data path, the only location the session can read.
+        The bytes are rewritten as the catalog's own Parquet, never registered in
+        place, so an encrypted catalog stays encrypted. One DuckLake transaction:
+        a reader sees the old table or the new one. `201` when the table is new,
+        `200` when it replaced one; with `If-None-Match: *` an existing table is
+        refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
+        is written.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: "`*` to create only, refusing a table that exists."
+          schema:
+            type: string
+            enum: ["*"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TableWrite"
+      responses:
+        "200":
+          description: The table, replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "201":
+          description: The table, created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          description: "`If-None-Match: *` and the table exists (`TABLE_EXISTS`)"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
         "500":
           $ref: "#/components/responses/InternalServerError"
-  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables/{tableName}:
     delete:
-      tags:
-        - storage-destinations
-      operationId: delete-storage-destination-table
-      summary: Drop a table from a storage destination
+      tags: [tables]
+      operationId: delete-table
+      summary: Drop a table
       description: |
-        Drops one named table from a storage destination. Idempotent: a table that
-        does not exist answers 204 as well, so a retried drop is free.
-
-        For a DuckLake destination this retires the table in the catalog; its data
-        files stay in storage until a file cleanup reclaims them (see
-        `create-storage-destination-file-cleanup`), which is also the window in
-        which the table can still be read at an earlier snapshot.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-        - $ref: "#/components/parameters/storageSchemaName"
-        - name: tableName
-          in: path
-          required: true
-          description: Name of the table
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
+        Drops the table. A table that does not exist answers 204 as well, so a
+        retried drop is free. Its data files stay until a snapshot delete
+        reclaims them, which is also the window in which the table can still be
+        read at an earlier snapshot.
       responses:
         "204":
           description: The table is dropped, or did not exist
-        "400":
-          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /environments/{environmentName}/storageDestinations/{destinationName}/fileCleanups:
-    post:
-      tags:
-        - storage-destinations
-      operationId: create-storage-destination-file-cleanup
-      summary: Reclaim storage behind dropped tables in a DuckLake destination
-      description: |
-        Reclaims the object-storage bytes that dropped and rewritten tables leave
-        behind in a DuckLake destination. Runs, in order:
-
-        1. `ducklake_expire_snapshots(older_than => snapshotsOlderThan)` — forgets
-           snapshots older than the cutoff (never the latest) and schedules for
-           deletion the files only they referenced. Snapshots that remain are what
-           time travel can still read, so this cutoff is the recovery window for a
-           dropped table.
-        2. `ducklake_cleanup_old_files(older_than => filesOlderThan)` — deletes the
-           files scheduled for deletion before the cutoff. The age counts from when
-           step 1 scheduled the file, so this protects readers still scanning a
-           file from a snapshot that was just expired.
-
-        Only files the catalog itself recorded and then retired are deleted. It
-        does not run `CHECKPOINT` or `ducklake_delete_orphaned_files`, which also
-        delete untracked files — another catalog's, when two share a data path, or
-        a concurrent build's not-yet-committed output.
-
-        Synchronous. Refused with 400 for a destination that is not DuckLake.
+  /catalogs/{catalogName}/snapshots:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [snapshots]
+      operationId: list-snapshots
+      summary: List a catalog's snapshots
+      description: The newest first, each with its time and what it changed.
       parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/StorageFileCleanupRequest"
+        - name: limit
+          in: query
+          required: false
+          description: How many, from 1 to 1000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
       responses:
-        "201":
-          description: The cleanup ran; what it reclaimed
+        "200":
+          description: The snapshots
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StorageFileCleanup"
+                type: array
+                items:
+                  $ref: "#/components/schemas/Snapshot"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
         "500":
           $ref: "#/components/responses/InternalServerError"
-
-  /environments/{environmentName}/storageDestinations/{destinationName}/bootstraps:
-    post:
-      tags:
-        - storage-destinations
-      operationId: create-storage-destination-bootstrap
-      summary: Create a DuckLake destination's catalog with its first attach
+    delete:
+      tags: [snapshots]
+      operationId: delete-snapshots
+      summary: Delete old snapshots, and the storage only they held
       description: |
-        For an orchestrator that provisions a DuckLake catalog itself (a Postgres
-        role and metadata schema it created) and must decide how the catalog is
-        created before anything else attaches it. Attaches the catalog read-write
-        with `ENCRYPTED`, which DuckLake records at the catalog's creation and
-        ignores afterwards; records the inlining limit given with `set_option`;
-        then creates each schema named. Idempotent: on a catalog that already
-        exists encryption is unchanged, the limit is set again, and the schemas
-        already exist.
-
-        The request carries the destination's configuration in its body, so it
-        works for a catalog this server has not been given as a destination, and
-        never resolves `{destinationName}` from the environment's list; the body's
-        `destination.name` must equal it. The answer is what the catalog records,
-        read back, so a caller learns when a catalog created earlier without
-        encryption was handed to it.
-
-        Synchronous. Refused with 400 for a destination that is not DuckLake.
+        Expires every snapshot older than `olderThan` (never the latest), which
+        retires the data files only those snapshots referenced. Then deletes the
+        files that have been retired for longer than the catalog's
+        `fileDeletionGrace` (`1 day` when it records none), so a reader still
+        scanning a file of a just-expired snapshot is not cut off; files this
+        call retires go on a later call. Only files the catalog itself recorded
+        and retired are deleted, never an untracked file under the data path.
       parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/destinationName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/StorageBootstrapRequest"
+        - name: olderThan
+          in: query
+          required: true
+          description: Expire the snapshots taken before this time.
+          schema:
+            type: string
+            format: date-time
       responses:
-        "201":
-          description: The catalog exists; what it records
+        "200":
+          description: What was reclaimed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StorageBootstrap"
+                $ref: "#/components/schemas/SnapshotDeletion"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
 components:
+  parameters:
+    catalogName:
+      name: catalogName
+      in: path
+      required: true
+      description: The catalog's name, the schema of the catalog database that holds it.
+      schema:
+        $ref: "#/components/schemas/Identifier"
+    schemaName:
+      name: schemaName
+      in: path
+      required: true
+      description: A schema in the catalog (`main` is DuckLake's default).
+      schema:
+        $ref: "#/components/schemas/Identifier"
+    tableName:
+      name: tableName
+      in: path
+      required: true
+      description: A table in the schema.
+      schema:
+        $ref: "#/components/schemas/Identifier"
+
   responses:
     BadRequest:
-      description:
-        The request was malformed or cannot be performed given the current
-        state of the system
+      description: The request is malformed (`INVALID_REQUEST`), or names an object outside the catalog's data path (`OBJECT_OUTSIDE_DATA_PATH`)
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: The specified resource was not found
+      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: The catalog already exists (`CATALOG_EXISTS`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotConfigured:
+      description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`)
       content:
         application/json:
           schema:
@@ -257,120 +400,101 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
 
-  parameters:
-    environmentName:
-      name: environmentName
-      in: path
-      required: true
-      description: Name of the environment
-      schema:
-        type: string
-    destinationName:
-      name: destinationName
-      in: path
-      required: true
-      description: Name of a storage destination
-      schema:
-        $ref: "#/components/schemas/IdentifierPattern"
-    storageSchemaName:
-      name: schemaName
-      in: path
-      required: true
-      description: |
-        Schema within the storage destination. A table built from a bare
-        physical name lives in `main`.
-      schema:
-        $ref: "#/components/schemas/IdentifierPattern"
-
   schemas:
-    IdentifierPattern:
+    Identifier:
       type: string
-      pattern: "^[a-zA-Z0-9_-]+$"
-      description: Standard identifier pattern for resource names
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+      description: A plain identifier
 
-    StorageDestinationConfig:
+    Catalog:
       type: object
-      additionalProperties: true
-      description: >-
-        A storage destination's configuration: an entry of an environment's
-        `storageDestinations`, in the `Connection` shape of the main API
-        (`api-doc.yaml`), credentials included. It must be `type: ducklake`,
-        and it is validated as `storageDestinations` validates an entry.
-      required:
-        - name
-        - type
+      description: A DuckLake catalog, as it records itself
+      required: [name, dataPath, encrypted, formatVersion, sizeBytes]
       properties:
         name:
           type: string
-        type:
+          description: The schema of the catalog database that holds it
+        dataPath:
           type: string
-
-    StorageTable:
-      type: object
-      description: A table in a storage destination
-      required:
-        - name
-      properties:
-        name:
+          description: Where its files live, recorded at its creation
+        encrypted:
+          type: boolean
+          description: Whether its files are encrypted; fixed at its creation
+        formatVersion:
           type: string
-          description: Table name, unqualified
-
-    StorageTableLoadRequest:
-      type: object
-      required:
-        - destination
-        - tableName
-        - source
-      properties:
-        destination:
-          $ref: "#/components/schemas/StorageDestinationConfig"
-          description: The destination's configuration, as for `bootstraps`.
-        tableName:
-          type: string
-          description: The table to write, a plain identifier.
-        mode:
-          type: string
-          enum: [create, replace]
-          default: create
-        source:
-          type: object
-          required:
-            - uri
-            - format
-          properties:
-            uri:
-              type: string
-              description: The object, under the destination's `storage.bucketUrl`.
-            format:
-              type: string
-              enum: [csv, parquet, xlsx, json]
-            options:
-              type: object
-              description: Reader options; each is typed and applies only to the formats named.
-              properties:
-                header:
-                  type: boolean
-                  description: csv and xlsx.
-                delimiter:
-                  type: string
-                  description: csv; one character.
-                sheet:
-                  type: string
-                  description: xlsx; the sheet to read.
-                skip:
-                  type: integer
-                  minimum: 0
-                  description: csv; lines to skip before the header.
-
-    StorageTableLoad:
-      type: object
-      description: The table a load wrote
-      required:
-        - rowCount
-        - columns
-      properties:
-        rowCount:
+          description: DuckLake's catalog format version
+        dataInliningRowLimit:
           type: integer
+          description: Writes of up to this many rows are kept in the catalog database rather than as files
+        fileDeletionGrace:
+          type: string
+          description: How long a retired file is kept before a snapshot delete removes it, e.g. `1 day`
+        sizeBytes:
+          type: integer
+          format: int64
+          description: |
+            Bytes the catalog holds: every data and delete file it records, live
+            or retired but not yet deleted, plus rows inlined in the catalog
+            database
+        schemas:
+          type: array
+          items:
+            type: string
+          description: Its schemas; on a single catalog's read only
+
+    CatalogCreate:
+      type: object
+      required: [name, dataPath]
+      properties:
+        name:
+          $ref: "#/components/schemas/Identifier"
+        dataPath:
+          type: string
+          description: Where its files will live, e.g. `s3://bucket/prefix` or a local directory
+        encrypted:
+          type: boolean
+          default: true
+        dataInliningRowLimit:
+          type: integer
+          minimum: 0
+        fileDeletionGrace:
+          type: string
+          description: An interval like `1 day` or `12 hours`
+        schemas:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identifier"
+          description: Schemas to create beside `main`
+
+    CatalogUpdate:
+      type: object
+      properties:
+        dataInliningRowLimit:
+          type: integer
+          minimum: 0
+        fileDeletionGrace:
+          type: string
+          description: An interval like `1 day` or `12 hours`
+
+    TableSummary:
+      type: object
+      required: [name, sizeBytes]
+      properties:
+        name:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: Bytes its live files hold
+
+    Table:
+      type: object
+      required: [schema, name, columns]
+      properties:
+        schema:
+          type: string
+        name:
+          type: string
         columns:
           type: array
           items:
@@ -381,141 +505,77 @@ components:
                 type: string
               type:
                 type: string
-
-    StorageBootstrapRequest:
-      type: object
-      required:
-        - destination
-      properties:
-        destination:
-          $ref: "#/components/schemas/StorageDestinationConfig"
-          description: >-
-            The destination's configuration, credentials included, in the shape
-            `storageDestinations` takes. Its `name` must equal the path's
-            `destinationName`, and its `type` must be `ducklake`.
-        encrypted:
-          type: boolean
-          default: true
-          description: Create the catalog with DuckLake's encryption at rest.
-        dataInliningRowLimit:
+        rowCount:
           type: integer
-          minimum: 0
-          description: >-
-            DuckLake's data inlining row limit, recorded in the catalog with
-            `set_option` so every later attach reads it. Absent leaves DuckLake's
-            default.
-        schemas:
-          type: array
-          description: >-
-            Schemas to create in the catalog, each a plain identifier. Absent
-            creates none beyond DuckLake's `main`.
-          items:
-            type: string
+          format: int64
+          description: When the catalog records one
 
-    StorageBootstrap:
+    TableWrite:
       type: object
-      description: What a bootstrapped catalog records
-      required:
-        - encrypted
-        - schemas
+      required: [source]
       properties:
-        encrypted:
-          type: boolean
-          description: Whether the catalog records encryption at rest.
-        schemas:
-          type: array
-          description: Every schema in the catalog after the bootstrap.
-          items:
-            type: string
+        source:
+          type: object
+          required: [uri, format]
+          description: One object under the catalog's data path
+          properties:
+            uri:
+              type: string
+            format:
+              type: string
+              enum: [csv, parquet, xlsx, json]
+            options:
+              type: object
+              description: An allowlist of typed reader options
+              properties:
+                header:
+                  type: boolean
+                delimiter:
+                  type: string
+                sheet:
+                  type: string
+                skip:
+                  type: integer
+                  minimum: 0
+              additionalProperties: false
 
-    StorageFileCleanupRequest:
+    Snapshot:
       type: object
-      required:
-        - snapshotsOlderThan
-        - filesOlderThan
+      required: [id, time, changes]
       properties:
-        snapshotsOlderThan:
-          type: string
-          format: date-time
-          description: |
-            Expire snapshots older than this. Sets how long a dropped table stays
-            recoverable.
-        filesOlderThan:
-          type: string
-          format: date-time
-          description: |
-            Delete files scheduled for deletion before this. Must outlast the
-            longest query reading the destination.
-
-    StorageFileCleanup:
-      type: object
-      description: What one file cleanup reclaimed
-      required:
-        - snapshotsOlderThan
-        - filesOlderThan
-        - expiredSnapshots
-        - deletedFiles
-      properties:
-        snapshotsOlderThan:
-          type: string
-          format: date-time
-        filesOlderThan:
-          type: string
-          format: date-time
-        expiredSnapshots:
+        id:
           type: integer
-          description: Snapshots this cleanup expired
-        deletedFiles:
+          format: int64
+        time:
+          type: string
+          format: date-time
+        changes:
+          type: object
+          additionalProperties: true
+          description: What it changed, as DuckLake records it (e.g. `tables_created`)
+
+    SnapshotDeletion:
+      type: object
+      required: [snapshotsExpired, filesDeleted]
+      properties:
+        snapshotsExpired:
           type: integer
-          description: Data and delete files this cleanup removed from storage
+        filesDeleted:
+          type: integer
 
     Error:
       type: object
-      description: Standard error response format
+      required: [code, message]
       properties:
         code:
           type: integer
-          description: HTTP status code, repeated in the body for convenience
+          description: HTTP status code, repeated in the body
         message:
           type: string
-          description: Human-readable error message describing what went wrong
-        details:
-          type: string
-          description: Additional error details or context
         reason:
           type: string
           description: |
-            Machine-readable discriminator, for callers that must branch on
-            which error they got rather than on prose. Absent unless a caller is
-            expected to act on it, so treat absence as "no special handling".
-
-            TABLE_NOT_FOUND distinguishes a table that is not in the database
-            from the other conditions that also answer 404 on these routes --
-            an environment or connection this server does not host. The former
-            says nothing about whether the caller reached the right server; the
-            latter is a routing problem worth retrying elsewhere.
-
-            CONNECTION_FAILED, on a 502, means the database could not be
-            reached (the connection was refused, reset or timed out, or the
-            server closed it), so the query never ran. The query and the model
-            are fine; retrying elsewhere will not help, and neither will
-            rewriting the query.
-
-            CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
-            connection's credentials (a wrong password, an invalid key, an
-            expired token), so the query never ran. Whoever configures the
-            connection has to fix it; retrying fails the same way.
-
-            CONNECTION_NOT_FOUND, on a 424, means the model names a connection
-            the environment does not have, usually one deleted after the
-            package was loaded.
-
-            Deliberately an open string rather than an enum. Generators render
-            an enum closed, so adding a second value here would break every
-            client generated before it -- on the one field whose purpose is to
-            grow. Callers must treat an unrecognized value as absent.
-
-            Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
-      required:
-        - message
+            Machine-readable: CATALOG_NOT_FOUND, CATALOG_EXISTS,
+            CATALOG_DATABASE_NOT_CONFIGURED, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
+            TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH, INVALID_REQUEST. Treat an
+            unrecognized value as absent.

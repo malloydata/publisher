@@ -372,7 +372,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    sql: {},
    operator: {},
    connection: {
-      attrs: ["type", "refused", "rows", "metadataschema", "createifnotexists"],
+      attrs: ["type", "refused", "rows", "metadataschema", "datapath"],
       keys: ["cites"],
    },
    rejected: { keys: ["cites"] },
@@ -944,15 +944,15 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   throw new Error(
                      `## Connection ${arg}: metadataSchema must be a plain identifier, got ${metadataSchema}`,
                   );
-               const createRaw = attrs.createifnotexists;
-               if (createRaw !== undefined) {
+               const dataPathRaw = attrs.datapath;
+               if (dataPathRaw !== undefined) {
                   if (kind !== "ducklake")
                      throw new Error(
-                        `## Connection ${arg}: createIfNotExists applies only to type=ducklake`,
+                        `## Connection ${arg}: dataPath applies only to type=ducklake`,
                      );
-                  if (createRaw !== "true" && createRaw !== "false")
+                  if (dataPathRaw !== "recorded")
                      throw new Error(
-                        `## Connection ${arg}: createIfNotExists must be true or false, got ${String(createRaw)}`,
+                        `## Connection ${arg}: dataPath must be "recorded" (omit bucketUrl), got ${String(dataPathRaw)}`,
                      );
                }
                connectionDecls.push({
@@ -960,8 +960,8 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   name: arg.trim(),
                   kind,
                   ...(metadataSchema ? { metadataSchema } : {}),
-                  ...(createRaw !== undefined
-                     ? { createIfNotExists: createRaw === "true" }
+                  ...(dataPathRaw !== undefined
+                     ? { recordedDataPath: true }
                      : {}),
                });
                break;
@@ -2002,9 +2002,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       const serverFor = async (pub?: string, env?: string): Promise<Rest> => {
          const base = pub ? ctx.restOf(pub) : await active();
          const target = ctx.envFor(env ?? PRIMARY_ENV);
-         return target === base.env
-            ? base
-            : new Rest(base.baseUrl, target, base.adminUrl);
+         return target === base.env ? base : new Rest(base.baseUrl, target);
       };
       const modelPath = (pkg?: string, env?: string): string =>
          primaryModel.get(

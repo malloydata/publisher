@@ -86,6 +86,10 @@ import {
    resolveAdminHost,
    resolveAdminPort,
 } from "./routes/admin";
+import {
+   CatalogAdmin,
+   catalogAdminConfigFromEnv,
+} from "./service/catalog_admin";
 import { createMcpApp, resolveMcpHost } from "./routes/mcp";
 import { registerSpaFallback } from "./routes/spa";
 import {
@@ -128,6 +132,13 @@ const MCP_HOST = resolveMcpHost(process.env);
 // here so a malformed port fails startup before anything binds.
 const ADMIN_PORT = resolveAdminPort(process.env);
 const ADMIN_HOST = resolveAdminHost(process.env);
+// The catalog database the admin API finds catalogs in, read here so a malformed
+// storage setting fails startup. Null leaves the catalog routes answering 503.
+const ADMIN_CATALOG_CONFIG =
+   ADMIN_PORT === null ? null : catalogAdminConfigFromEnv(process.env);
+const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
+   ? new CatalogAdmin(ADMIN_CATALOG_CONFIG)
+   : null;
 // Resolved at module scope, not in the listen callback: it throws on a typo,
 // and a throw there would be an uncaughtException after both ports are bound.
 const MCP_CONFIG_ENABLED = mcpConfigEnabled();
@@ -539,7 +550,7 @@ mcpServer.headersTimeout = 600000;
 const adminServer =
    ADMIN_PORT === null
       ? null
-      : createAdminApp(storageDestinationController).listen(
+      : createAdminApp(ADMIN_CATALOGS).listen(
            ADMIN_PORT,
            ADMIN_HOST,
            function (this: import("net").Server) {

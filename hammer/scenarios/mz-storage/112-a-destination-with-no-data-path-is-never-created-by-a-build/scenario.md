@@ -1,5 +1,5 @@
 ---
-id: a-destination-that-must-be-bootstrapped-is-never-created-by-a-build
+id: a-destination-with-no-data-path-is-never-created-by-a-build
 tags: orchestration, operator, security
 package: nb
 ---
@@ -9,13 +9,14 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A destination that must be bootstrapped is never created by a build
+# A destination with no data path is never created by a build
 
 `a-destination-nothing-has-been-built-into-lists-as-not-found` shows the default:
 the first build into a DuckLake destination creates its catalog, with whatever
-settings that attach carried. An orchestrator that creates catalogs itself, through
-the destination's `bootstraps` route, encrypted and owned by the role it chose, sets
-`createIfNotExists: false`. Then a build into a catalog that does not exist yet is a
+settings that attach carried. A destination that gives no `storage.bucketUrl`
+names a catalog created elsewhere (the admin API's `POST /catalogs`, encrypted
+and owned by the role its creator chose, or another tool), whose recorded data
+path every attach uses. A build into such a catalog that does not exist yet is a
 failure, never a quiet creation of an unencrypted catalog.
 
 Proves:
@@ -23,7 +24,7 @@ Proves:
 - the build of a source into such a destination fails;
 - it created nothing: the destination still lists as not found afterwards.
 
-## Connection nb_lake (type=ducklake, metadataSchema=tenant_nb, createIfNotExists=false)
+## Connection nb_lake (type=ducklake, metadataSchema=tenant_nb, dataPath=recorded)
 
 A destination whose catalog lives in the `tenant_nb` schema, which nothing has
 created, and which no build may create.

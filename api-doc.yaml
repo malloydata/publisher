@@ -3331,9 +3331,9 @@ paths:
       deprecated: true
       summary: List tables in a storage destination
       description: |
-        **DEPRECATED**: served on the admin listener (`admin-api-doc.yaml`,
-        `PUBLISHER_ADMIN_PORT`) at the same path; this public route is removed
-        in a later release.
+        **DEPRECATED**: use the admin API's `GET
+        /catalogs/{catalogName}/schemas/{schemaName}/tables`
+        (`admin-api-doc.yaml`); this route is removed in a later release.
 
         Lists the tables in one schema of a storage destination, in name order.
         Storage destinations are never reachable through the connection routes, so
@@ -3367,9 +3367,9 @@ paths:
       deprecated: true
       summary: Drop a table from a storage destination
       description: |
-        **DEPRECATED**: served on the admin listener (`admin-api-doc.yaml`,
-        `PUBLISHER_ADMIN_PORT`) at the same path; this public route is removed
-        in a later release.
+        **DEPRECATED**: use the admin API's `DELETE
+        /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}`
+        (`admin-api-doc.yaml`); this route is removed in a later release.
 
         Drops one named table from a storage destination. Idempotent: a table that
         does not exist answers 204 as well, so a retried drop is free.
@@ -3406,9 +3406,10 @@ paths:
       deprecated: true
       summary: Reclaim storage behind dropped tables in a DuckLake destination
       description: |
-        **DEPRECATED**: served on the admin listener (`admin-api-doc.yaml`,
-        `PUBLISHER_ADMIN_PORT`) at the same path; this public route is removed
-        in a later release.
+        **DEPRECATED**: use the admin API's `DELETE
+        /catalogs/{catalogName}/snapshots?olderThan=…` (`admin-api-doc.yaml`),
+        whose file-deletion grace is the catalog's own setting; this route is
+        removed in a later release.
 
         Reclaims the object-storage bytes that dropped and rewritten tables leave
         behind in a DuckLake destination. Runs, in order:
@@ -7122,17 +7123,22 @@ components:
           properties:
             bucketUrl:
               type: string
-              description:
-                URL of the storage bucket (e.g. s3://my-bucket/path or
-                gs://my-bucket/path)
+              description: >-
+                The catalog's data path, a URL of the storage location (e.g.
+                s3://my-bucket/path or gs://my-bucket/path). Given, it is the
+                path every attach uses, and the first read-write attach of a
+                catalog that does not exist yet creates it there: the
+                pre-existing behavior. Omitted, the catalog must already exist,
+                every attach uses the data path the catalog recorded at its
+                creation, and no attach ever creates a catalog: the shape for a
+                catalog created elsewhere, through the admin API
+                (admin-api-doc.yaml) or by another tool.
             s3Connection:
               $ref: "#/components/schemas/S3Connection"
               description: AWS S3 connection configuration for data storage
             gcsConnection:
               $ref: "#/components/schemas/GCSConnection"
               description: Google Cloud Storage connection configuration for data storage
-          required:
-            - bucketUrl
         catalog:
           type: object
           description: Catalog metadata connection configuration
@@ -7195,21 +7201,7 @@ components:
             orchestrator that provisions the catalog and decides who may write
             through it. A storage destination's build sessions attach
             read-write regardless; this field governs only the connection.
-        createIfNotExists:
-          type: boolean
-          default: true
-          description: >
-            Whether a read-write attach creates the catalog when there is none.
-            Absent or true is the pre-existing behavior: the first build into a
-            destination creates its catalog, with that attach's settings. False
-            is for an orchestrator that creates the catalog itself, through the
-            admin API's `bootstraps` route (admin-api-doc.yaml): every other read-write attach, on
-            a build, a load or a read-write connection, then refuses a missing
-            catalog rather than creating one, so a catalog is never created
-            unencrypted or owned by whichever role wrote first. A read-only
-            attach never creates a catalog either way.
       required:
-        - storage
         - catalog
 
     BigqueryConnection:

@@ -156,10 +156,7 @@ class PublisherCluster {
       string,
       { server: ServerHandle; rest: Rest; mode: PersistStorageMode }
    >();
-   private ports = new Map<
-      string,
-      { port: number; mcpPort: number; adminPort: number }
-   >();
+   private ports = new Map<string, { port: number; mcpPort: number }>();
    private nextIdx = 0;
    /** Every server root this cluster created, so teardown can remove them. */
    private roots: string[] = [];
@@ -190,19 +187,13 @@ class PublisherCluster {
     * server exit early ("port in use"). A wide stride keeps every REST/MCP port
     * distinct no matter how many named publishers a run accumulates.
     */
-   private portsFor(name: string): {
-      port: number;
-      mcpPort: number;
-      adminPort: number;
-   } {
+   private portsFor(name: string): { port: number; mcpPort: number } {
       let p = this.ports.get(name);
       if (!p) {
          const i = this.nextIdx++;
          p = {
             port: this.cfg.basePort + i * 100,
             mcpPort: this.cfg.baseMcpPort + i * 100,
-            // Inside the MCP port's band, which no other publisher's ports reach.
-            adminPort: this.cfg.baseMcpPort + i * 100 + 10,
          };
          this.ports.set(name, p);
       }
@@ -251,7 +242,7 @@ class PublisherCluster {
          bootStats.stopMs += performance.now() - stopStart;
          this.pubs.delete(name);
       }
-      const { port, mcpPort, adminPort } = this.portsFor(name);
+      const { port, mcpPort } = this.portsFor(name);
       const serverRoot = path.join(
          this.cfg.workdir,
          `server-${this.cfg.tag}${name}`,
@@ -265,7 +256,6 @@ class PublisherCluster {
          configPath: this.cfg.configPath,
          port,
          mcpPort,
-         adminPort,
          mode,
          init,
          extraEnv,
@@ -276,7 +266,7 @@ class PublisherCluster {
       });
       bootStats.count++;
       bootStats.startMs += performance.now() - bootStart;
-      const rest = new Rest(server.baseUrl, this.cfg.env, server.adminUrl);
+      const rest = new Rest(server.baseUrl, this.cfg.env);
       const st = await rest.status();
       bootStats.ms = bootStats.startMs + bootStats.stopMs;
       if (st.loadErrors)
@@ -527,7 +517,7 @@ async function main(): Promise<void> {
                   r.catalogDbFor(c.name),
                   r.storageDirFor(c.name),
                   c.metadataSchema,
-                  c.createIfNotExists,
+                  c.recordedDataPath,
                );
                if (!declaredDestinationsByEnv.has(cEnv))
                   declaredDestinationsByEnv.set(cEnv, []);
@@ -779,7 +769,7 @@ async function main(): Promise<void> {
          const bind = (rest: Rest): Rest =>
             rest.env === r.envFor(PRIMARY)
                ? rest
-               : new Rest(rest.baseUrl, r.envFor(PRIMARY), rest.adminUrl);
+               : new Rest(rest.baseUrl, r.envFor(PRIMARY));
          const ctx: ScenarioContext = {
             pg,
             env: r.envFor(PRIMARY),

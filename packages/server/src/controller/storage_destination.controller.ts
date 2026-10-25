@@ -1,10 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { components as adminComponents } from "../admin_api";
 import type { components } from "../api";
-
-type AdminSchemas = adminComponents["schemas"];
 import {
    BadRequestError,
    DestinationNotFoundError,
@@ -13,26 +10,16 @@ import {
 import { logger } from "../logger";
 import { recordDropTables } from "../materialization_metrics";
 import type { Environment } from "../service/environment";
-import { validateStorageDestinations } from "../service/connection_config";
-import {
-   loadStorageTable,
-   type LoadFormat,
-   type LoadOptions,
-} from "../service/storage_table_load";
 import { EnvironmentStore } from "../service/environment_store";
 import {
-   bootstrapStorageCatalog,
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
 } from "../service/materialization_build_session";
-import { withStatementUsage } from "../service/statement_usage";
 
 type ApiConnection = components["schemas"]["Connection"];
-type ApiStorageTable = AdminSchemas["StorageTable"];
-type ApiStorageFileCleanup = AdminSchemas["StorageFileCleanup"];
-type ApiStorageBootstrap = AdminSchemas["StorageBootstrap"];
-type ApiStorageTableLoad = AdminSchemas["StorageTableLoad"];
+type ApiStorageTable = components["schemas"]["StorageTable"];
+type ApiStorageFileCleanup = components["schemas"]["StorageFileCleanup"];
 
 /**
  * The same shape the spec declares for every identifier in these paths. Checked
@@ -138,175 +125,6 @@ export class StorageDestinationController {
          filesOlderThan: filesOlderThan.toISOString(),
          ...result,
       };
-   }
-
-   /**
-    * The first attach of a catalog the caller provisioned. The destination is
-    * the body's, validated as `storageDestinations` validates an entry, and never
-    * resolved from the environment's list: the caller may not have distributed it
-    * yet, and a same-named configured destination is a different catalog.
-    */
-   async createBootstrap(
-      environmentName: string,
-      destinationName: string,
-      body: Record<string, unknown>,
-   ): Promise<ApiStorageBootstrap> {
-      const destination = await this.bodyDestination(
-         environmentName,
-         destinationName,
-         body,
-      );
-      const accepted = [destination];
-      const encrypted = body.encrypted === undefined ? true : body.encrypted;
-      if (typeof encrypted !== "boolean") {
-         throw new BadRequestError("'encrypted' must be a boolean.");
-      }
-      const limit = body.dataInliningRowLimit;
-      if (
-         limit !== undefined &&
-         !(typeof limit === "number" && Number.isInteger(limit) && limit >= 0)
-      ) {
-         throw new BadRequestError(
-            "'dataInliningRowLimit' must be a non-negative integer.",
-         );
-      }
-      const schemas = body.schemas === undefined ? [] : body.schemas;
-      if (
-         !Array.isArray(schemas) ||
-         !schemas.every((x) => typeof x === "string")
-      ) {
-         throw new BadRequestError("'schemas' must be a list of names.");
-      }
-      for (const schema of schemas as string[]) {
-         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
-            throw new BadRequestError(
-               `Invalid schema name '${schema}': expected a plain identifier.`,
-            );
-         }
-      }
-      const result = await bootstrapStorageCatalog({
-         destinationName,
-         destinationConnection: accepted[0],
-         encrypted,
-         dataInliningRowLimit: limit as number | undefined,
-         schemas: schemas as string[],
-      });
-      logger.info("Bootstrapped a storage destination catalog", {
-         environmentName,
-         destinationName,
-         encrypted: result.encrypted,
-         schemas: result.schemas,
-      });
-      return result;
-   }
-
-   /** Loads an object from the destination's own bucket into a table. */
-   async createTable(
-      environmentName: string,
-      destinationName: string,
-      schemaName: string,
-      body: Record<string, unknown>,
-   ): Promise<ApiStorageTableLoad> {
-      assertIdentifier("schema", schemaName);
-      const destination = await this.bodyDestination(
-         environmentName,
-         destinationName,
-         body,
-      );
-      const tableName = body.tableName;
-      if (typeof tableName !== "string") {
-         throw new BadRequestError("'tableName' is required.");
-      }
-      const mode = body.mode === undefined ? "create" : body.mode;
-      if (mode !== "create" && mode !== "replace") {
-         throw new BadRequestError("'mode' must be 'create' or 'replace'.");
-      }
-      const source = body.source as
-         | { uri?: unknown; format?: unknown; options?: unknown }
-         | undefined;
-      if (!source || typeof source.uri !== "string") {
-         throw new BadRequestError("'source.uri' is required.");
-      }
-      if (!["csv", "parquet", "xlsx", "json"].includes(String(source.format))) {
-         throw new BadRequestError(
-            "'source.format' must be csv, parquet, xlsx or json.",
-         );
-      }
-      const options = (source.options ?? {}) as LoadOptions;
-      const allowed = new Set(["header", "delimiter", "sheet", "skip"]);
-      for (const key of Object.keys(options)) {
-         if (!allowed.has(key)) {
-            throw new BadRequestError(`Unknown reader option '${key}'.`);
-         }
-      }
-      const uri = source.uri;
-      const result = await withStatementUsage(
-         {
-            environment: environmentName,
-            connection: destinationName,
-            surface: "load",
-         },
-         () =>
-            loadStorageTable({
-               destinationName,
-               destinationConnection: destination,
-               schemaName,
-               tableName,
-               uri,
-               format: source.format as LoadFormat,
-               options,
-               mode,
-            }),
-         (r) => r.rowCount,
-      );
-      logger.info("Loaded a table into a storage destination", {
-         environmentName,
-         destinationName,
-         schemaName,
-         tableName,
-         format: source.format,
-         mode,
-         rowCount: result.rowCount,
-      });
-      return result;
-   }
-
-   /**
-    * A destination carried in a request body, for a catalog the caller may not
-    * have distributed: validated as a `storageDestinations` entry, never
-    * resolved from the environment's list.
-    */
-   private async bodyDestination(
-      environmentName: string,
-      destinationName: string,
-      body: Record<string, unknown>,
-   ): Promise<ApiConnection> {
-      assertIdentifier("storage destination", destinationName);
-      // The environment must exist, as for every route under it.
-      await this.environmentStore.getEnvironment(environmentName, false);
-      const raw = body?.destination as ApiConnection | undefined;
-      if (!raw || typeof raw !== "object") {
-         throw new BadRequestError("'destination' is required.");
-      }
-      if (raw.name !== destinationName) {
-         throw new BadRequestError(
-            `The body's destination is named '${raw.name}', not '${destinationName}'.`,
-         );
-      }
-      if (raw.type !== "ducklake") {
-         throw new BadRequestError(
-            `Only a DuckLake destination is taken here; '${destinationName}' is '${raw.type}'.`,
-         );
-      }
-      const { accepted, rejected } = validateStorageDestinations([raw]);
-      if (accepted.length !== 1) {
-         throw new BadRequestError(
-            `Storage destination '${destinationName}' is not valid: ${rejected
-               .map((r) => r.reason)
-               .join("; ")}`,
-         );
-      }
-      return accepted[0];
    }
 
    private async resolve(

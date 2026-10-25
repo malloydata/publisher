@@ -139,9 +139,9 @@ status: 404
       ).toThrow(/not both/);
    });
 
-   it("parses createIfNotExists on a ducklake connection, and only there", () => {
+   it("parses dataPath=recorded on a ducklake connection, and only there", () => {
       const parsed = parseMarkdownForTest(
-         `${FRONT}\n## Connection nb (type=ducklake, createIfNotExists=false)\n`,
+         `${FRONT}\n## Connection nb (type=ducklake, dataPath=recorded)\n`,
          "t",
       );
       expect(parsed.connectionDecls).toEqual([
@@ -149,21 +149,21 @@ status: 404
             env: "default",
             name: "nb",
             kind: "ducklake",
-            createIfNotExists: false,
+            recordedDataPath: true,
          },
       ]);
       expect(() =>
          parseMarkdownForTest(
-            `${FRONT}\n## Connection pg2 (type=postgres, createIfNotExists=false)\n`,
+            `${FRONT}\n## Connection pg2 (type=postgres, dataPath=recorded)\n`,
             "t",
          ),
       ).toThrow(/applies only to type=ducklake/);
       expect(() =>
          parseMarkdownForTest(
-            `${FRONT}\n## Connection nb (type=ducklake, createIfNotExists=no)\n`,
+            `${FRONT}\n## Connection nb (type=ducklake, dataPath=bucket)\n`,
             "t",
          ),
-      ).toThrow(/must be true or false/);
+      ).toThrow(/must be "recorded"/);
    });
 
    it("rejects a metadataSchema on anything but a ducklake connection", () => {

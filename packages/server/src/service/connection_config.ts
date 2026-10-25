@@ -718,11 +718,8 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
       );
    }
-   if (!connection.ducklakeConnection.storage?.bucketUrl) {
-      throw new Error(
-         `Storage bucketUrl is required for DuckLake: ${connection.name}`,
-      );
-   }
+   // No bucketUrl is allowed: the catalog must then exist, and its recorded
+   // data path is used (connection.ts, dataPathClauses).
    // Shape only, as in the duckdb branch: a throw here fails the ENTIRE
    // environment. The mutual-exclusion and enum guards are safe; the key-pair
    // requirement is NOT applied, because failing every other connection over
@@ -730,7 +727,7 @@ function validateDuckLakeShape(connection: ApiConnection): void {
    // validateStorageDestinations rejects one destination at a time, so it
    // applies the full check.
    const storage = connection.ducklakeConnection.storage;
-   if (storage.s3Connection) {
+   if (storage?.s3Connection) {
       validateS3ProviderShape(storage.s3Connection, connection.name);
    }
    // metadataSchema reaches the ATTACH as a quoted string literal AND the
@@ -767,17 +764,6 @@ function validateDuckLakeShape(connection: ApiConnection): void {
                `${connection.name}`,
          );
       }
-   }
-   const createIfNotExists = connection.ducklakeConnection.createIfNotExists;
-   if (
-      createIfNotExists !== undefined &&
-      createIfNotExists !== null &&
-      typeof createIfNotExists !== "boolean"
-   ) {
-      throw new Error(
-         `DuckLake createIfNotExists must be a boolean, got ` +
-            `'${String(createIfNotExists)}' for connection: ${connection.name}`,
-      );
    }
 }
 

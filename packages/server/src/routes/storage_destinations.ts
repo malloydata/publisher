@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The storage-destination routes: an orchestrator's operations on a DuckLake
- * destination's catalog and bucket (admin-api-doc.yaml). None changes this
- * server's own state, so they are served on the admin listener
- * (`routes/admin.ts`). Three of them predate it and are also still served on the
- * main API, deprecated; removing those is deleting the `public` branch below.
+ * DEPRECATED: the main API's storage-destination routes, the table listing, drop
+ * and file cleanup an orchestrator's garbage collection used. The admin API's
+ * catalog resources replace them (admin-api-doc.yaml: GET and DELETE
+ * `/catalogs/{c}/schemas/{s}/tables[/{t}]`, and DELETE `/catalogs/{c}/snapshots`).
+ * Every response carries `Deprecation: true`. Removing them is deleting this
+ * module, its controller, and the one call in routes/api.ts.
  */
 
 import type express from "express";
@@ -23,11 +24,9 @@ export function registerStorageDestinationRoutes(
    app: express.Express,
    apiPrefix: string,
    controller: StorageDestinationController,
-   surface: "admin" | "public",
 ): void {
    const destination = `${apiPrefix}/environments/:environmentName/storageDestinations/:destinationName`;
-   const before: express.RequestHandler[] =
-      surface === "public" ? [deprecatedOnPublic] : [];
+   const before = [deprecatedOnPublic];
 
    app.get(
       `${destination}/schemas/:schemaName/tables`,
@@ -59,33 +58,6 @@ export function registerStorageDestinationRoutes(
       apiRoute(
          (req) =>
             controller.createFileCleanup(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
-   );
-   if (surface === "public") return;
-
-   app.post(
-      `${destination}/schemas/:schemaName/tables`,
-      apiRoute(
-         (req) =>
-            controller.createTable(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.params.schemaName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
-   );
-   app.post(
-      `${destination}/bootstraps`,
-      apiRoute(
-         (req) =>
-            controller.createBootstrap(
                req.params.environmentName,
                req.params.destinationName,
                req.body ?? {},

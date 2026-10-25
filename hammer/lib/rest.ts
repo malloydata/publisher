@@ -41,8 +41,6 @@ export class Rest {
    constructor(
       readonly baseUrl: string,
       readonly env: string,
-      /** The admin listener, which serves the storage-destination routes. */
-      readonly adminUrl: string,
    ) {}
 
    private pkgUrl(pkg: string, suffix = ""): string {
@@ -50,7 +48,7 @@ export class Rest {
    }
 
    private destinationUrl(dest: string, suffix = ""): string {
-      return `${this.adminUrl}/api/v0/environments/${this.env}/storageDestinations/${dest}${suffix}`;
+      return `${this.baseUrl}/api/v0/environments/${this.env}/storageDestinations/${dest}${suffix}`;
    }
 
    /** `GET …/storageDestinations/{dest}/schemas/{schema}/tables` — table names. */

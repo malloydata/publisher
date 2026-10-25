@@ -3,17 +3,17 @@
 
 import { describe, expect, it } from "bun:test";
 import request from "supertest";
-import type { StorageDestinationController } from "../controller/storage_destination.controller";
+import {
+   type CatalogAdmin,
+   CatalogAdminError,
+   catalogAdminConfigFromEnv,
+   connectionStringAsRole,
+} from "../service/catalog_admin";
 import { buildRouteApp } from "../test_helpers/route_app";
 import { createAdminApp, resolveAdminHost, resolveAdminPort } from "./admin";
 
-const TABLES =
-   "/api/v0/environments/e/storageDestinations/lake/schemas/main/tables";
-
-const controller = {
-   listTables: async () => [{ name: "t" }],
-   createBootstrap: async () => ({ encrypted: true, schemas: ["main"] }),
-} as unknown as StorageDestinationController;
+const catalogs = (over: Partial<CatalogAdmin>): CatalogAdmin =>
+   over as unknown as CatalogAdmin;
 
 describe("the admin listener", () => {
    it("is off unless a port is given, and refuses one that is not a port", () => {
@@ -33,26 +33,141 @@ describe("the admin listener", () => {
       );
    });
 
-   it("serves the catalog operations, with no Deprecation header", async () => {
-      const app = createAdminApp(controller);
-      const listed = await request(app).get(TABLES);
-      expect(listed.status).toBe(200);
-      expect(listed.body).toEqual([{ name: "t" }]);
-      expect(listed.headers.deprecation).toBeUndefined();
-      const boot = await request(app)
-         .post("/api/v0/environments/e/storageDestinations/lake/bootstraps")
-         .send({});
-      expect(boot.status).toBe(201);
+   it("answers 503 on every catalog route when no catalog database is configured", async () => {
+      const res = await request(createAdminApp(null)).get("/api/v0/catalogs");
+      expect(res.status).toBe(503);
+      expect(res.body.reason).toBe("CATALOG_DATABASE_NOT_CONFIGURED");
    });
 
-   it("leaves the main API the deprecated three, marked, and not the new two", async () => {
-      const app = buildRouteApp({ storageDestinationController: controller });
-      const listed = await request(app).get(TABLES);
+   it("answers an admin refusal with its status and reason", async () => {
+      const app = createAdminApp(
+         catalogs({
+            getCatalog: async () => {
+               throw new CatalogAdminError(404, "CATALOG_NOT_FOUND", "no");
+            },
+         }),
+      );
+      const res = await request(app).get("/api/v0/catalogs/ds_x");
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+         code: 404,
+         message: "no",
+         reason: "CATALOG_NOT_FOUND",
+      });
+   });
+
+   it("creates with 201, and a PUT answers 201 for a new table and 200 for a replacement", async () => {
+      let created = true;
+      let ifAbsent: boolean | undefined;
+      const app = createAdminApp(
+         catalogs({
+            createCatalog: async () => ({
+               name: "ds_x",
+               dataPath: "/d",
+               encrypted: true,
+               formatVersion: "1.0",
+               sizeBytes: 0,
+            }),
+            putTable: async (_c, _s, _t, _b, absent) => {
+               ifAbsent = absent;
+               return {
+                  table: { schema: "main", name: "t", columns: [] },
+                  created,
+               };
+            },
+         }),
+      );
+      expect(
+         (await request(app).post("/api/v0/catalogs").send({})).status,
+      ).toBe(201);
+      const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t";
+      expect((await request(app).put(path).send({})).status).toBe(201);
+      expect(ifAbsent).toBe(false);
+      created = false;
+      expect(
+         (await request(app).put(path).set("If-None-Match", "*").send({}))
+            .status,
+      ).toBe(200);
+      expect(ifAbsent).toBe(true);
+   });
+
+   it("refuses a snapshot delete without a valid olderThan", async () => {
+      const app = createAdminApp(catalogs({}));
+      const res = await request(app).delete("/api/v0/catalogs/ds_x/snapshots");
+      expect(res.status).toBe(400);
+      expect(res.body.reason).toBe("INVALID_REQUEST");
+   });
+
+   it("leaves the main API the three deprecated storage routes, marked", async () => {
+      const app = buildRouteApp({
+         storageDestinationController: {
+            listTables: async () => [{ name: "t" }],
+         },
+      });
+      const listed = await request(app).get(
+         "/api/v0/environments/e/storageDestinations/lake/schemas/main/tables",
+      );
       expect(listed.status).toBe(200);
       expect(listed.headers.deprecation).toBe("true");
       const boot = await request(app)
          .post("/api/v0/environments/e/storageDestinations/lake/bootstraps")
          .send({});
       expect(boot.status).toBe(404);
+   });
+});
+
+describe("the admin listener's configuration", () => {
+   it("is null without a catalog database, and reads each storage provider", () => {
+      expect(catalogAdminConfigFromEnv({})).toBeNull();
+      const db = "host=h dbname=ducklake user=a password=p";
+      expect(
+         catalogAdminConfigFromEnv({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
+      ).toEqual({ catalogDatabase: db, storage: undefined });
+      expect(
+         catalogAdminConfigFromEnv({
+            PUBLISHER_ADMIN_CATALOG_DATABASE: db,
+            PUBLISHER_ADMIN_STORAGE_PROVIDER: "gcs",
+            PUBLISHER_ADMIN_STORAGE_KEY_ID: "k",
+            PUBLISHER_ADMIN_STORAGE_SECRET: "s",
+         })?.storage,
+      ).toEqual({ gcsConnection: { keyId: "k", secret: "s" } });
+      expect(
+         catalogAdminConfigFromEnv({
+            PUBLISHER_ADMIN_CATALOG_DATABASE: db,
+            PUBLISHER_ADMIN_STORAGE_PROVIDER: "s3_credential_chain",
+            PUBLISHER_ADMIN_STORAGE_REGION: "us-east-1",
+         })?.storage,
+      ).toEqual({
+         s3Connection: { provider: "credential_chain", region: "us-east-1" },
+      });
+   });
+
+   it("fails startup on a provider it cannot use", () => {
+      const db = "host=h";
+      expect(() =>
+         catalogAdminConfigFromEnv({
+            PUBLISHER_ADMIN_CATALOG_DATABASE: db,
+            PUBLISHER_ADMIN_STORAGE_PROVIDER: "azure",
+         }),
+      ).toThrow(/must be s3, s3_credential_chain or gcs/);
+      expect(() =>
+         catalogAdminConfigFromEnv({
+            PUBLISHER_ADMIN_CATALOG_DATABASE: db,
+            PUBLISHER_ADMIN_STORAGE_PROVIDER: "s3",
+         }),
+      ).toThrow(/needs PUBLISHER_ADMIN_STORAGE_KEY_ID/);
+   });
+
+   it("acts as a role through libpq options, in either connection-string form", () => {
+      expect(connectionStringAsRole("host=h user=a", "ds_x")).toBe(
+         "host=h user=a options=-crole=ds_x",
+      );
+      expect(connectionStringAsRole("postgres://a@h/db", "ds_x")).toBe(
+         "postgres://a@h/db?options=-crole%3Dds_x",
+      );
+      expect(
+         connectionStringAsRole("postgres://a@h/db?sslmode=require", "ds_x"),
+      ).toBe("postgres://a@h/db?sslmode=require&options=-crole%3Dds_x");
+      expect(connectionStringAsRole("host=h", undefined)).toBe("host=h");
    });
 });
