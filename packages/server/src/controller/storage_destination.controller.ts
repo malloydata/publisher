@@ -23,6 +23,7 @@ import {
    dropStorageTable,
    listStorageTables,
 } from "../service/materialization_build_session";
+import { withStatementUsage } from "../service/statement_usage";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiStorageTable = components["schemas"]["StorageTable"];
@@ -232,16 +233,22 @@ export class StorageDestinationController {
             throw new BadRequestError(`Unknown reader option '${key}'.`);
          }
       }
-      const result = await loadStorageTable({
-         destinationName,
-         destinationConnection: destination,
-         schemaName,
-         tableName,
-         uri: source.uri,
-         format: source.format as LoadFormat,
-         options,
-         mode,
-      });
+      const uri = source.uri;
+      const result = await withStatementUsage(
+         { environment: environmentName, connection: destinationName, surface: "load" },
+         () =>
+            loadStorageTable({
+               destinationName,
+               destinationConnection: destination,
+               schemaName,
+               tableName,
+               uri,
+               format: source.format as LoadFormat,
+               options,
+               mode,
+            }),
+         (r) => r.rowCount,
+      );
       logger.info("Loaded a table into a storage destination", {
          environmentName,
          destinationName,

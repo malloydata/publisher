@@ -152,7 +152,8 @@ import {
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
 import { destinationSchemaOf } from "./storage_table_path";
-import { carriesAuthorSql } from "./same_catalog_build";
+import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { withStatementUsage } from "./statement_usage";
 
 /**
  * Orchestrates single-call materialization builds.
@@ -2308,7 +2309,8 @@ export class MaterializationService {
       // source warehouse and CTAS it into the destination.
       if (!result) {
          try {
-            result = await buildSourceIntoStorage({
+            const build = () =>
+               buildSourceIntoStorage({
                destinationName,
                destinationConnection,
                sourceConnection,
@@ -2320,6 +2322,19 @@ export class MaterializationService {
                queryMetadata,
                incremental: refresh,
             });
+            // A same-catalog build reads and writes only the store, so its seconds
+            // are the store's; a passthrough build's are mostly the warehouse's.
+            result = isSameCatalog(sourceConnection, destinationConnection)
+               ? await withStatementUsage(
+                    {
+                       environment: environment.getEnvironmentName?.() ?? "",
+                       connection: destinationName,
+                       surface: "build",
+                       package: params.incremental?.packageName,
+                    },
+                    build,
+                 )
+               : await build();
          } catch (err) {
             // Redact: a federation/passthrough/attach error can echo connection
             // detail (connstrings, service-account JSON). Strip credential VALUES

@@ -6040,6 +6040,7 @@ export class Model {
             {
                abortSignal,
                maxRows,
+               usage: Model.statementUsage(queryMetadataInput, this.packageName),
                queryMetadata: (connectionName) =>
                   this.resolveQueryMetadata(
                      queryMetadataInput,
@@ -6151,6 +6152,7 @@ export class Model {
                {
                   abortSignal,
                   maxRows,
+                  usage: Model.statementUsage(queryMetadataInput, this.packageName),
                   // Re-resolved: the first bag was for the STORAGE connection.
                   // The correlation id rides in the input, so it is kept.
                   queryMetadata: (connectionName) =>
@@ -6295,6 +6297,21 @@ export class Model {
     * Fails open: an unreadable connection config or an unparseable annotation
     * contributes no layer rather than failing the query.
     */
+   /** The usage hook for a statement, when its caller says which connections are metered. */
+   private static statementUsage(
+      input: ModelQueryMetadataInput | undefined,
+      packageName: string,
+   ):
+      | { metered: (connectionName: string) => boolean; environment: string; package: string }
+      | undefined {
+      if (!input?.meteredConnection || !input.environment) return undefined;
+      return {
+         metered: input.meteredConnection,
+         environment: input.environment,
+         package: packageName,
+      };
+   }
+
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
@@ -6977,6 +6994,7 @@ export class Model {
                {
                   abortSignal,
                   maxRows: cellMaxRows,
+                  usage: Model.statementUsage(queryMetadataInput, this.packageName),
                   queryMetadata: async (connectionName) => {
                      // The compiled run target, as in getQueryResults.
                      const cellCompiledSource =
