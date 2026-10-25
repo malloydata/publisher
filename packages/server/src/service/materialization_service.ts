@@ -152,6 +152,7 @@ import {
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
 import { destinationSchemaOf } from "./storage_table_path";
+import { carriesAuthorSql } from "./same_catalog_build";
 
 /**
  * Orchestrates single-call materialization builds.
@@ -2312,6 +2313,7 @@ export class MaterializationService {
                destinationConnection,
                sourceConnection,
                buildSQL: params.publicBuildSQL,
+               sourceCarriesAuthorSql: carriesAuthorSql(persistSource._sourceDef),
                physicalTableName,
                partitionColumns: partitionColumnsForBuild(persistSource),
                environmentPath: environment.getEnvironmentPath(),

@@ -1,0 +1,126 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// Real-compiler contract for the same-catalog build's author-SQL check: the IR
+// shapes it reads (`type: 'sql_select'`, `node: 'genericSQLExpr'`) are pinned
+// against the compiler, so a Malloy change to either must fail here rather than
+// let author SQL onto a read-write lake session.
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { PersistSource } from "@malloydata/malloy";
+import { FixedConnectionMap, InMemoryURLReader, Runtime } from "@malloydata/malloy";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { components } from "../api";
+import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+
+type ApiConnection = components["schemas"]["Connection"];
+
+const ROOT = "file:///same/";
+let connections: FixedConnectionMap;
+
+beforeAll(async () => {
+   const dir = mkdtempSync(join(tmpdir(), "same-catalog-"));
+   const lake = new DuckDBConnection("lake", join(dir, "lake.duckdb"));
+   await lake.runSQL("CREATE TABLE orders AS SELECT 1 AS id, 10 AS amount");
+   connections = new FixedConnectionMap(new Map([["lake", lake]]), "lake");
+});
+
+async function persisted(model: string): Promise<PersistSource> {
+   const urlReader = new InMemoryURLReader(new Map([[`${ROOT}m.malloy`, model]]));
+   const runtime = new Runtime({ urlReader, connections });
+   const compiled = await runtime
+      .loadModel(new URL(`${ROOT}m.malloy`), { importBaseURL: new URL(ROOT) })
+      .getModel();
+   const sources = Object.values(compiled.getBuildPlan().sources);
+   expect(sources.length).toBe(1);
+   return sources[0];
+}
+
+describe("carriesAuthorSql against the real compiler", () => {
+   it("is false for a source Malloy writes all of", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: orders is lake.table('orders')
+#@ persist name="daily"
+source: daily is orders -> { group_by: id; aggregate: total is amount.sum() }`);
+      expect(carriesAuthorSql(s._sourceDef)).toBe(false);
+   });
+
+   it("is true for an .sql() source", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: raw is lake.sql("SELECT * FROM orders")
+#@ persist name="daily"
+source: daily is raw -> { group_by: id }`);
+      expect(carriesAuthorSql(s._sourceDef)).toBe(true);
+   });
+
+   it("is true for a sql_number() expression", async () => {
+      const s = await persisted(`##! experimental { persistence sql_functions }
+source: orders is lake.table('orders') extend {
+   dimension: doubled is sql_number("\${amount} * 2")
+}
+#@ persist name="daily"
+source: daily is orders -> { group_by: doubled }`);
+      expect(carriesAuthorSql(s._sourceDef)).toBe(true);
+   });
+
+   it("is true through a join to an .sql() source", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: extra is lake.sql("SELECT 1 AS id, 'x' AS tag")
+source: orders is lake.table('orders') extend {
+   join_one: extra on id = extra.id
+}
+#@ persist name="daily"
+source: daily is orders -> { group_by: extra.tag }`);
+      expect(carriesAuthorSql(s._sourceDef)).toBe(true);
+   });
+
+   it("fails closed on an unreadable definition", () => {
+      expect(carriesAuthorSql(undefined)).toBe(true);
+      expect(carriesAuthorSql("text")).toBe(true);
+   });
+});
+
+describe("isSameCatalog decides by catalog identity, never by name", () => {
+   const lake = (
+      name: string,
+      over: { host?: string; port?: number; db?: string; schema?: string; bucket?: string } = {},
+   ): ApiConnection =>
+      ({
+         name,
+         type: "ducklake",
+         ducklakeConnection: {
+            storage: { bucketUrl: over.bucket ?? "gs://b/ds_x" },
+            catalog: {
+               postgresConnection: {
+                  host: over.host ?? "catalog",
+                  port: over.port,
+                  databaseName: over.db ?? "ducklake",
+                  userName: "u",
+               },
+               metadataSchema: over.schema ?? "ds_x",
+            },
+         },
+      }) as ApiConnection;
+
+   it("is the same catalog under two names", () => {
+      expect(isSameCatalog(lake("sales"), lake("credible"))).toBe(true);
+      expect(isSameCatalog(lake("a"), lake("a", { bucket: "gs://b/ds_x/", port: 5432 }))).toBe(true);
+   });
+
+   it("is not the same catalog under one name", () => {
+      expect(isSameCatalog(lake("sales"), lake("sales", { schema: "ds_y" }))).toBe(false);
+      expect(isSameCatalog(lake("sales"), lake("sales", { bucket: "gs://b/ds_y" }))).toBe(false);
+      expect(isSameCatalog(lake("sales"), lake("sales", { host: "other" }))).toBe(false);
+      expect(isSameCatalog(lake("sales"), lake("sales", { port: 6543 }))).toBe(false);
+      expect(isSameCatalog(lake("sales"), lake("sales", { db: "other" }))).toBe(false);
+   });
+
+   it("is never true for a non-DuckLake side", () => {
+      expect(
+         isSameCatalog({ name: "sales", type: "postgres" } as ApiConnection, lake("sales")),
+      ).toBe(false);
+      expect(isSameCatalog(lake("sales"), undefined)).toBe(false);
+   });
+});

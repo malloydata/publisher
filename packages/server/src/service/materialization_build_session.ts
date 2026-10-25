@@ -50,6 +50,7 @@ import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    escapeSQL,
+   managedSearchPathSql,
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
@@ -63,6 +64,7 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "./storage_table_path";
+import { isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -712,6 +714,12 @@ export async function buildSourceIntoStorage(params: {
    sourceConnection: ApiConnection;
    /** The source-dialect compiled SELECT (`getSQL` output), verbatim. */
    buildSQL: string;
+   /**
+    * Whether the source's compiled definition carries SQL its author wrote
+    * ({@link carriesAuthorSql}). Read only for a same-catalog build, which runs
+    * on a read-write session and must refuse author SQL; absent counts as true.
+    */
+   sourceCarriesAuthorSql?: boolean;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
@@ -752,6 +760,9 @@ export async function buildSourceIntoStorage(params: {
    const read = params.deps?.read ?? issuePassthroughRead;
 
    assertSupportedDestination(destinationName, destinationConnection);
+   if (isSameCatalog(sourceConnection, destinationConnection)) {
+      return buildSameCatalogIntoStorage(params);
+   }
    const sourceType = passthroughSourceType(sourceConnection);
 
    // Its own instance, so its attach and credentials cannot collide with any
@@ -918,6 +929,74 @@ export async function buildSourceIntoStorage(params: {
             ),
          );
       }
+   }
+}
+
+/**
+ * A source that reads the catalog it is built into (a file loaded into a data
+ * store, then persisted there): a plain CTAS on one read-write attach, with no
+ * federation, no passthrough and no egress.
+ *
+ * The session is read-write on the catalog, so it runs only SQL Malloy
+ * generated: a source whose compiled definition carries author SQL (an `.sql()`
+ * source, a `sql_number()` and its kind) is refused, as every DuckLake source
+ * was before, which keeps the invariant the build path has always held: no
+ * user SQL runs on a read-write lake session. The compiled SQL names its tables
+ * bare, so the session's search path is the catalog's `main`.
+ *
+ * Always a full build: an incremental refresh is offered only to a passthrough
+ * source, so `incremental` is not consulted here.
+ */
+async function buildSameCatalogIntoStorage(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   buildSQL: string;
+   sourceCarriesAuthorSql?: boolean;
+   physicalTableName: string;
+   partitionColumns?: string[];
+   environmentPath: string;
+}): Promise<StorageBuildResult> {
+   const { destinationName, destinationConnection, physicalTableName } = params;
+   if (params.sourceCarriesAuthorSql !== false) {
+      throw new BadRequestError(
+         `Cannot materialize a source that reads storage destination ` +
+            `'${destinationName}' and carries SQL its author wrote (an .sql() source ` +
+            `or a sql_* expression): a build on the catalog runs only Malloy's own SQL. ` +
+            `Express it in Malloy, or persist it without storage=.`,
+      );
+   }
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `build_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      await attachDestinationReadWrite(
+         session,
+         destinationName,
+         destinationConnection,
+         params.environmentPath,
+      );
+      await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+      await pinSessionToUTC(session);
+      await session.runSQL(managedSearchPathSql(destinationName));
+      const target = quoteManifestTablePath(
+         storageTablePath(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
+         STORAGE_TARGET_DIALECT,
+      );
+      const schema = await createTableAndDescribe(
+         session,
+         target,
+         params.buildSQL,
+         params.partitionColumns ?? [],
+      );
+      // Reads no warehouse, as a chained build does: nothing was charged.
+      return { storageDestinationName: destinationName, schema, readCost: null };
+   } finally {
+      await dispose();
    }
 }
 
