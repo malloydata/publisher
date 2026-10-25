@@ -3361,9 +3361,8 @@ paths:
       summary: Load an object from the destination's bucket into a table
       description: |
         For an orchestrator that stages a file in a DuckLake destination's own
-        bucket and wants it as a table there (Credible's data stores). The object
-        must sit under the destination's `storage.bucketUrl`, the only location the
-        session can read. The bytes are rewritten as the catalog's own Parquet,
+        bucket and wants it as a table there. The object must sit under the
+        destination's `storage.bucketUrl`, the only location the session can read. The bytes are rewritten as the catalog's own Parquet,
         never registered in place, so an encrypted catalog stays encrypted. One
         DuckLake transaction: a reader sees the old table or the new one, never
         neither. `mode: create` refuses a table that exists with 409; `replace`

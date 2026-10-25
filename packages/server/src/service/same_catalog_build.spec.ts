@@ -117,7 +117,7 @@ describe("isSameCatalog decides by catalog identity, never by name", () => {
       }) as ApiConnection;
 
    it("is the same catalog under two names", () => {
-      expect(isSameCatalog(lake("sales"), lake("credible"))).toBe(true);
+      expect(isSameCatalog(lake("sales"), lake("analytics"))).toBe(true);
       expect(
          isSameCatalog(
             lake("a"),

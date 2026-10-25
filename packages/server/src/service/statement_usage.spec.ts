@@ -79,12 +79,12 @@ describe("which connections are metered", () => {
             throw new Error("not a connection");
          },
          getStorageDestination: (name: string) => {
-            if (name !== "credible") throw new Error("not a destination");
+            if (name !== "lake") throw new Error("not a destination");
             return {};
          },
       }).meteredConnection!;
       expect(metered("sales")).toBe(true);
-      expect(metered("credible")).toBe(true);
+      expect(metered("lake")).toBe(true);
       expect(metered("warehouse")).toBe(false);
       expect(metered("unknown")).toBe(false);
    });

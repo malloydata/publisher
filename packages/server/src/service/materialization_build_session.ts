@@ -1288,8 +1288,7 @@ export async function dropStorageTable(params: {
  * follow-up drop or cleanup, and those attach read-write, creating the catalog.
  */
 /**
- * The first attach of a catalog an orchestrator provisioned (Credible's data
- * stores): read-write, with the encryption and inlining settings DuckLake fixes
+ * The first attach of a catalog an orchestrator provisioned: read-write, with the encryption and inlining settings DuckLake fixes
  * when it creates the catalog, then each named schema created. Idempotent: on a
  * catalog that already exists the first-attach settings are ignored and the
  * schemas already exist.

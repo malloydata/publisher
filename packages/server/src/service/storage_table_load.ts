@@ -80,7 +80,7 @@ export function readerSql(
 
 /**
  * Loads one object into a table of a DuckLake destination, for an orchestrator
- * that stages a file in the destination's own bucket (Credible's data stores).
+ * that stages a file in the destination's own bucket.
  *
  * - The object must sit under the destination's `bucketUrl`: the session holds
  *   only that bucket's credential, and a load may read nothing else.
