@@ -148,10 +148,11 @@ it on loopback or behind an authenticating proxy.
 
 **Running it on its own.** The catalog database's role reaches every catalog in it, which is fine when one
 operator owns the server and every catalog. When the server serves other people's environments, keep the
-two apart with `PUBLISHER_ROLE` (`--role`): `serve` runs the main API and MCP and refuses to start if
-`PUBLISHER_ADMIN_PORT` or `PUBLISHER_ADMIN_CATALOG_DATABASE` is set; `admin` runs only the admin listener,
-loads no environments (watch mode is then absent), and refuses a config that declares any. The default,
-`all`, runs whatever is configured, as above.
+two apart with two top-level settings in `publisher.config.json`, both `true` by default
+([configuration.md](configuration.md)): the serving deployment sets `"adminApiEnabled": false`, which
+refuses to start if `PUBLISHER_ADMIN_PORT` or `PUBLISHER_ADMIN_CATALOG_DATABASE` is set, and the admin
+deployment sets `"servingApiEnabled": false`, which runs only the admin listener, loads no environments
+(watch mode is then absent) and refuses a config that declares any.
 
 A catalog is found, not registered: every schema of that database holding DuckLake's
 `ducklake_metadata` table is a catalog, named by the schema, and its data path, encryption and settings

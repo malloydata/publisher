@@ -1,12 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// The `admin` role (server_role.ts): only the admin listener. No main API, no
-// MCP, and no environment store, so the process that holds the catalog
+// `servingApiEnabled: false` (server_apis.ts): only the admin listener. No main
+// API, no MCP, and no environment store, so the process that holds the catalog
 // credential has nothing of anyone's to serve.
-import * as path from "path";
 import "./instrumentation";
-import { getPublisherConfig, getPublisherConfigDir } from "./config";
 import { markReady, registerSignalHandlers } from "./health";
 import { logger } from "./logger";
 import { resolveBoundPort } from "./mcp_config";
@@ -20,20 +18,7 @@ import {
    catalogAdminConfigFromEnv,
 } from "./service/catalog_admin";
 
-const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
-
-// A config that declares environments is a deployment that expects this process
-// to serve them. The bundled default (no config file) declares none of its own.
-if (
-   getPublisherConfigDir(SERVER_ROOT) !== null &&
-   getPublisherConfig(SERVER_ROOT).environments.length > 0
-) {
-   throw new Error(
-      "PUBLISHER_ROLE=admin loads no environments, but the publisher config declares some.",
-   );
-}
-
-// assertServerRole has already required the port.
+// assertServerApis has already required the port.
 const ADMIN_PORT = resolveAdminPort(process.env)!;
 const ADMIN_HOST = resolveAdminHost(process.env);
 const CATALOG_CONFIG = catalogAdminConfigFromEnv(process.env);

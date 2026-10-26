@@ -40,9 +40,6 @@ export function applyCliArgs(
       } else if (arg === "--admin_host" && args[i + 1]) {
          env.PUBLISHER_ADMIN_HOST = args[i + 1];
          i++;
-      } else if (arg === "--role" && args[i + 1]) {
-         env.PUBLISHER_ROLE = args[i + 1];
-         i++;
       } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
          env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
          i++;
@@ -93,9 +90,6 @@ export function applyCliArgs(
          );
          console.log(
             "  --admin_host <string>  Host to bind the admin API to (default: 127.0.0.1; not moved by --host)",
-         );
-         console.log(
-            "  --role <all|serve|admin>  What this process runs: all (default), serve (main API and MCP, never the admin API) or admin (only the admin API, no environments)",
          );
          console.log(
             "  --shutdown_drain_duration_seconds <number>  Time in seconds to keep service in draining state before closing servers (default: 0)",

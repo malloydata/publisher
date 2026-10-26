@@ -229,7 +229,7 @@ export function registerWatchModeRoutes(
 
 /**
  * The admin app; `catalogs` is null when no catalog database is configured, and
- * `watchMode` is null in the `admin` role, which loads no environments to watch.
+ * `watchMode` is null with serving off, which loads no environments to watch.
  */
 export function createAdminApp(
    catalogs: CatalogAdmin | null,

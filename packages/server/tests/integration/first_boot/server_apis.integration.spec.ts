@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * PUBLISHER_ROLE through the real entry point: `serve` refuses to start with an
- * admin setting, and `admin` starts only the admin listener, with no main API,
- * no MCP and no watch mode, and refuses a config that declares environments.
+ * `servingApiEnabled` and `adminApiEnabled` through the real entry point: with
+ * the admin API off an admin setting refuses to start, and with serving off only
+ * the admin listener starts, with no main API, no MCP and no watch mode, and a
+ * config that declares environments refuses to start.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -34,14 +35,14 @@ async function answers(url: string): Promise<number | null> {
    }
 }
 
-describe("PUBLISHER_ROLE", () => {
+describe("servingApiEnabled and adminApiEnabled", () => {
    const cleanups: Array<() => void> = [];
    afterEach(() => {
       while (cleanups.length) cleanups.pop()!();
    });
 
    async function boot(env: Record<string, string>, configText?: string) {
-      const root = mkdtempSync(join(tmpdir(), "publisher-role-"));
+      const root = mkdtempSync(join(tmpdir(), "publisher-apis-"));
       if (configText !== undefined) {
          writeFileSync(join(root, "publisher.config.json"), configText);
       }
@@ -74,24 +75,24 @@ describe("PUBLISHER_ROLE", () => {
       return { code, output: err + out };
    }
 
-   it("serve refuses to start with the admin port set", async () => {
-      const { child } = await boot({
-         PUBLISHER_ROLE: "serve",
-         PUBLISHER_ADMIN_PORT: String(await freePort()),
-      });
+   it("refuses to start with the admin API off and its port set", async () => {
+      const { child } = await boot(
+         { PUBLISHER_ADMIN_PORT: String(await freePort()) },
+         JSON.stringify({ adminApiEnabled: false, environments: [] }),
+      );
       const { code, output } = await exitOf(child);
       expect(code).not.toBe(0);
       expect(output).toContain(
-         "PUBLISHER_ROLE=serve never runs the admin API, but PUBLISHER_ADMIN_PORT is set.",
+         "adminApiEnabled is false, but PUBLISHER_ADMIN_PORT is set.",
       );
    });
 
-   it("admin serves only the admin listener", async () => {
+   it("with serving off, serves only the admin listener", async () => {
       const port = await freePort();
-      const { ports } = await boot({
-         PUBLISHER_ROLE: "admin",
-         PUBLISHER_ADMIN_PORT: String(port),
-      });
+      const { ports } = await boot(
+         { PUBLISHER_ADMIN_PORT: String(port) },
+         JSON.stringify({ servingApiEnabled: false }),
+      );
       const admin = `http://127.0.0.1:${port}`;
       const deadline = Date.now() + 30_000;
       while ((await answers(`${admin}/health/readiness`)) !== 200) {
@@ -106,26 +107,38 @@ describe("PUBLISHER_ROLE", () => {
       expect(await answers(`http://127.0.0.1:${ports.mcp}/mcp`)).toBeNull();
    });
 
-   it("admin refuses a config that declares environments", async () => {
-      const port = await freePort();
+   it("with serving off, refuses a config that declares environments", async () => {
       const { child } = await boot(
-         { PUBLISHER_ROLE: "admin", PUBLISHER_ADMIN_PORT: String(port) },
+         { PUBLISHER_ADMIN_PORT: String(await freePort()) },
          JSON.stringify({
-            frozenConfig: true,
+            servingApiEnabled: false,
             environments: [{ name: "sales", packages: [] }],
          }),
       );
       const { code, output } = await exitOf(child);
       expect(code).not.toBe(0);
       expect(output).toContain(
-         "PUBLISHER_ROLE=admin loads no environments, but the publisher config declares some.",
+         "servingApiEnabled is false, so no environments are loaded, but the config declares some.",
       );
    });
 
-   it("admin refuses to start without the admin port", async () => {
-      const { child } = await boot({ PUBLISHER_ROLE: "admin" });
+   it("with serving off, refuses to start without the admin port", async () => {
+      const { child } = await boot(
+         {},
+         JSON.stringify({ servingApiEnabled: false }),
+      );
       const { code, output } = await exitOf(child);
       expect(code).not.toBe(0);
       expect(output).toContain("PUBLISHER_ADMIN_PORT is required.");
+   });
+
+   it("refuses a flag that is not a boolean", async () => {
+      const { child } = await boot(
+         {},
+         JSON.stringify({ adminApiEnabled: "no", environments: [] }),
+      );
+      const { code, output } = await exitOf(child);
+      expect(code).not.toBe(0);
+      expect(output).toContain('"adminApiEnabled" must be true or false');
    });
 });

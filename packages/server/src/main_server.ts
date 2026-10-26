@@ -1,8 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// The main API and MCP: what `server.ts` starts for the `all` and `serve` roles,
-// after it has checked the Node version and applied the command line.
+// The main API and MCP: what `server.ts` starts when `servingApiEnabled` is on,
+// after it has checked the Node version, applied the command line and checked
+// which APIs the config enables. The admin listener starts here too when the
+// config leaves `adminApiEnabled` on and its port is set.
 import type { AddressInfo } from "net";
 import express from "express";
 import bodyParser from "body-parser";

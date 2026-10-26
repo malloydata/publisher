@@ -1149,6 +1149,56 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
 };
 
 /**
+ * Which of the server's APIs this process may run: the top-level
+ * `servingApiEnabled` (the main API and MCP, and the environments they serve)
+ * and `adminApiEnabled` (the admin API, when its port is set), both `true`
+ * unless the config says otherwise. `declaresEnvironments` is whether the
+ * config lists any. A config that cannot be read answers the defaults: the main
+ * server reports that file's error itself, on /status.
+ */
+export type ServerApiSettings = {
+   servingApiEnabled: boolean;
+   adminApiEnabled: boolean;
+   declaresEnvironments: boolean;
+};
+
+export const getServerApiSettings = (serverRoot: string): ServerApiSettings => {
+   const defaults = {
+      servingApiEnabled: true,
+      adminApiEnabled: true,
+      declaresEnvironments: false,
+   };
+   const resolved = resolvePublisherConfigPath(serverRoot);
+   if (!resolved || resolved.isBundledDefault) return defaults;
+   let raw: unknown;
+   try {
+      raw = JSON.parse(fs.readFileSync(resolved.path, "utf8"));
+   } catch {
+      return defaults;
+   }
+   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaults;
+   const config = raw as Record<string, unknown>;
+   // A misspelled value must not quietly run an API the operator turned off.
+   const flag = (name: "servingApiEnabled" | "adminApiEnabled"): boolean => {
+      const value = config[name];
+      if (value === undefined) return true;
+      if (typeof value !== "boolean") {
+         throw new Error(
+            `Invalid ${PUBLISHER_CONFIG_NAME}: "${name}" must be true or false, got ${JSON.stringify(value)}.`,
+         );
+      }
+      return value;
+   };
+   const environments = config.environments ?? config.projects;
+   return {
+      servingApiEnabled: flag("servingApiEnabled"),
+      adminApiEnabled: flag("adminApiEnabled"),
+      declaresEnvironments:
+         Array.isArray(environments) && environments.length > 0,
+   };
+};
+
+/**
  * The `publisher.config.json` path that was looked for and not found, or null
  * whenever a config did resolve. `explicit` says the path came from `--config`.
  *
