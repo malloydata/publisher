@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
+## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:
 
@@ -31,7 +31,7 @@ Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes th
 - **A SQL Server `datetimeoffset` column is a `timestamptz`** ([malloydata/malloy#3138](https://github.com/malloydata/malloy/pull/3138)), read at UTC or in the query's time zone rather than at the offset it was written with.
 - **Importing a persisted source without the given its SQL reads is a compile error** ([malloydata/malloy#3173](https://github.com/malloydata/malloy/pull/3173)). When a model imports a `#@ persist` source whose SQL reads a given with no default, and the model does not surface that given, it fails to compile with `unsatisfied-given-in-persist-source`. Import the given alongside the source. Publisher refuses to build a persisted source whose SQL reads a given, so no built table is affected.
 
-## [Unreleased] — A `where:` across a join to a query source or composite is served when untouched and refused when rebound
+## [0.10.0] — A `where:` across a join to a query source or composite is served when untouched and refused when rebound
 
 A package source whose `where:` read a field joined from a query source (for example `source: pipeline_now is deals extend { where: is_open }` where `is_open` is `deal_first_close.close_type is null` and `deal_first_close` is `duckdb.sql(...) -> { ... }`) was refused with `403 Access denied for source "pipeline_now"`, even when nothing had been modified. Malloy names a query source afresh on every compile, so the row-security binding check could not match the served source against the package's own compile of the same file. It now compares a query source by what it queries, so the same shapes serve whether the query source is joined directly, built on another query source, declared with `extend: { join_one: ... }` inside its own query, built on a parameterized source, or a composite member, and whether the `where:` was inherited across files or not.
 
