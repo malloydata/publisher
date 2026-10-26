@@ -29,8 +29,11 @@ beforeAll(async () => {
    const dir = mkdtempSync(join(tmpdir(), "same-catalog-"));
    const lake = new DuckDBConnection("lake", join(dir, "lake.duckdb"));
    await lake.runSQL("CREATE TABLE orders AS SELECT 1 AS id, 10 AS amount");
-   csvPath = join(dir, "outside.csv");
-   writeFileSync(csvPath, "id,amount\n1,10\n");
+   const file = join(dir, "outside.csv");
+   writeFileSync(file, "id,amount\n1,10\n");
+   // Forward slashes: the path goes inside a Malloy string, where a Windows
+   // backslash is an escape, and DuckDB reads either separator.
+   csvPath = file.replaceAll("\\", "/");
    connections = new FixedConnectionMap(new Map([["lake", lake]]), "lake");
 });
 
