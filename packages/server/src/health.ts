@@ -44,8 +44,8 @@ export function markNotReady(): void {
  * logger and exit.
  */
 export function registerSignalHandlers(
-   server: Server,
-   mcpServer: Server,
+   server: Server | null,
+   mcpServer: Server | null,
    shutdownDrainDurationSeconds: number = 0,
    shutdownGracefulCloseTimeoutSeconds: number = 0,
    /** Further listeners closed with the two above (the admin listener). */
@@ -83,12 +83,12 @@ export function registerSignalHandlers(
  * module-level state "draining" for sibling specs.
  */
 export async function performGracefulShutdownAfterDrain(
-   server: Server,
-   mcpServer: Server,
+   server: Server | null,
+   mcpServer: Server | null,
    shutdownGracefulCloseTimeoutSeconds: number,
    otherServers: Server[] = [],
 ): Promise<void> {
-   const closeServer = (server: Server, name: string) =>
+   const closeServer = (server: Server | null, name: string) =>
       new Promise<void>((resolve) => {
          if (server && server.listening) {
             server.close((err) => {

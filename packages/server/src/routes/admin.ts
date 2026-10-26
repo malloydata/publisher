@@ -227,10 +227,13 @@ export function registerWatchModeRoutes(
    );
 }
 
-/** The admin app; `catalogs` is null when no catalog database is configured. */
+/**
+ * The admin app; `catalogs` is null when no catalog database is configured, and
+ * `watchMode` is null in the `admin` role, which loads no environments to watch.
+ */
 export function createAdminApp(
    catalogs: CatalogAdmin | null,
-   watchMode: WatchModeController,
+   watchMode: WatchModeController | null,
 ): express.Express {
    const adminApp = express();
    registerHealthEndpoints(adminApp);
@@ -238,7 +241,8 @@ export function createAdminApp(
    adminApp.use(httpMetricsMiddleware);
    adminApp.use(bodyParser.json({ limit: "1mb" }));
    registerAdminRoutes(adminApp, ADMIN_API_PREFIX, catalogs);
-   registerWatchModeRoutes(adminApp, ADMIN_API_PREFIX, watchMode);
+   if (watchMode)
+      registerWatchModeRoutes(adminApp, ADMIN_API_PREFIX, watchMode);
    adminApp.use(unhandledErrorMiddleware);
    return adminApp;
 }

@@ -146,6 +146,13 @@ a credential and no response returns one. The listener binds `127.0.0.1` unless 
 says otherwise (`PUBLISHER_HOST` does not move it), and it is unauthenticated: it can drop tables, so keep
 it on loopback or behind an authenticating proxy.
 
+**Running it on its own.** The catalog database's role reaches every catalog in it, which is fine when one
+operator owns the server and every catalog. When the server serves other people's environments, keep the
+two apart with `PUBLISHER_ROLE` (`--role`): `serve` runs the main API and MCP and refuses to start if
+`PUBLISHER_ADMIN_PORT` or `PUBLISHER_ADMIN_CATALOG_DATABASE` is set; `admin` runs only the admin listener,
+loads no environments (watch mode is then absent), and refuses a config that declares any. The default,
+`all`, runs whatever is configured, as above.
+
 A catalog is found, not registered: every schema of that database holding DuckLake's
 `ducklake_metadata` table is a catalog, named by the schema, and its data path, encryption and settings
 are what it recorded when it was created.
