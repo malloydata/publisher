@@ -659,8 +659,10 @@ export class CatalogAdmin {
          pg: (sql: string) => Promise<Record<string, unknown>[]>,
       ) => Promise<T>,
    ): Promise<T> {
-      const { session, dispose } = createIsolatedBuildSession("admin_catalogs");
+      const { session, dispose, workDir } =
+         createIsolatedBuildSession("admin_catalogs");
       try {
+         await applySessionResourceLimits(session, { tempDirectory: workDir });
          await session.runSQL("INSTALL postgres; LOAD postgres;");
          await session.runSQL(
             `ATTACH '${escapeSQL(this.config.catalogDatabase)}' AS admin_pg (TYPE postgres, READ_ONLY)`,

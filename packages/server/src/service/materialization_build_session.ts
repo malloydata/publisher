@@ -59,8 +59,12 @@ import {
    assertServesInDuckDB,
    type ServeBinding,
 } from "./materialization_serve_transform";
-import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
-import { isSameCatalog } from "./same_catalog_build";
+import {
+   DEFAULT_DESTINATION_SCHEMA,
+   destinationSchemaOf,
+   storageTablePath,
+} from "./storage_table_path";
+import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -499,6 +503,16 @@ export function passthroughSourceType(
    if ((PASSTHROUGH_SOURCE_TYPES as readonly string[]).includes(type ?? "")) {
       return type as FederatedSourceType;
    }
+   if (type === "ducklake") {
+      // Reached only when isSameCatalog said no: say why, not just "unsupported".
+      throw new BadRequestError(
+         `Cannot materialize a 'ducklake' source into a storage destination ` +
+            `that is a different catalog. A DuckLake source builds only into its ` +
+            `own catalog, matched by the catalog database's host, port and ` +
+            `databaseName (a connectionString is never matched), its ` +
+            `metadataSchema, and its data path when both configs state one.`,
+      );
+   }
    throw new BadRequestError(
       `Cannot materialize a '${type}' source into a storage destination: the ` +
          `native query-passthrough build supports source connections of type ` +
@@ -782,6 +796,12 @@ export async function buildSourceIntoStorage(params: {
          destinationConnection,
          environmentPath,
       );
+      await assertDestinationSchemaExists(
+         session,
+         destinationName,
+         destinationName,
+         destinationConnection,
+      );
 
       if (destinationConnection.type === "ducklake") {
          // Disable row inlining for this session so rows land as Parquet in the
@@ -980,6 +1000,12 @@ async function buildSameCatalogIntoStorage(params: {
          destinationConnection,
          params.environmentPath,
       );
+      await assertDestinationSchemaExists(
+         session,
+         alias,
+         destinationName,
+         destinationConnection,
+      );
       await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       await pinSessionToUTC(session);
       await session.runSQL(managedSearchPathSql(alias));
@@ -1065,6 +1091,12 @@ export async function buildDownstreamIntoStorage(params: {
          destinationConnection,
          environmentPath,
       );
+      await assertDestinationSchemaExists(
+         session,
+         destinationName,
+         destinationName,
+         destinationConnection,
+      );
       if (destinationConnection.type === "ducklake") {
          // See buildSourceIntoStorage: keep rows out of the catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
@@ -1117,6 +1149,20 @@ export async function buildDownstreamIntoStorage(params: {
                `Chained build model did not yield a persist source named ` +
                `'${downstreamName}' (the downstream references something the ` +
                `rebound parents don't provide).`,
+         });
+      }
+      // The CTAS runs on a read-write session on the destination, as a
+      // same-catalog build does, so the same rule holds: only SQL Malloy
+      // generated. The rebound parents are virtual, so this reads the
+      // downstream's own definition. Marked eligible, so the caller recomputes
+      // from raw, where author SQL runs in the source warehouse (or a
+      // same-catalog source is refused).
+      if (carriesAuthorSql(downstream._sourceDef)) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained source '${downstreamName}' carries SQL its author wrote ` +
+               `(an .sql() source, a sql_* expression, or a file or URL table), ` +
+               `which does not run on the destination's read-write session.`,
          });
       }
       // Projected to public columns so hidden (`except:` / access-restricted)
@@ -1480,6 +1526,35 @@ function assertSupportedDestination(
          `Storage destination '${destinationName}' is type '${type}', but ` +
             `'storage=' destinations must be one of ` +
             `${STORAGE_DESTINATION_TYPES.join(", ")}.`,
+      );
+   }
+}
+
+/**
+ * Throw a clean 400 when the destination's `destinationSchema` is not a schema
+ * in the attached catalog. No build creates a schema (the catalog's owner does),
+ * so without this a typo fails every build into the destination with DuckDB's
+ * bare "schema does not exist". `main` always exists and is not checked.
+ */
+async function assertDestinationSchemaExists(
+   session: DuckDBConnection,
+   attachName: string,
+   destinationName: string,
+   destinationConnection: ApiConnection,
+): Promise<void> {
+   const schema = destinationSchemaOf(destinationConnection);
+   if (schema === DEFAULT_DESTINATION_SCHEMA) return;
+   const result = await session.runSQL(
+      `SELECT 1 FROM duckdb_schemas() WHERE database_name = '${escapeSQL(attachName)}' ` +
+         // DuckDB resolves identifiers case-insensitively, as the CTAS would.
+         `AND lower(schema_name) = lower('${escapeSQL(schema)}')`,
+   );
+   const rows = Array.isArray(result) ? result : (result.rows ?? []);
+   if (rows.length === 0) {
+      throw new BadRequestError(
+         `Storage destination '${destinationName}' declares destinationSchema ` +
+            `'${schema}', but its catalog has no schema by that name. Create it ` +
+            `in the catalog, or correct destinationSchema.`,
       );
    }
 }

@@ -43,7 +43,8 @@ that holds the Parquet data. Publisher reaches it through DuckDB's `ducklake` ex
 - `catalog.metadataSchema` — schema holding this catalog's `ducklake_*` metadata tables, passed to
   `ATTACH` as `METADATA_SCHEMA`. Absent uses DuckLake's default (the catalog connection's default
   schema, typically `public`). See [Several catalogs in one database](#several-catalogs-in-one-database).
-- `storage.bucketUrl` (**required**) — the object-storage data path.
+- `storage.bucketUrl` — the object-storage data path. Required unless the catalog already exists and
+  records one; see [A catalog created elsewhere](#a-catalog-created-elsewhere-served-and-built-into).
 - `storage.s3Connection` **or** `storage.gcsConnection` — credentials for the data path.
 
 In the Docker image, a local-path `bucketUrl` must be writable by uid 1000, the user the server runs
@@ -208,11 +209,14 @@ recorded at its creation, and no attach may create a catalog: a build, a load or
 a catalog that does not exist fails with `Existing DuckLake … does not exist` instead of creating one
 unencrypted with its own settings. The storage credential (`s3Connection` or `gcsConnection`) still goes
 under `storage`. With a `bucketUrl`, the first build creates the catalog there, as it always has.
+Servers before this release require `bucketUrl` and refuse the whole environment's connections without
+it, so in a mixed-version deployment upgrade every server before any config leaves it out.
 
 **Keep built tables apart from people's.** `ducklakeConnection.destinationSchema` on a storage
 destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and
 the serve binding reads it from there. People's own tables stay in `main`. A `#@ persist name=` that
-already names a schema keeps it.
+already names a schema keeps it. No build creates the schema: the catalog's owner does, and a build into a
+destination whose `destinationSchema` the catalog lacks is refused with a message naming both.
 
 **Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher
 then sets the session's search path to the catalog's `main` after the attach, so `sales.table('orders')`,
@@ -229,13 +233,17 @@ takes the connection's name, so the two may be named differently and a table pat
 connection still resolves. That session can write the catalog, so it runs only SQL Malloy generated: a
 source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it is refused, as every
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
-which that session would read with the destination's storage credential.
+which that session would read with the destination's storage credential. A chained build (a
+downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
+the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
 
 **Meter it.** Each statement on a storage destination or a `managed` connection, and each admin-API load,
 emits one log record, `statement_usage`, with the environment (empty for an admin load), connection or
 catalog, surface (`serve`, `load`, `build`), package, duration, rows and status, and increments
-`publisher_statement_usage_total`. The record names no sink; a log collector maps it. Only a same-catalog
-build is recorded: a passthrough build's time is mostly the source warehouse's.
+`publisher_statement_usage_total`. The record names no sink; a log collector maps it. A same-catalog
+build and a chained build are recorded; a passthrough build is not, since its time is mostly the source
+warehouse's. A statement that fails is recorded too, with `status: "error"`, since it spent the time; a
+collector that bills only completed work counts `status: "ok"`.
 
 The main API's storage-destination routes (`GET …/storageDestinations/{dest}/schemas/{schema}/tables`,
 `DELETE …/tables/{table}` and `POST …/fileCleanups`) are deprecated: the admin API's catalog, table and

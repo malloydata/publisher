@@ -2239,16 +2239,28 @@ export class MaterializationService {
       // refuse (`strictUpstreams`).
       if (dependsOnStorageUpstream) {
          try {
-            result = await this.buildDownstreamViaParents(
-               persistSource,
-               destinationName,
-               destinationConnection,
-               builtEntries,
-               environment,
-               physicalTableName,
-               planFacts,
-               params.contentSourceEntityId ?? instruction.sourceEntityId,
-               lift,
+            // Reads stored parents and writes in the one destination, so its
+            // seconds are the store's, as a same-catalog build's are.
+            result = await withStatementUsage(
+               {
+                  environment: environment.getEnvironmentName?.() ?? "",
+                  connection: destinationName,
+                  surface: "build",
+                  package:
+                     params.packageName ?? params.incremental?.packageName,
+               },
+               () =>
+                  this.buildDownstreamViaParents(
+                     persistSource,
+                     destinationName,
+                     destinationConnection,
+                     builtEntries,
+                     environment,
+                     physicalTableName,
+                     planFacts,
+                     params.contentSourceEntityId ?? instruction.sourceEntityId,
+                     lift,
+                  ),
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {

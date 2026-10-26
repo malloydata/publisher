@@ -105,6 +105,15 @@ source: daily is orders -> { group_by: id }`);
       expect(carriesAuthorSql(undefined)).toBe(true);
       expect(carriesAuthorSql("text")).toBe(true);
    });
+
+   it("fails closed on a definition deeper than the walk", () => {
+      let deep: Record<string, unknown> = {
+         type: "table",
+         tablePath: "orders",
+      };
+      for (let i = 0; i < 250; i++) deep = { inner: deep };
+      expect(carriesAuthorSql(deep)).toBe(true);
+   });
 });
 
 describe("isSameCatalog decides by catalog identity, never by name", () => {
@@ -173,6 +182,20 @@ describe("isSameCatalog decides by catalog identity, never by name", () => {
          false,
       );
       expect(isSameCatalog(lake("sales"), lake("sales", { db: "other" }))).toBe(
+         false,
+      );
+   });
+
+   it("never matches a catalog given as a connectionString", () => {
+      const byString = (name: string): ApiConnection => {
+         const c = lake(name);
+         c.ducklakeConnection!.catalog.postgresConnection = {
+            connectionString: "postgresql://u@catalog:5432/ducklake",
+         };
+         return c;
+      };
+      expect(isSameCatalog(byString("sales"), lake("analytics"))).toBe(false);
+      expect(isSameCatalog(byString("sales"), byString("analytics"))).toBe(
          false,
       );
    });
