@@ -984,14 +984,14 @@ describe("ducklake shape validation", () => {
       );
    });
 
-   it("rejects a missing bucketUrl at load", () => {
+   it("accepts a missing bucketUrl at load: the catalog's recorded data path is used", () => {
       const c = {
          ...valid,
          ducklakeConnection: { catalog: valid.ducklakeConnection!.catalog },
       } as ApiConnection;
-      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
-         /Storage bucketUrl is required for DuckLake/i,
-      );
+      expect(() =>
+         assembleEnvironmentConnections([c], "/tmp/env"),
+      ).not.toThrow();
    });
 
    // metadataSchema reaches TWO grammars: a quoted string literal in the ATTACH,

@@ -139,6 +139,33 @@ status: 404
       ).toThrow(/not both/);
    });
 
+   it("parses dataPath=recorded on a ducklake connection, and only there", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Connection nb (type=ducklake, dataPath=recorded)\n`,
+         "t",
+      );
+      expect(parsed.connectionDecls).toEqual([
+         {
+            env: "default",
+            name: "nb",
+            kind: "ducklake",
+            recordedDataPath: true,
+         },
+      ]);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection pg2 (type=postgres, dataPath=recorded)\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to type=ducklake/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection nb (type=ducklake, dataPath=bucket)\n`,
+            "t",
+         ),
+      ).toThrow(/must be "recorded"/);
+   });
+
    it("rejects a metadataSchema on anything but a ducklake connection", () => {
       expect(() =>
          parseMarkdownForTest(

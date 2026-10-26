@@ -43,7 +43,8 @@ that holds the Parquet data. Publisher reaches it through DuckDB's `ducklake` ex
 - `catalog.metadataSchema` — schema holding this catalog's `ducklake_*` metadata tables, passed to
   `ATTACH` as `METADATA_SCHEMA`. Absent uses DuckLake's default (the catalog connection's default
   schema, typically `public`). See [Several catalogs in one database](#several-catalogs-in-one-database).
-- `storage.bucketUrl` (**required**) — the object-storage data path.
+- `storage.bucketUrl` — the object-storage data path. Required unless the catalog already exists and
+  records one; see [A catalog created elsewhere](#a-catalog-created-elsewhere-served-and-built-into).
 - `storage.s3Connection` **or** `storage.gcsConnection` — credentials for the data path.
 
 In the Docker image, a local-path `bucketUrl` must be writable by uid 1000, the user the server runs
@@ -91,7 +92,9 @@ enough to honor it.
 ## How Publisher attaches a DuckLake catalog
 
 **Read-only to serve.** Serving a query attaches the catalog `READ_ONLY`: it reads tables and never
-writes catalog metadata. The lakehouse's own client owns writes.
+writes catalog metadata. The lakehouse's own client owns writes. The one exception is a connection
+configured with `ducklakeConnection.readOnly: false`, which attaches read-write and runs everything on
+it read-write, user SQL included; set it only where something else decides who may run SQL there.
 
 **Read-write only to build, and only for the build.** A `#@ persist storage=<destination>` source
 materializes into the catalog, which needs a read-write attach. That attach is confined to a
@@ -122,6 +125,129 @@ compatibility preflight (below). Any failure of the preflight _itself_ — missi
 timeout, an unreachable catalog — is logged and falls through to the normal attach, which remains
 the source of truth for unrelated errors. The preflight only ever _adds_ a clearer error; it never
 introduces a new failure of its own.
+
+## Managing DuckLake catalogs: the admin API
+
+Everything above is for a catalog that comes into being with its first build. The **admin API**
+(`admin-api-doc.yaml`) manages catalogs as resources instead: create one deliberately, encrypted and
+with the schemas you want; load a file into a table; see what each catalog holds and how many bytes;
+drop tables; and reclaim the storage behind old snapshots. It is a separate listener in the same
+server, off unless configured:
+
+```bash
+PUBLISHER_ADMIN_PORT=4050 \
+PUBLISHER_ADMIN_CATALOG_DATABASE="host=localhost port=5432 dbname=ducklake user=lake password=…" \
+malloy-publisher --server_root .
+```
+
+`PUBLISHER_ADMIN_CATALOG_DATABASE` is the Postgres database your catalogs live in. For files in a cloud
+bucket, add `PUBLISHER_ADMIN_STORAGE_PROVIDER` (`s3`, `s3_credential_chain` or `gcs`) and its key
+variables ([configuration.md](configuration.md)); for a local directory, nothing more. No request carries
+a credential and no response returns one. The listener binds `127.0.0.1` unless `PUBLISHER_ADMIN_HOST`
+says otherwise (`PUBLISHER_HOST` does not move it), and it is unauthenticated: it can drop tables, so keep
+it on loopback or behind an authenticating proxy.
+
+**Running it on its own.** The catalog database's role reaches every catalog in it, which is fine when one
+operator owns the server and every catalog. When the server serves other people's environments, keep the
+two apart with two top-level settings, both `true` by default and given in `publisher.config.json`, as a
+variable or as a flag ([configuration.md](configuration.md)): the serving deployment sets `"adminApiEnabled": false`, which
+refuses to start if `PUBLISHER_ADMIN_PORT` or `PUBLISHER_ADMIN_CATALOG_DATABASE` is set, and the admin
+deployment sets `"servingApiEnabled": false`, which runs only the admin listener, loads no environments
+(watch mode is then absent) and refuses a config that declares any.
+
+A catalog is found, not registered: every schema of that database holding DuckLake's
+`ducklake_metadata` table is a catalog, named by the schema, and its data path, encryption and settings
+are what it recorded when it was created.
+
+```bash
+A=http://localhost:4050/api/v0
+
+# Create a catalog: encrypted (the default), its files under /srv/lake/sales.
+curl -s -X POST $A/catalogs -H 'Content-Type: application/json' \
+  -d '{"name": "sales", "dataPath": "/srv/lake/sales", "fileDeletionGrace": "1 day"}'
+
+# Load a CSV that sits under the data path into main.orders (201 created, 200 replaced;
+# add `If-None-Match: *` to refuse a table that exists).
+curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders -H 'Content-Type: application/json' \
+  -d '{"source": {"uri": "/srv/lake/sales/uploads/orders.csv", "format": "csv"}}'
+
+# What it holds.
+curl -s $A/catalogs/sales
+curl -s $A/catalogs/sales/schemas/main/tables
+
+# Drop a table, then reclaim history from before a date, and the files only it held.
+curl -s -X DELETE $A/catalogs/sales/schemas/main/tables/orders
+curl -s -X DELETE "$A/catalogs/sales/snapshots?olderThan=2026-10-01T00:00:00Z"
+```
+
+To read `sales` from a model, give the environment a DuckLake connection to the same catalog, with no
+`bucketUrl` (next section): `sales.table('orders')`.
+
+**Files.** A load reads one CSV, Parquet, Excel or JSON object under the catalog's data path, the only
+location its session can read, and rewrites the bytes as the catalog's own Parquet in one DuckLake
+transaction, so an encrypted catalog stays encrypted and a reader sees the old table or the new one.
+
+**History.** Dropping or replacing a table only retires its files: they stay readable at earlier
+snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files
+that have been retired longer than the catalog's `fileDeletionGrace` (`1 day` if it records none), so a
+reader mid-scan is never cut off; files it retires go on a later call. It deletes only files the catalog
+recorded, never an untracked file under the data path.
+
+**Ownership.** When the admin API's configured role is not a catalog schema's owner, every admin-API
+session on that catalog acts as the owner (libpq `options=-crole=<owner>`), so a catalog an orchestrator
+provisioned with its own role keeps that role's ownership and grants however it is managed. The owner
+must be a plain role name (letters, digits, `_`, `-`); any other answers `409 CATALOG_OWNER_UNSUPPORTED`.
+The configured connection string must not set `options` itself.
+
+## A catalog created elsewhere, served and built into
+
+Five settings on a DuckLake connection or storage destination serve a catalog the admin API (or any other
+tool) created. Each is additive; a configuration that uses none of them behaves as before.
+
+**Leave out the data path.** Without `storage.bucketUrl`, every attach uses the data path the catalog
+recorded at its creation, and no attach may create a catalog: a build, a load or a read-write connection to
+a catalog that does not exist fails with `Existing DuckLake … does not exist` instead of creating one
+unencrypted with its own settings. The storage credential (`s3Connection` or `gcsConnection`) still goes
+under `storage`. With a `bucketUrl`, the first build creates the catalog there, as it always has.
+Servers before this release require `bucketUrl` and refuse the whole environment's connections without
+it, so in a mixed-version deployment upgrade every server before any config leaves it out.
+
+**Keep built tables apart from people's.** `ducklakeConnection.destinationSchema` on a storage
+destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and
+the serve binding reads it from there. People's own tables stay in `main`. A `#@ persist name=` that
+already names a schema keeps it. No build creates the schema: the catalog's owner does, and a build into a
+destination whose `destinationSchema` the catalog lacks is refused with a message naming both.
+
+**Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher
+then sets the session's search path to the catalog's `main` after the attach, so `sales.table('orders')`,
+which compiles to the bare table name, resolves: DuckDB never searches an attached catalog for an
+unqualified name otherwise. `ducklakeConnection.readOnly` stays `true` (the default) unless you have
+decided who may write through the connection.
+
+**Persist from the catalog into itself.** A `#@ persist storage=<dest>` source on that connection reads
+the catalog it is built into. When the connection and the destination are the same catalog — the same
+catalog database (given as `host`, `port` and `databaseName`; a `connectionString` config is never
+matched) and metadata schema (and the same data path, when both state one), never decided by name — the
+build is a plain CTAS on one read-write attach, with no federation and no egress. The attach
+takes the connection's name, so the two may be named differently and a table path written for the
+connection still resolves. That session can write the catalog, so it runs only SQL Malloy generated: a
+source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it is refused, as every
+DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
+which that session would read with the destination's storage credential. A chained build (a
+downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
+the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
+
+**Meter it.** Each statement on a storage destination or a `managed` connection, and each admin-API load,
+emits one log record, `statement_usage`, with the environment (empty for an admin load), connection or
+catalog, surface (`serve`, `load`, `build`), package, duration, rows and status, and increments
+`publisher_statement_usage_total`. The record names no sink; a log collector maps it. A same-catalog
+build and a chained build are recorded; a passthrough build is not, since its time is mostly the source
+warehouse's. A statement that fails is recorded too, with `status: "error"`, since it spent the time; a
+collector that bills only completed work counts `status: "ok"`.
+
+The main API's storage-destination routes (`GET …/storageDestinations/{dest}/schemas/{schema}/tables`,
+`DELETE …/tables/{table}` and `POST …/fileCleanups`) are deprecated: the admin API's catalog, table and
+snapshot resources replace them, and they will be removed.
 
 ## Catalog-format compatibility
 

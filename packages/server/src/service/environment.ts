@@ -71,6 +71,7 @@ import {
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
+import { destinationSchemaOf } from "./storage_table_path";
 
 export {
    COMPILE_SCOPES,
@@ -652,6 +653,12 @@ export class Environment {
    private attachDestinationServeConfig(_package: Package): void {
       _package.setServeDestinationConfig(() =>
          this.getStorageDestinationMalloyConfig(),
+      );
+      // Live, like the config: a destination list swap needs no reload.
+      _package.setServeDestinationSchema((destinationName) =>
+         destinationSchemaOf(
+            this.destinations.find((d) => d.name === destinationName),
+         ),
       );
    }
 

@@ -517,6 +517,7 @@ async function main(): Promise<void> {
                   r.catalogDbFor(c.name),
                   r.storageDirFor(c.name),
                   c.metadataSchema,
+                  c.recordedDataPath,
                );
                if (!declaredDestinationsByEnv.has(cEnv))
                   declaredDestinationsByEnv.set(cEnv, []);

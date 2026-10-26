@@ -1069,7 +1069,17 @@ async function attachDuckLakeWithMode(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
-   options: { readOnly: boolean; skipIfAbsent?: boolean },
+   options: {
+      readOnly: boolean;
+      skipIfAbsent?: boolean;
+      /**
+       * First-attach settings, which DuckLake fixes in the catalog when it creates
+       * it and ignores on a catalog that already exists. Only a catalog create
+       * (the admin API's POST /catalogs) sets them.
+       */
+      encrypted?: boolean;
+      dataInliningRowLimit?: number;
+   },
 ): Promise<boolean> {
    // Never implicitly auto-install, whatever the policy: the DuckLake stack is
    // installed explicitly below.
@@ -1086,24 +1096,20 @@ async function attachDuckLakeWithMode(
       );
    }
 
-   if (!ducklakeConfig.storage?.bucketUrl) {
-      throw new Error(`Storage bucketUrl is required for DuckLake: ${dbName}`);
-   }
-
-   const hasS3 = !!ducklakeConfig.storage.s3Connection;
-   const hasGCS = !!ducklakeConfig.storage.gcsConnection;
+   const hasS3 = !!ducklakeConfig.storage?.s3Connection;
+   const hasGCS = !!ducklakeConfig.storage?.gcsConnection;
 
    if (hasS3) {
       await attachCloudStorage(connection, {
          name: `${dbName}_storage`,
          type: "s3",
-         s3Connection: ducklakeConfig.storage.s3Connection,
+         s3Connection: ducklakeConfig.storage!.s3Connection,
       });
    } else if (hasGCS) {
       await attachCloudStorage(connection, {
          name: `${dbName}_storage`,
          type: "gcs",
-         gcsConnection: ducklakeConfig.storage.gcsConnection,
+         gcsConnection: ducklakeConfig.storage!.gcsConnection,
       });
    }
 
@@ -1122,7 +1128,10 @@ async function attachDuckLakeWithMode(
    logger.debug(
       `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
    );
-   const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
+   // The data path: given, every attach uses it (and a read-write attach may
+   // create the catalog there); omitted, the catalog's recorded path is used and
+   // no attach may create one (see `dataPathClauses`).
+   const dataPath = ducklakeConfig.storage?.bucketUrl;
    // The schema holding the `ducklake_*` tables; absent keeps DuckLake's default.
    // Validated to a plain identifier at config load, because it reaches a quoted
    // literal here and an identifier position in the preflight.
@@ -1138,13 +1147,15 @@ async function attachDuckLakeWithMode(
          return false;
       }
       // Normal before the first read-write attach, but also what a mistyped
-      // schema looks like, and neither attach mode says so (read-write creates an
-      // empty catalog; read-only fails without naming the schema).
+      // schema looks like, and no attach mode says so (a read-write attach with
+      // a data path creates an empty catalog; the others fail without naming the
+      // schema).
       logger.warn(
-         "No DuckLake catalog found in the configured metadata schema. This is " +
-            "expected the first time a catalog is created there: a read-write " +
-            "attach will create it, and a read-only attach will fail until it " +
-            "exists. Otherwise check the schema name against the configuration.",
+         "No DuckLake catalog found in the configured metadata schema. With a " +
+            "configured data path this is expected before the first build, which " +
+            "creates it; without one, every attach fails until the catalog is " +
+            "created (the admin API's POST /catalogs). Otherwise check the schema " +
+            "name against the configuration.",
          { dbName, metadataSchema },
       );
    }
@@ -1153,7 +1164,15 @@ async function attachDuckLakeWithMode(
    const metadataSchemaClause = metadataSchema
       ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
       : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
+   // Every clause but the data path's leads with ", ", and that one may be
+   // empty, so a leading separator is dropped rather than emitted.
+   const attachClauses = (
+      dataPathClauses(dataPath, options.readOnly) +
+      readOnlyClause +
+      metadataSchemaClause +
+      firstAttachClauses(options)
+   ).replace(/^, /, "");
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (${attachClauses});`;
    logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
@@ -1182,14 +1201,126 @@ async function attachDuckLakeWithMode(
    return true;
 }
 
+/**
+ * The settings a catalog attached as `alias` recorded in its `ducklake_metadata`
+ * table (`data_path`, `encrypted`, `version`, `data_inlining_row_limit`,
+ * `delete_older_than`, …), keyed by name. The metadata tables live in the
+ * catalog's metadata schema when one is configured, and in its default schema
+ * otherwise.
+ */
+export async function recordedCatalogSettings(
+   connection: DuckDBConnection,
+   alias: string,
+   metadataSchema: string | undefined,
+): Promise<Record<string, string>> {
+   const metadataCatalog = [
+      `__ducklake_metadata_${alias}`,
+      ...(metadataSchema ? [metadataSchema] : []),
+   ]
+      .map((part) => quoteIdentifier(part, "duckdb"))
+      .join(".");
+   const rows = runSQLRows(
+      await connection.runSQL(
+         `SELECT key, value FROM ${metadataCatalog}.ducklake_metadata WHERE scope IS NULL`,
+      ),
+   );
+   const settings: Record<string, string> = {};
+   for (const row of rows) {
+      if (typeof row.key === "string" && row.value != null) {
+         settings[row.key] = String(row.value);
+      }
+   }
+   return settings;
+}
+
+/**
+ * The data-path half of a DuckLake ATTACH. A configured path is the one every
+ * attach uses (`OVERRIDE_DATA_PATH`, so a catalog first created elsewhere still
+ * writes under it), and a read-write attach may create the catalog there. With
+ * none, DuckLake uses the path the catalog recorded at its creation, and a
+ * read-write attach passes `CREATE_IF_NOT_EXISTS false`, so it refuses a missing
+ * catalog ("Existing DuckLake ... does not exist") rather than creating one
+ * with no path; a read-only attach never creates either way.
+ */
+export function dataPathClauses(
+   dataPath: string | undefined,
+   readOnly: boolean,
+): string {
+   if (dataPath) {
+      return `DATA_PATH '${escapeSQL(dataPath)}', OVERRIDE_DATA_PATH true`;
+   }
+   return readOnly ? "" : "CREATE_IF_NOT_EXISTS false";
+}
+
+/**
+ * ATTACH options a catalog takes only at its creation. Integers and booleans
+ * only, so nothing here is spliced from text.
+ */
+export function firstAttachClauses(options: {
+   encrypted?: boolean;
+   dataInliningRowLimit?: number;
+}): string {
+   let clauses = "";
+   if (options.encrypted === true) {
+      clauses += ", ENCRYPTED true";
+   }
+   if (
+      options.dataInliningRowLimit !== undefined &&
+      Number.isInteger(options.dataInliningRowLimit) &&
+      options.dataInliningRowLimit >= 0
+   ) {
+      clauses += `, DATA_INLINING_ROW_LIMIT ${options.dataInliningRowLimit}`;
+   }
+   return clauses;
+}
+
+/**
+ * The attach that creates a catalog (the admin API's POST /catalogs): read-write,
+ * with encryption, which DuckLake records in the catalog at its creation. The
+ * inlining limit is an ATTACH option for this session only; the create records it
+ * in the catalog with `set_option`.
+ */
+export async function attachDuckLakeForCreate(
+   connection: DuckDBConnection,
+   dbName: string,
+   ducklakeConfig: components["schemas"]["DucklakeConnection"],
+   settings: { encrypted: boolean; dataInliningRowLimit?: number },
+): Promise<void> {
+   await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
+      readOnly: false,
+      encrypted: settings.encrypted,
+      dataInliningRowLimit: settings.dataInliningRowLimit,
+   });
+}
+
 async function attachDuckLake(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
 ): Promise<void> {
+   // Read-only unless the connection says otherwise in so many words: absent,
+   // null and anything but `false` keep the pre-existing read-only attach.
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
-      readOnly: true,
+      readOnly: ducklakeConfig.readOnly !== false,
    });
+}
+
+/**
+ * After a managed DuckLake attach, make the catalog's `main` the session's
+ * search path: DuckDB never searches an attached catalog for an unqualified
+ * table name, and `<name>.table('t')` compiles to the bare name. The alias is
+ * quoted as an identifier inside the string literal the setting takes.
+ */
+export function managedSearchPathSql(dbName: string): string {
+   const alias = `"${dbName.replace(/"/g, '""')}"`;
+   return `SET search_path = '${`${alias}.main`.replace(/'/g, "''")}'`;
+}
+
+async function setManagedSearchPath(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   await connection.runSQL(managedSearchPathSql(dbName));
 }
 
 /**
@@ -2701,6 +2832,9 @@ export function buildEnvironmentMalloyConfig(
                      name!,
                      metadata.apiConnection.ducklakeConnection!,
                   );
+                  if (metadata.apiConnection.managed === true) {
+                     await setManagedSearchPath(connection, name!);
+                  }
                }
                return connection;
             }

@@ -11,7 +11,7 @@ import { MaterializationService } from "../../../src/service/materialization_ser
 import {
    environmentStore,
    startMaterializationSchedulerFromEnv,
-} from "../../../src/server";
+} from "../../../src/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { pollFor, waitUntilOk } from "./polling";
 
