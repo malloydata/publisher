@@ -231,7 +231,14 @@ function parseFloatEnv(name: string, example: string): number | undefined {
 }
 
 export function parseBoolEnv(name: string): boolean | undefined {
-   const raw = process.env[name];
+   return parseBoolString(process.env[name], name);
+}
+
+/** A boolean as a variable spells it: `1/true/yes/on`, `0/false/no/off`, any case; blank is unset. */
+function parseBoolString(
+   raw: string | undefined,
+   name: string,
+): boolean | undefined {
    if (raw === undefined || raw.trim() === "") return undefined;
    const normalised = raw.trim().toLowerCase();
    if (["1", "true", "yes", "on"].includes(normalised)) return true;
@@ -1149,11 +1156,17 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
 };
 
 /**
- * Which of the server's APIs this process may run: the top-level
- * `servingApiEnabled` (the main API and MCP, and the environments they serve)
- * and `adminApiEnabled` (the admin API, when its port is set), both `true`
- * unless the config says otherwise. `declaresEnvironments` is whether the
- * config lists any. A config that cannot be read answers the defaults: the main
+ * Which of the server's APIs this process may run: `servingApiEnabled` (the
+ * main API and MCP, and the environments they serve) and `adminApiEnabled` (the
+ * admin API, when its port is set), both `true` by default.
+ * `declaresEnvironments` is whether the config lists any.
+ *
+ * Each is a top-level setting of the config, given as its key in the file, as
+ * `PUBLISHER_SERVING_API_ENABLED` / `PUBLISHER_ADMIN_API_ENABLED`, or as
+ * `--[no-]serving-api-enabled` / `--[no-]admin-api-enabled` (cli_args.ts sets
+ * the variable, so a flag wins over it), and the variable wins over the file.
+ * In the file the value is `true` or `false`, or a `${VAR}` reference read as a
+ * variable is. A config that cannot be read contributes nothing: the main
  * server reports that file's error itself, on /status.
  */
 export type ServerApiSettings = {
@@ -1162,37 +1175,48 @@ export type ServerApiSettings = {
    declaresEnvironments: boolean;
 };
 
-export const getServerApiSettings = (serverRoot: string): ServerApiSettings => {
-   const defaults = {
-      servingApiEnabled: true,
-      adminApiEnabled: true,
-      declaresEnvironments: false,
-   };
+const SERVER_API_SETTINGS = {
+   servingApiEnabled: "PUBLISHER_SERVING_API_ENABLED",
+   adminApiEnabled: "PUBLISHER_ADMIN_API_ENABLED",
+} as const;
+
+function readConfigObject(serverRoot: string): Record<string, unknown> | null {
    const resolved = resolvePublisherConfigPath(serverRoot);
-   if (!resolved || resolved.isBundledDefault) return defaults;
-   let raw: unknown;
+   if (!resolved || resolved.isBundledDefault) return null;
    try {
-      raw = JSON.parse(fs.readFileSync(resolved.path, "utf8"));
+      const raw: unknown = JSON.parse(fs.readFileSync(resolved.path, "utf8"));
+      return raw && typeof raw === "object" && !Array.isArray(raw)
+         ? (raw as Record<string, unknown>)
+         : null;
    } catch {
-      return defaults;
+      return null;
    }
-   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaults;
-   const config = raw as Record<string, unknown>;
+}
+
+export const getServerApiSettings = (serverRoot: string): ServerApiSettings => {
+   const config = readConfigObject(serverRoot) ?? {};
    // A misspelled value must not quietly run an API the operator turned off.
-   const flag = (name: "servingApiEnabled" | "adminApiEnabled"): boolean => {
-      const value = config[name];
+   const setting = (key: keyof typeof SERVER_API_SETTINGS): boolean => {
+      const fromEnv = parseBoolEnv(SERVER_API_SETTINGS[key]);
+      if (fromEnv !== undefined) return fromEnv;
+      const value = config[key];
       if (value === undefined) return true;
-      if (typeof value !== "boolean") {
-         throw new Error(
-            `Invalid ${PUBLISHER_CONFIG_NAME}: "${name}" must be true or false, got ${JSON.stringify(value)}.`,
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string" && /\$\{[A-Z_][A-Z0-9_]*\}/.test(value)) {
+         const fromFile = parseBoolString(
+            substituteEnvVars(value),
+            `"${key}" in ${PUBLISHER_CONFIG_NAME}`,
          );
+         if (fromFile !== undefined) return fromFile;
       }
-      return value;
+      throw new Error(
+         `Invalid ${PUBLISHER_CONFIG_NAME}: "${key}" must be true or false, got ${JSON.stringify(value)}.`,
+      );
    };
    const environments = config.environments ?? config.projects;
    return {
-      servingApiEnabled: flag("servingApiEnabled"),
-      adminApiEnabled: flag("adminApiEnabled"),
+      servingApiEnabled: setting("servingApiEnabled"),
+      adminApiEnabled: setting("adminApiEnabled"),
       declaresEnvironments:
          Array.isArray(environments) && environments.length > 0,
    };

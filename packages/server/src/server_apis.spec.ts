@@ -14,6 +14,22 @@ const BOTH: ServerApiSettings = {
    declaresEnvironments: false,
 };
 
+/** Runs `fn` with `vars` set, then puts the environment back. */
+function withEnv(vars: Record<string, string>, fn: () => void): void {
+   const before = Object.fromEntries(
+      Object.keys(vars).map((k) => [k, process.env[k]]),
+   );
+   Object.assign(process.env, vars);
+   try {
+      fn();
+   } finally {
+      for (const [k, v] of Object.entries(before)) {
+         if (v === undefined) delete process.env[k];
+         else process.env[k] = v;
+      }
+   }
+}
+
 describe("getServerApiSettings", () => {
    const roots: string[] = [];
    afterEach(() => {
@@ -59,6 +75,49 @@ describe("getServerApiSettings", () => {
          getServerApiSettings(rootWith('{"adminApiEnabled": "false"}')),
       ).toThrow(
          'Invalid publisher.config.json: "adminApiEnabled" must be true or false, got "false".',
+      );
+   });
+
+   it("lets the variable override the file, read as any variable boolean is", () => {
+      const root = rootWith(
+         JSON.stringify({ servingApiEnabled: true, adminApiEnabled: false }),
+      );
+      withEnv(
+         {
+            PUBLISHER_SERVING_API_ENABLED: "off",
+            PUBLISHER_ADMIN_API_ENABLED: "1",
+         },
+         () =>
+            expect(getServerApiSettings(root)).toEqual({
+               servingApiEnabled: false,
+               adminApiEnabled: true,
+               declaresEnvironments: false,
+            }),
+      );
+      withEnv({ PUBLISHER_ADMIN_API_ENABLED: "maybe" }, () =>
+         expect(() => getServerApiSettings(root)).toThrow(
+            'Invalid value for PUBLISHER_ADMIN_API_ENABLED: expected a boolean (true/false), got "maybe"',
+         ),
+      );
+   });
+
+   it("reads a ${VAR} in the file as a boolean, and refuses one that is not", () => {
+      const root = rootWith('{"adminApiEnabled": "${TEST_ADMIN_API}"}');
+      withEnv({ TEST_ADMIN_API: "false" }, () =>
+         expect(getServerApiSettings(root).adminApiEnabled).toBe(false),
+      );
+      withEnv({ TEST_ADMIN_API: "nope" }, () =>
+         expect(() => getServerApiSettings(root)).toThrow(
+            'expected a boolean (true/false), got "nope"',
+         ),
+      );
+   });
+
+   it("applies the variable when the config cannot be read", () => {
+      withEnv({ PUBLISHER_ADMIN_API_ENABLED: "false" }, () =>
+         expect(
+            getServerApiSettings(rootWith("{ not json")).adminApiEnabled,
+         ).toBe(false),
       );
    });
 

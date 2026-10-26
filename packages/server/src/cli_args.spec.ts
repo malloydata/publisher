@@ -40,6 +40,21 @@ describe("applyCliArgs", () => {
       expect(env.PUBLISHER_NO_MCP_CONFIG).toBe("true");
    });
 
+   it("maps each API switch to its variable, on bare and off with no-, overriding the variable", () => {
+      const env = apply(["--no-serving-api-enabled", "--admin-api-enabled"], {
+         NODE_ENV: "test",
+         PUBLISHER_SERVING_API_ENABLED: "true",
+         PUBLISHER_ADMIN_API_ENABLED: "false",
+      });
+      expect(env.PUBLISHER_SERVING_API_ENABLED).toBe("false");
+      expect(env.PUBLISHER_ADMIN_API_ENABLED).toBe("true");
+      const off = apply(["--serving-api-enabled", "--no-admin-api-enabled"], {
+         NODE_ENV: "test",
+      });
+      expect(off.PUBLISHER_SERVING_API_ENABLED).toBe("true");
+      expect(off.PUBLISHER_ADMIN_API_ENABLED).toBe("false");
+   });
+
    it("appends repeated --watch-env to an existing PUBLISHER_WATCH", () => {
       const env = apply(["--watch-env", "b", "--watch-env", "c"], {
          NODE_ENV: "test",

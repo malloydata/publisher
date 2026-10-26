@@ -132,6 +132,25 @@ describe("servingApiEnabled and adminApiEnabled", () => {
       expect(output).toContain("PUBLISHER_ADMIN_PORT is required.");
    });
 
+   it("takes serving off from the variable, over a file that leaves it on", async () => {
+      const port = await freePort();
+      const { ports } = await boot(
+         {
+            PUBLISHER_ADMIN_PORT: String(port),
+            PUBLISHER_SERVING_API_ENABLED: "false",
+         },
+         JSON.stringify({ servingApiEnabled: true }),
+      );
+      const deadline = Date.now() + 30_000;
+      while (
+         (await answers(`http://127.0.0.1:${port}/health/readiness`)) !== 200
+      ) {
+         if (Date.now() > deadline) throw new Error("admin never became ready");
+         await Bun.sleep(250);
+      }
+      expect(await answers(`http://127.0.0.1:${ports.main}/health`)).toBeNull();
+   });
+
    it("refuses a flag that is not a boolean", async () => {
       const { child } = await boot(
          {},

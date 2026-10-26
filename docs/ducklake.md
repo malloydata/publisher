@@ -148,8 +148,8 @@ it on loopback or behind an authenticating proxy.
 
 **Running it on its own.** The catalog database's role reaches every catalog in it, which is fine when one
 operator owns the server and every catalog. When the server serves other people's environments, keep the
-two apart with two top-level settings in `publisher.config.json`, both `true` by default
-([configuration.md](configuration.md)): the serving deployment sets `"adminApiEnabled": false`, which
+two apart with two top-level settings, both `true` by default and given in `publisher.config.json`, as a
+variable or as a flag ([configuration.md](configuration.md)): the serving deployment sets `"adminApiEnabled": false`, which
 refuses to start if `PUBLISHER_ADMIN_PORT` or `PUBLISHER_ADMIN_CATALOG_DATABASE` is set, and the admin
 deployment sets `"servingApiEnabled": false`, which runs only the admin listener, loads no environments
 (watch mode is then absent) and refuses a config that declares any.

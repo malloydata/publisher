@@ -49,6 +49,14 @@ export function applyCliArgs(
       ) {
          env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = args[i + 1];
          i++;
+      } else if (arg === "--serving-api-enabled") {
+         env.PUBLISHER_SERVING_API_ENABLED = "true";
+      } else if (arg === "--no-serving-api-enabled") {
+         env.PUBLISHER_SERVING_API_ENABLED = "false";
+      } else if (arg === "--admin-api-enabled") {
+         env.PUBLISHER_ADMIN_API_ENABLED = "true";
+      } else if (arg === "--no-admin-api-enabled") {
+         env.PUBLISHER_ADMIN_API_ENABLED = "false";
       } else if (arg === "--init") {
          env.INITIALIZE_STORAGE = "true";
       } else if (arg === "--no-mcp-config") {
@@ -90,6 +98,12 @@ export function applyCliArgs(
          );
          console.log(
             "  --admin_host <string>  Host to bind the admin API to (default: 127.0.0.1; not moved by --host)",
+         );
+         console.log(
+            "  --[no-]serving-api-enabled  Run the main API and MCP (default: on; off runs only the admin API)",
+         );
+         console.log(
+            "  --[no-]admin-api-enabled    Allow the admin API (default: on; off refuses an admin setting)",
          );
          console.log(
             "  --shutdown_drain_duration_seconds <number>  Time in seconds to keep service in draining state before closing servers (default: 0)",
