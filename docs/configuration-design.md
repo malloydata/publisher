@@ -21,8 +21,9 @@ a value comes from is the operator's choice, not an accident of when the setting
 Publisher reads its settings from three places, and which place a setting lives in follows no rule:
 
 - **`publisher.config.json`** began as the list of what to serve, and grew server-wide settings one at a
-  time: `frozenConfig`, `theme`, `mcp.includeHiddenFilesAndSources`, the `retrieval` block, and, with the
-  admin API, `servingApiEnabled` and `adminApiEnabled`.
+  time: `frozenConfig`, `theme`, `mcp.includeHiddenFilesAndSources` and the `retrieval` block. With the
+  admin API, `servingApiEnabled` and `adminApiEnabled` arrive already following this design: each is a
+  key in the file, a derived variable and a derived flag, read with the precedence below.
 - **Environment variables** carry everything else, about 60 of them, most added for container
   deployments.
 - **Command-line flags** exist for about a dozen of those variables, the ones a local user reaches for:
@@ -139,8 +140,8 @@ match the derived names.
 | Today | Key | Variable | Flag | Notes |
 |---|---|---|---|---|
 | `frozenConfig` (file) | `frozenConfig` | `PUBLISHER_FROZEN_CONFIG` | `--frozen-config` | strict boolean |
-| `servingApiEnabled` (file) | `servingApiEnabled` | `PUBLISHER_SERVING_API_ENABLED` | `--serving-api-enabled` | |
-| `adminApiEnabled` (file) | `adminApiEnabled` | `PUBLISHER_ADMIN_API_ENABLED` | `--admin-api-enabled` | |
+| `servingApiEnabled`, `PUBLISHER_SERVING_API_ENABLED`, `--[no-]serving-api-enabled` | `servingApiEnabled` | unchanged | unchanged | already follows this design |
+| `adminApiEnabled`, `PUBLISHER_ADMIN_API_ENABLED`, `--[no-]admin-api-enabled` | `adminApiEnabled` | unchanged | unchanged | already follows this design |
 | `PUBLISHER_PORT`, `--port` | `port` | unchanged | unchanged | |
 | `PUBLISHER_HOST`, `--host` | `host` | unchanged | unchanged | |
 | `PUBLISHER_RATE_LIMIT` | `rateLimit` | unchanged | `--rate-limit` | requests per minute |
