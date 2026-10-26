@@ -123,13 +123,6 @@ Variables Publisher does not own keep their names and stay outside the registry:
 `GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE` and `PGSERVICE` (which Publisher's Postgres
 connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
 
-Kubernetes also sets variables of its own. For each Service in a pod's namespace it injects
-`<NAME>_SERVICE_HOST`, `<NAME>_PORT=tcp://<ip>:<port>` and related variables. A Service named `mcp` sets
-`MCP_PORT`, and Services named `publisher`, `publisher-mcp` or `publisher-admin` set `PUBLISHER_PORT`,
-`PUBLISHER_MCP_PORT` and `PUBLISHER_ADMIN_PORT`. Step 2 of the migration says how a port setting treats
-these. An unknown `PUBLISHER_*` variable is warned about, with the nearest registered name, and never
-refused, because service links add names such as `PUBLISHER_SERVICE_HOST` and `PUBLISHER_PORT_4000_TCP`.
-
 ### Types, read the same way from every source
 
 | Type | In the file | As a variable or flag |
@@ -324,19 +317,16 @@ does, so it never needs an alias.
    allow proxy connections; and `"frozenConfig": "false"`, which freezes the server today. A value no
    reader accepts (`enabled`, say), which some of them read as off today, fails startup. An unknown file
    key and an invalid `LOG_LEVEL` (today it falls back to `debug`) are warned about, not yet refused.
+   Some settings are exceptions to "behavior unchanged". Today they accept values of more than one
+   type, and the registry gives each setting a single type (a boolean, an integer, an enum), so a value
+   of any other type fails startup from this step. For example, `MCP_PORT` takes a port number, `0` for
+   an ephemeral port, or, under Bun, any non-numeric string, which also binds an ephemeral port.
+   Registered as an integer, the non-numeric form fails startup. The release notes name each exception.
    Ships alone.
 2. **The new names.** The derived variables and flags become the names, today's become aliases, and
    each alias in use logs one deprecation warning at startup and counts in
    `publisher_deprecated_usage_total{feature="config:<old name>"}`. Precedence becomes flag, variable,
    file for every setting. An old and new name given different values fails startup.
-   - A port setting ignores a `tcp://` value, with a warning, as a Kubernetes service link, both as its
-     value and in that comparison. Today an explicit `MCP_PORT` in a pod spec hides the `MCP_PORT`
-     Kubernetes injects for a Service named `mcp`. A deployment that moves to `PUBLISHER_MCP_PORT` and
-     drops `MCP_PORT` would otherwise expose the injected value and fail startup.
-   - The Docker image's own `ENV PUBLISHER_NO_MCP_CONFIG=1`, and the `--server_root` in its `CMD`, move
-     to the new names in the same release. Otherwise every container warns and counts in the metric,
-     so the metric never reaches zero, and an operator who sets `PUBLISHER_MCP_CONFIG_FILE_ENABLED=true`
-     conflicts with the image's own value and fails startup.
 3. **Strict.** A release later: the warnings from step 1 become refusals, so a boolean value the two
    readers disagree on is refused before it can change meaning. The aliases are removed in the release
    after that, announced in the changelog with the mapping table above.
