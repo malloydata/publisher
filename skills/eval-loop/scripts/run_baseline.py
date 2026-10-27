@@ -207,7 +207,7 @@ import check_findable  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
-                           build_workspace, default_manifest,
+                           build_workspace, default_manifest, find_skill,
                            manifest_skills, no_events, no_text,
                            run_cli, skills_roots)
 from flip_table import counts_toward_score  # noqa: E402
@@ -663,6 +663,32 @@ def path_breaches(events: list[dict[str, Any]],
     return list(r["reasons"])
 
 
+def outside_workspace_breaches(events: list[dict[str, Any]], qid: str) -> list[str]:
+    """File reads that left the answerer's workspace.
+
+    `path_breaches` guards the eval set; this guards everything else on the
+    machine. Measured the day it was written: an answerer on this harness opened
+    the operator's own Claude memory (~/.claude/memory/...) on its first turn,
+    which held the modelling decisions the questions test, and nothing flagged
+    it. The workspace is a temp dir named `ans-<qid>-...`, so any absolute path
+    a file tool touches outside it is a breach.
+    """
+    out = []
+    for e in events:
+        if e.get("type") != "assistant":
+            continue
+        for c in e["message"].get("content") or []:
+            if c.get("type") != "tool_use" or c.get("name") not in ("Read", "Glob", "Grep"):
+                continue
+            inp = c.get("input") or {}
+            for key in ("file_path", "path"):
+                v = inp.get(key)
+                if isinstance(v, str) and (v.startswith("/") or v.startswith("~")) \
+                        and f"/ans-{qid}-" not in v:
+                    out.append(f"{c['name']} outside the answerer's workspace: {v}")
+    return out
+
+
 def result_text(block: dict[str, Any]) -> str:
     """The text of one tool_result block, with a spilled result read back.
 
@@ -712,6 +738,7 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
            turns: int = 30,
            effort: str | None = None, timeout: int = 900,
            skills: bool = True, retry: int = 2,
+           system_append: str | None = None,
            backoff: float = 20.0,
            retry_when: Any = no_events) -> list[dict[str, Any]]:
     """One `claude -p` run. With `skills=True` the workspace's
@@ -744,6 +771,10 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
         cmd += ["--mcp-config", mcp]
     if tools:
         cmd += ["--allowedTools", *tools]
+    # --inline-skills: pre-loads skill bodies into the system prompt, the way a
+    # host app pastes its entry skill in rather than asking the model to read it.
+    if system_append:
+        cmd += ["--append-system-prompt", system_append]
     # The subprocess, the stream-json parse and the retry are shared with
     # `agent_harness.spawn_agent`; only the retry predicate differs. The
     # DEFAULT is `no_events`, which retries a dead process or a rate limit and
@@ -986,6 +1017,21 @@ def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
     rejection any server with required parameters gives, which is not the
     reachability answer it was there to get.
     """
+    # A hosted GLOBAL endpoint needs `organization` and `workspace` on every
+    # call, and its scopes name the environment and package, not the
+    # organization and workspace. Without this
+    # the probe is refused on /global (403, or "organizationName must match")
+    # although the answerer, whose prompt names both, would have worked.
+    if getattr(a, "target", None) == "platform" and "/workspace/" not in (a.mcp_url or ""):
+        scope = {"environment": a.environment, "package": a.package}
+        if getattr(a, "scope", None):
+            env, pkg, version, _ = parse_scope(a.scope, getattr(a, "target_version", None))
+            scope = {"environment": env, "package": pkg}
+            if version:
+                scope["version"] = version
+        return {"organization": a.environment, "workspace": a.package,
+                "search_targets": [{"target_type": "source", "search_text": "data"}],
+                "scopes": [scope]}
     return {"search_targets": [{"target_type": "source",
                                 "search_text": "data"}],
             "scopes": [{"environment": a.environment, "package": a.package}]}
@@ -2139,6 +2185,29 @@ def parse_scope(scope: str, target_version: str | None
     return env.strip(), pkg.strip(), version, notes
 
 
+def timing_fields(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Seconds from spawn to the first get_context and
+    first execute_query call (from the `_t` stamp run_cli puts on each event),
+    and which guides the answerer fetched through the MCP `get_skill` tool,
+    which `skills_invoked` (the Skill tool only) cannot see."""
+    first: dict[str, float | None] = {"get_context": None, "execute_query": None}
+    fetched: list[str] = []
+    for e in events:
+        if e.get("type") != "assistant":
+            continue
+        for c in e["message"].get("content") or []:
+            if c.get("type") != "tool_use":
+                continue
+            leaf = str(c.get("name", "")).rsplit("__", 1)[-1]
+            if leaf in first and first[leaf] is None:
+                first[leaf] = e.get("_t")
+            if leaf == "get_skill":
+                fetched.append(str((c.get("input") or {}).get("skill_name") or "(list)"))
+    return {"first_get_context_s": first["get_context"],
+            "first_execute_s": first["execute_query"],
+            "get_skill_names": fetched}
+
+
 def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                  art: pathlib.Path) -> dict[str, Any]:
     qid = case["qid"]
@@ -2198,7 +2267,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
             # was granted rather than pretending to have denied it.
             denied=answer_denied(a),
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
-            skills=bool(a.answerer_skills))
+            skills=bool(a.answerer_skills),
+            system_append=getattr(a, "inline_text", None))
         elapsed = round(time.time() - t0, 1)
         (d / "answerer.jsonl").write_text(
             "".join(json.dumps(e) + "\n" for e in events))
@@ -2419,11 +2489,13 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "cost_usd": res.get("total_cost_usd"),
         "num_turns": res.get("num_turns"),
         "wall_seconds": elapsed,
+        **timing_fields(events),
         "error": res.get("subtype") if res.get("is_error") else None,
         "calls": calls,
         "breaches": isolation_breaches(
             events, answer_tools(a))
         + path_breaches(events, a.set_dir)
+        + outside_workspace_breaches(events, qid)
         + [f"invoked a skill outside the manifest: {sk}"
            for sk in sorted(set(foreign_skills))],
         "transcriptPath": str((d / "answerer.jsonl").relative_to(art.parent)),
@@ -3247,6 +3319,9 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         cost_usd=att.get("cost_usd"),
         num_turns=att.get("num_turns"),
         wall_seconds=att.get("wall_seconds"),
+        first_get_context_s=att.get("first_get_context_s"),
+        first_execute_s=att.get("first_execute_s"),
+        get_skill_names=att.get("get_skill_names") or [],
         answer_text=att.get("answer_text"),
         run_error=att.get("error"),
         transcriptPath=att["transcriptPath"])
@@ -3271,6 +3346,11 @@ def answer_denied(a: argparse.Namespace) -> tuple[str, ...]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # No spawned agent -- answerer, judge or probe --
+    # may load the operator's auto-memory. Children inherit this. Verified: a
+    # `claude -p` without it reports the operator's MEMORY.md index in context;
+    # with it, none.
+    os.environ["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--out", type=pathlib.Path, default=None,
@@ -3384,6 +3464,13 @@ def main(argv: list[str] | None = None) -> int:
                          "a bare model. Default: analysis-app where that "
                          "exists (a private skills repo), else publisher-local#analysis "
                          "(a Publisher checkout). name#group takes one group")
+    ap.add_argument("--inline-skills", dest="inline_skills_csv", default=None,
+                    help="Comma-separated answerer "
+                         "skills whose SKILL.md bodies are put INTO the answerer's "
+                         "system prompt, the way a host app pre-loads its entry "
+                         "skill. Each must be in the answerer's "
+                         "manifest. The rest stay on disk for the Skill tool. "
+                         "Recorded as answererInlineSkills / answererInlineSha")
     ap.add_argument("--no-answerer-skills", action="store_true",
                     help="run the answerer with no skills at all. This is a "
                          "DIFFERENT measurement -- the semantic model alone, "
@@ -3508,6 +3595,37 @@ def main(argv: list[str] | None = None) -> int:
               f"the run's answererManifest pin is left unset.")
         a.answerer_skills = []
         a.answerer_manifest = None
+    # --inline-skills, rendered the way a host app
+    # renders them: frontmatter stripped, under one "pre-loaded" heading, with
+    # the instruction not to open them again.
+    a.inline_skills, a.inline_text, a.inline_sha = [], None, None
+    wanted = [x.strip() for x in (a.inline_skills_csv or "").split(",") if x.strip()]
+    if wanted:
+        missing = [n for n in wanted if n not in (a.answerer_skills or [])]
+        if missing:
+            raise SystemExit(f"--inline-skills names skills the answerer's manifest "
+                             f"does not install: {', '.join(missing)}")
+        parts = []
+        for n in wanted:
+            path = find_skill(n, a.roots)
+            if path is None:
+                raise SystemExit(f"--inline-skills: {n} has no SKILL.md under {a.roots}")
+            body = (path / "SKILL.md").read_text()
+            if body.startswith("---"):
+                end = body.find("\n---", 3)
+                body = body[end + 4:] if end != -1 else body
+            parts.append(f"### Skill: {n}\n\n{body.strip()}")
+        listed = ", ".join(f"`{n}`" for n in wanted)
+        a.inline_text = (
+            f"Your workflow skill{'s' if len(wanted) > 1 else ''} -- {listed} -- "
+            "are included in full below under \"Primary workflow skills\". They are "
+            "already loaded: do NOT call the Skill tool to read them, and do not "
+            "narrate reading them.\n\n## Primary workflow skills (pre-loaded)\n\n"
+            + "\n\n".join(parts) + "\n")
+        a.inline_skills = wanted
+        a.inline_sha = hashlib.sha256(a.inline_text.encode()).hexdigest()
+        print(f"  inlining {len(wanted)} skill(s) into the answerer's system prompt: "
+              f"{', '.join(wanted)} ({len(a.inline_text):,} chars, sha {a.inline_sha[:12]})")
     a.judge_skills = list(JUDGE_SKILLS)
     # The reachability probe's own `get_context` reply, when one was made. The
     # retrieval gate reads it rather than making a second call it cannot
@@ -3899,6 +4017,8 @@ def main(argv: list[str] | None = None) -> int:
         packageSkillsSha=a.package_skills_sha,
         answererManifest=a.answerer_manifest if a.answerer_skills else None,
         answererSkills=a.answerer_skills or [],
+        answererInlineSkills=getattr(a, "inline_skills", []) or [],
+        answererInlineSha=getattr(a, "inline_sha", None),
         judgeSkills=a.judge_skills or [],
         mcpUrl=a.mcp_url, publisher=a.publisher,
         evalConfig=cfg.summary(),

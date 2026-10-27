@@ -69,7 +69,10 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
                      "cache_write_tokens", "skills_invoked",
-                     "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
+                     "cost_usd", "num_turns", "wall_seconds", "run_error", "at",
+                     # Time to first retrieval and
+                     # first query, and guides fetched through MCP get_skill.
+                     "first_get_context_s", "first_execute_s", "get_skill_names"},
     },
     "tool_call": {
         "required": _CASE | {"tool"},
@@ -200,6 +203,11 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # and both suppress the pass rate (`incomplete` below).
                 "truncated", "contaminated",
                 "callBudget", "status", "answererSkills",
+                # Skills pre-loaded into the
+                # answerer's system prompt by --inline-skills, and a sha of
+                # the exact text, so two runs that inlined different doctrine
+                # can never compare as the same instrument.
+                "answererInlineSkills", "answererInlineSha",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 # The run whose attempts this run's answerer cost was COPIED
                 # from, when it did not spawn an answerer at all (a re-judge, a
