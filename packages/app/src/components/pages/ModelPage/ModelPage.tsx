@@ -6,7 +6,6 @@ import {
    encodeResourceUri,
    Model,
    packageFileUrl,
-   useGivenUrlParams,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
@@ -33,11 +32,6 @@ function ModelPage() {
       writable,
    } = usePackageRoute({ always: true });
    const { server } = useServer();
-   // Every branch below has the same parent, the package, so the way up is
-   // built once here.
-   // Parameter values ride in the query string, so a Model's Run is a
-   // shareable link, the same as a report's.
-   const { params: givens, onGivensChange } = useGivenUrlParams();
    if (!params.environmentName) {
       return (
          <div>
@@ -141,8 +135,6 @@ function ModelPage() {
                resourceUri={resourceUri}
                runOnDemand={true}
                maxResultSize={512 * 1024}
-               givens={givens}
-               onGivensChange={onGivensChange}
             />
          </Box>
       );

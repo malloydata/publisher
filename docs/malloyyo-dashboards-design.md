@@ -536,7 +536,7 @@ ahead of notebooks and models. Two list-hygiene rules keep entries canonical:
 
 **Routing: a branch in the catch-all, keyed on the extension.** `createMalloyRouter`
 (`packages/app/src/App.tsx`) routes `/:env/:pkg/*` to `ModelPage`, which branches on extension —
-`.malloy` opens the Explorer-style `Model` view, so a dashboard file must not fall through to it
+`.malloy` opens the `Model` view, so a dashboard file must not fall through to it
 as its primary experience. The URL is:
 
 ```

@@ -27,9 +27,8 @@ import React from 'react';
 import { useAuth0, withAuthenticationRequired } from '@auth0/auth0-react';
 import { MalloyPublisherApp, MalloyPublisherAppProps, createMalloyRouter } from '@malloy-publisher/app';
 import { RouterProvider } from 'react-router-dom';
-// You must manually import the styles for the MalloyExplorer, otherwise it 
-// will render very weirds
-import "@malloy-publisher/sdk/malloy-explorer.css";
+// The SDK's styles: how result tables sit in their containers.
+import "@malloy-publisher/sdk/styles.css";
 
 interface AuthenticatedMalloyAppProps extends Omit<MalloyPublisherAppProps, 'server'> {
   serverUrl?: string;

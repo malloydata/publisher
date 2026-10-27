@@ -38,47 +38,42 @@ test.describe("package-models", () => {
       ).toBeVisible();
    });
 
-   test("source combobox defaults to a known source value", async ({
-      page,
-   }) => {
+   test("lists each source with its fields", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
       await modelRow(page, "storefront.malloy").click();
 
-      // MUI Autocomplete: input value, not innerText.
-      await expect(page.getByRole("combobox").first()).toHaveValue("customers");
+      // Each source is a section named by its own heading.
+      const customers = page.getByRole("region", {
+         name: "customers",
+         exact: true,
+      });
+      await expect(customers).toBeVisible();
+      await expect(
+         customers.getByText("full_name", { exact: true }),
+      ).toBeVisible();
+      await expect(
+         customers.getByText("customer_count", { exact: true }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("region", { name: "order_items", exact: true }),
+      ).toBeVisible();
    });
 
-   test("picking a dimension and running returns rows", async ({ page }) => {
+   test("running a named query returns rows", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
       await modelRow(page, "storefront.malloy").click();
 
-      const sourceSelect = page.getByRole("combobox").first();
-      await expect(sourceSelect).toHaveValue("customers");
-      await page.keyboard.press("Escape");
-
-      const dimensionsToggle = page.getByText("Dimensions5");
-      await expect(dimensionsToggle).toBeVisible();
-      await dimensionsToggle.scrollIntoViewIfNeeded();
-      await dimensionsToggle.click();
-
-      const nameField = page.getByText("full_name", { exact: true });
-      await expect(nameField).toBeVisible();
-      await nameField.scrollIntoViewIfNeeded();
-      // force: label sits under an icon button; Playwright otherwise reports pointer interception.
-      await nameField.click({ force: true });
-
-      const runQuery = page.getByRole("button", { name: "Run", exact: true });
-      await expect(runQuery).toBeEnabled();
-      await runQuery.click();
-
-      await expect(page.getByRole("tab", { name: "Results" })).toBeVisible();
-      const resultsPanel = page.getByRole("tabpanel", { name: "Results" });
-      await expect(resultsPanel).toContainText(
-         /Aiden Ali|Aiden Andersson|Aiden Cohen|Aiden Diaz/,
-      );
+      await expect(
+         page.getByRole("heading", { name: "Named Queries", level: 2 }),
+      ).toBeVisible();
+      // brand_suggest is the model's only named query: distinct brands, in
+      // order, so the first two are the fixture data's first two.
+      await page.getByRole("button", { name: "Run Query" }).click();
+      await expect(page.getByText("Alpine", { exact: true })).toBeVisible();
+      await expect(page.getByText("Aurora", { exact: true })).toBeVisible();
    });
 });

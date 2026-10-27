@@ -97,7 +97,6 @@ Or ask an AI agent over MCP: _"Use Malloy to chart storefront revenue by categor
 ## Learn more
 
 - [docs/console.md](../../docs/console.md) — navigate this package in the Publisher Console, the built-in web UI.
-- [docs/explorer.md](../../docs/explorer.md) — explore the model with the no-code visual query builder.
 - [docs/html-data-apps.md](../../docs/html-data-apps.md) — how `public/index.html` works.
 - [docs/ai-agents.md](../../docs/ai-agents.md) — query this model from an AI agent over MCP.
 - [examples/data-app](../data-app) — the React SDK app that reads from this package.

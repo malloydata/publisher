@@ -231,8 +231,8 @@ npm install --save-dev rollup-plugin-visualizer
 
 ```tsx
 // Lazy load heavy components
-const ModelExplorer = lazy(() => 
-  import('@malloy-publisher/sdk').then(m => ({ default: m.ModelExplorer }))
+const Model = lazy(() =>
+  import('@malloy-publisher/sdk').then(m => ({ default: m.Model }))
 );
 ```
 

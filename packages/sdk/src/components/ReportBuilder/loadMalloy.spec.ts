@@ -5,10 +5,8 @@ import { describe, expect, it } from "bun:test";
 import {
    loadMalloy,
    loadMalloyTag,
-   loadQueryBuilder,
    unwrapMalloy,
    unwrapMalloyTag,
-   unwrapQueryBuilder,
 } from "./loadMalloy";
 
 type Namespace = Parameters<typeof unwrapMalloy>[0];
@@ -54,27 +52,5 @@ describe("unwrapMalloyTag", () => {
    it("loads the real package with a callable parser", async () => {
       const tag = await loadMalloyTag();
       expect(typeof tag.parseAnnotation).toBe("function");
-   });
-});
-
-describe("unwrapQueryBuilder", () => {
-   type Builder = Parameters<typeof unwrapQueryBuilder>[0];
-   class ASTQuery {}
-
-   it("returns an ESM-style namespace as it is", () => {
-      const ns = { ASTQuery, default: { other: 1 } } as unknown as Builder;
-      expect(unwrapQueryBuilder(ns)).toBe(ns);
-   });
-
-   it("unwraps a default-only namespace from a bundled CommonJS import", () => {
-      const unwrapped = unwrapQueryBuilder({
-         default: { ASTQuery },
-      } as unknown as Builder);
-      expect(unwrapped.ASTQuery as unknown).toBe(ASTQuery);
-   });
-
-   it("loads the real package with a constructible query", async () => {
-      const builder = await loadQueryBuilder();
-      expect(typeof builder.ASTQuery).toBe("function");
    });
 });

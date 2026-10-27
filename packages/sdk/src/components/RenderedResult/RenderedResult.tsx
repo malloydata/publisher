@@ -344,7 +344,7 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
 }
-/* !important because the malloy-explorer stylesheet pins these same properties with it. */
+/* !important because the SDK's result-tables.css pins these same properties with it. */
 [${FILL_ATTR}] .malloy-table.root {
    height: 100% !important;
    align-content: start !important;
