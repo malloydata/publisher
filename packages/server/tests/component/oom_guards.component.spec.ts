@@ -179,11 +179,10 @@ describe("OOM guardrails: end-to-end chain", () => {
       );
       let release!: () => void;
       const released = new Promise<void>((resolve) => (release = resolve));
-      let calls = 0;
-      const runSQL = sinon.stub().callsFake(async () => {
-         // Only the first call waits, so a second request that wrongly gets
-         // a slot fails the assertions below rather than hanging.
-         if (++calls === 1) {
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         // Only the first request's query waits, so a second request that
+         // wrongly gets a slot fails the assertions below rather than hanging.
+         if (sql === "SELECT 1") {
             entered();
             await released;
          }
@@ -197,8 +196,10 @@ describe("OOM guardrails: end-to-end chain", () => {
          .send({ sqlStatement: "SELECT 1" })
          .then((res) => res);
       // The middleware takes the slot before the controller runs, and gives it
-      // back when the response finishes, so the slot is held from here on.
-      await firstHoldsSlot;
+      // back when the response finishes, so the slot is held from here on. A
+      // first request answered without reaching the query ends the wait too,
+      // so that regression fails the status checks instead of timing out.
+      await Promise.race([firstHoldsSlot, firstResponse]);
       const second = await request(app)
          .post("/api/v0/environments/e/connections/c/sqlQuery")
          .send({ sqlStatement: "SELECT 2" });

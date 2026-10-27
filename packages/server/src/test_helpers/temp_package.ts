@@ -15,6 +15,7 @@ import {
    type Connection,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll } from "bun:test";
+import { randomUUID } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -30,9 +31,21 @@ import { Package } from "../service/package";
  * statements) already run on it. Only this process sees the seeded tables: a
  * package-load worker opens its own DuckDB, so a package loaded through the
  * pool reads inline `duckdb.sql(...)` rows instead.
+ *
+ * Each call gets its own database. db-duckdb pools `:memory:` connections
+ * with the same config into one database for as long as any of them is open,
+ * so two specs seeding a table of the same name would read each other's.
+ * The temp directory is part of the pool's key, so a fresh one per call keeps
+ * this connection out of the pool; nothing here spills, so it is never
+ * created.
  */
 export async function seededDuckdb(seedSql = ""): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   const duckdb = new DuckDBConnection({
+      name: "duckdb",
+      databasePath: ":memory:",
+      workingDirectory: ".",
+      tempDirectory: path.join(os.tmpdir(), `seeded-duckdb-${randomUUID()}`),
+   });
    for (const statement of seedSql.split(";")) {
       if (statement.trim()) await duckdb.runSQL(statement.trim() + ";");
    }
