@@ -546,3 +546,37 @@ it("leaves a #(secure) given's control alone outside text-source mode", async ()
       0,
    );
 });
+
+describe("a tile with no label", () => {
+   it("is titled as the view the builder's query reads, and an author's query by its own name", async () => {
+      const manifest = {
+         ...base,
+         givens: [],
+         tiles: [
+            {
+               kind: "query",
+               query: "top_brands_tile",
+               view: "orders -> top_brands",
+            },
+            {
+               kind: "query",
+               query: "kpis_tile",
+               view: "orders -> key_figures",
+            },
+         ],
+      } as DashboardManifest;
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      expect(await screen.findByText("Top brands")).toBeTruthy();
+      expect(screen.queryByText("Top brands tile")).toBeNull();
+      expect(screen.getByText("Kpis tile")).toBeTruthy();
+   });
+});

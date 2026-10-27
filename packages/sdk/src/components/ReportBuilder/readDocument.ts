@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { Tag } from "@malloydata/malloy-tag";
+import type { EntryDrill } from "../drill/resolveDrill";
 import {
    chartLinesOf,
    chartStateOfTagLines,
+   parseChartLine,
    seriesColorOf,
    type ChartState,
 } from "./chartLine";
@@ -15,8 +17,9 @@ import type {
    DashboardSource,
    DashboardTile,
    LocalGiven,
+   QueryTile,
 } from "./document";
-import { isTextTile } from "./document";
+import { isInlineStage, isTextTile } from "./document";
 import { loadMalloyTag } from "./loadMalloy";
 import {
    CELLS_REMOVED_REASON,
@@ -30,9 +33,12 @@ import {
    parseRefused,
    readTileList,
    type ParsedMalloy,
+   type TreeQuery,
    type TreeStage,
+   type TreeViewBody,
    type TreeView,
 } from "./malloyTree";
+import { isBuilderTag } from "./tileTags";
 import {
    ARTIFACT_NOT_FIRST,
    artifactLeads,
@@ -153,35 +159,61 @@ const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 function chartField(tags: Array<{ text: string }>): {
    chart?: ChartState;
    chartLines?: string[];
-   color?: string;
+   chartReset?: string[];
 } {
    const lines = tagText(tags);
    const chart = chartStateOfTagLines(lines);
-   // The last colour line wins, as it does in the renderer's tag merge.
-   const color = lines.map(seriesColorOf).filter(Boolean).at(-1);
-   const colored = color ? { color } : {};
-   if (chart === undefined) return colored;
-   return chart === "custom"
-      ? { chart, chartLines: chartLinesOf(lines), ...colored }
-      : { chart, ...colored };
+   if (chart === undefined) return {};
+   if (chart === "custom") return { chart, chartLines: chartLinesOf(lines) };
+   // What the pick's line takes off the view's chart, as written.
+   const reset = lines
+      .map(parseChartLine)
+      .find((parts) => parts !== undefined)?.negated;
+   return {
+      chart,
+      ...(reset?.length ? { chartReset: reset } : {}),
+   };
 }
 
 /**
- * Whether a tile's own tags set the series palette in a line the builder did
- * not write; see {@link QueryTile.ownPalette}. Each line is parsed on its own,
- * so `# theme { palette.series=[…] }` counts as well as the dotted spelling.
+ * The colour a tile's tags draw, and whether they carry a palette the builder
+ * did not write. See {@link QueryTile.color} and {@link QueryTile.ownPalette}.
+ *
+ * The renderer merges tag lines in order and the last `theme.palette.series`
+ * wins. The colour is that winning line when it is the builder's one-colour
+ * form; an earlier one-colour line under a later palette is not what draws,
+ * so it is not read back. A palette line is parsed on its own, so
+ * `# theme { palette.series=[…] }` counts as well as the dotted spelling.
+ * `ownPalette` stays set when any such line is present, even under a later
+ * one-colour line: setting the tile back to Theme must not take the author's
+ * palette off.
  */
-function ownPaletteField(
+function seriesFields(
    tags: Array<{ text: string }>,
    parse: ParseTags,
-): { ownPalette?: true } {
-   const own = tagText(tags).some(
-      (line) =>
-         seriesColorOf(line) === undefined &&
+): { color?: string; ownPalette?: true } {
+   let color: string | undefined;
+   let own = false;
+   let last: "color" | "own" | undefined;
+   for (const line of tagText(tags)) {
+      const one = seriesColorOf(line);
+      if (one !== undefined) {
+         color = one;
+         last = "color";
+         continue;
+      }
+      if (
          parse([line]).tag?.tag("theme")?.tag("palette")?.tag("series") !==
-            undefined,
-   );
-   return own ? { ownPalette: true } : {};
+         undefined
+      ) {
+         own = true;
+         last = "own";
+      }
+   }
+   return {
+      ...(last === "color" && color ? { color } : {}),
+      ...(own ? { ownPalette: true as const } : {}),
+   };
 }
 
 /**
@@ -211,12 +243,86 @@ function filtersOf(
 }
 
 /**
+ * A query in this file as a `named` tile, or undefined when it is not one the
+ * builder can edit: `query: q is <source> -> <view>`, with at most a `+ { … }`
+ * refinement, declared alone in its statement. Its settings are its own tags,
+ * read as a view's are, and its filters are the refinement's bindings.
+ */
+function namedTile(
+   query: TreeQuery,
+   parse: ParseTags,
+   text: string,
+): QueryTile | undefined {
+   const { source } = query;
+   // An inline stage, `src -> { … }`, is the report's own query as much as a
+   // view reference is: its stage text is its base, kept exactly as written,
+   // and its filters go in a `+ { where: … }` after it like a view's.
+   const body: TreeViewBody =
+      query.body.kind === "inline" && !query.body.pipeline
+         ? {
+              kind: "reference",
+              from: text.slice(
+                 query.body.stage.span.start,
+                 query.body.stage.span.end,
+              ),
+              fromSpan: query.body.stage.span,
+           }
+         : query.body;
+   if (
+      source === undefined ||
+      query.siblings !== 1 ||
+      body.kind !== "reference" ||
+      !(isInlineStage(body.from) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(body.from))
+   )
+      return undefined;
+   const t = parse(tagText(query.tags)).tag;
+   const refinement = body.refinement;
+   const scope = query.scope?.block;
+   // Anything in a block that is not a `where:` of bindings is the author's.
+   const ownContent = (stage: TreeStage | undefined) =>
+      stage !== undefined &&
+      (stage.statements.some(
+         (st) => !stage.wheres.some((w) => w.span.start === st.span.start),
+      ) ||
+         stage.wheres.some((w) => w.clauses.some((c) => !c.binding)));
+   const unmodelled =
+      ownContent(refinement) ||
+      ownContent(scope) ||
+      query.tags.some((tag) => !isBuilderTag(tag.text));
+   // The report's filters on the source (`flights extend { where: … } -> v`,
+   // what the builder writes), and an earlier `v + { where: … }` refinement.
+   const filters = [
+      ...(filtersOf(scope) ?? []),
+      ...(filtersOf(refinement) ?? []),
+   ];
+   return {
+      name: query.name,
+      source,
+      declaration: { kind: "named", from: body.from },
+      ...(filters.length > 0 ? { filters } : {}),
+      ...(t?.text("label") ? { label: t.text("label") as string } : {}),
+      ...(t?.text("subtitle")
+         ? { subtitle: t.text("subtitle") as string }
+         : {}),
+      ...(t?.numeric("colspan") !== undefined
+         ? { colspan: t.numeric("colspan") as number }
+         : {}),
+      ...chartField(query.tags),
+      ...seriesFields(query.tags, parse),
+      ...(t?.has("break") ? { break: true } : {}),
+      ...(t?.has("borderless") ? { borderless: true } : {}),
+      ...(unmodelled ? { unmodelled: true } : {}),
+   };
+}
+
+/**
  * A tag object, as `parseAnnotation` returns it. Only the reads this file makes.
  */
 type TagLike = {
    text: (key: string) => string | undefined;
    numeric: (key: string) => number | undefined;
    tag: (key: string) => TagLike | undefined;
+   has: (key: string) => boolean;
 };
 type ParseTags = (lines: string[]) => { tag?: TagLike | null };
 
@@ -320,34 +426,61 @@ function gridWidth(
 const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"\s*(\{[\s\S]*\})?$/;
 
 /** The layout a `tiles=[…]` entry carries, read the way the server reads it. */
-function entryLayout(
-   tag:
-      | {
-           text(key: string): string | undefined;
-           has(key: string): boolean;
-        }
-      | undefined,
-): EntryLayout {
+function entryLayout(tag: EntryTag | undefined): EntryLayout {
    const colspan = gridWidth(tag, "colspan");
    const rowspan = gridWidth(tag, "rowspan");
    const row = gridWidth(tag, "row");
    const col = gridWidth(tag, "col");
+   const drill = entryDrill(tag);
    return {
       ...(colspan === undefined ? {} : { colspan }),
       ...(tag?.has("break") ? { break: tag.text("break") !== "false" } : {}),
       ...(rowspan === undefined ? {} : { rowspan }),
       ...(row === undefined ? {} : { row }),
       ...(col === undefined ? {} : { col }),
+      ...(drill === undefined ? {} : { drill }),
    };
 }
 
-/** What an entry in `tiles=[…]` can say about where its tile sits. */
+/** As much of a parsed entry tag as the reader asks of it. */
+interface EntryTag {
+   text(key: string): string | undefined;
+   textArray?(key: string): string[] | undefined;
+   has(key: string): boolean;
+   tag?(key: string): EntryTag | undefined;
+   dict?: Record<string, unknown>;
+}
+
+/**
+ * `drill { <dimension> { to=… given=… } }` on an entry, read the way the server
+ * reads it (`readEntryDrill`): one destination may go unbracketed, `to=[]` is
+ * the tag turned off, and a dimension with no `to` is left out.
+ */
+function entryDrill(
+   tag: EntryTag | undefined,
+): Record<string, EntryDrill> | undefined {
+   const drill = tag?.tag?.("drill");
+   if (!drill) return undefined;
+   const out: Record<string, EntryDrill> = {};
+   for (const dimension of Object.keys(drill.dict ?? {})) {
+      const spec = drill.tag?.(dimension);
+      if (!spec?.has("to")) continue;
+      const one = spec.text("to");
+      const to = spec.textArray?.("to") ?? (one ? [one] : []);
+      const given = spec.text("given");
+      out[dimension] = given === undefined ? { to } : { to, given };
+   }
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** What an entry in `tiles=[…]` can say about its tile: where it sits, and what a click on a value offers. */
 interface EntryLayout {
    colspan?: number;
    break?: boolean;
    rowspan?: number;
    row?: number;
    col?: number;
+   drill?: Record<string, EntryDrill>;
 }
 
 /** An entry's layout over a view's own: each property the entry sets wins, and a `break` that ends up off is no field. */
@@ -360,6 +493,7 @@ function placed(
    rowspan?: number;
    row?: number;
    col?: number;
+   drill?: Record<string, EntryDrill>;
 } {
    const colspan = entry.colspan ?? view.colspan;
    return {
@@ -368,28 +502,12 @@ function placed(
       ...(entry.rowspan === undefined ? {} : { rowspan: entry.rowspan }),
       ...(entry.row === undefined ? {} : { row: entry.row }),
       ...(entry.col === undefined ? {} : { col: entry.col }),
+      ...(entry.drill === undefined ? {} : { drill: entry.drill }),
    };
 }
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 /** An entry that is one plain name, quoted or bare: a query, as the server's reader takes it. */
 const NAMED_QUERY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/**
- * The `#` lines above `query: <name> is …` in this file, or none when the
- * query is declared in the model. `name` is a plain name ({@link NAMED_QUERY}).
- */
-function queryTags(
-   parsed: ParsedMalloy,
-   lines: string[],
-   name: string,
-): Array<{ line: number; text: string }> {
-   const declares = new RegExp(`^\\s*query\\s*:\\s*${name}\\s+is\\b`);
-   for (let i = 0; i < lines.length; i++) {
-      if (parsed.commentLine(i) || parsed.proseLine(i)) continue;
-      if (declares.test(lines[i])) return blockAbove(parsed, lines, i).tags;
-   }
-   return [];
-}
 
 /**
  * What the reader takes off a tile's own tags for its frame: label, subtitle,
@@ -562,13 +680,22 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
 
    const tiles: DashboardTile[] = [];
    /**
-    * A tile that names a query: framed by the query's own tags when the file
-    * declares it, and laid out by its entry over the query's `# colspan` and
-    * `# break`, as a view's tile is.
+    * A tile that names a query: one in this file that reads
+    * `<source> -> <view>` is the builder's to edit (`named`); any other is
+    * framed by the query's own tags when the file declares it. Either is laid
+    * out by its entry over the query's `# colspan` and `# break`, as a view's
+    * tile is.
     */
    const namedQueryTile = (name: string, own: EntryLayout): DashboardTile => {
+      const query = parsed.queries.find((q) => q.name === name);
+      const named =
+         query && namedTile(query, parseAnnotation as ParseTags, parsed.text);
+      if (named) {
+         const { colspan, break: brk, ...rest } = named;
+         return { ...rest, ...placed({ colspan, break: brk }, own) };
+      }
       const frame = readOnlyFrame(
-         parseAnnotation(tagText(queryTags(parsed, lines, name))).tag,
+         query ? parseAnnotation(tagText(query.tags)).tag : undefined,
       );
       return {
          name,
@@ -622,9 +749,10 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       );
       // A plain name, quoted or bare, is a named query,
       // `query: by_carrier is flights -> { … }`, here or in the model: the
-      // server's reader runs it as `run: by_carrier`. Shown and movable, never
-      // rewritten (see the `query` declaration), and framed by the query's own
-      // tags when this file declares it, as the reader frames it.
+      // server's reader runs it as `run: by_carrier`. One in this file that
+      // reads `<source> -> <view>` is the builder's to edit (`named`); any
+      // other is shown and movable, never rewritten, and framed by the query's
+      // own tags when this file declares it, as the reader frames it.
       if (NAMED_QUERY.test(entry.trim())) {
          tiles.push(namedQueryTile(entry.trim(), own));
          continue;
@@ -683,7 +811,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             ...frameWithout(readOnlyFrame(t)),
             ...placed(viewLayout(t), own),
             ...chartField(view.tags),
-            ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
+            ...seriesFields(view.tags, parseAnnotation as ParseTags),
          });
          continue;
       }
@@ -707,7 +835,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             : {}),
          ...placed(viewLayout(t), own),
          ...chartField(view.tags),
-         ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
+         ...seriesFields(view.tags, parseAnnotation as ParseTags),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });
    }

@@ -31,6 +31,7 @@ import * as path from "path";
 import {
    AccessDeniedError,
    BadRequestError,
+   DeclaredElsewhereError,
    NotQueryableError,
    OffSurfaceError,
    QueryCompileError,
@@ -2029,12 +2030,18 @@ query: raw_t is ${RAW}`,
                malloyConfig,
             );
             const index = pkg.getModel("index.malloy")!;
-            // `r` does not exist in index.malloy: a plain not-found.
+            // `r` does not exist in index.malloy, so asking index.malloy for it
+            // is still refused. The report that declares it is served, so the
+            // refusal names that file to run it against, and widens nothing.
             const missing = await refusedBy(
                index.getQueryResults("r", "kpis_r"),
             );
             expect(missing).not.toBeInstanceOf(OffSurfaceError);
-            expect(missing.message).toBe('No queryable source "r".');
+            expect(missing).toBeInstanceOf(DeclaredElsewhereError);
+            expect(missing.message).toBe(
+               `'r' is not defined in index.malloy. It is a source in ${REPORT}; ` +
+                  `run it with modelPath "${REPORT}".`,
+            );
             // An ordinary model's unexported extension of a served source
             // stays refused, with today's hint.
             const ext = await refusedBy(index.getQueryResults("ext", "ev"));

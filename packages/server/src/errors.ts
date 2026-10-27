@@ -827,6 +827,20 @@ export class OffSurfaceError extends NotQueryableError {
    }
 }
 
+/**
+ * A target the addressed file does not have, that another file of the same
+ * package declares: a report's own named query or source asked of
+ * index.malloy. The message names the file to address instead. Only thrown
+ * when neither file carries a gate, so it never confirms a hidden name. Still
+ * a 404.
+ */
+export class DeclaredElsewhereError extends NotQueryableError {
+   constructor(message: string) {
+      super(message);
+      this.name = "DeclaredElsewhereError";
+   }
+}
+
 export class MaterializationNotFoundError extends Error {
    constructor(message: string) {
       super(message);

@@ -117,6 +117,7 @@ describe("Package serving identity", () => {
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
                   setSiblingModelDefResolver: () => {},
+                  setDeclaringFilesResolver: () => {},
                   hasEmptyDiscoverySurface: () => false,
                   getDeclaredQueryMetadata: () => [],
                   getDeclaredSourceQueryMetadata: () => [],

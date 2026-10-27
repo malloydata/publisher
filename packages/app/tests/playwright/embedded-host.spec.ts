@@ -183,9 +183,11 @@ test.describe("embedded host", () => {
       const stored = `${storefront.env}/${storefront.pkg}/${slug}.malloy`;
       expect(Object.keys(held.documents)).toContain(stored);
       expect(held.documents[stored]).toContain("layout=linear");
+      // The tile names the served view itself, with no source extension.
       expect(held.documents[stored]).toContain(
-         "view: sales_by_month_tile is sales_by_month",
+         '"order_items -> sales_by_month"',
       );
+      expect(held.documents[stored]).not.toContain("extend");
       expect(writes).toEqual([]);
       // The package has no such file: the record is the only copy.
       const inPackage = await fetch(

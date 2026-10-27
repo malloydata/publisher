@@ -185,7 +185,7 @@ describe("BuilderBar", () => {
 });
 
 describe("Duplicate, from a tile's menu", () => {
-   it("writes a copy as a view of its own, right after the original", async () => {
+   it("writes a copy as a query of the report's own, right after the original", async () => {
       const saved = mock((_source: string) => {});
       render(
          <ReportBuilder
@@ -194,7 +194,7 @@ describe("Duplicate, from a tile's menu", () => {
             onSave={saved}
          />,
       );
-      screen.getByLabelText("Settings for By category").click();
+      screen.getAllByLabelText("Settings for By category")[0].click();
       await waitFor(() =>
          screen.getByRole("menuitem", { name: "Duplicate", hidden: true }),
       );
@@ -206,10 +206,10 @@ describe("Duplicate, from a tile's menu", () => {
       await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
       const text = saved.mock.calls[0]?.[0] ?? "";
       expect(text).toContain(
-         'tiles=["a -> by_cat", "a -> by_category_tile" { colspan=6 }]',
+         'tiles=["a -> by_cat", "by_category_tile" { colspan=6 }]',
       );
-      expect(text).toMatch(
-         /\n\n\s*# label="By category"\n\s*view: by_category_tile is by_category/,
+      expect(text).toContain(
+         '\n\n# label="By category"\nquery: by_category_tile is a -> by_category\n',
       );
    });
 
@@ -221,7 +221,7 @@ describe("Duplicate, from a tile's menu", () => {
             onSave={() => {}}
          />,
       );
-      screen.getByLabelText("Settings for By category").click();
+      screen.getAllByLabelText("Settings for By category")[0].click();
       await waitFor(() =>
          screen.getByRole("menuitem", { name: "Duplicate", hidden: true }),
       );
@@ -229,7 +229,7 @@ describe("Duplicate, from a tile's menu", () => {
       await waitFor(() =>
          expect(
             document
-               .querySelector('[aria-label="Tile by_category_tile"]')
+               .querySelector('[data-tile-key="query.by_category_tile"]')
                ?.getAttribute("aria-current"),
          ).toBe("true"),
       );
@@ -656,7 +656,7 @@ describe("selection", () => {
       await waitFor(() =>
          expect(
             document
-               .querySelector('[aria-label="Tile by_cat"]')
+               .querySelector('[data-tile-key="a.by_cat"]')
                ?.getAttribute("aria-current"),
          ).toBe("true"),
       );
@@ -664,14 +664,14 @@ describe("selection", () => {
       fireEvent.pointerDown(tile);
       expect(
          document
-            .querySelector('[aria-label="Tile by_cat"]')
+            .querySelector('[data-tile-key="a.by_cat"]')
             ?.getAttribute("aria-current"),
       ).toBe("true");
       fireEvent.pointerDown(document.body);
       await waitFor(() =>
          expect(
             document
-               .querySelector('[aria-label="Tile by_cat"]')
+               .querySelector('[data-tile-key="a.by_cat"]')
                ?.getAttribute("aria-current"),
          ).toBe("false"),
       );

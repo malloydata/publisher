@@ -191,18 +191,14 @@ describe("chartShapeProblem", () => {
       ).toBeUndefined();
    });
 
-   // `viz=` wins over every chart tag in the renderer, so a table drawn over
-   // an inherited `# bar_chart` is not a bar chart missing its x-axis.
-   it("reads a viz= it does not know as no chart that plots rows", () => {
-      expect(requestedChart(["# bar_chart\n", "# viz=table\n"])).toBe(
-         "viz=table",
-      );
+   // A `viz=` replaces a bar chart in the renderer, so a table drawn over an
+   // inherited `# bar_chart` is not a bar chart missing its x-axis.
+   it("reads viz=table over an inherited bar chart as a table", () => {
+      expect(
+         requestedChart(["# bar_chart\n", "# viz=table\n"]),
+      ).toBeUndefined();
       expect(
          chartShapeProblem(result(kpis, ["# bar_chart\n", "# viz=table\n"])),
-      ).toBeUndefined();
-      // A quoted value cannot be read, so it is left to the renderer too.
-      expect(
-         chartShapeProblem(result(kpis, ["# bar_chart\n", '# viz="bar"\n'])),
       ).toBeUndefined();
    });
 

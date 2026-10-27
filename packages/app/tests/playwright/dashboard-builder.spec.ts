@@ -79,7 +79,7 @@ test.describe("dashboard-builder", () => {
    }) => {
       await openEditor(page);
       // The file's tiles, laid out; the reader's header over them.
-      await expect(page.getByLabel("Tile order_tile")).toBeVisible();
+      await expect(page.getByLabel("Tile Orders")).toBeVisible();
       await expect(
          page.getByText("Two rows of two, one of them a chart."),
       ).toBeVisible();
@@ -126,10 +126,10 @@ test.describe("dashboard-builder", () => {
 
       // A real pointer drag, because that is what re-runs the tiles' render
       // effects: the last tile, picked up by its card, onto the first.
-      const last = page.getByLabel("Tile region_tile");
+      const last = page.getByLabel("Tile By region");
       await last.scrollIntoViewIfNeeded();
       const from = await last.boundingBox();
-      const onto = await page.getByLabel("Tile order_tile").boundingBox();
+      const onto = await page.getByLabel("Tile Orders").boundingBox();
       expect(from && onto).toBeTruthy();
       if (!from || !onto) return;
       // By its top padding: the title is a button and the body a chart.
@@ -180,8 +180,8 @@ test.describe("dashboard-builder", () => {
       await expect(edge).toHaveAttribute("aria-valuenow", "5");
       await page.keyboard.press("End");
       await expect(edge).toHaveAttribute("aria-valuenow", "12");
-      const tile = page.getByLabel("Tile order_tile");
-      const revenue = page.getByLabel("Tile revenue_tile");
+      const tile = page.getByLabel("Tile Orders");
+      const revenue = page.getByLabel("Tile Revenue");
       // Full width: the next tile starts under it rather than beside it.
       const [a, b] = await Promise.all([
          tile.boundingBox(),

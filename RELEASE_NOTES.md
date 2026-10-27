@@ -65,6 +65,42 @@ The Console builder's tiles no longer draw grips on their right and bottom edges
 
 On a grid report whose tiles are placed, the Console builder's bar has **Arrange tiles**: **Pack tiles upward** slides every tile up into the space above it, and **Let tiles flow** clears every tile's place and keeps its size, each one undoable edit. While a tile is selected the grid's rows and columns show faintly, so empty space reads as somewhere a tile can go, and Option/Alt with an arrow key moves the selected tile one cell, swapping it with the tile beside it in that direction (so Down past a tile mirrors Up past it) and pushing down anything else it lands on. Placing a report that flowed snaps each tile's edges to the nearest row line, so tiles that touched still touch and none drifts more than half a row. A row of value cards in a tile shorter than it needs is drawn compact (smaller figures, more cards to a row) so it fits instead of scrolling. A host drawing the builder's controls itself gets the same actions as `BuilderControls.arrange`.
 
+## [Unreleased] — The builder edits an inline-stage query, and says what it can't edit
+
+- A tile whose query is an inline stage, `query: x is src -> { … }` (what a notebook conversion writes), is as editable as one over a served view: chart, colour, title, subtitle and border as tags above the query, filters as `+ { where: … }` after the stage (or merged into one already there), layout on the entry. The stage is never rewritten. A shape the builder cannot parse, such as a second stage, stays read-only.
+- `?edit` on a `.malloynb`, by its own path or its name without a suffix, says "This is an older notebook. It can't be edited here. Convert it to a report to edit it." instead of a not-found for a `.malloy` of the same name. `skills/malloy-reports/reference/linear.md` has the conversion recipe.
+- Removing a tile that names a query removes the `query:` too, unless something else in the file names it.
+- Duplicating a tile with nothing of its own adds a second `"src -> view"` entry rather than an unchanged query. Two entries may name one view; each has its own layout.
+- The colour line the builder writes (`# theme.palette.series=[…]`) is no longer reported as "Unknown render tag 'theme'", on save or on load. A `# subtitle` or `# borderless` on a linear report's tile is not reported either.
+- A grid's first move places every tile; the builder now says so once, as that move begins.
+- The storefront example reports and the New report template are written in the form the builder writes: no source extension, served views and named queries, layout on entries.
+
+## [Unreleased] — A tile sets its own click actions on its entry, and the builder says what a click does
+
+A tile's entry in `tiles=[…]` may carry `drill { <dimension> { to=… given=… } }`. For a dimension it names, it replaces the model's `# drill` on that tile only; other dimensions keep the model's tag, and `to=[]` turns the tag off on the tile. The manifest serves it as `ReportTile.drill`, and the drill lints check it like a tag. The builder's **Clickable cells…** is now **What clicking a value does…**: it lists every dimension the tile groups by (from the model, not only the report file), offers **Filter this report by …** and **Link to another report:** beside Show rows, previews the exact menu a click opens, and writes the entry. List-reports gives each report's `givenNames`, which the link picker filters on. `ReportBuilder` takes `linkTargets` and `tileResult`.
+
+## [Unreleased] — The report builder writes no source extension: a tile names a served view, or a query of the report's own
+
+The Console builder no longer writes a `source: <source>_tiles is <source> extend { … }` into a report to hold its tiles. A tile with nothing of its own names the served view directly, `"flights -> by_carrier"`. A tile given a chart, colour, title, subtitle, no border or a filter becomes a `query:` in the report file, its settings as `#` tags above it and its filters as `+ { where: … }`: `# viz=bar` then `query: by_carrier_tile is flights -> by_carrier + { where: carrier_code ~ $CARRIER }`, listed as `"by_carrier_tile"`. When every setting is the view's again, the query is removed and the tile names the view. A tile's layout stays on its entry in `tiles=[…]` in either form, so a resize or a move never makes a query. Reports written the old way load, render and edit where they are, and an untouched tile is never rewritten. A named query of that shape is now editable in the builder. A new lint finding (`warn`) names a tile that is missing a filter most tiles over its source read.
+
+## [Unreleased] — A chart's one-colour series list colours the first series only
+
+A `# theme.palette.series` with one colour, including the line the report builder's Color item writes, now sets that chart's first series and leaves the rest on the page's colours. It used to be the chart's whole palette, so every series cycled through the one colour and a bar-and-line chart drew its line in the same colour as its bars. A list of two or more colours is still the palette as written. A later series that already held the picked colour takes the colour the first series gave up, so two series are not drawn alike.
+
+## [Unreleased] — Report and DashboardView take actions, and a host can pin the filter row below its own bar
+
+`Report` and `DashboardView` take `actions`, drawn at the end of the title's line, where the builder's toolbar sits. A host's download or menu no longer needs a row of its own above the title.
+
+The report's filter row pins at `--publisher-sticky-top` (default `0px`). A host that pins its own bar above a report sets that variable on an ancestor to the bar's height, and the row pins below it and fills in once it does.
+
+## [Unreleased] — A report's own source is queryable by name, and a lock on it answers 403
+
+A source a served report declares on a surface source (`source: big is orders extend { … }`) can be queried by name on that report's path. It keeps the base's `#(authorize)` and `#(access_filter)`. A caller the lock refuses gets **403**, not 404: the report is already listed, so the 403 does not reveal a hidden name. A source the report declares that is not built on a surface source stays 404.
+
+An `#(access_filter)` now applies to a named query written as `source extend { where: … } -> view`, the same rows as the refinement form. A query that renames or shadows the filtered column is still refused.
+
+A `# colspan`, `# break`, `# subtitle` or `# borderless` on a view is no longer reported as an unknown render tag when a grid report names that view as a tile, including a view imported from another file. The same tag on a view no grid tile names is still reported.
+
 ## [0.9.15] — Tiles can be placed anywhere on the grid, have heights, and are laid out on their own entries
 
 A tile's entry in `tiles=[…]` can now carry its layout: `"overview -> kpis" { colspan=12 rowspan=2 }`. `colspan` and `break` there win over the view's `# colspan` and `# break` (and `break=false` turns a view's break off), so one view can sit at a different width on each report, and a tile on a view the report imports can be resized at all. `rowspan=N` is new: the tile's height in grid rows of 80px, plus the 16px gaps between them. A chart fills it, a table scrolls in it, and a tile keeps its height beside a taller neighbour instead of stretching to it. Without one a tile is as tall as its result, as before. The manifest's tiles carry `rowspan`, and the lint now reads an entry's `colspan`, `break` and `rowspan` instead of calling them unread.

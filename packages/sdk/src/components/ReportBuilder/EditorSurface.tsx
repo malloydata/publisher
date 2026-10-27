@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -26,6 +26,7 @@ import {
 import { layoutRules } from "../Report/layoutRules";
 import type { CompiledModel } from "../../client";
 import { documentViewsOf } from "./catalog";
+import { catalogViewOfTile } from "./tileCatalogView";
 import { useReportListing } from "../Package/useDocumentLocation";
 import {
    BUILDER_HANDOFF_STALE_MS,
@@ -43,9 +44,9 @@ import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
    isQueryTile,
-   isReadOnlyTile,
    tileExpression,
    tileKey,
+   tileViewExpression,
    type DashboardDocument,
    type DashboardTile as DocumentTile,
    type QueryTile,
@@ -56,7 +57,7 @@ import {
    previewGivens,
    previewTileQuery,
    tileExpressionKey,
-   unsavedSources,
+   unsavedImports,
    type PreviewTileQuery,
 } from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
@@ -226,6 +227,31 @@ export function EditorSurface({
       environmentName,
       packageName,
       queryVersionId,
+   );
+   // The same reports, each with the filters it shows: where a click can open
+   // one with its value set.
+   const linkTargets = useMemo(
+      () =>
+         reportList.flatMap((r) =>
+            r.path && r.path !== modelPath && r.path.endsWith(".malloy")
+               ? [
+                    {
+                       path: r.path.replace(/\.malloy$/, ""),
+                       title: r.title ?? r.name ?? r.path,
+                       ...(r.givenNames ? { givenNames: r.givenNames } : {}),
+                    },
+                 ]
+               : [],
+         ),
+      [reportList, modelPath],
+   );
+   // Each tile's last result, by tile key, for "What clicking a value does".
+   // A ref, not state: the canvas writes it as results land, and only the
+   // dialog reads it, when it opens.
+   const tileResults = useRef(new Map<string, string>());
+   const tileResult = useCallback(
+      (key: string) => tileResults.current.get(key),
+      [],
    );
    const otherDashboards = useMemo(
       () =>
@@ -452,11 +478,26 @@ export function EditorSurface({
          ),
       [opened.document],
    );
-   // Extensions this session added, which the model the tiles run on does not
-   // have until the file is saved and served: a tile on one runs on its base.
+   // Sources this session imported, which the report the tiles run on cannot
+   // see until the file is saved and served: a tile on one runs on its model.
    const unsaved = useMemo(
-      () => unsavedSources(doc, opened.document, modelPath, !!textSource),
+      () => unsavedImports(doc, opened.document, modelPath, !!textSource),
       [doc, opened.document, modelPath, textSource],
+   );
+   // Every name the builder gives a tile, headings and aria labels alike, is
+   // the reader's title: the tile's own label, else the served label of the
+   // query or view it names, else of the view a query of the report's own
+   // reads, else that view's `# label` from the catalog (a tile the served
+   // manifest does not title yet, or a refinement it titles by its text), else
+   // one derived from the view's name.
+   const titleOf = useCallback(
+      (tile: QueryTile) =>
+         tile.label ??
+         servedLabels.get(tileExpressionKey(tileExpression(tile))) ??
+         servedLabels.get(tileExpressionKey(tileViewExpression(tile))) ??
+         catalogViewOfTile(tile, doc, offered)?.label ??
+         tileDisplayTitle(tile),
+      [servedLabels, doc, offered],
    );
    const renderTile = useMemo(
       () =>
@@ -465,10 +506,7 @@ export function EditorSurface({
             heading?: TileHeadingSlots,
             chrome: TileChrome = "card",
          ) {
-            const title =
-               (isReadOnlyTile(tile)
-                  ? servedLabels.get(tileExpressionKey(tileExpression(tile)))
-                  : undefined) ?? tileDisplayTitle(tile);
+            const title = titleOf(tile);
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
             if (notCompiled)
@@ -538,6 +576,9 @@ export function EditorSurface({
                      ? { restricted: true }
                      : {})}
                   tile={query.expression}
+                  onResult={(result) =>
+                     tileResults.current.set(tileKey(tile), result)
+                  }
                   {...(query.annotation
                      ? { annotation: query.annotation }
                      : {})}
@@ -587,7 +628,7 @@ export function EditorSurface({
          missing,
          runnable,
          servedReads,
-         servedLabels,
+         titleOf,
          environmentName,
          packageName,
          queryVersionId,
@@ -619,7 +660,7 @@ export function EditorSurface({
                      ? {
                           annotation: chartLineText(
                              view.chart,
-                             view.chartCarried,
+                             view.chartReset,
                           ),
                        }
                      : {})}
@@ -680,6 +721,7 @@ export function EditorSurface({
                ? { takenGivenNames: textSource.takenGivenNames }
                : {})}
             renderTile={renderTile}
+            titleOf={titleOf}
             renderViewPreview={renderViewPreview}
             givens={specs
                .filter((spec) => spec.name !== undefined)
@@ -699,6 +741,8 @@ export function EditorSurface({
             {...(draftKey !== undefined ? { draftKey } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
+            linkTargets={linkTargets}
+            tileResult={tileResult}
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (

@@ -199,23 +199,83 @@ describe("service/report_manifest render-log filtering", () => {
          { message: "Unknown render tag 'artifact' on field 'root'" },
          { message: "Unknown render tag 'artifact.title' on field 'root'" },
          { message: "Unknown render tag 'drill' on field 'brand_name'" },
-         // The per-chart theme the SDK reads; the builder writes a tile's colour as one.
-         { message: "Unknown render tag 'theme' on field 'root'" },
+         // The one theme path the SDK reads for a tile's colour.
          {
             message:
                "Unknown render tag 'theme.palette.series' on field 'root'",
          },
       ];
-      expect(filterPublisherOwnedRenderLogs(owned, DASH)).toEqual([]);
-      expect(filterPublisherOwnedRenderLogs(owned, PLAIN)).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(owned, DASH, undefined)).toEqual(
+         [],
+      );
+      expect(filterPublisherOwnedRenderLogs(owned, PLAIN, undefined)).toEqual(
+         [],
+      );
+   });
+
+   it("keeps a theme typo, and any theme path other than the series list", () => {
+      const kept = [
+         { message: "Unknown render tag 'theme' on field 'root'" },
+         {
+            message: "Unknown render tag 'theme.palete.series' on field 'root'",
+         },
+         {
+            message:
+               "Unknown render tag 'theme.palette.background' on field 'root'",
+         },
+      ];
+      expect(filterPublisherOwnedRenderLogs(kept, DASH, undefined)).toEqual(
+         kept,
+      );
+      expect(filterPublisherOwnedRenderLogs(kept, PLAIN, undefined)).toEqual(
+         kept,
+      );
+   });
+
+   // The renderer names only the root of a path it does not read, so the colour
+   // line the builder writes comes back as a bare `theme`. Measured on a real
+   // result in compile_dashboard_lint.spec.ts.
+   it("drops a bare theme finding when the result's only theme path is the series list", () => {
+      const bare = [{ message: "Unknown render tag 'theme' on field 'root'" }];
+      const tagged = (...lines: string[]) => ({
+         annotations: lines.map((value) => ({ value })),
+      });
+      expect(
+         filterPublisherOwnedRenderLogs(
+            bare,
+            DASH,
+            tagged('# theme.palette.series=["#7f9862"]\n', "# bar_chart\n"),
+         ),
+      ).toEqual([]);
+      // A typo beside it, or another theme path, keeps the finding.
+      expect(
+         filterPublisherOwnedRenderLogs(
+            bare,
+            DASH,
+            tagged(
+               '# theme.palette.series=["#7f9862"]\n',
+               '# theme.palete.series=["#000000"]\n',
+            ),
+         ),
+      ).toEqual(bare);
+      expect(
+         filterPublisherOwnedRenderLogs(
+            bare,
+            DASH,
+            tagged("# theme.palette.background=red\n"),
+         ),
+      ).toEqual(bare);
+      expect(filterPublisherOwnedRenderLogs(bare, DASH, undefined)).toEqual(
+         bare,
+      );
    });
 
    it("drops the unknown-tag line for the artifact kind of a notebook", () => {
       const kind = [
          { message: "Unknown render tag 'artifact.kind' on field 'root'" },
       ];
-      expect(filterPublisherOwnedRenderLogs(kind, true)).toEqual([]);
-      expect(filterPublisherOwnedRenderLogs(kind, DASH)).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(kind, true, undefined)).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(kind, DASH, undefined)).toEqual([]);
    });
 
    // Every tile is a standalone query, and the renderer reads these only for the
@@ -232,6 +292,7 @@ describe("service/report_manifest render-log filtering", () => {
                { message: "Unknown render tag 'borderless' on field 'root'" },
             ],
             DASH,
+            undefined,
          ),
       ).toEqual([]);
    });
@@ -245,7 +306,9 @@ describe("service/report_manifest render-log filtering", () => {
          { message: "Unknown render tag 'colspan' on field 'root'" },
          { message: "Unknown render tag 'borderless' on field 'root'" },
       ];
-      expect(filterPublisherOwnedRenderLogs(kept, PLAIN)).toEqual(kept);
+      expect(filterPublisherOwnedRenderLogs(kept, PLAIN, undefined)).toEqual(
+         kept,
+      );
    });
 
    // Scoped to the top-level result, which is the shape a tile has. A colspan on
@@ -255,7 +318,9 @@ describe("service/report_manifest render-log filtering", () => {
       const kept = [
          { message: "Unknown render tag 'colspan' on field 'by_month'" },
       ];
-      expect(filterPublisherOwnedRenderLogs(kept, DASH)).toEqual(kept);
+      expect(filterPublisherOwnedRenderLogs(kept, DASH, undefined)).toEqual(
+         kept,
+      );
    });
 
    // Only the unknown-tag line. On the form where the renderer DOES lay out, its
@@ -272,7 +337,9 @@ describe("service/report_manifest render-log filtering", () => {
                "Ignored # colspan on 'kpis': colspan only applies in columns mode.",
          },
       ];
-      expect(filterPublisherOwnedRenderLogs(kept, DASH)).toEqual(kept);
+      expect(filterPublisherOwnedRenderLogs(kept, DASH, undefined)).toEqual(
+         kept,
+      );
    });
 
    it("keeps every other render finding, including real unknown tags", () => {
@@ -281,7 +348,9 @@ describe("service/report_manifest render-log filtering", () => {
          { message: "Invalid number suffix 'nope' on field 'amount'" },
          { message: undefined },
       ];
-      expect(filterPublisherOwnedRenderLogs(kept, DASH)).toEqual(kept);
+      expect(filterPublisherOwnedRenderLogs(kept, DASH, undefined)).toEqual(
+         kept,
+      );
    });
 });
 
@@ -2225,7 +2294,7 @@ describe("service/report_manifest grid width and hostile literals", () => {
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
       expect(carried).toContain(
-         "reads only `row`, `col`, `colspan`, `rowspan` and `break`",
+         "reads only `row`, `col`, `colspan`, `rowspan`, `break` and `drill`",
       );
       expect(carried).toContain("# label");
       // Alongside, not instead of: `intro` is also a tile expression that does

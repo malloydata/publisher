@@ -38,6 +38,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    ConnectionError,
+   DeclaredElsewhereError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -405,6 +406,16 @@ const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
 /** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
 const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
 
+/**
+ * The other files of a package that declare `name` themselves (not by import),
+ * excluding `askingPath`. Only ungated files the package lists or serves, so
+ * the answer never names a hidden file or a gated one.
+ */
+export type DeclaringFilesResolver = (
+   name: string,
+   askingPath: string,
+) => { modelPath: string; kind: "query" | "source" }[];
+
 const queryExecutionHistogram = lazyHistogram(
    "malloy_model_query_duration",
    "How long it takes to execute a Malloy model query",
@@ -543,6 +554,12 @@ export class Model {
     * `SiblingModelDefResolver` in `./filter_binding_guard` for why it exists.
     */
    private siblingModelDefResolver: SiblingModelDefResolver | undefined;
+   /**
+    * The other files of the owning Package that declare a name, pushed down
+    * with {@link siblingModelDefResolver}. Read only to word a refusal
+    * ({@link pointToDeclaringFile}); `undefined` outside a Package.
+    */
+   private declaringFilesResolver: DeclaringFilesResolver | undefined;
    /** Per-package query-boundary policy, pushed down by the owning Package
     *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert so a
     *  Model outside a Package, or before the policy lands, never denies. */
@@ -560,10 +577,10 @@ export class Model {
       /** Which files are the surface, for an explained refusal
        *  ({@link notQueryable}). */
       offSurface?: OffSurfaceContext;
-      /** This file is a served report with this layout: an entry point that,
-       *  like a `.malloynb`, admits nothing of its own, since a grid report's
-       *  tiles and a linear report's cells read only the package surface. A
-       *  linear report keeps `modelType` "model". */
+      /** This file is a served report with this layout. A source it declares
+       *  on a surface source is queryable by name on this report and keeps
+       *  that base's gate; every other read is the package surface. A linear
+       *  report keeps `modelType` "model". */
       layout?: ReportLayout;
       /** The served report's own compiled file text, so a source it declares
        *  on top of a surface source (`source: big is orders extend {...}`) can
@@ -2885,9 +2902,13 @@ export class Model {
     *  - NO recursion into `fields` (joins), the `pipeline`, or a composite's
     *    `sources[]` (composite member snapshots fail closed).
     *
-    * Idempotent by `condition.code`. For a gated `query_source` the filter
-    * applies inside the stored query's run target, so its aggregates are
-    * caller-rows, not all-rows.
+    * A snapshot that already holds this condition is left alone. One with a
+    * `sourceID` is matched by that id and deduped by `condition.code`. One
+    * with none (an inline `extend`) is matched by {@link resolveGraftTarget}
+    * and deduped by the condition object, so a `where:` the query's author
+    * wrote with the same text does not stand in for the gate. For a gated
+    * `query_source` the filter applies inside the stored query's run target,
+    * so its aggregates are caller-rows, not all-rows.
     */
    private graftIntoNamedQuerySnapshots(
       copy: ModelDef,
@@ -2911,11 +2932,14 @@ export class Model {
          const struct = snapshot as SourceDef;
          // An inline extension (`query: q is gated extend { … } -> v`) stores
          // a new struct with NO `sourceID` of its own, so the identity match
-         // above never reaches it. Match it the way the request path chose
-         // this graft target for that same struct (`resolveGraftTarget`),
-         // so the two decisions cannot disagree. The bind guards that run
-         // after the graft still prove the condition reads `graftTarget`'s
-         // own column on this struct.
+         // below never reaches it. Match it with `resolveGraftTarget`, the
+         // resolution the request path used to choose this graft target. On
+         // the query path both model defs are this copy, so the two agree. A
+         // `.malloynb` cell's graft scope and the struct's origin can differ,
+         // so they can disagree; a miss does not attach the condition, and
+         // the proof that it landed denies the query. The bind guards that
+         // run after a graft that does land still prove the condition reads
+         // `graftTarget`'s own column on this struct.
          if (struct.sourceID === undefined) {
             if (resolveGraftTargetImpl(struct, copy, copy) !== graftTarget)
                continue;
@@ -4263,6 +4287,66 @@ export class Model {
       this.siblingModelDefResolver = resolver;
    }
 
+   /** Set by the owning Package; see {@link declaringFilesResolver}. */
+   public setDeclaringFilesResolver(
+      resolver: DeclaringFilesResolver | undefined,
+   ): void {
+      this.declaringFilesResolver = resolver;
+   }
+
+   /** Whether any source this model reaches carries a gate. A gated model
+    *  answers a missing name and a hidden one alike, so a sibling file must
+    *  not point at it either. */
+   public carriesAnyGate(): boolean {
+      return this.hasAnyAuthorizeNote();
+   }
+
+   /**
+    * The refusal for a name this file does not have but another file of the
+    * package declares, naming that file: `run: revenue_by_category` asked of
+    * index.malloy when overview.malloy declares it. Undefined (keep the
+    * original error) unless `error` is a plain not-queryable refusal, this
+    * file carries no gate, and the name is absent here. The lookup reads the
+    * package's already-compiled files; nothing is compiled.
+    */
+   private pointToDeclaringFile(
+      error: unknown,
+      sourceName: string | undefined,
+      queryName: string | undefined,
+      query: string | undefined,
+   ): DeclaredElsewhereError | undefined {
+      if (
+         !(error instanceof NotQueryableError) ||
+         error instanceof OffSurfaceError ||
+         !this.declaringFilesResolver ||
+         this.hasAnyAuthorizeNote()
+      ) {
+         return undefined;
+      }
+      const contents = this.modelDef?.contents ?? {};
+      const candidates = query
+         ? extractRunTargetSourceNames(query)
+         : [sourceName ?? queryName];
+      for (const name of candidates) {
+         if (!name || contents[name]) continue;
+         const files = this.declaringFilesResolver(name, this.modelPath);
+         if (files.length === 0) continue;
+         if (files.length === 1) {
+            const [{ modelPath, kind }] = files;
+            return new DeclaredElsewhereError(
+               `'${name}' is not defined in ${this.modelPath}. It is a ${kind} in ${modelPath}; run it with modelPath "${modelPath}".`,
+            );
+         }
+         const listed = files
+            .map(({ modelPath, kind }) => `${modelPath} (${kind})`)
+            .join(", ");
+         return new DeclaredElsewhereError(
+            `'${name}' is not defined in ${this.modelPath}. It is declared in ${listed}; run it with modelPath set to the file you mean.`,
+         );
+      }
+      return undefined;
+   }
+
    /**
     * A boundary refusal. Explains itself ({@link OffSurfaceError}) only when
     * `explainable` (the target is real) AND no gate is findable anywhere in
@@ -5082,6 +5166,7 @@ export class Model {
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
             false,
+            result,
          );
          // Not logged here: the package logs what survives its tile filter,
          // so a tile's layout tag does not log a warning on every load.
@@ -5395,7 +5480,20 @@ export class Model {
             "malloy.model.path": this.modelPath,
          },
          async (span) => {
-            const result = await this.runQueryResults(...args);
+            let result: Awaited<ReturnType<Model["runQueryResults"]>>;
+            try {
+               result = await this.runQueryResults(...args);
+            } catch (error) {
+               const [sourceName, queryName, query] = args;
+               throw (
+                  this.pointToDeclaringFile(
+                     error,
+                     sourceName,
+                     queryName,
+                     query,
+                  ) ?? error
+               );
+            }
             if (result.servedFrom)
                span.setAttribute("publisher.served_from", result.servedFrom);
             return result;
@@ -6452,9 +6550,10 @@ export class Model {
     * curates nothing (then every name is public).
     *
     * For an ordinary file, its export closure, the same set
-    * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
-    * its own (as does a served notebook), only the exported names that trace
-    * to the package surface: a source it may read, or a query over one.
+    * {@link curateForDiscovery} lists. For a dashboard or a served notebook,
+    * only the exported names that trace to the package surface: a source it
+    * may read, including one it builds on a surface source, or a query over
+    * one. A declaration that does not trace there is not shown.
     */
    private publishedNames(): Set<string> | undefined {
       if (!this.discoveryCurationEnabled) return undefined;

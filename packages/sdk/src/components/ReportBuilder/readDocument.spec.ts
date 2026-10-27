@@ -804,7 +804,7 @@ describe("readDashboardDocument: what it refuses", () => {
    // listing a named query is served; the builder used to refuse it whole.
    it("opens a tile that names a query, read-only and with no source", async () => {
       const doc = await read(
-         `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+         `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`,
       );
       expect(doc.tiles).toEqual([
          { name: "by_carrier", declaration: { kind: "query" } },
@@ -821,7 +821,7 @@ describe("readDashboardDocument: what it refuses", () => {
    // give, and the server reads it the same way.
    it("opens a tile that names a query unquoted", async () => {
       const doc = await read(
-         `## artifact { title="T" tiles=[by_carrier, "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+         `## artifact { title="T" tiles=[by_carrier, "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`,
       );
       expect(doc.tiles[0]).toEqual({
          name: "by_carrier",
@@ -833,7 +833,7 @@ describe("readDashboardDocument: what it refuses", () => {
    // draws it at the same width and on the same row.
    it("reads a query tile's frame off the query's own tags", async () => {
       const doc = await read(
-         `## artifact { title="T" tiles=["flights -> by_month", "by_carrier"] } dashboard { columns=12 }\nimport { flights } from '../flights.malloy'\n\n# colspan=6\n# break\n# label="By airline"\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+         `## artifact { title="T" tiles=["flights -> by_month", "by_carrier"] } dashboard { columns=12 }\nimport { flights } from '../flights.malloy'\n\n# colspan=6\n# break\n# label="By airline"\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`,
       );
       expect(doc.tiles[1]).toEqual({
          name: "by_carrier",

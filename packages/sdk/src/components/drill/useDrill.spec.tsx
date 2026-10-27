@@ -1,10 +1,44 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, mock } from "bun:test";
+import {
+   act,
+   cleanup,
+   fireEvent,
+   render,
+   screen,
+} from "@testing-library/react";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import type { DrillField, DrillTagReader } from "./resolveDrill";
-import { useDrill } from "./useDrill";
+import {
+   useDrill,
+   type UseDrillOptions,
+   type UseDrillResult,
+} from "./useDrill";
+
+afterEach(cleanup);
+
+/**
+ * The hook mounted with its menu, as a surface renders it: the menu is what
+ * every click opens, so a test reads and picks its items the way a reader does.
+ */
+function mountDrill(options: UseDrillOptions): { current: UseDrillResult } {
+   const ref = {} as { current: UseDrillResult };
+   function Host() {
+      ref.current = useDrill(options);
+      return <>{ref.current.drillMenu}</>;
+   }
+   render(<Host />);
+   return ref;
+}
+
+const menuItems = () =>
+   screen.queryAllByRole("menuitem").map((item) => item.textContent);
+
+const pick = (name: string) =>
+   act(() => {
+      fireEvent.click(screen.getByRole("menuitem", { name }));
+   });
 
 const tag = (drill?: { to: string[]; given?: string }): DrillTagReader => ({
    tag: (...at: string[]) =>
@@ -22,66 +56,171 @@ const dimension = (
    name: string,
    drill?: { to: string[]; given?: string },
 ): DrillField => ({ name, tag: tag(drill), wasDimension: () => true });
+/**
+ * A grouped field as the renderer's metadata reports it: its expression as
+ * code, under a root that names its source. What a rows query is built from.
+ */
+const reported = (name: string, code: string): DrillField => {
+   const root = {
+      name: "root",
+      isArray: () => true,
+      metadataTag: {
+         text: (...at: string[]) =>
+            at.join(".") === "source.name"
+               ? "overview"
+               : at[0] === "query_name"
+                 ? "by_cat"
+                 : undefined,
+         array: () => undefined,
+      },
+      fields: [] as unknown[],
+   };
+   const field = {
+      name,
+      tag: tag(),
+      parent: root,
+      isBasic: () => true,
+      wasDimension: () => true,
+      metadataTag: {
+         text: (...at: string[]) =>
+            at.join(".") === "drill_expression.code" ? code : undefined,
+         array: () => undefined,
+      },
+   };
+   root.fields.push(field);
+   return field;
+};
 const measure = (name: string): DrillField => ({
    name,
    tag: tag(),
    wasDimension: () => false,
 });
 
-describe("useDrill: the rows behind a value", () => {
-   it("opens the rows for a grouped value that has no drill, and marks it clickable", () => {
+describe("useDrill: every drillable click opens a menu that says what it does", () => {
+   it("offers Show rows alone for a grouped value with no drill, and opens the rows only when picked", () => {
       const onRows = mock(() => {});
-      const { result } = renderHook(() => useDrill({ onRows }));
-      expect(result.current.drill.canDrill(dimension("cat"))).toBe(true);
+      const result = mountDrill({ onRows });
+      const cat = reported("cat", "products.category");
+      expect(result.current.drill.canDrill(cat)).toBe(true);
       expect(result.current.drill.canDrill(measure("revenue"))).toBe(false);
       act(() =>
          result.current.drill.onClick({
-            field: dimension("cat"),
+            field: cat,
             value: "Jeans",
             context: "overview -> by_cat",
          }),
       );
+      expect(onRows).not.toHaveBeenCalled();
+      expect(menuItems()).toEqual(["Show rows (cat: Jeans)"]);
+      pick("Show rows (cat: Jeans)");
       expect(onRows).toHaveBeenCalledWith({
          field: "cat",
          rawValue: "Jeans",
          label: "Jeans",
+         target: { source: "overview", filters: [], queryName: "by_cat" },
+         code: "products.category",
          context: "overview -> by_cat",
       });
+      expect(menuItems()).toEqual([]);
+   });
+
+   it("marks no dimension the result names no rows for, and opens no menu for it", () => {
+      const onRows = mock(() => {});
+      const result = mountDrill({ onRows });
+      // No source or code in its metadata: nothing to build a query from.
+      expect(result.current.drill.canDrill(dimension("cat"))).toBe(false);
+      act(() =>
+         result.current.drill.onClick({
+            field: dimension("cat"),
+            value: "Jeans",
+         }),
+      );
+      expect(menuItems()).toEqual([]);
+      expect(onRows).not.toHaveBeenCalled();
    });
 
    it("does nothing for a header, a measure, or an empty cell", () => {
       const onRows = mock(() => {});
-      const { result } = renderHook(() => useDrill({ onRows }));
+      const result = mountDrill({ onRows });
       act(() => {
          result.current.drill.onClick({
-            field: dimension("cat"),
+            field: reported("cat", "products.category"),
             value: "Jeans",
             isHeader: true,
          });
          result.current.drill.onClick({ field: measure("revenue"), value: 3 });
          result.current.drill.onClick({ field: dimension("cat"), value: null });
       });
+      expect(menuItems()).toEqual([]);
       expect(onRows).not.toHaveBeenCalled();
    });
 
-   it("leaves a drilled value to its drill: one destination still navigates at once", () => {
+   it("offers a to=self drill and the rows side by side, filter first", () => {
       const onRows = mock(() => {});
       const onSelf = mock(() => {});
-      const { result } = renderHook(() => useDrill({ onRows, onSelf }));
+      const result = mountDrill({
+         onRows,
+         onSelf,
+      });
+      const cat = {
+         ...reported("cat", "products.category"),
+         tag: tag({ to: ["self"], given: "CATEGORY" }),
+      } as DrillField;
       act(() =>
          result.current.drill.onClick({
-            field: dimension("cat", { to: ["self"], given: "CATEGORY" }),
+            field: cat,
             value: "Jeans",
             context: "overview -> by_cat",
          }),
       );
+      expect(onSelf).not.toHaveBeenCalled();
+      expect(menuItems()).toEqual([
+         "Filter to cat: Jeans",
+         "Show rows (cat: Jeans)",
+      ]);
+      pick("Filter to cat: Jeans");
       expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
       expect(onRows).not.toHaveBeenCalled();
    });
 
-   it("still navigates straight away when rows are not on offer", () => {
+   it("lists every report a drill names, self first, and opens the one picked", () => {
       const onSelf = mock(() => {});
-      const { result } = renderHook(() => useDrill({ onSelf }));
+      const onNavigate = mock(() => {});
+      const result = mountDrill({ onSelf, onNavigate });
+      act(() =>
+         result.current.drill.onClick({
+            field: dimension("cat", {
+               to: [
+                  "category-detail",
+                  "self",
+                  "brand_review",
+                  "category-detail",
+               ],
+               given: "CATEGORY",
+            }),
+            value: "Jeans",
+         }),
+      );
+      expect(menuItems()).toEqual([
+         "Filter to cat: Jeans",
+         "Open Category detail (cat: Jeans)",
+         "Open Brand review (cat: Jeans)",
+      ]);
+      pick("Open Brand review (cat: Jeans)");
+      expect(onNavigate).toHaveBeenCalledWith(
+         {
+            path: "brand_review",
+            dashboard: "brand_review",
+            givens: { CATEGORY: "Jeans" },
+         },
+         undefined,
+      );
+      expect(onSelf).not.toHaveBeenCalled();
+   });
+
+   it("still says what one tag action does when rows are not on offer", () => {
+      const onSelf = mock(() => {});
+      const result = mountDrill({ onSelf });
       expect(result.current.drill.canDrill(dimension("cat"))).toBe(false);
       act(() =>
          result.current.drill.onClick({
@@ -89,6 +228,202 @@ describe("useDrill: the rows behind a value", () => {
             value: "Jeans",
          }),
       );
+      expect(onSelf).not.toHaveBeenCalled();
+      expect(menuItems()).toEqual(["Filter to cat: Jeans"]);
+      pick("Filter to cat: Jeans");
       expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
+   });
+
+   it("moves focus into the menu, and Escape closes it without acting", async () => {
+      const onRows = mock(() => {});
+      const result = mountDrill({ onRows });
+      act(() =>
+         result.current.drill.onClick({
+            field: reported("cat", "products.category"),
+            value: "Jeans",
+         }),
+      );
+      await act(async () => {
+         await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      const first = screen.getByRole("menuitem", {
+         name: "Show rows (cat: Jeans)",
+      });
+      expect(document.activeElement).toBe(first);
+      act(() => {
+         fireEvent.keyDown(first, { key: "Escape" });
+      });
+      await act(async () => {
+         await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+      expect(menuItems()).toEqual([]);
+      expect(onRows).not.toHaveBeenCalled();
+   });
+
+   it("names every value of the row the rows are filtered on, and holds nothing but actions", () => {
+      const onRows = mock(() => {});
+      const onSelf = mock(() => {});
+      const result = mountDrill({
+         onRows,
+         onSelf,
+      });
+      // A two-dimension row: the click is on `region`, the row also has `month`.
+      const root = {
+         name: "root",
+         isArray: () => true,
+         metadataTag: {
+            text: (...at: string[]) =>
+               at.join(".") === "source.name" ? "orders" : undefined,
+            array: () => undefined,
+         },
+         fields: [] as unknown[],
+      };
+      const rowField = (
+         name: string,
+         drill?: { to: string[]; given?: string },
+      ) => {
+         const field = {
+            name,
+            tag: tag(drill),
+            parent: root,
+            isBasic: () => true,
+            wasDimension: () => true,
+            drillStableExpression: { kind: "field_reference", name },
+            metadataTag: {
+               text: (...at: string[]) =>
+                  at.join(".") === "drill_expression.code" ? name : undefined,
+               array: () => undefined,
+            },
+         };
+         root.fields.push(field);
+         return field as unknown as DrillField;
+      };
+      // Named as its column header reads: a `# label`, else the field name.
+      const region = {
+         ...(rowField("region", { to: ["self"], given: "REGION" }) as object),
+         getLabel: () => "Region",
+      } as unknown as DrillField;
+      root.fields[0] = region;
+      rowField("status");
+      const clause = (name: string, value: string) => ({
+         filter: {
+            kind: "literal_equality" as const,
+            expression: { kind: "field_reference" as const, name },
+            value: { kind: "string_literal" as const, string_value: value },
+         },
+      });
+      act(() =>
+         result.current.drill.onClick({
+            field: region,
+            value: "West",
+            drillClauses: [
+               clause("region", "West"),
+               clause("status", "Shipped"),
+            ],
+         }),
+      );
+      expect(menuItems()).toEqual([
+         "Filter to Region: West",
+         "Show rows (Region: West, status: Shipped)",
+      ]);
+      // No header or divider: every child of the menu list is an action.
+      const list = screen.getByRole("menu");
+      expect(
+         Array.from(list.children).every(
+            (child) => child.getAttribute("role") === "menuitem",
+         ),
+      ).toBe(true);
+      const rows = screen.getByRole("menuitem", {
+         name: "Show rows (Region: West, status: Shipped)",
+      });
+      expect(rows.getAttribute("title")).toBe(
+         "Show rows (Region: West, status: Shipped)",
+      );
+   });
+
+   it("names a destination report by its title, and by its file name when it has none", () => {
+      const onNavigate = mock(() => {});
+      const result = mountDrill({
+         onNavigate,
+         destinationTitle: (destination) =>
+            destination === "regions/deep_dive"
+               ? "Regional deep dive"
+               : undefined,
+      });
+      act(() =>
+         result.current.drill.onClick({
+            field: {
+               ...dimension("region", {
+                  to: ["regions/deep_dive", "brand_review"],
+                  given: "REGION",
+               }),
+               getLabel: () => "Region",
+            } as DrillField,
+            value: "East",
+         }),
+      );
+      expect(menuItems()).toEqual([
+         "Open Regional deep dive (Region: East)",
+         "Open Brand review (Region: East)",
+      ]);
+   });
+
+   it("leaves out a destination this surface cannot honour", () => {
+      const onSelf = mock(() => {});
+      const result = mountDrill({ onSelf, canSelf: () => false });
+      const field = dimension("cat", {
+         to: ["self", "detail"],
+         given: "CATEGORY",
+      });
+      expect(result.current.drill.canDrill(field)).toBe(false);
+      act(() => result.current.drill.onClick({ field, value: "Jeans" }));
+      expect(menuItems()).toEqual([]);
+   });
+});
+
+describe("useDrill: a tile entry's drill is that tile's click actions", () => {
+   const entries = {
+      cat: { to: ["regions"], given: "CATEGORY" },
+      brand: { to: [] },
+   };
+
+   it("replaces the model's tag for the dimension it names, on that tile only", () => {
+      const onSelf = mock(() => {});
+      const onNavigate = mock(() => {});
+      const result = mountDrill({ onSelf, onNavigate });
+      const cat = dimension("cat", { to: ["self"], given: "CATEGORY" });
+      act(() =>
+         result.current
+            .bindingFor("overview -> by_cat", false, entries)
+            .onClick({ field: cat, value: "Jeans" }),
+      );
+      expect(menuItems()).toEqual(["Open Regions (cat: Jeans)"]);
+      pick("Open Regions (cat: Jeans)");
+      expect(onNavigate).toHaveBeenCalledTimes(1);
+      expect(onSelf).not.toHaveBeenCalled();
+      // The same field on a tile whose entry says nothing keeps the model's tag.
+      act(() =>
+         result.current
+            .bindingFor("overview -> other", false)
+            .onClick({ field: cat, value: "Jeans" }),
+      );
+      expect(menuItems()).toEqual(["Filter to cat: Jeans"]);
+   });
+
+   it("keeps the model's tag on a dimension the entry does not name", () => {
+      const result = mountDrill({ onSelf: mock(() => {}) });
+      const binding = result.current.bindingFor("t", false, entries);
+      const region = dimension("region", { to: ["self"] });
+      expect(binding.canDrill(region)).toBe(true);
+      act(() => binding.onClick({ field: region, value: "West" }));
+      expect(menuItems()).toEqual(["Filter to region: West"]);
+   });
+
+   it("turns the model's tag off where the entry writes to=[]", () => {
+      const result = mountDrill({ onSelf: mock(() => {}) });
+      const binding = result.current.bindingFor("t", false, entries);
+      expect(binding.canDrill(dimension("brand", { to: ["self"] }))).toBe(
+         false,
+      );
    });
 });
