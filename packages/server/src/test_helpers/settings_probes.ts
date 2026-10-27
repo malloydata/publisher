@@ -126,7 +126,10 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       assertDuckDBResourceConfig();
       return isDuckDBMemoryLimitDisabled() ? "off" : getDuckDBMemoryLimit();
    },
-   "duckdb.tempDirectory": () => getDuckDBTempDirectory(),
+   "duckdb.tempDirectory": () => {
+      assertDuckDBResourceConfig();
+      return getDuckDBTempDirectory();
+   },
    "duckdb.partitionedWriteFlushThreshold": () => {
       assertDuckDBResourceConfig();
       return getPartitionedWriteFlushThreshold();

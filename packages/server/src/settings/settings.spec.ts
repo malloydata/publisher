@@ -13,6 +13,16 @@ import {
    Settings,
    type SettingKey,
 } from ".";
+import {
+   BooleanType,
+   EnumType,
+   IntegerType,
+   ListType,
+   NumberType,
+} from "./types";
+
+/** A key, for the settings that need one to be read at all. */
+const KEY = { EMBEDDING_API_KEY: "sk-test" };
 
 /**
  * The variable the configuration design (docs/configuration-design.md, "The
@@ -497,4 +507,123 @@ describe("step 1's rules", () => {
          }),
       ).toEqual([]);
    });
+});
+
+/**
+ * Every setting, under each name it is read from today: a value its type
+ * reads (the happy case) and one it does not (the sad case). The contract
+ * table pins what each case means; these make sure no name is left out.
+ */
+describe("every setting, under each of its names", () => {
+   const named = REGISTRY.filter((entry) => entry.kind !== "structured");
+
+   /** A value each type reads, and one it does not, as a variable spells them. */
+   function samples(entry: (typeof REGISTRY)[number]): {
+      good: string;
+      value: unknown;
+      bad?: string;
+   } {
+      const type = entry.type;
+      const today = entry.aliases.today?.reads;
+      if (type instanceof BooleanType) {
+         const good = today === "on-off" ? "on" : "true";
+         return {
+            good,
+            value: entry.aliases.negated ? false : true,
+            bad: "enabled",
+         };
+      }
+      if (type instanceof IntegerType) {
+         const n = [5000, 1000, 100, 10, 2, 1, 0].find((v) => type.allows(v))!;
+         return { good: String(n), value: n, bad: "many" };
+      }
+      if (type instanceof NumberType) {
+         return { good: "0.5", value: 0.5, bad: "half" };
+      }
+      if (type instanceof EnumType) {
+         const v = type.values[type.values.length - 1];
+         return { good: v, value: v, bad: "no-such-value" };
+      }
+      if (type instanceof ListType) return { good: "a,b", value: ["a", "b"] };
+      // Any text is a string; a string has no sad case as a variable.
+      return { good: "x", value: "x" };
+   }
+
+   for (const entry of named) {
+      const key = entry.key as SettingKey;
+      const { good, value, bad } = samples(entry);
+      for (const name of entry.aliases.env ?? []) {
+         it(`${key} reads ${name}`, () => {
+            withSettings({ env: { [name]: good } }, () => {
+               expect(settings.get(key) as unknown).toEqual(value);
+               expect(settings.source(key)).toEqual({ kind: "env", name });
+            });
+         });
+         if (bad === undefined) continue;
+         it(`${key} refuses a bad ${name}`, () => {
+            withSettings({ env: { [name]: bad } }, () => {
+               const current = Settings.current();
+               if (entry.aliases.today?.invalid === "warn") {
+                  // Kept from today: a bad value is the default, with a warning.
+                  expect(settings.get(key) as unknown).toEqual(entry.default);
+                  expect(current.warnings[0].message).toContain(name);
+                  return;
+               }
+               expect(() => settings.get(key)).toThrow(`${key} from ${name}`);
+               expect(current.errors().length).toBe(1);
+            });
+         });
+      }
+      for (const flag of entry.aliases.flags ?? []) {
+         const isSwitch = entry.type instanceof BooleanType;
+         it(`${key} reads ${flag}`, () => {
+            withSettings({ argv: isSwitch ? [flag] : [flag, good] }, () => {
+               expect(settings.get(key) as unknown).toEqual(
+                  isSwitch ? !flag.startsWith("--no-") : value,
+               );
+               expect(settings.source(key)).toEqual({
+                  kind: "flag",
+                  name: flag,
+               });
+            });
+         });
+         if (isSwitch || bad === undefined) continue;
+         it(`${key} refuses a bad ${flag}`, () => {
+            withSettings({ argv: [flag, bad] }, () => {
+               expect(() => settings.get(key)).toThrow(`${key} from ${flag}`);
+            });
+         });
+      }
+      for (const filePath of entry.aliases.file ?? []) {
+         const isBoolean = entry.type instanceof BooleanType;
+         const nest = (leaf: unknown) => {
+            const file: Record<string, unknown> = {};
+            let node = file;
+            const parts = filePath.split(".");
+            for (const part of parts.slice(0, -1)) {
+               node = (node[part] = {}) as Record<string, unknown>;
+            }
+            node[parts[parts.length - 1]] = leaf;
+            return file;
+         };
+         const json = isBoolean
+            ? true
+            : entry.type instanceof IntegerType
+              ? value
+              : good;
+         it(`${key} reads "${filePath}" in the file`, () => {
+            withSettings({ env: KEY, file: nest(json) }, () => {
+               expect(settings.get(key) as unknown).toEqual(
+                  isBoolean ? true : value,
+               );
+               expect(settings.source(key).kind).toBe("file");
+            });
+         });
+         it(`${key} refuses an object as "${filePath}" in the file`, () => {
+            withSettings({ env: KEY, file: nest({ not: "a value" }) }, () => {
+               expect(() => settings.get(key)).toThrow(key);
+            });
+         });
+      }
+   }
 });
