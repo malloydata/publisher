@@ -5,11 +5,8 @@ SPDX-License-Identifier: MIT
 
 # Design: one configuration model
 
-**Status: proposed.** Nothing here is built. It assumes the admin API
-([#1473](https://github.com/malloydata/publisher/pull/1473)) has landed: the `servingApiEnabled`,
-`adminApiEnabled` and `admin` rows below describe settings that pull request adds. The user-facing
-reference is [configuration.md](configuration.md), which this design would generate rather than
-hand-maintain.
+**Status: proposed.** Nothing here is built. The user-facing reference is
+[configuration.md](configuration.md), which this design would generate rather than hand-maintain.
 The decisions are under [Decisions](#decisions), and the questions still open under
 [Open questions](#open-questions).
 
