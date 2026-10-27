@@ -68,7 +68,11 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          # The root lockfile only: this job installs nothing else, and the
+          # post-job save re-evaluates the key after the tests have filled the
+          # workspace, where a `**/bun.lock` walk ran past hashFiles' 120s
+          # limit on macOS and failed a green job.
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
 
       - name: Install dependencies
