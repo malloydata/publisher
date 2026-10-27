@@ -265,13 +265,15 @@ export async function runFcjQuery(args: {
    const { request, environmentStore, pkgIndex, uri, traceMode } = args;
    const pkg = pkgIndex.pkg;
    const state = fcjStateOf(pkg);
+   // Starts a build when there is none, and on a ready index rebuilds one
+   // whose value reads failed once its cool-down is over; otherwise a no-op.
+   kickFcjBuild({
+      environmentStore,
+      environmentName: request.environmentName,
+      packageName: request.packageName,
+      pkg,
+   });
    if (!state || state.status !== "ready") {
-      kickFcjBuild({
-         environmentStore,
-         environmentName: request.environmentName,
-         packageName: request.packageName,
-         pkg,
-      });
       if (state?.status === "error") {
          return jsonToolError(
             uri,
