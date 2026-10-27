@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it, spyOn } from "bun:test";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -508,25 +509,41 @@ describe.skipIf(process.platform === "win32")(
          "  aggregate: monthly_total is total.sum()\n}";
 
       /**
-       * Seed a plain-DuckDB "lake" file with the parent's content-addressed table,
-       * at the path the build attaches: a destination's files live under the
-       * destinations root, not directly in the environment directory, so they
-       * cannot collide with a connection of the same name.
+       * Run `sql` against the plain-DuckDB "lake" file, at the path the build
+       * attaches: a destination's files live under the destinations root, not
+       * directly in the environment directory, so they cannot collide with a
+       * connection of the same name.
+       *
+       * Through node-api with both handles closed synchronously, not through
+       * db-duckdb: its `close()` only drops a refcount, so the instance lives on
+       * until GC finalizes its connection, and its shutdown checkpoint then
+       * writes its own stale catalog over whatever a later instance committed
+       * to the same file (a schema created after the seed vanished under CI load).
        */
-      async function seedLake(dir: string): Promise<void> {
+      async function writeLake(dir: string, sql: string): Promise<void> {
          const root = storageDestinationRoot(dir);
          mkdirSync(root, { recursive: true });
-         const seed = new DuckDBConnection("lake", join(root, "lake.duckdb"));
+         const instance = await DuckDBInstance.create(
+            join(root, "lake.duckdb"),
+         );
+         const connection = await instance.connect();
          try {
-            await seed.runSQL(
-               'CREATE TABLE "daily_orders__mabc" AS ' +
-                  "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total " +
-                  "UNION ALL SELECT CAST('2026-01-02' AS DATE), 225.0 " +
-                  "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0",
-            );
+            await connection.run(sql);
          } finally {
-            await seed.close();
+            connection.closeSync();
+            instance.closeSync();
          }
+      }
+
+      /** Seed the lake with the parent's content-addressed table. */
+      function seedLake(dir: string): Promise<void> {
+         return writeLake(
+            dir,
+            'CREATE TABLE "daily_orders__mabc" AS ' +
+               "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total " +
+               "UNION ALL SELECT CAST('2026-01-02' AS DATE), 225.0 " +
+               "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0",
+         );
       }
 
       it("compiles the rebind model, runs the downstream over the parent, and captures the rolled-up schema", async () => {
@@ -670,15 +687,7 @@ describe.skipIf(process.platform === "win32")(
                "Storage destination 'lake' declares destinationSchema 'materialzed', but its catalog has no schema by that name.",
             );
 
-            const lake = new DuckDBConnection(
-               "lake",
-               join(storageDestinationRoot(dir), "lake.duckdb"),
-            );
-            try {
-               await lake.runSQL("CREATE SCHEMA Materialized");
-            } finally {
-               await lake.close();
-            }
+            await writeLake(dir, "CREATE SCHEMA Materialized");
             const built = await buildDownstreamIntoStorage({
                destinationName: "lake",
                destinationConnection: {

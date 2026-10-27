@@ -168,41 +168,43 @@ describe("OOM guardrails: end-to-end chain", () => {
 
    it("concurrency cap fires SECOND: 503 before the controller is touched, once the slot pool is full", async () => {
       process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1";
-      // First request: runSQL takes ~200 ms so the slot stays
-      // held while we fire the second. Using a real timer rather
-      // than an unresolved deferred keeps the test deterministic
-      // even when supertest spawns one ephemeral http server per
-      // `request(app)` call — both sockets will eventually close
-      // on their own regardless of orchestration order.
-      const runSQL = sinon
-         .stub()
-         .callsFake(
-            () =>
-               new Promise((resolve) =>
-                  setTimeout(() => resolve({ rows: [], totalRows: 0 }), 200),
-               ),
-         );
+      // The first query holds its slot until the second request has been
+      // answered. Ordered by events, not timers: a fixed head start for the
+      // first request and a fixed hold time for its query lost the race on a
+      // loaded runner, where the second request arrived after the slot was
+      // released and got a 200.
+      let entered!: () => void;
+      const firstHoldsSlot = new Promise<void>(
+         (resolve) => (entered = resolve),
+      );
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         // Only the first request's query waits, so a second request that
+         // wrongly gets a slot fails the assertions below rather than hanging.
+         if (sql === "SELECT 1") {
+            entered();
+            await released;
+         }
+         return { rows: [], totalRows: 0 };
+      });
       const { app } = buildApp(runSQL);
 
-      // Drive both requests in parallel — `Promise.all` keeps the
-      // event loop turning on the first request's pending timer
-      // while the second runs through the middleware.
-      const [first, second] = await Promise.all([
-         request(app)
-            .post("/api/v0/environments/e/connections/c/sqlQuery")
-            .send({ sqlStatement: "SELECT 1" }),
-         (async () => {
-            // Yield a few ticks so the first request actually
-            // enters the middleware and holds the slot before
-            // the second one is dispatched. 20 ms is far longer
-            // than any scheduler hop but well below the 200 ms
-            // runSQL timer, leaving the slot definitely held.
-            await new Promise((r) => setTimeout(r, 20));
-            return request(app)
-               .post("/api/v0/environments/e/connections/c/sqlQuery")
-               .send({ sqlStatement: "SELECT 2" });
-         })(),
-      ]);
+      // `.then` starts the request; supertest sends nothing until then.
+      const firstResponse = request(app)
+         .post("/api/v0/environments/e/connections/c/sqlQuery")
+         .send({ sqlStatement: "SELECT 1" })
+         .then((res) => res);
+      // The middleware takes the slot before the controller runs, and gives it
+      // back when the response finishes, so the slot is held from here on. A
+      // first request answered without reaching the query ends the wait too,
+      // so that regression fails the status checks instead of timing out.
+      await Promise.race([firstHoldsSlot, firstResponse]);
+      const second = await request(app)
+         .post("/api/v0/environments/e/connections/c/sqlQuery")
+         .send({ sqlStatement: "SELECT 2" });
+      release();
+      const first = await firstResponse;
 
       expect(first.status).toBe(200);
       expect(second.status).toBe(503);
