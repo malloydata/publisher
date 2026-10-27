@@ -191,10 +191,12 @@ To read `sales` from a model, give the environment a DuckLake connection to the 
 
 **Files.** A load reads one CSV, Parquet, Excel or JSON object under the catalog's data path, the only
 location its session can read, and rewrites the bytes as the catalog's own Parquet in one DuckLake
-transaction, so an encrypted catalog stays encrypted and a reader sees the old table or the new one.
-A copy reads a table of another catalog in the same catalog database (or of the same catalog), attached
-read-only as that catalog's owner, and writes it the same way; the configured role must be able to act
-as both owners (otherwise `409 CATALOG_OWNER_UNSUPPORTED`). A copy from an encrypted catalog into an
+transaction, so an encrypted catalog stays encrypted and a reader sees the old table or the new one. The
+rows never stay in the catalog database, even in a catalog that records a `dataInliningRowLimit`: the
+write's inlined rows are flushed to Parquet straight after it.
+A copy reads a table of another catalog in the same catalog database, attached read-only as that
+catalog's owner, or of the same catalog, and writes it the same way; the configured role must be able to
+act as both owners (otherwise `409 CATALOG_OWNER_UNSUPPORTED`). A copy from an encrypted catalog into an
 unencrypted one is refused, since it would write the rows unencrypted.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier

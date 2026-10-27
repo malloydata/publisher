@@ -63,6 +63,38 @@ async function superuserQuery(
    return r.rows;
 }
 
+/**
+ * Where a table's live rows are: in its live data files (and whether every one
+ * is encrypted), and in the catalog database as inlined rows.
+ */
+async function writtenEncrypted(
+   catalog: string,
+   table: string,
+): Promise<{ rows: number; encrypted: boolean; inlined: number }> {
+   const tableId = `(select table_id from ${catalog}.ducklake_table where table_name = '${table}' and end_snapshot is null)`;
+   const files = (
+      await superuserQuery(
+         "select coalesce(sum(record_count), 0)::int as n, " +
+            "coalesce(bool_and(encryption_key is not null), false) as encrypted " +
+            `from ${catalog}.ducklake_data_file where end_snapshot is null and table_id = ${tableId}`,
+      )
+   )[0] as { n: number; encrypted: boolean };
+   let inlined = 0;
+   for (const row of await superuserQuery(
+      `select table_name from ${catalog}.ducklake_inlined_data_tables where table_id = ${tableId}`,
+   )) {
+      const counted = await superuserQuery(
+         `select count(*)::int as n from ${catalog}."${String(row.table_name)}" where end_snapshot is null`,
+      );
+      inlined += Number(counted[0]?.n ?? 0);
+   }
+   return {
+      rows: Number(files.n),
+      encrypted: files.encrypted === true,
+      inlined,
+   };
+}
+
 async function refusal(p: Promise<unknown>): Promise<CatalogAdminError> {
    const error = await p.then(
       () => undefined,
@@ -326,12 +358,61 @@ describe.skipIf(!SUPERUSER)(
          );
          expect([again.status, again.reason]).toEqual([412, "TABLE_EXISTS"]);
          // DuckLake records the rows it wrote, in the target catalog's own files.
-         const written = await superuserQuery(
-            "select sum(record_count)::int as n from ds_owned.ducklake_data_file f " +
-               "join ds_owned.ducklake_table t using (table_id) " +
-               "where t.table_name = 'legacy' and f.end_snapshot is null",
+         expect(await writtenEncrypted("ds_owned", "legacy")).toEqual({
+            rows: 2,
+            encrypted: true,
+            inlined: 0,
+         });
+      });
+
+      it("writes every row to encrypted Parquet in a catalog that records an inlining limit", async () => {
+         // The session sets inlining off, but a limit the catalog records wins over
+         // that default, so without the flush both of these would stay as rows in
+         // the catalog database.
+         keep(
+            await admin.createCatalog({
+               name: "ds_inline",
+               dataPath: join(root, "ds_inline"),
+               dataInliningRowLimit: 10,
+            }),
          );
-         expect(written).toEqual([{ n: 2 }]);
+         mkdirSync(join(root, "ds_inline"), { recursive: true });
+         writeFileSync(join(root, "ds_inline", "small.csv"), "id\n1\n2\n3\n");
+         await admin.putTable(
+            "ds_inline",
+            "main",
+            "copied",
+            {
+               source: {
+                  catalog: "ds_standalone",
+                  schema: "main",
+                  table: "legacy",
+               },
+            },
+            true,
+         );
+         await admin.putTable(
+            "ds_inline",
+            "main",
+            "loaded",
+            {
+               source: {
+                  uri: join(root, "ds_inline", "small.csv"),
+                  format: "csv",
+               },
+            },
+            true,
+         );
+         expect(await writtenEncrypted("ds_inline", "copied")).toEqual({
+            rows: 2,
+            encrypted: true,
+            inlined: 0,
+         });
+         expect(await writtenEncrypted("ds_inline", "loaded")).toEqual({
+            rows: 3,
+            encrypted: true,
+            inlined: 0,
+         });
       });
 
       it("copies within one catalog, and answers a missing source with SOURCE_NOT_FOUND", async () => {

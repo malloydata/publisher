@@ -722,9 +722,11 @@ export class CatalogAdmin {
          // Ownership first, from pg_namespace: a catalog owned by a role this
          // one cannot act as would otherwise read as missing, since
          // information_schema lists only tables the role has a privilege on.
+         // USAGE, not MEMBER: the reads below run as this role without SET
+         // ROLE, which a member granted INHERIT FALSE cannot make.
          const found = (await pg(
             "SELECT pg_get_userbyid(nspowner) AS owner, current_user AS me, " +
-               "pg_has_role(current_user, nspowner, 'MEMBER') AS member " +
+               "pg_has_role(current_user, nspowner, 'USAGE') AS member " +
                `FROM pg_namespace WHERE nspname = ${pgLiteral(source.catalog)}`,
          )) as { owner: string; me: string; member: unknown }[];
          const row = found[0];

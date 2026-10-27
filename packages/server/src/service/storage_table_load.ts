@@ -196,9 +196,11 @@ export async function loadStorageTable(params: {
  * same) catalog, both in the same catalog database: a migration's copy, run on
  * the bytes the source catalog already holds.
  *
- * - The source is attached read-only and the destination read-write, each as
- *   its own connection; the destination's rows are rewritten as its own Parquet,
- *   so an encrypted destination stays encrypted whatever the source is.
+ * - A source in another catalog is attached read-only and the destination
+ *   read-write, each as its own owner; a source within the destination's own
+ *   catalog is read through the destination's attach. The rows are rewritten
+ *   as the destination's own Parquet, so an encrypted destination stays
+ *   encrypted whatever the source is.
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
@@ -296,7 +298,8 @@ async function writeTableAs(
    from: string,
 ): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
    const { destinationName, schemaName, tableName } = params;
-   // Rows go to Parquet, never into the catalog database.
+   // Rows go to Parquet, never into the catalog database: inlining off for this
+   // session, and the flush below for a catalog that records its own limit.
    await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
    const target = [destinationName, schemaName, tableName]
       .map((part) => quoteIdentifier(part, "duckdb"))
@@ -317,6 +320,13 @@ async function writeTableAs(
       }
       throw error;
    }
+   // The SET above is only DuckLake's default: a catalog that records its own
+   // data_inlining_row_limit (dataInliningRowLimit on POST/PATCH) keeps it, so a
+   // table under that limit would sit as rows in the catalog database,
+   // unencrypted whatever the catalog's encryption. Flush them to its Parquet.
+   await session.runSQL(
+      `CALL ducklake_flush_inlined_data('${escapeSQL(destinationName)}', schema_name => '${escapeSQL(schemaName)}', table_name => '${escapeSQL(tableName)}')`,
+   );
    const counted = rows(
       await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
    );
