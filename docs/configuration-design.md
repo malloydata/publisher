@@ -39,7 +39,7 @@ credential without holding it.
 | The same kind of setting lives in different places | MCP's port and host are variables, but what MCP exposes (`mcp.includeHiddenFilesAndSources`) is in the file |
 | A setting can be given in two places with no general rule for which wins | the `retrieval.embedding` keys override the `EMBEDDING_*` variables; nothing else overlaps |
 | Booleans are read five ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` reads an unrecognised value as off where it is used, because one reader runs inside ssh2's synchronous host-key callback, where a throw would escape; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
-| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off |
+| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
 | A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
 | Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
 | The reference drifts from the code | `--config`, `PERSIST_COLLISION_ENFORCE` and `S3_CREDENTIAL_CHAIN_POLICY` are not in the configuration table |
@@ -65,6 +65,13 @@ reference and the startup log are all produced from it, and a test fails if the 
 differs from what the registry generates, if two settings derive the same variable or flag, or if one
 setting's derived name is another's alias. Code reads a setting through one typed accessor
 (`settings.get("mcp.port")`), never from `process.env`.
+
+The module can be one file per section of [the mapping](#the-mapping), exported as one list; what
+matters is that one list holds every setting. Settings are read once, at startup, before any module
+that uses one is loaded, and a lint rule refuses `process.env` outside the registry module, which also
+hands out the variables Publisher does not own (below), unparsed. A worker thread receives the parsed
+settings from the thread that started it rather than reading the environment again, and a test builds
+its settings with the same loader rather than writing `process.env`.
 
 A default can be another setting rather than a constant, so `default` also takes a function of the
 settings already resolved:
@@ -142,8 +149,9 @@ A `${VAR}` in the file is substituted first and then read as the setting's type,
 
 ### Validation
 
-A value that does not parse as its type, an unknown key at any registered level of the file, or the same
-setting given under an old and a new name with different values fails startup, with one message naming
+A value that does not parse as its type, an unknown key at any registered level of the file, an unknown
+flag or a flag given without its value, or the same setting given under an old and a new name with
+different values fails startup, with one message naming
 the setting, the source and what was expected (`mcp.port from PUBLISHER_MCP_PORT: expected an integer
 from 0 to 65535, got "40a0"`). An unknown key gets the nearest registered key as a suggestion. An old
 and a new name are compared after parsing, so a negated alias agrees with its new name
@@ -314,7 +322,11 @@ does, so it never needs an alias.
    storage on every boot; `PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes`, which is refused today and would
    allow proxy connections; and `"frozenConfig": "false"`, which freezes the server today. A value no
    reader accepts (`enabled`, say), which some of them read as off today, fails startup. An unknown file
-   key and an invalid `LOG_LEVEL` (today it falls back to `debug`) are warned about, not yet refused.
+   key, an unknown flag, a flag given without its value and an invalid `LOG_LEVEL` (today it falls back
+   to `debug`) are warned about, not yet refused. Each reading this step keeps and a later step ends (an
+   exact-`true` boolean, the `retrieval.embedding` keys winning over their variables, `--watch-env`
+   adding to `PUBLISHER_WATCH`, only the flags turning `useBundledDefault` off) is recorded in the
+   registry next to the alias or default it belongs to, so the later step removes it from one place.
    Some settings are exceptions to "behavior unchanged". Today they accept values of more than one
    type, and the registry gives each setting a single type (a boolean, an integer, an enum), so a value
    of any other type fails startup from this step. For example, `MCP_PORT` takes a port number, `0` for
