@@ -32,6 +32,7 @@ import {
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { pollFor } from "../../test_helpers/poll";
+import { withSettings } from "../../test_helpers/settings_env";
 
 // Pin the baseline: every test in this file runs unconfigured (lexical)
 // unless it sets a provider itself, regardless of ambient EMBEDDING_* env
@@ -3045,29 +3046,28 @@ describe("get_context semantic retrieval", () => {
       // _setEmbeddingProviderForTests override: a malformed base makes
       // getEmbeddingProvider() throw, and tier 4 must report it as an error
       // that names the variable (embeddingConfigured() is still true).
-      const saved = {
-         key: process.env.EMBEDDING_API_KEY,
-         base: process.env.EMBEDDING_API_BASE,
-      };
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_API_BASE = "not a url";
       _clearEmbeddingProviderForTests();
       try {
-         const handler = captureHandler(semanticStore());
-         const result = await handler({
-            search_targets: anyKind("state"),
-            scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
-         });
-         expect(result.isError).toBe(true);
-         const payload = parse(result);
-         expect(payload.retrieval_reason).toBe("unavailable");
-         expect(payload.error).toContain("EMBEDDING_API_BASE");
-         expect(payload.sources).toEqual([]);
+         await withSettings(
+            {
+               env: { EMBEDDING_API_KEY: "k", EMBEDDING_API_BASE: "not a url" },
+            },
+            async () => {
+               const handler = captureHandler(semanticStore());
+               const result = await handler({
+                  search_targets: anyKind("state"),
+                  scopes: [
+                     { environment: "specs", package: "malformed-cfg-pkg" },
+                  ],
+               });
+               expect(result.isError).toBe(true);
+               const payload = parse(result);
+               expect(payload.retrieval_reason).toBe("unavailable");
+               expect(payload.error).toContain("EMBEDDING_API_BASE");
+               expect(payload.sources).toEqual([]);
+            },
+         );
       } finally {
-         if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
-         else process.env.EMBEDDING_API_KEY = saved.key;
-         if (saved.base === undefined) delete process.env.EMBEDDING_API_BASE;
-         else process.env.EMBEDDING_API_BASE = saved.base;
          _clearEmbeddingProviderForTests();
          _setEmbeddingProviderForTests(null);
       }

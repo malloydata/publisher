@@ -92,3 +92,14 @@ export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
 export const DEFAULT_POSTGRES_POOL_MAX = 5;
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";
+
+/**
+ * Default cosine-similarity floor for semantic retrieval. Tunable because
+ * cosine similarity is not calibrated across embedding models; deliberately
+ * permissive, preferring a weak match to a lost real one. See
+ * docs/configuration.md.
+ */
+export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
+
+/** Default for `packageLoad.schemaCacheBytes`: 16 MiB of serialized schema per worker. */
+export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;

@@ -15,6 +15,7 @@ import {
 } from "./scaffold";
 import { REQUIRED_NODE_RANGE } from "./node_version";
 import { countSkills, skillsDir } from "@malloy-publisher/skills";
+import { flagsTakingAValue } from "../../server/src/settings/settings";
 
 /**
  * Derived from the payload, never hardcoded: a count in here would fail the
@@ -124,8 +125,9 @@ function resolveCommand(command: string, scripts: Record<string, string>) {
  *
  * Whitespace only, never `--host=<addr>`. This is the second opinion on
  * scaffold.ts's own parser, so it is written from the server's source rather
- * than from what the line looks like it means: packages/server/src/cli_args.ts
- * matches `arg === "--host" && args[i + 1]`, a whole argument plus the next one.
+ * than from what the line looks like it means: the flag reader in
+ * packages/server/src/settings/settings.ts matches `--host` as a whole argument
+ * and takes the next one.
  * The joined form matches no flag it knows, is dropped in silence, and the bind
  * falls back to `PUBLISHER_HOST || "0.0.0.0"`. A helper that accepted `=` here
  * agreed with the bug it was supposed to catch, and the whole matrix below went
@@ -1138,33 +1140,12 @@ describe("shellTokens splits the way sh does", () => {
 });
 
 describe("SERVER_VALUE_FLAGS drift against packages/server", () => {
-   test("matches the server's own argv chain", () => {
-      const serverSource = path.join(
-         import.meta.dir,
-         "..",
-         "..",
-         "server",
-         "src",
-         "cli_args.ts",
-      );
-      // A monorepo path, so say why it is missing rather than failing on a
-      // regex that matched nothing.
-      expect(fs.existsSync(serverSource)).toBe(true);
+   test("matches the flags the server's settings registry reads a value after", () => {
+      // From the registry itself rather than a sweep of its source, so a flag
+      // nobody anticipated is caught however its entry is written.
+      const declared = new Set(flagsTakingAValue());
 
-      const declared = new Set(
-         [
-            ...fs
-               .readFileSync(serverSource, "utf8")
-               // Tolerates the wrapped branch: the chain puts one condition
-               // across three lines.
-               // Case-insensitive on purpose: the flag this exists to catch is
-               // the one nobody anticipated, and a lowercase-only class would
-               // wave `--basePath` straight through.
-               .matchAll(/arg === "(--[A-Za-z0-9_-]+)"\s*&&\s*args\[i \+ 1\]/g),
-         ].map((match) => match[1]),
-      );
-
-      // A sweep that found nothing would pass vacuously.
+      // A registry that gave nothing would pass vacuously.
       expect(declared.size).toBeGreaterThan(4);
       expect([...SERVER_VALUE_FLAGS].sort()).toEqual([...declared].sort());
    });
@@ -1533,7 +1514,7 @@ describe("scaffold: AGENTS.md across every start/reset script state", () => {
  * why this table is judged against Publisher's parser rather than against what a
  * command line looks like it means. Publisher matches `--host` as a whole
  * argument and reads the address out of the next one
- * (packages/server/src/cli_args.ts: `arg === "--host" && args[i + 1]`), so the
+ * (the flag reader in packages/server/src/settings/settings.ts), so the
  * joined form matches nothing it knows, is dropped without a word, and the bind
  * falls back to 0.0.0.0. Reading it as loopback was exactly backwards: it
  * suppressed the exposure warning on the one shape that looks safest and serves
@@ -2620,9 +2601,9 @@ describe("scaffold: what the run asserts about the boot it names", () => {
     * The value of the last whole-token `--<flag> <value>`, quotes stripped.
     *
     * Written from the server's argv walk rather than from what the line looks
-    * like it means: it matches `arg === "--port" && args[i + 1]`, so the flag is
-    * a whole argument and its value is the next one. A joined `--port=4100`
-    * matches no branch, is dropped in silence, and the bind falls back to the
+    * like it means: it matches `--port` as a whole argument, so the flag is a
+    * whole argument and its value is the next one. A joined `--port=4100`
+    * matches no flag, is dropped in silence, and the bind falls back to the
     * default, which is why the `=` form is deliberately not read here.
     */
    function lastFlagValue(command: string, flag: string): string | undefined {

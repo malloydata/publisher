@@ -204,20 +204,14 @@ export function usePackageLoadPool(): {
    /** Install a fresh live pool, e.g. after a test swapped in a dead one. */
    restore: () => Promise<void>;
 } {
-   const original = process.env.PACKAGE_LOAD_WORKERS;
    let pool: PackageLoadPool;
    const restore = async () => {
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    };
-   beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
-      await restore();
-   });
+   beforeAll(restore);
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (original === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = original;
    });
    return {
       get pool() {

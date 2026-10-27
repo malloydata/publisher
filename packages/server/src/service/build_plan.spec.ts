@@ -28,6 +28,7 @@ import {
    tempBuildPlanPackages,
 } from "../test_helpers/incremental_test_harness";
 import { fakeSource } from "../test_helpers/materialization_test_fixtures";
+import { installSettings } from "../test_helpers/settings_env";
 
 describe("source builds from getBuildTargets", () => {
    // a <- b <- c, plus `a_ext`, which extends `a` without changing its SQL and
@@ -323,7 +324,9 @@ describe("resolvePackageConnections", () => {
 
 describe("deriveBuildPlan", () => {
    it("reports a join to a given-scoped persisted source as joinedTerms, apart from strippedTerms", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       try {
          const { connections } = duckdbTestConnections();
          const { sources } = await compilePersistSources(
@@ -382,7 +385,7 @@ source: opps is raw -> { select: * } extend {
          );
          expect(grants?.joinedTerms).toBeUndefined();
       } finally {
-         delete process.env.PERSIST_STORAGE_MODE;
+         restore();
       }
    });
 

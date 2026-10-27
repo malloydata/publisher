@@ -98,4 +98,27 @@ export default [
          ],
       },
    },
+   {
+      // Every setting is read through the registry (src/settings), never from
+      // process.env, so no read can bypass its names, types and precedence.
+      // Specs and test helpers set up processes and are exempt.
+      files: ["src/**/*.ts"],
+      ignores: [
+         "src/settings/**",
+         "src/**/*.spec.ts",
+         "src/test_helpers/**",
+         "src/package_load/test_fixtures/**",
+      ],
+      rules: {
+         "no-restricted-properties": [
+            "error",
+            {
+               object: "process",
+               property: "env",
+               message:
+                  'Read a setting with settings.get("<key>"), a variable Publisher does not own with externalEnv(), or a ${VAR} with referencedVariable(); see src/settings.',
+            },
+         ],
+      },
+   },
 ];

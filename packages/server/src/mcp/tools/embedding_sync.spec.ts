@@ -31,6 +31,7 @@ import {
 } from "../../service/embedding_provider";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { pollUntil } from "../../test_helpers/poll";
+import { withSettings } from "../../test_helpers/settings_env";
 import {
    createEntityEmbeddingsTable,
    createEntityKeyphrasesTable,
@@ -580,26 +581,25 @@ describe("getPackageEmbeddingStatus", () => {
    });
 
    it("is an error with the reason when the embedding configuration is invalid", async () => {
-      const saved = {
-         key: process.env.EMBEDDING_API_KEY,
-         base: process.env.EMBEDDING_API_BASE,
-      };
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_API_BASE = "not a url";
       _clearEmbeddingProviderForTests();
       try {
-         const status = await getPackageEmbeddingStatus(
-            storeHolding({}),
-            "env",
-            "any",
+         await withSettings(
+            {
+               env: { EMBEDDING_API_KEY: "k", EMBEDDING_API_BASE: "not a url" },
+            },
+            async () => {
+               const status = await getPackageEmbeddingStatus(
+                  storeHolding({}),
+                  "env",
+                  "any",
+               );
+               expect(status.status).toBe("error");
+               expect(status.lastError?.message).toContain(
+                  "EMBEDDING_API_BASE",
+               );
+            },
          );
-         expect(status.status).toBe("error");
-         expect(status.lastError?.message).toContain("EMBEDDING_API_BASE");
       } finally {
-         if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
-         else process.env.EMBEDDING_API_KEY = saved.key;
-         if (saved.base === undefined) delete process.env.EMBEDDING_API_BASE;
-         else process.env.EMBEDDING_API_BASE = saved.base;
          _clearEmbeddingProviderForTests();
       }
    });

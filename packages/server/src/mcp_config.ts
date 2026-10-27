@@ -17,7 +17,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { parseBoolEnv } from "./config";
+import { settings } from "./settings";
 import { logger } from "./logger";
 
 export const MCP_CONFIG_FILENAME = ".mcp.json";
@@ -167,7 +167,7 @@ function conflictingMalloyUrl(
 
 /** Throws on an unrecognised value, so a typo is loud rather than silent. */
 export function mcpConfigEnabled(): boolean {
-   return !(parseBoolEnv("PUBLISHER_NO_MCP_CONFIG") ?? false);
+   return settings.get("mcp.configFileEnabled");
 }
 
 /**
