@@ -38,7 +38,6 @@ export const retrieval = [
       aliases: {
          env: ["EMBEDDING_MODEL"],
          file: ["retrieval.embedding.model"],
-         today: { fileFirst: true },
       },
    }),
    setting({
@@ -51,7 +50,6 @@ export const retrieval = [
       aliases: {
          env: ["EMBEDDING_API_BASE"],
          file: ["retrieval.embedding.baseUrl"],
-         today: { fileFirst: true },
       },
    }),
    setting({
@@ -63,7 +61,6 @@ export const retrieval = [
       aliases: {
          env: ["EMBEDDING_DIMENSIONS"],
          file: ["retrieval.embedding.dimensions"],
-         today: { fileFirst: true },
       },
    }),
    setting({

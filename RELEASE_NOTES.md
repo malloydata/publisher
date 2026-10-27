@@ -21,6 +21,19 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Settings take their derived names; today's names are deprecated
+
+Step 2 of the configuration design. Every setting now has one name of each kind, derived from its key: a variable (`PUBLISHER_` plus the key in upper snake case), a flag (`--` plus the key in kebab case, `--no-` for a boolean) and its key in `publisher.config.json`. So `mcp.port` is `PUBLISHER_MCP_PORT`, `--mcp-port` and `{ "mcp": { "port": 4040 } }`. `docs/configuration.md` lists every setting's names, generated from the registry.
+
+- **Today's names still work, and are deprecated.** Each one in use logs a warning naming its replacement and counts in `publisher_deprecated_usage_total{feature="config:<old name>"}`, so you can find what still sets one. Names the design left unchanged, such as `PUBLISHER_PORT` and `--port`, are not deprecated, and neither are `--init` and `--watch-env`, which are kept as short forms of `--initialize-storage` and `--watch-environments`. A release after the next refuses the old names.
+- **One precedence for every setting: flag, then variable, then file.** Two cases change:
+  - the `retrieval.embedding` file keys no longer win over `EMBEDDING_MODEL`, `EMBEDDING_API_BASE` and `EMBEDDING_DIMENSIONS`;
+  - `--watch-env` replaces `PUBLISHER_WATCH` instead of adding to it.
+- **An old and a new name given different values fail startup**, rather than one quietly winning. Examples are `MCP_PORT=4141` with `PUBLISHER_MCP_PORT=4242`, and a `retrieval.embedding.model` in the file that differs from `EMBEDDING_MODEL`. Values are compared after they are read, so a negated old name (`PUBLISHER_NO_MCP_CONFIG=1`) agrees with its positive new one (`PUBLISHER_MCP_CONFIG_FILE_ENABLED=false`).
+- **`useBundledDefault` counts the variables.** `SERVER_ROOT=/x` (or `PUBLISHER_ROOT`) now turns off the bundled sample config, as `--server_root` already did.
+- **Every setting can be in the file**, except the launch settings (`root`, `config`, `useBundledDefault`, `initializeStorage`, `watchEnvironments`), which startup warns about there. A secret in the file must be a `${VAR}` reference: a literal one fails startup. `retrieval.embedding` and `retrieval.llm` now accept their `apiKey`, and `retrieval.embedding` accepts `minSimilarity` and `connectionSchemaIndexingEnabled`.
+- A secret has no flag, and is never logged or echoed in an error.
+
 ## [Unreleased] — Settings are read once, from one registry, and bad values fail startup
 
 Every Publisher setting is now read once at startup, through one registry, as step 1 of the configuration design ([docs/configuration-design.md](docs/configuration-design.md)) lays out. The names, the defaults and the precedence are today's, and no value that works changes meaning. These are the changes:

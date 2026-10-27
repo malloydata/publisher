@@ -61,3 +61,9 @@ if (apis.servingApiEnabled) {
 } else {
    await import("./admin_server");
 }
+
+// Counted once the server's telemetry is up, which loading it starts.
+const { recordDeprecatedUsage } = await import("./deprecated_usage_metrics");
+for (const name of loaded.deprecatedNames) {
+   recordDeprecatedUsage(`config:${name}`);
+}
