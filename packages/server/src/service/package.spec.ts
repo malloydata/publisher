@@ -415,6 +415,90 @@ describe("service/package", () => {
             });
          });
 
+         it("should probe a data file whose name is outside the bare-path set", async () => {
+            // DuckDB's table-path check takes a bare path only when every
+            // character is in a short safe set, so these files used to list
+            // with `error` and no `info`. A double quote can't appear in a
+            // Windows file name.
+            const names = [
+               "Revenue by month.csv",
+               "Bob's sales.csv",
+               "orders (1).csv",
+               "données.csv",
+               ...(process.platform === "win32" ? [] : ['say "hi".csv']),
+            ];
+            await fs.mkdir(join(testPackageDirectory, "data"), {
+               recursive: true,
+            });
+            const csv = "Name,Value\nJohn,10\nJane,20\nJim,30";
+            const conn = new DuckDBConnection("duckdb");
+
+            for (const file of names) {
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", file),
+                  csv,
+               );
+               const name = `data/${file}`;
+               // @ts-expect-error Accessing private static method for testing
+               const info = await Package.getDatabaseInfo(
+                  testPackageDirectory,
+                  name,
+                  conn,
+               );
+               expect(info).toEqual({
+                  name,
+                  columns: [
+                     { name: "Name", type: "string" },
+                     { name: "Value", type: "number" },
+                  ],
+                  rowCount: 3,
+               });
+            }
+         });
+
+         it("refuses a data file whose path holds `;`, `--` or a glob character", async () => {
+            // Malloy refuses `;` and `--` anywhere in a table path, even
+            // quoted, and DuckDB reads `[`, `?` and `*` as a glob. Each file
+            // lists with `error` and no `info`. `a-b.csv` is the control: it
+            // must read, so a checkout path that itself holds `--` can't make
+            // the refusals pass for the wrong reason.
+            await fs.mkdir(join(testPackageDirectory, "data"), {
+               recursive: true,
+            });
+            const conn = new DuckDBConnection("duckdb");
+            const probe = async (file: string, csv: string) => {
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", file),
+                  csv,
+               );
+               // @ts-expect-error Accessing private static method for testing
+               return Package.getDatabaseInfo(
+                  testPackageDirectory,
+                  `data/${file}`,
+                  conn,
+               );
+            };
+            expect(
+               (await probe("a-b.csv", "Name,Value\nJohn,10")).rowCount,
+            ).toBe(1);
+            for (const file of ["a;b.csv", "a--b.csv"]) {
+               await expect(probe(file, "Name,Value\nJohn,10")).rejects.toThrow(
+                  "forbidden character `;` or `--`",
+               );
+            }
+            // The refusal throws before DuckDB reads anything, so the message
+            // is the proof. `?` and `*` can't appear in a Windows file name.
+            const globNames = [
+               "[x].csv",
+               ...(process.platform === "win32" ? [] : ["x?.csv", "x*.csv"]),
+            ];
+            for (const file of globNames) {
+               await expect(probe(file, "Name,Value\nJohn,10")).rejects.toThrow(
+                  "pattern matching other files",
+               );
+            }
+         });
+
          it("should probe an xlsx database file", async () => {
             // Real committed fixture: DuckDB's excel extension reads it via the
             // same duckdb.table() replacement scan the csv path uses.

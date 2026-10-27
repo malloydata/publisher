@@ -759,7 +759,7 @@ value a filter cannot spell (a uuid, JSON, a database-native type) or grouped by
 result reports no expression for; and a nested row whose levels use different time zones, since one rows
 query has one `timezone:`.
 
-Malloy's result metadata is wrong in three of those places as of Malloy 0.0.435: a pipeline's root reads
+Malloy's result metadata is wrong in three of those places as of Malloy 0.0.436: a pipeline's root reads
 as drillable, a dimension declared in a joined source carries code that reads the root source's fields, and
 an unnamed truncation in a view loses its truncation. Publisher's server corrects all three before it sends
 a result, so a client reading the metadata gets the right rows or none.

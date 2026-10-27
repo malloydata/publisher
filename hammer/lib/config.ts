@@ -34,7 +34,7 @@ export type ConnectionConfig =
                  password: string;
               };
            };
-           storage: { bucketUrl: string };
+           storage?: { bucketUrl: string };
         };
      }
    | {
@@ -92,6 +92,8 @@ export function ducklakeDest(
    catalogDb: string,
    storageDir: string,
    metadataSchema?: string,
+   /** Omit `storage.bucketUrl`, so the catalog's recorded data path is used and no attach creates it. */
+   recordedDataPath?: boolean,
 ): ConnectionConfig {
    return {
       name,
@@ -107,7 +109,7 @@ export function ducklakeDest(
             },
             ...(metadataSchema ? { metadataSchema } : {}),
          },
-         storage: { bucketUrl: storageDir },
+         ...(recordedDataPath ? {} : { storage: { bucketUrl: storageDir } }),
       },
    };
 }

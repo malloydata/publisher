@@ -32,6 +32,7 @@ import {
    type QueryRowLimitSource,
 } from "./model_limits";
 import { type QueryMetadata } from "./query_metadata";
+import { withStatementUsage } from "./statement_usage";
 
 /**
  * The options prepare and run must agree on. Spread into both calls, so a key
@@ -62,6 +63,12 @@ export async function prepareAndRun(
       queryMetadata: (
          connectionName: string,
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+      /** Emit a usage record when the executing connection is metered. */
+      usage?: {
+         metered: (connectionName: string) => boolean;
+         environment: string;
+         package?: string;
+      };
    },
 ): Promise<PreparedRun> {
    return withSpan("publisher.query.execute", {}, () =>
@@ -78,6 +85,11 @@ async function prepareAndRunUntraced(
       queryMetadata: (
          connectionName: string,
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+      usage?: {
+         metered: (connectionName: string) => boolean;
+         environment: string;
+         package?: string;
+      };
    },
 ): Promise<PreparedRun> {
    const prepared = await runnable.getPreparedResult(options);
@@ -88,12 +100,27 @@ async function prepareAndRunUntraced(
       maxRows: run.maxRows,
    });
    const queryMetadata = await run.queryMetadata(prepared.connectionName);
-   const result = await runnable.run({
-      rowLimit,
-      ...options,
-      abortSignal: run.abortSignal,
-      queryMetadata,
-   });
+   const execute = () =>
+      runnable.run({
+         rowLimit,
+         ...options,
+         abortSignal: run.abortSignal,
+         queryMetadata,
+      });
+   const usage = run.usage;
+   const result =
+      usage && safeMetered(usage.metered, prepared.connectionName)
+         ? await withStatementUsage(
+              {
+                 environment: usage.environment,
+                 connection: prepared.connectionName,
+                 surface: "serve",
+                 package: usage.package,
+              },
+              execute,
+              (r) => r.data.rowCount,
+           )
+         : await execute();
    return { result, rowLimit, rowLimitSource, queryMetadata };
 }
 
@@ -214,4 +241,16 @@ export function isGivenBindingFailure(err: unknown): boolean {
       Array.isArray(problems) &&
       problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
    );
+}
+
+/** A metering check must never fail a query. */
+function safeMetered(
+   metered: (connectionName: string) => boolean,
+   connectionName: string,
+): boolean {
+   try {
+      return metered(connectionName);
+   } catch {
+      return false;
+   }
 }

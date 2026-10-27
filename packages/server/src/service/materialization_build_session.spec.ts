@@ -213,6 +213,15 @@ describe("passthroughSourceType", () => {
          ).toThrow(BadRequestError);
       },
    );
+
+   it("says a DuckLake source is refused because it is a different catalog", () => {
+      expect(() =>
+         passthroughSourceType({
+            name: "s",
+            type: "ducklake",
+         } as ApiConnection),
+      ).toThrow("into a storage destination that is a different catalog");
+   });
 });
 
 describe("buildSourceIntoStorage gating (no session I/O before the gates)", () => {
@@ -593,6 +602,102 @@ describe.skipIf(process.platform === "win32")(
                }),
                // The shape failure the caller falls back on, by type.
             ).rejects.toBeInstanceOf(MaterializationEligibilityError);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a downstream carrying author SQL as a shape failure, so the caller recomputes", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-sql-"));
+         try {
+            await seedLake(dir);
+            const error = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText:
+                     "monthly_orders is daily_orders extend {\n" +
+                     '  dimension: doubled is sql_number("${total} * 2")\n' +
+                     "} -> { group_by: doubled }",
+                  destinationName: "lake",
+                  documentFlags: ["##! experimental.sql_functions"],
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }).then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+            expect(error).toBeInstanceOf(MaterializationEligibilityError);
+            // Refused by the author-SQL check, not by a compile failure.
+            expect(String(error)).toMatch(/carries SQL its author wrote/);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a destinationSchema the catalog does not have, and builds into one it has", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-schema-"));
+         try {
+            await seedLake(dir);
+            await expect(
+               buildDownstreamIntoStorage({
+                  destinationName: "lake",
+                  destinationConnection: {
+                     name: "lake",
+                     type: "duckdb",
+                     ducklakeConnection: { destinationSchema: "materialzed" },
+                  } as ApiConnection,
+                  transientModel: buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+                  downstreamName: "monthly_orders",
+                  virtualMap: buildVirtualMap([parent]),
+                  physicalTableName: "monthly_orders__mdef456",
+                  environmentPath: dir,
+               }),
+            ).rejects.toThrow(
+               "Storage destination 'lake' declares destinationSchema 'materialzed', but its catalog has no schema by that name.",
+            );
+
+            const lake = new DuckDBConnection(
+               "lake",
+               join(storageDestinationRoot(dir), "lake.duckdb"),
+            );
+            try {
+               await lake.runSQL("CREATE SCHEMA Materialized");
+            } finally {
+               await lake.close();
+            }
+            const built = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+                  ducklakeConnection: { destinationSchema: "materialized" },
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            });
+            expect(built.schema.length).toBe(2);
          } finally {
             rmSync(dir, { recursive: true, force: true });
          }

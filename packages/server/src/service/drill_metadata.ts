@@ -10,7 +10,7 @@ import type { Result } from "@malloydata/malloy";
  * A client builds those rows as
  * `run: <source> -> { where: <each dimension's code> = <its value>; select: * }`,
  * reading each dimension's code from `drill_expression.code` and whether a
- * level can be drilled at all from `drillable`. Malloy 0.0.435 gets three of
+ * level can be drilled at all from `drillable`. Malloy 0.0.436 gets three of
  * those wrong, and only the server still holds what it needs to fix them:
  *
  * - The root of a pipeline of more than one stage is marked `drillable`.

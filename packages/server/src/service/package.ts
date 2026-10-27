@@ -162,6 +162,7 @@ import {
    type ReportTag,
 } from "./report";
 import { filterFreshManifest } from "./freshness";
+import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
@@ -288,6 +289,10 @@ export class Package {
    private malloyConfig: MalloyConfig;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
+   /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
+   private serveDestinationSchema?: (
+      destinationName: string,
+   ) => string | undefined;
    // Bound build manifest (sourceEntityId -> { tableName }): routes persist
    // sources to their materialized tables for served queries and the /compile
    // preview alike, so previewed SQL matches executed SQL. Surfaced on /status
@@ -1635,6 +1640,7 @@ export class Package {
       const derived = deriveServeBindings(
          entries,
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
+         this.serveDestinationSchema,
       );
       const eligibility = this.sourceEligibility;
       // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
@@ -1687,6 +1693,17 @@ export class Package {
       for (const model of this.models.values()) {
          model.setServeBindings(this.storageServeBindings);
       }
+   }
+
+   /**
+    * How a serve binding names a destination's schema, so it reads the table
+    * where the build wrote it (storageTablePath). Absent, every destination is
+    * `main`, the pre-existing layout.
+    */
+   public setServeDestinationSchema(
+      resolver: (destinationName: string) => string | undefined,
+   ): void {
+      this.serveDestinationSchema = resolver;
    }
 
    /**
@@ -3325,8 +3342,26 @@ export class Package {
       });
       // Forward slashes work on Windows DuckDB and avoid escaping.
       const normalizedPath = fullPath.replace(/\\/g, "/");
+      // DuckDB reads `[`, `?` and `*` in a table path as a glob, so such a
+      // path would report other files' columns and rows (`[x].csv` reads
+      // `x.csv`). The check covers the whole path, since a glob in a folder
+      // name matches sibling folders. List it as unreadable instead.
+      if (/[[?*]/.test(normalizedPath)) {
+         throw new Error(
+            `Cannot read ${databasePath}: its path holds [, ? or *, which DuckDB reads as a pattern matching other files. Rename the file, or the folder holding it, without those characters.`,
+         );
+      }
+      // DuckDB's table-path check refuses a bare path holding a space or a
+      // quote, which left such a file listed as unreadable. So the path goes
+      // in as a single-quoted SQL literal, which the check accepts and
+      // canonicalizes to the same SQL a bare path gets.
+      const tableLiteral = `'${sqlLiteral(normalizedPath, "duckdb")}'`;
+      // That literal sits in a Malloy double-quoted string, so `\` and `"` are
+      // escaped for it. Normalizing above left no backslash, but escaping it
+      // keeps this step correct on its own.
+      const malloyString = `"${tableLiteral.replace(/[\\"]/g, "\\$&")}"`;
       const model = runtime.loadModel(
-         `source: temp is duckdb.table('${normalizedPath}')`,
+         `source: temp is duckdb.table(${malloyString})`,
       );
       const modelDef = await model.getModel();
       const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;

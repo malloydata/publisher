@@ -151,6 +151,9 @@ import {
    type InstructedRun,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
+import { destinationSchemaOf } from "./storage_table_path";
+import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { withStatementUsage } from "./statement_usage";
 
 /**
  * Orchestrates single-call materialization builds.
@@ -1953,6 +1956,7 @@ export class MaterializationService {
             // Reported when the build does not stack on a parent.
             baseReuse: reuse.fields,
             queryMetadata: runOptions.queryMetadata,
+            packageName: buildMetadata?.context.package,
             incremental,
             contentSourceEntityId,
             planFacts,
@@ -2126,6 +2130,8 @@ export class MaterializationService {
       dependsOnStorageUpstream: boolean;
       /** Applied by the passthrough itself (see {@link buildSourceIntoStorage}). */
       queryMetadata?: QueryMetadata;
+      /** The package being built, for the build's statement_usage record. */
+      packageName?: string;
       /** Present when any source in the run declared an incremental refresh. */
       incremental?: IncrementalRunContext;
       /** The source's CONTENT address — see buildOneSource's parameter of the same name. */
@@ -2214,6 +2220,7 @@ export class MaterializationService {
                  persistSource,
                  instruction,
                  destinationName,
+                 destinationSchema: destinationSchemaOf(destinationConnection),
                  physicalTableName,
                  buildSQL: params.buildSQL,
                  queryMetadata,
@@ -2232,16 +2239,28 @@ export class MaterializationService {
       // refuse (`strictUpstreams`).
       if (dependsOnStorageUpstream) {
          try {
-            result = await this.buildDownstreamViaParents(
-               persistSource,
-               destinationName,
-               destinationConnection,
-               builtEntries,
-               environment,
-               physicalTableName,
-               planFacts,
-               params.contentSourceEntityId ?? instruction.sourceEntityId,
-               lift,
+            // Reads stored parents and writes in the one destination, so its
+            // seconds are the store's, as a same-catalog build's are.
+            result = await withStatementUsage(
+               {
+                  environment: environment.getEnvironmentName?.() ?? "",
+                  connection: destinationName,
+                  surface: "build",
+                  package:
+                     params.packageName ?? params.incremental?.packageName,
+               },
+               () =>
+                  this.buildDownstreamViaParents(
+                     persistSource,
+                     destinationName,
+                     destinationConnection,
+                     builtEntries,
+                     environment,
+                     physicalTableName,
+                     planFacts,
+                     params.contentSourceEntityId ?? instruction.sourceEntityId,
+                     lift,
+                  ),
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
@@ -2305,17 +2324,35 @@ export class MaterializationService {
       // source warehouse and CTAS it into the destination.
       if (!result) {
          try {
-            result = await buildSourceIntoStorage({
-               destinationName,
-               destinationConnection,
-               sourceConnection,
-               buildSQL: params.publicBuildSQL,
-               physicalTableName,
-               partitionColumns: partitionColumnsForBuild(persistSource),
-               environmentPath: environment.getEnvironmentPath(),
-               queryMetadata,
-               incremental: refresh,
-            });
+            const build = () =>
+               buildSourceIntoStorage({
+                  destinationName,
+                  destinationConnection,
+                  sourceConnection,
+                  buildSQL: params.publicBuildSQL,
+                  sourceCarriesAuthorSql: carriesAuthorSql(
+                     persistSource._sourceDef,
+                  ),
+                  physicalTableName,
+                  partitionColumns: partitionColumnsForBuild(persistSource),
+                  environmentPath: environment.getEnvironmentPath(),
+                  queryMetadata,
+                  incremental: refresh,
+               });
+            // A same-catalog build reads and writes only the store, so its seconds
+            // are the store's; a passthrough build's are mostly the warehouse's.
+            result = isSameCatalog(sourceConnection, destinationConnection)
+               ? await withStatementUsage(
+                    {
+                       environment: environment.getEnvironmentName?.() ?? "",
+                       connection: destinationName,
+                       surface: "build",
+                       package:
+                          params.packageName ?? params.incremental?.packageName,
+                    },
+                    build,
+                 )
+               : await build();
          } catch (err) {
             // Redact: a federation/passthrough/attach error can echo connection
             // detail (connstrings, service-account JSON). Strip credential VALUES
@@ -2355,6 +2392,7 @@ export class MaterializationService {
       try {
          await assertStorageServeShapeCompiles({
             destinationName,
+            destinationSchema: destinationSchemaOf(destinationConnection),
             sourceName: persistSource.name,
             virtualHandle: sourceEntityId,
             physicalTableName,
@@ -2508,6 +2546,15 @@ export class MaterializationService {
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
          aliasesForBinding,
+         (name) => {
+            try {
+               return destinationSchemaOf(
+                  environment.getStorageDestination(name),
+               );
+            } catch {
+               return undefined;
+            }
+         },
       )
          .filter((b) => b.destinationName === destinationName)
          // A rollup is never an upstream (its synthesized name is in no model
