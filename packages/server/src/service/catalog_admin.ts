@@ -18,7 +18,7 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../api";
-import { BadRequestError, ConflictError, TableNotFoundError } from "../errors";
+import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
 import {
    applySessionResourceLimits,
@@ -421,19 +421,12 @@ export class CatalogAdmin {
       const { owner, sourceOwner } = await this.withCatalogDatabase(
          async (pg) => {
             await this.requireCatalog(pg, name);
-            if (source.kind === "table" && source.catalog !== name) {
-               if (!(await this.catalogExists(pg, source.catalog))) {
-                  throw sourceNotFound(
-                     `Source catalog '${source.catalog}' does not exist.`,
-                  );
-               }
-            }
+            const owner = await this.schemaOwner(pg, name);
+            if (source.kind !== "table")
+               return { owner, sourceOwner: undefined };
             return {
-               owner: await this.schemaOwner(pg, name),
-               sourceOwner:
-                  source.kind === "table"
-                     ? await this.schemaOwner(pg, source.catalog)
-                     : undefined,
+               owner,
+               sourceOwner: await this.copySource(pg, name, owner, source),
             };
          },
       );
@@ -487,9 +480,6 @@ export class CatalogAdmin {
             (r) => r.rowCount,
          );
       } catch (error) {
-         if (error instanceof TableNotFoundError) {
-            throw sourceNotFound(redactPgSecrets(error.message));
-         }
          // Another create-only PUT won the race between the existence check
          // and the load: the same answer as if it had come first.
          if (ifAbsent && error instanceof ConflictError) {
@@ -714,6 +704,74 @@ export class CatalogAdmin {
       }
    }
 
+   /**
+    * Checks a copy's source before anything attaches or is metered: the source
+    * catalog and its live table exist, the configured role can act as the
+    * source's owner, and the copy would not write an encrypted catalog's rows
+    * into an unencrypted one. Returns the role the source attaches as.
+    */
+   private async copySource(
+      pg: (sql: string) => Promise<Record<string, unknown>[]>,
+      name: string,
+      owner: string | undefined,
+      source: { catalog: string; schema: string; table: string },
+   ): Promise<string | undefined> {
+      const same = source.catalog === name;
+      let sourceOwner = owner;
+      if (!same) {
+         // Ownership first, from pg_namespace: a catalog owned by a role this
+         // one cannot act as would otherwise read as missing, since
+         // information_schema lists only tables the role has a privilege on.
+         const found = (await pg(
+            "SELECT pg_get_userbyid(nspowner) AS owner, current_user AS me, " +
+               "pg_has_role(current_user, nspowner, 'MEMBER') AS member " +
+               `FROM pg_namespace WHERE nspname = ${pgLiteral(source.catalog)}`,
+         )) as { owner: string; me: string; member: unknown }[];
+         const row = found[0];
+         if (!row) {
+            throw sourceNotFound(
+               `Source catalog '${source.catalog}' does not exist.`,
+            );
+         }
+         if (row.member !== true) {
+            throw new CatalogAdminError(
+               409,
+               "CATALOG_OWNER_UNSUPPORTED",
+               `Source catalog '${source.catalog}' is owned by a role this server's catalog role cannot act as.`,
+            );
+         }
+         if (!(await this.catalogExists(pg, source.catalog))) {
+            throw sourceNotFound(
+               `Source catalog '${source.catalog}' does not exist.`,
+            );
+         }
+         sourceOwner = row.owner === row.me ? undefined : row.owner;
+      }
+      const catalog = pgIdent(source.catalog);
+      const live = await pg(
+         `SELECT 1 FROM ${catalog}.ducklake_table t JOIN ${catalog}.ducklake_schema s ` +
+            "ON t.schema_id = s.schema_id " +
+            `WHERE s.schema_name = ${pgLiteral(source.schema)} ` +
+            `AND t.table_name = ${pgLiteral(source.table)} ` +
+            "AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL",
+      );
+      if (live.length === 0) {
+         throw sourceNotFound(
+            `Source table '${source.schema}.${source.table}' does not exist in catalog '${source.catalog}'.`,
+         );
+      }
+      if (!same) {
+         const from = await this.metadata(pg, source.catalog);
+         const to = await this.metadata(pg, name);
+         if (from.encrypted === "true" && to.encrypted !== "true") {
+            throw badRequest(
+               `Source catalog '${source.catalog}' is encrypted and '${name}' is not; a copy would write its rows unencrypted.`,
+            );
+         }
+      }
+      return sourceOwner;
+   }
+
    private async catalogExists(
       pg: (sql: string) => Promise<Record<string, unknown>[]>,
       name: string,
@@ -863,6 +921,7 @@ function tableSource(value: unknown): TableSource {
             "'source' is either an object ({uri, format}) or a table ({catalog, schema, table}), not both.",
          );
       }
+      onlyKeys(source, ["catalog", "schema", "table"]);
       return {
          kind: "table",
          catalog: identifier(source.catalog, "source.catalog"),
@@ -870,6 +929,7 @@ function tableSource(value: unknown): TableSource {
          table: identifier(source.table, "source.table"),
       };
    }
+   onlyKeys(source, ["uri", "format", "options"]);
    if (typeof source.uri !== "string") {
       throw badRequest("'source.uri' is required.");
    }
@@ -888,6 +948,15 @@ function tableSource(value: unknown): TableSource {
       format: source.format as LoadFormat,
       options,
    };
+}
+
+/** A source may carry only its own shape's keys, as the spec's `additionalProperties: false` says. */
+function onlyKeys(source: Record<string, unknown>, allowed: string[]): void {
+   for (const key of Object.keys(source)) {
+      if (!allowed.includes(key)) {
+         throw badRequest(`Unknown key 'source.${key}'.`);
+      }
+   }
 }
 
 function sourceNotFound(message: string): CatalogAdminError {

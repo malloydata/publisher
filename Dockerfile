@@ -186,7 +186,7 @@ ENV NODE_ENV=production
 WORKDIR /publisher
 
 # Copy package files first for better layer caching
-COPY package.json bun.lock api-doc.yaml admin-api-doc.yaml ./
+COPY package.json bun.lock api-doc.yaml ./
 # patchedDependencies in package.json point at patches/; bun install refuses to
 # run without the patch files, so they have to arrive before it does.
 COPY patches/ ./patches/
@@ -215,6 +215,9 @@ RUN --mount=type=cache,target=/root/.bun \
 # Build server. The bundle alone: the extensions the image ships come from the
 # duckdb-extensions stage, so the bake that ends build:server-only is skipped.
 WORKDIR /publisher/packages/server
+# Read only by build.ts, so copied here rather than above bun install, where an
+# edit to the admin spec would invalidate the dependency install layer.
+COPY admin-api-doc.yaml /publisher/
 COPY packages/server/ ./
 RUN --mount=type=cache,target=/root/.bun \
     bun run build:server-only:bundle

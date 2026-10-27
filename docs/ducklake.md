@@ -194,7 +194,8 @@ location its session can read, and rewrites the bytes as the catalog's own Parqu
 transaction, so an encrypted catalog stays encrypted and a reader sees the old table or the new one.
 A copy reads a table of another catalog in the same catalog database (or of the same catalog), attached
 read-only as that catalog's owner, and writes it the same way; the configured role must be able to act
-as both owners.
+as both owners (otherwise `409 CATALOG_OWNER_UNSUPPORTED`). A copy from an encrypted catalog into an
+unencrypted one is refused, since it would write the rows unencrypted.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files

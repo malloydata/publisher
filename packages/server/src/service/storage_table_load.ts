@@ -4,7 +4,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../api";
-import { BadRequestError, ConflictError, TableNotFoundError } from "../errors";
+import { BadRequestError, ConflictError } from "../errors";
 import {
    applySessionResourceLimits,
    attachDuckLakeReadOnly,
@@ -202,8 +202,8 @@ export async function loadStorageTable(params: {
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
- * - A missing source schema or table is a `TableNotFoundError`, before anything is
- *   written.
+ * - The caller checks that the source exists and that the destination may
+ *   hold its rows before calling: this attaches and writes.
  */
 export async function copyStorageTable(params: {
    destinationName: string;
@@ -239,8 +239,14 @@ export async function copyStorageTable(params: {
       }
    }
    const sameCatalog = source.catalogName === destinationName;
-   // Attached under its own alias, so it never shadows the destination.
-   const sourceAlias = sameCatalog ? destinationName : COPY_SOURCE_ALIAS;
+   // Attached under its own alias, so it never shadows the destination: the
+   // attach is ATTACH OR REPLACE, so a destination catalog named like the alias
+   // would otherwise be replaced by the read-only source.
+   const sourceAlias = sameCatalog
+      ? destinationName
+      : destinationName === COPY_SOURCE_ALIAS
+        ? `${COPY_SOURCE_ALIAS}_2`
+        : COPY_SOURCE_ALIAS;
 
    const { session, dispose, workDir } = createIsolatedBuildSession(
       `copy_${destinationName}`,
@@ -257,19 +263,6 @@ export async function copyStorageTable(params: {
             session,
             sourceAlias,
             source.connection.ducklakeConnection!,
-         );
-      }
-      const found = rows(
-         await session.runSQL(
-            "SELECT count(*) AS n FROM duckdb_tables() " +
-               `WHERE database_name = '${escapeSQL(sourceAlias)}' ` +
-               `AND schema_name = '${escapeSQL(source.schemaName)}' ` +
-               `AND table_name = '${escapeSQL(source.tableName)}'`,
-         ),
-      );
-      if (Number(found[0]?.n ?? 0) === 0) {
-         throw new TableNotFoundError(
-            `Source table '${source.schemaName}.${source.tableName}' does not exist in catalog '${source.catalogName}'.`,
          );
       }
       const from = [sourceAlias, source.schemaName, source.tableName]

@@ -227,7 +227,11 @@ paths:
         or a table of a catalog in the same catalog database, attached read-only
         as its own owner (a migration's copy, from one catalog into another or
         within one). A missing source catalog, schema or table is
-        `404 SOURCE_NOT_FOUND`. Either way the bytes are rewritten as the
+        `404 SOURCE_NOT_FOUND`; a source catalog owned by a role the configured
+        role cannot act as is `409 CATALOG_OWNER_UNSUPPORTED`; and a copy from an
+        encrypted catalog into an unencrypted one is refused (`400
+        INVALID_REQUEST`), since it would write the rows unencrypted. Either way
+        the bytes are rewritten as the
         catalog's own Parquet, never registered in place, so an encrypted
         catalog stays encrypted. One DuckLake transaction:
         a reader sees the old table or the new one. `201` when the table is new,
@@ -265,6 +269,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "412":
           description: "`If-None-Match: *` and the table exists (`TABLE_EXISTS`)"
           content:

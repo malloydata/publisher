@@ -101,7 +101,9 @@ describe.skipIf(!SUPERUSER)(
          for (const stmt of [
             `DROP ROLE IF EXISTS ${DB}_admin`,
             `DROP ROLE IF EXISTS ${DB}_owner`,
+            `DROP ROLE IF EXISTS ${DB}_stranger`,
             `CREATE ROLE ${DB}_admin LOGIN PASSWORD '${PASSWORD}'`,
+            `CREATE ROLE ${DB}_stranger NOLOGIN`,
             `CREATE ROLE ${DB}_owner NOLOGIN`,
             `GRANT ${DB}_owner TO ${DB}_admin${membership}`,
             `GRANT CREATE, CONNECT ON DATABASE ${DB} TO ${DB}_admin`,
@@ -136,6 +138,7 @@ describe.skipIf(!SUPERUSER)(
          await superuserSql(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
          await superuserSql(`DROP ROLE IF EXISTS ${DB}_admin`);
          await superuserSql(`DROP ROLE IF EXISTS ${DB}_owner`);
+         await superuserSql(`DROP ROLE IF EXISTS ${DB}_stranger`);
       });
 
       it("finds no catalog in an empty database", async () => {
@@ -372,6 +375,72 @@ describe.skipIf(!SUPERUSER)(
                (t) => t.name,
             ),
          ).toEqual(["legacy", "orders_copy"]);
+      });
+
+      it("refuses to copy an encrypted catalog's table into an unencrypted one", async () => {
+         const error = await refusal(
+            admin.putTable(
+               "ds_standalone",
+               "main",
+               "leaked",
+               {
+                  source: {
+                     catalog: "ds_owned",
+                     schema: "main",
+                     table: "orders",
+                  },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
+         expect(
+            (await admin.listTables("ds_standalone", "main")).map(
+               (t) => t.name,
+            ),
+         ).toEqual(["legacy"]);
+      });
+
+      it("refuses a source catalog owned by a role it cannot act as, before reading it", async () => {
+         await superuserSql(
+            `CREATE SCHEMA ds_strange AUTHORIZATION ${DB}_stranger`,
+            DB,
+         );
+         const error = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "x",
+               {
+                  source: { catalog: "ds_strange", schema: "main", table: "t" },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([
+            409,
+            "CATALOG_OWNER_UNSUPPORTED",
+         ]);
+      });
+
+      it("refuses a key the source's shape does not have", async () => {
+         const error = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "x",
+               {
+                  source: {
+                     catalog: "ds_standalone",
+                     schema: "main",
+                     table: "legacy",
+                     snapshot: 5,
+                  },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
       });
 
       it("refuses a source that is both an object and a table", async () => {
