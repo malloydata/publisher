@@ -7,6 +7,7 @@ import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import type { EnvironmentStore } from "../service/environment_store";
 import { MaterializationService } from "../service/materialization_service";
+import { installSettings } from "./settings_env";
 
 /**
  * Shared harness for the MaterializationService unit specs: a sinon-faked
@@ -26,19 +27,23 @@ export interface ServiceMocks {
 }
 
 /**
- * Turn per-query metadata on for one test and put the environment back after.
+ * Turn per-query metadata on for one test and put the settings back after.
  * The feature ships dark, so a test that asserts what a statement carries has
  * to enable it — and saying so per test keeps the default honest here: a test
  * that forgets is testing the shipped default, which is "nothing attached".
+ * Installing settings replaces them all, so every other setting is at its
+ * default for these tests.
  */
 export function withQueryMetadataOn(): void {
-   const original = process.env.PUBLISHER_QUERY_METADATA;
+   let restore: (() => void) | undefined;
    beforeEach(() => {
-      process.env.PUBLISHER_QUERY_METADATA = "on";
+      restore = installSettings({
+         env: { PUBLISHER_QUERY_METADATA: "on" },
+      }).restore;
    });
    afterEach(() => {
-      if (original === undefined) delete process.env.PUBLISHER_QUERY_METADATA;
-      else process.env.PUBLISHER_QUERY_METADATA = original;
+      restore?.();
+      restore = undefined;
    });
 }
 

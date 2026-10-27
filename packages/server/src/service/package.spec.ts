@@ -10,6 +10,7 @@ import fs from "fs/promises";
 import { join, resolve } from "path";
 import sinon from "sinon";
 import { PackageNotFoundError } from "../errors";
+import { installSettings } from "../test_helpers/settings_env";
 import { Model } from "./model";
 import { Package } from "./package";
 
@@ -102,13 +103,10 @@ describe("service/package", () => {
    });
 
    describe("per-package sandbox extension pinning", () => {
-      const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+      let restoreSettings: (() => void) | undefined;
       afterEach(() => {
-         if (originalPolicy === undefined) {
-            delete process.env.EXTENSION_FETCH_POLICY;
-         } else {
-            process.env.EXTENSION_FETCH_POLICY = originalPolicy;
-         }
+         restoreSettings?.();
+         restoreSettings = undefined;
       });
 
       it(
@@ -120,7 +118,9 @@ describe("service/package", () => {
             // against DuckDB's implicit auto-install, or a sandbox query
             // referencing an unbaked extension could silently fetch from the
             // CDN. Uses a spy (not a stub) so real DuckDB runs the pragma.
-            process.env.EXTENSION_FETCH_POLICY = "local-only";
+            restoreSettings = installSettings({
+               env: { EXTENSION_FETCH_POLICY: "local-only" },
+            }).restore;
             const spy = sinon.spy(DuckDBConnection.prototype, "runSQL");
             await Package.create(
                "testProject",

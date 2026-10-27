@@ -22,6 +22,36 @@ import {
 } from "../test_helpers/metrics_harness";
 import { Model, ModelType } from "./model";
 import { StorageServeShape } from "./model_serve_shape";
+import { installSettings } from "../test_helpers/settings_env";
+
+/**
+ * The variables the current test has set; the settings are re-installed from
+ * them on each change.
+ */
+let testEnv: Record<string, string> = {};
+/** Puts back the settings from before the current test's first `setEnv`. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Set (or, given `undefined`, unset) variables for the rest of this test, the
+ * way assigning `process.env` once did: the settings are re-installed from
+ * every variable this test has set so far, and everything else is at its
+ * default.
+ */
+function setEnv(vars: Record<string, string | undefined>): void {
+   for (const [name, value] of Object.entries(vars)) {
+      if (value === undefined) delete testEnv[name];
+      else testEnv[name] = value;
+   }
+   restoreSettings?.();
+   restoreSettings = installSettings({ env: testEnv }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+   testEnv = {};
+});
 
 describe("service/model", () => {
    const packageName = "test-package";
@@ -582,24 +612,8 @@ describe("service/model", () => {
           * (HTTP 413), not the generic `BadRequestError` (HTTP 400).
           */
          describe("response caps", () => {
-            const originalRowsEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
-            const originalBytesEnv = process.env.PUBLISHER_MAX_RESPONSE_BYTES;
-            const originalDefaultEnv =
-               process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
-
             afterEach(() => {
                sinon.restore();
-               for (const [name, original] of [
-                  ["PUBLISHER_MAX_QUERY_ROWS", originalRowsEnv],
-                  ["PUBLISHER_MAX_RESPONSE_BYTES", originalBytesEnv],
-                  ["PUBLISHER_DEFAULT_QUERY_ROW_LIMIT", originalDefaultEnv],
-               ] as const) {
-                  if (original === undefined) {
-                     delete process.env[name];
-                  } else {
-                     process.env[name] = original;
-                  }
-               }
             });
 
             /**
@@ -666,7 +680,7 @@ describe("service/model", () => {
             }
 
             it("clamps user LIMIT to maxRows + 1 when the user requested more than the cap", async () => {
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+               setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
                const { model, runStub } = buildModelWithFakeRun({
                   userLimit: 1_000_000,
                   totalRows: 10,
@@ -683,7 +697,7 @@ describe("service/model", () => {
             });
 
             it("passes user LIMIT through when below maxRows", async () => {
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+               setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
                const { model, runStub } = buildModelWithFakeRun({
                   userLimit: 50,
                   totalRows: 10,
@@ -700,8 +714,10 @@ describe("service/model", () => {
             });
 
             it("falls back to PUBLISHER_DEFAULT_QUERY_ROW_LIMIT when the user query has no LIMIT", async () => {
-               process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "42";
-               delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+               setEnv({
+                  PUBLISHER_DEFAULT_QUERY_ROW_LIMIT: "42",
+                  PUBLISHER_MAX_QUERY_ROWS: undefined,
+               });
                const { model, runStub } = buildModelWithFakeRun({
                   userLimit: 0,
                   totalRows: 10,
@@ -718,7 +734,7 @@ describe("service/model", () => {
             });
 
             it("throws PayloadTooLargeError (not BadRequestError) when totalRows exceeds the cap", async () => {
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+               setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
                const { model } = buildModelWithFakeRun({
                   userLimit: 1000,
                   totalRows: 101,
@@ -735,8 +751,10 @@ describe("service/model", () => {
             });
 
             it("throws PayloadTooLargeError when the wrapped response exceeds the byte cap", async () => {
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "100";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "1000",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "100",
+               });
                const huge = "x".repeat(500);
                const { model } = buildModelWithFakeRun({
                   userLimit: 10,
@@ -758,8 +776,10 @@ describe("service/model", () => {
                // request was measured against the WRAPPED result, so it could be
                // refused on bytes it would never receive. Wrapped JSON is far over
                // the cap here; the compact rows are far under it.
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "100";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "1000",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "100",
+               });
                const huge = "x".repeat(500);
                const build = () =>
                   buildModelWithFakeRun({
@@ -804,8 +824,10 @@ describe("service/model", () => {
                // The second half: a compact shape that cannot be serialized must
                // report the same 413, rather than escaping as a bare 500 from
                // whoever stringifies it next.
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "1000",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "0",
+               });
                const unserializable = [
                   {
                      toJSON() {
@@ -839,8 +861,10 @@ describe("service/model", () => {
                // Ordering: rows are checked before the payload is built, so the
                // caller is told to raise PUBLISHER_MAX_QUERY_ROWS rather than that
                // the response could not be serialized.
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "10",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "0",
+               });
                const { model } = buildModelWithFakeRun({
                   userLimit: 100,
                   totalRows: 11,
@@ -871,8 +895,10 @@ describe("service/model", () => {
                // construction. Asserting the stub never ran is the only thing
                // that catches the check drifting below the wrap: the 413 and its
                // message are identical either way.
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "10000";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "10",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "10000",
+               });
                const { model, wrapStub } = buildModelWithFakeRun({
                   userLimit: 100,
                   totalRows: 11,
@@ -895,8 +921,10 @@ describe("service/model", () => {
                // throws a TypeError, not a RangeError, and escapes as the bare
                // 500 this whole path exists to remove. No other test in the
                // suite fails if the replacer argument is dropped.
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "10000";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "1000",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "10000",
+               });
                const { model } = buildModelWithFakeRun({
                   userLimit: 10,
                   totalRows: 1,
@@ -924,8 +952,10 @@ describe("service/model", () => {
             });
 
             it("does not throw when both counts are within their caps", async () => {
-               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "10000";
+               setEnv({
+                  PUBLISHER_MAX_QUERY_ROWS: "1000",
+                  PUBLISHER_MAX_RESPONSE_BYTES: "10000",
+               });
                const { model } = buildModelWithFakeRun({
                   userLimit: 10,
                   totalRows: 10,
@@ -1251,9 +1281,6 @@ describe("service/model", () => {
    // tier's headline KPI while it is broken — so they need assertions rather than
    // an end-to-end observation.
    describe("runtime storage failure → freshnessFallback=live", () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      const originalDefaultRows = process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
-      const originalMetadata = process.env.PUBLISHER_QUERY_METADATA;
       let metrics: MetricsHarness;
       /** Attribute sets recorded on the query duration histogram. */
       const recordedQueries = () =>
@@ -1268,14 +1295,6 @@ describe("service/model", () => {
          await metrics.shutdown();
          resetInstrumentsForTesting();
          sinon.restore();
-         for (const [name, original] of [
-            ["PERSIST_STORAGE_MODE", originalMode],
-            ["PUBLISHER_DEFAULT_QUERY_ROW_LIMIT", originalDefaultRows],
-            ["PUBLISHER_QUERY_METADATA", originalMetadata],
-         ] as const) {
-            if (original === undefined) delete process.env[name];
-            else process.env[name] = original;
-         }
       });
 
       const binding = (sourceName: string, freshnessFallback?: string) =>
@@ -1508,7 +1527,7 @@ describe("service/model", () => {
             undefined,
             undefined,
          );
-         process.env.PERSIST_STORAGE_MODE = "on";
+         setEnv({ PERSIST_STORAGE_MODE: "on" });
          model.setServeBindings(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (opts.packageBindings ?? opts.shapeBindings) as any,
@@ -1533,7 +1552,7 @@ describe("service/model", () => {
          // `rowLimit` is assigned from the storage prepare, so a prepare-time
          // failure leaves it 0 — which the connector reads as "stop before the
          // first row", returning a successful EMPTY answer instead of the data.
-         process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "250";
+         setEnv({ PUBLISHER_DEFAULT_QUERY_ROW_LIMIT: "250" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "prepare",
@@ -1554,7 +1573,7 @@ describe("service/model", () => {
          // The layers must come from the live connection: on this tier the store
          // is routinely a different connection, with different enforced
          // properties.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1588,7 +1607,7 @@ describe("service/model", () => {
          // Metadata reads the compiled target, which is the source that
          // actually ran. (Two `run:` statements are refused outright now, so a
          // definition is how one text still names two sources.)
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1615,7 +1634,7 @@ describe("service/model", () => {
          // importing file's traffic to the include's team, and reports the
          // resulting publish warning against a file that does not contain the
          // line.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1636,7 +1655,7 @@ describe("service/model", () => {
          // so assembling anyway made the DEFAULT deployment pay an annotation
          // walk and a connection lookup on every query for a bag nobody reads.
          // The connection lookup is the observable half.
-         process.env.PUBLISHER_QUERY_METADATA = "off";
+         setEnv({ PUBLISHER_QUERY_METADATA: "off" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1668,7 +1687,7 @@ describe("service/model", () => {
          // builds and not the interactive traffic that is most of its warehouse
          // bill. A served query arrived carrying the platform's context and none
          // of the author's own vocabulary.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1701,7 +1720,7 @@ describe("service/model", () => {
          // Precedence across the two layers that were never composed together
          // before: a caller's per-request bag is more specific than anything the
          // author declared, but must not evict what it does not mention.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1735,7 +1754,7 @@ describe("service/model", () => {
          // into `modelDef`, the shape where a field rename degrades to a silent
          // no-layer, so an empty-`contents` fixture would pass while proving
          // neither.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1777,7 +1796,7 @@ describe("service/model", () => {
          // says, so passing the raw param would drop the declared layer for the
          // call shape most callers use. Resolves through
          // `queries.find(q => q.name === queryName)?.sourceName`.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1807,7 +1826,7 @@ describe("service/model", () => {
       it("resolves the source layer from ad-hoc query text", async () => {
          // The other branch of the same resolution: surface syntax on the run
          // target, for a request that names nothing at all.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
@@ -1841,7 +1860,7 @@ describe("service/model", () => {
          // which in the warehouse's own history reads exactly like a build of
          // that source — the confusion the declared layer was originally withheld
          // to prevent.
-         process.env.PUBLISHER_QUERY_METADATA = "on";
+         setEnv({ PUBLISHER_QUERY_METADATA: "on" });
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv, settings } from "../settings";
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
@@ -9,7 +10,6 @@ import {
    ALLOW_DUCKDB_SETUP_SQL_ENV,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
-   parseBoolEnv,
 } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -54,7 +54,7 @@ function validatePostgresSslmode(subject: string, sslmode: string): void {
       );
    }
    if (sslmode === "verify-ca") {
-      const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+      const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
       if (!caBundle || !existsSync(caBundle)) {
          throw new Error(
             `${subject} uses sslmode 'verify-ca' but no readable ` +
@@ -379,7 +379,7 @@ function directSslParams(
          return {
             uselibpqcompat: "true",
             sslmode: "verify-ca",
-            sslrootcert: process.env.NODE_EXTRA_CA_CERTS ?? "",
+            sslrootcert: externalEnv("NODE_EXTRA_CA_CERTS") ?? "",
          };
    }
 }
@@ -403,14 +403,15 @@ export function buildPostgresConnectionString(
    }
 
    const params = new URLSearchParams();
+   const pgSslmode = externalEnv("PGSSLMODE");
    if (applySslmode && config.sslmode != null) {
       for (const [key, value] of Object.entries(
          directSslParams(config.sslmode),
       )) {
          params.set(key, value);
       }
-   } else if (process.env.PGSSLMODE) {
-      params.set("sslmode", process.env.PGSSLMODE);
+   } else if (pgSslmode) {
+      params.set("sslmode", pgSslmode);
    } else {
       return undefined;
    }
@@ -545,7 +546,7 @@ function validateProxyShape(
    // Config load can throw, so a misspelled opt-in (`=ture`) is caught here
    // rather than read as "off"; the connect-time check in proxy.ts falls back
    // instead (see allowUnverifiedHostKey).
-   parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
+   settings.get("allow.unverifiedSshHostKey");
    if (!hostKey && !allowUnverifiedHostKey()) {
       logger.warn(
          `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
@@ -827,7 +828,7 @@ function validatePublisherShape(connection: ApiConnection): void {
    // hosted multi-tenant deployment, so it needs an explicit opt-in. Every
    // connection passes validateConnectionShape before it can be assembled,
    // queried, or introspected, so denying here shuts off all three.
-   if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+   if (!settings.get("allow.proxyConnections")) {
       throw new Error(
          `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
             `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +

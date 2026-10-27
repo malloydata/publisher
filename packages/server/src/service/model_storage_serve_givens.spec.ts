@@ -22,6 +22,26 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { ServeBinding } from "./materialization_serve_transform";
 import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
+import { installSettings } from "../test_helpers/settings_env";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 const ROOT = "file:///storage-serve-givens/";
 
@@ -119,12 +139,8 @@ async function sumFor(
 }
 
 describe("storage= serving of a given-scoped source", () => {
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    it("answers each caller from their own rows in one shared artifact", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
 
       // Two callers, one table. Different answers is the whole property: the
@@ -138,7 +154,7 @@ describe("storage= serving of a given-scoped source", () => {
       // rows. If the shape ever stops carrying the term, both callers above
       // still "route" and both return 37 — so the sum of the two answers is
       // asserted to be the whole table rather than either caller seeing it.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       expect(await sumFor(model, { ORG_ID: 1 })).not.toBe(37);
       expect(await sumFor(model, { ORG_ID: 2 })).not.toBe(37);
@@ -147,7 +163,7 @@ describe("storage= serving of a given-scoped source", () => {
    it("falls back to the given's declared default when the caller supplies none", async () => {
       // The shape carries the author's default, so an unbound request gets the
       // answer the live path would give it rather than failing to compile.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       expect(await sumFor(model)).toBe(30);
    });
@@ -155,7 +171,7 @@ describe("storage= serving of a given-scoped source", () => {
    it("serves live, and therefore nothing, when the tier is switched off", async () => {
       // Proves the numbers above came from the stored table: the live relation
       // behind `scoped` has no rows at all, so an unrouted query sums to zero.
-      process.env.PERSIST_STORAGE_MODE = "off";
+      setStorageMode("off");
       const model = await buildModel();
       expect(await sumFor(model, { ORG_ID: 1 })).toBe(0);
    });
@@ -179,7 +195,7 @@ describe("a term the shape cannot reproduce withholds the binding", () => {
    // not have and fails to compile. The required outcome is a LIVE answer, never
    // an unfiltered one.
    it("serves live rather than serving the artifact unfiltered", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
 
       // Baseline: with the term reproducible, the tier answers 30.
@@ -218,7 +234,7 @@ describe("the cached serve shape cannot carry one caller's values to another", (
    // Alternating and repeating is still the right shape: a per-caller answer that
    // degraded to the first one would survive a single A-then-B check.
    it("answers each caller correctly however the requests interleave", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
 
       for (const org of [1, 2, 1, 2, 2, 1]) {

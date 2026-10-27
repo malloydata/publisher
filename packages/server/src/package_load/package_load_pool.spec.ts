@@ -39,45 +39,40 @@ import {
    handleWorkerLog,
 } from "./package_load_pool";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
+import { installSettings, withSettings } from "../test_helpers/settings_env";
 
 // ──────────────────────────────────────────────────────────────────────
 // getPackageLoadWorkerCount — env var parsing
 // ──────────────────────────────────────────────────────────────────────
 
 describe("getPackageLoadWorkerCount", () => {
-   const ORIGINAL = process.env.PACKAGE_LOAD_WORKERS;
-
-   afterEach(() => {
-      if (ORIGINAL === undefined) {
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      } else {
-         process.env.PACKAGE_LOAD_WORKERS = ORIGINAL;
-      }
-   });
+   const workersFrom = (raw: string) =>
+      withSettings({ env: { PACKAGE_LOAD_WORKERS: raw } }, () =>
+         getPackageLoadWorkerCount(),
+      );
+   const refusal = (raw: string) =>
+      `packageLoad.workers from PACKAGE_LOAD_WORKERS: expected an integer of at least 1, got "${raw}"`;
 
    it("defaults to 1 worker when env unset", () => {
-      delete process.env.PACKAGE_LOAD_WORKERS;
-      expect(getPackageLoadWorkerCount()).toBe(1);
+      expect(withSettings({}, () => getPackageLoadWorkerCount())).toBe(1);
    });
 
    it("throws when env value is non-numeric", () => {
-      process.env.PACKAGE_LOAD_WORKERS = "not-a-number";
-      expect(() => getPackageLoadWorkerCount()).toThrow(/positive integer/);
+      expect(() => workersFrom("not-a-number")).toThrow(
+         refusal("not-a-number"),
+      );
    });
 
    it("throws when env value is negative", () => {
-      process.env.PACKAGE_LOAD_WORKERS = "-2";
-      expect(() => getPackageLoadWorkerCount()).toThrow(/positive integer/);
+      expect(() => workersFrom("-2")).toThrow(refusal("-2"));
    });
 
    it("throws when env value is 0 (no in-process fallback)", () => {
-      process.env.PACKAGE_LOAD_WORKERS = "0";
-      expect(() => getPackageLoadWorkerCount()).toThrow(/positive integer/);
+      expect(() => workersFrom("0")).toThrow(refusal("0"));
    });
 
    it("honors positive overrides", () => {
-      process.env.PACKAGE_LOAD_WORKERS = "4";
-      expect(getPackageLoadWorkerCount()).toBe(4);
+      expect(workersFrom("4")).toBe(4);
    });
 });
 
@@ -86,38 +81,31 @@ describe("getPackageLoadWorkerCount", () => {
 // ──────────────────────────────────────────────────────────────────────
 
 describe("getPackageLoadSchemaCacheBytes", () => {
-   const original = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   afterEach(() => {
-      if (original === undefined) {
-         delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-      } else {
-         process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = original;
-      }
-   });
+   const cacheBytesFrom = (raw?: string) =>
+      withSettings(
+         {
+            env:
+               raw === undefined
+                  ? {}
+                  : { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: raw },
+         },
+         () => getPackageLoadSchemaCacheBytes(),
+      );
 
    it("takes the default when unset or empty, as a chart rendering an empty value leaves it", () => {
-      delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-      expect(getPackageLoadSchemaCacheBytes()).toBe(
-         DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
-      );
-      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = " ";
-      expect(getPackageLoadSchemaCacheBytes()).toBe(
-         DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
-      );
+      expect(cacheBytesFrom()).toBe(DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES);
+      expect(cacheBytesFrom(" ")).toBe(DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES);
    });
 
    it("honors 0, which disables the cache, and other byte counts", () => {
-      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
-      expect(getPackageLoadSchemaCacheBytes()).toBe(0);
-      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "1048576";
-      expect(getPackageLoadSchemaCacheBytes()).toBe(1048576);
+      expect(cacheBytesFrom("0")).toBe(0);
+      expect(cacheBytesFrom("1048576")).toBe(1048576);
    });
 
    it("refuses a value that is not a byte count rather than ignoring it", () => {
       for (const raw of ["16MiB", "-1", "1.5", "lots"]) {
-         process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = raw;
-         expect(() => getPackageLoadSchemaCacheBytes()).toThrow(
-            /PACKAGE_LOAD_SCHEMA_CACHE_BYTES/,
+         expect(() => cacheBytesFrom(raw)).toThrow(
+            `packageLoad.schemaCacheBytes from PACKAGE_LOAD_SCHEMA_CACHE_BYTES: expected an integer of at least 0, got "${raw}"`,
          );
       }
    });
@@ -557,8 +545,9 @@ source: orders is duckdb.table('limit_t') extend {
 }
 `,
       );
-      const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
+      const cacheOff = installSettings({
+         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+      });
       let limitFetches = 0;
       const { duckdb, load, tearDown } = await setUp(
          (tables) => {
@@ -579,12 +568,8 @@ source: orders is duckdb.table('limit_t') extend {
          ).toBeDefined();
          expect(outcome.buildPlan?.ok).toBe(true);
       } finally {
-         if (cacheBytes === undefined) {
-            delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-         } else {
-            process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = cacheBytes;
-         }
          await tearDown();
+         cacheOff.restore();
       }
    }, 20000);
 
@@ -602,8 +587,9 @@ source: orders is duckdb.table('shared_t') extend {
       // With the worker's schema cache off, every compile fetches the table:
       // the model's, the companion's, and a second companion's if the plan
       // compiled its own.
-      const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
+      const cacheOff = installSettings({
+         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+      });
       const { duckdb, tableFetches, load, tearDown } = await setUp(() =>
          Promise.resolve(),
       );
@@ -620,12 +606,8 @@ source: orders is duckdb.table('shared_t') extend {
             tableFetches.filter((paths) => paths.includes("shared_t")),
          ).toHaveLength(2);
       } finally {
-         if (cacheBytes === undefined) {
-            delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-         } else {
-            process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = cacheBytes;
-         }
          await tearDown();
+         cacheOff.restore();
       }
    });
 

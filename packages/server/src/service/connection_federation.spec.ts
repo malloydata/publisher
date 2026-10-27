@@ -22,6 +22,7 @@ import {
    buildProxiedPgAttachString,
    pgConninfoPair,
 } from "./connection";
+import { installSettings } from "../test_helpers/settings_env";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */
 function stubbedConnection(): { conn: DuckDBConnection; sql: string[] } {
@@ -480,14 +481,19 @@ describe("attachDuckLakeReadWrite", () => {
    // module-private and reachable only through the connection factory; the gate
    // itself is one `if (!options.readOnly)` that both calls sit inside.
    describe("write bounds reach the attach", () => {
+      let restoreSettings: (() => void) | undefined;
       afterEach(() => {
-         delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
-         delete process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES;
+         restoreSettings?.();
+         restoreSettings = undefined;
       });
 
       it("read-write issues both configured catalog options", async () => {
-         process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "32MB";
-         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "256MB";
+         restoreSettings = installSettings({
+            env: {
+               PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: "32MB",
+               PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: "256MB",
+            },
+         }).restore;
          const { conn, sql } = stubbedConnection();
          await attachDuckLakeReadWrite(conn, "lake", ducklakeConfig);
          expect(

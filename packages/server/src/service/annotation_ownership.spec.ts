@@ -178,21 +178,16 @@ source: local is orders extend { dimension: two is 2 }`,
 });
 
 describe("notebook API response reports its own `##`, not its include's", () => {
-   const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
    let pool: PackageLoadPool;
    let tempDir = "";
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_WORKERS === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_WORKERS;
    });
 
    afterEach(() => {

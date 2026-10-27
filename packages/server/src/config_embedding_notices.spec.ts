@@ -1,38 +1,28 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { embeddingStartupNotices } from "./config";
 import type { RetrievalEmbeddingConfig } from "./retrieval_config";
+import { withSettings } from "./test_helpers/settings_env";
 
-/** The block as the parser returns it: the prefixes are always present. */
-const run = (file?: Partial<RetrievalEmbeddingConfig>) =>
-   embeddingStartupNotices(
-      file && ({ queryPrefix: "", documentPrefix: "", ...file } as never),
+/**
+ * The notices for `file`, the block as the parser returns it (the prefixes
+ * are always present), with `env` as the variables. The block is the settings'
+ * config file too, as at startup: model, baseUrl and dimensions are read
+ * through the settings, which keep what a variable the file overrides held.
+ */
+const run = (
+   file?: Partial<RetrievalEmbeddingConfig>,
+   env: Record<string, string> = {},
+) =>
+   withSettings({ env, file: file && { retrieval: { embedding: file } } }, () =>
+      embeddingStartupNotices(
+         file && ({ queryPrefix: "", documentPrefix: "", ...file } as never),
+      ),
    );
 
-const VARS = [
-   "EMBEDDING_API_KEY",
-   "EMBEDDING_API_BASE",
-   "EMBEDDING_MODEL",
-   "EMBEDDING_DIMENSIONS",
-] as const;
-
 describe("embeddingStartupNotices", () => {
-   const saved: Record<string, string | undefined> = {};
-   beforeEach(() => {
-      for (const v of VARS) {
-         saved[v] = process.env[v];
-         delete process.env[v];
-      }
-   });
-   afterEach(() => {
-      for (const v of VARS) {
-         if (saved[v] === undefined) delete process.env[v];
-         else process.env[v] = saved[v];
-      }
-   });
-
    for (const provider of ["openai", "openai-compatible", "google"] as const) {
       it(`warns when provider ${provider} is set and EMBEDDING_API_KEY is not`, () => {
          const notices = run({ provider, model: "m" });
@@ -47,8 +37,9 @@ describe("embeddingStartupNotices", () => {
    }
 
    it("does not warn when the key is set", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      expect(run({ provider: "openai", model: "m" })).toEqual([]);
+      expect(
+         run({ provider: "openai", model: "m" }, { EMBEDDING_API_KEY: "k" }),
+      ).toEqual([]);
    });
 
    it("does not warn for providers that need no key", () => {
@@ -61,12 +52,13 @@ describe("embeddingStartupNotices", () => {
    });
 
    it("says when the file overrides a different EMBEDDING_MODEL and that a model change re-embeds", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_MODEL = "env-model";
-      const notices = run({
-         provider: "openai",
-         model: "file-model",
-      });
+      const notices = run(
+         {
+            provider: "openai",
+            model: "file-model",
+         },
+         { EMBEDDING_API_KEY: "k", EMBEDDING_MODEL: "env-model" },
+      );
       expect(notices).toHaveLength(1);
       expect(notices[0].level).toBe("info");
       expect(notices[0].message).toContain(
@@ -76,15 +68,19 @@ describe("embeddingStartupNotices", () => {
    });
 
    it("says the same for dimensions, and the host only for a base URL", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_DIMENSIONS = "512";
-      process.env.EMBEDDING_API_BASE = "https://user:pw@env.example.com/v1/x";
-      const notices = run({
-         provider: "openai-compatible",
-         model: "m",
-         dimensions: 1024,
-         baseUrl: "https://file.example.com/v1",
-      });
+      const notices = run(
+         {
+            provider: "openai-compatible",
+            model: "m",
+            dimensions: 1024,
+            baseUrl: "https://file.example.com/v1",
+         },
+         {
+            EMBEDDING_API_KEY: "k",
+            EMBEDDING_DIMENSIONS: "512",
+            EMBEDDING_API_BASE: "https://user:pw@env.example.com/v1/x",
+         },
+      );
       const text = notices.map((n) => n.message).join("\n");
       expect(text).toContain(
          "retrieval.embedding.dimensions 1024 in publisher.config.json overrides EMBEDDING_DIMENSIONS 512",
@@ -98,16 +94,22 @@ describe("embeddingStartupNotices", () => {
    });
 
    it("says nothing when the file and the variable agree, or the variable is unset", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      expect(run({ provider: "openai", model: "m" })).toEqual([]);
-      process.env.EMBEDDING_MODEL = "m";
-      process.env.EMBEDDING_DIMENSIONS = "512";
       expect(
-         run({
-            provider: "openai",
-            model: "m",
-            dimensions: 512,
-         }),
+         run({ provider: "openai", model: "m" }, { EMBEDDING_API_KEY: "k" }),
+      ).toEqual([]);
+      expect(
+         run(
+            {
+               provider: "openai",
+               model: "m",
+               dimensions: 512,
+            },
+            {
+               EMBEDDING_API_KEY: "k",
+               EMBEDDING_MODEL: "m",
+               EMBEDDING_DIMENSIONS: "512",
+            },
+         ),
       ).toEqual([]);
    });
 });

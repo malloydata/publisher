@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { assertServerApis } from "../server_apis";
 import { getServerApiSettings } from "../config";
-import { withEnv, type SettingsInput } from "../test_helpers/settings_env";
+import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { PROBES } from "../test_helpers/settings_probes";
 
 /**
@@ -1659,7 +1659,9 @@ export const CONTRACT: Record<string, Case[]> = {
 /** Read one case: its value, or the message it failed with. */
 function outcome(key: string, input: SettingsInput): Expected {
    try {
-      return { value: withEnv(input, (context) => PROBES[key](context)) };
+      return {
+         value: withSettings(input, (context) => PROBES[key](context)),
+      };
    } catch (error) {
       return { fails: error instanceof Error ? error.message : String(error) };
    }
@@ -1697,9 +1699,7 @@ describe("settings contract", () => {
 describe("settings contract: the server APIs' cross-setting rules", () => {
    const check = (input: SettingsInput): Expected => {
       try {
-         withEnv(input, ({ serverRoot }) =>
-            assertServerApis(getServerApiSettings(serverRoot), process.env),
-         );
+         withSettings(input, () => assertServerApis(getServerApiSettings()));
          return { value: "starts" };
       } catch (error) {
          return {

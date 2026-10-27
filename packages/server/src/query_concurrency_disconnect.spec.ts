@@ -23,16 +23,25 @@ import {
    resetActiveQueryCountForTesting,
 } from "./query_concurrency";
 import { API_PREFIX, buildRouteApp } from "./test_helpers/route_app";
+import { installSettings } from "./test_helpers/settings_env";
 
-/** Restored after each case so a cap set here cannot leak into another file. */
-const ORIGINAL_CAP = process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+/**
+ * Puts back the settings a case installed, so a cap set here cannot leak into
+ * another file.
+ */
+let restoreSettings: (() => void) | undefined;
+
+/** Install the concurrency cap for this case, before its app is built. */
+function installCap(cap: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PUBLISHER_MAX_CONCURRENT_QUERIES: cap },
+   }).restore;
+}
 
 afterEach(() => {
-   if (ORIGINAL_CAP === undefined) {
-      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
-   } else {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = ORIGINAL_CAP;
-   }
+   restoreSettings?.();
+   restoreSettings = undefined;
    resetActiveQueryCountForTesting();
 });
 
@@ -101,7 +110,7 @@ async function abandonQuery(hold: Promise<void>): Promise<Server> {
 
 describe("query concurrency slot after the client disconnects", () => {
    it("is released when the query answers after the client left", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
+      installCap("4");
       const hold = deferred();
       const server = await abandonQuery(hold.promise);
       try {
@@ -117,7 +126,7 @@ describe("query concurrency slot after the client disconnects", () => {
       // cancels the query after the caller has given up, the driver reports
       // it as an error, and the route answers that error to a socket nobody
       // is reading.
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
+      installCap("4");
       const hold = deferred();
       const server = await abandonQuery(hold.promise);
       try {

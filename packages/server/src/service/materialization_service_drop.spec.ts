@@ -18,6 +18,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { installSettings } from "../test_helpers/settings_env";
 
 /**
  * Drop and cleanup: deleteMaterialization (state guards, the storage= table
@@ -185,7 +186,9 @@ describe("deleteMaterialization", () => {
       }
 
       it("re-derives storage bindings from the next-latest materialization (on)", async () => {
-         process.env.PERSIST_STORAGE_MODE = "on";
+         const { restore } = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         });
          try {
             const { storageSpy, colocatedSpy } = setupEnv();
             // The latest REMAINING successful run carries a storage entry.
@@ -206,7 +209,7 @@ describe("deleteMaterialization", () => {
             expect(colocatedSpy.calledOnce).toBe(true);
             expect(colocatedSpy.firstCall.args[1]).toEqual({});
          } finally {
-            delete process.env.PERSIST_STORAGE_MODE;
+            restore();
          }
       });
 
@@ -232,7 +235,9 @@ describe("deleteMaterialization", () => {
       });
 
       it("clears both tiers' bindings when no successful materialization remains (on)", async () => {
-         process.env.PERSIST_STORAGE_MODE = "on";
+         const { restore } = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         });
          try {
             const { storageSpy, colocatedSpy } = setupEnv();
             ctx.repository.listMaterializations.resolves([]); // none remain
@@ -244,7 +249,7 @@ describe("deleteMaterialization", () => {
             expect(colocatedSpy.calledOnce).toBe(true);
             expect(colocatedSpy.firstCall.args[1]).toEqual({});
          } finally {
-            delete process.env.PERSIST_STORAGE_MODE;
+            restore();
          }
       });
 

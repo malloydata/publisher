@@ -29,8 +29,6 @@ import {
    listNotebooks,
 } from "./legacy_report_views";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
-
 const SOURCE =
    `source: base is duckdb.sql("select 1 as id, 'x' as label") extend {\n` +
    `   measure: n is count()\n` +
@@ -47,15 +45,12 @@ describe("notebooks written as tiles (worker path)", () => {
    let pool: PackageLoadPool;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { settings } from "../../settings";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EnvironmentStore } from "../../service/environment_store";
 import { embeddingConfigured } from "../../service/embedding_provider";
@@ -508,13 +509,12 @@ function wantsTrace(extra: RequestExtra | undefined): boolean {
 
 /**
  * `PUBLISHER_MCP_TRACE=retrieval` writes the trace summary to the server log,
- * one line per ranked call, and adds nothing to any response. Read on each
- * call so a test can change it.
+ * one line per ranked call, and adds nothing to any response.
  */
 export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
 
 function traceToLog(): boolean {
-   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+   return settings.get("mcp.trace") === "retrieval";
 }
 
 export function registerGetContextTool(

@@ -28,22 +28,17 @@ import {
 import { Package } from "./package";
 import type { EnvironmentStore } from "./environment_store";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
-
 describe("package agents", () => {
    let dir: string;
    let duckdb: { close: () => Promise<void> };
    let malloyConfig: import("@malloydata/malloy").MalloyConfig;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(async () => {

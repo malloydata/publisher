@@ -5,6 +5,7 @@ import {
    s3ConnectionToCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
+import { installSettings } from "../test_helpers/settings_env";
 
 // The SDK's default chain reads the environment first, so seeding it keeps these
 // tests off the network — no IMDS probe, no shared credentials file.
@@ -21,11 +22,21 @@ const seedEnv = () => {
    }
 };
 
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
 afterEach(() => {
    for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
    }
+   restoreSettings?.();
+   restoreSettings = undefined;
 });
 
 describe("createCloudStorageClient", () => {
@@ -105,16 +116,10 @@ describe("DEFAULT_S3_CREDENTIAL_CHAIN", () => {
 });
 
 describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
-   const ORIGINAL = process.env.S3_CREDENTIAL_CHAIN_POLICY;
-   afterEach(() => {
-      if (ORIGINAL === undefined) delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
-      else process.env.S3_CREDENTIAL_CHAIN_POLICY = ORIGINAL;
-   });
-
    const chainConn = () => ({ provider: "credential_chain" }) as never;
 
    it("permits chain auth anywhere when unset, so no deployment changes", () => {
-      delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
+      installEnv({});
       expect(() => validateS3ProviderShape(chainConn(), "c")).not.toThrow();
       expect(() =>
          validateS3ProviderShape(chainConn(), "c", "storage-destination"),
@@ -125,7 +130,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       // The whole point of the setting: a storage destination is the OPERATOR's
       // configuration, while a connection may be authored by whoever can reach the
       // connection endpoints — and Publisher's take an arbitrary body.
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted.*destinations-only/s,
       );
@@ -135,7 +140,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
    });
 
    it("under off, refuses both", () => {
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "off";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "off" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted/,
       );
@@ -148,7 +153,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       // A caller that does not say which path it is on is treated as the
       // author-supplied one. Failing closed is the only safe default for a
       // parameter whose whole job is to decide whether to lend the host identity.
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted/,
       );
@@ -157,15 +162,15 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
    it("leaves a key-pair connection alone under every policy", () => {
       const keyed = { accessKeyId: "AKIA", secretAccessKey: "s" } as never;
       for (const p of ["any", "destinations-only", "off"]) {
-         process.env.S3_CREDENTIAL_CHAIN_POLICY = p;
+         installEnv({ S3_CREDENTIAL_CHAIN_POLICY: p });
          expect(() => validateS3ProviderShape(keyed, "c")).not.toThrow();
       }
    });
 
    it("refuses an unrecognized policy value rather than choosing the permissive one", () => {
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations_only";
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations_only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
-         /Invalid value for S3_CREDENTIAL_CHAIN_POLICY/,
+         'allow.s3CredentialChain from S3_CREDENTIAL_CHAIN_POLICY: expected one of "any", "destinations-only" or "off", got "destinations_only"',
       );
    });
 });

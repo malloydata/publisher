@@ -13,16 +13,6 @@ import type { EnvironmentStore } from "../service/environment_store";
 export const MCP_ENDPOINT = "/mcp";
 
 /**
- * The MCP endpoint is unauthenticated and exposes every tool, so it binds
- * loopback by default while the REST port keeps its own default. MCP_HOST wins,
- * then an explicit PUBLISHER_HOST (so `--host` moves both listeners together),
- * then loopback. Widening it belongs behind an authenticating gateway.
- */
-export function resolveMcpHost(env: NodeJS.ProcessEnv): string {
-   return env.MCP_HOST || env.PUBLISHER_HOST || "127.0.0.1";
-}
-
-/**
  * The MCP listener's app: health probes and one stateless streamable-HTTP
  * endpoint. Each POST gets its own transport and server, which is how the SDK
  * runs without sessions.

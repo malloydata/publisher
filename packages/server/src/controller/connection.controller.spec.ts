@@ -31,6 +31,36 @@ import {
    ConnectionController,
    lookupFailureDriverMessage,
 } from "./connection.controller";
+import { installSettings } from "../test_helpers/settings_env";
+
+/**
+ * The variables the current test has set; the settings are re-installed from
+ * them on each change.
+ */
+let testEnv: Record<string, string> = {};
+/** Puts back the settings from before the current test's first `setEnv`. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Set (or, given `undefined`, unset) variables for the rest of this test, the
+ * way assigning `process.env` once did: the settings are re-installed from
+ * every variable this test has set so far, and everything else is at its
+ * default.
+ */
+function setEnv(vars: Record<string, string | undefined>): void {
+   for (const [name, value] of Object.entries(vars)) {
+      if (value === undefined) delete testEnv[name];
+      else testEnv[name] = value;
+   }
+   restoreSettings?.();
+   restoreSettings = installSettings({ env: testEnv }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+   testEnv = {};
+});
 
 /**
  * Tests for the row-cap path inside
@@ -128,19 +158,12 @@ describe("ConnectionController connection queryMetadata", () => {
 });
 
 describe("ConnectionController.getConnectionQueryData row cap", () => {
-   const originalEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
-
    afterEach(() => {
       sinon.restore();
-      if (originalEnv === undefined) {
-         delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-      } else {
-         process.env.PUBLISHER_MAX_QUERY_ROWS = originalEnv;
-      }
    });
 
    it("passes the SQL through verbatim and asks the connector for cap+1 rows", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "5";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "5" });
       const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
       const { controller } = buildController(runSQL);
 
@@ -163,7 +186,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("returns the result when row count equals the cap exactly", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "3";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -180,7 +203,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("throws PayloadTooLargeError when the connection returns cap+1 rows", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "3";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -204,7 +227,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("forwards non-SELECT statements verbatim with rowLimit applied", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
       const rows = [{ table_name: "a" }, { table_name: "b" }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -217,7 +240,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("disables rowLimit when PUBLISHER_MAX_QUERY_ROWS=0", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
       const rows = Array.from({ length: 100 }, (_, i) => ({ a: i }));
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -237,7 +260,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("uses the default cap when PUBLISHER_MAX_QUERY_ROWS is unset", async () => {
-      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: undefined });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -249,7 +272,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("preserves a caller-supplied rowLimit when it is below the cap", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -265,7 +288,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("clamps a caller-supplied rowLimit that exceeds the cap+1 sentinel and replaces any caller-supplied abortSignal with the publisher's timeout signal", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -476,21 +499,8 @@ describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
 });
 
 describe("ConnectionController.getConnectionQueryData streaming", () => {
-   const originalRowsEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
-   const originalBytesEnv = process.env.PUBLISHER_MAX_RESPONSE_BYTES;
-
    afterEach(() => {
       sinon.restore();
-      if (originalRowsEnv === undefined) {
-         delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-      } else {
-         process.env.PUBLISHER_MAX_QUERY_ROWS = originalRowsEnv;
-      }
-      if (originalBytesEnv === undefined) {
-         delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
-      } else {
-         process.env.PUBLISHER_MAX_RESPONSE_BYTES = originalBytesEnv;
-      }
    });
 
    /**
@@ -548,7 +558,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    }
 
    it("routes through runSQLStream and asks the driver for cap+1 rows", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "5";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "5" });
       const rows = [{ a: 1 }, { a: 2 }];
       const { controller, seenSql, seenOptions } = buildStreamingController({
          rows,
@@ -568,7 +578,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("preserves a caller-supplied rowLimit when it is below the cap+1 ceiling", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
       const { controller, seenOptions } = buildStreamingController({
          rows: [{ a: 1 }],
       });
@@ -584,7 +594,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("throws PayloadTooLargeError when the stream yields more than the row cap", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "2";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "2" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
       const { controller } = buildStreamingController({
          rows,
@@ -610,8 +620,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("throws PayloadTooLargeError when the stream exceeds the byte cap", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "60";
+      setEnv({
+         PUBLISHER_MAX_QUERY_ROWS: "1000",
+         PUBLISHER_MAX_RESPONSE_BYTES: "60",
+      });
       const big = "x".repeat(40);
       const rows = [{ s: big }, { s: big }, { s: big }];
       const { controller } = buildStreamingController({
@@ -638,8 +650,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("disables byte cap when PUBLISHER_MAX_RESPONSE_BYTES=0", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+      setEnv({
+         PUBLISHER_MAX_QUERY_ROWS: "1000",
+         PUBLISHER_MAX_RESPONSE_BYTES: "0",
+      });
       const big = "x".repeat(10_000);
       const rows: QueryRecord[] = Array.from({ length: 3 }, () => ({ s: big }));
       const { controller } = buildStreamingController({
@@ -659,7 +673,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("omits rowLimit when PUBLISHER_MAX_QUERY_ROWS=0 and no caller limit is given", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
       const { controller, seenOptions } = buildStreamingController({
          rows,
@@ -679,7 +693,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("replaces caller-supplied abortSignal with a real AbortSignal", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
       const { controller, seenOptions } = buildStreamingController({
          rows: [{ a: 1 }],
       });
@@ -748,19 +762,12 @@ describe("ConnectionController.getConnectionQueryData admission gate", () => {
 });
 
 describe("ConnectionController.getConnectionQueryData query timeout", () => {
-   const originalTimeout = process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-
    afterEach(() => {
       sinon.restore();
-      if (originalTimeout === undefined) {
-         delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-      } else {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = originalTimeout;
-      }
    });
 
    it("surfaces QueryTimeoutError when the driver outlasts PUBLISHER_QUERY_TIMEOUT_MS, with the publisher's AbortSignal delivered to runSQL", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      setEnv({ PUBLISHER_QUERY_TIMEOUT_MS: "20" });
       // The driver "hangs" until the publisher's abort signal
       // fires; on abort it rejects with a driver-shaped error. The
       // controller's runWithQueryTimeout wrapper converts that into
@@ -833,15 +840,8 @@ function buildTemporaryTableController(
  * / `server-old.ts` and exercised by `tests/component/oom_guards.component.spec.ts`.
  */
 describe("ConnectionController.getConnectionTemporaryTable guards", () => {
-   const originalTimeout = process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-
    afterEach(() => {
       sinon.restore();
-      if (originalTimeout === undefined) {
-         delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-      } else {
-         process.env.PUBLISHER_QUERY_TIMEOUT_MS = originalTimeout;
-      }
    });
 
    it("rejects non-string sqlStatement at the boundary (CodeQL type guard)", async () => {
@@ -904,7 +904,7 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
    });
 
    it("surfaces QueryTimeoutError when manifestTemporaryTable outlasts PUBLISHER_QUERY_TIMEOUT_MS", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      setEnv({ PUBLISHER_QUERY_TIMEOUT_MS: "20" });
       // `manifestTemporaryTable` does not accept an abortSignal, so
       // the timeout is a pure wall-clock guard — the DDL keeps
       // running inside the DB but the HTTP response unblocks as

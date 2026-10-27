@@ -23,7 +23,6 @@ import { registerExecuteQueryTool } from "./execute_query_tool";
 
 const REPORT = "models/flights_editable.malloy";
 const ORDERS_REPORT = "models/orders_report.malloy";
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -36,7 +35,6 @@ describe("execute_query on a grid report's own source", () => {
    let duckdb: { close: () => Promise<void> };
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-rs-"));
       fs.writeFileSync(
@@ -141,8 +139,6 @@ query: inline_t is orders extend { where: org_id = 2 or true } -> { group_by: or
    afterAll(async () => {
       await duckdb.close();
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
