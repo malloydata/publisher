@@ -80,6 +80,10 @@ export interface Setting<K extends string = string, T = unknown> {
    readonly type: SettingType<NonNullable<T>>;
    readonly default: DefaultValue<T> | undefined;
    readonly description: string;
+   /** The reference's longer text (markdown), where one line does not say enough. */
+   readonly notes?: string;
+   /** How the reference shows the default, where its value alone does not say. */
+   readonly defaultText?: string;
    readonly kind: SettingKind;
    /** No flag; never logged, reported, or echoed in an error. */
    readonly secret: boolean;
@@ -92,6 +96,8 @@ interface Entry<K extends string, T> {
    key: K;
    type: SettingType<T>;
    description: string;
+   notes?: string;
+   defaultText?: string;
    kind?: SettingKind;
    secret?: boolean;
    aliases?: Aliases;
@@ -112,6 +118,10 @@ export function setting<K extends string, T>(
       type: entry.type as SettingType<NonNullable<T>>,
       default: entry.default,
       description: entry.description,
+      ...(entry.notes !== undefined ? { notes: entry.notes } : {}),
+      ...(entry.defaultText !== undefined
+         ? { defaultText: entry.defaultText }
+         : {}),
       kind: entry.kind ?? "server",
       secret: entry.secret ?? false,
       aliases: entry.aliases ?? {},

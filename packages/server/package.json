@@ -56,6 +56,7 @@
       "lint": "bunx eslint \"./src/**/*.ts\"",
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bunx vite build",
+      "generate-settings-reference": "bun scripts/generate-settings-reference.ts",
       "generate-api-types": "bunx openapi-typescript ../../api-doc.yaml --output src/api.ts && node ../../scripts/add-license-headers.mjs src/api.ts"
    },
    "dependencies": {
