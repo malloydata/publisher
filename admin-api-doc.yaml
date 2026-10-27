@@ -648,6 +648,9 @@ components:
       description: |
         A table of a catalog in the same catalog database: the target catalog
         itself, or another one the configured role can act as the owner of.
+        Added for one migration, moving an orchestrator's tables out of its
+        legacy per-organization catalogs into per-database ones without
+        rebuilding them; it can be removed once those legacy catalogs are dropped.
       properties:
         catalog:
           $ref: "#/components/schemas/Identifier"

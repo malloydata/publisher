@@ -905,7 +905,13 @@ async function rows(
 
 const q = (name: string) => quoteIdentifier(name, "duckdb");
 
-/** A table write's source, validated: an object to read, or a catalog's table. */
+/**
+ * A table write's source, validated: an object to read, or a catalog's table.
+ * The `table` kind exists for one migration, moving an orchestrator's tables out
+ * of its legacy per-organization catalogs into per-database ones without
+ * rebuilding them, and can be removed (with copyStorageTable) once those legacy
+ * catalogs are dropped.
+ */
 type TableSource =
    | { kind: "object"; uri: string; format: LoadFormat; options: LoadOptions }
    | { kind: "table"; catalog: string; schema: string; table: string };

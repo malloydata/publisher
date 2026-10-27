@@ -204,6 +204,9 @@ export async function loadStorageTable(params: {
  *   session with the build session's teardown.
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
+ *
+ * Exists for one migration (legacy per-organization catalogs into per-database
+ * ones); remove it with the `table` source once those catalogs are dropped.
  */
 export async function copyStorageTable(params: {
    destinationName: string;
