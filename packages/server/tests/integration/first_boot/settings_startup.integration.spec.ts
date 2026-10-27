@@ -13,9 +13,9 @@ import {
 
 /**
  * The settings rows only a running server can show: that the flags
- * `server.ts` parses reach the listeners, ahead of their variables, and what
- * the parser does with a flag it does not know. The per-setting cases are in
- * src/settings/contract.spec.ts.
+ * `server.ts` parses reach the listeners, ahead of their variables, what it
+ * says about a flag it does not know, and that a bad value stops it before it
+ * binds. The per-setting cases are in src/settings/contract.spec.ts.
  */
 
 setDefaultTimeout(150_000);
@@ -61,7 +61,7 @@ describe("settings at startup", () => {
       expect(status.ok).toBe(true);
    });
 
-   it("ignores a flag it does not know and a flag missing its value", async () => {
+   it("warns about a flag it does not know and a flag missing its value, and starts", async () => {
       server = await spawnServer({
          // The design's derived name, not read before step 2, then a known
          // flag with nothing after it.
@@ -71,5 +71,28 @@ describe("settings at startup", () => {
       const line = await waitForReady();
       expect(line).toContain(`mcp=http://127.0.0.1:${server.mcpPort} `);
       await server.waitUntilServing();
+      expect(server.output()).toContain(
+         "--mcp-port is not read before a later release, so it is ignored; until then use --mcp_port.",
+      );
+      expect(server.output()).toContain(
+         "--admin_port has no value after it, so it is ignored.",
+      );
+   });
+
+   it("fails startup on bad values, naming every one, before anything binds", async () => {
+      server = await spawnServer({
+         env: { MCP_PORT: "40a0", PUBLISHER_MAX_QUERY_ROWS: "-1" },
+      });
+
+      expect(await server.waitForExit()).not.toBe(0);
+      const stderr = server.stderr();
+      expect(stderr).toContain(
+         'mcp.port from MCP_PORT: expected an integer from 0 to 65535, got "40a0"',
+      );
+      expect(stderr).toContain(
+         'query.maxRows from PUBLISHER_MAX_QUERY_ROWS: expected an integer of at least 0, got "-1"',
+      );
+      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
+      expect(stderr).not.toContain("PUBLISHER_READY");
    });
 });

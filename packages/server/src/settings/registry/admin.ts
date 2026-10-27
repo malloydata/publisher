@@ -13,7 +13,6 @@ export const admin = [
       aliases: {
          env: ["PUBLISHER_ADMIN_PORT"],
          flags: ["--admin_port"],
-         today: { reads: "Number" },
       },
    }),
    setting({

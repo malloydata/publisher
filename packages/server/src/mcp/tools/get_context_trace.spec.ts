@@ -19,6 +19,7 @@ import { registerGetContextTool } from "./get_context_tool";
 import { _setEmbeddingProviderForTests } from "../../service/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { ChatModel } from "../../providers/types";
+import { settings } from "../../settings";
 import { installSettings, withSettings } from "../../test_helpers/settings_env";
 
 function ctxWithTrace(): PipelineContext {
@@ -313,15 +314,22 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
       expect(JSON.stringify(traced)).toBe(JSON.stringify(plain));
    });
 
-   it("is off when the variable is unset or has another value", async () => {
+   it("is off when the variable is unset", async () => {
       const info = spyOn(logger, "info");
       try {
          await run();
-         await tracing("all", () => run());
          expect(traceLines(info)).toHaveLength(0);
       } finally {
          info.mockRestore();
       }
+   });
+
+   it("refuses another value, which used to read as off", () => {
+      withSettings({ env: { PUBLISHER_MCP_TRACE: "all" } }, () => {
+         expect(() => settings.get("mcp.trace")).toThrow(
+            'mcp.trace from PUBLISHER_MCP_TRACE: expected "retrieval", got "all"',
+         );
+      });
    });
 
    it("with the header too: the log line and the response block", async () => {

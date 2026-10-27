@@ -318,9 +318,34 @@ describe("defaults that depend on another setting", () => {
 describe("flags", () => {
    it("takes the next argument as a value, even one that looks like a flag", () => {
       withSettings({ argv: ["--port", "--host", "x"] }, () => {
-         expect(settings.get("port")).toBeNaN();
+         expect(() => settings.get("port")).toThrow(
+            'port from --port: expected an integer from 0 to 65535, got "--host"',
+         );
          expect(settings.isSet("host")).toBe(false);
       });
+   });
+
+   it("warns about a flag it does not know, naming the nearest, or today's name for a later one", () => {
+      const warnings = Settings.load({
+         argv: ["--mcp-port", "5000", "--server-root", "/x", "--help"],
+         env: {},
+         cwd: "/nonexistent",
+      }).warnings.map((warning) => warning.message);
+      expect(warnings).toEqual([
+         "--mcp-port is not read before a later release, so it is ignored; until then use --mcp_port.",
+         "Unknown flag --server-root, so it is ignored. Did you mean --server_root?",
+      ]);
+   });
+
+   it("warns about a flag given without its value", () => {
+      const warnings = Settings.load({
+         argv: ["--admin_port"],
+         env: {},
+         cwd: "/nonexistent",
+      }).warnings.map((warning) => warning.message);
+      expect(warnings).toEqual([
+         "--admin_port has no value after it, so it is ignored.",
+      ]);
    });
 
    it("lets the last of a repeated flag win, except --watch-env, which adds", () => {
@@ -380,5 +405,96 @@ describe("worker threads", () => {
          expect(worker.get(key)).toEqual(expected as never);
          expect(worker.source(key)).toEqual(parent.source(key));
       }
+   });
+});
+
+describe("step 1's rules", () => {
+   const warningsFor = (input: Parameters<typeof withSettings>[0]) =>
+      withSettings(input, () =>
+         Settings.current().warnings.map((warning) => warning.message),
+      );
+
+   it("keeps a boolean's meaning where readers disagree, and says how to write it", () => {
+      expect(warningsFor({ env: { INITIALIZE_STORAGE: "1" } })).toEqual([
+         'initializeStorage: INITIALIZE_STORAGE=1 is read as off, as it always has been, though other boolean settings read "1" as on. Write true or false: a later release refuses "1" here.',
+      ]);
+      withSettings({ env: { INITIALIZE_STORAGE: "1" } }, () => {
+         expect(settings.get("initializeStorage")).toBe(false);
+      });
+   });
+
+   it("reads a negated variable's disagreement in the variable's own words", () => {
+      withSettings({ env: { DISABLE_RESPONSE_LOGGING: "yes" } }, () => {
+         expect(settings.get("logging.responseBodiesEnabled")).toBe(true);
+         expect(Settings.current().warnings[0].message).toContain(
+            "DISABLE_RESPONSE_LOGGING=yes is read as off",
+         );
+      });
+   });
+
+   it("fails a value no boolean reader accepts", () => {
+      withSettings(
+         { env: { PUBLISHER_ALLOW_PROXY_CONNECTIONS: "enabled" } },
+         () => {
+            expect(() => settings.get("allow.proxyConnections")).toThrow(
+               'allow.proxyConnections from PUBLISHER_ALLOW_PROXY_CONNECTIONS: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
+            );
+         },
+      );
+   });
+
+   it("lists every bad value of one startup", () => {
+      const errors = withSettings(
+         { env: { MCP_PORT: "40a0", PUBLISHER_MAX_QUERY_ROWS: "-1" } },
+         () =>
+            Settings.current()
+               .errors()
+               .map((error) => error.message),
+      );
+      expect(errors).toEqual([
+         'mcp.port from MCP_PORT: expected an integer from 0 to 65535, got "40a0"',
+         'query.maxRows from PUBLISHER_MAX_QUERY_ROWS: expected an integer of at least 0, got "-1"',
+      ]);
+   });
+
+   it("warns about a file key no setting reads, with the nearest one", () => {
+      const messages = withSettings(
+         {
+            file: {
+               adminApiEnable: false,
+               query: { maxRows: 5 },
+               mcp: { includeHiddenFiles: true },
+               environments: [],
+               retrieval: {},
+            },
+         },
+         ({ serverRoot }) =>
+            Settings.current().warnings.map((warning) =>
+               warning.message.replace(
+                  path.join(serverRoot, "publisher.config.json"),
+                  "<file>",
+               ),
+            ),
+      );
+      expect(messages).toEqual([
+         '<file> has "adminApiEnable", which no setting reads, so it is ignored. Did you mean "adminApiEnabled"?',
+         '"query" in <file> holds settings that are not read from the file before a later release, so it is ignored; set them by their variables or flags.',
+         '<file> has "mcp.includeHiddenFiles", which no setting reads, so it is ignored. Did you mean "mcp.includeHiddenFilesAndSources"?',
+      ]);
+   });
+
+   it("says a later step reads a registered key from the file, and what to set until then", () => {
+      const [message] = warningsFor({ file: { port: 4100 } });
+      expect(message).toEndWith(
+         "is not read from the file before a later release, so it is ignored; until then use --port.",
+      );
+   });
+
+   it("leaves a structured setting's own keys to its parser", () => {
+      expect(
+         warningsFor({
+            file: { theme: { anything: 1 }, retrieval: { indexing: {} } },
+         }),
+      ).toEqual([]);
    });
 });

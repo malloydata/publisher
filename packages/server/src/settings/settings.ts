@@ -12,7 +12,7 @@ import {
    type SettingKey,
    type SettingValue,
 } from "./registry";
-import type { Resolving, Setting } from "./setting";
+import { derivedFlagName, type Resolving, type Setting } from "./setting";
 import { BooleanType, Mismatch } from "./types";
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -218,6 +218,8 @@ class Loader {
    private readonly slots = new Map<string, Slot>();
    private readonly resolving = new Set<string>();
    private readonly warnings: SettingWarning[] = [];
+   private readonly unknownFlags: string[] = [];
+   private readonly flagsWithoutValue: string[] = [];
    private file: Record<string, unknown> = {};
    private configPath: string | undefined;
    private fileError: Error | undefined;
@@ -248,6 +250,8 @@ class Loader {
          this.valueOf("config") as string | undefined,
       );
       for (const entry of this.registry) this.resolve(entry);
+      this.warnAboutFlags();
+      this.warnAboutFileKeys();
       return {
          slots: this.slots,
          configPath: this.configPath,
@@ -264,14 +268,20 @@ class Loader {
 
    /**
     * Today's parser: an exact flag name, a boolean's flag alone, any other
-    * flag with the next argument as its value when there is one. An argument
-    * it does not know, and a flag with nothing after it, are skipped.
+    * flag with the next argument as its value when there is one. A flag it
+    * does not know, and a flag with nothing after it, are skipped and warned
+    * about.
     */
    private readFlags(): void {
       for (let i = 0; i < this.argv.length; i++) {
          const name = this.argv[i];
          const entry = this.byFlag.get(name);
-         if (!entry) continue;
+         if (!entry) {
+            if (name.startsWith("-") && name !== "--help" && name !== "-h") {
+               this.unknownFlags.push(name);
+            }
+            continue;
+         }
          const hits = this.flags.get(entry.key) ?? [];
          if (entry.type instanceof BooleanType) {
             hits.push({ name, raw: !name.startsWith("--no-") });
@@ -279,10 +289,83 @@ class Loader {
             hits.push({ name, raw: this.argv[i + 1] });
             i++;
          } else {
+            this.flagsWithoutValue.push(name);
             continue;
          }
          this.flags.set(entry.key, hits);
       }
+   }
+
+   private warnAboutFlags(): void {
+      const known = [...this.byFlag.keys()];
+      for (const name of this.unknownFlags) {
+         const later = this.registry.find(
+            (entry) => derivedFlagName(entry.key) === name,
+         );
+         const suggestion = nearest(name, known);
+         this.warnings.push({
+            message: later
+               ? `${name} is not read before a later release, so it is ignored; ${todayNames(later)}.`
+               : `Unknown flag ${name}, so it is ignored.${suggestion ? ` Did you mean ${suggestion}?` : ""}`,
+         });
+      }
+      for (const name of this.flagsWithoutValue) {
+         this.warnings.push({
+            message: `${name} has no value after it, so it is ignored.`,
+         });
+      }
+   }
+
+   /**
+    * A key the file holds that no setting reads: a typo (`adminApiEnable`), or
+    * a setting read from the file only from a later step. Checked at the top
+    * level and in each section that holds settings; a structured setting's
+    * own keys are its parser's to check.
+    */
+   private warnAboutFileKeys(): void {
+      const read = this.registry.flatMap((entry) => entry.aliases.file ?? []);
+      const whole = new Set(
+         this.registry
+            .filter((entry) => entry.kind === "structured")
+            .flatMap((entry) => entry.aliases.file ?? []),
+      );
+      const file = this.configPath ?? PUBLISHER_CONFIG_NAME;
+      const visit = (node: Record<string, unknown>, prefix: string) => {
+         for (const [name, value] of Object.entries(node)) {
+            const key = prefix ? `${prefix}.${name}` : name;
+            if (whole.has(key) || read.includes(key)) continue;
+            if (read.some((path) => path.startsWith(`${key}.`))) {
+               if (
+                  value &&
+                  typeof value === "object" &&
+                  !Array.isArray(value)
+               ) {
+                  visit(value as Record<string, unknown>, key);
+               }
+               continue;
+            }
+            const later = this.registry.find(
+               (entry) => entry.key === key || entry.key.startsWith(`${key}.`),
+            );
+            if (later) {
+               this.warnings.push({
+                  message:
+                     later.key === key
+                        ? `"${key}" in ${file} is not read from the file before a later release, so it is ignored; ${todayNames(later)}.`
+                        : `"${key}" in ${file} holds settings that are not read from the file before a later release, so it is ignored; set them by their variables or flags.`,
+               });
+               continue;
+            }
+            const siblings = read
+               .filter((path) => parentOf(path) === prefix)
+               .map((path) => path.slice(prefix ? prefix.length + 1 : 0));
+            const suggestion = nearest(name, siblings);
+            this.warnings.push({
+               message: `${file} has "${key}", which no setting reads, so it is ignored.${suggestion ? ` Did you mean "${prefix ? `${prefix}.` : ""}${suggestion}"?` : ""}`,
+            });
+         }
+      };
+      visit(this.file, "");
    }
 
    private readFile(root: string, config: string | undefined): void {
@@ -359,6 +442,9 @@ class Loader {
          };
       }
       const source = sourceOf(first);
+      if (this.readsBooleanAsToday(entry, first)) {
+         return this.readBoolean(entry, first, rest);
+      }
       try {
          return {
             value: this.parse(entry, first),
@@ -376,14 +462,12 @@ class Loader {
             first.raw,
             entry.secret,
          );
-         if (today.invalid || today.reads === "parseInt-or-default") {
+         if (today.invalid === "warn") {
             const fallback = this.defaultOf(entry);
-            if (today.invalid === "warn") {
-               this.warnings.push({
-                  key: entry.key,
-                  message: `${mismatch.message}; using its default, ${JSON.stringify(fallback)}.`,
-               });
-            }
+            this.warnings.push({
+               key: entry.key,
+               message: `${mismatch.message}; using its default, ${JSON.stringify(fallback)}.`,
+            });
             return {
                value: fallback,
                source: { kind: "default" },
@@ -392,6 +476,104 @@ class Loader {
          }
          return { error: mismatch, source };
       }
+   }
+
+   /** Whether this source's value is a boolean that today reads its own way. */
+   private readsBooleanAsToday(
+      entry: RegisteredSetting,
+      candidate: Candidate,
+   ): boolean {
+      const today = entry.aliases.today ?? {};
+      if (!(entry.type instanceof BooleanType)) return false;
+      return candidate.kind === "file"
+         ? today.file !== undefined
+         : typeof candidate.raw === "string" && today.reads !== undefined;
+   }
+
+   /**
+    * Step 1's rule for a boolean today reads its own way: a value the common
+    * reader does not accept fails; one today's reader refuses is still
+    * refused; and where the two read it differently, today's meaning stays,
+    * with a warning that a later release refuses the value.
+    */
+   private readBoolean(
+      entry: RegisteredSetting,
+      first: Candidate,
+      rest: Candidate[],
+   ): Slot {
+      const source = sourceOf(first);
+      const refusal = (expected: string): Slot => ({
+         error: new SettingError(
+            entry.key,
+            source,
+            expected,
+            first.raw,
+            entry.secret,
+         ),
+         source,
+      });
+      let common: boolean;
+      let today: boolean;
+      try {
+         common = this.commonBoolean(entry, first);
+      } catch (error) {
+         if (!(error instanceof Mismatch))
+            return { error: error as Error, source };
+         return refusal(entry.type.expected);
+      }
+      try {
+         today = this.parseRaw(entry, first) as boolean;
+      } catch (error) {
+         if (!(error instanceof Mismatch))
+            return { error: error as Error, source };
+         if (entry.aliases.today?.invalid !== "warn") {
+            return refusal(this.expected(entry));
+         }
+         today = this.unnegated(entry, first, this.defaultOf(entry) as boolean);
+      }
+      if (today !== common) {
+         this.warnings.push({
+            key: entry.key,
+            message: disagreement(entry.key, first, today, common),
+         });
+      }
+      return {
+         value: this.negate(entry, first, today),
+         source,
+         shadowed: this.parsedQuietly(entry, rest),
+      };
+   }
+
+   /** The value as every boolean setting without a reading of its own reads it. */
+   private commonBoolean(
+      entry: RegisteredSetting,
+      candidate: Candidate,
+   ): boolean {
+      const type = entry.type as BooleanType;
+      return candidate.kind === "file"
+         ? type.fromJson(
+              typeof candidate.raw === "string"
+                 ? this.substitute(entry, candidate.raw)
+                 : candidate.raw,
+           )
+         : type.fromString(candidate.raw as string);
+   }
+
+   /** A negated variable (`PUBLISHER_NO_MCP_CONFIG`) says the opposite of its setting. */
+   private negate(
+      entry: RegisteredSetting,
+      candidate: Candidate,
+      value: unknown,
+   ): unknown {
+      return entry.aliases.negated && candidate.kind === "env" ? !value : value;
+   }
+
+   private unnegated(
+      entry: RegisteredSetting,
+      candidate: Candidate,
+      value: boolean,
+   ): boolean {
+      return this.negate(entry, candidate, value) as boolean;
    }
 
    /** A section of the file that should hold settings but is not an object. */
@@ -413,8 +595,8 @@ class Loader {
       const env: Candidate[] = [];
       for (const name of entry.aliases.env ?? []) {
          const raw = this.env[name];
-         if (raw === undefined) continue;
-         if (raw.trim() === "" && !today.blankFails) continue;
+         // Blank is unset, so `-e NAME=` undoes a value an image sets.
+         if (raw === undefined || raw.trim() === "") continue;
          env.push({ kind: "env", name, raw });
          break;
       }
@@ -440,13 +622,16 @@ class Loader {
 
    /** Read one source's value as today's reader reads it. Throws {@link Mismatch}. */
    private parse(entry: RegisteredSetting, candidate: Candidate): unknown {
-      const value =
-         candidate.kind === "file"
-            ? this.parseFileValue(entry, candidate.raw)
-            : typeof candidate.raw === "boolean"
-              ? candidate.raw
-              : this.parseString(entry, candidate.raw);
-      return entry.aliases.negated && candidate.kind === "env" ? !value : value;
+      return this.negate(entry, candidate, this.parseRaw(entry, candidate));
+   }
+
+   /** As {@link parse}, before a negated variable is turned around. */
+   private parseRaw(entry: RegisteredSetting, candidate: Candidate): unknown {
+      return candidate.kind === "file"
+         ? this.parseFileValue(entry, candidate.raw)
+         : typeof candidate.raw === "boolean"
+           ? candidate.raw
+           : this.parseString(entry, candidate.raw);
    }
 
    private parseString(entry: RegisteredSetting, raw: string): unknown {
@@ -462,15 +647,7 @@ class Loader {
             if (spelled === "off") return false;
             throw new Mismatch();
          }
-         case "unchecked-Number":
-            return Number(raw);
-         case "Number":
-            return checked(type, Number(raw));
-         case "parseInt":
-         case "parseInt-or-default":
-            return checked(type, Number.parseInt(raw, 10));
          default:
-            if (raw.trim() === "") throw new Mismatch();
             return type.fromString(raw);
       }
    }
@@ -550,10 +727,85 @@ class Loader {
    }
 }
 
-/** A number some other reader produced, held to the type's checks. */
-function checked(type: RegisteredSetting["type"], value: number): number {
-   if (!type.allows(value)) throw new Mismatch();
-   return value;
+/**
+ * The warning for a boolean today reads differently from every other boolean
+ * setting: `INITIALIZE_STORAGE=1`, `"frozenConfig": "false"`.
+ */
+function disagreement(
+   key: string,
+   candidate: Candidate,
+   today: boolean,
+   common: boolean,
+): string {
+   const raw = JSON.stringify(candidate.raw);
+   const given =
+      candidate.kind === "file"
+         ? `"${key}": ${raw} in ${candidate.name}`
+         : `${candidate.name}=${typeof candidate.raw === "string" ? candidate.raw : raw}`;
+   const onOff = (value: boolean) => (value ? "on" : "off");
+   return (
+      `${key}: ${given} is read as ${onOff(today)}, as it always has been, ` +
+      `though other boolean settings read ${raw} as ${onOff(common)}. ` +
+      `Write true or false: a later release refuses ${raw} here.`
+   );
+}
+
+/** How to give a setting today, for a name that is read only from a later release. */
+function todayNames(entry: RegisteredSetting): string {
+   const flags = entry.aliases.flags ?? [];
+   const env = entry.aliases.env ?? [];
+   if (flags.length > 0) return `until then use ${flags[0]}`;
+   if (env.length > 0) return `until then set ${env[0]}`;
+   return `until then set it in ${PUBLISHER_CONFIG_NAME}`;
+}
+
+function parentOf(key: string): string {
+   const dot = key.lastIndexOf(".");
+   return dot < 0 ? "" : key.slice(0, dot);
+}
+
+/**
+ * The closest of `names` to `name`, if one is close enough to be a typo of it:
+ * a few edits away, or the start of it (`includeHiddenFiles`).
+ */
+function nearest(name: string, names: readonly string[]): string | undefined {
+   const lower = name.toLowerCase();
+   const prefixed = names.find(
+      (candidate) =>
+         lower.length >= 4 && candidate.toLowerCase().startsWith(lower),
+   );
+   if (prefixed) return prefixed;
+   let best: string | undefined;
+   let bestDistance = Infinity;
+   for (const candidate of names) {
+      const d = distance(lower, candidate.toLowerCase());
+      if (d < bestDistance) {
+         best = candidate;
+         bestDistance = d;
+      }
+   }
+   return bestDistance <= Math.max(2, Math.floor(name.length / 3))
+      ? best
+      : undefined;
+}
+
+/** Edit distance: insertions, deletions and substitutions. */
+function distance(a: string, b: string): number {
+   const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+   for (let i = 1; i <= a.length; i++) {
+      let diagonal = row[0];
+      row[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+         const above = row[j];
+         row[j] = Math.min(
+            row[j] + 1,
+            row[j - 1] + 1,
+            diagonal + (a[i - 1] === b[j - 1] ? 0 : 1),
+         );
+         diagonal = above;
+      }
+   }
+   return row[b.length];
 }
 
 function sourceOf(candidate: Candidate): SettingSource {

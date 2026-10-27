@@ -76,7 +76,6 @@ export const access = [
       aliases: {
          env: ["SHUTDOWN_DRAIN_DURATION_SECONDS"],
          flags: ["--shutdown_drain_duration_seconds"],
-         today: { reads: "unchecked-Number" },
       },
    }),
    setting({
@@ -88,7 +87,6 @@ export const access = [
       aliases: {
          env: ["SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS"],
          flags: ["--shutdown_graceful_close_timeout_seconds"],
-         today: { reads: "unchecked-Number" },
       },
    }),
 ];

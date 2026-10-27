@@ -24,10 +24,7 @@ export abstract class SettingType<T> {
       throw new Mismatch();
    }
 
-   /**
-    * Whether a number read some other way (step 1 keeps a few `Number()` and
-    * `parseInt` readers) is one this type allows.
-    */
+   /** Whether a value already read is one this type allows. */
    allows(_value: unknown): boolean {
       return true;
    }

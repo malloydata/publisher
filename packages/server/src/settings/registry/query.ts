@@ -113,20 +113,14 @@ export const query = [
       type: integer({ min: 1 }),
       default: 1,
       description: "Package-load worker threads.",
-      aliases: {
-         env: ["PACKAGE_LOAD_WORKERS"],
-         today: { reads: "parseInt", blankFails: true },
-      },
+      aliases: { env: ["PACKAGE_LOAD_WORKERS"] },
    }),
    setting({
       key: "packageLoad.jobTimeoutMs",
       type: integer({ min: 1 }),
       default: 120_000,
       description: "Compile budget of one package load, in ms.",
-      aliases: {
-         env: ["PACKAGE_LOAD_JOB_TIMEOUT_MS"],
-         today: { reads: "parseInt-or-default" },
-      },
+      aliases: { env: ["PACKAGE_LOAD_JOB_TIMEOUT_MS"] },
    }),
    setting({
       key: "packageLoad.schemaCacheBytes",
@@ -134,9 +128,6 @@ export const query = [
       default: DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
       description:
          "Serialized schema each package-load worker caches across loads, in bytes; 0 turns it off.",
-      aliases: {
-         env: ["PACKAGE_LOAD_SCHEMA_CACHE_BYTES"],
-         today: { reads: "Number" },
-      },
+      aliases: { env: ["PACKAGE_LOAD_SCHEMA_CACHE_BYTES"] },
    }),
 ];

@@ -14,7 +14,6 @@ export const mcp = [
       aliases: {
          env: ["MCP_PORT"],
          flags: ["--mcp_port"],
-         today: { reads: "unchecked-Number" },
       },
    }),
    setting({
@@ -66,6 +65,6 @@ export const mcp = [
       type: oneOf(["retrieval"]),
       description:
          "retrieval writes a trace summary of each ranked get_context call to the log.",
-      aliases: { env: ["PUBLISHER_MCP_TRACE"], today: { invalid: "default" } },
+      aliases: { env: ["PUBLISHER_MCP_TRACE"] },
    }),
 ];
