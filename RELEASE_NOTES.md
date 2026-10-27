@@ -80,6 +80,8 @@ The earlier search is gone, and so are its settings. `retrieval.engine`, `repres
 
 An agent that calls `get_context` needs no change. What changes for an operator: a package's first ranked answer after a load or reload is `retrieval: "indexing"` until its search index is built, and a failed judge call fails the request with `retrieval_reason: "llm-stage-failed"` (set `retrieval.fcj.judge` to `false` to answer without it).
 
+The search index stores the distinct values of `#(index)` dimensions on ungated sources, read once when the package loads, so a `dimensional_value` target matches a value by spelling (and by meaning with an embedding key). A server with no embedding key builds it too, and its ranked answers say `retrieval: "lexical"`. If a value read is refused because the server is at `PUBLISHER_MAX_CONCURRENT_QUERIES`, or times out, the index serves without those values, and the first question after a one-minute cool-down rebuilds it in the background.
+
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:
