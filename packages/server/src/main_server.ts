@@ -257,8 +257,10 @@ const memoryGovernor = memoryGovernorConfig
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
 observePackageStates(environmentStore);
-// Build the semantic index as each package loads, not on the first question.
-// This only queues work; with no embedding provider the job returns at once.
+// Build each package's search index as it loads, not on the first question.
+// This only queues the build. The build runs with or without an embedding
+// provider: without one it still builds the catalog, the keyword index and
+// the value index of #(index) dimensions, and skips only the vectors.
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );
