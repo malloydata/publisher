@@ -32,7 +32,7 @@ import {
    _setChatModelForTests,
 } from "../../providers/active";
 import { ServiceUnavailableError } from "../../errors";
-import { pollUntil } from "../../test_helpers/poll";
+import { pollFor, pollUntil } from "../../test_helpers/poll";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
 import { _setFcjValueFetcherForTests, fcjStateOf } from "./engine_state";
 import type { IndexValueFetcher } from "./values_index";
@@ -96,6 +96,25 @@ describe("the search engine", () => {
             (s.entities ?? []).map((e) => e.entity_id),
       );
       expect(ids).toContain("measure:flights:flight_count");
+   });
+
+   it("says lexical, not semantic, when no embedding provider is configured", async () => {
+      _setEmbeddingProviderForTests(null);
+      const { pkg } = await compileFcjFixture();
+      const { payload } = await pollFor(
+         () =>
+            callPayload(harness.handlerFor(pkg), {
+               search_targets: [
+                  { target_type: "dimension", search_text: "city" },
+               ],
+               scopes,
+            }),
+         (out) => out.payload.retrieval !== "indexing",
+         5_000,
+      );
+      expect(payload.engine).toBe("fcj");
+      expect(payload.retrieval).toBe("lexical");
+      expect(payload.returned).toBeGreaterThan(0);
    });
 
    it("answers a listing from the package's entity index, not from the engine", async () => {

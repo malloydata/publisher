@@ -196,6 +196,12 @@ export function canonicalJson(value: unknown): string {
 /** One complete result, as the response layer pages it. */
 export interface HeldResult {
    cards: SourceCard[];
+   /**
+    * `semantic` when the targets were matched by embedding closeness as well
+    * as by keyword and stored value; `lexical` when no embedding was used (no
+    * provider, or an index built without vectors).
+    */
+   retrieval: "semantic" | "lexical";
    clusters: unknown[];
    coverage?: unknown[];
    unresolved_targets: unknown[];
