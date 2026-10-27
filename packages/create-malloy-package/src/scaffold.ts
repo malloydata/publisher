@@ -1593,6 +1593,8 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--config",
    "--mcp_port",
    "--mcp_host",
+   "--admin_port",
+   "--admin_host",
    "--shutdown_drain_duration_seconds",
    "--shutdown_graceful_close_timeout_seconds",
    "--watch-env",

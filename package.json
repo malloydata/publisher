@@ -78,7 +78,7 @@
     "@types/react-dom": "^19.1.6",
     "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
-    "@malloydata/malloy-filter": "^0.0.435",
+    "@malloydata/malloy-filter": "^0.0.436",
     "esbuild": "0.25.9",
     "happy-dom": "^20.11.1",
     "prettier": "^3.0.0",
@@ -96,11 +96,11 @@
   "resolutions": {
     "pg": "8.7.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.435",
+    "@malloydata/malloy-interfaces": "^0.0.436",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.435",
-    "@malloydata/malloy-filter": "^0.0.435",
-    "@malloydata/malloy-tag": "^0.0.435",
+    "@malloydata/malloy-query-builder": "^0.0.436",
+    "@malloydata/malloy-filter": "^0.0.436",
+    "@malloydata/malloy-tag": "^0.0.436",
     "basic-ftp": "^5.3.1",
     "protobufjs": "^7.5.5",
     "concurrently": "^10.0.6",
@@ -113,6 +113,6 @@
     "seroval-plugins": "^1.6.3"
   },
   "patchedDependencies": {
-    "@malloydata/render@0.0.435": "patches/@malloydata%2Frender@0.0.435.patch"
+    "@malloydata/render@0.0.436": "patches/@malloydata%2Frender@0.0.436.patch"
   }
 }

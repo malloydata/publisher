@@ -116,14 +116,23 @@ describe("processStorageDestinations", () => {
    });
 
    it("drops a DuckLake destination missing the fields its attach needs", () => {
-      // A config that arrived without its storage block. The schema marks the
+      // A config that arrived without its catalog block. The schema marks the
       // field required, which is exactly why the validator has to check it: a
       // request body and a config file are not type-checked on the way in.
-      const noBucket = ducklakeDestination("managed", "org_a");
-      delete (noBucket.ducklakeConnection as unknown as Record<string, unknown>)
+      const noCatalog = ducklakeDestination("managed", "org_a");
+      delete (
+         noCatalog.ducklakeConnection as unknown as Record<string, unknown>
+      ).catalog;
+
+      expect(processStorageDestinations([noCatalog])).toEqual([]);
+   });
+
+   it("keeps a DuckLake destination with no data path, which reads the catalog's own", () => {
+      const noPath = ducklakeDestination("managed", "org_a");
+      delete (noPath.ducklakeConnection as unknown as Record<string, unknown>)
          .storage;
 
-      expect(processStorageDestinations([noBucket])).toEqual([]);
+      expect(processStorageDestinations([noPath])).toHaveLength(1);
    });
 
    it("keeps the first of two destinations sharing a name", () => {
