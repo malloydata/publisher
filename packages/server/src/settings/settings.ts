@@ -812,7 +812,6 @@ function sourceOf(candidate: Candidate): SettingSource {
    return { kind: candidate.kind, name: candidate.name };
 }
 
-/** The value at a dotted path of the config file, or undefined. */
 /**
  * The value at a dotted path of the config file, or undefined. `notObject`
  * names the section on the way that holds something other than an object.

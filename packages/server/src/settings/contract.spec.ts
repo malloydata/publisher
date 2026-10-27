@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import os from "os";
+import path from "path";
 import { Settings } from ".";
 import { assertServerApis } from "../server_apis";
 import { getServerApiSettings } from "../config";
@@ -52,6 +54,8 @@ const S3 = {
    PUBLISHER_ADMIN_STORAGE_KEY_ID: "AKID",
    PUBLISHER_ADMIN_STORAGE_SECRET: "SECRET",
 };
+/** A spill directory the DuckDB check can create. */
+const SPILL = path.join(os.tmpdir(), "publisher-contract-spill");
 const ONE_ENVIRONMENT = [
    { name: "e", packages: [{ name: "p", location: "./p" }] },
 ];
@@ -222,6 +226,11 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("10.0.0.1"),
       },
       { name: "blank", env: { PUBLISHER_HOST: "" }, expect: value("0.0.0.0") },
+      {
+         name: "whitespace only is unset",
+         env: { PUBLISHER_HOST: "   " },
+         expect: value("0.0.0.0"),
+      },
    ],
    rateLimit: [
       { name: "unset is unlimited", expect: value(0) },
@@ -259,6 +268,11 @@ export const CONTRACT: Record<string, Case[]> = {
          env: { PUBLISHER_FRAME_ANCESTORS: "" },
          expect: value("'self'"),
       },
+      {
+         name: "whitespace only is unset",
+         env: { PUBLISHER_FRAME_ANCESTORS: "   " },
+         expect: value("'self'"),
+      },
    ],
    theme: [
       { name: "unset", expect: value(undefined) },
@@ -266,6 +280,11 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "the file",
          file: { theme: { defaultMode: "dark" } },
          expect: value({ defaultMode: "dark" }),
+      },
+      {
+         name: "a theme that is not an object is ignored",
+         file: { theme: "dark" },
+         expect: value(undefined),
       },
    ],
    environments: [
@@ -279,6 +298,11 @@ export const CONTRACT: Record<string, Case[]> = {
          name: 'the old "projects" key is still read',
          file: { projects: ONE_ENVIRONMENT },
          expect: value(["e"]),
+      },
+      {
+         name: "environments that are not a list are none",
+         file: { environments: { e: {} } },
+         expect: value([]),
       },
    ],
 
@@ -302,6 +326,11 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("/x"),
       },
       { name: "blank", env: { SERVER_ROOT: "" }, expect: value(".") },
+      {
+         name: "whitespace only is unset",
+         env: { SERVER_ROOT: "   " },
+         expect: value("."),
+      },
    ],
    config: [
       { name: "unset", expect: value(undefined) },
@@ -324,6 +353,11 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "blank",
          env: { PUBLISHER_CONFIG_PATH: "" },
+         expect: value(undefined),
+      },
+      {
+         name: "whitespace only is unset",
+         env: { PUBLISHER_CONFIG_PATH: "   " },
          expect: value(undefined),
       },
    ],
@@ -491,6 +525,11 @@ export const CONTRACT: Record<string, Case[]> = {
          env: { PUBLISHER_HOST: "10.0.0.1", MCP_HOST: "" },
          expect: value("10.0.0.1"),
       },
+      {
+         name: "whitespace only is unset",
+         env: { MCP_HOST: "   " },
+         expect: value("127.0.0.1"),
+      },
    ],
    "mcp.corsOrigins": [
       { name: "unset denies", expect: value(false) },
@@ -635,6 +674,11 @@ export const CONTRACT: Record<string, Case[]> = {
          env: { PUBLISHER_ADMIN_HOST: "" },
          expect: value("127.0.0.1"),
       },
+      {
+         name: "whitespace only is unset",
+         env: { PUBLISHER_ADMIN_HOST: "   " },
+         expect: value("127.0.0.1"),
+      },
    ],
    "admin.catalogDatabase": [
       { name: "unset is off", expect: value(null) },
@@ -735,6 +779,11 @@ export const CONTRACT: Record<string, Case[]> = {
             s3Connection: { provider: "credential_chain", region: "us-west-2" },
          }),
       },
+      {
+         name: "ignored without a provider",
+         env: { ...CATALOG, PUBLISHER_ADMIN_STORAGE_REGION: "us-east-1" },
+         expect: value(undefined),
+      },
    ],
    "admin.storage.endpoint": [
       {
@@ -748,6 +797,14 @@ export const CONTRACT: Record<string, Case[]> = {
                endpoint: "http://minio:9000",
             },
          }),
+      },
+      {
+         name: "ignored without a provider",
+         env: {
+            ...CATALOG,
+            PUBLISHER_ADMIN_STORAGE_ENDPOINT: "http://minio:9000",
+         },
+         expect: value(undefined),
       },
    ],
 
@@ -1139,13 +1196,24 @@ export const CONTRACT: Record<string, Case[]> = {
       { name: "unset", expect: value(undefined) },
       {
          name: "PUBLISHER_DUCKDB_TEMP_DIRECTORY",
-         env: { PUBLISHER_DUCKDB_TEMP_DIRECTORY: "/var/spill" },
-         expect: value("/var/spill"),
+         env: { PUBLISHER_DUCKDB_TEMP_DIRECTORY: SPILL },
+         expect: value(SPILL),
       },
       {
          name: "blank",
          env: { PUBLISHER_DUCKDB_TEMP_DIRECTORY: "" },
          expect: value(undefined),
+      },
+      {
+         name: "a directory that cannot be made fails",
+         // Under a file, where no OS can make a directory.
+         env: {
+            PUBLISHER_DUCKDB_TEMP_DIRECTORY: path.join(
+               import.meta.path,
+               "spill",
+            ),
+         },
+         expect: fails("PUBLISHER_DUCKDB_TEMP_DIRECTORY"),
       },
    ],
    "duckdb.partitionedWriteFlushThreshold": [
@@ -1437,6 +1505,11 @@ export const CONTRACT: Record<string, Case[]> = {
          env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: "" },
          expect: value(false),
       },
+      {
+         name: "whitespace only is unset",
+         env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: "   " },
+         expect: value(false),
+      },
    ],
    "logging.level": [
       { name: "unset", expect: value("debug") },
@@ -1539,6 +1612,11 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("sk-1"),
       },
       { name: "blank", env: { EMBEDDING_API_KEY: "" }, expect: value(null) },
+      {
+         name: "whitespace only is unset",
+         env: { EMBEDDING_API_KEY: "   " },
+         expect: value(null),
+      },
    ],
    "retrieval.embedding.model": [
       { name: "unset", env: KEY, expect: value("text-embedding-3-small") },
@@ -1563,6 +1641,12 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "blank",
          env: { ...KEY, EMBEDDING_MODEL: "" },
          expect: value("text-embedding-3-small"),
+      },
+      {
+         name: "a model that is not a string fails",
+         env: KEY,
+         file: { retrieval: { embedding: { model: 5 } } },
+         expect: fails("retrieval.embedding.model"),
       },
    ],
    "retrieval.embedding.baseUrl": [
@@ -1672,6 +1756,11 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("sk-2"),
       },
       { name: "blank", env: { LLM_API_KEY: "" }, expect: value(null) },
+      {
+         name: "whitespace only is unset",
+         env: { LLM_API_KEY: "   " },
+         expect: value(null),
+      },
    ],
 };
 
