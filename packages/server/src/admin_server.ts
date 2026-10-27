@@ -6,6 +6,7 @@
 // credential has nothing of anyone's to serve.
 import "./instrumentation";
 import { markReady, registerSignalHandlers } from "./health";
+import { getPrometheusMetricsHandler } from "./instrumentation";
 import { logger } from "./logger";
 import { resolveBoundPort } from "./mcp_config";
 import {
@@ -24,7 +25,10 @@ const ADMIN_HOST = resolveAdminHost(process.env);
 const CATALOG_CONFIG = catalogAdminConfigFromEnv(process.env);
 const catalogs = CATALOG_CONFIG ? new CatalogAdmin(CATALOG_CONFIG) : null;
 
-const adminServer = createAdminApp(catalogs, null).listen(
+// The only listener, so the only place the process's metrics can be scraped.
+const adminApp = createAdminApp(catalogs, null, getPrometheusMetricsHandler());
+
+const adminServer = adminApp.listen(
    ADMIN_PORT,
    ADMIN_HOST,
    function (this: import("net").Server) {

@@ -186,7 +186,7 @@ ENV NODE_ENV=production
 WORKDIR /publisher
 
 # Copy package files first for better layer caching
-COPY package.json bun.lock api-doc.yaml ./
+COPY package.json bun.lock api-doc.yaml admin-api-doc.yaml ./
 # patchedDependencies in package.json point at patches/; bun install refuses to
 # run without the patch files, so they have to arrive before it does.
 COPY patches/ ./patches/
