@@ -558,6 +558,10 @@ export async function runFcjQuery(args: {
    });
    const result: HeldResult = {
       cards: answer.sources,
+      // Embedding closeness ranked only if the targets were embedded and the
+      // index has vectors to compare them with.
+      retrieval:
+         queries.size > 0 && index.vectors.size > 0 ? "semantic" : "lexical",
       clusters: answer.clusters,
       ...(answer.coverage ? { coverage: answer.coverage } : {}),
       unresolved_targets: answer.unresolved_targets,
@@ -733,7 +737,7 @@ function pageResponse(args: {
       ...(page.nextOffset !== undefined
          ? { next_offset: page.nextOffset }
          : {}),
-      retrieval: "semantic",
+      retrieval: result.retrieval,
       engine: "fcj",
       clusters: result.clusters,
       ...(result.coverage ? { coverage: result.coverage } : {}),

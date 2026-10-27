@@ -276,6 +276,7 @@ describe("resultKey", () => {
 describe("HeldResults", () => {
    const result = (n: number): HeldResult => ({
       cards: [bigCard(`s${n}`, 1, 10)],
+      retrieval: "lexical",
       clusters: [],
       unresolved_targets: [],
       warnings: [],
