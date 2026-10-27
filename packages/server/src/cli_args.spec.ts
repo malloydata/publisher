@@ -63,7 +63,10 @@ describe("printHelpIfAsked", () => {
       (flag) => {
          const { log, exit } = watch();
          printHelpIfAsked(["--port", "4100", flag]);
-         expect(log).toHaveBeenCalledWith("Usage: malloy-publisher [options]");
+         expect(log).toHaveBeenCalledTimes(1);
+         expect(log.mock.calls[0][0]).toContain(
+            "Usage: malloy-publisher [options]",
+         );
          expect(exit).toHaveBeenCalledTimes(1);
          expect(exit).toHaveBeenCalledWith(0);
       },
