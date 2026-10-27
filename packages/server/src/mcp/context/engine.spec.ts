@@ -8,6 +8,7 @@ import {
    describe,
    expect,
    it,
+   setSystemTime,
 } from "bun:test";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
@@ -30,7 +31,12 @@ import {
    _clearChatModelForTests,
    _setChatModelForTests,
 } from "../../providers/active";
-import { _setFcjValueFetcherForTests } from "./engine_state";
+import { ServiceUnavailableError } from "../../errors";
+import { pollUntil } from "../../test_helpers/poll";
+import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
+import { _setFcjValueFetcherForTests, fcjStateOf } from "./engine_state";
+import type { IndexValueFetcher } from "./values_index";
+import type { Package } from "../../service/package";
 import { heldResults } from "./pages";
 import {
    DEFAULT_FCJ_SETTINGS,
@@ -581,5 +587,152 @@ describe("splitBundles", () => {
       );
       expect(p2.retrieval_trace_full.fcj.split).toBeUndefined();
       expect(p2.retrieval_trace_full.fcj.find).toHaveLength(1);
+   });
+});
+
+describe("a value read the server refused", () => {
+   const CITY = "dimension:cities@travel.malloy:city";
+   /** The fixture's Package is typed unknown; the state is keyed by it. */
+   const stateOf = (pkg: unknown) => fcjStateOf(pkg as Package);
+   const ask = {
+      search_targets: [
+         { target_type: "measure", search_text: "number of flights" },
+      ],
+      scopes,
+   };
+   /** A fetcher whose reads of `cities.city` fail `failures` times, at the query cap. */
+   const refusing = (failures: number) => {
+      const reads = { city: 0 };
+      const fetcher: IndexValueFetcher = async (req) => {
+         if (req.source === "cities") {
+            reads.city += 1;
+            if (reads.city <= failures) {
+               throw new ServiceUnavailableError(
+                  "Publisher pod is at its maximum concurrent query cap (1).",
+               );
+            }
+         }
+         return fcjValueFetcher(req);
+      };
+      return { reads, fetcher };
+   };
+   const cityValues = (pkg: unknown) => {
+      const state = stateOf(pkg);
+      if (state?.status !== "ready") return undefined;
+      return state.index.values.values
+         .filter((v) => v.dimension === CITY)
+         .map((v) => v.value);
+   };
+   /** Jump past the cool-down, ask once, and wait for the rebuild to land. */
+   const askAfterCooldown = async (
+      handler: ReturnType<SemanticHarness["handlerFor"]>,
+      pkg: unknown,
+   ) => {
+      setSystemTime(new Date(Date.now() + PROVIDER_FAILURE_COOLDOWN_MS + 1));
+      let served;
+      try {
+         served = await callPayload(handler, ask);
+      } finally {
+         setSystemTime();
+      }
+      const landed = await pollUntil(() => {
+         const state = stateOf(pkg);
+         return state?.status === "ready" && !state.rebuilding;
+      }, 5_000);
+      expect(landed).toBe(true);
+      return served;
+   };
+
+   afterAll(() => {
+      setSystemTime();
+      _setFcjValueFetcherForTests(fcjValueFetcher);
+   });
+
+   it("serves without the values, then reads them again after the cool-down when the first read failed", async () => {
+      const { reads, fetcher } = refusing(1);
+      _setFcjValueFetcherForTests(fetcher);
+      const { pkg } = await compileFcjFixture();
+      const handler = harness.handlerFor(pkg);
+      await untilSemantic(handler, ask);
+
+      const built = stateOf(pkg);
+      expect(built?.status).toBe("ready");
+      if (built?.status !== "ready") return;
+      expect(built.index.report.values).toMatchObject({
+         failed: [
+            {
+               dimension: CITY,
+               reason:
+                  "the read failed: Publisher pod is at its maximum concurrent query cap (1).",
+            },
+         ],
+         skipped: [],
+      });
+      expect(cityValues(pkg)).toEqual([]);
+      expect(built.rebuildAt).toBeGreaterThan(Date.now());
+
+      // Inside the cool-down nothing is read again.
+      await callPayload(handler, ask);
+      expect(reads.city).toBe(1);
+
+      // After it, the old index answers while the rebuild reads the values.
+      const served = await askAfterCooldown(handler, pkg);
+      expect(served.payload.retrieval).toBe("semantic");
+      expect(reads.city).toBe(2);
+      expect(cityValues(pkg)).toEqual(["Denver", "Boulder"]);
+      const rebuilt = stateOf(pkg);
+      expect(rebuilt?.status === "ready" && rebuilt.rebuildAt).toBeUndefined();
+      expect(
+         rebuilt?.status === "ready" && rebuilt.index.report.values,
+      ).toMatchObject({
+         failed: [],
+      });
+   });
+
+   it("keeps serving and reads again at most once per cool-down when every read fails", async () => {
+      const { reads, fetcher } = refusing(Number.POSITIVE_INFINITY);
+      _setFcjValueFetcherForTests(fetcher);
+      const { pkg } = await compileFcjFixture();
+      const handler = harness.handlerFor(pkg);
+      await untilSemantic(handler, ask);
+      expect(reads.city).toBe(1);
+
+      for (const round of [2, 3]) {
+         const served = await askAfterCooldown(handler, pkg);
+         expect(served.payload.retrieval).toBe("semantic");
+         expect(reads.city).toBe(round);
+         const state = stateOf(pkg);
+         expect(state?.status).toBe("ready");
+         if (state?.status !== "ready") return;
+         expect(state.rebuildAt).toBeGreaterThan(Date.now());
+         expect(cityValues(pkg)).toEqual([]);
+         // A second question inside the new cool-down reads nothing.
+         await callPayload(handler, ask);
+         expect(reads.city).toBe(round);
+      }
+   });
+
+   it("does not read an empty dimension again: no values is an answer, not a failure", async () => {
+      let reads = 0;
+      _setFcjValueFetcherForTests(async (req) => {
+         if (req.source === "cities") {
+            reads += 1;
+            return { values: [], truncated: false };
+         }
+         return fcjValueFetcher(req);
+      });
+      const { pkg } = await compileFcjFixture();
+      const handler = harness.handlerFor(pkg);
+      await untilSemantic(handler, ask);
+      const state = stateOf(pkg);
+      expect(state?.status === "ready" && state.rebuildAt).toBeUndefined();
+      setSystemTime(new Date(Date.now() + PROVIDER_FAILURE_COOLDOWN_MS + 1));
+      try {
+         await callPayload(handler, ask);
+      } finally {
+         setSystemTime();
+      }
+      expect(stateOf(pkg)?.status).toBe("ready");
+      expect(reads).toBe(1);
    });
 });

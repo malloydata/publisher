@@ -39,6 +39,7 @@
  */
 
 import type { GivenValue } from "@malloydata/malloy";
+import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import { logger } from "../../logger";
 import { tryAcquireQuerySlot } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
@@ -503,7 +504,23 @@ export interface ValueBuildReport {
    cut: Array<{ dimension: string; kept: number }>;
    /** `#(index)` dimensions not read, and why. */
    skipped: Array<{ dimension: string; reason: string }>;
+   /**
+    * `#(index)` dimensions whose read was refused for a reason that clears on
+    * its own: the server was at its concurrent-query cap, or the read timed
+    * out. Their values are missing from this build, and the engine rebuilds
+    * the index after a cool-down (engine_state.ts). Any other failed read is
+    * in `skipped`, since reading again would fail the same way.
+    */
+   failed: Array<{ dimension: string; reason: string }>;
    ms: number;
+}
+
+/** A read that failed for a reason that clears on its own, so it is worth reading again. */
+export function isTransientReadFailure(error: unknown): boolean {
+   return (
+      error instanceof ServiceUnavailableError ||
+      error instanceof QueryTimeoutError
+   );
 }
 
 /** Whether a node's values may be read into the shared index. */
@@ -550,6 +567,7 @@ export async function buildValueIndex(args: {
       valuesFromDocs: 0,
       cut: [],
       skipped: [],
+      failed: [],
       ms: 0,
    };
    for (const node of args.catalog.nodes.values()) {
@@ -608,7 +626,7 @@ export async function buildValueIndex(args: {
             report.valuesFromData += 1;
          }
       } catch (error) {
-         report.skipped.push({
+         (isTransientReadFailure(error) ? report.failed : report.skipped).push({
             dimension: node.key,
             reason: `the read failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`,
          });
