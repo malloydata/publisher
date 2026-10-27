@@ -97,8 +97,6 @@
     "pg": "8.7.3",
     "esbuild": "0.25.9",
     "@malloydata/malloy-interfaces": "^0.0.436",
-    "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.436",
     "@malloydata/malloy-filter": "^0.0.436",
     "@malloydata/malloy-tag": "^0.0.436",
     "basic-ftp": "^5.3.1",

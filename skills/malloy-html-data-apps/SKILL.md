@@ -18,7 +18,6 @@ SPDX-License-Identifier: MIT
 | A hand-authored HTML/JS dashboard, no toolchain | this skill (an HTML data app) |
 | A React app with managed components | the Publisher React SDK (out of scope here) |
 | An analyst notebook or dashboard with charts | a Malloy report (`<slug>.malloy` at the package root, `layout=linear` or `layout=grid`; the `malloy-reports` skill) |
-| Point-and-click exploration, no code | the Publisher Explorer |
 
 Pick an HTML data app when the user wants full control of the markup and only plain web files.
 

@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Breaking: the Explorer is removed from the Console and the SDK
+
+The model page no longer embeds the Malloy Explorer. It turned a structured query back into Malloy text with `ASTQuery.toMalloy()`, and `@malloydata/malloy-interfaces` writes a string value into that text unescaped: its `escapeString` is still a TODO. A value holding a double quote therefore ended the string early. Drilling into a result cell holding `27" Monitor` sent `drill: name = "27" Monitor"`, which failed to compile, and drilling into a cell holding `x" or "a" = "a` sent a filter that matched every row. Nobody had to type the quote: it only had to be in the data. The Explorer's filter box was not affected, because a typed filter is a filter expression, which upstream quotes correctly. The server bounded all of it: caller text compiles in restricted mode and the `#(authorize)` gates apply to whatever runs, so no query reached data its caller could not already query.
+
+The model page now lists each source with its dimensions, measures, views and joins, read-only, above the model's named queries, which run as before. The model viewer the page will get next replaces that list. A legacy `.malloynb` notebook's import cell no longer offers the "Data sources" dialog, which was the same Explorer.
+
+**SDK.** Removed exports: `ModelExplorer`, `ModelExplorerDialog`, `SourcesExplorer`, and the types `ModelExplorerProps`, `QueryExplorerResult` and `SourceAndPath`. `Model` keeps `resourceUri`, `runOnDemand` and `maxResultSize`; its `onChange`, `givens` and `onGivensChange` props are gone, because nothing on the page builds a query or reads a given any more. `@malloydata/malloy-explorer` and `@malloydata/malloy-query-builder` are no longer peer dependencies, so a host no longer installs the package whose `ASTQuery` writes values unescaped; ESLint refuses both, and `queryToMalloy` and `filterToMalloy` from `@malloydata/malloy-interfaces`, in the SDK and the Console. To query from a host page, write the Malloy yourself with each value spelled by `malloyLiteral`, and run it with `QueryResult` or the query API.
+
+**Releasing.** This removes exports and two peer dependencies, so cut it as a minor release (0.11.0), not the default patch.
+
+**Styles.** `@malloy-publisher/sdk/styles.css` now ships the SDK's own `result-tables.css`: the one rule from the Explorer's stylesheet that laid out every rendered result table, unchanged, so tables in reports, dashboards and notebooks look as they did. `@malloy-publisher/sdk/malloy-explorer.css` still resolves, to the same rules, and is deprecated; import `styles.css` instead. The `@malloy-publisher/app` package no longer lists a `./malloy-explorer.css` export, which pointed at a file the package never shipped.
+
 ## [Unreleased] — A DuckLake storage credential reaches only its catalog's data path
 
 Every DuckLake storage secret (an S3 key, an S3 `credential_chain`, a GCS key) is now created with a `SCOPE` of the catalog's data path: the configured `storage.bucketUrl`, or, when the config leaves it out, the path the catalog recorded at its creation. A `managed: true` connection attached read-only is scoped to its `main` schema's recorded path. On S3, DuckDB's fallback to a key seeded from the host's `AWS_*` environment is turned off on the connection's DuckDB instance. Before, the secret reached the whole bucket, so raw SQL carried into a storage destination's session could read another prefix with the destination's credential. See [docs/ducklake.md](docs/ducklake.md#what-the-storage-credential-reaches).
@@ -59,6 +71,7 @@ Clicking a value in a dashboard, a report or a notebook cell now always opens a 
 - **Download CSV.** The rows dialog's title row has a button that runs the same query with no `limit:`, so only the server's row cap bounds the file. When the file reaches that cap, its name and tooltip say so.
 
 For SDK hosts: `DashboardView` and `Report` take a new `rowsActions` prop that draws your own actions (an export, a download) in the rows dialog in place of Download CSV; it receives the unlimited query, the givens and a file name. `DownloadRowsCsv` is exported for hosts that want it beside their own. `useDrill`'s `selfLabel` option is removed: every `to=self` entry reads `Filter to <Field>: <value>`.
+
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:

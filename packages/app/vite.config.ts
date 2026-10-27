@@ -16,10 +16,6 @@ export default ({ mode }) => {
             __dirname,
             "../sdk/dist/styles.css",
          ),
-         "@malloy-publisher/sdk/malloy-explorer.css": path.resolve(
-            __dirname,
-            "../sdk/dist/malloy-explorer.css",
-         ),
          "@malloy-publisher/sdk/markdown-editor.css": path.resolve(
             __dirname,
             "../sdk/dist/markdown-editor.css",

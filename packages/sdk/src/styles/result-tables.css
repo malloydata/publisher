@@ -1,0 +1,31 @@
+/*
+ * Copyright (c) Credible Data Inc.
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * How every rendered Malloy table sits in its container: full width, as tall as
+ * its rows up to the box it is in, scrolling inside that box rather than
+ * pushing the page wider.
+ *
+ * This rule arrived with the Explorer's stylesheet (`@malloydata/malloy-explorer`),
+ * which the Console and `styles.css` loaded for every page, so every result
+ * table on every surface was laid out by it. It is carried here, unchanged,
+ * now that the Explorer is gone: `RenderedResult` and hosts that load
+ * `styles.css` override parts of it with `!important` and depend on it being
+ * there to override.
+ */
+.malloy-table.root {
+   width: 100% !important;
+   max-width: 100% !important;
+   height: fit-content !important;
+   max-height: 100% !important;
+   position: relative !important;
+   overflow: auto !important;
+   flex-direction: column !important;
+   overflow-anchor: none !important;
+   grid-template-columns: repeat(
+      var(--total-header-size),
+      minmax(auto, max-content)
+   ) !important;
+}
