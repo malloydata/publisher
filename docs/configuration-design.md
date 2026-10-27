@@ -130,7 +130,8 @@ connection setup also reads), and the `ADBC_*` variables the Docker image's driv
 | list | a JSON array | comma-separated; a flag may repeat |
 | string | a JSON string | the same |
 
-An empty variable is unset, as it is today, so `-e NAME=` undoes a value an image sets.
+An empty variable is unset, as it already is for nearly every variable (`PACKAGE_LOAD_WORKERS=""`
+fails startup today), so `-e NAME=` undoes a value an image sets.
 
 Units stay in the name (`timeoutMs`, `maxResponseBytes`, `drainDurationSeconds`) and values are plain
 integers in that unit. The one exception is `duckdb.memoryLimit`, which DuckDB parses (`1GB`), so it is
