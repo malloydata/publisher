@@ -20,6 +20,7 @@ import { AccessDeniedError } from "../../errors";
 import { parseRetrievalConfig } from "../../retrieval_config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Model } from "../../service/model";
+import { defaultIndexValueFetcher } from "../context/values_index";
 import { defaultValueFetcher } from "./get_context_values";
 import {
    editDistance,
@@ -282,5 +283,34 @@ describe("the lookup query over a real model (gates are the query path's)", () =
          "Auto Intenders (In-Market)",
          "Auto Intenders (Lapsed)",
       ]);
+   });
+
+   it("reads the index's counted values through the same query, gates included", async () => {
+      const indexRead = (source: string, dimension: string, limit: number) =>
+         defaultIndexValueFetcher({
+            environmentStore: store,
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            source,
+            dimension,
+            limit,
+            timeoutMs: 10_000,
+         });
+      const markets = await indexRead("open_segments", "market", 10);
+      expect(markets.truncated).toBe(false);
+      expect(
+         [...markets.values].sort((a, b) => a.value.localeCompare(b.value)),
+      ).toEqual([
+         { value: "EU", count: 2 },
+         { value: "US", count: 2 },
+      ]);
+      const cut = await indexRead("open_segments", "segment", 2);
+      expect(cut.values).toHaveLength(2);
+      expect(cut.truncated).toBe(true);
+      // The index read sends no givens, so a gated source refuses it.
+      await expect(
+         indexRead("locked_segments", "segment", 10),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });
