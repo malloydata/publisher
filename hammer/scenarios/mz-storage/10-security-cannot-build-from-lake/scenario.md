@@ -20,6 +20,11 @@ read-write build session. (Which of the two fires depends on catalog state; `## 
 accepts both — a build that reaches FAILED, or a package that won't even load so
 the build can't start — the invariant is simply: it never builds.)
 
+A lake a model CAN name, through a connection on the destination's own catalog, is
+`a-source-reading-its-destinations-own-catalog-builds-into-it`: there a persist over
+`.table(…)` builds and one over `.sql(…)` is refused, which is this invariant in its
+own words — no SQL its author wrote runs on a read-write lake session.
+
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on

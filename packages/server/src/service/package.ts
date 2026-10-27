@@ -289,6 +289,10 @@ export class Package {
    private malloyConfig: MalloyConfig;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
+   /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
+   private serveDestinationSchema?: (
+      destinationName: string,
+   ) => string | undefined;
    // Bound build manifest (sourceEntityId -> { tableName }): routes persist
    // sources to their materialized tables for served queries and the /compile
    // preview alike, so previewed SQL matches executed SQL. Surfaced on /status
@@ -1636,6 +1640,7 @@ export class Package {
       const derived = deriveServeBindings(
          entries,
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
+         this.serveDestinationSchema,
       );
       const eligibility = this.sourceEligibility;
       // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
@@ -1688,6 +1693,17 @@ export class Package {
       for (const model of this.models.values()) {
          model.setServeBindings(this.storageServeBindings);
       }
+   }
+
+   /**
+    * How a serve binding names a destination's schema, so it reads the table
+    * where the build wrote it (storageTablePath). Absent, every destination is
+    * `main`, the pre-existing layout.
+    */
+   public setServeDestinationSchema(
+      resolver: (destinationName: string) => string | undefined,
+   ): void {
+      this.serveDestinationSchema = resolver;
    }
 
    /**

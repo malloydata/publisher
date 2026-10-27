@@ -91,6 +91,11 @@ fs.copyFileSync(
    "./dist/default-publisher.config.json",
 );
 
+// The admin API's spec, shipped beside the bundle (and not under dist/app, which
+// the main API serves as static files), so a client of the admin API can check
+// its copy against the release it pins.
+fs.copyFileSync("../../admin-api-doc.yaml", "./dist/admin-api-doc.yaml");
+
 // Rename ESM outputs to .mjs so both Node and Bun can execute them
 fs.renameSync("./dist/server.js", "./dist/server.mjs");
 fs.renameSync("./dist/instrumentation.js", "./dist/instrumentation.mjs");

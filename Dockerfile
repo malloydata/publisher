@@ -215,6 +215,9 @@ RUN --mount=type=cache,target=/root/.bun \
 # Build server. The bundle alone: the extensions the image ships come from the
 # duckdb-extensions stage, so the bake that ends build:server-only is skipped.
 WORKDIR /publisher/packages/server
+# Read only by build.ts, so copied here rather than above bun install, where an
+# edit to the admin spec would invalidate the dependency install layer.
+COPY admin-api-doc.yaml /publisher/
 COPY packages/server/ ./
 RUN --mount=type=cache,target=/root/.bun \
     bun run build:server-only:bundle

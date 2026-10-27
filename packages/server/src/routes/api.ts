@@ -46,7 +46,9 @@ import {
    sendRouteError,
    setVersionIdError,
    wildcardParam,
+   markDeprecated,
 } from "./json_route";
+import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 
 export interface ApiControllers {
@@ -84,7 +86,13 @@ export function registerApiRoutes(
    registerConnectionRoutes(app, apiPrefix, env, pkg, c);
    registerPackageRoutes(app, apiPrefix, env, pkg, c);
    registerQueryRoutes(app, pkg, c);
-   registerMaterializationRoutes(app, env, pkg, c);
+   registerMaterializationRoutes(app, pkg, c);
+   // Deprecated: the admin API's catalog resources replace them.
+   registerStorageDestinationRoutes(
+      app,
+      apiPrefix,
+      c.storageDestinationController,
+   );
 }
 
 function registerStatusAndThemeRoutes(
@@ -142,12 +150,22 @@ function registerWatchModeRoutes(
    pkg: string,
    { environmentStore, watchModeController }: ApiControllers,
 ): void {
+   // Deprecated here: the admin API serves watch mode, an operator's control.
    app.get(
       `${apiPrefix}/watch-mode/status`,
+      markDeprecated,
       watchModeController.getWatchStatus,
    );
-   app.post(`${apiPrefix}/watch-mode/start`, watchModeController.startWatching);
-   app.post(`${apiPrefix}/watch-mode/stop`, watchModeController.stopWatchMode);
+   app.post(
+      `${apiPrefix}/watch-mode/start`,
+      markDeprecated,
+      watchModeController.startWatching,
+   );
+   app.post(
+      `${apiPrefix}/watch-mode/stop`,
+      markDeprecated,
+      watchModeController.stopWatchMode,
+   );
 
    // Live-reload SSE for in-package HTML dashboards. It never starts watch
    // mode, so an arbitrary fetch cannot mutate global watch state; it reports
@@ -735,9 +753,8 @@ function registerQueryRoutes(
 
 function registerMaterializationRoutes(
    app: express.Express,
-   env: string,
    pkg: string,
-   { materializationController, storageDestinationController }: ApiControllers,
+   { materializationController }: ApiControllers,
 ): void {
    // Package-scoped: a materialization is a run of one package's persist
    // sources and cannot exist without a package.
@@ -808,45 +825,5 @@ function registerMaterializationRoutes(
          );
          res.status(204).send();
       }),
-   );
-
-   // Table lifecycle inside an environment's storage destinations, for an
-   // orchestrator that assigns its own physical table names. Destinations are
-   // never reachable through the connection routes, so these are the only way
-   // to drop, enumerate, or reclaim the storage behind a table in one.
-   const destination = `${env}/storageDestinations/:destinationName`;
-   app.get(
-      `${destination}/schemas/:schemaName/tables`,
-      apiRoute((req) =>
-         storageDestinationController.listTables(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-         ),
-      ),
-   );
-   app.delete(
-      `${destination}/schemas/:schemaName/tables/:tableName`,
-      apiRoute(async (req, res) => {
-         await storageDestinationController.dropTable(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-            req.params.tableName,
-         );
-         res.status(204).send();
-      }),
-   );
-   app.post(
-      `${destination}/fileCleanups`,
-      apiRoute(
-         (req) =>
-            storageDestinationController.createFileCleanup(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
    );
 }

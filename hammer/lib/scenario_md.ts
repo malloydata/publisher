@@ -372,7 +372,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    sql: {},
    operator: {},
    connection: {
-      attrs: ["type", "refused", "rows", "metadataschema"],
+      attrs: ["type", "refused", "rows", "metadataschema", "datapath"],
       keys: ["cites"],
    },
    rejected: { keys: ["cites"] },
@@ -944,11 +944,25 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   throw new Error(
                      `## Connection ${arg}: metadataSchema must be a plain identifier, got ${metadataSchema}`,
                   );
+               const dataPathRaw = attrs.datapath;
+               if (dataPathRaw !== undefined) {
+                  if (kind !== "ducklake")
+                     throw new Error(
+                        `## Connection ${arg}: dataPath applies only to type=ducklake`,
+                     );
+                  if (dataPathRaw !== "recorded")
+                     throw new Error(
+                        `## Connection ${arg}: dataPath must be "recorded" (omit bucketUrl), got ${String(dataPathRaw)}`,
+                     );
+               }
                connectionDecls.push({
                   env,
                   name: arg.trim(),
                   kind,
                   ...(metadataSchema ? { metadataSchema } : {}),
+                  ...(dataPathRaw !== undefined
+                     ? { recordedDataPath: true }
+                     : {}),
                });
                break;
             }

@@ -240,6 +240,31 @@ describe("connection public view: contract parity", () => {
 });
 
 describe("toPublicConnection", () => {
+   it("returns a managed DuckLake connection's managed and readOnly flags", () => {
+      const view = toPublicConnection({
+         name: "sales",
+         type: "ducklake",
+         managed: true,
+         ducklakeConnection: {
+            readOnly: true,
+            storage: { bucketUrl: "gs://b/ds_x" },
+            catalog: {
+               postgresConnection: {
+                  host: "catalog.internal",
+                  databaseName: "ducklake",
+                  userName: "ds_x_r",
+                  password: SENTINEL,
+               },
+               metadataSchema: "ds_x",
+            },
+         },
+      } as ApiConnection);
+
+      expect(view.managed).toBe(true);
+      expect(view.ducklakeConnection?.readOnly).toBe(true);
+      expect(JSON.stringify(view)).not.toContain(SENTINEL);
+   });
+
    it("keeps the public fields of a postgres connection", () => {
       const view = toPublicConnection({
          name: "pg",

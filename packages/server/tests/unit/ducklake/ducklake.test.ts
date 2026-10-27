@@ -590,35 +590,39 @@ describe("DuckLake Connection Tests", () => {
          ).rejects.toThrow(/PostgreSQL connection configuration is required/);
       });
 
-      it("should throw error if DuckLake storage bucketUrl is missing", async () => {
-         await expect(
-            createEnvironmentConnections(
-               [
-                  {
-                     name: "ducklake_no_bucket",
-                     type: "ducklake",
-                     ducklakeConnection: {
-                        catalog: {
-                           postgresConnection: {
-                              host: "localhost",
-                              port: 5432,
-                              userName: "test",
-                              password: "test",
-                              databaseName: "test",
-                           },
-                        },
-                        storage: {
-                           s3Connection: {
-                              accessKeyId: "test",
-                              secretAccessKey: "test",
-                           },
+      it("passes a DuckLake connection with no bucketUrl through to its attach: the catalog's recorded data path is used", async () => {
+         // No catalog is reachable here, so the attach itself fails; what this
+         // pins is that the configuration is no longer refused before it.
+         const outcome = await createEnvironmentConnections(
+            [
+               {
+                  name: "ducklake_no_bucket",
+                  type: "ducklake",
+                  ducklakeConnection: {
+                     catalog: {
+                        postgresConnection: {
+                           host: "localhost",
+                           port: 5432,
+                           userName: "test",
+                           password: "test",
+                           databaseName: "test",
                         },
                      },
-                  } as ApiConnection,
-               ],
-               testProjectPath,
-            ),
-         ).rejects.toThrow(/Storage bucketUrl is required/);
+                     storage: {
+                        s3Connection: {
+                           accessKeyId: "test",
+                           secretAccessKey: "test",
+                        },
+                     },
+                  },
+               } as ApiConnection,
+            ],
+            testProjectPath,
+         ).then(
+            () => "attached",
+            (error: Error) => error.message,
+         );
+         expect(outcome).not.toMatch(/bucketUrl/i);
       });
 
       it("should throw error if DuckLake connection config is missing", async () => {

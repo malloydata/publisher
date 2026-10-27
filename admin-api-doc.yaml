@@ -1,0 +1,726 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+openapi: 3.1.0
+info:
+  title: Malloy Publisher - Admin API
+  description: |
+    The operator's surface. It holds two kinds of thing, neither of which a user
+    of a running server should call: the DuckLake catalogs in one Postgres
+    database, as resources (a catalog, the tables in its schemas, and its
+    snapshots), and controls of this server's own process that only an operator
+    or a local developer uses (watch mode).
+
+    **Catalogs** are resources the server manages but does not own. Create a
+    catalog deliberately (encrypted, with the schemas you want), load a file into
+    a table, see what a catalog holds and how much, drop tables, and reclaim the
+    storage behind its history. None of this touches this server's environments,
+    packages or connections: a model reads a catalog through a DuckLake
+    connection, and a build writes one through a storage destination, in the
+    main API (`api-doc.yaml`).
+
+    **Watch mode** is for local development; `--watch-env` at boot is the usual
+    way to turn it on. The live-reload event stream an open dashboard listens to
+    stays on the main API.
+
+    **Configuration, not requests, says where the catalogs are.** The listener
+    starts only when `PUBLISHER_ADMIN_PORT` is set. `PUBLISHER_ADMIN_CATALOG_DATABASE`
+    is a libpq connection string for the Postgres database holding the catalogs,
+    and `PUBLISHER_ADMIN_STORAGE_*` is the credential for their data paths. No
+    request carries a credential and no response returns one.
+
+    **A catalog is found, not registered.** Every schema of the catalog database
+    that holds DuckLake's `ducklake_metadata` table is a catalog, named by that
+    schema. Its data path, encryption, format version and settings are what it
+    recorded at its creation. When the configured role is not the schema's
+    owner, every session acts as the owner (libpq `options=-crole=<owner>`), so
+    tables keep the ownership and grants their catalog was set up with.
+
+    **Security.** The listener is unauthenticated and binds loopback unless
+    `PUBLISHER_ADMIN_HOST` widens it, which `PUBLISHER_HOST` does not do. It can
+    drop tables, so keep it on loopback or behind an authenticating proxy.
+  version: v0
+servers:
+  - url: http://localhost:4050/api/v0
+    description: Admin listener (PUBLISHER_ADMIN_PORT)
+
+tags:
+  - name: catalogs
+    description: DuckLake catalogs and their settings
+  - name: tables
+    description: The tables in a catalog's schemas
+  - name: snapshots
+    description: A catalog's history, and the storage behind it
+  - name: watch-mode
+    description: File watching for local development, an operator's control of this process
+
+paths:
+  /catalogs:
+    get:
+      tags: [catalogs]
+      operationId: list-catalogs
+      summary: List the catalogs in the catalog database
+      description: |
+        Every DuckLake catalog in the configured catalog database, in name order,
+        with what each records and the bytes it holds. One catalog is read at a
+        time, so a long list never becomes many concurrent queries on the
+        catalog database.
+      responses:
+        "200":
+          description: The catalogs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Catalog"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [catalogs]
+      operationId: create-catalog
+      summary: Create a catalog
+      description: |
+        Creates a DuckLake catalog in the schema `name`, with its data under
+        `dataPath`. Encryption is fixed now and cannot be changed later; the
+        inlining limit and file-deletion grace are recorded in the catalog and
+        can be changed with PATCH. Each schema named is created. The schema may
+        already exist, empty (created by whoever provisioned its owner role); the
+        catalog's tables are then owned by that role. `409 CATALOG_EXISTS` when a
+        catalog is already there.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CatalogCreate"
+      responses:
+        "201":
+          description: The catalog, as it records itself
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [catalogs]
+      operationId: get-catalog
+      summary: Get a catalog
+      description: What the catalog records, the bytes it holds, and its schemas.
+      responses:
+        "200":
+          description: The catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [catalogs]
+      operationId: update-catalog
+      summary: Change a catalog's settings
+      description: |
+        Records a new inlining limit or file-deletion grace in the catalog, where
+        every later attach reads it. Encryption and the data path are fixed at
+        creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CatalogUpdate"
+      responses:
+        "200":
+          description: The catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+    get:
+      tags: [tables]
+      operationId: list-tables
+      summary: List the tables in a schema
+      description: The schema's tables in name order, each with the bytes its live files hold.
+      responses:
+        "200":
+          description: The tables
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TableSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+      - $ref: "#/components/parameters/tableName"
+    get:
+      tags: [tables]
+      operationId: get-table
+      summary: Get a table
+      description: The table's columns, and its row count when the catalog records one.
+      responses:
+        "200":
+          description: The table
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      tags: [tables]
+      operationId: put-table
+      summary: Create or replace a table from a source
+      description: |
+        Writes the table from `source`: one CSV, Parquet, Excel or JSON object
+        under the catalog's data path, the only location the session can read;
+        or a table of a catalog in the same catalog database (a migration's
+        copy: from another catalog, attached read-only as its own owner, or
+        from within this one). A missing source catalog, schema or table is
+        `404 SOURCE_NOT_FOUND`; a source catalog owned by a role the configured
+        role cannot act as is `409 CATALOG_OWNER_UNSUPPORTED`; and a copy from an
+        encrypted catalog into an unencrypted one is refused (`400
+        INVALID_REQUEST`), since it would write the rows unencrypted. Either way
+        the bytes are rewritten as the catalog's own Parquet, never registered
+        in place and never left as rows in the catalog database, so an
+        encrypted catalog stays encrypted. One DuckLake transaction:
+        a reader sees the old table or the new one. `201` when the table is new,
+        `200` when it replaced one; with `If-None-Match: *` an existing table is
+        refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
+        is written.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: "`*` to create only, refusing a table that exists."
+          schema:
+            type: string
+            enum: ["*"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TableWrite"
+      responses:
+        "200":
+          description: The table, replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "201":
+          description: The table, created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "412":
+          description: "`If-None-Match: *` and the table exists (`TABLE_EXISTS`)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [tables]
+      operationId: delete-table
+      summary: Drop a table
+      description: |
+        Drops the table. A table that does not exist answers 204 as well, so a
+        retried drop is free. Its data files stay until a snapshot delete
+        reclaims them, which is also the window in which the table can still be
+        read at an earlier snapshot.
+      responses:
+        "204":
+          description: The table is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/snapshots:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [snapshots]
+      operationId: list-snapshots
+      summary: List a catalog's snapshots
+      description: The newest first, each with its time and what it changed.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: How many, from 1 to 1000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        "200":
+          description: The snapshots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Snapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [snapshots]
+      operationId: delete-snapshots
+      summary: Delete old snapshots, and the storage only they held
+      description: |
+        Expires every snapshot older than `olderThan` (never the latest), which
+        retires the data files only those snapshots referenced. Then deletes the
+        files that have been retired for longer than the catalog's
+        `fileDeletionGrace` (`1 day` when it records none), so a reader still
+        scanning a file of a just-expired snapshot is not cut off; files this
+        call retires go on a later call. Only files the catalog itself recorded
+        and retired are deleted, never an untracked file under the data path.
+      parameters:
+        - name: olderThan
+          in: query
+          required: true
+          description: Expire the snapshots taken before this time.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: What was reclaimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotDeletion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /watch-mode:
+    get:
+      tags: [watch-mode]
+      operationId: get-watch-mode
+      summary: Get watch mode
+      description: |
+        What this process watches for local development: whether watching is on,
+        the environment, and the path it monitors. `--watch-env` at boot is the
+        usual way to turn it on.
+      responses:
+        "200":
+          description: Watch mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchMode"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      tags: [watch-mode]
+      operationId: put-watch-mode
+      summary: Set the watched environment
+      description: |
+        Watches the named environment's package directories and reloads a package
+        when its files change, replacing any other watch: one environment at a
+        time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WatchModeUpdate"
+      responses:
+        "200":
+          description: Watch mode, now watching the environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WatchMode"
+        "400":
+          description: No environment name, or one that is not a safe name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such environment, or one with no packages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [watch-mode]
+      operationId: delete-watch-mode
+      summary: Turn watch mode off
+      description: Stops watching and releases its resources. Idempotent.
+      responses:
+        "204":
+          description: Watch mode is off
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  parameters:
+    catalogName:
+      name: catalogName
+      in: path
+      required: true
+      description: The catalog's name, the schema of the catalog database that holds it.
+      schema:
+        $ref: "#/components/schemas/Identifier"
+    schemaName:
+      name: schemaName
+      in: path
+      required: true
+      description: A schema in the catalog (`main` is DuckLake's default).
+      schema:
+        $ref: "#/components/schemas/Identifier"
+    tableName:
+      name: tableName
+      in: path
+      required: true
+      description: A table in the schema.
+      schema:
+        $ref: "#/components/schemas/Identifier"
+
+  responses:
+    BadRequest:
+      description: The request is malformed, including a catalog, schema or table name that is not a plain identifier (`INVALID_REQUEST`), or names an object outside the catalog's data path (`OBJECT_OUTSIDE_DATA_PATH`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`), or no such source for a table write (`SOURCE_NOT_FOUND`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: The catalog already exists (`CATALOG_EXISTS`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotConfigured:
+      description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalServerError:
+      description: The server encountered an internal error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Identifier:
+      type: string
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+      description: A plain identifier
+
+    Catalog:
+      type: object
+      description: A DuckLake catalog, as it records itself
+      required: [name, dataPath, encrypted, formatVersion, sizeBytes]
+      properties:
+        name:
+          type: string
+          description: The schema of the catalog database that holds it
+        dataPath:
+          type: string
+          description: Where its files live, recorded at its creation
+        encrypted:
+          type: boolean
+          description: Whether its files are encrypted; fixed at its creation
+        formatVersion:
+          type: string
+          description: DuckLake's catalog format version
+        dataInliningRowLimit:
+          type: integer
+          description: Writes of up to this many rows are kept in the catalog database rather than as files
+        fileDeletionGrace:
+          type: string
+          description: How long a retired file is kept before a snapshot delete removes it, e.g. `1 day`
+        sizeBytes:
+          type: integer
+          format: int64
+          description: |
+            Bytes the catalog holds: every data and delete file it records, live
+            or retired but not yet deleted, plus rows inlined in the catalog
+            database
+        schemas:
+          type: array
+          items:
+            type: string
+          description: Its schemas; on a single catalog's read only
+
+    CatalogCreate:
+      type: object
+      required: [name, dataPath]
+      properties:
+        name:
+          $ref: "#/components/schemas/Identifier"
+        dataPath:
+          type: string
+          description: Where its files will live, e.g. `s3://bucket/prefix` or a local directory
+        encrypted:
+          type: boolean
+          default: true
+        dataInliningRowLimit:
+          type: integer
+          minimum: 0
+        fileDeletionGrace:
+          type: string
+          description: An interval like `1 day` or `12 hours`
+        schemas:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identifier"
+          description: Schemas to create beside `main`
+
+    CatalogUpdate:
+      type: object
+      properties:
+        dataInliningRowLimit:
+          type: integer
+          minimum: 0
+        fileDeletionGrace:
+          type: string
+          description: An interval like `1 day` or `12 hours`
+
+    TableSummary:
+      type: object
+      required: [name, sizeBytes]
+      properties:
+        name:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: Bytes its live files hold
+
+    Table:
+      type: object
+      required: [schema, name, columns]
+      properties:
+        schema:
+          type: string
+        name:
+          type: string
+        columns:
+          type: array
+          items:
+            type: object
+            required: [name, type]
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+        rowCount:
+          type: integer
+          format: int64
+          description: When the catalog records one
+
+    TableWrite:
+      type: object
+      required: [source]
+      properties:
+        source:
+          oneOf:
+            - $ref: "#/components/schemas/ObjectSource"
+            - $ref: "#/components/schemas/CatalogTableSource"
+
+    ObjectSource:
+      type: object
+      required: [uri, format]
+      description: One object under the catalog's data path
+      properties:
+        uri:
+          type: string
+        format:
+          type: string
+          enum: [csv, parquet, xlsx, json]
+        options:
+          type: object
+          description: An allowlist of typed reader options
+          properties:
+            header:
+              type: boolean
+            delimiter:
+              type: string
+            sheet:
+              type: string
+            skip:
+              type: integer
+              minimum: 0
+          additionalProperties: false
+      additionalProperties: false
+
+    CatalogTableSource:
+      type: object
+      required: [catalog, schema, table]
+      description: |
+        A table of a catalog in the same catalog database: the target catalog
+        itself, or another one the configured role can act as the owner of.
+        Added for one migration, moving an orchestrator's tables out of its
+        legacy per-organization catalogs into per-database ones without
+        rebuilding them; it can be removed once those legacy catalogs are dropped.
+      properties:
+        catalog:
+          $ref: "#/components/schemas/Identifier"
+        schema:
+          $ref: "#/components/schemas/Identifier"
+        table:
+          $ref: "#/components/schemas/Identifier"
+      additionalProperties: false
+
+    Snapshot:
+      type: object
+      required: [id, time, changes]
+      properties:
+        id:
+          type: integer
+          format: int64
+        time:
+          type: string
+          format: date-time
+        changes:
+          type: object
+          additionalProperties: true
+          description: What it changed, as DuckLake records it (e.g. `tables_created`)
+
+    SnapshotDeletion:
+      type: object
+      required: [snapshotsExpired, filesDeleted]
+      properties:
+        snapshotsExpired:
+          type: integer
+        filesDeleted:
+          type: integer
+
+    WatchMode:
+      type: object
+      description: What this process watches for local development
+      required: [enabled, environmentName, watchingPath]
+      properties:
+        enabled:
+          type: boolean
+        environmentName:
+          type: string
+          description: The environment being watched; empty when off
+        watchingPath:
+          type: string
+          description: The path being monitored; empty when off
+
+    WatchModeUpdate:
+      type: object
+      required: [environmentName]
+      properties:
+        environmentName:
+          type: string
+          description: The environment to watch
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          description: HTTP status code, repeated in the body
+        message:
+          type: string
+        reason:
+          type: string
+          description: |
+            Machine-readable: CATALOG_NOT_FOUND, CATALOG_EXISTS,
+            CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
+            CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
+            SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
+            INVALID_REQUEST. Treat an
+            unrecognized value as absent.
