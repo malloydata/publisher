@@ -75,7 +75,7 @@
       "build": "bun generate-api-types && bunx vite build",
       "postbuild": "cp ./src/styles/result-tables.css ./dist/result-tables.css && printf '/* SDK Styles */\\n@import \"./result-tables.css\";\\n' > ./dist/styles.css && printf '/* Deprecated: import @malloy-publisher/sdk/styles.css instead. */\\n@import \"./result-tables.css\";\\n' > ./dist/malloy-explorer.css",
       "test": "bun test",
-      "test:tz": "bun test ./src/components/given/GivenInput.spec.tsx ./src/components/given/filterSummary.spec.ts ./src/components/given/paramCodec.spec.ts ./src/utils/malloyLiteral.spec.ts ./src/components/drill/resolveDrill.spec.ts ./src/components/ReportBuilder/preview.spec.ts ./src/components/Materializations/cron.spec.ts ./src/components/Materializations/utils.spec.ts",
+      "test:tz": "bun test ./src/components/given/GivenInput.spec.tsx ./src/components/given/filterSummary.spec.ts ./src/components/given/paramCodec.spec.ts ./src/utils/malloyLiteral.spec.ts ./src/utils/filterCondition.spec.ts ./src/hooks/useDimensionalFilterRangeData.spec.ts ./src/components/drill/resolveDrill.spec.ts ./src/components/ReportBuilder/preview.spec.ts ./src/components/Materializations/cron.spec.ts ./src/components/Materializations/utils.spec.ts",
       "lint": "bunx eslint ./src ./test --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",

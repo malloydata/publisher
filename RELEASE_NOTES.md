@@ -43,6 +43,12 @@ It is the Credible app's model viewer, moved into the SDK so the Console and the
 
 **Option lists.** A given's `suggest { source=… dimension=… }` query, on every page that has one, now backtick-quotes the source's and the dimension's names, so a name that is a Malloy keyword (`year`, `source`) no longer fails the picker's list.
 
+## [Unreleased] — A "Contains" dimension filter matches the text it was given, and a filter given keeps its escapes
+
+The SDK writes a few filters as Malloy text itself, and two of them wrote values the filter grammar then misread. A "Contains" dimension filter (`DimensionFilter`, `useDimensionFilters`, `useDimensionFiltersQuery`, `generateFilterClause`, and the other dimensions' value lists `useDimensionalFilterRangeData` reads under it) spliced its value into `f'%…%'`, where `,` separates alternatives and `%` and `_` are wildcards: "a,b" matched values ending in `a` or starting with `b` and not "a,b" itself, "50%" also matched "500", and "x_y" also matched "xzy". It is now printed by `@malloydata/malloy-filter`, so it matches exactly the text typed. And `malloyLiteral` doubled every backslash in a `filter<…>` value, which undid the filter's own escapes: a multi-pick holding "a,b", carried as `a\,b`, ran as "a\" or "b" when a report or document applied it as a literal. It now hands the value through unchanged and escapes only a bare quote.
+
+Neither path goes through `@malloydata/malloy-interfaces`, whose `escapeString` is still unfixed upstream; these are the SDK's own text, now covered by tests that parse what they write. The value lists also wrote a date bound on Greater Than and Less Than as the Date's text rather than as a day; they now write `@2024-01-05`, as the result rows' query does.
+
 ## [Unreleased] — Packages published from a location can be immutable versions (opt in with `PUBLISHER_PACKAGE_VERSIONING=on`)
 
 With `PUBLISHER_PACKAGE_VERSIONING=on`, `POST /api/v0/environments/{env}/packages` with a `location` publishes an immutable **version** of the package, numbered by the `version` in its `publisher.json`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
