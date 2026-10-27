@@ -153,7 +153,8 @@ two apart with two top-level settings, both `true` by default and given in `publ
 variable or as a flag ([configuration.md](configuration.md)): the serving deployment sets `"adminApiEnabled": false`, which
 refuses to start if `PUBLISHER_ADMIN_PORT` or `PUBLISHER_ADMIN_CATALOG_DATABASE` is set, and the admin
 deployment sets `"servingApiEnabled": false`, which runs only the admin listener, loads no environments
-(watch mode is then absent) and refuses a config that declares any.
+(watch mode is then absent) and refuses a config that declares any. An admin-only process serves
+`/metrics` on the admin listener, since it has no main API to serve it from.
 
 A catalog is found, not registered: every schema of that database holding DuckLake's
 `ducklake_metadata` table is a catalog, named by the schema, and its data path, encryption and settings
@@ -171,6 +172,11 @@ curl -s -X POST $A/catalogs -H 'Content-Type: application/json' \
 curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders -H 'Content-Type: application/json' \
   -d '{"source": {"uri": "/srv/lake/sales/uploads/orders.csv", "format": "csv"}}'
 
+# Copy a table from another catalog of the same catalog database (a migration), rewritten
+# into this catalog's own files; a missing source answers 404 SOURCE_NOT_FOUND.
+curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders_2025 -H 'Content-Type: application/json' \
+  -d '{"source": {"catalog": "sales_2025", "schema": "main", "table": "orders"}}'
+
 # What it holds.
 curl -s $A/catalogs/sales
 curl -s $A/catalogs/sales/schemas/main/tables
@@ -186,6 +192,9 @@ To read `sales` from a model, give the environment a DuckLake connection to the 
 **Files.** A load reads one CSV, Parquet, Excel or JSON object under the catalog's data path, the only
 location its session can read, and rewrites the bytes as the catalog's own Parquet in one DuckLake
 transaction, so an encrypted catalog stays encrypted and a reader sees the old table or the new one.
+A copy reads a table of another catalog in the same catalog database (or of the same catalog), attached
+read-only as that catalog's owner, and writes it the same way; the configured role must be able to act
+as both owners.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files
@@ -237,9 +246,9 @@ which that session would read with the destination's storage credential. A chain
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
 the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
 
-**Meter it.** Each statement on a storage destination or a `managed` connection, and each admin-API load,
-emits one log record, `statement_usage`, with the environment (empty for an admin load), connection or
-catalog, surface (`serve`, `load`, `build`), package, duration, rows and status, and increments
+**Meter it.** Each statement on a storage destination or a `managed` connection, and each admin-API load
+or copy, emits one log record, `statement_usage`, with the environment (empty for an admin load or copy),
+connection or catalog, surface (`serve`, `load`, `copy`, `build`), package, duration, rows and status, and increments
 `publisher_statement_usage_total`. The record names no sink; a log collector maps it. A same-catalog
 build and a chained build are recorded; a passthrough build is not, since its time is mostly the source
 warehouse's. A statement that fails is recorded too, with `status: "error"`, since it spent the time; a

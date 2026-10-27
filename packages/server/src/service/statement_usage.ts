@@ -5,7 +5,7 @@ import { logger } from "../logger";
 import { lazyCounter } from "../telemetry";
 
 /** Where a metered statement ran. */
-export type UsageSurface = "serve" | "build" | "load";
+export type UsageSurface = "serve" | "build" | "load" | "copy";
 
 /**
  * One statement on a metered connection: a storage destination, or a connection

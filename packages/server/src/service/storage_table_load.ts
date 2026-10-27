@@ -1,11 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../api";
-import { BadRequestError, ConflictError } from "../errors";
+import { BadRequestError, ConflictError, TableNotFoundError } from "../errors";
 import {
    applySessionResourceLimits,
+   attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
    installAndLoadExtension,
@@ -180,44 +182,156 @@ export async function loadStorageTable(params: {
          );
          assertUnderDataPath(params.uri, recorded.data_path ?? "");
       }
-      // Rows go to Parquet, never into the catalog database.
-      await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
       if (params.format === "xlsx") {
          await installAndLoadExtension(session, "excel");
       }
-      const target = [destinationName, schemaName, tableName]
-         .map((part) => quoteIdentifier(part, "duckdb"))
-         .join(".");
-      try {
-         await session.runSQL(
-            `${params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE"} ${target} AS SELECT * FROM ${reader}`,
-         );
-      } catch (error) {
-         if (
-            params.mode === "create" &&
-            error instanceof Error &&
-            /already exists/i.test(error.message)
-         ) {
-            throw new ConflictError(
-               `Table '${schemaName}.${tableName}' already exists in '${destinationName}'.`,
-            );
-         }
-         throw error;
-      }
-      const counted = rows(
-         await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
-      );
-      const described = rows(await session.runSQL(`DESCRIBE ${target}`));
-      return {
-         rowCount: Number(counted[0]?.n ?? 0),
-         columns: described.map((r) => ({
-            name: String(r.column_name),
-            type: String(r.column_type),
-         })),
-      };
+      return await writeTableAs(session, params, reader);
    } finally {
       await dispose();
    }
+}
+
+/**
+ * Copies a table from one DuckLake catalog into a table of another (or the
+ * same) catalog, both in the same catalog database: a migration's copy, run on
+ * the bytes the source catalog already holds.
+ *
+ * - The source is attached read-only and the destination read-write, each as
+ *   its own connection; the destination's rows are rewritten as its own Parquet,
+ *   so an encrypted destination stays encrypted whatever the source is.
+ * - The same table guarantees as {@link loadStorageTable}: one DuckLake
+ *   transaction, `create` refusing a table that exists (409), a transient
+ *   session with the build session's teardown.
+ * - A missing source schema or table is a `TableNotFoundError`, before anything is
+ *   written.
+ */
+export async function copyStorageTable(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   schemaName: string;
+   tableName: string;
+   source: {
+      catalogName: string;
+      connection: ApiConnection;
+      schemaName: string;
+      tableName: string;
+   };
+   mode: "create" | "replace";
+}): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
+   const { destinationName, destinationConnection, source } = params;
+   for (const conn of [destinationConnection, source.connection]) {
+      if (conn.type !== "ducklake" || !conn.ducklakeConnection) {
+         throw new BadRequestError(
+            "Only a DuckLake catalog is a copy's source or destination.",
+         );
+      }
+   }
+   for (const part of [
+      params.schemaName,
+      params.tableName,
+      source.schemaName,
+      source.tableName,
+   ]) {
+      if (!IDENT.test(part)) {
+         throw new BadRequestError(
+            "Schema and table names must be plain identifiers.",
+         );
+      }
+   }
+   const sameCatalog = source.catalogName === destinationName;
+   // Attached under its own alias, so it never shadows the destination.
+   const sourceAlias = sameCatalog ? destinationName : COPY_SOURCE_ALIAS;
+
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `copy_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      await attachDuckLakeReadWrite(
+         session,
+         destinationName,
+         destinationConnection.ducklakeConnection!,
+      );
+      if (!sameCatalog) {
+         await attachDuckLakeReadOnly(
+            session,
+            sourceAlias,
+            source.connection.ducklakeConnection!,
+         );
+      }
+      const found = rows(
+         await session.runSQL(
+            "SELECT count(*) AS n FROM duckdb_tables() " +
+               `WHERE database_name = '${escapeSQL(sourceAlias)}' ` +
+               `AND schema_name = '${escapeSQL(source.schemaName)}' ` +
+               `AND table_name = '${escapeSQL(source.tableName)}'`,
+         ),
+      );
+      if (Number(found[0]?.n ?? 0) === 0) {
+         throw new TableNotFoundError(
+            `Source table '${source.schemaName}.${source.tableName}' does not exist in catalog '${source.catalogName}'.`,
+         );
+      }
+      const from = [sourceAlias, source.schemaName, source.tableName]
+         .map((part) => quoteIdentifier(part, "duckdb"))
+         .join(".");
+      return await writeTableAs(session, params, from);
+   } finally {
+      await dispose();
+   }
+}
+
+/** The alias a copy attaches its source catalog under. */
+const COPY_SOURCE_ALIAS = "__copy_source";
+
+/**
+ * `CREATE [OR REPLACE] TABLE <destination>.<schema>.<table> AS SELECT * FROM
+ * <from>` on a session that has the destination attached read-write, with
+ * inlining off, and the table's row count and columns after.
+ */
+async function writeTableAs(
+   session: DuckDBConnection,
+   params: {
+      destinationName: string;
+      schemaName: string;
+      tableName: string;
+      mode: "create" | "replace";
+   },
+   from: string,
+): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
+   const { destinationName, schemaName, tableName } = params;
+   // Rows go to Parquet, never into the catalog database.
+   await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
+   const target = [destinationName, schemaName, tableName]
+      .map((part) => quoteIdentifier(part, "duckdb"))
+      .join(".");
+   try {
+      await session.runSQL(
+         `${params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE"} ${target} AS SELECT * FROM ${from}`,
+      );
+   } catch (error) {
+      if (
+         params.mode === "create" &&
+         error instanceof Error &&
+         /already exists/i.test(error.message)
+      ) {
+         throw new ConflictError(
+            `Table '${schemaName}.${tableName}' already exists in '${destinationName}'.`,
+         );
+      }
+      throw error;
+   }
+   const counted = rows(
+      await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
+   );
+   const described = rows(await session.runSQL(`DESCRIBE ${target}`));
+   return {
+      rowCount: Number(counted[0]?.n ?? 0),
+      columns: described.map((r) => ({
+         name: String(r.column_name),
+         type: String(r.column_type),
+      })),
+   };
 }
 
 function rows(result: unknown): Record<string, unknown>[] {

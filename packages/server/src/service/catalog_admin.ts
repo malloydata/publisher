@@ -18,7 +18,7 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../api";
-import { BadRequestError, ConflictError } from "../errors";
+import { BadRequestError, ConflictError, TableNotFoundError } from "../errors";
 import { logger } from "../logger";
 import {
    applySessionResourceLimits,
@@ -38,6 +38,7 @@ import { withStatementUsage } from "./statement_usage";
 import {
    type LoadFormat,
    type LoadOptions,
+   copyStorageTable,
    loadStorageTable,
 } from "./storage_table_load";
 
@@ -402,8 +403,9 @@ export class CatalogAdmin {
    }
 
    /**
-    * Creates or replaces a table from a source. Today the source is one object
-    * under the catalog's data path; `ifAbsent` refuses a table that exists (the
+    * Creates or replaces a table from a source: one object under the catalog's
+    * data path, or a table of a catalog in the same catalog database (a
+    * migration's copy). `ifAbsent` refuses a table that exists (the
     * `If-None-Match: *` precondition). Returns the table and whether it is new.
     */
    async putTable(
@@ -415,27 +417,26 @@ export class CatalogAdmin {
    ): Promise<{ table: CatalogTable; created: boolean }> {
       identifier(schema, "schema");
       identifier(table, "table");
-      const source = request.source as
-         | { uri?: unknown; format?: unknown; options?: unknown }
-         | undefined;
-      if (!source || typeof source.uri !== "string") {
-         throw badRequest("'source.uri' is required.");
-      }
-      if (!["csv", "parquet", "xlsx", "json"].includes(String(source.format))) {
-         throw badRequest(
-            "'source.format' must be csv, parquet, xlsx or json.",
-         );
-      }
-      const options = (source.options ?? {}) as LoadOptions;
-      for (const key of Object.keys(options)) {
-         if (!["header", "delimiter", "sheet", "skip"].includes(key)) {
-            throw badRequest(`Unknown reader option '${key}'.`);
-         }
-      }
-      const owner = await this.withCatalogDatabase(async (pg) => {
-         await this.requireCatalog(pg, name);
-         return this.schemaOwner(pg, name);
-      });
+      const source = tableSource(request.source);
+      const { owner, sourceOwner } = await this.withCatalogDatabase(
+         async (pg) => {
+            await this.requireCatalog(pg, name);
+            if (source.kind === "table" && source.catalog !== name) {
+               if (!(await this.catalogExists(pg, source.catalog))) {
+                  throw sourceNotFound(
+                     `Source catalog '${source.catalog}' does not exist.`,
+                  );
+               }
+            }
+            return {
+               owner: await this.schemaOwner(pg, name),
+               sourceOwner:
+                  source.kind === "table"
+                     ? await this.schemaOwner(pg, source.catalog)
+                     : undefined,
+            };
+         },
+      );
       // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
       // before anything is read.
       const existing = await this.listTables(name, schema);
@@ -447,24 +448,48 @@ export class CatalogAdmin {
             `Table '${schema}.${table}' already exists in catalog '${name}'.`,
          );
       }
-      const uri = source.uri;
+      const mode = ifAbsent ? "create" : "replace";
       try {
          await withStatementUsage(
-            { environment: "", connection: name, surface: "load" },
+            {
+               environment: "",
+               connection: name,
+               surface: source.kind === "table" ? "copy" : "load",
+            },
             () =>
-               loadStorageTable({
-                  destinationName: name,
-                  destinationConnection: this.connection(name, owner),
-                  schemaName: schema,
-                  tableName: table,
-                  uri,
-                  format: source.format as LoadFormat,
-                  options,
-                  mode: ifAbsent ? "create" : "replace",
-               }),
+               source.kind === "table"
+                  ? copyStorageTable({
+                       destinationName: name,
+                       destinationConnection: this.connection(name, owner),
+                       schemaName: schema,
+                       tableName: table,
+                       source: {
+                          catalogName: source.catalog,
+                          connection: this.connection(
+                             source.catalog,
+                             sourceOwner,
+                          ),
+                          schemaName: source.schema,
+                          tableName: source.table,
+                       },
+                       mode,
+                    })
+                  : loadStorageTable({
+                       destinationName: name,
+                       destinationConnection: this.connection(name, owner),
+                       schemaName: schema,
+                       tableName: table,
+                       uri: source.uri,
+                       format: source.format,
+                       options: source.options,
+                       mode,
+                    }),
             (r) => r.rowCount,
          );
       } catch (error) {
+         if (error instanceof TableNotFoundError) {
+            throw sourceNotFound(redactPgSecrets(error.message));
+         }
          // Another create-only PUT won the race between the existence check
          // and the load: the same answer as if it had come first.
          if (ifAbsent && error instanceof ConflictError) {
@@ -476,13 +501,22 @@ export class CatalogAdmin {
          }
          throw this.redacted(error);
       }
-      logger.info("Loaded a table into a DuckLake catalog", {
-         catalog: name,
-         schema,
-         table,
-         format: source.format,
-         created: !exists,
-      });
+      logger.info(
+         source.kind === "table"
+            ? "Copied a table into a DuckLake catalog"
+            : "Loaded a table into a DuckLake catalog",
+         {
+            catalog: name,
+            schema,
+            table,
+            ...(source.kind === "table"
+               ? {
+                    source: `${source.catalog}.${source.schema}.${source.table}`,
+                 }
+               : { format: source.format }),
+            created: !exists,
+         },
+      );
       return {
          table: await this.getTable(name, schema, table),
          created: !exists,
@@ -812,6 +846,53 @@ async function rows(
 }
 
 const q = (name: string) => quoteIdentifier(name, "duckdb");
+
+/** A table write's source, validated: an object to read, or a catalog's table. */
+type TableSource =
+   | { kind: "object"; uri: string; format: LoadFormat; options: LoadOptions }
+   | { kind: "table"; catalog: string; schema: string; table: string };
+
+function tableSource(value: unknown): TableSource {
+   const source = value as Record<string, unknown> | undefined;
+   if (!source || typeof source !== "object") {
+      throw badRequest("'source' is required.");
+   }
+   if ("catalog" in source || "table" in source || "schema" in source) {
+      if ("uri" in source || "format" in source || "options" in source) {
+         throw badRequest(
+            "'source' is either an object ({uri, format}) or a table ({catalog, schema, table}), not both.",
+         );
+      }
+      return {
+         kind: "table",
+         catalog: identifier(source.catalog, "source.catalog"),
+         schema: identifier(source.schema, "source.schema"),
+         table: identifier(source.table, "source.table"),
+      };
+   }
+   if (typeof source.uri !== "string") {
+      throw badRequest("'source.uri' is required.");
+   }
+   if (!["csv", "parquet", "xlsx", "json"].includes(String(source.format))) {
+      throw badRequest("'source.format' must be csv, parquet, xlsx or json.");
+   }
+   const options = (source.options ?? {}) as LoadOptions;
+   for (const key of Object.keys(options)) {
+      if (!["header", "delimiter", "sheet", "skip"].includes(key)) {
+         throw badRequest(`Unknown reader option '${key}'.`);
+      }
+   }
+   return {
+      kind: "object",
+      uri: source.uri,
+      format: source.format as LoadFormat,
+      options,
+   };
+}
+
+function sourceNotFound(message: string): CatalogAdminError {
+   return new CatalogAdminError(404, "SOURCE_NOT_FOUND", message);
+}
 
 function identifier(value: unknown, what: string): string {
    if (typeof value !== "string" || !IDENT.test(value)) {

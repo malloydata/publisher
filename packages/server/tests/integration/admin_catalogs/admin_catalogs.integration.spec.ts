@@ -269,6 +269,131 @@ describe.skipIf(!SUPERUSER)(
          );
       });
 
+      it("copies a table from another catalog of the database, rewriting it into the encrypted one", async () => {
+         // The source stands in for a legacy catalog: unencrypted, and owned by
+         // a different role than the target.
+         mkdirSync(join(root, "ds_standalone"), { recursive: true });
+         writeFileSync(
+            join(root, "ds_standalone", "legacy.csv"),
+            "id,amount\n1,5\n2,6\n",
+         );
+         await admin.putTable(
+            "ds_standalone",
+            "main",
+            "legacy",
+            {
+               source: {
+                  uri: join(root, "ds_standalone", "legacy.csv"),
+                  format: "csv",
+               },
+            },
+            true,
+         );
+         const source = {
+            catalog: "ds_standalone",
+            schema: "main",
+            table: "legacy",
+         };
+         const copied = keep(
+            await admin.putTable(
+               "ds_owned",
+               "materialized",
+               "legacy",
+               { source },
+               true,
+            ),
+         );
+         expect(copied.created).toBe(true);
+         expect(copied.table).toMatchObject({
+            schema: "materialized",
+            name: "legacy",
+         });
+         expect(copied.table.columns.map((c) => c.name)).toEqual([
+            "id",
+            "amount",
+         ]);
+         const again = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "legacy",
+               { source },
+               true,
+            ),
+         );
+         expect([again.status, again.reason]).toEqual([412, "TABLE_EXISTS"]);
+         // DuckLake records the rows it wrote, in the target catalog's own files.
+         const written = await superuserQuery(
+            "select sum(record_count)::int as n from ds_owned.ducklake_data_file f " +
+               "join ds_owned.ducklake_table t using (table_id) " +
+               "where t.table_name = 'legacy' and f.end_snapshot is null",
+         );
+         expect(written).toEqual([{ n: 2 }]);
+      });
+
+      it("copies within one catalog, and answers a missing source with SOURCE_NOT_FOUND", async () => {
+         const within = keep(
+            await admin.putTable(
+               "ds_owned",
+               "materialized",
+               "orders_copy",
+               {
+                  source: {
+                     catalog: "ds_owned",
+                     schema: "main",
+                     table: "orders",
+                  },
+               },
+               false,
+            ),
+         );
+         expect(within.created).toBe(true);
+         for (const source of [
+            { catalog: "ds_nowhere", schema: "main", table: "orders" },
+            { catalog: "ds_standalone", schema: "nope", table: "legacy" },
+            { catalog: "ds_standalone", schema: "main", table: "nope" },
+         ]) {
+            const error = await refusal(
+               admin.putTable(
+                  "ds_owned",
+                  "materialized",
+                  "missing",
+                  { source },
+                  false,
+               ),
+            );
+            expect([error.status, error.reason]).toEqual([
+               404,
+               "SOURCE_NOT_FOUND",
+            ]);
+         }
+         expect(
+            (await admin.listTables("ds_owned", "materialized")).map(
+               (t) => t.name,
+            ),
+         ).toEqual(["legacy", "orders_copy"]);
+      });
+
+      it("refuses a source that is both an object and a table", async () => {
+         const error = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "x",
+               {
+                  source: {
+                     catalog: "ds_standalone",
+                     schema: "main",
+                     table: "legacy",
+                     uri: join(root, "ds_owned", "orders.csv"),
+                  },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
+      });
+
       it("serves the catalog to the main API from a config with no data path, and refuses to create a missing one", async () => {
          const host = SUPERUSER!
             .split(/\s+/)
