@@ -10,6 +10,13 @@
  * waits on it. A failed build is retried
  * by a request that arrives after PROVIDER_FAILURE_COOLDOWN_MS. A reload is a
  * new Package, so it gets a new build; the content caches make that cheap.
+ *
+ * A build whose value reads were refused for a reason that clears on its own
+ * (the query cap, a timeout; see ValueBuildReport.failed) is ready but
+ * missing those values. It keeps serving, and a request that arrives after
+ * PROVIDER_FAILURE_COOLDOWN_MS rebuilds it in the background, so the values
+ * are not left out until the next reload. At most one such rebuild runs per
+ * cool-down, and only while requests arrive.
  */
 
 import { activeLlmSettings, getChatModel } from "../../providers/active";
@@ -41,7 +48,14 @@ import type { IndexValueFetcher } from "./values_index";
 
 export type FcjState =
    | { status: "building"; startedAt: number }
-   | { status: "ready"; index: FcjIndex }
+   | {
+        status: "ready";
+        index: FcjIndex;
+        /** Set when value reads failed: when to build again for them. */
+        rebuildAt?: number;
+        /** A rebuild for failed value reads is queued; this index serves until it lands. */
+        rebuilding?: boolean;
+     }
    | { status: "error"; message: string; failedAt: number };
 
 const states = new WeakMap<Package, FcjState>();
@@ -125,7 +139,18 @@ export function kickFcjBuild(args: {
 }): void {
    const { environmentStore, environmentName, packageName, pkg } = args;
    const state = states.get(pkg);
-   if (state?.status === "building" || state?.status === "ready") return;
+   if (state?.status === "building") return;
+   if (state?.status === "ready") {
+      if (
+         state.rebuilding ||
+         state.rebuildAt === undefined ||
+         Date.now() < state.rebuildAt
+      ) {
+         return;
+      }
+      rebuildForValues(args, state);
+      return;
+   }
    if (
       state?.status === "error" &&
       Date.now() - state.failedAt < PROVIDER_FAILURE_COOLDOWN_MS
@@ -144,7 +169,7 @@ export function kickFcjBuild(args: {
       }
       try {
          const index = await buildFor(args);
-         states.set(pkg, { status: "ready", index });
+         states.set(pkg, readyState(index, environmentName, packageName));
       } catch (error) {
          const message = error instanceof Error ? error.message : String(error);
          logger.warn("[get_context fcj] The search index could not be built", {
@@ -153,6 +178,71 @@ export function kickFcjBuild(args: {
             error: message,
          });
          states.set(pkg, { status: "error", message, failedAt: Date.now() });
+      }
+   });
+}
+
+/** The ready state for a new index, due for a rebuild when value reads failed. */
+function readyState(
+   index: FcjIndex,
+   environmentName: string,
+   packageName: string,
+): FcjState {
+   const values = index.report.values;
+   const failed = "failed" in values ? values.failed : [];
+   if (failed.length === 0) return { status: "ready", index };
+   logger.warn(
+      "[get_context fcj] Some #(index) values could not be read; the index serves without them and is built again after a cool-down",
+      {
+         environmentName,
+         packageName,
+         failed,
+         retryAfterMs: PROVIDER_FAILURE_COOLDOWN_MS,
+      },
+   );
+   return {
+      status: "ready",
+      index,
+      rebuildAt: Date.now() + PROVIDER_FAILURE_COOLDOWN_MS,
+   };
+}
+
+/**
+ * Build a ready index again because some of its value reads failed. The old
+ * index serves until the new one is ready. If the rebuild fails, the old one
+ * stays, due again after another cool-down.
+ */
+function rebuildForValues(
+   args: Parameters<typeof kickFcjBuild>[0],
+   state: Extract<FcjState, { status: "ready" }>,
+): void {
+   const { environmentStore, environmentName, packageName, pkg } = args;
+   states.set(pkg, { ...state, rebuilding: true });
+   void embeddingSyncQueue.enqueue(async () => {
+      const served = environmentStore
+         .peekEnvironment?.(environmentName)
+         ?.peekPackage?.(packageName);
+      if (served !== undefined && served !== pkg) {
+         states.delete(pkg);
+         return;
+      }
+      try {
+         const index = await buildFor(args);
+         states.set(pkg, readyState(index, environmentName, packageName));
+      } catch (error) {
+         logger.warn(
+            "[get_context fcj] The search index could not be built again for its missing values; the earlier index keeps serving",
+            {
+               environmentName,
+               packageName,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         states.set(pkg, {
+            status: "ready",
+            index: state.index,
+            rebuildAt: Date.now() + PROVIDER_FAILURE_COOLDOWN_MS,
+         });
       }
    });
 }
@@ -259,5 +349,12 @@ export function fcjStatusOf(pkg: Package): Record<string, unknown> {
          lastError: { message: state.message },
       };
    }
-   return { engine: "fcj", status: "ready", build: state.index.report };
+   return {
+      engine: "fcj",
+      status: "ready",
+      build: state.index.report,
+      ...(state.rebuildAt !== undefined
+         ? { valuesRebuildAt: new Date(state.rebuildAt).toISOString() }
+         : {}),
+   };
 }

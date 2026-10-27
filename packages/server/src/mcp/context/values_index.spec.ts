@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { beforeAll, describe, expect, it } from "bun:test";
+import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import {
    compileFcjFixture,
    type FcjFixture,
@@ -80,6 +81,7 @@ describe("value index build", () => {
          valuesFromDocs: 0,
          cut: [],
          skipped: [],
+         failed: [],
       });
    });
 
@@ -153,6 +155,31 @@ describe("value index build", () => {
       expect(report.skipped).toEqual([
          { dimension: CITY, reason: "the read failed: table not found" },
       ]);
+   });
+
+   it("names a read refused at the query cap or timed out as failed, apart from a read that cannot succeed", async () => {
+      const refusing: IndexValueFetcher = async (req) => {
+         if (req.source === "cities") {
+            throw new ServiceUnavailableError("at the query cap");
+         }
+         throw new QueryTimeoutError("timed out after 60000ms");
+      };
+      const { report, index } = await buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(refusing),
+      });
+      expect(report.dimensionsRead).toBe(0);
+      expect(report.skipped).toEqual([]);
+      expect(report.failed).toEqual([
+         { dimension: CITY, reason: "the read failed: at the query cap" },
+         {
+            dimension: ARRIVES,
+            reason: "the read failed: timed out after 60000ms",
+         },
+      ]);
+      expect(index.size).toBe(0);
    });
 });
 

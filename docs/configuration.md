@@ -574,6 +574,12 @@ accents, punctuation and spacing, a partial phrase, and a typo (one edit in a wo
 two in a longer one). With an embedding provider and `fcj.valueEmbeddings` they are also matched by
 meaning. A dimension no one tagged `#(index)` has no stored values to match.
 
+A read the server refuses because it is at `PUBLISHER_MAX_CONCURRENT_QUERIES`, or one that times out, leaves
+that dimension's values out of the build. The index still serves, the server log names the dimension, and
+the first question after a one-minute cool-down builds the index again in the background while the old one
+keeps answering. Any other failed read (a query error, a missing table) is skipped until the package
+reloads, since reading again would fail the same way. A dimension that holds no values is not a failure.
+
 **Access.** A value is data, and a gate applies to it as it does to `execute_query`. A source with
 `#(authorize)` or `#(access_filter)` is never read at index time and its values are never embedded. A
 `dimensional_value` target that pins one of its dimensions reads the values when asked, through the query
