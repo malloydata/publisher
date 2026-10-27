@@ -55,11 +55,44 @@ export type ValueFetcher = (
 /** Values longer than this are free text, not a category worth matching. */
 const MAX_VALUE_CHARS = 200;
 
+/** A row's value as text, or undefined for a null, a blank or free text. */
+export function usableValue(raw: unknown): string | undefined {
+   if (raw === null || raw === undefined) return undefined;
+   const text = String(raw);
+   if (text.trim() === "" || text.length > MAX_VALUE_CHARS) return undefined;
+   return text;
+}
+
+/** One read of a dimension's distinct values: the query and how it is run. */
+export interface DistinctValueQuery {
+   environmentStore: EnvironmentStore;
+   environmentName: string;
+   packageName: string;
+   modelPath: string;
+   source: string;
+   dimension: string;
+   /** Rows to read; one more is asked for to learn whether there are more. */
+   limit: number;
+   timeoutMs: number;
+   /** When set, only values containing this text (case-insensitive) are read. */
+   stem?: string;
+   givens?: Record<string, unknown>;
+   filterParams?: Record<string, string | string[]>;
+   /** Also count each value's rows (`n`) and read the most frequent first. */
+   counted: boolean;
+   /** Labels a refusal at the query cap; see tryAcquireQuerySlot. */
+   routeLabel: string;
+}
+
 /**
- * The lookup query: read up to `limit + 1` distinct non-null values of one
- * dimension, through the normal query path with the caller's givens.
+ * The one query that reads a dimension's distinct values: up to `limit + 1`
+ * non-null values as rows of `v` (and `n` when counted), through the normal
+ * query path, with the caller's givens and no `#(authorize)` bypass. The
+ * value index and the query-time lookup both read through it.
  */
-export const defaultValueFetcher: ValueFetcher = async (request) => {
+export async function queryDistinctValues(
+   request: DistinctValueQuery,
+): Promise<Array<Record<string, unknown>>> {
    const found = await getModelForQuery(
       request.environmentStore,
       request.environmentName,
@@ -72,8 +105,11 @@ export const defaultValueFetcher: ValueFetcher = async (request) => {
    const where = request.stem
       ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
       : `${dim} != null`;
-   const query = `run: ${quoteMalloyIdentifier(request.source)} -> { where: ${where} group_by: v is ${dim} limit: ${request.limit + 1} }`;
-   const slot = tryAcquireQuerySlot("mcp:getContext:values");
+   const body = request.counted
+      ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
+      : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
+   const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
+   const slot = tryAcquireQuerySlot(request.routeLabel);
    try {
       const { compactResult } = await runWithQueryTimeout(
          (signal) =>
@@ -93,20 +129,29 @@ export const defaultValueFetcher: ValueFetcher = async (request) => {
             ),
          request.timeoutMs,
       );
-      const rows = compactResult as unknown as Array<Record<string, unknown>>;
-      const values: string[] = [];
-      for (const row of rows) {
-         const raw = row.v;
-         if (raw === null || raw === undefined) continue;
-         const text = String(raw);
-         if (text.trim() === "" || text.length > MAX_VALUE_CHARS) continue;
-         values.push(text);
-      }
-      return {
-         values: values.slice(0, request.limit),
-         truncated: rows.length > request.limit,
-      };
+      return compactResult as unknown as Array<Record<string, unknown>>;
    } finally {
       slot.release();
    }
+}
+
+/**
+ * The lookup query: read up to `limit + 1` distinct non-null values of one
+ * dimension, through the normal query path with the caller's givens.
+ */
+export const defaultValueFetcher: ValueFetcher = async (request) => {
+   const rows = await queryDistinctValues({
+      ...request,
+      counted: false,
+      routeLabel: "mcp:getContext:values",
+   });
+   const values: string[] = [];
+   for (const row of rows) {
+      const text = usableValue(row.v);
+      if (text !== undefined) values.push(text);
+   }
+   return {
+      values: values.slice(0, request.limit),
+      truncated: rows.length > request.limit,
+   };
 };
