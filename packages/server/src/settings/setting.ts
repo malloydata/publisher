@@ -40,18 +40,12 @@ export interface TodayReading {
    file?: "truthy" | "boolean-or-reference" | "json-boolean";
    /** A value that does not parse is the default today, with a warning. */
    invalid?: "warn";
-   /** The file's value wins over the variable today. */
-   fileFirst?: true;
-   /** Each flag adds to the variable's list today, rather than replacing it. */
-   flagsAppend?: true;
-   /**
-    * Only flags count as giving the settings this default depends on, and the
-    * default wins over the variable whenever it is on.
-    */
-   defaultFromFlags?: true;
 }
 
-/** Today's names for a setting. In step 1 they are the only names read. */
+/**
+ * Today's names for a setting, read with a deprecation warning where the
+ * design renamed them, and removed in step 3.
+ */
 export interface Aliases {
    env?: readonly string[];
    /**
@@ -85,6 +79,8 @@ export interface Setting<K extends string = string, T = unknown> {
    /** How the reference shows the default, where its value alone does not say. */
    readonly defaultText?: string;
    readonly kind: SettingKind;
+   /** Short flags the design keeps beside the derived one (`--init`). */
+   readonly shortFlags?: readonly string[];
    /** No flag; never logged, reported, or echoed in an error. */
    readonly secret: boolean;
    readonly aliases: Aliases;
@@ -99,6 +95,7 @@ interface Entry<K extends string, T> {
    notes?: string;
    defaultText?: string;
    kind?: SettingKind;
+   shortFlags?: readonly string[];
    secret?: boolean;
    aliases?: Aliases;
 }
@@ -123,6 +120,9 @@ export function setting<K extends string, T>(
          ? { defaultText: entry.defaultText }
          : {}),
       kind: entry.kind ?? "server",
+      ...(entry.shortFlags !== undefined
+         ? { shortFlags: entry.shortFlags }
+         : {}),
       secret: entry.secret ?? false,
       aliases: entry.aliases ?? {},
    };

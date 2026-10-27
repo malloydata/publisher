@@ -20,7 +20,10 @@ import { PROBES } from "../test_helpers/settings_probes";
  * here as a changed row. Step 1's rules (#1477) are such rows: a value of
  * another type fails startup, a blank variable is unset, a boolean today
  * reads its own way keeps its meaning with a warning, and an unreadable file
- * fails startup.
+ * fails startup. So are step 2's: one precedence, flag then variable then
+ * file, and an old name and a new one given different values fail. The rows
+ * still use today's names, which step 2 deprecates; settings.spec.ts covers
+ * the derived names.
  *
  * A row expects a value, with the warning startup gives if any, or a failure
  * whose message names the setting. A failure is at startup, as server.ts
@@ -496,10 +499,10 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("/nonexistent/b.json"),
       },
       {
-         name: "--config wins over the variable",
+         name: "--config and an old PUBLISHER_CONFIG_PATH that differ fail",
          env: { PUBLISHER_CONFIG_PATH: "/nonexistent/a.json" },
          argv: ["--config", "/nonexistent/b.json"],
-         expect: value("/nonexistent/b.json"),
+         expect: fails("given different values under its old and new names"),
       },
       {
          name: "blank",
@@ -526,17 +529,17 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
       {
-         name: "SERVER_ROOT does not turn it off",
+         name: "SERVER_ROOT turns it off too",
          env: { NODE_ENV: "production", SERVER_ROOT: "/x" },
-         expect: value(true),
+         expect: value(false),
       },
       {
-         name: "the variable cannot turn it off",
+         name: "the variable turns it off",
          env: {
             NODE_ENV: "production",
             PUBLISHER_USE_BUNDLED_DEFAULT: "false",
          },
-         expect: value(true),
+         expect: value(false),
       },
       {
          name: "the variable turns it on despite a flag",
@@ -598,10 +601,10 @@ export const CONTRACT: Record<string, Case[]> = {
       },
       { name: "--watch-env", argv: ["--watch-env", "c"], expect: value(["c"]) },
       {
-         name: "--watch-env adds to the variable",
+         name: "--watch-env and an old PUBLISHER_WATCH that differ fail",
          env: { PUBLISHER_WATCH: "a" },
          argv: ["--watch-env", "c"],
-         expect: value(["a", "c"]),
+         expect: fails("given different values under its old and new names"),
       },
       {
          name: "--watch-env repeats",
@@ -796,10 +799,10 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(4200),
       },
       {
-         name: "--admin_port wins over the variable",
+         name: "an old --admin_port and PUBLISHER_ADMIN_PORT that differ fail",
          env: { PUBLISHER_ADMIN_PORT: "4100" },
          argv: ["--admin_port", "4200"],
-         expect: value(4200),
+         expect: fails("given different values under its old and new names"),
       },
       { name: "blank", env: { PUBLISHER_ADMIN_PORT: "" }, expect: value(null) },
       {
@@ -1808,10 +1811,10 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("m2"),
       },
       {
-         name: "the file wins over the variable",
+         name: "the file and an old EMBEDDING_MODEL that differ fail",
          env: { ...KEY, EMBEDDING_MODEL: "m1" },
          file: { retrieval: { embedding: { model: "m2" } } },
-         expect: value("m2"),
+         expect: fails("given different values under its old and new names"),
       },
       {
          name: "blank",
@@ -1847,10 +1850,10 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("http://e.example/v1"),
       },
       {
-         name: "the file wins over the variable",
+         name: "the file and an old EMBEDDING_API_BASE that differ fail",
          env: { ...KEY, EMBEDDING_API_BASE: "http://e.example/v1" },
          file: { retrieval: { embedding: { baseUrl: "http://f.example/v1" } } },
-         expect: value("http://f.example/v1"),
+         expect: fails("given different values under its old and new names"),
       },
       {
          name: "blank",
@@ -1877,10 +1880,10 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(256),
       },
       {
-         name: "the file wins over the variable",
+         name: "the file and an old EMBEDDING_DIMENSIONS that differ fail",
          env: { ...KEY, EMBEDDING_DIMENSIONS: "256" },
          file: { retrieval: { embedding: { dimensions: 512 } } },
-         expect: value(512),
+         expect: fails("given different values under its old and new names"),
       },
       {
          name: "blank",
@@ -1982,7 +1985,11 @@ function outcome(
          }
          return {
             value: PROBES[key](context),
-            warns: current.warnings.map((warning) => warning.message),
+            // An old name in use is deprecated from step 2; settings.spec.ts
+            // checks those warnings, so a row here names only the others.
+            warns: current.warnings
+               .filter((warning) => warning.kind !== "deprecated")
+               .map((warning) => warning.message),
          };
       });
    } catch (error) {
