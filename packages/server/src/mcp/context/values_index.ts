@@ -38,21 +38,17 @@
  * store that value, the same idea as rare-word weighting in keyword search.
  */
 
-import type { GivenValue } from "@malloydata/malloy";
 import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import { logger } from "../../logger";
-import { tryAcquireQuerySlot } from "../../query_concurrency";
-import { runWithQueryTimeout } from "../../query_timeout";
-import { quoteMalloyIdentifier } from "../../service/authorize";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { getModelForQuery } from "../handler_utils";
 import {
    editDistance,
    normalizeText,
    scoreValue,
    VALUE_MATCH_FLOOR,
 } from "../tools/get_context_value_match";
+import { queryDistinctValues, usableValue } from "../tools/get_context_values";
 import type { Catalog, CatalogNode } from "./catalog";
 import type { DocParts } from "./doc_parts";
 import { dot } from "./vectors";
@@ -92,9 +88,6 @@ export type IndexValueFetcher = (
    request: IndexValueRequest,
 ) => Promise<CountedValues>;
 
-/** Values longer than this are free text, not a category worth matching. */
-const MAX_VALUE_CHARS = 200;
-
 /** One read at load. Generous: it runs once per load, not per question. */
 export const VALUE_READ_TIMEOUT_MS = 60_000;
 
@@ -104,46 +97,18 @@ export const VALUE_READ_TIMEOUT_MS = 60_000;
  * none) and no `#(authorize)` bypass.
  */
 export const defaultIndexValueFetcher: IndexValueFetcher = async (request) => {
-   const found = await getModelForQuery(
-      request.environmentStore,
-      request.environmentName,
-      request.packageName,
-      request.modelPath,
-   );
-   if ("error" in found) throw new Error(found.error.message);
-   const dim = quoteMalloyIdentifier(request.dimension);
-   const query = `run: ${quoteMalloyIdentifier(request.source)} -> { where: ${dim} != null group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1} }`;
-   const slot = tryAcquireQuerySlot("mcp:getContext:valueIndex");
-   try {
-      const { compactResult } = await runWithQueryTimeout(
-         (signal) =>
-            found.model.getQueryResults(
-               undefined,
-               undefined,
-               query,
-               undefined,
-               undefined,
-               request.givens as Record<string, GivenValue> | undefined,
-               signal,
-               undefined,
-               "compact",
-               false,
-               false,
-            ),
-         request.timeoutMs,
-      );
-      const rows = compactResult as unknown as Array<Record<string, unknown>>;
-      const values: Array<{ value: string; count: number }> = [];
-      for (const row of rows.slice(0, request.limit)) {
-         if (row.v === null || row.v === undefined) continue;
-         const text = String(row.v);
-         if (text.trim() === "" || text.length > MAX_VALUE_CHARS) continue;
-         values.push({ value: text, count: Number(row.n) || 0 });
-      }
-      return { values, truncated: rows.length > request.limit };
-   } finally {
-      slot.release();
+   const rows = await queryDistinctValues({
+      ...request,
+      counted: true,
+      routeLabel: "mcp:getContext:valueIndex",
+   });
+   const values: Array<{ value: string; count: number }> = [];
+   for (const row of rows.slice(0, request.limit)) {
+      const text = usableValue(row.v);
+      if (text === undefined) continue;
+      values.push({ value: text, count: Number(row.n) || 0 });
    }
+   return { values, truncated: rows.length > request.limit };
 };
 
 /** One value that matched, and how. */
