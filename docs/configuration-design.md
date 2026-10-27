@@ -38,8 +38,8 @@ credential without holding it.
 |---|---|
 | The same kind of setting lives in different places | MCP's port and host are variables, but what MCP exposes (`mcp.includeHiddenFilesAndSources`) is in the file |
 | A setting can be given in two places with no general rule for which wins | the `retrieval.embedding` keys override the `EMBEDDING_*` variables; nothing else overlaps |
-| Booleans are read four ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
-| A typo is silent | an unknown key in the file is ignored, so a misspelled `adminApiEnable` runs the API it meant to turn off |
+| Booleans are read five ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` reads an unrecognised value as off where it is used, because one reader runs inside ssh2's synchronous host-key callback, where a throw would escape; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
+| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
 | A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
 | Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
 | The reference drifts from the code | `--config`, `PERSIST_COLLISION_ENFORCE` and `S3_CREDENTIAL_CHAIN_POLICY` are not in the configuration table |
@@ -62,8 +62,29 @@ setting({
 
 The registry is the only place a setting is defined. Parsing, validation, `--help`, the configuration
 reference and the startup log are all produced from it, and a test fails if the checked-in reference
-differs from what the registry generates. Code reads a setting through one typed accessor
+differs from what the registry generates, if two settings derive the same variable or flag, or if one
+setting's derived name is another's alias. Code reads a setting through one typed accessor
 (`settings.get("mcp.port")`), never from `process.env`.
+
+The module can be one file per section of [the mapping](#the-mapping), exported as one list; what
+matters is that one list holds every setting. Settings are read once, at startup, before any module
+that uses one is loaded, and a lint rule refuses `process.env` outside the registry module, which also
+hands out the variables Publisher does not own (below), unparsed. A worker thread receives the parsed
+settings from the thread that started it rather than reading the environment again, and a test builds
+its settings with the same loader rather than writing `process.env`.
+
+A default can be another setting rather than a constant, so `default` also takes a function of the
+settings already resolved:
+
+- `mcp.host` defaults to `host` when `host` is given and to `127.0.0.1` otherwise, while `admin.host`
+  defaults to `127.0.0.1` whatever `host` is.
+- `retrieval.fcj.judgeLlm.apiKey`, which
+  [#1469](https://github.com/malloydata/publisher/pull/1469) adds as `JUDGE_LLM_API_KEY`, defaults to
+  `retrieval.llm.apiKey`.
+- `useBundledDefault` is on when neither `root` nor `config` is given. Today only the two flags count,
+  so `--server_root /x` with no config at `/x` serves nothing, while `SERVER_ROOT=/x` serves the bundled
+  samples. Once a setting has one value whatever its source, the variable counts too, which changes the
+  second case in step 2.
 
 ### Three sources, one precedence
 
@@ -83,18 +104,28 @@ each setting that is not at its default and where its value came from, with secr
 Three kinds of setting are exceptions, and the registry marks them:
 
 - **Structured settings** (`environments`, `theme`, and objects such as `retrieval.llm` whose fields
-  depend on each other) are file-only. Their scalar leaves (`retrieval.embedding.model`) still get a
-  variable and a flag.
+  depend on each other) are file-only as a whole. Their scalar leaves (`retrieval.embedding.model`)
+  still get a variable and a flag, so one object's leaves can come from different sources. Where one
+  field decides what the others mean (in `retrieval.llm` and `retrieval.embedding`, `provider` decides
+  which fields apply and what `baseUrl` defaults to), the object is assembled from every source first
+  and validated as one, and an error names the source of each field it cites. A variable that switches
+  `provider` is therefore checked against the file's other fields. A mix can still validate (a `model`
+  written for the old provider), so the startup line lists that object's leaves with their sources.
 - **Launch settings** (`root`, `config`, `useBundledDefault`, `initializeStorage`,
   `watchEnvironments`) have a variable and a flag but cannot be in the file: the first three decide
   which file is read, `initializeStorage` wipes storage and must not happen on every boot because a file
   said so, and `watchEnvironments` describes one development run.
 - **Secrets** have no flag, because a flag is visible in a process listing. They come from a variable, or
-  from the file through a `${VAR}` reference, and are never logged or reported.
+  from the file through a `${VAR}` reference, and are never logged or reported. A literal secret in the
+  file fails startup. Telling a literal from a reference means checking the file's raw value before
+  `${VAR}` substitution, because a substituted value looks like a literal. The `retrieval` API keys are
+  new file keys: today they come only from `EMBEDDING_API_KEY` and `LLM_API_KEY`, and `retrieval.llm`
+  and `retrieval.embedding` refuse an `apiKey`.
 
 Variables Publisher does not own keep their names and stay outside the registry: `NODE_ENV`,
-`NODE_OPTIONS`, `OTEL_*`, `GOOGLE_APPLICATION_CREDENTIALS`, and the `ADBC_*` variables the Docker image's
-driver shim reads.
+`NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` (which the Docker image sets to its RDS CA bundle), `OTEL_*`,
+`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE` and `PGSERVICE` (which Publisher's Postgres
+connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
 
 ### Types, read the same way from every source
 
@@ -106,6 +137,9 @@ driver shim reads.
 | list | a JSON array | comma-separated; a flag may repeat |
 | string | a JSON string | the same |
 
+An empty variable is unset, as it already is for nearly every variable (`PACKAGE_LOAD_WORKERS=""`
+fails startup today), so `-e NAME=` undoes a value an image sets.
+
 Units stay in the name (`timeoutMs`, `maxResponseBytes`, `drainDurationSeconds`) and values are plain
 integers in that unit. The one exception is `duckdb.memoryLimit`, which DuckDB parses (`1GB`), so it is
 a string and says so.
@@ -115,10 +149,15 @@ A `${VAR}` in the file is substituted first and then read as the setting's type,
 
 ### Validation
 
-A value that does not parse as its type, an unknown key at any registered level of the file, or the same
-setting given under an old and a new name with different values fails startup, with one message naming
+A value that does not parse as its type, an unknown key at any registered level of the file, an unknown
+flag or a flag given without its value, or the same setting given under an old and a new name with
+different values fails startup, with one message naming
 the setting, the source and what was expected (`mcp.port from PUBLISHER_MCP_PORT: expected an integer
-from 0 to 65535, got "40a0"`). An unknown key gets the nearest registered key as a suggestion.
+from 0 to 65535, got "40a0"`). An unknown key gets the nearest registered key as a suggestion. An old
+and a new name are compared after parsing, so a negated alias agrees with its new name
+(`PUBLISHER_NO_MCP_CONFIG=1` and `PUBLISHER_MCP_CONFIG_FILE_ENABLED=false`). A file that cannot be read
+or parsed fails startup before any setting is read, so no setting falls back to its default because the
+file was unreadable.
 Cross-setting rules stay where they are today (the admin API's checks, the memory governor's
 high-water above low-water) but run on the parsed settings.
 
@@ -128,7 +167,9 @@ The top level of the file holds the server's own settings, so the most used name
 `port` is `PUBLISHER_PORT` and `--port`, and `frozenConfig` gains `PUBLISHER_FROZEN_CONFIG`. Other
 settings sit in sections named for the subsystem they configure. A boolean that turns a feature on or
 off ends in `Enabled` and defaults to whichever state is safe; the `allow` section holds permissions,
-each `false` by default.
+each off by default except `allow.s3CredentialChain`, which keeps today's default `any`. Deployments that
+read S3 through the host's own role (an EKS pod's IRSA role) depend on that default, so changing it
+would be a breaking change with its own migration step.
 
 ## The mapping
 
@@ -158,6 +199,9 @@ match the derived names.
 | `PUBLISHER_USE_BUNDLED_DEFAULT` | `useBundledDefault` | unchanged | `--use-bundled-default` |
 | `INITIALIZE_STORAGE`, `--init` | `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage` (`--init` kept as a short form) |
 | `PUBLISHER_WATCH`, `--watch-env` | `watchEnvironments` | `PUBLISHER_WATCH_ENVIRONMENTS` | `--watch-environments` (`--watch-env` kept as a short form) |
+
+`watchEnvironments` is a list. Today `--watch-env` adds to `PUBLISHER_WATCH` rather than replacing it.
+Under one precedence the flag replaces the variable, as it does for every other list.
 
 ### `mcp`
 
@@ -192,7 +236,7 @@ match the derived names.
 | `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT` | `query.defaultRowLimit` | `PUBLISHER_QUERY_DEFAULT_ROW_LIMIT` |
 | `PUBLISHER_QUERY_TIMEOUT_MS` | `query.timeoutMs` | unchanged |
 | `PUBLISHER_MAX_CONCURRENT_QUERIES` | `query.maxConcurrent` | `PUBLISHER_QUERY_MAX_CONCURRENT` |
-| `PUBLISHER_QUERY_METADATA` | `query.metadata` (enum: `on`, `off`) | unchanged |
+| `PUBLISHER_QUERY_METADATA` | `query.metadataEnabled` (default `false`) | `PUBLISHER_QUERY_METADATA_ENABLED` |
 | `PUBLISHER_POSTGRES_POOL_MAX` | `postgres.poolMax` | unchanged |
 | `PUBLISHER_MAX_MEMORY_BYTES` | `memory.maxBytes` | `PUBLISHER_MEMORY_MAX_BYTES` |
 | `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | `memory.highWaterFraction` | unchanged |
@@ -203,7 +247,9 @@ match the derived names.
 | `PACKAGE_LOAD_JOB_TIMEOUT_MS` | `packageLoad.jobTimeoutMs` | `PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS` |
 | `PACKAGE_LOAD_SCHEMA_CACHE_BYTES` | `packageLoad.schemaCacheBytes` | `PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES` |
 
-Every row here also gets the derived flag (`--query-max-rows`, …).
+Every row here also gets the derived flag (`--query-max-rows`, …). `PUBLISHER_QUERY_METADATA` takes only
+`on` and `off`, so it is a boolean under the `Enabled` rule, and today's two values are boolean spellings
+the alias keeps reading.
 
 ### `duckdb`, `ducklake`, `persist`, `materialization`
 
@@ -255,23 +301,49 @@ The block keeps its shape. Its scalar leaves gain a variable and a flag, and the
 The other `retrieval` keys (`indexing.maxEntities`, `llm.provider`, `llm.model`, …, `egress.preset`)
 keep their file paths and gain derived variables and flags.
 
+### Settings in open pull requests
+
+| Today | Key | Variable | Flag | Notes |
+|---|---|---|---|---|
+| `versionPromotion` (file), `PUBLISHER_VERSION_PROMOTION` ([#1354](https://github.com/malloydata/publisher/pull/1354)) | `versionPromotion` (enum: `on-publish`, `explicit`) | unchanged | `--version-promotion` | the key and variable already follow this design; the flag is new |
+| `PUBLISHER_PACKAGE_VERSIONING` (#1354) | `packageVersioning` (enum: `on`, `off`) | unchanged | — | a transition setting that [#1381](https://github.com/malloydata/publisher/issues/1381) removes, so it keeps its name and is exempt from the `Enabled` rule |
+| `JUDGE_LLM_API_KEY` (#1469) | `retrieval.fcj.judgeLlm.apiKey` (secret, default `retrieval.llm.apiKey`) | `PUBLISHER_RETRIEVAL_FCJ_JUDGE_LLM_API_KEY` | — (secret) | `retrieval.fcj.judgeLlm` is provisional |
+
+Until step 2 ships, a new setting takes its derived name from the start, as `PUBLISHER_VERSION_PROMOTION`
+does, so it never needs an alias.
+
 ## Migration
 
 1. **The registry, behavior unchanged.** Every setting is registered under its key, with today's
    variable and flag as its names and today's precedence; code reads through the accessor; the reference
-   and `--help` are generated. The four boolean readers become one: `TRUE` and `1` now mean on for the
-   three exact-`true` variables, and a value no reader accepts (`enabled`, say), which some of them read
-   as off today, fails startup. A non-boolean `frozenConfig` and an unknown file key are warned about,
-   not yet refused. Ships alone.
+   and `--help` are generated. The boolean readers become one, but no value changes meaning in this
+   step: a value that the common reader and today's reader read differently keeps today's meaning and
+   is warned about. Those values include `INITIALIZE_STORAGE=1`, which is off today and would wipe
+   storage on every boot; `PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes`, which is refused today and would
+   allow proxy connections; and `"frozenConfig": "false"`, which freezes the server today. A value no
+   reader accepts (`enabled`, say), which some of them read as off today, fails startup. An unknown file
+   key, an unknown flag, a flag given without its value and an invalid `LOG_LEVEL` (today it falls back
+   to `debug`) are warned about, not yet refused. Each reading this step keeps and a later step ends (an
+   exact-`true` boolean, the `retrieval.embedding` keys winning over their variables, `--watch-env`
+   adding to `PUBLISHER_WATCH`, only the flags turning `useBundledDefault` off) is recorded in the
+   registry next to the alias or default it belongs to, so the later step removes it from one place.
+   Some settings are exceptions to "behavior unchanged". Today they accept values of more than one
+   type, and the registry gives each setting a single type (a boolean, an integer, an enum), so a value
+   of any other type fails startup from this step. For example, `MCP_PORT` takes a port number, `0` for
+   an ephemeral port, or, under Bun, any non-numeric string, which also binds an ephemeral port.
+   Registered as an integer, the non-numeric form fails startup. The release notes name each exception.
+   Ships alone.
 2. **The new names.** The derived variables and flags become the names, today's become aliases, and
    each alias in use logs one deprecation warning at startup and counts in
    `publisher_deprecated_usage_total{feature="config:<old name>"}`. Precedence becomes flag, variable,
    file for every setting. An old and new name given different values fails startup.
-3. **Strict.** A release later: the warnings from step 1 become refusals, and the aliases are removed
-   in the release after that, announced in the changelog with the mapping table above.
+3. **Strict.** A release later: the warnings from step 1 become refusals, so a boolean value the two
+   readers disagree on is refused before it can change meaning. The aliases are removed in the release
+   after that, announced in the changelog with the mapping table above.
 
-An orchestrator moves to the new names when it adopts step 2's release; nothing it sets today stops
-working until step 3's second release.
+An orchestrator moves to the new names when it adopts step 2's release. Nothing it sets today stops
+working before step 3, which refuses only the values step 1 warned about; the old names keep working
+until step 3's second release.
 
 ## Decisions
 
