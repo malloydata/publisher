@@ -63,6 +63,38 @@ async function superuserQuery(
    return r.rows;
 }
 
+/**
+ * Where a table's live rows are: in its live data files (and whether every one
+ * is encrypted), and in the catalog database as inlined rows.
+ */
+async function writtenEncrypted(
+   catalog: string,
+   table: string,
+): Promise<{ rows: number; encrypted: boolean; inlined: number }> {
+   const tableId = `(select table_id from ${catalog}.ducklake_table where table_name = '${table}' and end_snapshot is null)`;
+   const files = (
+      await superuserQuery(
+         "select coalesce(sum(record_count), 0)::int as n, " +
+            "coalesce(bool_and(encryption_key is not null), false) as encrypted " +
+            `from ${catalog}.ducklake_data_file where end_snapshot is null and table_id = ${tableId}`,
+      )
+   )[0] as { n: number; encrypted: boolean };
+   let inlined = 0;
+   for (const row of await superuserQuery(
+      `select table_name from ${catalog}.ducklake_inlined_data_tables where table_id = ${tableId}`,
+   )) {
+      const counted = await superuserQuery(
+         `select count(*)::int as n from ${catalog}."${String(row.table_name)}" where end_snapshot is null`,
+      );
+      inlined += Number(counted[0]?.n ?? 0);
+   }
+   return {
+      rows: Number(files.n),
+      encrypted: files.encrypted === true,
+      inlined,
+   };
+}
+
 async function refusal(p: Promise<unknown>): Promise<CatalogAdminError> {
    const error = await p.then(
       () => undefined,
@@ -101,7 +133,9 @@ describe.skipIf(!SUPERUSER)(
          for (const stmt of [
             `DROP ROLE IF EXISTS ${DB}_admin`,
             `DROP ROLE IF EXISTS ${DB}_owner`,
+            `DROP ROLE IF EXISTS ${DB}_stranger`,
             `CREATE ROLE ${DB}_admin LOGIN PASSWORD '${PASSWORD}'`,
+            `CREATE ROLE ${DB}_stranger NOLOGIN`,
             `CREATE ROLE ${DB}_owner NOLOGIN`,
             `GRANT ${DB}_owner TO ${DB}_admin${membership}`,
             `GRANT CREATE, CONNECT ON DATABASE ${DB} TO ${DB}_admin`,
@@ -136,6 +170,7 @@ describe.skipIf(!SUPERUSER)(
          await superuserSql(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
          await superuserSql(`DROP ROLE IF EXISTS ${DB}_admin`);
          await superuserSql(`DROP ROLE IF EXISTS ${DB}_owner`);
+         await superuserSql(`DROP ROLE IF EXISTS ${DB}_stranger`);
       });
 
       it("finds no catalog in an empty database", async () => {
@@ -267,6 +302,246 @@ describe.skipIf(!SUPERUSER)(
          expect((await admin.getCatalog("ds_owned")).sizeBytes).toBeGreaterThan(
             0,
          );
+      });
+
+      it("copies a table from another catalog of the database, rewriting it into the encrypted one", async () => {
+         // The source stands in for a legacy catalog: unencrypted, and owned by
+         // a different role than the target.
+         mkdirSync(join(root, "ds_standalone"), { recursive: true });
+         writeFileSync(
+            join(root, "ds_standalone", "legacy.csv"),
+            "id,amount\n1,5\n2,6\n",
+         );
+         await admin.putTable(
+            "ds_standalone",
+            "main",
+            "legacy",
+            {
+               source: {
+                  uri: join(root, "ds_standalone", "legacy.csv"),
+                  format: "csv",
+               },
+            },
+            true,
+         );
+         const source = {
+            catalog: "ds_standalone",
+            schema: "main",
+            table: "legacy",
+         };
+         const copied = keep(
+            await admin.putTable(
+               "ds_owned",
+               "materialized",
+               "legacy",
+               { source },
+               true,
+            ),
+         );
+         expect(copied.created).toBe(true);
+         expect(copied.table).toMatchObject({
+            schema: "materialized",
+            name: "legacy",
+         });
+         expect(copied.table.columns.map((c) => c.name)).toEqual([
+            "id",
+            "amount",
+         ]);
+         const again = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "legacy",
+               { source },
+               true,
+            ),
+         );
+         expect([again.status, again.reason]).toEqual([412, "TABLE_EXISTS"]);
+         // DuckLake records the rows it wrote, in the target catalog's own files.
+         expect(await writtenEncrypted("ds_owned", "legacy")).toEqual({
+            rows: 2,
+            encrypted: true,
+            inlined: 0,
+         });
+      });
+
+      it("writes every row to encrypted Parquet in a catalog that records an inlining limit", async () => {
+         // The session sets inlining off, but a limit the catalog records wins over
+         // that default, so without the flush both of these would stay as rows in
+         // the catalog database.
+         keep(
+            await admin.createCatalog({
+               name: "ds_inline",
+               dataPath: join(root, "ds_inline"),
+               dataInliningRowLimit: 10,
+            }),
+         );
+         mkdirSync(join(root, "ds_inline"), { recursive: true });
+         writeFileSync(join(root, "ds_inline", "small.csv"), "id\n1\n2\n3\n");
+         await admin.putTable(
+            "ds_inline",
+            "main",
+            "copied",
+            {
+               source: {
+                  catalog: "ds_standalone",
+                  schema: "main",
+                  table: "legacy",
+               },
+            },
+            true,
+         );
+         await admin.putTable(
+            "ds_inline",
+            "main",
+            "loaded",
+            {
+               source: {
+                  uri: join(root, "ds_inline", "small.csv"),
+                  format: "csv",
+               },
+            },
+            true,
+         );
+         expect(await writtenEncrypted("ds_inline", "copied")).toEqual({
+            rows: 2,
+            encrypted: true,
+            inlined: 0,
+         });
+         expect(await writtenEncrypted("ds_inline", "loaded")).toEqual({
+            rows: 3,
+            encrypted: true,
+            inlined: 0,
+         });
+      });
+
+      it("copies within one catalog, and answers a missing source with SOURCE_NOT_FOUND", async () => {
+         const within = keep(
+            await admin.putTable(
+               "ds_owned",
+               "materialized",
+               "orders_copy",
+               {
+                  source: {
+                     catalog: "ds_owned",
+                     schema: "main",
+                     table: "orders",
+                  },
+               },
+               false,
+            ),
+         );
+         expect(within.created).toBe(true);
+         for (const source of [
+            { catalog: "ds_nowhere", schema: "main", table: "orders" },
+            { catalog: "ds_standalone", schema: "nope", table: "legacy" },
+            { catalog: "ds_standalone", schema: "main", table: "nope" },
+         ]) {
+            const error = await refusal(
+               admin.putTable(
+                  "ds_owned",
+                  "materialized",
+                  "missing",
+                  { source },
+                  false,
+               ),
+            );
+            expect([error.status, error.reason]).toEqual([
+               404,
+               "SOURCE_NOT_FOUND",
+            ]);
+         }
+         expect(
+            (await admin.listTables("ds_owned", "materialized")).map(
+               (t) => t.name,
+            ),
+         ).toEqual(["legacy", "orders_copy"]);
+      });
+
+      it("refuses to copy an encrypted catalog's table into an unencrypted one", async () => {
+         const error = await refusal(
+            admin.putTable(
+               "ds_standalone",
+               "main",
+               "leaked",
+               {
+                  source: {
+                     catalog: "ds_owned",
+                     schema: "main",
+                     table: "orders",
+                  },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
+         expect(
+            (await admin.listTables("ds_standalone", "main")).map(
+               (t) => t.name,
+            ),
+         ).toEqual(["legacy"]);
+      });
+
+      it("refuses a source catalog owned by a role it cannot act as, before reading it", async () => {
+         await superuserSql(
+            `CREATE SCHEMA ds_strange AUTHORIZATION ${DB}_stranger`,
+            DB,
+         );
+         const error = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "x",
+               {
+                  source: { catalog: "ds_strange", schema: "main", table: "t" },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([
+            409,
+            "CATALOG_OWNER_UNSUPPORTED",
+         ]);
+      });
+
+      it("refuses a key the source's shape does not have", async () => {
+         const error = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "x",
+               {
+                  source: {
+                     catalog: "ds_standalone",
+                     schema: "main",
+                     table: "legacy",
+                     snapshot: 5,
+                  },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
+      });
+
+      it("refuses a source that is both an object and a table", async () => {
+         const error = await refusal(
+            admin.putTable(
+               "ds_owned",
+               "materialized",
+               "x",
+               {
+                  source: {
+                     catalog: "ds_standalone",
+                     schema: "main",
+                     table: "legacy",
+                     uri: join(root, "ds_owned", "orders.csv"),
+                  },
+               },
+               false,
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
       });
 
       it("serves the catalog to the main API from a config with no data path, and refuses to create a missing one", async () => {

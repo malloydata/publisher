@@ -230,13 +230,17 @@ export function registerWatchModeRoutes(
 /**
  * The admin app; `catalogs` is null when no catalog database is configured, and
  * `watchMode` is null with serving off, which loads no environments to watch.
+ * `metrics` serves `/metrics` when the admin listener is the process's only
+ * one; in-process, the main API already serves the same registry.
  */
 export function createAdminApp(
    catalogs: CatalogAdmin | null,
    watchMode: WatchModeController | null,
+   metrics?: express.RequestHandler,
 ): express.Express {
    const adminApp = express();
    registerHealthEndpoints(adminApp);
+   if (metrics) adminApp.get("/metrics", metrics);
    adminApp.use(loggerMiddleware);
    adminApp.use(httpMetricsMiddleware);
    adminApp.use(bodyParser.json({ limit: "1mb" }));

@@ -38,6 +38,7 @@ import { withStatementUsage } from "./statement_usage";
 import {
    type LoadFormat,
    type LoadOptions,
+   copyStorageTable,
    loadStorageTable,
 } from "./storage_table_load";
 
@@ -402,8 +403,9 @@ export class CatalogAdmin {
    }
 
    /**
-    * Creates or replaces a table from a source. Today the source is one object
-    * under the catalog's data path; `ifAbsent` refuses a table that exists (the
+    * Creates or replaces a table from a source: one object under the catalog's
+    * data path, or a table of a catalog in the same catalog database (a
+    * migration's copy). `ifAbsent` refuses a table that exists (the
     * `If-None-Match: *` precondition). Returns the table and whether it is new.
     */
    async putTable(
@@ -415,27 +417,19 @@ export class CatalogAdmin {
    ): Promise<{ table: CatalogTable; created: boolean }> {
       identifier(schema, "schema");
       identifier(table, "table");
-      const source = request.source as
-         | { uri?: unknown; format?: unknown; options?: unknown }
-         | undefined;
-      if (!source || typeof source.uri !== "string") {
-         throw badRequest("'source.uri' is required.");
-      }
-      if (!["csv", "parquet", "xlsx", "json"].includes(String(source.format))) {
-         throw badRequest(
-            "'source.format' must be csv, parquet, xlsx or json.",
-         );
-      }
-      const options = (source.options ?? {}) as LoadOptions;
-      for (const key of Object.keys(options)) {
-         if (!["header", "delimiter", "sheet", "skip"].includes(key)) {
-            throw badRequest(`Unknown reader option '${key}'.`);
-         }
-      }
-      const owner = await this.withCatalogDatabase(async (pg) => {
-         await this.requireCatalog(pg, name);
-         return this.schemaOwner(pg, name);
-      });
+      const source = tableSource(request.source);
+      const { owner, sourceOwner } = await this.withCatalogDatabase(
+         async (pg) => {
+            await this.requireCatalog(pg, name);
+            const owner = await this.schemaOwner(pg, name);
+            if (source.kind !== "table")
+               return { owner, sourceOwner: undefined };
+            return {
+               owner,
+               sourceOwner: await this.copySource(pg, name, owner, source),
+            };
+         },
+      );
       // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
       // before anything is read.
       const existing = await this.listTables(name, schema);
@@ -447,21 +441,42 @@ export class CatalogAdmin {
             `Table '${schema}.${table}' already exists in catalog '${name}'.`,
          );
       }
-      const uri = source.uri;
+      const mode = ifAbsent ? "create" : "replace";
       try {
          await withStatementUsage(
-            { environment: "", connection: name, surface: "load" },
+            {
+               environment: "",
+               connection: name,
+               surface: source.kind === "table" ? "copy" : "load",
+            },
             () =>
-               loadStorageTable({
-                  destinationName: name,
-                  destinationConnection: this.connection(name, owner),
-                  schemaName: schema,
-                  tableName: table,
-                  uri,
-                  format: source.format as LoadFormat,
-                  options,
-                  mode: ifAbsent ? "create" : "replace",
-               }),
+               source.kind === "table"
+                  ? copyStorageTable({
+                       destinationName: name,
+                       destinationConnection: this.connection(name, owner),
+                       schemaName: schema,
+                       tableName: table,
+                       source: {
+                          catalogName: source.catalog,
+                          connection: this.connection(
+                             source.catalog,
+                             sourceOwner,
+                          ),
+                          schemaName: source.schema,
+                          tableName: source.table,
+                       },
+                       mode,
+                    })
+                  : loadStorageTable({
+                       destinationName: name,
+                       destinationConnection: this.connection(name, owner),
+                       schemaName: schema,
+                       tableName: table,
+                       uri: source.uri,
+                       format: source.format,
+                       options: source.options,
+                       mode,
+                    }),
             (r) => r.rowCount,
          );
       } catch (error) {
@@ -476,13 +491,22 @@ export class CatalogAdmin {
          }
          throw this.redacted(error);
       }
-      logger.info("Loaded a table into a DuckLake catalog", {
-         catalog: name,
-         schema,
-         table,
-         format: source.format,
-         created: !exists,
-      });
+      logger.info(
+         source.kind === "table"
+            ? "Copied a table into a DuckLake catalog"
+            : "Loaded a table into a DuckLake catalog",
+         {
+            catalog: name,
+            schema,
+            table,
+            ...(source.kind === "table"
+               ? {
+                    source: `${source.catalog}.${source.schema}.${source.table}`,
+                 }
+               : { format: source.format }),
+            created: !exists,
+         },
+      );
       return {
          table: await this.getTable(name, schema, table),
          created: !exists,
@@ -680,6 +704,76 @@ export class CatalogAdmin {
       }
    }
 
+   /**
+    * Checks a copy's source before anything attaches or is metered: the source
+    * catalog and its live table exist, the configured role can act as the
+    * source's owner, and the copy would not write an encrypted catalog's rows
+    * into an unencrypted one. Returns the role the source attaches as.
+    */
+   private async copySource(
+      pg: (sql: string) => Promise<Record<string, unknown>[]>,
+      name: string,
+      owner: string | undefined,
+      source: { catalog: string; schema: string; table: string },
+   ): Promise<string | undefined> {
+      const same = source.catalog === name;
+      let sourceOwner = owner;
+      if (!same) {
+         // Ownership first, from pg_namespace: a catalog owned by a role this
+         // one cannot act as would otherwise read as missing, since
+         // information_schema lists only tables the role has a privilege on.
+         // USAGE, not MEMBER: the reads below run as this role without SET
+         // ROLE, which a member granted INHERIT FALSE cannot make.
+         const found = (await pg(
+            "SELECT pg_get_userbyid(nspowner) AS owner, current_user AS me, " +
+               "pg_has_role(current_user, nspowner, 'USAGE') AS member " +
+               `FROM pg_namespace WHERE nspname = ${pgLiteral(source.catalog)}`,
+         )) as { owner: string; me: string; member: unknown }[];
+         const row = found[0];
+         if (!row) {
+            throw sourceNotFound(
+               `Source catalog '${source.catalog}' does not exist.`,
+            );
+         }
+         if (row.member !== true) {
+            throw new CatalogAdminError(
+               409,
+               "CATALOG_OWNER_UNSUPPORTED",
+               `Source catalog '${source.catalog}' is owned by a role this server's catalog role cannot act as.`,
+            );
+         }
+         if (!(await this.catalogExists(pg, source.catalog))) {
+            throw sourceNotFound(
+               `Source catalog '${source.catalog}' does not exist.`,
+            );
+         }
+         sourceOwner = row.owner === row.me ? undefined : row.owner;
+      }
+      const catalog = pgIdent(source.catalog);
+      const live = await pg(
+         `SELECT 1 FROM ${catalog}.ducklake_table t JOIN ${catalog}.ducklake_schema s ` +
+            "ON t.schema_id = s.schema_id " +
+            `WHERE s.schema_name = ${pgLiteral(source.schema)} ` +
+            `AND t.table_name = ${pgLiteral(source.table)} ` +
+            "AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL",
+      );
+      if (live.length === 0) {
+         throw sourceNotFound(
+            `Source table '${source.schema}.${source.table}' does not exist in catalog '${source.catalog}'.`,
+         );
+      }
+      if (!same) {
+         const from = await this.metadata(pg, source.catalog);
+         const to = await this.metadata(pg, name);
+         if (from.encrypted === "true" && to.encrypted !== "true") {
+            throw badRequest(
+               `Source catalog '${source.catalog}' is encrypted and '${name}' is not; a copy would write its rows unencrypted.`,
+            );
+         }
+      }
+      return sourceOwner;
+   }
+
    private async catalogExists(
       pg: (sql: string) => Promise<Record<string, unknown>[]>,
       name: string,
@@ -812,6 +906,70 @@ async function rows(
 }
 
 const q = (name: string) => quoteIdentifier(name, "duckdb");
+
+/**
+ * A table write's source, validated: an object to read, or a catalog's table.
+ * The `table` kind exists for one migration, moving an orchestrator's tables out
+ * of its legacy per-organization catalogs into per-database ones without
+ * rebuilding them, and can be removed (with copyStorageTable) once those legacy
+ * catalogs are dropped.
+ */
+type TableSource =
+   | { kind: "object"; uri: string; format: LoadFormat; options: LoadOptions }
+   | { kind: "table"; catalog: string; schema: string; table: string };
+
+function tableSource(value: unknown): TableSource {
+   const source = value as Record<string, unknown> | undefined;
+   if (!source || typeof source !== "object") {
+      throw badRequest("'source' is required.");
+   }
+   if ("catalog" in source || "table" in source || "schema" in source) {
+      if ("uri" in source || "format" in source || "options" in source) {
+         throw badRequest(
+            "'source' is either an object ({uri, format}) or a table ({catalog, schema, table}), not both.",
+         );
+      }
+      onlyKeys(source, ["catalog", "schema", "table"]);
+      return {
+         kind: "table",
+         catalog: identifier(source.catalog, "source.catalog"),
+         schema: identifier(source.schema, "source.schema"),
+         table: identifier(source.table, "source.table"),
+      };
+   }
+   onlyKeys(source, ["uri", "format", "options"]);
+   if (typeof source.uri !== "string") {
+      throw badRequest("'source.uri' is required.");
+   }
+   if (!["csv", "parquet", "xlsx", "json"].includes(String(source.format))) {
+      throw badRequest("'source.format' must be csv, parquet, xlsx or json.");
+   }
+   const options = (source.options ?? {}) as LoadOptions;
+   for (const key of Object.keys(options)) {
+      if (!["header", "delimiter", "sheet", "skip"].includes(key)) {
+         throw badRequest(`Unknown reader option '${key}'.`);
+      }
+   }
+   return {
+      kind: "object",
+      uri: source.uri,
+      format: source.format as LoadFormat,
+      options,
+   };
+}
+
+/** A source may carry only its own shape's keys, as the spec's `additionalProperties: false` says. */
+function onlyKeys(source: Record<string, unknown>, allowed: string[]): void {
+   for (const key of Object.keys(source)) {
+      if (!allowed.includes(key)) {
+         throw badRequest(`Unknown key 'source.${key}'.`);
+      }
+   }
+}
+
+function sourceNotFound(message: string): CatalogAdminError {
+   return new CatalogAdminError(404, "SOURCE_NOT_FOUND", message);
+}
 
 function identifier(value: unknown, what: string): string {
    if (typeof value !== "string" || !IDENT.test(value)) {

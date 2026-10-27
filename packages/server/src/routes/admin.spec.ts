@@ -65,6 +65,17 @@ describe("the admin listener", () => {
       );
    });
 
+   it("serves /metrics only when handed the handler, as an admin-only process is", async () => {
+      expect(
+         (await request(createAdminApp(null, watch)).get("/metrics")).status,
+      ).toBe(404);
+      const app = createAdminApp(null, null, (_req, res) => {
+         res.type("text/plain").send("publisher_up 1\n");
+      });
+      const res = await request(app).get("/metrics");
+      expect([res.status, res.text]).toEqual([200, "publisher_up 1\n"]);
+   });
+
    it("answers 503 on every catalog route when no catalog database is configured", async () => {
       const res = await request(createAdminApp(null, watch)).get(
          "/api/v0/catalogs",

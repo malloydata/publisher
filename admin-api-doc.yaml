@@ -223,9 +223,17 @@ paths:
       summary: Create or replace a table from a source
       description: |
         Writes the table from `source`: one CSV, Parquet, Excel or JSON object
-        under the catalog's data path, the only location the session can read.
-        The bytes are rewritten as the catalog's own Parquet, never registered in
-        place, so an encrypted catalog stays encrypted. One DuckLake transaction:
+        under the catalog's data path, the only location the session can read;
+        or a table of a catalog in the same catalog database (a migration's
+        copy: from another catalog, attached read-only as its own owner, or
+        from within this one). A missing source catalog, schema or table is
+        `404 SOURCE_NOT_FOUND`; a source catalog owned by a role the configured
+        role cannot act as is `409 CATALOG_OWNER_UNSUPPORTED`; and a copy from an
+        encrypted catalog into an unencrypted one is refused (`400
+        INVALID_REQUEST`), since it would write the rows unencrypted. Either way
+        the bytes are rewritten as the catalog's own Parquet, never registered
+        in place and never left as rows in the catalog database, so an
+        encrypted catalog stays encrypted. One DuckLake transaction:
         a reader sees the old table or the new one. `201` when the table is new,
         `200` when it replaced one; with `If-None-Match: *` an existing table is
         refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
@@ -261,6 +269,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "412":
           description: "`If-None-Match: *` and the table exists (`TABLE_EXISTS`)"
           content:
@@ -459,7 +473,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`)
+      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`), or no such source for a table write (`SOURCE_NOT_FOUND`)
       content:
         application/json:
           schema:
@@ -598,29 +612,53 @@ components:
       required: [source]
       properties:
         source:
+          oneOf:
+            - $ref: "#/components/schemas/ObjectSource"
+            - $ref: "#/components/schemas/CatalogTableSource"
+
+    ObjectSource:
+      type: object
+      required: [uri, format]
+      description: One object under the catalog's data path
+      properties:
+        uri:
+          type: string
+        format:
+          type: string
+          enum: [csv, parquet, xlsx, json]
+        options:
           type: object
-          required: [uri, format]
-          description: One object under the catalog's data path
+          description: An allowlist of typed reader options
           properties:
-            uri:
+            header:
+              type: boolean
+            delimiter:
               type: string
-            format:
+            sheet:
               type: string
-              enum: [csv, parquet, xlsx, json]
-            options:
-              type: object
-              description: An allowlist of typed reader options
-              properties:
-                header:
-                  type: boolean
-                delimiter:
-                  type: string
-                sheet:
-                  type: string
-                skip:
-                  type: integer
-                  minimum: 0
-              additionalProperties: false
+            skip:
+              type: integer
+              minimum: 0
+          additionalProperties: false
+      additionalProperties: false
+
+    CatalogTableSource:
+      type: object
+      required: [catalog, schema, table]
+      description: |
+        A table of a catalog in the same catalog database: the target catalog
+        itself, or another one the configured role can act as the owner of.
+        Added for one migration, moving an orchestrator's tables out of its
+        legacy per-organization catalogs into per-database ones without
+        rebuilding them; it can be removed once those legacy catalogs are dropped.
+      properties:
+        catalog:
+          $ref: "#/components/schemas/Identifier"
+        schema:
+          $ref: "#/components/schemas/Identifier"
+        table:
+          $ref: "#/components/schemas/Identifier"
+      additionalProperties: false
 
     Snapshot:
       type: object
@@ -683,5 +721,6 @@ components:
             Machine-readable: CATALOG_NOT_FOUND, CATALOG_EXISTS,
             CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
-            TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH, INVALID_REQUEST. Treat an
+            SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
+            INVALID_REQUEST. Treat an
             unrecognized value as absent.
