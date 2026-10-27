@@ -42,6 +42,7 @@ export interface DrillTagReader {
    tag(...at: string[]): DrillTagReader | undefined;
    text(...at: string[]): string | undefined;
    textArray(...at: string[]): string[] | undefined;
+   array?(...at: string[]): DrillTagReader[] | undefined;
 }
 
 /** The clicked field, as much of it as drill reads. */
@@ -57,6 +58,8 @@ export interface DrillField {
     * carry the method; absent, the field is taken at its word.
     */
    wasDimension?: () => boolean;
+   /** The column header: the field's `# label`, else its name. */
+   getLabel?: () => string;
 }
 
 /**

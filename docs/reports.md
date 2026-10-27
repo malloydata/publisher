@@ -749,14 +749,19 @@ view with its own `timezone:` is filtered in that zone.
 
 That works for any tile shape that runs one stage: `"<source> -> <view>"`, a refined view
 (`"<source> -> <view> + { where: … }"`), a tile naming a `query:`, an inline query, a view grouped by a
-joined field (`customers.name`). Two shapes offer no rows, and their values are not marked: a view of more
-than one stage (`view: v is { … } -> { … }`), whose later dimensions are an earlier stage's outputs that the
-source cannot be filtered by, and a source with parameters.
+joined field (`customers.name`). Some rows cannot be named exactly, so their values offer no rows and are
+not marked: a view of more than one stage (`view: v is { … } -> { … }`), whose later dimensions are an
+earlier stage's outputs that the source cannot be filtered by; a source with parameters; a row holding a
+value a filter cannot spell (a uuid, JSON, a database-native type) or grouped by an inline expression the
+result reports no expression for; and a nested row whose levels use different time zones, since one rows
+query has one `timezone:`.
 
 **Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
 `limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,
-and saves the result as `<source>_rows_<values>.csv`. When that cap cut the result short, the file name ends
-`_first_<N>_rows_server_limit` and the button's tooltip says `First N rows (server limit)`. A text value that a
+and saves the result as `<source>_rows_<values>.csv`. When the file reaches that cap, the file name ends
+`_first_<N>_rows_server_limit` and the button's tooltip says there may be more. The response has no
+truncation flag, so a result of exactly the cap is labelled the same way. A failed download says why
+beside the button, with the server's message, and closing the dialog cancels a download in flight. A text value that a
 spreadsheet would run as a formula (one starting `=`, `+`, `-` or `@`) is written with a leading `'`; numbers are
 written as they are.
 

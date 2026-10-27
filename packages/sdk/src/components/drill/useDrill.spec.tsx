@@ -80,7 +80,9 @@ const reported = (name: string, code: string): DrillField => {
       tag: tag(),
       parent: root,
       isBasic: () => true,
+      isString: () => true,
       wasDimension: () => true,
+      drillStableExpression: { kind: "field_reference", name },
       metadataTag: {
          text: (...at: string[]) =>
             at.join(".") === "drill_expression.code" ? code : undefined,
@@ -287,6 +289,7 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
             tag: tag(drill),
             parent: root,
             isBasic: () => true,
+            isString: () => true,
             wasDimension: () => true,
             drillStableExpression: { kind: "field_reference", name },
             metadataTag: {

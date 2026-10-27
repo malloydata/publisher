@@ -3,6 +3,7 @@
 
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import type { DrillClause } from "./drillClauses";
+import type { DrillField, DrillTagReader } from "./resolveDrill";
 
 /**
  * What "the rows behind a value" runs, read from the result's own metadata
@@ -33,27 +34,30 @@ import type { DrillClause } from "./drillClauses";
  * guess.
  */
 
-/** The renderer's parsed tag, as much of it as this reads. */
-interface TagReader {
-   text(...at: string[]): string | undefined;
-   array(...at: string[]): TagReader[] | undefined;
-}
-
 /**
- * A renderer result field, structurally typed: `@malloydata/render` is a
- * lazily imported dependency, so its classes are not imported here.
+ * A renderer result field, as much as the rows behind a value read: the
+ * drill field plus Malloy's result metadata, its place in the result, and its
+ * type. Its own type because the renderer declares `metadataTag` protected, so
+ * a renderer field does not satisfy a `DrillField` that names it; a click's
+ * field is read as this one ({@link asRowsField}).
  */
-export interface RowsField {
-   name: string;
-   metadataTag?: TagReader;
+export interface RowsField extends DrillField {
+   metadataTag?: DrillTagReader;
    parent?: RowsField;
    fields?: RowsField[];
    drillStableExpression?: Malloy.Expression;
+   getEffectiveQueryTimezone?: () => string | undefined;
    isArray?: () => boolean;
    isRecord?: () => boolean;
    isBasic?: () => boolean;
-   wasDimension?: () => boolean;
+   isString?: () => boolean;
+   isNumber?: () => boolean;
+   isBoolean?: () => boolean;
+   isTime?: () => boolean;
 }
+
+/** A clicked or listed renderer field, read for its rows. */
+export const asRowsField = (field: DrillField) => field as RowsField;
 
 /** One dimension of the clicked row: its expression as code, and its value. */
 export interface RowsDimension {
@@ -82,6 +86,16 @@ const isDimension = (field: RowsField) =>
    call(field.isBasic?.bind(field)) === true &&
    call(field.wasDimension?.bind(field)) === true;
 
+/**
+ * Whether a cell of this field has a value a filter can be written from. The
+ * renderer reports no value for any other type (a uuid, JSON, a database-native
+ * type), and a row missing one cannot be named.
+ */
+const hasLiteral = (field: RowsField) =>
+   [field.isString, field.isNumber, field.isBoolean, field.isTime].some(
+      (is) => call(is?.bind(field)) === true,
+   );
+
 /** A dimension's expression as Malloy code, or undefined when the result has none. */
 export function dimensionCode(field: RowsField): string | undefined {
    const code = field.metadataTag?.text("drill_expression", "code");
@@ -105,14 +119,18 @@ export function rowsTargetOf(field: RowsField): RowsTarget | undefined {
    const tag = root.metadataTag;
    const source = tag?.text("source", "name");
    // A parameterized source would need its arguments spelled; none are read.
-   if (!source || tag?.array("source", "parameters") !== undefined)
+   if (
+      !source ||
+      !tag?.array ||
+      tag.array("source", "parameters") !== undefined
+   )
       return undefined;
    const filters: string[] = [];
    // Outermost first, as Malloy applies them; each level's own `where:` and a
    // refinement's are both here, a given (`region ~ $REGION`) included.
    for (const level of [...chain].reverse()) {
       if (call(level.isArray?.bind(level)) !== true) continue;
-      for (const filter of level.metadataTag?.array("drill_filters") ?? []) {
+      for (const filter of level.metadataTag?.array?.("drill_filters") ?? []) {
          const code = filter.text("code");
          if (!code) return undefined;
          filters.push(code);
@@ -140,14 +158,40 @@ export function rowDimensionsOf(field: RowsField): RowsField[] {
 }
 
 /**
+ * The one zone every time dimension of the row was truncated in: undefined
+ * when there are none or they use the default, `null` when they differ. A
+ * rows query has one `timezone:`, so a nest whose levels set different zones
+ * cannot be filtered by all of its values at once.
+ */
+export function rowTimezone(field: RowsField): string | undefined | null {
+   const zones = new Set<string | undefined>(
+      rowDimensionsOf(field)
+         .filter((d) => call(d.isTime?.bind(d)) === true)
+         .map((d) => call(d.getEffectiveQueryTimezone?.bind(d))),
+   );
+   if (zones.size > 1) return null;
+   return [...zones][0];
+}
+
+/**
  * Whether a click on `field` can open its rows: a dimension, with a target,
- * and a code for every dimension of its row. What the affordance asks, so a
- * value reads as clickable exactly when the click can build its query.
+ * and every dimension of its row having a code, an expression the renderer
+ * reports its value under, and a value a filter can spell, all in one zone.
+ * What the affordance asks, so a value reads as clickable exactly when the
+ * click can build its query: the renderer reports no row at all when any
+ * dimension lacks an expression, and leaves out one whose value it cannot
+ * write.
  */
 export function canShowRows(field: RowsField): boolean {
    if (!isDimension(field) || dimensionCode(field) === undefined) return false;
    if (rowsTargetOf(field) === undefined) return false;
-   return rowDimensionsOf(field).every((d) => dimensionCode(d) !== undefined);
+   if (rowTimezone(field) === null) return false;
+   return rowDimensionsOf(field).every(
+      (d) =>
+         dimensionCode(d) !== undefined &&
+         d.drillStableExpression !== undefined &&
+         hasLiteral(d),
+   );
 }
 
 /**

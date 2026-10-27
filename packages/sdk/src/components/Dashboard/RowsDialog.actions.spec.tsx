@@ -198,11 +198,53 @@ it("downloads every row as CSV by default, and says when the server's cap cut it
       );
       fireEvent.mouseOver(screen.getByRole("button", { name: /Download CSV/ }));
       expect(
-         await screen.findByText("First 3 rows (server limit)"),
+         await screen.findByText(
+            "First 3 rows: the server's row limit, so there may be more",
+         ),
       ).toBeTruthy();
    } finally {
       URL.createObjectURL = originalCreate;
       URL.revokeObjectURL = originalRevoke;
       HTMLAnchorElement.prototype.click = originalClick;
    }
+});
+
+it("says why a download failed, with the server's message, where a keyboard user reaches it", async () => {
+   mount({});
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   executeQueryModel.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("Request failed with status code 413"), {
+         response: {
+            data: { message: "The result is over the 1000-row cap." },
+         },
+      });
+   });
+   await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Download CSV/ }));
+   });
+   expect((await screen.findByRole("alert")).textContent).toBe(
+      "Download failed: The result is over the 1000-row cap.",
+   );
+});
+
+it("cancels a download in flight when the dialog closes", async () => {
+   const { unmount } = render(
+      <RowsDialog
+         request={request}
+         environmentName="env"
+         packageName="pkg"
+         modelPath="report.malloy"
+         givens={givens}
+         onClose={() => {}}
+      />,
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Download CSV/ }));
+   });
+   const options = executeQueryModel.mock.calls.at(-1)![5];
+   expect(options?.signal?.aborted).toBe(false);
+   unmount();
+   expect(options?.signal?.aborted).toBe(true);
 });

@@ -97,6 +97,28 @@ source: sales_tiles is quarterly_sales extend {
     aggregate: sale_count
   } -> { select: region, sale_count }
 }
+source: edge_cases is duckdb.sql("""
+  select * from (values
+    (9007199254740993::BIGINT, TIMESTAMP '2026-01-15 10:30:15.250', 'East', 'line one
+line two', '00000000-0000-0000-0000-000000000001'::UUID),
+    (9007199254740992::BIGINT, TIMESTAMP '2026-01-15 10:30:15.750', 'West', 'plain', '00000000-0000-0000-0000-000000000002'::UUID),
+    (1::BIGINT, TIMESTAMP '2026-01-16 23:30:00', 'North', 'plain', '00000000-0000-0000-0000-000000000003'::UUID)
+  ) t(big_id, seen_at, region, note, uid)
+""") extend {
+  dimension: coastal is region = 'East' or region = 'West'
+  measure: sale_count is count()
+  view: by_id is { group_by: big_id; aggregate: sale_count }
+  view: by_at is { group_by: seen_at; aggregate: sale_count }
+  view: by_coastal is { group_by: coastal; aggregate: sale_count }
+  view: by_note is { group_by: note; aggregate: sale_count }
+  view: by_uid is { group_by: uid, region; aggregate: sale_count }
+  view: mixed_zone is {
+    group_by: d is seen_at.day
+    aggregate: sale_count
+    nest: tokyo is { timezone: 'Asia/Tokyo'; group_by: h is seen_at.hour; aggregate: sale_count }
+  }
+}
+source: \`edge sales\` is edge_cases
 query: online_quarters is sales_tiles -> quarter_region_table + { where: is_online = true }
 query: given_regions is sales_tiles -> by_region + { where: region ~ $REGION }
 `;
@@ -468,5 +490,72 @@ describe("which tile shapes open the rows behind a value", () => {
       hook.unmount();
       viz.remove();
       element.remove();
+   });
+});
+
+describe("values and shapes a rows query must spell exactly", () => {
+   it("writes a bigint id with its own digits, not a rounded number", async () => {
+      const { outcomes } = await expectEveryRowMatches("edge_cases -> by_id");
+      expect(queriesOf(outcomes)).toContain("big_id = 9007199254740993;");
+      expect(queriesOf(outcomes)).toContain("big_id = 9007199254740992;");
+   });
+
+   it("writes a raw timestamp to its fraction of a second", async () => {
+      const { outcomes } = await expectEveryRowMatches("edge_cases -> by_at");
+      expect(queriesOf(outcomes)).toContain(
+         "seen_at = @2026-01-15 10:30:15.25;",
+      );
+      expect(queriesOf(outcomes)).toContain(
+         "seen_at = @2026-01-15 10:30:15.75;",
+      );
+   });
+
+   it("parenthesizes a dimension whose code is an expression", async () => {
+      const { outcomes } = await expectEveryRowMatches(
+         "edge_cases -> by_coastal",
+      );
+      expect(queriesOf(outcomes)).toContain(
+         "where: (region = 'East' or region = 'West') = false;",
+      );
+   });
+
+   it("escapes a line break inside a string value", async () => {
+      const { outcomes } = await expectEveryRowMatches("edge_cases -> by_note");
+      expect(queriesOf(outcomes)).toContain("note = 'line one\\nline two';");
+   });
+
+   it("back-quotes a source name that cannot stand bare", async () => {
+      const { outcomes } = await expectEveryRowMatches("`edge sales` -> by_id");
+      expect(queriesOf(outcomes)).toContain("run: `edge sales` -> {");
+   });
+
+   it("marks no column of a row holding a value a filter cannot spell", async () => {
+      // The renderer reports no value for a uuid, so no row can be named.
+      const { requests, marked } = await clickEveryCell("edge_cases -> by_uid");
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("marks no column of a row the renderer reports no clauses for", async () => {
+      // An inline expression has no stable expression, so the renderer
+      // gives up on the whole row: its cells must not read as clickable.
+      const { requests, marked } = await clickEveryCell(
+         "sales_tiles -> { group_by: big_amt is amount > 6, region; aggregate: sale_count }",
+      );
+      expect(marked).toEqual([]);
+      expect(requests).toEqual([]);
+   });
+
+   it("marks a nested value only when its row's times share one zone", async () => {
+      const { rows, requests, marked } = await clickEveryCell(
+         "edge_cases -> mixed_zone",
+      );
+      // The outer day is in UTC and the nested hour in Tokyo: one rows query
+      // has one zone, so the nested row is not offered.
+      expect(marked).toEqual(["d"]);
+      await expectRowsMatch(
+         perRow(requests),
+         rows.map((r) => r.sale_count),
+      );
    });
 });

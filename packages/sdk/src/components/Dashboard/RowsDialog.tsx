@@ -17,19 +17,17 @@ import { useQueryResult } from "../../hooks/useQueryResult";
 import {
    drillClauseLabels,
    literalText,
-   type DrillClause,
    type DrillClauseLabel,
 } from "../drill/drillClauses";
-import type { DrillRowsRequest } from "../drill/resolveDrill";
+import type { DrillField, DrillRowsRequest } from "../drill/resolveDrill";
 import {
+   asRowsField,
    rowDimensionsOf,
-   type RowsDimension,
-   type RowsField,
    type RowsTarget,
 } from "../drill/rowsTarget";
 import { malloyLiteral } from "../../utils/malloyLiteral";
 import { escapeMalloyString } from "../../utils/malloyString";
-import { isIdentifier, tileSteps } from "../../utils/malloyText";
+import { isBareName, isIdentifier, tileSteps } from "../../utils/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { withPreamble } from "./textSource";
@@ -49,41 +47,18 @@ import { rowsFileName } from "./rowsCsv";
  */
 export const ROW_LIMIT = 200;
 
-export interface RowsRequest {
-   target: RowsTarget;
-   field: string;
-   rawValue: unknown;
-   label: string;
-   /** The clicked row's dimensions as code, each with its value. */
-   dimensions?: readonly RowsDimension[];
-   /** The clicked field's code, for a click that came with no row. */
-   code?: string;
-   /** The clicked row as the renderer reported it, for the title and a null. */
-   drillClauses?: readonly DrillClause[];
-   timezone?: string;
-}
+/** A click's rows request once its result has named everything a query needs. */
+export type RowsRequest = DrillRowsRequest & { target: RowsTarget };
 
 /** The dialog's request for a click, if its result named everything a query needs. */
 export function rowsRequestFor(
    request: DrillRowsRequest,
 ): RowsRequest | undefined {
-   if (request.target === undefined) return undefined;
+   const { target } = request;
+   if (target === undefined) return undefined;
    if (request.dimensions === undefined && request.code === undefined)
       return undefined;
-   return {
-      target: request.target,
-      field: request.field,
-      rawValue: request.rawValue,
-      label: request.label,
-      ...(request.dimensions === undefined
-         ? {}
-         : { dimensions: request.dimensions }),
-      ...(request.code === undefined ? {} : { code: request.code }),
-      ...(request.drillClauses === undefined
-         ? {}
-         : { drillClauses: request.drillClauses }),
-      ...(request.timezone === undefined ? {} : { timezone: request.timezone }),
-   };
+   return { ...request, target };
 }
 
 /**
@@ -134,7 +109,26 @@ export function rowsQuery(
       ? `timezone: '${escapeMalloyString(request.timezone)}'; `
       : "";
    const cap = limit === null ? "" : `; limit: ${limit}`;
-   return `run: ${request.target.source} -> { ${zone}where: ${where}; select: *${cap} }`;
+   const source = sourceName(request.target.source);
+   if (source === undefined) return undefined;
+   return `run: ${source} -> { ${zone}where: ${where}; select: *${cap} }`;
+}
+
+/** A source name as `run:` reads it: back-quoted unless it stands bare. */
+function sourceName(name: string): string | undefined {
+   if (isBareName(name)) return name;
+   return name.includes("`") ? undefined : `\`${name}\``;
+}
+
+/**
+ * A dimension's code as an operand: parenthesized unless it is a plain name
+ * or dotted path, since `region = 'East' or region = 'West' = false` binds
+ * the `=` to the last disjunct only.
+ */
+function operand(code: string): string {
+   return /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(code)
+      ? code
+      : `(${code})`;
 }
 
 /** Each dimension at its value; undefined if any one cannot be written. */
@@ -144,18 +138,18 @@ function dimensionFilters(request: RowsRequest): string[] | undefined {
       for (const { code, value } of request.dimensions) {
          // A row whose dimension is null is the rows where it is null.
          if (value.kind === "null_literal") {
-            out.push(`${code} is null`);
+            out.push(`${operand(code)} is null`);
             continue;
          }
          const literal = literalText(value, request.timezone);
          if (literal === undefined) return undefined;
-         out.push(`${code} = ${literal}`);
+         out.push(`${operand(code)} = ${literal}`);
       }
       return out;
    }
    const literal = malloyLiteral(request.rawValue);
    return request.code !== undefined && literal
-      ? [`${request.code} = ${literal}`]
+      ? [`${operand(request.code)} = ${literal}`]
       : undefined;
 }
 
@@ -207,14 +201,16 @@ export const sourceOf = (tileExpression: string | undefined) =>
  */
 export function rowsGateFor(
    tileExpression: string | undefined,
-): (field: RowsField) => boolean {
+): (field: DrillField) => boolean {
    if (stepsOf(tileExpression) === undefined) return () => true;
-   return (field) =>
-      [field, ...rowDimensionsOf(field)].every(
+   return (clicked) => {
+      const field = asRowsField(clicked);
+      return [field, ...rowDimensionsOf(field)].every(
          (d) =>
             d.drillStableExpression?.kind !== "field_reference" ||
             (d.drillStableExpression.path ?? []).length > 0,
       );
+   };
 }
 
 export function RowsDialog({

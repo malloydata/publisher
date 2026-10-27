@@ -2,15 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 import DownloadIcon from "@mui/icons-material/Download";
-import { Button, Tooltip } from "@mui/material";
+import { Box, Button, Tooltip, Typography } from "@mui/material";
 import type * as Malloy from "@malloydata/malloy-interfaces";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServer } from "../ServerProvider";
 import type { RowsActionsContext } from "./RowsDialog";
 import { resultRecords, resultToCsv, serverCappedAt } from "./rowsCsv";
 import { withPreamble } from "./textSource";
 
-const DEFAULT_TIP = "Download every row behind this value as CSV";
+const DEFAULT_TIP =
+   "Download the rows behind this value as CSV, up to the server's row limit";
+
+/**
+ * How long a saved file's object URL outlives the click. Revoking it at once
+ * can cancel the save in Firefox and Safari; FileSaver.js waits 40 seconds.
+ */
+const REVOKE_AFTER_MS = 40_000;
 
 /** Hands `text` to the browser as a file named `fileName`. */
 function saveFile(text: string, fileName: string) {
@@ -23,15 +30,27 @@ function saveFile(text: string, fileName: string) {
    document.body.appendChild(link);
    link.click();
    link.remove();
-   URL.revokeObjectURL(url);
+   setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
+}
+
+/** The server's own message for a failed request, else the error's. */
+function failureMessage(error: unknown): string {
+   const response = (error as { response?: { data?: { message?: unknown } } })
+      ?.response;
+   const message = response?.data?.message;
+   if (typeof message === "string" && message !== "") return message;
+   return error instanceof Error && error.message !== ""
+      ? error.message
+      : "The request failed.";
 }
 
 /**
  * The rows dialog's own download, for a host that passes no `rowsActions`:
  * runs the rows query with no row limit through the same query endpoint the
  * dialog uses, and saves the result as CSV. The server's own row cap still
- * applies; when it cut the result short, the file name and the tooltip say
- * how many rows the file holds.
+ * applies; when the file reached it, the file name and the tooltip say so.
+ * A failure is written beside the button, where a keyboard user reaches it,
+ * with the server's message. Closing the dialog cancels a download in flight.
  */
 export function DownloadRowsCsv({
    query,
@@ -46,9 +65,16 @@ export function DownloadRowsCsv({
    const { apiClients } = useServer();
    const [busy, setBusy] = useState(false);
    const [tip, setTip] = useState(DEFAULT_TIP);
+   const [failure, setFailure] = useState<string | undefined>(undefined);
+   const inFlight = useRef<AbortController | undefined>(undefined);
+   useEffect(() => () => inFlight.current?.abort(), []);
 
    const download = async () => {
+      inFlight.current?.abort();
+      const controller = new AbortController();
+      inFlight.current = controller;
       setBusy(true);
+      setFailure(undefined);
       try {
          const response = await apiClients.models.executeQueryModel(
             environmentName,
@@ -62,7 +88,10 @@ export function DownloadRowsCsv({
                givens,
                versionId,
             },
+            undefined,
+            { signal: controller.signal },
          );
+         if (controller.signal.aborted) return;
          const body = response.data;
          const result = JSON.parse(body.result ?? "{}") as Malloy.Result;
          const capped = serverCappedAt(
@@ -73,7 +102,7 @@ export function DownloadRowsCsv({
          setTip(
             capped === undefined
                ? DEFAULT_TIP
-               : `First ${capped} rows (server limit)`,
+               : `First ${capped} rows: the server's row limit, so there may be more`,
          );
          saveFile(
             resultToCsv(result),
@@ -81,25 +110,41 @@ export function DownloadRowsCsv({
                ? `${fileName}.csv`
                : `${fileName}_first_${capped}_rows_server_limit.csv`,
          );
-         setBusy(false);
-      } catch {
-         setTip("The download failed. Try again.");
-         setBusy(false);
+      } catch (error) {
+         if (controller.signal.aborted) return;
+         setFailure(`Download failed: ${failureMessage(error)}`);
+      } finally {
+         if (inFlight.current === controller) {
+            inFlight.current = undefined;
+            setBusy(false);
+         }
       }
    };
 
    return (
-      <Tooltip title={tip}>
-         <span>
-            <Button
-               size="small"
-               startIcon={<DownloadIcon fontSize="small" />}
-               onClick={() => void download()}
-               disabled={busy}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+         {failure && (
+            <Typography
+               role="alert"
+               variant="caption"
+               color="error"
+               sx={{ maxWidth: 320 }}
             >
-               Download CSV
-            </Button>
-         </span>
-      </Tooltip>
+               {failure}
+            </Typography>
+         )}
+         <Tooltip title={tip}>
+            <span>
+               <Button
+                  size="small"
+                  startIcon={<DownloadIcon fontSize="small" />}
+                  onClick={() => void download()}
+                  disabled={busy}
+               >
+                  Download CSV
+               </Button>
+            </span>
+         </Tooltip>
+      </Box>
    );
 }
