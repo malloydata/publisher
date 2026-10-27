@@ -1,15 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
    chmodSync,
    existsSync,
@@ -23,7 +15,6 @@ import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
-import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
@@ -321,13 +312,6 @@ describe("EnvironmentStore Service", () => {
       failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
       environmentStore = new EnvironmentStore(serverRootPath);
    });
 
@@ -1939,13 +1923,6 @@ describe("Project Service Error Recovery", () => {
       sandbox = sinon.createSandbox();
       mkdirSync(serverRootPath, { recursive: true });
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
       environmentStore = new EnvironmentStore(serverRootPath);
    });
 
@@ -2141,10 +2118,6 @@ describe("EnvironmentStore path-injection guards", () => {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
       mkdirSync(serverRootPath);
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       environmentStore = new EnvironmentStore(serverRootPath);
       await environmentStore.finishedInitialization;
    });
@@ -2621,9 +2594,6 @@ describe("readiness line emission", () => {
          rmSync(readinessRoot, { recursive: true, force: true });
       }
       mkdirSync(readinessRoot, { recursive: true });
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       stderrWrites = [];
       stderrSpy = spyOn(process.stderr, "write").mockImplementation(
          (chunk: string | Uint8Array) => {
