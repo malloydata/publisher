@@ -7,7 +7,7 @@ import {
    FilterType,
 } from "../../hooks/useDimensionalFilterRangeData";
 import { FilterSelection } from "../../hooks/useDimensionFilters";
-import { escapeMalloyString } from "../../utils/malloyString";
+import { filterCondition } from "../../utils/filterCondition";
 
 /**
  * A single filter specification with source and dimension
@@ -281,13 +281,7 @@ export function generateFilterClause(
 
    const conditions = activeFilters
       .map((selection) => {
-         const {
-            dimensionName,
-            source: filterSourceName,
-            matchType,
-            value,
-            value2,
-         } = selection;
+         const { dimensionName, source: filterSourceName } = selection;
          // Only use source.dimension format if the filter's source is different from the query's source
          // (i.e., it's a joined source, not the main source)
          const needsSourcePrefix =
@@ -295,57 +289,7 @@ export function generateFilterClause(
          const fieldName = needsSourcePrefix
             ? `\`${filterSourceName}\`.\`${dimensionName}\``
             : `\`${dimensionName}\``;
-         const isDate = value instanceof Date;
-
-         const formatValue = (
-            v: unknown,
-            isDateVal: boolean = false,
-         ): string => {
-            if (v === null || v === undefined) return "null";
-            if (isDateVal && v instanceof Date) {
-               return `@${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
-            }
-            if (typeof v === "string") {
-               return `'${escapeMalloyString(v)}'`;
-            }
-            if (typeof v === "boolean") return v ? "true" : "false";
-            return String(v);
-         };
-
-         switch (matchType) {
-            case "Equals":
-            case "Semantic Search":
-               if (Array.isArray(value) && value.length > 0) {
-                  const conditions = value.map(
-                     (v) => `${fieldName} = ${formatValue(v, isDate)}`,
-                  );
-                  return `(${conditions.join(" or ")})`;
-               }
-               return `${fieldName} = ${formatValue(value, isDate)}`;
-
-            case "Contains":
-               if (typeof value === "string") {
-                  return `${fieldName} ~ f'%${escapeMalloyString(value)}%'`;
-               }
-               return `${fieldName} = ${formatValue(value)}`;
-
-            case "After":
-            case "Greater Than":
-               return `${fieldName} > ${formatValue(value, isDate)}`;
-
-            case "Before":
-            case "Less Than":
-               return `${fieldName} < ${formatValue(value, isDate)}`;
-
-            case "Between":
-               if (value2 !== undefined) {
-                  return `${fieldName} >= ${formatValue(value, isDate)} and ${fieldName} <= ${formatValue(value2, isDate)}`;
-               }
-               return `${fieldName} >= ${formatValue(value, isDate)}`;
-
-            default:
-               return "";
-         }
+         return filterCondition(fieldName, selection);
       })
       .filter((c) => c.length > 0);
 

@@ -5,8 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import { createEmbeddedQueryResult } from "../components/QueryResult";
 import { encodeResourceUri } from "../utils/formatting";
 import { FilterSelection } from "./useDimensionFilters";
-import { formatMalloyValue } from "../utils/malloyLiteral";
-import { escapeMalloyString } from "../utils/malloyString";
+import { filterCondition } from "../utils/filterCondition";
 
 /**
  * Parameters for the useDimensionFiltersQuery hook
@@ -44,63 +43,9 @@ export interface DimensionFiltersQueryResult {
    canExecute: boolean;
 }
 
-/**
- * Generates a Malloy filter condition for a single filter selection
- */
+/** A selection as a Malloy condition on its dimension. */
 function generateFilterCondition(selection: FilterSelection): string {
-   const { dimensionName, matchType, value, value2 } = selection;
-   const fieldName = `\`${dimensionName}\``;
-
-   // Determine if this is a date field based on the value
-   const isDate = value instanceof Date;
-
-   switch (matchType) {
-      case "Equals":
-      case "Semantic Search":
-         if (Array.isArray(value) && value.length > 0) {
-            // Handle multi-select: (field = val1 or field = val2)
-            const conditions = value.map(
-               (v) => `${fieldName} = ${formatMalloyValue(v, isDate)}`,
-            );
-            return `(${conditions.join(" or ")})`;
-         }
-         // Empty array or single value
-         if (Array.isArray(value)) return "";
-         return `${fieldName} = ${formatMalloyValue(value, isDate)}`;
-
-      case "Contains":
-         if (typeof value === "string") {
-            return `${fieldName} ~ f'%${escapeMalloyString(value)}%'`;
-         }
-         if (Array.isArray(value)) return "";
-         return `${fieldName} = ${formatMalloyValue(value)}`;
-
-      case "After":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} > ${formatMalloyValue(value, isDate)}`;
-
-      case "Before":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} < ${formatMalloyValue(value, isDate)}`;
-
-      case "Greater Than":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} > ${formatMalloyValue(value)}`;
-
-      case "Less Than":
-         if (Array.isArray(value)) return "";
-         return `${fieldName} < ${formatMalloyValue(value)}`;
-
-      case "Between":
-         if (Array.isArray(value)) return "";
-         if (value2 !== undefined) {
-            return `${fieldName} >= ${formatMalloyValue(value, isDate)} and ${fieldName} <= ${formatMalloyValue(value2, isDate)}`;
-         }
-         return `${fieldName} >= ${formatMalloyValue(value, isDate)}`;
-
-      default:
-         return "";
-   }
+   return filterCondition(`\`${selection.dimensionName}\``, selection);
 }
 
 /**
