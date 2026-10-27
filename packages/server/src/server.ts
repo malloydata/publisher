@@ -6,7 +6,7 @@
 // before the call below; it precedes everything this process chooses to do.
 import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
-import { Settings } from "./settings";
+import { Settings, SettingsError } from "./settings";
 
 // Exits non-zero on an unsupported Node before argument parsing, storage init
 // or any listener; otherwise the failure surfaces only as an unexplained 500
@@ -19,17 +19,30 @@ printHelpIfAsked(argv);
 // Every setting, read once from the flags, the variables and the config file,
 // before any module that reads one is loaded: main_server.ts and
 // admin_server.ts read theirs when they load.
-Settings.install(Settings.load({ argv }));
+const loaded = Settings.load({ argv });
+Settings.install(loaded);
+
+const { logger } = await import("./logger");
+for (const warning of loaded.warnings) {
+   logger.warn(warning.message);
+}
+// A value that does not parse fails startup, every one of them at once, and
+// before anything binds. A config file that cannot be read fails it alone,
+// since none of its settings can be trusted to have their defaults.
+const failures = loaded.fileError ? [loaded.fileError] : loaded.errors();
+if (failures.length > 0) {
+   const message = new SettingsError(failures).message;
+   process.stderr.write(
+      `${message}\nPUBLISHER_INIT_FAILED error=${JSON.stringify(message)}\n`,
+   );
+   process.exit(1);
+}
 
 // Checked before either server's module loads, so a contradiction fails startup
 // before anything binds or opens storage. Imported here, after the version check,
 // because config.ts brings the logger and the rest of the application with it.
 const { getServerApiSettings } = await import("./config");
 const { assertServerApis } = await import("./server_apis");
-const { logger } = await import("./logger");
-for (const warning of Settings.current().warnings) {
-   logger.warn(warning.message);
-}
 const apis = getServerApiSettings();
 assertServerApis(apis);
 

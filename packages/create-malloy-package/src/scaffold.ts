@@ -1571,11 +1571,11 @@ function isSingleServerInvocation(script: string): boolean {
  * Whitespace only, because that is the whole of what Publisher accepts: the
  * flag reader in `packages/server/src/settings/settings.ts` looks each argv
  * entry up by its exact name and takes the next entry as its value.
- * `--host=127.0.0.1` is the name of no flag, and the reader has no unknown-flag
- * error, so the flag is dropped in silence and PUBLISHER_HOST falls back to
- * "0.0.0.0" for the REST listener. The MCP listener reads MCP_HOST first and
- * defaults to loopback on its own, so a dropped --host exposes REST and leaves
- * MCP where it was.
+ * `--host=127.0.0.1` is the name of no flag, and an unknown flag is only warned
+ * about, so the flag is dropped and PUBLISHER_HOST falls back to "0.0.0.0" for
+ * the REST listener. The MCP listener reads MCP_HOST first and defaults to
+ * loopback on its own, so a dropped --host exposes REST and leaves MCP where it
+ * was.
  *
  * Accepting the `=` form here was worse than useless: it made the one shape that
  * looks private and is not the one shape this tool called safest, suppressing the

@@ -904,6 +904,9 @@ PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments
   shows as itself.
 - If initialization fails, `PUBLISHER_INIT_FAILED` is printed in its place. A startup failure outside
   initialization — a port already in use, say — crashes without either token.
+- A setting whose value does not parse, or a `publisher.config.json` that cannot be read or parsed,
+  also prints `PUBLISHER_INIT_FAILED` (after one line per bad setting) and exits non-zero before
+  binding anything.
 - On a Node older than 20 the server prints `PUBLISHER_UNSUPPORTED_NODE required=>=20 detected=<version>`
   and exits non-zero before binding anything, so a script waiting on `PUBLISHER_READY` fails fast
   instead of hanging. Every `@malloydata/*` dependency shares that floor; older runtimes are untested

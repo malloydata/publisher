@@ -21,6 +21,22 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Settings are read once, from one registry, and bad values fail startup
+
+Every Publisher setting is now read once at startup, through one registry, as step 1 of the configuration design ([docs/configuration-design.md](docs/configuration-design.md)) lays out. The names, the defaults and the precedence are today's, and no value that works changes meaning. These are the changes:
+
+- **A value that does not parse fails startup**, and every bad value of one startup is reported together, one line each, in one format: `mcp.port from MCP_PORT: expected an integer from 0 to 65535, got "40a0"`. A value used to fail only when something read it, sometimes on the first query; it now fails even for a setting this configuration never reads, such as a memory-governor fraction with `PUBLISHER_MAX_MEMORY_BYTES` unset. Some values that used to be accepted are now refused, because each setting has one type:
+  - `PUBLISHER_PORT`, `MCP_PORT`, `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` were read with `Number()` and no check, so a typo was `NaN`. Under Bun, a non-numeric `MCP_PORT` bound an ephemeral port. `0` is still an ephemeral port.
+  - `PACKAGE_LOAD_JOB_TIMEOUT_MS` fell back to 120000 on any bad value. `PACKAGE_LOAD_WORKERS` read `5abc` as 5.
+  - `PUBLISHER_RATE_LIMIT`, `PUBLISHER_ADMIN_PORT` and `PACKAGE_LOAD_SCHEMA_CACHE_BYTES` accepted whatever `Number()` reads (`1e3`, `0x10`, `4100.0`). They now take decimal digits.
+  - `PUBLISHER_MCP_TRACE` read anything but `retrieval` as off.
+  - `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` read an unrecognised value as off where a tunnel connected, and refused it only when a connection's config loaded.
+  - `mcp.includeHiddenFilesAndSources` in publisher.config.json ignored a value that is not a boolean, with a warning. A value that spells no boolean (`"enabled"`, `1`) now fails.
+- **An empty variable is unset for every setting.** `PACKAGE_LOAD_WORKERS=""` used to fail startup. It now takes the default.
+- **A config file that cannot be read or parsed fails startup**, with the reason and `PUBLISHER_INIT_FAILED` on stderr, before anything binds. Before, the server started with `frozenConfig` off and both APIs on, and named the problem only on `/status`.
+- **Booleans keep their meaning, and the spellings that would change it are warned about.** `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`. `DISABLE_RESPONSE_LOGGING` is on only for `true` or `1`. `"frozenConfig": "false"` freezes the server. Each of these still means what it did, and startup now warns about any value another boolean setting would read differently (`INITIALIZE_STORAGE=1`, `PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes`, `"frozenConfig": "false"`). A later release refuses those values, so write `true` or `false`. A value no boolean reads (`enabled`) fails startup now.
+- **Startup warns about what used to be ignored.** That covers an unknown key in publisher.config.json (naming the nearest known key, so `adminApiEnable` points at `adminApiEnabled`), an unknown flag, a flag given without its value, and an invalid `LOG_LEVEL`, which still falls back to `debug`.
+
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:

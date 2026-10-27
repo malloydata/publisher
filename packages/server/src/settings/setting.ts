@@ -18,28 +18,18 @@ export interface Resolving {
 
 /**
  * How today's names are read where that differs from the setting's type. Step 1
- * of the configuration design keeps every one of these, so no value changes
- * meaning; each is removed by the step that ends it, from here.
+ * of the configuration design keeps these, so no value changes meaning: where
+ * a boolean's reading here and the common reader disagree, today's wins, with a
+ * warning. Each is removed, from here, by the step that ends it.
  */
 export interface TodayReading {
    /**
-    * How a variable or flag value is read today:
+    * How a boolean's variable is read today:
     * - `exactly-true`: on only for the exact text `true`; anything else is off.
     * - `true-or-1`: on only for `true` or `1`.
     * - `on-off`: only `on` or `off`, any case; anything else fails.
-    * - `Number`: `Number()`, then the type's checks.
-    * - `unchecked-Number`: `Number()` and nothing else, so a typo is `NaN`.
-    * - `parseInt`: `Number.parseInt`, which reads `5abc` as 5, then the type's checks.
-    * - `parseInt-or-default`: as `parseInt`, but a value that fails is the default.
     */
-   reads?:
-      | "exactly-true"
-      | "true-or-1"
-      | "on-off"
-      | "Number"
-      | "unchecked-Number"
-      | "parseInt"
-      | "parseInt-or-default";
+   reads?: "exactly-true" | "true-or-1" | "on-off";
    /**
     * How a value in the file is read today:
     * - `truthy`: JavaScript truthiness, so the string `"false"` is on.
@@ -48,10 +38,8 @@ export interface TodayReading {
     * - `json-boolean`: a JSON boolean only.
     */
    file?: "truthy" | "boolean-or-reference" | "json-boolean";
-   /** A blank variable fails today, rather than reading as unset. */
-   blankFails?: true;
-   /** A value that does not parse is the default today: silently, or with a warning. */
-   invalid?: "default" | "warn";
+   /** A value that does not parse is the default today, with a warning. */
+   invalid?: "warn";
    /** The file's value wins over the variable today. */
    fileFirst?: true;
    /** Each flag adds to the variable's list today, rather than replacing it. */

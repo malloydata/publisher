@@ -47,7 +47,6 @@ export const server = [
       aliases: {
          env: ["PUBLISHER_PORT"],
          flags: ["--port"],
-         today: { reads: "unchecked-Number" },
       },
    }),
    setting({
@@ -63,7 +62,7 @@ export const server = [
       type: integer({ min: 0 }),
       default: 0,
       description: "Requests per minute per client; 0 is unlimited.",
-      aliases: { env: ["PUBLISHER_RATE_LIMIT"], today: { reads: "Number" } },
+      aliases: { env: ["PUBLISHER_RATE_LIMIT"] },
    }),
    setting({
       key: "frameAncestors",

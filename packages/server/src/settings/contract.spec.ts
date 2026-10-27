@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { Settings } from ".";
 import { assertServerApis } from "../server_apis";
 import { getServerApiSettings } from "../config";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
@@ -14,11 +15,16 @@ import { PROBES } from "../test_helpers/settings_probes";
  * the sources. Every row is a case a deployment can hit: unset, each source
  * read today, a blank variable, and values that are wrong. The expected result
  * is today's, quirks included, so a change to how a setting is read shows up
- * here as a changed row.
+ * here as a changed row. Step 1's rules (#1477) are such rows: a value of
+ * another type fails startup, a blank variable is unset, a boolean today
+ * reads its own way keeps its meaning with a warning, and an unreadable file
+ * fails startup.
  *
- * A row expects a value, or a failure whose message names the setting.
+ * A row expects a value, with the warning startup gives if any, or a failure
+ * whose message names the setting. A failure is at startup, as server.ts
+ * reports it, or where the server reads the setting.
  */
-type Expected = { value: unknown } | { fails: string };
+type Expected = { value: unknown; warns?: string } | { fails: string };
 
 interface Case extends SettingsInput {
    name: string;
@@ -26,6 +32,10 @@ interface Case extends SettingsInput {
 }
 
 const value = (v: unknown): Expected => ({ value: v });
+const warned = (v: unknown, warning: string): Expected => ({
+   value: v,
+   warns: warning,
+});
 const fails = (name: string): Expected => ({ fails: name });
 
 /** Embedding settings are off without a key, so their rows set one. */
@@ -61,20 +71,20 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
       {
-         name: 'the string "false" freezes the server',
+         name: 'the string "false" still freezes the server, with a warning',
          file: { frozenConfig: "false" },
-         expect: value(true),
+         expect: warned(true, '"frozenConfig": "false"'),
       },
       {
-         name: "a ${VAR} is read as a string, so any value freezes",
+         name: "a ${VAR} still reads as a string, so any value freezes, with a warning",
          env: { FROZEN: "false" },
          file: { frozenConfig: "${FROZEN}" },
-         expect: value(true),
+         expect: warned(true, '"frozenConfig": "${FROZEN}"'),
       },
       {
-         name: "an unreadable file reads as unfrozen",
+         name: "an unreadable file fails startup",
          file: "{",
-         expect: value(false),
+         expect: fails("Failed to parse"),
       },
    ],
    servingApiEnabled: [
@@ -128,9 +138,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("servingApiEnabled"),
       },
       {
-         name: "an unreadable file reads as on",
+         name: "an unreadable file fails startup",
          file: "{",
-         expect: value(true),
+         expect: fails("Failed to parse"),
       },
    ],
    adminApiEnabled: [
@@ -182,15 +192,15 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(4200),
       },
       {
-         name: "--port with no value is ignored",
+         name: "--port with no value is ignored, with a warning",
          argv: ["--port"],
-         expect: value(4000),
+         expect: warned(4000, "--port has no value after it"),
       },
       { name: "blank", env: { PUBLISHER_PORT: "" }, expect: value(4000) },
       {
-         name: "not a number is NaN",
+         name: "not a number fails",
          env: { PUBLISHER_PORT: "40a0" },
-         expect: value(NaN),
+         expect: fails("PUBLISHER_PORT"),
       },
    ],
    host: [
@@ -350,10 +360,13 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
       {
-         name: 'only exactly "true" turns it on',
+         name: 'only exactly "true" turns it on, with a warning for 1',
          env: { NODE_ENV: "production", PUBLISHER_USE_BUNDLED_DEFAULT: "1" },
          argv: ["--server_root", "/x"],
-         expect: value(false),
+         expect: warned(
+            false,
+            "PUBLISHER_USE_BUNDLED_DEFAULT=1 is read as off",
+         ),
       },
       {
          name: "the variable turns it on in tests",
@@ -370,25 +383,25 @@ export const CONTRACT: Record<string, Case[]> = {
       },
       { name: "--init", argv: ["--init"], expect: value(true) },
       {
-         name: '"1" is off',
+         name: '"1" is still off, with a warning',
          env: { INITIALIZE_STORAGE: "1" },
-         expect: value(false),
+         expect: warned(false, "INITIALIZE_STORAGE=1 is read as off"),
       },
       {
-         name: '"TRUE" is off',
+         name: '"TRUE" is still off, with a warning',
          env: { INITIALIZE_STORAGE: "TRUE" },
-         expect: value(false),
+         expect: warned(false, "INITIALIZE_STORAGE=TRUE is read as off"),
       },
       {
-         name: '"yes" is off',
+         name: '"yes" is still off, with a warning',
          env: { INITIALIZE_STORAGE: "yes" },
-         expect: value(false),
+         expect: warned(false, "INITIALIZE_STORAGE=yes is read as off"),
       },
       { name: "blank", env: { INITIALIZE_STORAGE: "" }, expect: value(false) },
       {
-         name: "not a boolean is off",
+         name: "not a boolean fails",
          env: { INITIALIZE_STORAGE: "enabled" },
-         expect: value(false),
+         expect: fails("INITIALIZE_STORAGE"),
       },
    ],
    watchEnvironments: [
@@ -417,9 +430,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(["a", "b"]),
       },
       {
-         name: "--watch-env with no value is ignored",
+         name: "--watch-env with no value is ignored, with a warning",
          argv: ["--watch-env"],
-         expect: value([]),
+         expect: warned([], "--watch-env has no value after it"),
       },
    ],
 
@@ -441,9 +454,9 @@ export const CONTRACT: Record<string, Case[]> = {
       },
       { name: "blank", env: { MCP_PORT: "" }, expect: value(4040) },
       {
-         name: "not a number is NaN",
+         name: "not a number fails",
          env: { MCP_PORT: "40a0" },
-         expect: value(NaN),
+         expect: fails("MCP_PORT"),
       },
    ],
    "mcp.host": [
@@ -536,17 +549,17 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "a string in the file is warned about and ignored",
          file: { mcp: { includeHiddenFilesAndSources: "yes" } },
-         expect: value(false),
+         expect: warned(false, '"mcp.includeHiddenFilesAndSources": "yes"'),
       },
       {
-         name: "an mcp that is not an object is ignored",
+         name: "an mcp that is not an object is warned about and ignored",
          file: { mcp: "on" },
-         expect: value(false),
+         expect: warned(false, 'Invalid "mcp"'),
       },
       {
-         name: "an unreadable file reads as off",
+         name: "an unreadable file fails startup",
          file: "{",
-         expect: value(false),
+         expect: fails("Failed to parse"),
       },
    ],
    "mcp.trace": [
@@ -562,9 +575,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
       {
-         name: "another value is off",
+         name: "another value fails",
          env: { PUBLISHER_MCP_TRACE: "summary" },
-         expect: value(false),
+         expect: fails("PUBLISHER_MCP_TRACE"),
       },
       { name: "blank", env: { PUBLISHER_MCP_TRACE: "" }, expect: value(false) },
    ],
@@ -1013,9 +1026,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(4),
       },
       {
-         name: "blank fails",
+         name: "blank is unset",
          env: { PACKAGE_LOAD_WORKERS: "" },
-         expect: fails("PACKAGE_LOAD_WORKERS"),
+         expect: value(1),
       },
       {
          name: "0 is refused",
@@ -1023,9 +1036,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PACKAGE_LOAD_WORKERS"),
       },
       {
-         name: "a number then text reads the number",
+         name: "a number then text fails",
          env: { PACKAGE_LOAD_WORKERS: "5abc" },
-         expect: value(5),
+         expect: fails("PACKAGE_LOAD_WORKERS"),
       },
    ],
    "packageLoad.jobTimeoutMs": [
@@ -1041,14 +1054,14 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(120_000),
       },
       {
-         name: "0 is the default",
+         name: "0 is refused",
          env: { PACKAGE_LOAD_JOB_TIMEOUT_MS: "0" },
-         expect: value(120_000),
+         expect: fails("PACKAGE_LOAD_JOB_TIMEOUT_MS"),
       },
       {
-         name: "not a number is the default",
+         name: "not a number fails",
          env: { PACKAGE_LOAD_JOB_TIMEOUT_MS: "soon" },
-         expect: value(120_000),
+         expect: fails("PACKAGE_LOAD_JOB_TIMEOUT_MS"),
       },
    ],
    "packageLoad.schemaCacheBytes": [
@@ -1319,14 +1332,20 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
       {
-         name: '"1" is off',
+         name: '"1" is still off, with a warning',
          env: { PUBLISHER_ALLOW_PROXY_CONNECTIONS: "1" },
-         expect: value(false),
+         expect: warned(
+            false,
+            "PUBLISHER_ALLOW_PROXY_CONNECTIONS=1 is read as off",
+         ),
       },
       {
-         name: '"yes" is off',
+         name: '"yes" is still off, with a warning',
          env: { PUBLISHER_ALLOW_PROXY_CONNECTIONS: "yes" },
-         expect: value(false),
+         expect: warned(
+            false,
+            "PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes is read as off",
+         ),
       },
       {
          name: "blank",
@@ -1368,9 +1387,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value({ atConnect: false, atConfigLoad: "accepted" }),
       },
       {
-         name: "a typo is off where a tunnel connects and refused when config loads",
+         name: "a typo fails",
          env: { PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY: "ture" },
-         expect: value({ atConnect: false, atConfigLoad: "refused" }),
+         expect: fails("PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY"),
       },
    ],
    "allow.s3CredentialChain": [
@@ -1425,9 +1444,9 @@ export const CONTRACT: Record<string, Case[]> = {
       { name: "any case", env: { LOG_LEVEL: "WARN" }, expect: value("warn") },
       { name: "blank", env: { LOG_LEVEL: "" }, expect: value("debug") },
       {
-         name: "an unknown level is debug",
+         name: "an unknown level is debug, with a warning",
          env: { LOG_LEVEL: "loud" },
-         expect: value("debug"),
+         expect: warned("debug", "LOG_LEVEL"),
       },
    ],
    "logging.responseBodiesEnabled": [
@@ -1443,9 +1462,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
       {
-         name: '"yes" does not disable',
+         name: '"yes" still does not disable, with a warning',
          env: { DISABLE_RESPONSE_LOGGING: "yes" },
-         expect: value(true),
+         expect: warned(true, "DISABLE_RESPONSE_LOGGING=yes is read as off"),
       },
       {
          name: "blank",
@@ -1477,9 +1496,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(0),
       },
       {
-         name: "not a number is NaN",
+         name: "not a number fails",
          env: { SHUTDOWN_DRAIN_DURATION_SECONDS: "abc" },
-         expect: value(NaN),
+         expect: fails("SHUTDOWN_DRAIN_DURATION_SECONDS"),
       },
    ],
    "shutdown.gracefulCloseTimeoutSeconds": [
@@ -1500,9 +1519,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(0),
       },
       {
-         name: "not a number is NaN",
+         name: "not a number fails",
          env: { SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "abc" },
-         expect: value(NaN),
+         expect: fails("SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS"),
       },
    ],
 
@@ -1656,12 +1675,25 @@ export const CONTRACT: Record<string, Case[]> = {
    ],
 };
 
-/** Read one case: its value, or the message it failed with. */
-function outcome(key: string, input: SettingsInput): Expected {
+/** Read one case: its value and warnings, or the message it failed with. */
+function outcome(
+   key: string,
+   input: SettingsInput,
+): { value: unknown; warns: string[] } | { fails: string } {
    try {
-      return {
-         value: withSettings(input, (context) => PROBES[key](context)),
-      };
+      return withSettings(input, (context) => {
+         const current = Settings.current();
+         const startup = current.fileError
+            ? [current.fileError]
+            : current.errors();
+         if (startup.length > 0) {
+            return { fails: startup.map((error) => error.message).join("\n") };
+         }
+         return {
+            value: PROBES[key](context),
+            warns: current.warnings.map((warning) => warning.message),
+         };
+      });
    } catch (error) {
       return { fails: error instanceof Error ? error.message : String(error) };
    }
@@ -1682,8 +1714,15 @@ describe("settings contract", () => {
                   expect((actual as { fails: string }).fails).toContain(
                      expected.fails,
                   );
+                  return;
+               }
+               expect(actual).toHaveProperty("value");
+               const read = actual as { value: unknown; warns: string[] };
+               expect(read.value).toEqual(expected.value);
+               if (expected.warns === undefined) {
+                  expect(read.warns).toEqual([]);
                } else {
-                  expect(actual).toEqual(expected);
+                  expect(read.warns.join("\n")).toContain(expected.warns);
                }
             });
          }
