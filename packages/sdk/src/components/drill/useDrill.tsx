@@ -88,14 +88,10 @@ export interface UseDrillResult {
    drill: DrillBinding;
    /**
     * The binding for one result on a surface with several, such as a
-    * dashboard's tiles: its clicks carry `context`, and a field opens rows
-    * only where `rowsGate` also says so. `rowsGate: false` turns rows off for
-    * that result, leaving its tag drills.
+    * dashboard's tiles: its clicks carry `context`. `rows: false` turns rows
+    * off for that result, leaving its tag drills.
     */
-   bindingFor: (
-      context: string | undefined,
-      rowsGate: ((field: DrillField) => boolean) | false,
-   ) => DrillBinding;
+   bindingFor: (context: string | undefined, rows: boolean) => DrillBinding;
    /** Render anywhere in the subtree: the menu every drillable click opens. */
    drillMenu: ReactNode;
 }
@@ -332,21 +328,14 @@ export function useDrill({
    );
 
    const bindingFor = useCallback(
-      (
-         context: string | undefined,
-         rowsGate: ((field: DrillField) => boolean) | false,
-      ): DrillBinding => ({
+      (context: string | undefined, rows: boolean): DrillBinding => ({
          canDrill: (field) =>
-            canDrillTag(field) ||
-            (rowsGate !== false && rowsGate(field) && canDrillRows(field)),
+            canDrillTag(field) || (rows && canDrillRows(field)),
          onClick: (payload) =>
             onClick({
                ...payload,
                ...(context === undefined ? {} : { context }),
-               ...(rowsGate === false ||
-               (payload.field !== undefined && !rowsGate(payload.field))
-                  ? { noRows: true }
-                  : {}),
+               ...(rows ? {} : { noRows: true }),
             }),
       }),
       [onClick, canDrillTag, canDrillRows],

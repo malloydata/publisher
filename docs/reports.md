@@ -749,12 +749,20 @@ view with its own `timezone:` is filtered in that zone.
 
 That works for any tile shape that runs one stage: `"<source> -> <view>"`, a refined view
 (`"<source> -> <view> + { where: … }"`), a tile naming a `query:`, an inline query, a view grouped by a
-joined field (`customers.name`). Some rows cannot be named exactly, so their values offer no rows and are
-not marked: a view of more than one stage (`view: v is { … } -> { … }`), whose later dimensions are an
-earlier stage's outputs that the source cannot be filtered by; a source with parameters; a row holding a
+joined field (`customers.name`), including a dimension declared in the joined source
+(`customers.signup_year`). Some rows cannot be named exactly, so their values offer no rows and are not
+marked: a pipeline of more than one stage, whether a view (`view: v is { … } -> { … }`), a nest, a named
+query or an inline query, since its later dimensions are an earlier stage's outputs that the source cannot
+be filtered by; a source with parameters; a time truncation with no name of its own inside a view or a nest
+(`group_by: created_at.month`; write `group_by: order_month is created_at.month` to drill it); a row holding a
 value a filter cannot spell (a uuid, JSON, a database-native type) or grouped by an inline expression the
 result reports no expression for; and a nested row whose levels use different time zones, since one rows
 query has one `timezone:`.
+
+Malloy's result metadata is wrong in three of those places as of Malloy 0.0.435: a pipeline's root reads
+as drillable, a dimension declared in a joined source carries code that reads the root source's fields, and
+an unnamed truncation in a view loses its truncation. Publisher's server corrects all three before it sends
+a result, so a client reading the metadata gets the right rows or none.
 
 **Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
 `limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,

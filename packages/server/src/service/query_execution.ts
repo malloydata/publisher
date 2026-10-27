@@ -22,6 +22,7 @@ import { BadRequestError, databaseAccessFailure } from "../errors";
 import { logger } from "../logger";
 import { type QueryCapSource } from "../query_cap_metrics";
 import { bigIntReplacer } from "../json_utils";
+import { correctDrillMetadata } from "./drill_metadata";
 import {
    assertWithinModelByteLimit,
    assertWithinModelRowLimit,
@@ -112,6 +113,7 @@ export function serializeWithinCaps(
    },
 ): { wrapped: Malloy.Result; serialized: string } {
    assertWithinModelRowLimit(result.totalRows, caps.maxRows, caps.source);
+   correctDrillMetadata(result);
    const wrapped = API.util.wrapResult(result);
    const serialized = stringifyQueryResponse(
       caps.compact ? result.data.value : wrapped,

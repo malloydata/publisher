@@ -72,6 +72,7 @@ const reported = (name: string, code: string): DrillField => {
                  ? "by_cat"
                  : undefined,
          array: () => undefined,
+         has: (...at: string[]) => at.join(".") === "drillable",
       },
       fields: [] as unknown[],
    };
@@ -277,6 +278,7 @@ describe("useDrill: every drillable click opens a menu that says what it does", 
             text: (...at: string[]) =>
                at.join(".") === "source.name" ? "orders" : undefined,
             array: () => undefined,
+            has: (...at: string[]) => at.join(".") === "drillable",
          },
          fields: [] as unknown[],
       };

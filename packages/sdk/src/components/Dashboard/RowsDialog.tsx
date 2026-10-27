@@ -19,12 +19,8 @@ import {
    literalText,
    type DrillClauseLabel,
 } from "../drill/drillClauses";
-import type { DrillField, DrillRowsRequest } from "../drill/resolveDrill";
-import {
-   asRowsField,
-   rowDimensionsOf,
-   type RowsTarget,
-} from "../drill/rowsTarget";
+import type { DrillRowsRequest } from "../drill/resolveDrill";
+import { type RowsTarget } from "../drill/rowsTarget";
 import { malloyLiteral } from "../../utils/malloyLiteral";
 import { escapeMalloyString } from "../../utils/malloyString";
 import { isBareName, isIdentifier, tileSteps } from "../../utils/malloyText";
@@ -188,30 +184,6 @@ export function stepsOf(
 /** The source alone, for opening the explorer on it. */
 export const sourceOf = (tileExpression: string | undefined) =>
    stepsOf(tileExpression)?.source;
-
-/**
- * Which of a tile's fields may open rows, beyond what the result says.
- *
- * A one-stage `source -> view` reports every dimension through the view
- * (`drill_expression.path = [view]`). One with no path there means the view
- * runs more than one stage, and a later stage's dimension is an earlier
- * stage's output, which the source cannot be filtered by: its rows query would
- * fail. A refined or named query reports a plain source field with no path
- * too, so this is decided only where the tile says it is `source -> view`.
- */
-export function rowsGateFor(
-   tileExpression: string | undefined,
-): (field: DrillField) => boolean {
-   if (stepsOf(tileExpression) === undefined) return () => true;
-   return (clicked) => {
-      const field = asRowsField(clicked);
-      return [field, ...rowDimensionsOf(field)].every(
-         (d) =>
-            d.drillStableExpression?.kind !== "field_reference" ||
-            (d.drillStableExpression.path ?? []).length > 0,
-      );
-   };
-}
 
 export function RowsDialog({
    request,

@@ -43,6 +43,7 @@ export interface DrillTagReader {
    text(...at: string[]): string | undefined;
    textArray(...at: string[]): string[] | undefined;
    array?(...at: string[]): DrillTagReader[] | undefined;
+   has?(...at: string[]): boolean;
 }
 
 /** The clicked field, as much of it as drill reads. */
@@ -94,7 +95,7 @@ export interface DrillClickPayload {
    timezone?: string;
    /**
     * Set by a host that shows no rows for this click's tile (a restricted
-    * one, or one whose shape cannot name its rows). Tag drills still apply.
+    * one). Tag drills still apply.
     */
    noRows?: boolean;
 }

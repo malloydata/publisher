@@ -29,9 +29,12 @@ import type { DrillField, DrillTagReader } from "./resolveDrill";
  * missing view path still is.
  *
  * A field reads as having rows only when every piece is there: a source with
- * no arguments, a code for every filter on the way down, and a code for every
- * dimension of the row. Anything else is not clickable for rows, never a
- * guess.
+ * no arguments, every level on the way down marked `drillable` (one stage),
+ * a code for every filter on the way down, and a code for every dimension of
+ * the row. Anything else is not clickable for rows, never a guess. Malloy's
+ * metadata is wrong in places that would name the wrong rows (a pipeline's
+ * root marked `drillable`, a joined dimension's code); Publisher's server
+ * corrects those before it sends a result (`drill_metadata.ts`).
  */
 
 /**
@@ -130,6 +133,11 @@ export function rowsTargetOf(field: RowsField): RowsTarget | undefined {
    // refinement's are both here, a given (`region ~ $REGION`) included.
    for (const level of [...chain].reverse()) {
       if (call(level.isArray?.bind(level)) !== true) continue;
+      // Malloy marks a level `drillable` only when it runs one stage, and
+      // Publisher's server corrects the root of a longer pipeline to match:
+      // a later stage's dimensions are an earlier stage's outputs, which the
+      // source cannot be filtered by.
+      if (level.metadataTag?.has?.("drillable") !== true) return undefined;
       for (const filter of level.metadataTag?.array?.("drill_filters") ?? []) {
          const code = filter.text("code");
          if (!code) return undefined;

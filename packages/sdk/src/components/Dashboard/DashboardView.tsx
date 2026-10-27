@@ -34,7 +34,6 @@ import { DashboardTile } from "./DashboardTile";
 import {
    RowsDialog,
    type RowsActions,
-   rowsGateFor,
    rowsRequestFor,
    type RowsRequest,
 } from "./RowsDialog";
@@ -281,11 +280,10 @@ export function DashboardView({
       destinationTitle,
    });
    // Each tile's clicks carry the tile they came from. A restricted tile
-   // never ran, so it offers no rows; otherwise the tile's shape may rule a
-   // field out (`rowsGateFor`).
+   // never ran, so it offers no rows.
    const drillFor = useCallback(
       (tile: string, restricted: boolean | undefined): DrillBinding =>
-         bindingFor(tile, restricted === true ? false : rowsGateFor(tile)),
+         bindingFor(tile, restricted !== true),
       [bindingFor],
    );
 
