@@ -15,10 +15,13 @@ import {
    withReferenceTable,
 } from "../src/settings/reference";
 
-const doc = path.resolve(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "../../../docs/configuration.md",
-);
+// The reference, or another file a test names.
+const doc =
+   process.argv[2] ??
+   path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../docs/configuration.md",
+   );
 const before = fs.readFileSync(doc, "utf8");
 const after = withReferenceTable(before);
 if (!before.includes(REFERENCE_START) || !before.includes(REFERENCE_END)) {

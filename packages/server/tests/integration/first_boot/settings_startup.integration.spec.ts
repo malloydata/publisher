@@ -4,6 +4,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
+import path from "path";
 import {
    getFreePort,
    pollUntil,
@@ -128,5 +129,34 @@ describe("settings at startup", () => {
          'rateLimit from PUBLISHER_RATE_LIMIT: expected an integer of at least 0, got "abc"',
       );
       expect(stderr).not.toContain("SettingError:");
+   });
+});
+
+describe("--help from the real entry point", () => {
+   const ENTRY = path.join(import.meta.dir, "../../../src/server.ts");
+
+   for (const flag of ["--help", "-h"]) {
+      it(`${flag} prints every flag and exits 0 without starting`, () => {
+         const run = Bun.spawnSync(["bun", ENTRY, "--port", "1", flag], {
+            env: { ...process.env, NODE_ENV: "test" },
+         });
+         expect(run.exitCode).toBe(0);
+         const out = run.stdout.toString();
+         expect(out).toContain("Usage: malloy-publisher [options]");
+         expect(out).toContain(
+            "--serving-api-enabled, --no-serving-api-enabled",
+         );
+         expect(out).toContain("--admin_port <n>");
+         expect(out).not.toContain("PUBLISHER_READY");
+      });
+   }
+
+   it("does not print help for a flag that merely starts like it", () => {
+      const run = Bun.spawnSync(["bun", ENTRY, "--helpme", "--port", "40a0"], {
+         env: { ...process.env, NODE_ENV: "test" },
+      });
+      expect(run.exitCode).not.toBe(0);
+      expect(run.stdout.toString()).not.toContain("Usage: malloy-publisher");
+      expect(run.stderr.toString()).toContain("port from --port");
    });
 });
