@@ -4,8 +4,6 @@
 import {
    CacheManager,
    type CachedModel,
-   type InvalidationKey,
-   type ModelDef,
    type URLReader,
 } from "@malloydata/malloy";
 
@@ -20,23 +18,30 @@ export const MAX_CACHED_MODELS_PER_PACKAGE = 512;
  * The compiled ModelDefs of one package, shared by every Runtime that
  * compiles it, so a file whose text (and whose imports' text) is unchanged is
  * not translated again. Malloy checks an entry against file contents only, so
- * the whole cache is emptied when the connections it compiled against change
- * (the `connectionsEpoch`). Restricted-mode compiles bypass it in Malloy.
+ * the whole cache is emptied when anything else a ModelDef depends on changes
+ * (see {@link beginLoad}). Restricted-mode compiles bypass it in Malloy.
  */
 export class PackageCompileCache {
    private models = new Map<string, CachedModel>();
-   private manager = this.newManager();
-   private epoch: number | undefined;
+   private sharedManager = this.newManager();
+   private stamp: string | undefined;
 
    constructor(private readonly maxModels = MAX_CACHED_MODELS_PER_PACKAGE) {}
 
-   /** The shared manager, emptied first if the connections changed since the last call. */
-   managerFor(connectionsEpoch: number): CacheManager {
-      if (this.epoch !== connectionsEpoch) {
+   /**
+    * Start a load. `stamp` names what the ModelDefs depend on besides file
+    * text (the connections, the package's data files); a new one empties the cache.
+    */
+   beginLoad(stamp: string): void {
+      if (this.stamp !== stamp) {
          this.clear();
-         this.epoch = connectionsEpoch;
+         this.stamp = stamp;
       }
-      return this.manager;
+   }
+
+   /** The shared manager. */
+   get manager(): CacheManager {
+      return this.sharedManager;
    }
 
    /**
@@ -44,13 +49,9 @@ export class PackageCompileCache {
     * served from the cache. With `translate`, it never is: a hit carries no
     * problems, so a caller that reports the file's problems translates it.
     */
-   forModel(
-      connectionsEpoch: number,
-      url: URL,
-      options: { translate: boolean },
-   ): ModelCompileCache {
+   forModel(url: URL, options: { translate: boolean }): ModelCompileCache {
       return new ModelCompileCache(
-         this.managerFor(connectionsEpoch),
+         this.sharedManager,
          url.toString(),
          options.translate,
       );
@@ -58,7 +59,7 @@ export class PackageCompileCache {
 
    clear(): void {
       this.models = new Map();
-      this.manager = this.newManager();
+      this.sharedManager = this.newManager();
    }
 
    private newManager(): CacheManager {
@@ -83,8 +84,6 @@ export class PackageCompileCache {
 export class ModelCompileCache extends CacheManager {
    /** `topLevelUrl` was served from the cache. */
    hit = false;
-   /** The ModelDef this compile produced for `topLevelUrl`, with the keys it was checked or stored under. */
-   private topLevel?: CachedModel;
 
    constructor(
       private readonly shared: CacheManager,
@@ -107,7 +106,6 @@ export class ModelCompileCache extends CacheManager {
       if (this.translateTopLevel) return undefined;
       const cached = await this.shared.getCachedModelDef(urlReader, url);
       this.hit = cached !== undefined;
-      this.topLevel = cached;
       return cached;
    }
 
@@ -115,21 +113,6 @@ export class ModelCompileCache extends CacheManager {
       url: string,
       cachedModel: CachedModel,
    ): Promise<boolean> {
-      if (url === this.topLevelUrl) this.topLevel = cachedModel;
       return this.shared.setCachedModelDef(url, cachedModel);
-   }
-
-   /**
-    * The invalidation keys `modelDef` was compiled against, if this compile
-    * produced it, so another isolate can seed its cache with the same pair.
-    * Taken from this compile, not the shared entry: a concurrent compile
-    * importing the file may have replaced that entry.
-    */
-   invalidationKeysFor(
-      modelDef: ModelDef,
-   ): Record<string, InvalidationKey> | undefined {
-      return this.topLevel?.modelDef === modelDef
-         ? this.topLevel.invalidationKeys
-         : undefined;
    }
 }

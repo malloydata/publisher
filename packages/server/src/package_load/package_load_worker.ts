@@ -37,6 +37,7 @@ import {
    declaredDeprecatedManifestKeys,
    type DeprecatedManifestKey,
 } from "../service/deprecated/manifest_keys";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -830,6 +831,32 @@ async function listPackageFiles(packagePath: string): Promise<string[]> {
    );
 }
 
+/**
+ * Path, size and mtime of every file a model can read data from (all but
+ * model and markdown sources), since a cached ModelDef holds those files' schemas.
+ */
+async function dataFilesDigest(
+   packagePath: string,
+   allRelative: string[],
+): Promise<string> {
+   const dataFiles = allRelative.filter(
+      (p) =>
+         !p.endsWith(MODEL_FILE_SUFFIX) &&
+         !p.endsWith(NOTEBOOK_FILE_SUFFIX) &&
+         !p.toLowerCase().endsWith(".md"),
+   );
+   const stats = await Promise.all(
+      dataFiles.map((p) =>
+         fs.promises.stat(path.join(packagePath, p)).catch(() => undefined),
+      ),
+   );
+   const hash = crypto.createHash("sha1");
+   dataFiles.forEach((p, i) =>
+      hash.update(`${p}\0${stats[i]?.size}\0${stats[i]?.mtimeMs}\n`),
+   );
+   return hash.digest("hex");
+}
+
 function filterModelPaths(allRelative: string[]): string[] {
    return allRelative.filter(
       (p) => p.endsWith(MODEL_FILE_SUFFIX) || p.endsWith(NOTEBOOK_FILE_SUFFIX),
@@ -1011,32 +1038,54 @@ interface LoadContext {
    planLeftToMainThread: boolean;
 }
 
-async function compileMalloyModel(
-   job: LoadPackageRequest,
-   malloyConfig: MalloyConfig,
-   modelPath: string,
-   load: LoadContext,
-): Promise<SerializedModel> {
-   const compileStart = performance.now();
-   const fullPath = path.join(job.packagePath, modelPath);
-   // Not a `file://` template, which parses host=`D:` on Windows.
-   const modelURL = pathToFileURL(fullPath);
-   const importBaseURL = new URL(".", modelURL);
+/** What a load derives from a compiled model, all of it a function of the ModelDef. */
+interface ModelDerivation {
+   givens: MalloyGivenApi[] | undefined;
+   sourceInfos: ReturnType<typeof collectSourceInfos>;
+   sources: ReturnType<typeof extractSources>["sources"];
+   filterMap: Array<[string, FilterDefinition[]]>;
+   queries: ReturnType<typeof extractQueries>["queries"];
+   authorizeWarnings?: string[];
+   modelInfo: ReturnType<typeof modelInfoOf>;
+}
 
-   const modelCache = compileCacheFor(job).forModel(
-      job.connectionsEpoch,
-      modelURL,
-      { translate: job.collectProblems === true },
-   );
-   const { runtime, urlReader, textFor } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      modelCache,
-   );
-   const mm = runtime.loadModel(modelURL, { importBaseURL });
-   const compiled = await mm.getModel();
+/**
+ * Each cached ModelDef's derivation, with a digest of the text it was compiled
+ * from. A cache hit returns the identical ModelDef, so the derivation (about
+ * as costly as the translation it replaces) is reused rather than redone.
+ */
+const derivations = new WeakMap<
+   ModelDef,
+   { textDigest: string; derivation: ModelDerivation }
+>();
+
+function textDigest(text: string | undefined): string {
+   return crypto
+      .createHash("sha1")
+      .update(text ?? "")
+      .digest("hex");
+}
+
+function reusableDerivation(
+   modelDef: ModelDef,
+   modelSourceText: string | undefined,
+): ModelDerivation | undefined {
+   const entry = derivations.get(modelDef);
+   return entry?.textDigest === textDigest(modelSourceText)
+      ? entry.derivation
+      : undefined;
+}
+
+/**
+ * Run the model's checks and extract what the main thread serves. Throws as
+ * the checks do; only a derivation that passed is kept for reuse.
+ */
+async function deriveModel(
+   mm: ModelMaterializer,
+   compiled: Awaited<ReturnType<ModelMaterializer["getModel"]>>,
+   modelSourceText: string | undefined,
+): Promise<ModelDerivation> {
    const modelDef = compiled._modelDef;
-
    const malloyGivens = Array.from(compiled.givens.values());
    const givens =
       malloyGivens.length > 0
@@ -1121,6 +1170,62 @@ async function compileMalloyModel(
       },
    });
 
+   const derivation: ModelDerivation = {
+      givens,
+      sourceInfos,
+      sources,
+      filterMap: Array.from(filterMap.entries()),
+      queries,
+      authorizeWarnings:
+         authorizeWarningCollection.warnings.length > 0
+            ? authorizeWarningCollection.warnings
+            : undefined,
+      modelInfo: modelInfoOf(modelDef),
+   };
+   derivations.set(modelDef, {
+      textDigest: textDigest(modelSourceText),
+      derivation,
+   });
+   return derivation;
+}
+
+async function compileMalloyModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   modelPath: string,
+   load: LoadContext,
+): Promise<SerializedModel> {
+   const compileStart = performance.now();
+   const fullPath = path.join(job.packagePath, modelPath);
+   // Not a `file://` template, which parses host=`D:` on Windows.
+   const modelURL = pathToFileURL(fullPath);
+   const importBaseURL = new URL(".", modelURL);
+
+   const modelCache = compileCacheFor(job).forModel(modelURL, {
+      translate: job.collectProblems === true,
+   });
+   const { runtime, urlReader, textFor } = buildRuntimeForModel(
+      job,
+      malloyConfig,
+      modelCache,
+   );
+   const mm = runtime.loadModel(modelURL, { importBaseURL });
+   const compiled = await mm.getModel();
+   const modelDef = compiled._modelDef;
+
+   const modelSourceText = textFor(modelURL);
+   const {
+      givens,
+      sourceInfos,
+      sources,
+      filterMap,
+      queries,
+      authorizeWarnings,
+      modelInfo,
+   } =
+      (modelCache.hit && reusableDerivation(modelDef, modelSourceText)) ||
+      (await deriveModel(mm, compiled, modelSourceText));
+
    const compileDurationMs = performance.now() - compileStart;
    const { renderTagResults, preaggregateCompanion } =
       await prepareForMainThread(job, malloyConfig, load, {
@@ -1136,7 +1241,7 @@ async function compileMalloyModel(
       modelPath,
       modelType: "model",
       modelDef,
-      modelInfo: modelInfoOf(modelDef),
+      modelInfo,
       sourceInfos,
       // `sources`/`queries` ship complete (authorize + filter enforcement and
       // join resolution read the full set); the Model's discovery accessors
@@ -1144,21 +1249,17 @@ async function compileMalloyModel(
       // `modelInfo`/`sourceInfos`.
       sources,
       queries,
-      filterMap: Array.from(filterMap.entries()),
+      filterMap,
       givens,
       // The bytes this compile read, so a consumer slicing a
       // DocumentLocation out of them is cutting the same snapshot the
       // coordinates were computed against. See SerializedModel.
-      modelSourceText: textFor(modelURL),
+      modelSourceText,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       compileCacheHit: modelCache.hit,
-      compileCacheKeys: modelCache.invalidationKeysFor(modelDef),
-      authorizeWarnings:
-         authorizeWarningCollection.warnings.length > 0
-            ? authorizeWarningCollection.warnings
-            : undefined,
+      authorizeWarnings,
       renderTagResults,
       preaggregateCompanion,
    };
@@ -1252,7 +1353,7 @@ async function prepareForMainThread(
                      : files.readURL(url);
                },
             },
-            compileCacheFor(job).managerFor(job.connectionsEpoch),
+            compileCacheFor(job).manager,
          ),
          importBaseURL,
       };
@@ -1332,7 +1433,7 @@ async function compileNotebookModel(
    const { runtime, urlReader } = buildRuntimeForModel(
       job,
       malloyConfig,
-      compileCacheFor(job).managerFor(job.connectionsEpoch),
+      compileCacheFor(job).manager,
    );
    const authorizeWarningCollection = authorizeWarningCollector();
 
@@ -1586,6 +1687,9 @@ async function loadPackage(
       modelPaths,
    );
    const malloyConfig = buildWorkerMalloyConfig(job);
+   compileCacheFor(job).beginLoad(
+      `${job.connectionsEpoch}\0${await dataFilesDigest(job.packagePath, allFiles)}`,
+   );
 
    const replacementMatchedExisting = job.replacement
       ? modelPaths.includes(job.replacement.modelPath)

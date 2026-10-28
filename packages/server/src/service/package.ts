@@ -8,7 +8,6 @@ import { pathToFileURL } from "url";
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
-   type CacheManager,
    Connection,
    ConnectionRuntime,
    contextOverlay,
@@ -27,7 +26,6 @@ import {
    getPackageLoadPool,
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
-import { PackageCompileCache } from "../package_load/compile_cache";
 import type { LoadPackageRequest } from "../package_load/protocol";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -367,8 +365,6 @@ export class Package {
    /** Identifies the connections this package compiles against (see PackageCompileCache). */
    private connectionsEpoch: () => number = () =>
       connectionGeneration(this.malloyConfig);
-   /** This thread's compile cache for `/compile`, seeded by the load. */
-   private readonly compileCache = new PackageCompileCache();
    /**
     * The skills in `skills/`, refreshed with the content sha so a skill edit is
     * covered by the reload receipt by construction.
@@ -1194,7 +1190,6 @@ export class Package {
          malloyConfig,
       );
       pkg.connectionsEpoch = connectionsEpoch;
-      await pkg.seedCompileCache(outcome, epoch);
       const reportTimings = await pkg.discoverReports("load");
       // After discovery: which findings a tile explains depends on the reports.
       pkg.renderTagWarnings = pkg.surfacedRenderTagWarnings(renderTagWarnings);
@@ -2305,36 +2300,6 @@ export class Package {
    /** See {@link LoadPackageRequest.connectionsEpoch}. */
    public getConnectionsEpoch(): number {
       return this.connectionsEpoch();
-   }
-
-   /**
-    * The cache a `/compile` of `url` compiles with: this package's, except
-    * that `url` itself is always translated, since its problems are reported.
-    */
-   public compileCacheManagerFor(url: URL): CacheManager {
-      return this.compileCache.forModel(this.connectionsEpoch(), url, {
-         translate: true,
-      });
-   }
-
-   /** Seed this thread's compile cache with the load's ModelDefs, under the worker's keys. */
-   private async seedCompileCache(
-      outcome: LoadPackageOutcome,
-      epoch: number,
-   ): Promise<void> {
-      const manager = this.compileCache.managerFor(epoch);
-      for (const model of outcome.models) {
-         if (!model.modelDef || !model.compileCacheKeys) continue;
-         await manager.setCachedModelDef(
-            pathToFileURL(
-               path.join(this.packagePath, model.modelPath),
-            ).toString(),
-            {
-               modelDef: model.modelDef,
-               invalidationKeys: model.compileCacheKeys,
-            },
-         );
-      }
    }
 
    public getPackagePath(): string {

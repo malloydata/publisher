@@ -2,19 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The per-package compile cache: the worker serves an unchanged file's
- * ModelDef across loads, the load seeds the main thread's copy that `/compile`
- * reads, and a connection change (but not a token-only one) empties both.
+ * The per-package compile cache in the load worker: an unchanged file's
+ * ModelDef (and what the load derives from it) is served across loads, and a
+ * connection change (but not a token-only one), a changed data file or an
+ * unload empties it.
  *
  * One pool for the file, as in package_worker_path.component.spec.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { CacheManager } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { pathToFileURL } from "url";
 import type { components } from "../../src/api";
 import {
    dropPackageCompileCache,
@@ -159,7 +158,7 @@ describe("package compile cache", () => {
          await load(1);
          fs.writeFileSync(
             path.join(packagePath, "base.malloy"),
-            BASE.replace("n.sum()", "n.avg()"),
+            BASE.replace("}", "  measure: added_measure is count()\n}"),
          );
          const edited = await load(1);
          expect(hits(edited)).toEqual({
@@ -167,8 +166,13 @@ describe("package compile cache", () => {
             "leaf.malloy": false,
             "other.malloy": true,
          });
-         const leaf = edited.models.find((m) => m.modelPath === "leaf.malloy");
-         expect(JSON.stringify(leaf?.modelDef)).toContain("avg");
+         // The derivation is redone for a new ModelDef, not reused.
+         for (const model of edited.models.filter((m) => !m.compileCacheHit)) {
+            expect(JSON.stringify(model.modelDef)).toContain("added_measure");
+            expect(JSON.stringify(model.sourceInfos)).toContain(
+               "added_measure",
+            );
+         }
       });
 
       it("empties the cache when the connections change", async () => {
@@ -278,10 +282,8 @@ describe("package compile cache", () => {
       });
    });
 
-   describe("compile_model on the main thread", () => {
+   describe("through the environment", () => {
       let environment: Environment;
-      const urlOf = (file: string) =>
-         pathToFileURL(path.join(packagePath, file)).toString();
 
       beforeEach(async () => {
          environment = await Environment.create("compile-env", tempDir, []);
@@ -290,36 +292,6 @@ describe("package compile cache", () => {
       afterEach(async () => {
          dropPackageCompileCache("compile-env", "pkg");
          await environment.closeAllConnections();
-      });
-
-      /** The files a compile translated rather than read from the cache. */
-      async function translatedBy(compile: () => Promise<unknown>) {
-         const stores = spyOn(CacheManager.prototype, "setCachedModelDef");
-         try {
-            await compile();
-            return new Set(stores.mock.calls.map(([url]) => url));
-         } finally {
-            stores.mockRestore();
-         }
-      }
-
-      const compileLeaf = () =>
-         environment.compileSource(
-            "pkg",
-            "leaf.malloy",
-            LEAF.replace("by_id", "by_id_edited"),
-            false,
-            undefined,
-            "file",
-         );
-
-      it("reads the load's ModelDefs for imports and translates only the file", async () => {
-         await environment.getPackage("pkg");
-         const translated = await translatedBy(async () => {
-            const { problems } = await compileLeaf();
-            expect(problems.filter((p) => p.severity === "error")).toEqual([]);
-         });
-         expect(translated).toEqual(new Set([urlOf("leaf.malloy")]));
       });
 
       it("keeps the worker's cache across a reload and drops it on unload", async () => {
@@ -333,15 +305,22 @@ describe("package compile cache", () => {
          ]);
       });
 
-      it("translates the imports again after a connection change", async () => {
+      it("recompiles a model whose data file changed under the same name", async () => {
+         const csv = path.join(packagePath, "rows.csv");
+         fs.writeFileSync(csv, "id\n1\n");
+         fs.writeFileSync(
+            path.join(packagePath, "rows.malloy"),
+            `source: rows is duckdb.table('${csv.replace(/\\/g, "/")}')\n`,
+         );
+         const outcomes = recordLoads();
          await environment.getPackage("pkg");
-         environment.updateConnections(
-            buildEnvironmentMalloyConfig([], tempDir),
+         fs.writeFileSync(csv, "id,added_column\n1,2\n");
+         await environment.getPackage("pkg", true);
+         const reloaded = outcomes[1].models.find(
+            (m) => m.modelPath === "rows.malloy",
          );
-         const translated = await translatedBy(compileLeaf);
-         expect(translated).toEqual(
-            new Set([urlOf("leaf.malloy"), urlOf("base.malloy")]),
-         );
+         expect(reloaded?.compileCacheHit).toBe(false);
+         expect(JSON.stringify(reloaded?.modelDef)).toContain("added_column");
       });
    });
 });

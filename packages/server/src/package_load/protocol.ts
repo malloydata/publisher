@@ -37,11 +37,7 @@
 
 import type { EligibilityRefusalReason } from "../materialization_metrics";
 import type { BuildPlanOutcome } from "../service/build_plan";
-import type {
-   InvalidationKey,
-   SQLSourceDef,
-   TableSourceDef,
-} from "@malloydata/malloy";
+import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
    PackageScope,
@@ -158,12 +154,6 @@ export interface SerializedModel {
    compileDurationMs?: number;
    /** Non-fatal compiler diagnostics emitted while compiling this model. */
    problems?: unknown[];
-   /**
-    * The invalidation keys `modelDef` was compiled against, so the main
-    * thread can seed its own compile cache with it (see
-    * ModelCompileCache.invalidationKeysFor).
-    */
-   compileCacheKeys?: Record<string, InvalidationKey>;
    /** This model's compile was served from the worker's compile cache. */
    compileCacheHit?: boolean;
    /** Set when the model failed to compile. */
