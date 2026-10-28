@@ -3,7 +3,7 @@
 
 import { describeSource } from "./errors";
 import { REGISTRY, type RegisteredSetting, type SettingKey } from "./registry";
-import type { Settings } from "./settings";
+import { namesOf, type Settings } from "./settings";
 import { BooleanType, IntegerType, ListType, NumberType } from "./types";
 
 /**
@@ -13,12 +13,8 @@ import { BooleanType, IntegerType, ListType, NumberType } from "./types";
  * reads; reference.spec.ts fails if the checked-in table does.
  */
 
-/** Settings a variable or flag can give; the file-only ones have their own tables. */
-const NAMED = REGISTRY.filter(
-   (entry) =>
-      (entry.aliases.env ?? []).length > 0 ||
-      (entry.aliases.flags ?? []).length > 0,
-);
+/** Settings a variable or flag can give; the structured ones are file-only. */
+const NAMED = REGISTRY.filter((entry) => entry.kind !== "structured");
 
 export const REFERENCE_START =
    "<!-- settings-reference:start (generated from src/settings/registry; run `bun run generate-settings-reference`) -->";
@@ -26,18 +22,29 @@ export const REFERENCE_END = "<!-- settings-reference:end -->";
 
 /** The markdown table of every setting a variable or flag gives. */
 export function settingsReferenceTable(): string {
-   const rows = NAMED.map((entry) =>
-      [
+   const rows = NAMED.map((entry) => {
+      const names = namesOf(entry);
+      const deprecated = [
+         ...names.env.filter(({ old }) => old),
+         ...names.flags.filter(({ old }) => old),
+      ].map(({ name }) => code(name));
+      return [
          code(entry.key),
-         cell((entry.aliases.env ?? []).map(code).join(", ")),
+         cell(
+            names.env
+               .filter(({ old }) => !old)
+               .map(({ name }) => code(name))
+               .join(", "),
+         ),
          cell(flagSpecs(entry).map(code).join(", ")),
+         cell(deprecated.join(", ")),
          cell(defaultText(entry, "markdown")),
          cell(entry.notes ?? entry.description),
-      ].join(" | "),
-   );
+      ].join(" | ");
+   });
    return [
-      "| Setting | Env var | CLI flag | Default | Meaning |",
-      "| --- | --- | --- | --- | --- |",
+      "| Setting | Env var | CLI flag | Deprecated names | Default | Meaning |",
+      "| --- | --- | --- | --- | --- | --- |",
       ...rows.map((row) => `| ${row} |`),
    ].join("\n");
 }
@@ -58,13 +65,20 @@ export function withReferenceTable(doc: string): string {
 
 /** `--help`: today's flags, with what each sets and its default. */
 export function helpText(): string {
-   const flagged = NAMED.filter(
-      (entry) => (entry.aliases.flags ?? []).length > 0,
-   ).map((entry) => ({ entry, spec: flagSpecs(entry).join(", ") }));
-   const width = Math.max(...flagged.map(({ spec }) => spec.length)) + 2;
+   const flagged = NAMED.filter((entry) => flagSpecs(entry).length > 0).map(
+      (entry) => ({ entry, spec: flagSpecs(entry).join(", ") }),
+   );
+   // A spec longer than the column goes on its own line, its text below it.
+   const width = 40;
    const lines = flagged.map(({ entry, spec }) => {
       const fallback = defaultText(entry, "text");
-      return `  ${spec.padEnd(width)}${entry.description}${fallback ? ` (default: ${fallback})` : ""}`;
+      const was = namesOf(entry)
+         .flags.filter(({ old }) => old)
+         .map(({ name }) => name);
+      const text = `${entry.description}${fallback ? ` (default: ${fallback})` : ""}${was.length > 0 ? ` (was ${was.join(", ")})` : ""}`;
+      return spec.length < width
+         ? `  ${spec.padEnd(width)}${text}`
+         : `  ${spec}\n  ${"".padEnd(width)}${text}`;
    });
    return [
       "Malloy Publisher Server",
@@ -75,7 +89,7 @@ export function helpText(): string {
       ...lines,
       `  ${"--help, -h".padEnd(width)}Show this help message`,
       "",
-      "Every setting can also be given as an environment variable; see docs/configuration.md.",
+      "Every setting can also be given as an environment variable or in publisher.config.json; see docs/configuration.md.",
    ].join("\n");
 }
 
@@ -108,8 +122,10 @@ export function settingsLine(settings: Settings): string {
 
 /** `--port <n>`, or a boolean's switches: `--serving-api-enabled`, `--no-...`. */
 function flagSpecs(entry: RegisteredSetting): string[] {
-   const flags = entry.aliases.flags ?? [];
-   if (entry.type instanceof BooleanType) return [...flags];
+   const flags = namesOf(entry)
+      .flags.filter(({ old }) => !old)
+      .map(({ name }) => name);
+   if (entry.type instanceof BooleanType) return flags;
    return flags.map((flag) => `${flag} <${valueName(entry)}>`);
 }
 

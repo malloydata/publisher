@@ -45,7 +45,7 @@ export const mcp = [
       type: boolean(),
       default: true,
       description:
-         "Write .mcp.json into the working directory, so an agent opened there finds this server; --no-mcp-config turns it off.",
+         "Write .mcp.json into the working directory, so an agent opened there finds this server.",
       notes: "Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes).",
       aliases: {
          env: ["PUBLISHER_NO_MCP_CONFIG"],
