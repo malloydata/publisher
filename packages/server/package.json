@@ -53,6 +53,7 @@
       "start:dev": "NODE_ENV=development bun --watch src/server.ts",
       "start:dev:init": "NODE_ENV=development bun --watch src/server.ts --init",
       "start:instrumented": "bun --preload ./dist/instrumentation.mjs ./dist/server.mjs",
+      "bench:reload": "NODE_ENV=test bun scripts/bench-reload.ts",
       "lint": "bunx eslint \"./src/**/*.ts\"",
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bunx vite build",
