@@ -238,7 +238,7 @@ describe("ReportEditor in text-source mode", () => {
       const suggestBody = () =>
          executeQueryModel.mock.calls
             .map((call) => call[3])
-            .find((body) => body.query?.includes("group_by: category"));
+            .find((body) => body.query?.includes("group_by: `category`"));
 
       it("is carried by a select control's suggest, which would otherwise be denied by the gate", async () => {
          withSuggestControl("TENANT");
@@ -272,7 +272,7 @@ describe("ReportEditor in text-source mode", () => {
                .find(
                   (body) =>
                      body.query?.includes("run: a ->") &&
-                     !body.query.includes("group_by: category"),
+                     !body.query.includes("group_by: `category`"),
                );
             expect(tile).toMatchObject({ givens });
          } finally {

@@ -6,6 +6,7 @@ import {
    encodeResourceUri,
    Model,
    packageFileUrl,
+   useGivenUrlParams,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
@@ -32,6 +33,11 @@ function ModelPage() {
       writable,
    } = usePackageRoute({ always: true });
    const { server } = useServer();
+   // Given values ride in the query string, beside `?source=`, so a link to a
+   // model (and its Copy link) opens with the values the page was running with.
+   // The source is written by the same hook, so neither write drops the other
+   // or the fragment.
+   const { params: query, onGivensChange, setParam } = useGivenUrlParams();
    if (!params.environmentName) {
       return (
          <div>
@@ -133,7 +139,13 @@ function ModelPage() {
          <Box sx={PAGE_FRAME_SX}>
             <Model
                resourceUri={resourceUri}
-               runOnDemand={true}
+               // The source on screen is in the address, so a link to one opens
+               // on it. Replaced, not pushed: picking a source is a choice
+               // within this page, and Back should leave the model.
+               sourceName={query.source}
+               onSourceChange={(source) => setParam("source", source)}
+               givens={query}
+               onGivensChange={onGivensChange}
                maxResultSize={512 * 1024}
             />
          </Box>

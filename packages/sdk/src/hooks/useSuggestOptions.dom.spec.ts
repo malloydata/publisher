@@ -248,7 +248,7 @@ describe("a list cut off at the limit", () => {
          buildSuggestQuery("recalls", "manufacturer", "General Motors"),
       );
       expect(sent).toContain(
-         "where: strpos(lower(manufacturer::string), 'general motors') > 0",
+         "where: strpos(lower(`manufacturer`::string), 'general motors') > 0",
       );
       expect(search!.key[0]).toBe("givenSuggestSearch");
       executeQueryModel.mockImplementation(() => pending());

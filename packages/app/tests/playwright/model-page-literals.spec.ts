@@ -17,9 +17,9 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * error, and drilling into `x" or "a" = "a` sent a filter that matched every
  * row. Nobody had to type anything: the values are data.
  *
- * The Explorer is gone. These specs hold the page to what replaces it: the
- * same data is listed and queried, and nothing on the page writes a value
- * into Malloy text.
+ * The Explorer is gone, and the page is the model viewer. These specs hold it
+ * to that: the same data is listed and queried, each value comes back as
+ * written, and nothing on the page writes a value into Malloy text.
  *
  * Like notebook-givens, the spec writes its model into the `storefront`
  * package directory and reloads the package, so run it against a normal
@@ -40,6 +40,8 @@ const PLAIN = "Plain";
 const MODEL_SOURCE = `source: items is duckdb.sql("""
   select * from (values ('${QUOTED}'), ('${PLAIN}'), ('${CRAFTED}')) as t(name)
 """) extend {
+  #(index)
+  dimension: item_name is name
   measure: item_count is count()
 }
 
@@ -60,7 +62,7 @@ async function reloadPackage(baseURL: string): Promise<void> {
 async function openFixtureModel(page: Page): Promise<void> {
    await page.goto(`/${DEFAULT_ENV}/${PACKAGES.storefront}/${FIXTURE_MODEL}`);
    await expect(
-      page.getByRole("heading", { name: "Sources", level: 1 }),
+      page.getByRole("heading", { name: "items", level: 1 }),
    ).toBeVisible();
 }
 
@@ -75,28 +77,30 @@ test.describe("model-page-literals", () => {
       await reloadPackage(baseURL!).catch(() => undefined);
    });
 
-   test("lists the source and its fields, read-only", async ({ page }) => {
+   test("lists the source's fields", async ({ page }) => {
       await openFixtureModel(page);
 
-      const source = page.getByRole("region", { name: "items", exact: true });
-      await expect(source).toBeVisible();
-      await expect(source.getByText("name", { exact: true })).toBeVisible();
-      await expect(source.getByText("dimension · string")).toBeVisible();
+      const dimensions = page.getByRole("region", { name: "Dimensions" });
       await expect(
-         source.getByText("item_count", { exact: true }),
+         dimensions.getByText("item_name", { exact: true }),
       ).toBeVisible();
-      await expect(source.getByText("measure · number")).toBeVisible();
-      // A field is something to read, not a control.
-      await expect(source.getByRole("button")).toHaveCount(0);
+      await expect(
+         dimensions.getByText("string", { exact: true }).first(),
+      ).toBeVisible();
+      const measures = page.getByRole("region", { name: "Measures" });
+      await expect(
+         measures.getByText("item_count", { exact: true }),
+      ).toBeVisible();
    });
 
    test("offers no query builder to write a value into", async ({ page }) => {
       await openFixtureModel(page);
-      // Loaded: the named query renders with or without a builder beside it.
-      // The Explorer was a lazy chunk, so an absence check before the network
-      // settles passes whether or not the page would have drawn one.
+      // Loaded: the named query's row is drawn with or without a builder
+      // beside it, and nothing is lazy-loading behind it.
       await expect(
-         page.getByRole("button", { name: "Run Query" }),
+         page
+            .getByRole("region", { name: "Queries" })
+            .getByRole("button", { name: /all_names/ }),
       ).toBeVisible();
       await page.waitForLoadState("networkidle");
 
@@ -116,9 +120,34 @@ test.describe("model-page-literals", () => {
    }) => {
       await openFixtureModel(page);
 
-      await page.getByRole("button", { name: "Run Query" }).click();
+      const queries = page.getByRole("region", { name: "Queries" });
+      await queries.getByRole("button", { name: /all_names/ }).click();
       for (const name of [QUOTED, PLAIN, CRAFTED]) {
-         await expect(page.getByText(name, { exact: true })).toBeVisible();
+         await expect(queries.getByText(name, { exact: true })).toBeVisible();
       }
+   });
+
+   // Where the Explorer drilled into a value, the viewer lists them: one
+   // query that groups by the quoted field name, with no value in its text.
+   test("lists a dimension's values as written, with none in the query", async ({
+      page,
+   }) => {
+      await openFixtureModel(page);
+      const sent: string[] = [];
+      page.on("request", (request) => {
+         if (request.method() === "POST" && request.url().includes("/query")) {
+            sent.push(request.postData() ?? "");
+         }
+      });
+
+      const dimensions = page.getByRole("region", { name: "Dimensions" });
+      await dimensions.getByRole("button", { name: /item_name/ }).click();
+      const values = page.getByTestId("model-viewer-values");
+      for (const name of [QUOTED, PLAIN, CRAFTED]) {
+         await expect(values.getByText(name, { exact: true })).toBeVisible();
+      }
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain("group_by: `item_name`");
+      expect(sent[0]).not.toContain("Monitor");
    });
 });

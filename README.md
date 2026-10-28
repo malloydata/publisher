@@ -192,8 +192,8 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   package; it mixes prose and queries and runs on the same governed endpoints. Pick a layout:
   `linear` for a story read top to bottom, `grid` for a view scanned at a glance —
   [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
-- **Browse a model.** Open a `.malloy` file in the [Console](docs/console.md) to see each source it
-  exposes with its fields, and run its named queries.
+- **Browse a model.** Open a `.malloy` file in the [Console](docs/console.md) to read each source
+  it exposes, field by field with its Malloy, and run its views and named queries.
 
 ### Surface
 
