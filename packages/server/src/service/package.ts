@@ -25,8 +25,9 @@ import {
    connectionGeneration,
    getPackageLoadPool,
    type LoadPackageOutcome,
+   armedPackageSchemaRefresh,
    packageConnectionsEpoch,
-   takePackageSchemaRefresh,
+   settlePackageSchemaRefresh,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
 import {
@@ -1122,22 +1123,31 @@ export class Package {
       const dispatchTime = performance.now();
       const epoch = connectionsEpoch();
       // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
-      const workerOutcome = loadOutcomeOrThrow(
-         pool.loadPackage({
-            packagePath,
-            packageName,
-            environmentName,
-            malloyConfig,
-            defaultConnectionName: "duckdb",
-            computeBuildPlan: true,
-            withPreaggregateCompanions: true,
-            connectionsEpoch: epoch,
-            refreshSchemaAt: takePackageSchemaRefresh(
+      const refreshSchemaAt = armedPackageSchemaRefresh(
+         environmentName,
+         packageName,
+      );
+      const poolLoad = pool.loadPackage({
+         packagePath,
+         packageName,
+         environmentName,
+         malloyConfig,
+         defaultConnectionName: "duckdb",
+         computeBuildPlan: true,
+         withPreaggregateCompanions: true,
+         connectionsEpoch: epoch,
+         refreshSchemaAt,
+      });
+      poolLoad.then(
+         () =>
+            settlePackageSchemaRefresh(
                environmentName,
                packageName,
+               refreshSchemaAt,
             ),
-         }),
+         () => {},
       );
+      const workerOutcome = loadOutcomeOrThrow(poolLoad);
       const [outcome, databases] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),

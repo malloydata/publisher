@@ -918,7 +918,7 @@ const refreshedPackages = new Map<
 /**
  * Give the package a fresh connections epoch, so its next load misses the
  * compile cache, and arm one schema refresh for that load (see
- * {@link takePackageSchemaRefresh}).
+ * {@link settlePackageSchemaRefresh}).
  */
 export function refreshPackageConnectionsEpoch(
    environmentName: string,
@@ -930,17 +930,30 @@ export function refreshPackageConnectionsEpoch(
    });
 }
 
-/** The armed schema refresh, once: only the load that serves the package refetches from the warehouse. */
-export function takePackageSchemaRefresh(
+/** The refresh armed for the package's next load, if any. */
+export function armedPackageSchemaRefresh(
    environmentName: string,
    packageName: string,
 ): number | undefined {
+   return refreshedPackages.get(`${environmentName}\0${packageName}`)
+      ?.refreshAt;
+}
+
+/**
+ * Disarm `refreshAt` once a worker answered the load that carried it. A pool
+ * failure never gets here, so the retry still refreshes.
+ */
+export function settlePackageSchemaRefresh(
+   environmentName: string,
+   packageName: string,
+   refreshAt: number | undefined,
+): void {
    const refreshed = refreshedPackages.get(
       `${environmentName}\0${packageName}`,
    );
-   const refreshAt = refreshed?.refreshAt;
-   if (refreshed) refreshed.refreshAt = undefined;
-   return refreshAt;
+   if (refreshed && refreshed.refreshAt === refreshAt) {
+      refreshed.refreshAt = undefined;
+   }
 }
 
 /** `base` (the environment config's generation), or the epoch a refresh gave the package while `base` is unchanged. */

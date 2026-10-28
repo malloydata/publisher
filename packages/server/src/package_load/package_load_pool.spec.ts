@@ -40,7 +40,8 @@ import {
    handleWorkerLog,
    packageConnectionsEpoch,
    refreshPackageConnectionsEpoch,
-   takePackageSchemaRefresh,
+   armedPackageSchemaRefresh,
+   settlePackageSchemaRefresh,
 } from "./package_load_pool";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
 
@@ -974,16 +975,24 @@ describe("a package's schema refresh", () => {
       expect(packageConnectionsEpoch("env-a", "pkg", 7)).toBe(refreshed);
       // Another package of the environment is not refreshed.
       expect(packageConnectionsEpoch("env-a", "other", 7)).toBe(7);
-      takePackageSchemaRefresh("env-a", "pkg");
+      settlePackageSchemaRefresh(
+         "env-a",
+         "pkg",
+         armedPackageSchemaRefresh("env-a", "pkg"),
+      );
       // The connections changed: the new base is already fresh, and the entry is gone.
       expect(packageConnectionsEpoch("env-a", "pkg", 8)).toBe(8);
       expect(packageConnectionsEpoch("env-a", "pkg", 7)).toBe(7);
    });
 
-   it("hands the refresh to one load only", () => {
-      expect(takePackageSchemaRefresh("env-b", "pkg")).toBeUndefined();
+   it("stays armed until a worker answered the load that carried it", () => {
+      expect(armedPackageSchemaRefresh("env-b", "pkg")).toBeUndefined();
       refreshPackageConnectionsEpoch("env-b", "pkg");
-      expect(takePackageSchemaRefresh("env-b", "pkg")).toBeGreaterThan(0);
-      expect(takePackageSchemaRefresh("env-b", "pkg")).toBeUndefined();
+      const armed = armedPackageSchemaRefresh("env-b", "pkg");
+      expect(armed).toBeGreaterThan(0);
+      // A pool failure settles nothing, so the retry carries it again.
+      expect(armedPackageSchemaRefresh("env-b", "pkg")).toBe(armed);
+      settlePackageSchemaRefresh("env-b", "pkg", armed);
+      expect(armedPackageSchemaRefresh("env-b", "pkg")).toBeUndefined();
    });
 });

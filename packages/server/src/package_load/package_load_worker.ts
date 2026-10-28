@@ -301,6 +301,9 @@ const writeEntry = logger.write.bind(logger) as (entry: unknown) => boolean;
    return true;
 };
 
+/** What a refresh fetched for one table. */
+type RefreshedTable = { schema?: TableSourceDef; error?: string };
+
 class ProxyConnection {
    public readonly name: string;
    public readonly dialectName: string;
@@ -310,6 +313,14 @@ class ProxyConnection {
    private readonly cacheScope: string;
    /** Set on a schema refresh: every fetch of the job goes to the warehouse once, and overwrites the cached entry. */
    private readonly refreshSchemaAt: number | undefined;
+   private readonly refreshedTables = new Map<
+      string,
+      Promise<RefreshedTable>
+   >();
+   private readonly refreshedSql = new Map<
+      string,
+      ReturnType<ProxyConnection["fetchSchemaForSQLStructFromMain"]>
+   >();
 
    constructor(
       metadata: ConnectionMetadata,
@@ -337,6 +348,56 @@ class ProxyConnection {
       return this.digest;
    }
 
+   /**
+    * A refresh fetches each table once per job: the models that import it
+    * join that fetch instead of each asking the warehouse again.
+    */
+   private async refreshTables(
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+   ): Promise<{
+      schemas: Record<string, TableSourceDef>;
+      errors: Record<string, string>;
+   }> {
+      const schemas: Record<string, TableSourceDef> = {};
+      const errors: Record<string, string> = {};
+      const answers: [string, Promise<RefreshedTable>][] = [];
+      const missing: Record<string, string> = {};
+      for (const [key, tablePath] of Object.entries(tables)) {
+         const known = this.refreshedTables.get(tablePath);
+         if (known) answers.push([key, known]);
+         else missing[key] = tablePath;
+      }
+      if (Object.keys(missing).length > 0) {
+         const request = this.fetchSchemaForTablesFromMain(missing, options);
+         for (const [key, tablePath] of Object.entries(missing)) {
+            const answer = request.then(
+               (r): RefreshedTable =>
+                  r.schemas[key]
+                     ? { schema: r.schemas[key] }
+                     : {
+                          error:
+                             r.errors[key] ??
+                             "No schema returned for the table",
+                       },
+               (error: unknown): RefreshedTable => ({
+                  error: error instanceof Error ? error.message : String(error),
+               }),
+            );
+            this.refreshedTables.set(tablePath, answer);
+            answers.push([key, answer]);
+         }
+         const refreshed = await request;
+         this.cacheTableSchemas(missing, refreshed.schemas);
+      }
+      for (const [key, answer] of answers) {
+         const { schema, error } = await answer;
+         if (schema) schemas[key] = schema;
+         else errors[key] = error ?? "No schema returned for the table";
+      }
+      return { schemas, errors };
+   }
+
    private withRefresh(options: FetchSchemaOptions): FetchSchemaOptions {
       return options.refreshTimestamp === undefined &&
          this.refreshSchemaAt !== undefined
@@ -355,12 +416,7 @@ class ProxyConnection {
       // A refresh is the main thread's to decide, since only its cache knows
       // when each schema was fetched. Its answer replaces the entries.
       if (options.refreshTimestamp !== undefined) {
-         const refreshed = await this.fetchSchemaForTablesFromMain(
-            tables,
-            options,
-         );
-         this.cacheTableSchemas(tables, refreshed.schemas);
-         return refreshed;
+         return this.refreshTables(tables, options);
       }
       const schemas: Record<string, TableSourceDef> = {};
       const errors: Record<string, string> = {};
@@ -464,12 +520,18 @@ class ProxyConnection {
       const cacheKey = `${this.cacheScope}\0sql\0${sentence.connection}\0${sentence.selectStr}`;
       // See fetchSchemaForTables: a refresh is the main thread's to decide.
       if (options.refreshTimestamp !== undefined) {
-         const refreshed = await this.fetchSchemaForSQLStructFromMain(
-            sentence,
-            options,
-         );
-         if (refreshed.structDef !== undefined) {
-            schemaCache.set(cacheKey, refreshed.structDef);
+         let refreshed = this.refreshedSql.get(cacheKey);
+         if (refreshed === undefined) {
+            refreshed = this.fetchSchemaForSQLStructFromMain(
+               sentence,
+               options,
+            ).then((answer) => {
+               if (answer.structDef !== undefined) {
+                  schemaCache.set(cacheKey, answer.structDef);
+               }
+               return answer;
+            });
+            this.refreshedSql.set(cacheKey, refreshed);
          }
          return refreshed;
       }

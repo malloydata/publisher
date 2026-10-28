@@ -267,23 +267,26 @@ describe("package compile cache", () => {
          } as unknown as ConstructorParameters<typeof ConnectionService>[0]);
          const outcomes = recordLoads();
          const packages: Package[] = [];
+         /** The fields of `source` in `modelPath` as the latest load compiled them. */
+         const fieldsOf = (modelPath: string, source: string) =>
+            JSON.stringify(
+               (
+                  outcomes[outcomes.length - 1].models.find(
+                     (m) => m.modelPath === modelPath,
+                  )?.modelDef as {
+                     contents: Record<
+                        string,
+                        { fields: Array<{ name: string }> }
+                     >;
+                  }
+               ).contents[source].fields.map((f) => f.name),
+            );
          return {
+            fieldsOf,
             warehouse,
             remote,
             moved,
-            /** The orders fields the latest load compiled. */
-            ordersFields: () =>
-               JSON.stringify(
-                  (
-                     outcomes[outcomes.length - 1].models.find(
-                        (m) => m.modelPath === "orders.malloy",
-                     )?.modelDef as {
-                        contents: {
-                           orders: { fields: Array<{ name: string }> };
-                        };
-                     }
-                  ).contents.orders.fields.map((f) => f.name),
-               ),
+            ordersFields: () => fieldsOf("orders.malloy", "orders"),
             patch: (uri: string) =>
                service.updateConnection("publisher-env", "warehouse", {
                   publisherConnection: {
@@ -370,6 +373,65 @@ describe("package compile cache", () => {
             await env.load();
             expect(env.ordersFields()).toBe('["id","added_col"]');
             expect(fetched).toHaveBeenCalledTimes(2);
+         } finally {
+            await env.cleanup();
+         }
+      });
+      it("a refresh asks the warehouse once for a table many models import", async () => {
+         const env = await publisherEnvironment();
+         const fetched = spyOn(env.warehouse, "fetchTableSchema");
+         const models = [1, 2, 3, 4, 5];
+         for (const model of ["base", "leaf", "other", "orders"]) {
+            fs.rmSync(path.join(packagePath, `${model}.malloy`), {
+               force: true,
+            });
+         }
+         const write = (n: number) => {
+            for (const m of models) {
+               fs.writeFileSync(
+                  path.join(packagePath, `m${m}.malloy`),
+                  `source: s${m} is warehouse.table('compile_cache_orders')\n// ${n}\n`,
+               );
+            }
+         };
+         try {
+            write(0);
+            await env.load();
+            await env.warehouse.runSQL(
+               "create or replace table compile_cache_orders as select 1 as id, 2 as added_col",
+            );
+            fetched.mockClear();
+            write(1);
+            refreshPackageConnectionsEpoch("publisher-env", "pkg");
+            await env.load();
+            expect(fetched).toHaveBeenCalledTimes(1);
+            for (const m of models) {
+               expect(env.fieldsOf(`m${m}.malloy`, `s${m}`)).toBe(
+                  '["id","added_col"]',
+               );
+            }
+         } finally {
+            await env.cleanup();
+         }
+      });
+
+      it("a refresh survives a pool failure: the retry still reaches the warehouse", async () => {
+         for (const model of ["base", "leaf", "other"]) {
+            fs.rmSync(path.join(packagePath, `${model}.malloy`));
+         }
+         const env = await publisherEnvironment();
+         try {
+            await env.load();
+            await env.warehouse.runSQL(
+               "create or replace table compile_cache_orders as select 1 as id, 2 as added_col",
+            );
+            refreshPackageConnectionsEpoch("publisher-env", "pkg");
+            spyOn(workers.pool, "loadPackage").mockRejectedValueOnce(
+               new Error("worker crashed"),
+            );
+            await expect(env.load()).rejects.toThrow("worker crashed");
+            await env.load();
+            expect(env.ordersFields()).toBe('["id","added_col"]');
          } finally {
             await env.cleanup();
          }
