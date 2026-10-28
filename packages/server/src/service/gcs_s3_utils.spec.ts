@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+   checkS3Endpoint,
    createCloudStorageClient,
+   parseS3Endpoint,
+   resolveCloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
    s3ConnectionToCredentials,
    validateS3ProviderShape,
@@ -26,6 +29,92 @@ afterEach(() => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
    }
+});
+
+describe("parseS3Endpoint", () => {
+   it("reads a bare host as TLS", () => {
+      expect(parseS3Endpoint("minio:9000")).toEqual({
+         hostAndPath: "minio:9000",
+         useSsl: true,
+         url: "https://minio:9000",
+      });
+   });
+
+   it("turns TLS off only for http://, in any case, and drops trailing slashes", () => {
+      expect(parseS3Endpoint("HTTP://minio:9000/")).toEqual({
+         hostAndPath: "minio:9000",
+         useSsl: false,
+         url: "http://minio:9000",
+      });
+      expect(parseS3Endpoint("https://s3.example.com/base").useSsl).toBe(true);
+   });
+
+   // What DuckDB and the SDK read differently, each refused. `https:///foo`
+   // would otherwise write ENDPOINT '/foo'.
+   it.each([
+      ["ftp://minio", "scheme must be http:// or https://, got ftp://"],
+      ["http://", "must include a host"],
+      ["https:///foo", "must include a host before any path"],
+      ["https://user:pw@minio", "must not contain userinfo"],
+      ["minio?x=1", "query string or fragment"],
+      ["minio#frag", "query string or fragment"],
+      ["minio name", "must not contain whitespace"],
+   ])("refuses %p", (endpoint, message) => {
+      expect(() => parseS3Endpoint(endpoint)).toThrow(message);
+   });
+
+   it("handles a long run of slashes without backtracking", () => {
+      expect(parseS3Endpoint(`minio${"/".repeat(100_000)}`).hostAndPath).toBe(
+         "minio",
+      );
+      expect(() => parseS3Endpoint(`https://${"/".repeat(100_000)}`)).toThrow(
+         "must include a host",
+      );
+   });
+
+   it("never repeats an endpoint that carries a credential", () => {
+      for (const endpoint of [
+         "ftp://key:secret@minio",
+         "https://key:secret@minio",
+      ]) {
+         try {
+            parseS3Endpoint(endpoint);
+            throw new Error("expected a refusal");
+         } catch (error) {
+            expect((error as Error).message).not.toContain("secret");
+         }
+      }
+   });
+});
+
+describe("checkS3Endpoint", () => {
+   it("refuses plain http for credential_chain, whose requests carry the host's credentials", () => {
+      expect(() =>
+         checkS3Endpoint("http://minio:9000", "credential_chain"),
+      ).toThrow("must use https:// with provider credential_chain");
+      expect(checkS3Endpoint("http://minio:9000", "config").useSsl).toBe(false);
+      expect(
+         checkS3Endpoint("https://minio:9000", "credential_chain").useSsl,
+      ).toBe(true);
+   });
+});
+
+describe("resolveCloudStorageCredentials endpoint", () => {
+   // A storage destination resolves its credentials when it is configured, so
+   // an unusable endpoint is refused then, not at its first build.
+   it("refuses an unusable endpoint when the credentials are resolved, naming the connection", () => {
+      expect(() =>
+         resolveCloudStorageCredentials({
+            name: "lake",
+            type: "s3",
+            s3Connection: {
+               accessKeyId: "AKIA",
+               secretAccessKey: "s",
+               endpoint: "ftp://minio",
+            },
+         }),
+      ).toThrow("got ftp:// (lake)");
+   });
 });
 
 describe("createCloudStorageClient", () => {
@@ -56,6 +145,22 @@ describe("createCloudStorageClient", () => {
       const resolved = await client.config.credentials();
       expect(resolved.accessKeyId).toBe(CHAIN_ENV.AWS_ACCESS_KEY_ID);
       expect(resolved.accessKeyId).not.toBe("");
+   });
+
+   // The SDK rejects a bare host as `Invalid URL`; DuckDB's form must reach it as a URL.
+   it("gives the SDK a URL for an endpoint written as a bare host", async () => {
+      const client = createCloudStorageClient(
+         s3ConnectionToCredentials({
+            accessKeyId: "AKIA",
+            secretAccessKey: "s",
+            region: "us-east-1",
+            endpoint: "minio:9000",
+         }),
+      );
+      const endpoint = await client.config.endpoint!();
+      expect(
+         `${endpoint.protocol}//${endpoint.hostname}:${endpoint.port}`,
+      ).toBe("https://minio:9000");
    });
 
    it("leaves GCS on its HMAC key pair", async () => {

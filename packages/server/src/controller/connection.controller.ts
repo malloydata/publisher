@@ -643,8 +643,11 @@ export class ConnectionController {
 
       if (connection.type === "ducklake") {
          if (tablePath.split(".").length === 1) {
-            // tablePath is just the table name, construct full path
-            tablePath = `${connectionName}.${schemaName}.${tablePath}`;
+            // db-publisher sends `tablePath.split('.')[0]` as the schema, so `table('t')` arrives as schema `t`.
+            tablePath =
+               schemaName === tablePath
+                  ? `${connectionName}.${tablePath}`
+                  : `${connectionName}.${schemaName}.${tablePath}`;
          } else if (
             tablePath.split(".").length === 2 &&
             !tablePath.startsWith(connectionName)
