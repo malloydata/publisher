@@ -18,7 +18,10 @@ import type { components } from "../../src/api";
 import {
    dropPackageCompileCache,
    type LoadPackageOutcome,
+   refreshPackageConnectionsEpoch,
 } from "../../src/package_load/package_load_pool";
+import { PackageController } from "../../src/controller/package.controller";
+import type { EnvironmentStore } from "../../src/service/environment_store";
 import { compileSource } from "../../src/service/compile_source";
 import { buildEnvironmentMalloyConfig } from "../../src/service/connection";
 import { ConnectionService } from "../../src/service/connection_service";
@@ -219,7 +222,8 @@ describe("package compile cache", () => {
    });
 
    describe("with a publisher connection", () => {
-      it("keeps the cache across a token-only PATCH and empties it on a host change", async () => {
+      /** An environment whose `warehouse` connection is proxied to a fake publisher, with `load` timing each package load. */
+      async function publisherEnvironment() {
          const previous = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
          process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
          const warehouse = new DuckDBConnection("warehouse", ":memory:");
@@ -261,40 +265,88 @@ describe("package compile cache", () => {
                }),
             },
          } as unknown as ConstructorParameters<typeof ConnectionService>[0]);
-         const patch = (uri: string) =>
-            service.updateConnection("publisher-env", "warehouse", {
-               publisherConnection: { connectionUri: uri, accessToken: "new" },
-            });
          const outcomes = recordLoads();
          const packages: Package[] = [];
-         const load = async () => {
-            packages.push(
-               await Package.create("publisher-env", "pkg", packagePath, () =>
-                  environment.getEnvironmentMalloyConfig(),
-               ),
-            );
-            return outcomes[outcomes.length - 1].timings.compileCacheHits;
+         return {
+            remote,
+            moved,
+            patch: (uri: string) =>
+               service.updateConnection("publisher-env", "warehouse", {
+                  publisherConnection: {
+                     connectionUri: uri,
+                     accessToken: "new",
+                  },
+               }),
+            /** The timings of a fresh load of the package. */
+            load: async () => {
+               packages.push(
+                  await Package.create(
+                     "publisher-env",
+                     "pkg",
+                     packagePath,
+                     () => environment.getEnvironmentMalloyConfig(),
+                  ),
+               );
+               return outcomes[outcomes.length - 1].timings;
+            },
+            cleanup: async () => {
+               dropPackageCompileCache("publisher-env", "pkg");
+               for (const pkg of packages) {
+                  await pkg.getMalloyConfig().releaseConnections();
+               }
+               await environment.getEnvironmentMalloyConfig().shutdown("close");
+               remote.stop();
+               moved.stop();
+               await warehouse.close();
+               if (previous === undefined) {
+                  delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+               } else {
+                  process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = previous;
+               }
+            },
          };
+      }
+
+      it("keeps the cache across a token-only PATCH and empties it on a host change", async () => {
+         const env = await publisherEnvironment();
          try {
-            expect(await load()).toBe(0);
-            await patch(remote.connectionUri("warehouse"));
-            expect(await load()).toBe(4);
-            await patch(moved.connectionUri("warehouse"));
-            expect(await load()).toBe(0);
+            expect((await env.load()).compileCacheHits).toBe(0);
+            await env.patch(env.remote.connectionUri("warehouse"));
+            expect((await env.load()).compileCacheHits).toBe(4);
+            await env.patch(env.moved.connectionUri("warehouse"));
+            expect((await env.load()).compileCacheHits).toBe(0);
          } finally {
-            dropPackageCompileCache("publisher-env", "pkg");
-            for (const pkg of packages) {
-               await pkg.getMalloyConfig().releaseConnections();
-            }
-            await environment.getEnvironmentMalloyConfig().shutdown("close");
-            remote.stop();
-            moved.stop();
-            await warehouse.close();
-            if (previous === undefined) {
-               delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-            } else {
-               process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = previous;
-            }
+            await env.cleanup();
+         }
+      });
+
+      it("a schema refresh makes the next compile fetch warehouse schemas again", async () => {
+         // Only the warehouse table: the sandbox duckdb is a new connection
+         // on every load, so models over it always fetch.
+         for (const model of ["base", "leaf", "other"]) {
+            fs.rmSync(path.join(packagePath, `${model}.malloy`));
+         }
+         const env = await publisherEnvironment();
+         const edit = (n: number) =>
+            fs.writeFileSync(
+               path.join(packagePath, "orders.malloy"),
+               `source: orders is warehouse.table('compile_cache_orders')\n// ${n}\n`,
+            );
+         try {
+            expect((await env.load()).schemaFetchCount).toBe(1);
+            // A recompile with no refresh is answered by the schema cache.
+            edit(1);
+            const edited = await env.load();
+            expect(edited.schemaFetchCount).toBe(0);
+            expect(edited.schemaCacheHits).toBe(1);
+            edit(2);
+            refreshPackageConnectionsEpoch("publisher-env", "pkg");
+            expect((await env.load()).schemaFetchCount).toBe(1);
+            // The refresh holds: later compiles reuse what it fetched.
+            edit(3);
+            expect((await env.load()).schemaFetchCount).toBe(0);
+         } finally {
+            await env.cleanup();
          }
       });
    });
@@ -387,6 +439,94 @@ source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() 
          expect(outcomes.map((o) => o.timings.compileCacheHits)).toEqual([
             0, 3, 0,
          ]);
+      });
+
+      describe("reload with ifChanged", () => {
+         let controller: PackageController;
+         const reload = (options: {
+            ifChanged?: boolean;
+            refreshSchema?: boolean;
+         }) => controller.reloadPackage("compile-env", "pkg", "mcp", options);
+
+         beforeEach(async () => {
+            controller = new PackageController({
+               getEnvironment: async () => environment,
+            } as unknown as EnvironmentStore);
+            await environment.getPackage("pkg");
+         });
+
+         it("loads nothing and reports no timings when the tree is unchanged", async () => {
+            const outcomes = recordLoads();
+            const served = (
+               await environment.getPackage("pkg")
+            ).getSourceContentSha();
+            const result = await reload({ ifChanged: true });
+            expect(result.unchanged).toBe(true);
+            expect(result.timings).toBeUndefined();
+            expect(result.metadata.sourceContentSha).toBe(served);
+            expect(outcomes).toHaveLength(0);
+         });
+
+         it("reloads when a model file was added", async () => {
+            const outcomes = recordLoads();
+            fs.writeFileSync(
+               path.join(packagePath, "added.malloy"),
+               `source: added is duckdb.sql("select 3 as id")\n`,
+            );
+            const result = await reload({ ifChanged: true });
+            expect(result.unchanged).toBeUndefined();
+            expect(outcomes).toHaveLength(1);
+            expect(result.metadata.sourceContentSha).toBe(
+               await Package.currentContentSha(packagePath),
+            );
+            expect(await reload({ ifChanged: true })).toMatchObject({
+               unchanged: true,
+            });
+         });
+
+         it("reloads when a model file was removed", async () => {
+            const outcomes = recordLoads();
+            fs.rmSync(path.join(packagePath, "other.malloy"));
+            const result = await reload({ ifChanged: true });
+            expect(result.unchanged).toBeUndefined();
+            expect(outcomes).toHaveLength(1);
+            expect(await reload({ ifChanged: true })).toMatchObject({
+               unchanged: true,
+            });
+         });
+
+         it("reloads when a model file changed, with the timings of that load", async () => {
+            const outcomes = recordLoads();
+            fs.writeFileSync(
+               path.join(packagePath, "other.malloy"),
+               `${OTHER}// edited\n`,
+            );
+            const result = await reload({ ifChanged: true });
+            expect(result.unchanged).toBeUndefined();
+            expect(outcomes).toHaveLength(1);
+            expect(result.timings).toEqual({
+               compileDurationMs: expect.any(Number),
+               schemaFetchDurationMs: expect.any(Number),
+               schemaFetchCount: expect.any(Number),
+               schemaCacheHits: expect.any(Number),
+               compileCacheHits: 2,
+               totalMs: expect.any(Number),
+            });
+         });
+
+         it("reloads an unchanged tree when refreshSchema is set, from cold caches", async () => {
+            const outcomes = recordLoads();
+            const refreshed = await reload({
+               ifChanged: true,
+               refreshSchema: true,
+            });
+            expect(refreshed.unchanged).toBeUndefined();
+            expect(refreshed.timings?.compileCacheHits).toBe(0);
+            // Only that load was cold: a plain reload is served by the cache again.
+            const next = await reload({});
+            expect(next.timings?.compileCacheHits).toBe(3);
+            expect(outcomes).toHaveLength(2);
+         });
       });
 
       it("recompiles a model whose data file changed under the same name", async () => {

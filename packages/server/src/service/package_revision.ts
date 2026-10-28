@@ -72,6 +72,16 @@ export function boundedManifestValue(value: unknown): unknown {
    return "[unreadable: too deep or too large]";
 }
 
+/** The manifest's `agents` value as hashed into the content sha, so an edit to a dropped agent moves it too. */
+export function agentsDeclaration(rawAgents: unknown): string | undefined {
+   try {
+      return rawAgents === undefined ? undefined : canonicalJson(rawAgents);
+   } catch {
+      // Reload must not stop between the model swap and the serve bindings.
+      return "[unhashable]";
+   }
+}
+
 export function canonicalSha(value: unknown): string {
    return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }

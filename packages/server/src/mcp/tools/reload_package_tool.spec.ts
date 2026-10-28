@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { registerReloadPackageTool } from "./reload_package_tool";
+import { Package } from "../../service/package";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    EnvironmentNotFoundError,
@@ -41,13 +45,17 @@ function parse(result: { content: Array<{ resource: { text: string } }> }) {
 function storeReturning(
    metadata: Record<string, unknown>,
    calls?: boolean[],
+   timings?: Record<string, number>,
 ): Partial<EnvironmentStore> {
    return {
       getEnvironment: async () =>
          ({
             getPackage: async (_pkg: string, reload: boolean) => {
                calls?.push(reload);
-               return { getPackageMetadata: () => metadata } as never;
+               return {
+                  getPackageMetadata: () => metadata,
+                  getLoadTimings: () => timings,
+               } as never;
             },
          }) as never,
    };
@@ -57,7 +65,10 @@ function storeReturning(
 // takes the re-fetch branch: installPackage instead of an in-place recompile.
 // This is the only remaining path that overwrites on-disk edits, so it is worth
 // pinning that the routing and the reported mode both match.
-function storeWithInstallLocation(installed: Record<string, unknown>): {
+function storeWithInstallLocation(
+   installed: Record<string, unknown>,
+   timings?: Record<string, number>,
+): {
    store: Partial<EnvironmentStore>;
    installCalls: string[];
 } {
@@ -76,7 +87,10 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
                   }) as never,
                installPackage: async (pkg: string) => {
                   installCalls.push(pkg);
-                  return { getPackageMetadata: () => installed } as never;
+                  return {
+                     getPackageMetadata: () => installed,
+                     getLoadTimings: () => timings,
+                  } as never;
                },
             }) as never,
       },
@@ -276,5 +290,162 @@ describe("reload_package tool", () => {
          expect(parsed.status).toBe("reloaded");
          expect(parsed.exploresWarnings).toEqual(exploresWarnings);
       });
+   });
+
+   describe("ifChanged and timings", () => {
+      const timings = {
+         compileDurationMs: 12,
+         schemaFetchDurationMs: 3,
+         schemaFetchCount: 2,
+         schemaCacheHits: 5,
+         compileCacheHits: 7,
+         totalMs: 40,
+      };
+
+      /** A resident package over a real tree, served at the tree's current sha. */
+      async function withTree(
+         run: (
+            tree: string,
+            handler: Handler,
+            calls: boolean[],
+         ) => Promise<void>,
+      ) {
+         const tree = fs.mkdtempSync(path.join(os.tmpdir(), "reload-tool-"));
+         try {
+            fs.writeFileSync(path.join(tree, "publisher.json"), "{}");
+            fs.writeFileSync(path.join(tree, "a.malloy"), "source: a is x\n");
+            const served = await Package.currentContentSha(tree);
+            const calls: boolean[] = [];
+            const resident = {
+               getPackagePath: () => tree,
+               getSourceContentSha: () => served,
+               getLoadTimings: () => timings,
+               getPackageMetadata: () => ({
+                  name: "ecommerce",
+                  sourceContentSha: served,
+                  servedRevision: "rev-1",
+               }),
+            };
+            const handler = captureHandler({
+               getEnvironment: async () =>
+                  ({
+                     getPackage: async (_pkg: string, reload: boolean) => {
+                        calls.push(reload);
+                        return resident as never;
+                     },
+                  }) as never,
+            });
+            await run(tree, handler, calls);
+         } finally {
+            fs.rmSync(tree, { recursive: true, force: true });
+         }
+      }
+
+      it("answers unchanged, with the sha and no timings, and loads nothing", async () => {
+         await withTree(async (_tree, handler, calls) => {
+            const parsed = parse(await handler({ ...args, ifChanged: true }));
+            expect(parsed.status).toBe("unchanged");
+            expect(parsed.sourceContentSha).toMatch(/^[0-9a-f]{64}$/);
+            expect(parsed.timings).toBeUndefined();
+            expect(calls).not.toContain(true);
+         });
+      });
+
+      it.each([
+         [
+            "a model file was added",
+            (t: string) =>
+               fs.writeFileSync(path.join(t, "b.malloy"), "source: b is x\n"),
+         ],
+         [
+            "a model file was removed",
+            (t: string) => fs.rmSync(path.join(t, "a.malloy")),
+         ],
+         [
+            "a model file changed",
+            (t: string) =>
+               fs.writeFileSync(path.join(t, "a.malloy"), "source: a is y\n"),
+         ],
+         [
+            "a skill file was added",
+            (t: string) => {
+               fs.mkdirSync(path.join(t, "skills", "s"), { recursive: true });
+               fs.writeFileSync(
+                  path.join(t, "skills", "s", "SKILL.md"),
+                  "---\nname: s\ndescription: d\n---\nbody\n",
+               );
+            },
+         ],
+      ])("reloads, with timings, when %s", async (_name, change) => {
+         await withTree(async (tree, handler, calls) => {
+            change(tree);
+            const parsed = parse(await handler({ ...args, ifChanged: true }));
+            expect(parsed.status).toBe("reloaded");
+            expect(parsed.timings).toEqual(timings);
+            expect(calls).toContain(true);
+         });
+      });
+
+      it("reloads without ifChanged even when nothing changed", async () => {
+         await withTree(async (_tree, handler, calls) => {
+            const parsed = parse(await handler(args));
+            expect(parsed.status).toBe("reloaded");
+            expect(parsed.timings).toEqual(timings);
+            expect(calls).toContain(true);
+         });
+      });
+
+      it("reloads an unchanged tree when refreshSchema is set", async () => {
+         await withTree(async (_tree, handler, calls) => {
+            const parsed = parse(
+               await handler({ ...args, ifChanged: true, refreshSchema: true }),
+            );
+            expect(parsed.status).toBe("reloaded");
+            expect(calls).toContain(true);
+         });
+      });
+
+      it("reloads when publisher.json cannot be parsed, so the load reports why", async () => {
+         await withTree(async (tree, handler, calls) => {
+            fs.writeFileSync(path.join(tree, "publisher.json"), "{");
+            const parsed = parse(await handler({ ...args, ifChanged: true }));
+            expect(parsed.status).toBe("reloaded");
+            expect(calls).toContain(true);
+         });
+      });
+
+      it("always reloads a package installed from a location", async () => {
+         const { store, installCalls } = storeWithInstallLocation(
+            { name: "ecommerce" },
+            timings,
+         );
+         const parsed = parse(
+            await captureHandler(store)({ ...args, ifChanged: true }),
+         );
+         expect(parsed.status).toBe("reloaded");
+         expect(parsed.mode).toBe("reinstalled");
+         expect(parsed.timings).toEqual(timings);
+         expect(installCalls).toEqual(["ecommerce"]);
+      });
+   });
+
+   it("documents the timings fields in api-doc.yaml", () => {
+      const doc = fs.readFileSync(
+         path.join(__dirname, "../../../../../api-doc.yaml"),
+         "utf8",
+      );
+      const block = doc.slice(doc.indexOf("    PackageLoadTimings:"));
+      for (const field of [
+         "compileDurationMs",
+         "schemaFetchDurationMs",
+         "schemaFetchCount",
+         "schemaCacheHits",
+         "compileCacheHits",
+         "totalMs",
+      ]) {
+         expect(block.slice(0, block.indexOf("    Package:"))).toContain(
+            `        ${field}:`,
+         );
+      }
    });
 });

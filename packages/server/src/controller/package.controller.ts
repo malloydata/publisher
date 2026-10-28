@@ -16,9 +16,30 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
+import { refreshPackageConnectionsEpoch } from "../package_load/package_load_pool";
 import { EnvironmentStore } from "../service/environment_store";
+import { Package } from "../service/package";
 
 type ApiPackage = components["schemas"]["Package"];
+type ApiPackageLoadTimings = components["schemas"]["PackageLoadTimings"];
+
+/**
+ * What a reload did: `unchanged` when `ifChanged` found the tree's content sha
+ * equal to the served one and nothing was loaded (so there are no timings).
+ */
+export interface PackageReloadResult {
+   metadata: ApiPackage;
+   mode: PackageReloadMode;
+   unchanged?: true;
+   timings?: ApiPackageLoadTimings;
+}
+
+export interface PackageReloadOptions {
+   /** Skip the reload when the tree on disk hashes to what is served. */
+   ifChanged?: boolean;
+   /** Clear the schema and compile caches first, to pick up a warehouse-side change. */
+   refreshSchema?: boolean;
+}
 
 /**
  * Which path a reload took. `in-place` recompiles the tree already on disk and
@@ -79,8 +100,11 @@ export class PackageController {
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
-         metadata = (await this.reloadPackage(environmentName, packageName))
-            .metadata;
+         const reloaded = await this.reloadPackage(
+            environmentName,
+            packageName,
+         );
+         metadata = { ...reloaded.metadata, timings: reloaded.timings };
       } else {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
@@ -134,13 +158,16 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       trigger: ReloadTrigger = "rest",
-   ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
+      options: PackageReloadOptions = {},
+   ): Promise<PackageReloadResult> {
       try {
          const reloaded = await this.reloadPackageFrom(
             environmentName,
             packageName,
+            options,
          );
-         recordPackageReload(trigger, "success");
+         // An unchanged answer loaded nothing, so it is not a reload.
+         if (!reloaded.unchanged) recordPackageReload(trigger, "success");
          return reloaded;
       } catch (error) {
          recordPackageReload(trigger, "failure");
@@ -151,7 +178,8 @@ export class PackageController {
    private async reloadPackageFrom(
       environmentName: string,
       packageName: string,
-   ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
+      options: PackageReloadOptions,
+   ): Promise<PackageReloadResult> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -161,13 +189,30 @@ export class PackageController {
       // With a location, reinstall so download-then-load is atomic;
       // otherwise reload the on-disk tree in place.
       let resident: ApiPackage | undefined;
+      let cached: Package | undefined;
       try {
-         const cached = await environment.getPackage(packageName, false);
+         cached = await environment.getPackage(packageName, false);
          resident = cached.getPackageMetadata();
       } catch {
          // Not previously loaded, so there is nothing to reinstall from.
       }
       const location = resident?.location;
+      // A refresh asks for a warehouse-side change the tree cannot show.
+      if (cached && options.ifChanged && !options.refreshSchema && !location) {
+         const current = await Package.currentContentSha(
+            cached.getPackagePath(),
+         );
+         if (current === cached.getSourceContentSha()) {
+            return {
+               metadata: cached.getPackageMetadata(),
+               mode: "in-place",
+               unchanged: true,
+            };
+         }
+      }
+      if (options.refreshSchema) {
+         refreshPackageConnectionsEpoch(environmentName, packageName);
+      }
       if (resident && location) {
          // Re-apply only what the orchestrator set (location and manifest),
          // else the package serves live until the next drift check. All else
@@ -195,10 +240,15 @@ export class PackageController {
          return {
             metadata: reinstalled.getPackageMetadata(),
             mode: "reinstalled",
+            timings: reinstalled.getLoadTimings(),
          };
       }
       const _package = await environment.getPackage(packageName, true);
-      return { metadata: _package.getPackageMetadata(), mode: "in-place" };
+      return {
+         metadata: _package.getPackageMetadata(),
+         mode: "in-place",
+         timings: _package.getLoadTimings(),
+      };
    }
 
    async addPackage(environmentName: string, body: ApiPackage) {

@@ -25,6 +25,7 @@ import {
    connectionGeneration,
    getPackageLoadPool,
    type LoadPackageOutcome,
+   packageConnectionsEpoch,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
 import {
@@ -71,6 +72,10 @@ import {
    recordPackageLoadPhases,
    type PackageLoadStatus,
 } from "../package_load_metrics";
+import {
+   filterModelPaths,
+   listPackageFiles,
+} from "../package_load/package_files";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import {
@@ -81,7 +86,8 @@ import {
    type PackageAgent,
 } from "../mcp/skills/package_skills";
 import {
-   canonicalJson,
+   agentsDeclaration,
+   boundedManifestValue,
    computeSourceContentSha,
    mintServedRevision,
 } from "./package_revision";
@@ -232,6 +238,7 @@ interface ReportDiscovery {
 }
 
 export type ApiPackage = components["schemas"]["Package"];
+type ApiPackageLoadTimings = components["schemas"]["PackageLoadTimings"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -376,6 +383,8 @@ export class Package {
     * metadata PATCH cannot replace it.
     */
    private rawAgents: unknown;
+   /** What the load that built this package measured; set once, by {@link loadViaWorker}. */
+   private loadTimings: ApiPackageLoadTimings | undefined;
    private packageAgents = new Map<string, PackageAgent>();
    private packageAgentWarnings: string[] = [];
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
@@ -422,6 +431,11 @@ export class Package {
 
    public getSourceContentSha(): string {
       return this.sourceContentSha;
+   }
+
+   /** The timings of the load that built this package, absent for one not built by a worker load. */
+   public getLoadTimings(): ApiPackageLoadTimings | undefined {
+      return this.loadTimings;
    }
 
    /** The agent skills this package ships, in on-disk order. */
@@ -502,16 +516,6 @@ export class Package {
       const agents = readPackageAgents(this.packagePath, this.rawAgents);
       this.packageAgents = agents.agents;
       this.packageAgentWarnings = agents.warnings;
-      let declaration: string | undefined;
-      try {
-         declaration =
-            this.rawAgents === undefined
-               ? undefined
-               : canonicalJson(this.rawAgents);
-      } catch {
-         // Reload must not stop between the model swap and the serve bindings.
-         declaration = "[unhashable]";
-      }
       this.sourceContentSha = computeSourceContentSha(
          this.packagePath,
          [
@@ -520,7 +524,43 @@ export class Package {
             ...agents.paths,
          ],
          // The declaration is hashed whole, so an edit to a dropped agent moves it too.
-         declaration,
+         agentsDeclaration(this.rawAgents),
+      );
+   }
+
+   /**
+    * The sha {@link refreshServingIdentity} would compute if the package were
+    * loaded from the tree now. Unlike the served sha, it enumerates the
+    * tree's current files, so an added or removed model, skill or agent file
+    * moves it. Undefined when publisher.json cannot be read or parsed: the
+    * caller should then load, which reports why.
+    */
+   public static async currentContentSha(
+      packagePath: string,
+   ): Promise<string | undefined> {
+      let rawAgents: unknown;
+      try {
+         const manifest = JSON.parse(
+            await fs.readFile(
+               path.join(packagePath, PACKAGE_MANIFEST_NAME),
+               "utf8",
+            ),
+         ) as { agents?: unknown } | null;
+         rawAgents = boundedManifestValue(manifest?.agents);
+      } catch {
+         return undefined;
+      }
+      const modelPaths = filterModelPaths(await listPackageFiles(packagePath));
+      return computeSourceContentSha(
+         packagePath,
+         [
+            ...modelPaths,
+            ...readSkillsDir(packagePath, PACKAGE_SKILLS_DIR).files.map(
+               (f) => f.path,
+            ),
+            ...readPackageAgents(packagePath, rawAgents).paths,
+         ],
+         agentsDeclaration(rawAgents),
       );
    }
 
@@ -747,10 +787,14 @@ export class Package {
          // The environment's config, not the package's: that one is new on
          // every load, and only a connection change should empty the cache.
          const connectionsEpoch = () =>
-            connectionGeneration(
-               typeof environmentMalloyConfig === "function"
-                  ? environmentMalloyConfig()
-                  : environmentMalloyConfig,
+            packageConnectionsEpoch(
+               environmentName,
+               packageName,
+               connectionGeneration(
+                  typeof environmentMalloyConfig === "function"
+                     ? environmentMalloyConfig()
+                     : environmentMalloyConfig,
+               ),
             );
 
          return await Package.loadViaWorker(
@@ -1225,6 +1269,14 @@ export class Package {
          build_plan: buildPlanMs,
          total: performance.now() - startTime,
       });
+      pkg.loadTimings = {
+         compileDurationMs: outcome.timings.compileDurationMs,
+         schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
+         schemaFetchCount: outcome.timings.schemaFetchCount,
+         schemaCacheHits: outcome.timings.schemaCacheHits ?? 0,
+         compileCacheHits: outcome.timings.compileCacheHits ?? 0,
+         totalMs: performance.now() - startTime,
+      };
       return pkg;
    }
 

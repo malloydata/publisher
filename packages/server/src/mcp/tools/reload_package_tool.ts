@@ -17,6 +17,18 @@ const reloadShape = {
    packageName: z
       .string()
       .describe("Package to reload, as list_packages returns it."),
+   ifChanged: z
+      .boolean()
+      .optional()
+      .describe(
+         'Skip the reload when the package\'s files on disk hash to what is already served; answers status "unchanged" with the sha. Ignored for a package re-fetched from a location, whose source can change without the tree changing.',
+      ),
+   refreshSchema: z
+      .boolean()
+      .optional()
+      .describe(
+         "Re-read warehouse table schemas instead of reusing the ones cached from earlier loads. Set it after a column was added or changed in the warehouse. Overrides ifChanged.",
+      ),
 };
 
 /**
@@ -29,20 +41,22 @@ const reloadShape = {
 export const RELOAD_FAILURE_IS_SAFE =
    "A reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors.";
 
-const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
+const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making new or changed sources, views, and named queries resolvable by execute_query WITHOUT a server restart. A source or view you add is not queryable by name until the package is reloaded; use this to close the edit -> run loop.
 
-Receipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.
+Receipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents): unchanged after an edit means the edit never reached the server. Data and other publisher.json keys are not hashed.
 
-${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.
+${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning appears only here.
 
 ## Parameters
-- environmentName, packageName (required): the package to recompile. Use the names get_context returns.
+- environmentName, packageName (required): use the names get_context returns.
+- ifChanged: skip the reload when the files on disk are already what is served; an added or removed file counts as a change. Not applied to a package re-fetched from a location.
+- refreshSchema: also re-read warehouse table schemas, which are otherwise cached across reloads; set it after a column changed in the warehouse. Overrides ifChanged.
 
 ## Behavior
-Recompiles the package from its on-disk content under publisher_data/, the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.
+Recompiles the package from its on-disk content under publisher_data/. A package the server installed from a location is re-fetched from it instead, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them. A hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, timings (compileDurationMs, schemaFetchDurationMs, schemaFetchCount, schemaCacheHits, compileCacheHits, totalMs), any render-tag warnings, and any exploresWarnings. "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them. With ifChanged and no change, status is "unchanged" and there are no timings. A hard compile error returns an error payload instead.`;
 
 /**
  * Registers reload_package: recompiles a package from disk so a saved edit is
@@ -63,7 +77,8 @@ export function registerReloadPackageTool(
       RELOAD_DESCRIPTION,
       reloadShape,
       async (params) => {
-         const { environmentName, packageName } = params;
+         const { environmentName, packageName, ifChanged, refreshSchema } =
+            params;
 
          logger.debug("[MCP Tool reloadPackage] Reloading package", {
             environmentName,
@@ -76,15 +91,22 @@ export function registerReloadPackageTool(
          );
 
          try {
-            const { metadata: pkg, mode } =
-               await packageController.reloadPackage(
-                  environmentName,
-                  packageName,
-                  "mcp",
-               );
+            const {
+               metadata: pkg,
+               mode,
+               unchanged,
+               timings,
+            } = await packageController.reloadPackage(
+               environmentName,
+               packageName,
+               "mcp",
+               { ifChanged, refreshSchema },
+            );
 
             const payload = {
-               status: "reloaded" as const,
+               status: unchanged
+                  ? ("unchanged" as const)
+                  : ("reloaded" as const),
                // "in-place" recompiled the tree on disk; "reinstalled"
                // re-fetched it, so on-disk edits are gone. Only this says which.
                mode,
@@ -96,6 +118,7 @@ export function registerReloadPackageTool(
                ...(pkg.servedRevision !== undefined && {
                   servedRevision: pkg.servedRevision,
                }),
+               ...(timings !== undefined && { timings }),
                ...(pkg.description !== undefined && {
                   description: pkg.description,
                }),

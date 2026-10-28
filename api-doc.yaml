@@ -1517,7 +1517,9 @@ paths:
         - name: reload
           in: query
           description: |
-            Load / reload the package before returning result.
+            Load / reload the package before returning result. The response
+            then carries `timings` for that load; a response that did not
+            reload omits it.
 
             Only the two spellings OpenAPI serializes a boolean as are accepted:
             `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
@@ -4025,11 +4027,50 @@ components:
             populated by the server or applied by the client; viewers currently
             use the instance-level theme only.
 
+    PackageLoadTimings:
+      type: object
+      description: >-
+        How long one load of a package took, so a caller that reloads can log
+        where the time went. The phase fields are parts of `totalMs`, not a
+        partition of it.
+      required:
+        - compileDurationMs
+        - schemaFetchDurationMs
+        - schemaFetchCount
+        - schemaCacheHits
+        - compileCacheHits
+        - totalMs
+      properties:
+        compileDurationMs:
+          type: number
+          description: >-
+            Compile time, excluding the time spent waiting on warehouse schema
+            fetches. An upper bound on compile CPU.
+        schemaFetchDurationMs:
+          type: number
+          description: Time spent waiting on warehouse table-schema fetches.
+        schemaFetchCount:
+          type: integer
+          description: Schema fetches the load sent to the warehouse.
+        schemaCacheHits:
+          type: integer
+          description: Schema requests answered from the worker's schema cache.
+        compileCacheHits:
+          type: integer
+          description: >-
+            Models whose compile was served from the package's compile cache
+            because their files, and the data files and connections they depend
+            on, were unchanged.
+        totalMs:
+          type: number
+          description: Wall-clock time of the whole load.
     Package:
       type: object
       description: Represents a Malloy package containing models, notebooks, and
         embedded databases
       properties:
+        timings:
+          $ref: "#/components/schemas/PackageLoadTimings"
         resource:
           type: string
           description: Resource path to the package

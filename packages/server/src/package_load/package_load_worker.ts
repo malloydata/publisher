@@ -42,7 +42,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { parentPort, threadId, workerData } from "node:worker_threads";
-import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import {
@@ -116,7 +115,7 @@ import {
    gateGivenSource,
    suggestGivenLookup,
 } from "../service/given";
-import { errMessage, ignoreDotfiles } from "../utils";
+import { errMessage } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
 import {
@@ -131,6 +130,7 @@ import {
 } from "../service/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { PackageCompileCache } from "./compile_cache";
+import { filterModelPaths, listPackageFiles } from "./package_files";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import {
@@ -313,6 +313,7 @@ class ProxyConnection {
       metadata: ConnectionMetadata,
       jobId: string,
       environmentScope: string,
+      connectionsEpoch: number,
    ) {
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
@@ -320,12 +321,14 @@ class ProxyConnection {
       this.jobId = jobId;
       // The environment is in the key because a digest can be a configured
       // fingerprint, and two environments must never share what one can see.
-      // The generation retires entries when the connection is replaced.
+      // The generation retires entries when the connection is replaced; the
+      // epoch also moves on a package's schema refresh.
       this.cacheScope = [
          environmentScope,
          this.name,
          this.digest,
          metadata.generation,
+         connectionsEpoch,
       ].join("\0");
    }
 
@@ -636,6 +639,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                      response.metadata,
                      job.requestId,
                      job.environmentName,
+                     job.connectionsEpoch,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -828,23 +832,6 @@ async function readPackageMetadata(
 }
 
 /**
- * Every file in the package, package-relative, sorted. `recursive-readdir`
- * yields libuv completion order, and this order becomes `listModels()` order,
- * so sorting keeps it stable across reloads and servers.
- */
-async function listPackageFiles(packagePath: string): Promise<string[]> {
-   const files = await recursive(packagePath, [ignoreDotfiles]);
-   return (
-      files
-         .map((full: string) =>
-            path.relative(packagePath, full).replace(/\\/g, "/"),
-         )
-         // Codepoint order: localeCompare follows LANG/LC_ALL, which varies by server.
-         .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-   );
-}
-
-/**
  * Path, size and mtime of every file a model can read data from, since a
  * cached ModelDef holds those files' schemas. Skipped: model and markdown
  * sources, `*.styles.json` (re-read on every load), and `public/`, a data
@@ -872,12 +859,6 @@ async function dataFilesDigest(
       hash.update(`${p}\0${stats[i]?.size}\0${stats[i]?.mtimeMs}\n`),
    );
    return hash.digest("hex");
-}
-
-function filterModelPaths(allRelative: string[]): string[] {
-   return allRelative.filter(
-      (p) => p.endsWith(MODEL_FILE_SUFFIX) || p.endsWith(NOTEBOOK_FILE_SUFFIX),
-   );
 }
 
 // `explores` is not validated here: the policy differs by context (reject at

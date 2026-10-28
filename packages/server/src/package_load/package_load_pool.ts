@@ -906,6 +906,39 @@ export function connectionGeneration(conn: object): number {
    return generation;
 }
 
+/** Packages whose schemas were refreshed: the epoch they compile under, while `base` still holds. */
+const refreshedEpochs = new Map<string, { epoch: number; base?: number }>();
+
+/**
+ * Give the package a fresh connections epoch, so its next load misses both
+ * the worker schema cache and the compile cache. Kept across an unload, whose
+ * reload would otherwise find the schemas the refresh retired.
+ */
+export function refreshPackageConnectionsEpoch(
+   environmentName: string,
+   packageName: string,
+): void {
+   refreshedEpochs.set(`${environmentName}\0${packageName}`, {
+      epoch: connectionGeneration({}),
+   });
+}
+
+/** `base` (the environment config's generation), or the epoch a refresh gave the package while `base` is unchanged. */
+export function packageConnectionsEpoch(
+   environmentName: string,
+   packageName: string,
+   base: number,
+): number {
+   const key = `${environmentName}\0${packageName}`;
+   const refreshed = refreshedEpochs.get(key);
+   if (refreshed === undefined) return base;
+   refreshed.base ??= base;
+   if (refreshed.base === base) return refreshed.epoch;
+   // The connections changed since: the new base is already fresh.
+   refreshedEpochs.delete(key);
+   return base;
+}
+
 /**
  * Log an entry a job wrote in the worker on this thread, whose logger reaches
  * the OpenTelemetry log pipeline (see WorkerLogMessage), naming the package
