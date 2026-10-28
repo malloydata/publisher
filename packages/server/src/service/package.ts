@@ -886,7 +886,8 @@ export class Package {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          // Before a failed model throws: the worker counted them before failing.
-         recordGateFindings(sm.gateFindings);
+         // A dry-run compile is not a publish, so it must not move the gate counters.
+         if (!ctx.compile) recordGateFindings(sm.gateFindings);
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
             if (onCompileError === "throw") {

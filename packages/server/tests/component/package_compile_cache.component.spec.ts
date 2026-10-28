@@ -19,6 +19,7 @@ import {
    dropPackageCompileCache,
    type LoadPackageOutcome,
 } from "../../src/package_load/package_load_pool";
+import { compileSource } from "../../src/service/compile_source";
 import { buildEnvironmentMalloyConfig } from "../../src/service/connection";
 import { ConnectionService } from "../../src/service/connection_service";
 import { Environment } from "../../src/service/environment";
@@ -336,6 +337,22 @@ source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() 
                (m) => m.modelPath === "gated.malloy",
             );
             expect(gated?.derivationReused).toBe(true);
+            expect(await admitAll()).toBe(2);
+            // A package-scope /compile is a dry run, not a publish.
+            await compileSource(
+               {
+                  environmentName: "metrics-env",
+                  environmentPath: tempDir,
+                  withPackageLock: (_name, fn) => fn(),
+                  loadPackageLocked: async () => packages[1],
+               },
+               "pkg",
+               "gated.malloy",
+               undefined,
+               false,
+               undefined,
+               "package",
+            );
             expect(await admitAll()).toBe(2);
          } finally {
             dropPackageCompileCache("metrics-env", "pkg");
