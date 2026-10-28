@@ -7084,7 +7084,11 @@ components:
             rather than as a misconfiguration.
         endpoint:
           type: string
-          description: Custom S3-compatible endpoint URL (optional, for MinIO, etc.)
+          description: >-
+            Custom S3-compatible endpoint (optional, for MinIO, etc.): `host[:port]`,
+            `https://host[:port]`, or `http://host[:port]`, which is the one form that turns TLS off
+            and is refused with `provider: credential_chain`, whose requests carry the host's credentials.
+            No userinfo, query, fragment or whitespace.
         sessionToken:
           type: string
           description: AWS session token for temporary credentials (optional)

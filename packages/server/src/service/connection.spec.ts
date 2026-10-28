@@ -3619,9 +3619,19 @@ describe("buildCloudStorageSecretSQL", () => {
             endpoint: "https://minio.internal:9000",
          });
          expect(sql).toContain("PROVIDER credential_chain");
-         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("ENDPOINT 'minio.internal:9000'");
          expect(sql).toContain("URL_STYLE 'path'");
+         expect(sql).not.toContain("USE_SSL");
          expect(sql).not.toContain("KEY_ID");
+      });
+
+      it("refuses a plain http:// endpoint, which would send the host's credentials in cleartext", () => {
+         expect(() =>
+            chainSQL({
+               provider: "credential_chain",
+               endpoint: "http://minio.internal:9000",
+            }),
+         ).toThrow("must use https:// with provider credential_chain");
       });
 
       it("escapes a chain containing a quote", () => {
@@ -3653,7 +3663,7 @@ describe("buildCloudStorageSecretSQL", () => {
             chainSQL({
                ...keys,
                region: "us-west-2",
-               endpoint: "https://mi.no",
+               endpoint: "mi.no",
             }),
          ).toBe(`
             CREATE OR REPLACE SECRET s3_root (
@@ -3661,8 +3671,64 @@ describe("buildCloudStorageSecretSQL", () => {
                KEY_ID 'AKIA',
                SECRET 'shhh',
                REGION 'us-west-2',
-               ENDPOINT 'https://mi.no',
+               ENDPOINT 'mi.no',
                URL_STYLE 'path'
+            );
+         `);
+      });
+
+      // DuckDB's ENDPOINT takes no scheme: given one, it requested
+      // `https://https://mi.no/…`. An https:// endpoint now writes the same
+      // secret a bare one always did.
+      it("custom endpoint written with https:// gives the bare endpoint's secret", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "https://mi.no/",
+            }),
+         ).toBe(chainSQL({ ...keys, region: "us-west-2", endpoint: "mi.no" }));
+      });
+
+      // The endpoint arm used to drop the token, so a temporary key pair behind
+      // an endpoint listed fine (the SDK sent it) and failed every DuckDB read.
+      it("custom endpoint with a session token keeps the token", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "mi.no",
+               sessionToken: "tok",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'mi.no',
+               URL_STYLE 'path',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("custom endpoint written with http:// turns TLS off", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "http://minio:9000",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'minio:9000',
+               URL_STYLE 'path',
+               USE_SSL false
             );
          `);
       });
