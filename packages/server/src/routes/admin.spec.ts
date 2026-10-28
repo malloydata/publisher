@@ -223,6 +223,29 @@ describe("the admin listener's configuration", () => {
       });
    });
 
+   it("fails startup on an S3 endpoint it cannot use, without repeating it", () => {
+      const env = {
+         PUBLISHER_ADMIN_CATALOG_DATABASE: "host=h",
+         PUBLISHER_ADMIN_STORAGE_PROVIDER: "s3",
+         PUBLISHER_ADMIN_STORAGE_KEY_ID: "k",
+         PUBLISHER_ADMIN_STORAGE_SECRET: "s",
+      };
+      expect(() =>
+         catalogAdminConfigFromEnv({
+            ...env,
+            PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://key:hunter2@minio",
+         }),
+      ).toThrow(
+         "PUBLISHER_ADMIN_STORAGE_ENDPOINT: S3 endpoint must not contain userinfo",
+      );
+      expect(
+         catalogAdminConfigFromEnv({
+            ...env,
+            PUBLISHER_ADMIN_STORAGE_ENDPOINT: "http://minio:9000",
+         })?.storage?.s3Connection?.endpoint,
+      ).toBe("http://minio:9000");
+   });
+
    it("fails startup on a provider it cannot use", () => {
       const db = "host=h";
       expect(() =>

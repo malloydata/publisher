@@ -36,28 +36,69 @@ export const DEFAULT_S3_CREDENTIAL_CHAIN = "env;web_identity;instance";
  * says `USE_SSL false`; given a scheme it requests `https://http://…`. The SDK
  * needs the full URL and rejects a bare host as `Invalid URL`. So an endpoint
  * may be written either way, and `http://` is the one form that turns TLS off.
+ *
+ * Anything the two read differently is refused: another scheme, whitespace, a
+ * query or fragment, userinfo, and a path with no host. No message repeats the
+ * endpoint, which may carry a credential.
  */
 export function parseS3Endpoint(endpoint: string): {
    hostAndPath: string;
    useSsl: boolean;
    url: string;
 } {
-   const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(.*)$/.exec(endpoint.trim());
-   const scheme = match ? match[1].toLowerCase() : "https";
-   if (scheme !== "http" && scheme !== "https") {
+   const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(endpoint);
+   const protocol = scheme?.[1].toLowerCase();
+   if (protocol !== undefined && protocol !== "http" && protocol !== "https") {
       throw new Error(
-         `S3 endpoint '${endpoint}' has scheme '${scheme}'; use host[:port], https://host[:port] or http://host[:port]`,
+         `S3 endpoint scheme must be http:// or https://, got ${protocol}://`,
       );
    }
-   const hostAndPath = (match ? match[2] : endpoint.trim()).replace(/\/+$/, "");
-   if (!hostAndPath) {
-      throw new Error(`S3 endpoint '${endpoint}' names no host`);
+   if (/\s/.test(endpoint)) {
+      throw new Error("S3 endpoint must not contain whitespace");
    }
+   if (/[?#]/.test(endpoint)) {
+      throw new Error(
+         "S3 endpoint must not contain a query string or fragment",
+      );
+   }
+   const hostAndPath = endpoint
+      .slice(scheme ? scheme[0].length : 0)
+      .replace(/\/+$/, "");
+   if (!hostAndPath) {
+      throw new Error("S3 endpoint must include a host");
+   }
+   if (hostAndPath.startsWith("/")) {
+      throw new Error("S3 endpoint must include a host before any path");
+   }
+   if (hostAndPath.split("/", 1)[0].includes("@")) {
+      throw new Error("S3 endpoint must not contain userinfo");
+   }
+   const useSsl = protocol !== "http";
    return {
       hostAndPath,
-      useSsl: scheme === "https",
-      url: `${scheme}://${hostAndPath}`,
+      useSsl,
+      url: `${useSsl ? "https" : "http"}://${hostAndPath}`,
    };
+}
+
+/**
+ * The endpoint a connection may use with its credentials: {@link parseS3Endpoint},
+ * and no plain `http://` for `credential_chain`, whose signed requests carry the
+ * host role's session token. Connection authors are less trusted than the host
+ * operator (the chain is policy-gated for that reason), so an author must not be
+ * able to send the host's credentials in cleartext.
+ */
+export function checkS3Endpoint(
+   endpoint: string,
+   provider: string | undefined,
+): ReturnType<typeof parseS3Endpoint> {
+   const parsed = parseS3Endpoint(endpoint);
+   if (!parsed.useSsl && provider === "credential_chain") {
+      throw new Error(
+         "S3 endpoint must use https:// with provider credential_chain: its requests carry the host's credentials",
+      );
+   }
+   return parsed;
 }
 
 export interface CloudStorageCredentials {
@@ -226,6 +267,15 @@ export function resolveCloudStorageCredentials(
    }
    const s3 = attachedDb.s3Connection;
    validateS3ProviderShape(s3, attachedDb.name, origin);
+   // Here rather than at attach, so a storage destination with an unusable
+   // endpoint is refused when it is configured, not at its first build.
+   if (typeof s3.endpoint === "string" && s3.endpoint !== "") {
+      try {
+         checkS3Endpoint(s3.endpoint, s3.provider);
+      } catch (error) {
+         throw new Error(`${(error as Error).message} (${attachedDb.name})`);
+      }
+   }
    if (
       s3.provider !== "credential_chain" &&
       (!s3.accessKeyId || !s3.secretAccessKey)
@@ -271,7 +321,7 @@ export function createCloudStorageClient(
       endpoint: isGCS
          ? "https://storage.googleapis.com"
          : credentials.endpoint
-           ? parseS3Endpoint(credentials.endpoint).url
+           ? checkS3Endpoint(credentials.endpoint, credentials.provider).url
            : undefined,
       region: isGCS ? "auto" : credentials.region || "us-east-1",
       ...(useHostCredentials

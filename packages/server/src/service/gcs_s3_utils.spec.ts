@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+   checkS3Endpoint,
    createCloudStorageClient,
    parseS3Endpoint,
+   resolveCloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
    s3ConnectionToCredentials,
    validateS3ProviderShape,
@@ -47,9 +49,62 @@ describe("parseS3Endpoint", () => {
       expect(parseS3Endpoint("https://s3.example.com/base").useSsl).toBe(true);
    });
 
-   it("refuses another scheme and an empty host", () => {
-      expect(() => parseS3Endpoint("ftp://minio")).toThrow("scheme 'ftp'");
-      expect(() => parseS3Endpoint("http://")).toThrow("names no host");
+   // What DuckDB and the SDK read differently, each refused. `https:///foo`
+   // would otherwise write ENDPOINT '/foo'.
+   it.each([
+      ["ftp://minio", "scheme must be http:// or https://, got ftp://"],
+      ["http://", "must include a host"],
+      ["https:///foo", "must include a host before any path"],
+      ["https://user:pw@minio", "must not contain userinfo"],
+      ["minio?x=1", "query string or fragment"],
+      ["minio#frag", "query string or fragment"],
+      ["minio name", "must not contain whitespace"],
+   ])("refuses %p", (endpoint, message) => {
+      expect(() => parseS3Endpoint(endpoint)).toThrow(message);
+   });
+
+   it("never repeats an endpoint that carries a credential", () => {
+      for (const endpoint of [
+         "ftp://key:secret@minio",
+         "https://key:secret@minio",
+      ]) {
+         try {
+            parseS3Endpoint(endpoint);
+            throw new Error("expected a refusal");
+         } catch (error) {
+            expect((error as Error).message).not.toContain("secret");
+         }
+      }
+   });
+});
+
+describe("checkS3Endpoint", () => {
+   it("refuses plain http for credential_chain, whose requests carry the host's credentials", () => {
+      expect(() =>
+         checkS3Endpoint("http://minio:9000", "credential_chain"),
+      ).toThrow("must use https:// with provider credential_chain");
+      expect(checkS3Endpoint("http://minio:9000", "config").useSsl).toBe(false);
+      expect(
+         checkS3Endpoint("https://minio:9000", "credential_chain").useSsl,
+      ).toBe(true);
+   });
+});
+
+describe("resolveCloudStorageCredentials endpoint", () => {
+   // A storage destination resolves its credentials when it is configured, so
+   // an unusable endpoint is refused then, not at its first build.
+   it("refuses an unusable endpoint when the credentials are resolved, naming the connection", () => {
+      expect(() =>
+         resolveCloudStorageCredentials({
+            name: "lake",
+            type: "s3",
+            s3Connection: {
+               accessKeyId: "AKIA",
+               secretAccessKey: "s",
+               endpoint: "ftp://minio",
+            },
+         }),
+      ).toThrow("got ftp:// (lake)");
    });
 });
 
