@@ -189,7 +189,7 @@ describe("respond", () => {
    it("nests matched values under their dimension", async () => {
       const out = await answer([
          t(0, "measure", "how many flights"),
-         t(1, "dimension", "flights to Denver"),
+         t(1, "dimensional_value", "Denver"),
       ]);
       const arrives = (out.sources as Card[])[0].entities!.find(
          (e) => e.entity_id === "dimension:flights:arrives_at",
@@ -198,7 +198,7 @@ describe("respond", () => {
          {
             value: "Denver International (DIA)",
             relevance: 0.85,
-            search_text: "flights to Denver",
+            search_text: "Denver",
          },
       ]);
    });

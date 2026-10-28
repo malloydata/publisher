@@ -12,7 +12,6 @@ import {
    fuseByRank,
    KINDS_BY_FIND_TARGET,
    mentionsPeriod,
-   valuePhrasesOf,
    type FindTarget,
 } from "./find";
 import { routesOf } from "./routes";
@@ -72,27 +71,15 @@ describe("find", () => {
       expect(r.candidates[0].ranks).toEqual({ close: 1, keyword: 1 });
    });
 
-   it("lets a value nominate a dimension: Denver puts both city and arrives_at on the list", () => {
-      const [r] = run([target(2, "dimension", "flights to Denver")]);
-      expect(r.valuePhrases).toEqual(["Denver"]);
-      expect(r.lists).toEqual({
-         close: 30,
-         keyword: 6,
-         value: 2,
-         valueMeaning: 0,
-      });
-      const arrives = r.candidates[0];
-      expect(arrives.key).toBe("dimension:flights@travel.malloy:arrives_at");
-      expect(arrives.ranks).toEqual({ close: 5, keyword: 1, value: 2 });
-      expect(arrives.values?.map((v) => v.value)).toEqual([
-         "Denver International (DIA)",
+   it("searches a value only for a dimensional_value target, never inside a dimension's text", () => {
+      const [dim, value] = run([
+         target(0, "dimension", "flights to Mile High"),
+         target(1, "dimensional_value", "Mile High"),
       ]);
-      const city = r.candidates.find(
-         (c) => c.key === "dimension:cities@travel.malloy:city",
-      )!;
-      expect(r.candidates.indexOf(city)).toBe(5);
-      expect(city.ranks).toEqual({ close: 25, value: 1 });
-      expect(city.valueScore).toBe(1);
+      expect(dim.valuePhrases).toEqual([]);
+      expect(dim.lists.value).toBe(0);
+      expect(dim.candidates.some((c) => c.ranks.value)).toBe(false);
+      expect(value.valuePhrases).toEqual(["Mile High"]);
    });
 
    it("adds a meaning list for value phrases when given their vectors", () => {
@@ -101,7 +88,7 @@ describe("find", () => {
             index: f.index,
             targets: [t],
             queries: new Map([[t.index, toUnit(embedText(t.text))]]),
-            phraseVectors: new Map(),
+            valueMeaning: true,
             perTarget: 30,
             keyword: true,
             values: true,
@@ -124,8 +111,8 @@ describe("find", () => {
          valueMeaningScore: 1,
       });
       expect(r.candidates[0].score).toBeCloseTo(2 / 61, 10);
-      // A dimension target with nothing value-looking asks nothing.
-      const plain = meaningRun(target(4, "dimension", "arrival airport"));
+      // A dimension target asks the value index nothing.
+      const plain = meaningRun(target(4, "dimension", "flights to Denver"));
       expect(plain.meaningPhrases).toEqual([]);
       expect(plain.lists.valueMeaning).toBe(0);
    });
@@ -183,21 +170,6 @@ describe("find", () => {
 });
 
 describe("helpers", () => {
-   it("prefers the caller's example values over the token rule", () => {
-      expect(
-         valuePhrasesOf(
-            {
-               ...target(2, "dimension", "flights to Denver"),
-               exampleValues: ["DIA"],
-            },
-            () => true,
-         ),
-      ).toEqual(["DIA"]);
-      expect(
-         valuePhrasesOf(target(0, "measure", "flights to Denver"), () => false),
-      ).toEqual([]);
-   });
-
    it("names every route to a field, two joins deep", () => {
       const node = f.index.catalog.nodes.get(
          "dimension:airports@travel.malloy:airport_name",

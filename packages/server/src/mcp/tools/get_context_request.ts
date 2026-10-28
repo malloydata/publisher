@@ -67,21 +67,14 @@ export const convergedContextShape = {
             target_type: z
                .enum(SEARCH_TARGET_TYPES)
                .describe(
-                  "What to look for. `dimension`/`measure`/`view` match fields and the response groups them by source; `source` matches or lists sources; `join` matches a declared relationship.",
+                  "What to look for. `dimension`/`measure`/`view` match fields and the response groups them by source; `source` matches or lists sources; `join` matches a declared relationship; `dimensional_value` matches one literal value against the values stored in `#(index)` dimensions.",
                ),
             search_text: z
                .string()
                .max(500)
                .nullish()
                .describe(
-                  'Plain-English description of what you need, e.g. "the total revenue". Omit or null to enumerate this type instead of ranking it.',
-               ),
-            example_values: z
-               .array(z.string().max(200))
-               .max(20)
-               .nullish()
-               .describe(
-                  'For a dimension or dimensional_value target: the literal values the user named, as typed (e.g. ["cancelled"]). Where this server indexes stored values, it looks them up to find the dimension that holds them; elsewhere they are ignored.',
+                  'Plain-English description of what you need, e.g. "the total revenue". For a `dimensional_value` target, one value exactly as the user typed it, e.g. "Denvr": it is matched by spelling, typos included, and with an embedding provider by meaning, and the stored string ("Denver") returns in `entities[].values` on the dimension that holds it. Send each value as its own target beside the `dimension` target for its field ("the city of the store"), and keep it out of that target\'s text. Scoping to the source narrows the search. Omit or null to enumerate this type instead of ranking it.',
                ),
          }),
       )
@@ -172,19 +165,8 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
    const valueSearches: ResolvedValueSearch[] = [];
    const valuesOn = getDimensionValueSettings().enabled;
    let textlessValueTargets = 0;
-   const exampleValues = new Map<number, string[]>();
 
    params.search_targets.forEach((target, targetIndex) => {
-      const examples = (target.example_values ?? [])
-         .map((v) => v.trim())
-         .filter(Boolean);
-      if (
-         examples.length > 0 &&
-         (target.target_type === "dimension" ||
-            target.target_type === "dimensional_value")
-      ) {
-         exampleValues.set(targetIndex, examples);
-      }
       if (target.target_type === "dimensional_value" && valuesOn) {
          // Answered by the values stage, which reads the data through the
          // query path; it selects no indexed entity kind. A target with no
@@ -233,7 +215,6 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       ...(textlessValueTargets > 0 ? { textlessValueTargets } : {}),
       ...(params.givens ? { givens: params.givens } : {}),
       ...(params.filter_params ? { filterParams: params.filter_params } : {}),
-      ...(exampleValues.size > 0 ? { exampleValues } : {}),
       listingOnly,
       // Pinning an entity by name turns code on, even over an explicit
       // `include_code: false`, matching the hosted retrieval API.

@@ -424,8 +424,8 @@ export function connect(args: {
    index: FcjIndex;
    found: readonly FindResult[];
    queries: ReadonlyMap<number, Float32Array>;
-   /** Value phrase vectors (`valueEmbeddings`), as find got them. */
-   phraseVectors?: ReadonlyMap<string, Float32Array>;
+   /** Match value phrases by meaning (`valueEmbeddings`), as find did. */
+   valueMeaning?: boolean;
    settings: ConnectSettings;
    /** The request's scope, applied to the in-cluster pool. */
    allow: (node: CatalogNode) => boolean;
@@ -472,7 +472,7 @@ export function connect(args: {
                   inPool,
                   pool,
                   settings,
-                  args.phraseVectors,
+                  args.valueMeaning,
                ),
             );
          }
@@ -655,13 +655,13 @@ function rankInCluster(
    inPool: (node: CatalogNode) => boolean,
    pool: ReadonlyMap<string, ReachEntry>,
    settings: ConnectSettings,
-   phraseVectors?: ReadonlyMap<string, Float32Array>,
+   valueMeaning?: boolean,
 ): ClusterCandidate[] {
    const ranked = rankTarget(index, target, query, inPool, {
       keyword: settings.keyword,
       values: settings.values,
       depth: Number.MAX_SAFE_INTEGER,
-      ...(phraseVectors ? { phraseVectors } : {}),
+      ...(valueMeaning ? { valueMeaning } : {}),
    });
    return ranked.all
       .map((c) => {

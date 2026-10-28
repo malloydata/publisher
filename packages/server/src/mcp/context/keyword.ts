@@ -98,11 +98,6 @@ export class KeywordIndex {
       return this.docs.length;
    }
 
-   /** Every term of the vocabulary; the value-looking-token rule reads it. */
-   hasTerm(term: string): boolean {
-      return this.df.has(term);
-   }
-
    /**
     * BM25 scores of the documents `allow` admits, best first, ties by key.
     * A document with no query term is left out.

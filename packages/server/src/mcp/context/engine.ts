@@ -49,7 +49,6 @@ import { fcjJudgeChat, fcjStateOf, kickFcjBuild } from "./engine_state";
 import {
    find,
    KINDS_BY_FIND_TARGET,
-   meaningPhrasesOf,
    type FindResult,
    type FindTarget,
 } from "./find";
@@ -125,18 +124,12 @@ export function findTargetsOf(request: ResolvedRequest): FindTarget[] {
          type: s.targetType as FindTarget["type"],
          text: s.text,
          kinds: KINDS_BY_FIND_TARGET[s.targetType as FindTarget["type"]],
-         ...(request.exampleValues?.get(s.targetIndex)
-            ? { exampleValues: request.exampleValues.get(s.targetIndex) }
-            : {}),
       })),
       ...request.valueSearches.map((s) => ({
          index: s.targetIndex,
          type: "dimensional_value" as const,
          text: s.text,
          kinds: KINDS_BY_FIND_TARGET.dimensional_value,
-         ...(request.exampleValues?.get(s.targetIndex)
-            ? { exampleValues: request.exampleValues.get(s.targetIndex) }
-            : {}),
       })),
    ];
    return targets.sort((a, b) => a.index - b.index);
@@ -162,45 +155,21 @@ export function inScope(request: ResolvedRequest) {
 }
 
 /**
- * Embed every target's text, and with `valueEmbeddings` every value phrase
- * that is not a target's text (meaningPhrasesOf), in one call. Empty maps
- * with no provider.
+ * Embed every target's text in one call. An empty map with no provider.
  */
 async function embedTargets(
    index: FcjIndex,
    targets: readonly FindTarget[],
-   valuePhrases: boolean,
-): Promise<{
-   queries: Map<number, Float32Array>;
-   phrases: Map<string, Float32Array> | undefined;
-}> {
+): Promise<Map<number, Float32Array>> {
    const queries = new Map<number, Float32Array>();
    const provider = index.provider;
-   if (!provider || targets.length === 0)
-      return { queries, phrases: undefined };
-   const withPhrases = valuePhrases && index.values.embedded > 0;
-   const texts = new Set(targets.map((t) => t.text));
-   const extra: string[] = [];
-   if (withPhrases) {
-      for (const t of targets) {
-         for (const p of meaningPhrasesOf(t, (term) =>
-            index.keyword.hasTerm(term),
-         )) {
-            if (!texts.has(p) && !extra.includes(p)) extra.push(p);
-         }
-      }
-   }
+   if (!provider || targets.length === 0) return queries;
    const vectors = await provider.embedBatch(
-      [...targets.map((t) => t.text), ...extra].map(
-         (x) => (provider.queryPrefix ?? "") + x,
-      ),
+      targets.map((t) => (provider.queryPrefix ?? "") + t.text),
       EMBEDDING_QUERY_TIMEOUT_MS,
    );
    targets.forEach((t, i) => queries.set(t.index, toUnit(vectors[i])));
-   if (!withPhrases) return { queries, phrases: undefined };
-   const phrases = new Map<string, Float32Array>();
-   extra.forEach((p, i) => phrases.set(p, toUnit(vectors[targets.length + i])));
-   return { queries, phrases };
+   return queries;
 }
 
 /** A node as the card builder wants it, under one of its model paths. */
@@ -338,16 +307,10 @@ export async function runFcjQuery(args: {
    // Stage 1.
    let started = performance.now();
    let queries = new Map<number, Float32Array>();
-   let phraseVectors: Map<string, Float32Array> | undefined;
+   const valueMeaning = settings.values && settings.valueEmbeddings;
    try {
       if (embeddingConfigured()) {
-         const embedded = await embedTargets(
-            index,
-            searched,
-            settings.values && settings.valueEmbeddings,
-         );
-         queries = embedded.queries;
-         phraseVectors = embedded.phrases;
+         queries = await embedTargets(index, searched);
       }
    } catch (error) {
       logger.warn("[get_context fcj] The search text could not be embedded", {
@@ -372,7 +335,7 @@ export async function runFcjQuery(args: {
          index,
          targets: searched,
          queries,
-         ...(phraseVectors ? { phraseVectors } : {}),
+         ...(valueMeaning ? { valueMeaning } : {}),
          perTarget: settings.perTarget,
          keyword: settings.keyword,
          values: settings.values,
@@ -403,7 +366,7 @@ export async function runFcjQuery(args: {
       index,
       found: foundForConnect,
       queries,
-      ...(phraseVectors ? { phraseVectors } : {}),
+      ...(valueMeaning ? { valueMeaning } : {}),
       settings,
       allow,
    });
