@@ -2425,9 +2425,9 @@ function withoutPublisherToken(
 
 /**
  * Whether `next` differs from `stored` only by a publisher connection's bearer
- * token, the one withheld credential a live connection reads per request.
- * Other types hand theirs to the driver at construction (postgres passes
- * pg.password to its pool), so only a rebuild can change it.
+ * token, which a live publisher connection reads per request. Other types are
+ * not fast-pathed: postgres, for one, passes pg.password to its pool at
+ * construction.
  */
 export function isPublisherTokenOnlyUpdate(
    stored: ApiConnection | undefined,
@@ -3027,7 +3027,8 @@ export function buildEnvironmentMalloyConfig(
       apiConnections: assembled.apiConnections,
       rebindPublisherToken: (name, accessToken) => {
          const live = livePublisherConnections.get(name);
-         if (!live) return false;
+         // Falls back to a rebuild if db-publisher renames or #privatizes the field.
+         if (!live || !Object.hasOwn(live, "accessToken")) return false;
          // PublisherConnection sends `this.accessToken` on every request.
          (live as unknown as { accessToken?: string }).accessToken =
             accessToken;

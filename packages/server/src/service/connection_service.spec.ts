@@ -790,6 +790,69 @@ describe("service/connection_service", () => {
          }
       });
 
+      it("reads the stored config under the update lock, so concurrent patches stay consistent", async () => {
+         let inLock = false;
+         const exclusive =
+            environment.runConnectionUpdateExclusive.bind(environment);
+         environment.runConnectionUpdateExclusive = (fn) =>
+            exclusive(async () => {
+               inLock = true;
+               try {
+                  return await fn();
+               } finally {
+                  inLock = false;
+               }
+            });
+         const readUnderLock: boolean[] = [];
+         (mockRepository.getConnectionByName as sinon.SinonStub).callsFake(
+            async () => {
+               readUnderLock.push(inLock);
+               return { config: stored };
+            },
+         );
+         (mockEnvironmentStore.updateConnection as sinon.SinonStub).callsFake(
+            async (next: ApiConnection) => {
+               stored = next;
+            },
+         );
+         await environment.getMalloyConnection("remote");
+         const other = startFakePublisher();
+         try {
+            // A host move and a token-only patch for the old host, racing.
+            await Promise.all([
+               connectionService.updateConnection("test-project", "remote", {
+                  publisherConnection: {
+                     connectionUri: other.connectionUri("remote"),
+                     accessToken: "h",
+                  },
+               }),
+               connectionService.updateConnection("test-project", "remote", {
+                  publisherConnection: {
+                     connectionUri: remote.connectionUri("remote"),
+                     accessToken: "t2",
+                  },
+               }),
+            ]);
+            expect(readUnderLock).toEqual([true, true]);
+            // Whatever order they ran in, the list, the store and the live
+            // instance agree on the last writer.
+            const listed =
+               environment.getApiConnection("remote").publisherConnection!;
+            expect(stored.publisherConnection).toEqual(listed);
+            const live = await environment.getMalloyConnection("remote");
+            await live.runSQL("select 1");
+            const hit =
+               listed.connectionUri === remote.connectionUri("remote")
+                  ? remote
+                  : other;
+            expect(hit.authorizations.at(-1)).toBe(
+               `Bearer ${listed.accessToken}`,
+            );
+         } finally {
+            other.stop();
+         }
+      });
+
       it("rebuilds when no live instance exists yet to rebind", async () => {
          await connectionService.updateConnection("test-project", "remote", {
             publisherConnection: {
@@ -828,6 +891,22 @@ describe("service/connection_service", () => {
                publisher("https://a/x", "old"),
                publisher("https://b/x", "new"),
             ),
+         ).toBe(false);
+      });
+
+      it("rejects a token change that rides with another withheld or fingerprinted field", () => {
+         const base = publisher("https://a/x", "old");
+         expect(
+            isPublisherTokenOnlyUpdate(base, {
+               ...publisher("https://a/x", "new"),
+               fingerprint: "f2",
+            }),
+         ).toBe(false);
+         expect(
+            isPublisherTokenOnlyUpdate(base, {
+               ...publisher("https://a/x", "new"),
+               queryMetadata: { team: "x" },
+            }),
          ).toBe(false);
       });
 

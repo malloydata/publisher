@@ -76,7 +76,7 @@ async function newWarehouse(
    const baseDims = cols("d", shape.baseFields);
    const baseVals = cols("v", shape.baseFields);
    const select = (id: number, d: string[], v: string[], extra: string) =>
-      `select ${id} as id, ${extra}${d.map((c, k) => `'${c}_${id}' as ${c}`).join(", ")}, ${v.map((c, k) => `${id + k}.5 as ${c}`).join(", ")}`;
+      `select ${id} as id, ${extra}${d.map((c, _k) => `'${c}_${id}' as ${c}`).join(", ")}, ${v.map((c, k) => `${id + k}.5 as ${c}`).join(", ")}`;
    for (let i = 0; i < BASE_COUNT; i++) {
       await connection.runSQL(
          `create table if not exists b_${i} as ${select(i, baseDims, baseVals, "")}`,
@@ -231,13 +231,16 @@ async function main(): Promise<void> {
          ),
       ];
       // The same package behind a publisher connection, driven by real PATCHes.
-      const remotes = [startFakePublisher(await connectWarehouse()), null];
-      remotes[1] = startFakePublisher(warehouses[warehouses.length - 1]);
+      const remoteWarehouse = await connectWarehouse();
+      const remotes = [
+         startFakePublisher(remoteWarehouse),
+         startFakePublisher(remoteWarehouse),
+      ];
       let stored: ApiConnection = {
          name: "warehouse",
          type: "publisher",
          publisherConnection: {
-            connectionUri: remotes[0]!.connectionUri("warehouse"),
+            connectionUri: remotes[0].connectionUri("warehouse"),
             accessToken: "t0",
          },
       };
@@ -274,7 +277,7 @@ async function main(): Promise<void> {
          await summarize("p-c: unchanged", REPS, () => loadRemote()),
          await summarize("p-a: token-only PATCH", REPS, async () => {
             await patch(
-               remotes[0]!.connectionUri("warehouse"),
+               remotes[0].connectionUri("warehouse"),
                `t${++tokenSeq}`,
             );
             return loadRemote();
@@ -284,20 +287,21 @@ async function main(): Promise<void> {
             REPS,
             async (rep) => {
                await patch(
-                  remotes[(rep + 1) % 2]!.connectionUri("warehouse"),
+                  remotes[(rep + 1) % 2].connectionUri("warehouse"),
                   `t${++tokenSeq}`,
                );
                return loadRemote();
             },
          ),
       );
-      await environment.getEnvironmentMalloyConfig().releaseConnections();
-      for (const remote of remotes) remote!.stop();
+      await environment.getEnvironmentMalloyConfig().shutdown("close");
+      for (const remote of remotes) remote.stop();
 
       console.log(
          `models=${modelCount} shape=${shape.name} (bases=${BASE_COUNT}, ` +
             `base fields=${shape.baseFields * 2 + 1}, leaf fields=${shape.leafFields * 2}, ` +
-            `views/leaf=${shape.views}, one join per leaf); median of ${REPS} reps`,
+            `views/leaf=${shape.views}, one join per leaf); median of ${REPS} reps; ` +
+            `a and p-h both play the cost-before role (every PATCH rebuilt)`,
       );
       console.table(rows);
    } finally {

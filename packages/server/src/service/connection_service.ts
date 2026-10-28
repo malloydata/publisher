@@ -180,14 +180,16 @@ export class ConnectionService {
          `Updating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
-      const { dbEnvironment, dbConnection, repository } =
-         await this.getConnection(environmentName, connectionName);
-
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
+         // Read under the update lock: a stored config read before it could
+         // predate a concurrent update, and the token-only check below would
+         // compare against that stale snapshot.
+         const { dbEnvironment, dbConnection, repository } =
+            await this.getConnection(environmentName, connectionName);
          const existingConnections = environment.listApiConnections();
 
          // A caller cannot echo back a credential the response withheld, so an
@@ -222,7 +224,7 @@ export class ConnectionService {
          );
 
          // A token-only change keeps the live instance, so the worker schema
-         // cache (keyed on its identity) survives the per-turn token refresh;
+         // cache (keyed on its identity) survives a rotated token;
          // the config built above is lazy, so discarding it leaks nothing.
          if (
             isPublisherTokenOnlyUpdate(
