@@ -9,7 +9,7 @@ Add `##! experimental.access_modifiers` at the top of base source files.
 
 **Every column must be explicitly declared** in `include {}`, listed under a single `public:` block with `#(doc)` tags, or under `internal:`. Do not use `public: *`.
 
-**`internal` fields are NOT accessible through join paths.** Most fields should stay public.
+**`internal` fields are NOT accessible through join paths.** They ARE readable by any caller's query that names them in its own `extend` or `include { public: f }`, so `internal` is curation, not protection: use `private` or `#(authorize)` for data a caller must not read. Most fields should stay public.
 
 **GOTCHA:** `include { except: a, b }` without a `public:` block makes remaining fields **private**, not public.
 

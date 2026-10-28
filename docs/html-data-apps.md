@@ -65,7 +65,7 @@ so `public/index.html` is the package's landing page and any other file under
 `public/` loads at its relative path. Only `public/` is reachable over the web. The models, the data
 files, and `publisher.json` live outside it and are never served; the page
 reaches model data only through the query API, which goes through the same
-governance (filters, access modifiers, authorize annotations) as any other
+governance (filters, `private:` fields, authorize annotations) as any other
 Publisher client.
 
 Note the `/environments/.../packages/...` prefix. The web UI opens a model at the
@@ -263,7 +263,7 @@ hook a host application uses to pass a signed token into an embedded page (see
 [Embedding](#embedding)).
 
 What the Publisher server enforces on these routes is the package's own model
-governance: filter and runtime-parameter (given) rules, access modifiers, and
+governance: filter and runtime-parameter (given) rules, `private:` fields, and
 `#(access_filter)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
 events routes themselves are open; treat anything you put under `public/` as
 world-readable to anyone who can reach the server, and keep secrets in the models
@@ -420,7 +420,7 @@ the manifest field reference is [packages.md](packages.md).
   the Console as well as `public/` files, so setting the variable is the whole
   configuration rather than part of it. All responses carry
   `X-Content-Type-Options: nosniff`.
-- The query API applies the model's governance (filters, access modifiers,
+- The query API applies the model's governance (filters, `private:` fields,
   authorize annotations). The static, data-apps, and events routes do not add
   their own auth, so do not place anything sensitive under `public/`.
 
