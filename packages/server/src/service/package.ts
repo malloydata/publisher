@@ -1145,7 +1145,7 @@ export class Package {
          refreshSchemaAt,
       });
       // Only an error-free outcome proves the refresh reached the warehouse: a
-      // failed fetch leaves the old worker entry, which the next load would serve.
+      // failed fetch leaves the main-thread connection's old schema, which the next load would serve.
       poolLoad.then(
          (done) => {
             if (done.models.every((m) => !m.compilationError)) {
