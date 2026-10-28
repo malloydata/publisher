@@ -7,6 +7,8 @@ import type * as Malloy from "@malloydata/malloy-interfaces";
 /**
  * Correct the drill metadata Malloy writes into a result, where as written
  * it would make a client's "rows behind this value" return the wrong rows.
+ * Returns false when it could not: Malloy's internal result shape is not
+ * the one read here.
  *
  * A client builds those rows as
  * `run: <source> -> { where: <each dimension's code> = <its value>; select: * }`,
@@ -32,15 +34,16 @@ import type * as Malloy from "@malloydata/malloy-interfaces";
  * rule has a spec in drill_metadata.spec.ts that runs Malloy without it and
  * fails once Malloy is fixed.
  */
-export function correctDrillMetadata(result: Result): void {
+export function correctDrillMetadata(result: Result): boolean {
    const structs = result._queryResult?.structs as unknown as
       | ResultField[]
       | undefined;
    const root = structs?.[structs.length - 1];
-   if (root === undefined) return;
+   if (root === undefined) return false;
    if (root.resultMetadata?.sourceField === LAST_STAGE)
       root.resultMetadata.drillable = false;
    correctFields(root.fields ?? []);
+   return true;
 }
 
 /**
@@ -54,11 +57,14 @@ export const DRILL_METADATA_CORRECTED = "drill_metadata_corrected";
 
 /**
  * The stable result a client receives: drill metadata corrected, then
- * wrapped, then stamped with {@link DRILL_METADATA_CORRECTED} on its root.
+ * wrapped, then stamped with {@link DRILL_METADATA_CORRECTED} on its root,
+ * unless the correction could not run.
  */
 export function wrapWithCorrectDrillMetadata(result: Result): Malloy.Result {
-   correctDrillMetadata(result);
+   const corrected = correctDrillMetadata(result);
    const wrapped = API.util.wrapResult(result);
+   // Unstamped when the internals moved and nothing was corrected.
+   if (!corrected) return wrapped;
    wrapped.annotations = [
       ...(wrapped.annotations ?? []),
       { value: `#(malloy) ${DRILL_METADATA_CORRECTED}\n` },
