@@ -130,7 +130,7 @@ async function newEnvironment(): Promise<Environment> {
    return created;
 }
 
-/** A MaterializationService over `environment`, as server.ts wires it. */
+/** A MaterializationService over `environment`, as main_server.ts wires it. */
 function newService(environment: Environment): MaterializationService {
    const store = {
       storageManager: { getRepository: () => repo },

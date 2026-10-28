@@ -8,7 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { MaterializationScheduler } from "../../../src/service/materialization_scheduler";
 import { MaterializationService } from "../../../src/service/materialization_service";
-import { environmentStore } from "../../../src/server";
+import { environmentStore } from "../../../src/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { allTerminal, pollFor, waitUntilOk } from "./polling";
 

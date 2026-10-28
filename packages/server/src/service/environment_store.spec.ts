@@ -338,6 +338,10 @@ describe("EnvironmentStore Service", () => {
    });
 
    afterEach(async () => {
+      // A test that boots its own store never awaits this one, whose
+      // initialization recreates serverRootPath. Left running, it can land
+      // between the rm and the mkdir below, which then fails with EEXIST.
+      await environmentStore.finishedInitialization;
       // Clean up the test directory after each test
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });

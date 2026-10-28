@@ -109,3 +109,12 @@ export function unhandledErrorMiddleware(
 export function wildcardParam(req: express.Request): string {
    return (req.params as Record<string, string>)["0"];
 }
+
+/**
+ * Marks a response from a main-API route the admin API now serves (the storage
+ * destinations' table routes, watch mode): `Deprecation: true`.
+ */
+export const markDeprecated: express.RequestHandler = (_req, res, next) => {
+   res.set("Deprecation", "true");
+   next();
+};

@@ -37,12 +37,31 @@ export async function getFreePort(): Promise<number> {
    });
 }
 
+/**
+ * Remove `dir`, retrying while Windows reports it busy. A spawned server's cwd
+ * and root can stay locked for a moment after its exit event, so the first rm
+ * fails with EBUSY. A directory still busy after the retries is left behind: it
+ * is in the OS temp directory and says nothing about the test's result.
+ */
+function removeDir(dir: string): void {
+   for (let attempt = 1; ; attempt++) {
+      try {
+         fs.rmSync(dir, { recursive: true, force: true });
+         return;
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+         if (attempt === 10) return;
+         Bun.sleepSync(100 * attempt);
+      }
+   }
+}
+
 /** A fresh temp directory, removed by the returned `cleanup`. */
 export function tempDir(prefix: string): { dir: string; cleanup: () => void } {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
    return {
       dir,
-      cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+      cleanup: () => removeDir(dir),
    };
 }
 
@@ -210,7 +229,7 @@ export async function spawnServer(
             proc.kill("SIGKILL");
             await pollUntil(exited, 10_000, 50);
          }
-         if (ownRoot) fs.rmSync(serverRoot, { recursive: true, force: true });
+         if (ownRoot) removeDir(serverRoot);
       },
    };
 }

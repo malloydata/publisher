@@ -338,6 +338,8 @@ export interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
    getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
+   /** For the usage record a metered build emits; absent in some test doubles. */
+   getEnvironmentName?(): string;
 }
 
 /**

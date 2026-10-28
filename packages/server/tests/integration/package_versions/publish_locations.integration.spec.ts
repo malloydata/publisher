@@ -103,7 +103,7 @@ mock.module("simple-git", () => ({
 }));
 
 const { startRestE2E } = await import("../../harness/rest_e2e");
-const { environmentStore } = await import("../../../src/server");
+const { environmentStore } = await import("../../../src/main_server");
 
 /** The in-memory buckets' objects, by "bucket/key". */
 const objects = new Map<string, Buffer>();

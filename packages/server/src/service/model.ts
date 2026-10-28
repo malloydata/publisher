@@ -183,6 +183,7 @@ import {
    findFilterAnnotationDeclaringSource,
    type DocumentLocationLike,
    type SiblingModelDefResolver,
+   type StageLike,
 } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
 // methods of the same names; without the alias, converting one of them to an
@@ -2464,7 +2465,12 @@ export class Model {
             "runnable",
             await this.resolveAuthorizeSourceFromRunnable(runnable),
          );
-         await this.assertNoMisboundInheritedFilters(runnable);
+         await this.assertNoMisboundInheritedFilters(
+            runnable,
+            new Set(),
+            "entry_point",
+            options?.callerJoins?.region,
+         );
          return runnable;
       }
 
@@ -2517,14 +2523,17 @@ export class Model {
          );
       }
       const rowLevel = [...entryPointRowLevel, ...callerJoinRowLevel];
-      if (rowLevel.length === 0) {
-         // No gate anywhere: still prove no inherited filter came unbound, as
-         // every exit does.
-         await this.assertNoMisboundInheritedFilters(runnable);
-         return runnable;
-      }
       const siteOf = (graft: RowLevelGraftEntry): AuthorizeGateSite =>
          graft.callerJoinPath ? "caller_join" : "entry_point";
+      // Before any exit, `checkOnly` included: `/compile` must refuse what the
+      // query route refuses. A grafted runnable is checked again below.
+      await this.assertNoMisboundInheritedFilters(
+         runnable,
+         new Set(),
+         rowLevel.length > 0 ? siteOf(rowLevel[0]) : undefined,
+         options?.callerJoins?.region,
+      );
+      if (rowLevel.length === 0) return runnable;
 
       if (!options?.recompile) {
          // Without `recompile` the filter cannot attach, so a caller that will
@@ -2587,6 +2596,7 @@ export class Model {
             recompiled,
             new Set(rowLevel.map((r) => r.condition)),
             siteOf(rowLevel[0]),
+            options?.callerJoins?.region,
          );
          this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
          return recompiled;
@@ -2604,12 +2614,13 @@ export class Model {
 
    /**
     * Resolve the run-target `SourceDef`/`ModelDef`, the composite member it
-    * resolved to, and two signals `isOwnFreshFilter` (`./filter_binding_guard`)
-    * uses to identify a condition parsed from THIS request's own text:
+    * resolved to, and two signals `./filter_binding_guard` uses to identify a
+    * condition parsed from THIS request's own text:
     *
-    * - `compiledUrl`: the synthetic `internal://` URL of the request's text.
-    *   `undefined` for a named run, whose URL is the model file's — a misbind
-    *   baked into a declared query must not claim freshness by sharing it.
+    * - `compiledUrl`: the synthetic `internal://` URL of the request's text,
+    *   which locates the caller-written span. `undefined` for a named run,
+    *   whose URL is the model file's — a misbind baked into a declared query
+    *   must not be taken for caller text by sharing it.
     * - `queryLocation`: `prepared._query.location`. Needed because `query: q2
     *   is X extend { where: … }` can leave the struct carrying X's location,
     *   so q2's own filter sits outside the struct's span.
@@ -2625,6 +2636,7 @@ export class Model {
       compositeResolvedSourceDef: SourceDef | undefined;
       compiledUrl: string | undefined;
       queryLocation: DocumentLocationLike | undefined;
+      pipeline: readonly StageLike[] | undefined;
    }> {
       try {
          const prepared = (await runnable.getPreparedQuery()) as {
@@ -2632,6 +2644,7 @@ export class Model {
                structRef?: unknown;
                compositeResolvedSourceDef?: SourceDef;
                location?: DocumentLocationLike;
+               pipeline?: readonly StageLike[];
             };
             _modelDef?: ModelDef;
          };
@@ -2643,6 +2656,7 @@ export class Model {
                compositeResolvedSourceDef: undefined,
                compiledUrl: undefined,
                queryLocation: undefined,
+               pipeline: undefined,
             };
          const structRef = prepared._query?.structRef;
          const struct =
@@ -2663,6 +2677,7 @@ export class Model {
                   ? prepared._query.location.url
                   : undefined,
             queryLocation: prepared._query?.location,
+            pipeline: prepared._query?.pipeline,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -2674,6 +2689,7 @@ export class Model {
             compositeResolvedSourceDef: undefined,
             compiledUrl: undefined,
             queryLocation: undefined,
+            pipeline: undefined,
          };
       }
    }
@@ -3007,6 +3023,7 @@ export class Model {
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
       site: AuthorizeGateSite = "entry_point",
+      callerRegion?: CallerRegion,
    ): Promise<void> {
       const {
          struct,
@@ -3014,6 +3031,7 @@ export class Model {
          compositeResolvedSourceDef,
          compiledUrl,
          queryLocation,
+         pipeline,
       } = await this.resolveRunTargetStruct(runnable);
       const target = compositeResolvedSourceDef ?? struct;
       if (!target) return;
@@ -3021,12 +3039,26 @@ export class Model {
          assertInheritedSourceFiltersBind(
             target,
             modelDef,
-            { compiledUrl, queryLocation },
+            {
+               callerText:
+                  callerRegion?.kind === "span"
+                     ? {
+                          url: callerRegion.url,
+                          fromLine: callerRegion.fromLine,
+                       }
+                     : callerRegion && compiledUrl
+                       ? { url: compiledUrl, fromLine: 0 }
+                       : undefined,
+               queryLocation,
+               virtualUrl:
+                  callerRegion?.kind === "span" ? callerRegion.url : undefined,
+            },
             this.siblingModelDefResolver,
             undefined,
             undefined,
             alreadyProven,
             struct,
+            pipeline,
          );
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", site);
@@ -6008,6 +6040,10 @@ export class Model {
             {
                abortSignal,
                maxRows,
+               usage: Model.statementUsage(
+                  queryMetadataInput,
+                  this.packageName,
+               ),
                queryMetadata: (connectionName) =>
                   this.resolveQueryMetadata(
                      queryMetadataInput,
@@ -6119,6 +6155,10 @@ export class Model {
                {
                   abortSignal,
                   maxRows,
+                  usage: Model.statementUsage(
+                     queryMetadataInput,
+                     this.packageName,
+                  ),
                   // Re-resolved: the first bag was for the STORAGE connection.
                   // The correlation id rides in the input, so it is kept.
                   queryMetadata: (connectionName) =>
@@ -6245,6 +6285,25 @@ export class Model {
          ...(args.servedFrom
             ? { "malloy.model.query.served_from": args.servedFrom }
             : {}),
+      };
+   }
+
+   /** The usage hook for a statement, when its caller says which connections are metered. */
+   private static statementUsage(
+      input: ModelQueryMetadataInput | undefined,
+      packageName: string,
+   ):
+      | {
+           metered: (connectionName: string) => boolean;
+           environment: string;
+           package: string;
+        }
+      | undefined {
+      if (!input?.meteredConnection || !input.environment) return undefined;
+      return {
+         metered: input.meteredConnection,
+         environment: input.environment,
+         package: packageName,
       };
    }
 
@@ -6945,6 +7004,10 @@ export class Model {
                {
                   abortSignal,
                   maxRows: cellMaxRows,
+                  usage: Model.statementUsage(
+                     queryMetadataInput,
+                     this.packageName,
+                  ),
                   queryMetadata: async (connectionName) => {
                      // The compiled run target, as in getQueryResults.
                      const cellCompiledSource =
