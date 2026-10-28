@@ -564,8 +564,9 @@ with the first line of its doc. Listings (a `source` target with no text) are un
 A `get_context` target `{"target_type": "dimensional_value", "search_text": "Auto Intenders"}` returns the
 string the data stores for what the user typed (`Auto Intenders (In-Market)`) and the dimension that
 holds it, as `values[]` on that dimension's entity: `{value, relevance, search_text}`, best first, at most
-10 per dimension. A dimension target can carry `example_values`, the literals the user named, to find the
-dimension that stores them.
+10 per dimension. Only a `dimensional_value` target searches values. A `dimension` target's text is never
+searched as a value: send each value the user named as its own `dimensional_value` target, beside the
+`dimension` target for its field.
 
 **Which values are searched.** The index build reads the distinct values of `#(index)` dimensions on
 ungated sources, and the value lists a doc gives ("one of DTC, B2B, Amazon"), once, through the same

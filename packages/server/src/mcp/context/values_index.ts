@@ -5,10 +5,10 @@
  * The value index: the stored values of `#(index)` dimensions on ungated
  * sources, plus every value list a doc gives, searchable by spelling.
  *
- * Three uses, one index. A dimension target whose phrase carries a value
- * ("orders shipped to Denver") nominates the dimensions that store it; a
- * `dimensional_value` target answers with the stored string; and a value list
- * in a doc ("one of DTC, B2B, Amazon") seeds its dimension even without a tag.
+ * Only a `dimensional_value` target reads it: its text ("Denver") nominates
+ * the dimensions that store that value and answers with the stored string. A
+ * value list in a doc ("one of DTC, B2B, Amazon") seeds its dimension even
+ * without a tag.
  *
  * Governance. Values are data, so only sources with no gate are read, and
  * they are read once at load through the ordinary query path with no givens,

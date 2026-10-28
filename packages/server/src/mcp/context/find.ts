@@ -11,13 +11,15 @@
  * - closeness: the cosine of the phrase against every embedding row of a
  *   node of the right kind, best row per node;
  * - keyword: BM25 over the same nodes' texts;
- * - value hits by spelling (dimension and `dimensional_value` targets): the
- *   dimensions whose stored values match the target's example values, or the
- *   parts of its phrase that look like a value;
- * - value hits by meaning (`valueEmbeddings`): the dimensions whose stored
- *   values are close in embedding to those same phrases or to the target's
- *   own text (meaningPhrasesOf), so "sneakers" finds the dimension that
- *   stores "Athletic Shoes".
+ * - value hits by spelling (`dimensional_value` targets only): the
+ *   dimensions whose stored values match the target's text as written;
+ * - value hits by meaning (`valueEmbeddings`, `dimensional_value` targets
+ *   only): the dimensions whose stored values are close in embedding to the
+ *   target's text, so "sneakers" finds the dimension that stores
+ *   "Athletic Shoes".
+ *
+ * A `dimension` target's text describes a field and is never searched as a
+ * value; a caller sends each value as its own `dimensional_value` target.
  *
  * Fusing by rank, not by score, because the scores are not on one
  * scale: a cosine of 0.6 and a BM25 of 7 say nothing about each other, while
@@ -29,7 +31,6 @@
 
 import type { CatalogNode } from "./catalog";
 import type { FcjIndex } from "./index_build";
-import { valueSpans } from "./value_tokens";
 import type { ValueMatch } from "./values_index";
 import { bestFacet } from "./vectors";
 import { terms } from "./keyword";
@@ -56,8 +57,6 @@ export interface FindTarget {
    text: string;
    /** Node kinds the target may return. */
    kinds: readonly string[];
-   /** Literals the caller extracted, for the value index. */
-   exampleValues?: readonly string[];
    /**
     * With `splitBundles`: this target is one item of the list in the target
     * whose index this is (split.ts). Engine-made; never on a caller's target.
@@ -119,41 +118,15 @@ export interface FindResult {
    beyond?: Array<Candidate & { fusedRank: number }>;
 }
 
-/** The value phrases of a target: its example values, else its value-looking parts. */
-export function valuePhrasesOf(
-   target: FindTarget,
-   inVocabulary: (term: string) => boolean,
-): string[] {
-   if (target.exampleValues && target.exampleValues.length > 0) {
-      return [...target.exampleValues];
-   }
-   if (target.type === "dimensional_value") {
-      return [target.text, ...valueSpans(target.text, inVocabulary)].filter(
-         (p, i, all) => all.indexOf(p) === i,
-      );
-   }
-   if (target.type === "dimension")
-      return valueSpans(target.text, inVocabulary);
-   return [];
-}
-
 /**
- * The phrases matched against stored values by meaning: the spelling phrases
- * plus the target's own text, for a target that has any value phrase. A
- * dimension target with nothing value-looking ("customer state") asks
- * nothing, as with spelling.
+ * The phrases a target asks the value index about, by spelling and by
+ * meaning: a `dimensional_value` target's text as written, and nothing for
+ * any other target.
  */
-export function meaningPhrasesOf(
-   target: FindTarget,
-   inVocabulary: (term: string) => boolean,
-): string[] {
-   if (target.type !== "dimension" && target.type !== "dimensional_value")
-      return [];
-   const phrases = valuePhrasesOf(target, inVocabulary);
-   if (phrases.length === 0) return [];
-   return [...phrases, target.text].filter(
-      (p, i, all) => p.trim() !== "" && all.indexOf(p) === i,
-   );
+export function valuePhrasesOf(target: FindTarget): string[] {
+   return target.type === "dimensional_value" && target.text.trim() !== ""
+      ? [target.text]
+      : [];
 }
 
 /** Fuse ranked key lists by reciprocal rank; ties by key. */
@@ -195,11 +168,8 @@ export function rankTarget(
       keyword: boolean;
       values: boolean;
       depth: number;
-      /**
-       * Unit vectors of value phrases other than the target's text (whose
-       * vector is `query`), by phrase. Absent: no meaning list.
-       */
-      phraseVectors?: ReadonlyMap<string, Float32Array>;
+      /** Match value phrases by meaning (`valueEmbeddings`); needs `query`. */
+      valueMeaning?: boolean;
    },
 ): Omit<FindResult, "target"> & { all: Candidate[] } {
    const admitted = new Map<string, CatalogNode>();
@@ -221,27 +191,16 @@ export function rankTarget(
    const keyword = options.keyword
       ? index.keyword.search(target.text, (k) => admitted.has(k))
       : [];
-   const phrases = options.values
-      ? valuePhrasesOf(target, (t) => index.keyword.hasTerm(t))
-      : [];
+   const phrases = options.values ? valuePhrasesOf(target) : [];
    const nominations =
-      phrases.length > 0 &&
-      (target.type === "dimension" || target.type === "dimensional_value")
+      phrases.length > 0
          ? index.values.nominate(phrases, (d) => admitted.has(d))
          : [];
-   // By meaning: the same phrases plus the target's text, each with a vector.
-   const meaning: Array<{ phrase: string; vec: Float32Array }> = [];
-   if (options.values && options.phraseVectors && index.values.embedded > 0) {
-      for (const phrase of meaningPhrasesOf(target, (t) =>
-         index.keyword.hasTerm(t),
-      )) {
-         const vec =
-            phrase === target.text
-               ? (query ?? options.phraseVectors.get(phrase))
-               : options.phraseVectors.get(phrase);
-         if (vec) meaning.push({ phrase, vec });
-      }
-   }
+   // By meaning: the one phrase is the target's text, so its vector is `query`.
+   const meaning: Array<{ phrase: string; vec: Float32Array }> =
+      options.valueMeaning && query && index.values.embedded > 0
+         ? phrases.map((phrase) => ({ phrase, vec: query }))
+         : [];
    const meaningNoms =
       meaning.length > 0
          ? index.values.nominateByMeaning(meaning, (d) => admitted.has(d))
@@ -319,8 +278,8 @@ export function find(args: {
    targets: readonly FindTarget[];
    /** Unit query vector by target index; absent with no embedding provider. */
    queries: ReadonlyMap<number, Float32Array>;
-   /** Unit vectors of the value phrases that are not a target's text (`valueEmbeddings`). */
-   phraseVectors?: ReadonlyMap<string, Float32Array>;
+   /** Match value phrases by meaning (`valueEmbeddings`). */
+   valueMeaning?: boolean;
    perTarget: number;
    keyword: boolean;
    values: boolean;
@@ -340,9 +299,7 @@ export function find(args: {
             keyword: args.keyword,
             values: args.values,
             depth: LIST_DEPTH,
-            ...(args.phraseVectors
-               ? { phraseVectors: args.phraseVectors }
-               : {}),
+            ...(args.valueMeaning ? { valueMeaning: true } : {}),
          },
       );
       const beyond =
