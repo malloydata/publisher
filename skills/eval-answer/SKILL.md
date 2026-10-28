@@ -133,7 +133,7 @@ come back is one whose docs do not say what people ask; `eval-diagnose` calls it
 surface. Those look identical in an answer score and have different owners,
 which is what makes this number worth having. It uses the search terms the answerer chose, so it
 attributes a failure *within* an arm and does not compare retrieval across arms
--- that is the engine-side `eval-retrieval` skill, which does not ship here.
+-- for that, replay fixed requests (`skill:eval-loop`, `reference/retrieval-replay.md`).
 
 `scripts/check_coverage.py` measures the other half, and it is worth knowing
 which question each answers. Recall asks whether search surfaced the entities a
