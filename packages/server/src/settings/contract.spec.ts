@@ -98,6 +98,16 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
       {
+         name: "a number fails, where 1 used to freeze the server",
+         file: { frozenConfig: 1 },
+         expect: fails("expected true or false, got 1"),
+      },
+      {
+         name: "and is told the file's spelling, for 0 as for 1",
+         file: { frozenConfig: 0 },
+         expect: fails("expected true or false, got 0"),
+      },
+      {
          name: "an unreadable file fails startup",
          file: "{",
          expect: fails("Failed to parse"),
@@ -616,6 +626,11 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "a value no boolean reader accepts fails",
          file: { mcp: { includeHiddenFilesAndSources: "maybe" } },
          expect: fails("mcp.includeHiddenFilesAndSources"),
+      },
+      {
+         name: "a number fails, and is told the file's spelling",
+         file: { mcp: { includeHiddenFilesAndSources: 1 } },
+         expect: fails("expected true or false, got 1"),
       },
       {
          name: "an mcp that is not an object is warned about and ignored",

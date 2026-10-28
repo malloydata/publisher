@@ -182,9 +182,12 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // fails loudly with its fix rather than on the first question. The provider
 // getters read them back from module state. Logs name the host, never the key.
 //
-// An unreadable config must not kill the process: the environment store reads
-// the same file, reports it as `initError` / PUBLISHER_INIT_FAILED and keeps
-// the server up so /status can name it. So this read logs and carries on.
+// A config file that cannot be read or parsed has already failed startup in
+// server.ts. What can still fail here must not kill the process: an unset
+// `${VAR}` in the environments, which the environment store reports as
+// `initError` / PUBLISHER_INIT_FAILED with the server kept up so /status can
+// name it, and a rejected `retrieval` block, which leaves retrieval at its
+// defaults. So this read logs and carries on.
 let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
 try {
    retrievalConfig = getRetrievalConfig(SERVER_ROOT);
@@ -431,8 +434,8 @@ const mcpServer = mcpApp.listen(
    MCP_PORT,
    MCP_HOST,
    function (this: import("net").Server) {
-      // Read back rather than reusing MCP_PORT: `--mcp_port 0` (or, under
-      // bun, a non-numeric value) binds an ephemeral port.
+      // Read back rather than reusing MCP_PORT: `--mcp_port 0` binds an
+      // ephemeral port.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
       // The bind address, deliberately not resolveClientHost: the docs tell
       // readers this line is the address really bound, which is how they

@@ -24,6 +24,9 @@ describe("setting types", () => {
       expect(boolean().expected).toBe(
          "a boolean (true/false, 1/0, yes/no or on/off)",
       );
+      // A JSON value in the file that is not a string: `"frozenConfig": 1`.
+      expect(boolean().expectedInFile).toBe("true or false");
+      expect(integer().expectedInFile).toBeUndefined();
       expect(integer({ min: 0, max: 65535 }).expected).toBe(
          "an integer from 0 to 65535",
       );

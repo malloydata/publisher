@@ -208,9 +208,9 @@ export function ensureMcpConfig(options: {
       const staleConfig = existing?.path;
 
       // Only write a port that will still be this port next boot, since the
-      // file is never corrected. Covers `--mcp_port 0` and a non-numeric
-      // MCP_PORT (k8s injects MCP_PORT=tcp://... beside a Service named `mcp`),
-      // both of which bind ephemerally.
+      // file is never corrected. Covers `--mcp_port 0`, which binds
+      // ephemerally. A non-numeric MCP_PORT, which once did too, now fails
+      // startup.
       if (boundPort !== requestedPort) {
          return {
             action: "skipped-unstable-port",
