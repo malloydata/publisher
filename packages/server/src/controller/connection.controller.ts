@@ -643,11 +643,7 @@ export class ConnectionController {
 
       if (connection.type === "ducklake") {
          if (tablePath.split(".").length === 1) {
-            // A bare table name. The remote connection (@malloydata/db-publisher)
-            // sends the path's first segment as the schema, so for `lake.table('t')`
-            // the schema arrives as `t` itself and names no schema: the table is
-            // in the catalog's default schema, as DuckLakeConnection.fetchTableSchema
-            // reads it on the worker. Any other schema came from the route itself.
+            // db-publisher sends `tablePath.split('.')[0]` as the schema, so `table('t')` arrives as schema `t`.
             tablePath =
                schemaName === tablePath
                   ? `${connectionName}.${tablePath}`

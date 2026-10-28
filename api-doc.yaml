@@ -750,7 +750,8 @@ paths:
         Retrieves a table from the specified database schema.
         This endpoint is useful for discovering available data sources and exploring the database
         structure. The schema must exist in the connection for this operation to succeed.
-        The tablePath is the full path to the table, including the schema name.
+        The tablePath is the full path to the table, including the schema name. On a DuckLake
+        connection, a bare tablePath equal to schemaName reads the catalog's default schema.
       parameters:
         - name: environmentName
           in: path
