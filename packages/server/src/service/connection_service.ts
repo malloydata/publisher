@@ -4,7 +4,10 @@
 import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
-import { buildEnvironmentMalloyConfig } from "./connection";
+import {
+   buildEnvironmentMalloyConfig,
+   isPublisherTokenOnlyUpdate,
+} from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
 import { EnvironmentStore } from "./environment_store";
 
@@ -17,6 +20,7 @@ type ConnectionUpdateEnvironment = {
       apiConnections?: ApiConnection[],
       afterPreviousRelease?: ReleaseCallback,
    ) => void;
+   rebindPublisherToken?: (updated: ApiConnection) => boolean;
    deleteConnection?: (connectionName: string) => Promise<void>;
    deleteDuckDBConnection?: (connectionName: string) => Promise<void>;
    deleteDuckLakeConnection?: (connectionName: string) => Promise<void>;
@@ -216,6 +220,19 @@ export class ConnectionService {
             dbEnvironment.id,
             repository,
          );
+
+         // A token-only change keeps the live instance, so the worker schema
+         // cache (keyed on its identity) survives the per-turn token refresh;
+         // the config built above is lazy, so discarding it leaks nothing.
+         if (
+            isPublisherTokenOnlyUpdate(
+               dbConnection.config as ApiConnection | undefined,
+               updatedConnection,
+            ) &&
+            environment.rebindPublisherToken?.(updatedConnection)
+         ) {
+            return;
+         }
 
          updateEnvironmentConnections(environment, nextMalloyConfig);
       });

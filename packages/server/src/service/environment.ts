@@ -2527,6 +2527,28 @@ export class Environment {
       }
    }
 
+   /**
+    * Applies a token-only change to a live publisher connection without
+    * rebuilding the config, so nothing is retired. False when the caller must
+    * take the full {@link updateConnections} path instead.
+    */
+   public rebindPublisherToken(updated: ApiConnection): boolean {
+      const index = this.apiConnections.findIndex(
+         (conn) => conn.name === updated.name,
+      );
+      if (
+         index === -1 ||
+         !this.malloyConfig.rebindPublisherToken(
+            updated.name!,
+            updated.publisherConnection?.accessToken,
+         )
+      ) {
+         return false;
+      }
+      this.apiConnections[index] = updated;
+      return true;
+   }
+
    public async deleteConnection(connectionName: string): Promise<void> {
       const index = this.apiConnections.findIndex(
          (conn) => conn.name === connectionName,

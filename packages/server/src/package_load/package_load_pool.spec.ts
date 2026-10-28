@@ -30,6 +30,7 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import type { components } from "../api";
 import {
    DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
    PackageLoadPool,
@@ -840,5 +841,122 @@ describe("PackageLoadPool (shutdown)", () => {
             defaultConnectionName: "duckdb",
          }),
       ).rejects.toThrow("shutting down");
+   });
+});
+
+type ApiConnection = components["schemas"]["Connection"];
+
+describe("PackageLoadPool (token-only connection update)", () => {
+   let tempDir: string;
+   const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+   beforeEach(() => {
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-token-"));
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({ name: "pkg" }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `source: orders is warehouse.table('orders_t')\n`,
+      );
+   });
+   afterEach(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (priorFlag === undefined) {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+      } else {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
+      }
+   });
+
+   it("hits the schema cache after a token-only update and refetches after a host change", async () => {
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const { buildEnvironmentMalloyConfig } = await import(
+         "../service/connection"
+      );
+      const { ConnectionService } = await import(
+         "../service/connection_service"
+      );
+      const { Environment } = await import("../service/environment");
+      const { startFakePublisher } = await import(
+         "../test_helpers/fake_publisher"
+      );
+
+      const warehouse = new DuckDBConnection("warehouse", ":memory:");
+      await warehouse.runSQL(
+         "create table orders_t as select 1 as id, 'a' as region",
+      );
+      const remote = startFakePublisher(warehouse);
+      const moved = startFakePublisher(warehouse);
+      let stored: ApiConnection = {
+         name: "warehouse",
+         type: "publisher",
+         publisherConnection: {
+            connectionUri: remote.connectionUri("warehouse"),
+            accessToken: "old",
+         },
+      };
+      const malloyConfig = buildEnvironmentMalloyConfig([stored], tempDir);
+      const environment = new Environment(
+         "env",
+         tempDir,
+         malloyConfig,
+         malloyConfig.apiConnections,
+      );
+      const service = new ConnectionService({
+         finishedInitialization: Promise.resolve(),
+         publisherConfigIsFrozen: false,
+         getEnvironment: async () => environment,
+         updateConnection: async (next: ApiConnection) => {
+            stored = next;
+         },
+         storageManager: {
+            getRepository: () => ({
+               getEnvironmentByName: async () => ({ id: "env-id" }),
+               getConnectionByName: async () => ({ config: stored }),
+            }),
+         },
+      } as unknown as ConstructorParameters<typeof ConnectionService>[0]);
+      const pool = new PackageLoadPool(1);
+      const load = async () =>
+         (
+            await pool.loadPackage({
+               packagePath: tempDir,
+               packageName: "pkg",
+               environmentName: "env",
+               malloyConfig: environment.getEnvironmentMalloyConfig(),
+               defaultConnectionName: "warehouse",
+            })
+         ).timings;
+      try {
+         const cold = await load();
+         expect(cold.schemaFetchCount).toBe(1);
+
+         await service.updateConnection("env", "warehouse", {
+            publisherConnection: {
+               connectionUri: remote.connectionUri("warehouse"),
+               accessToken: "new",
+            },
+         });
+         const afterToken = await load();
+         expect(afterToken.schemaFetchCount).toBe(0);
+         expect(afterToken.schemaCacheHits).toBe(1);
+
+         await service.updateConnection("env", "warehouse", {
+            publisherConnection: {
+               connectionUri: moved.connectionUri("warehouse"),
+               accessToken: "new",
+            },
+         });
+         const afterHostChange = await load();
+         expect(afterHostChange.schemaFetchCount).toBe(1);
+      } finally {
+         await pool.shutdown();
+         await environment.getEnvironmentMalloyConfig().shutdown("close");
+         remote.stop();
+         moved.stop();
+         await warehouse.close();
+      }
    });
 });

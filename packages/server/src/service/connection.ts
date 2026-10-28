@@ -16,7 +16,7 @@ import {
 } from "@malloydata/db-postgres";
 // Registers the "publisher" connection type (proxies SQL to a remote Publisher);
 // lookupConnection resolves it through the registry like any other type.
-import "@malloydata/db-publisher";
+import { PublisherConnection } from "@malloydata/db-publisher";
 import {
    buildPoolOptions,
    SnowflakeConnection,
@@ -38,6 +38,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { isDeepStrictEqual } from "util";
 import type { PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
@@ -2403,7 +2404,44 @@ export type EnvironmentMalloyConfig = {
    // Releases both core-managed connections and Publisher wrapper-managed
    // DuckDB connections captured by wrapConnections.
    releaseConnections: () => Promise<void>;
+   // Swaps the bearer token on the live instance in place so its identity, and
+   // the schema-cache generation keyed on it, survive; false when none exists yet.
+   rebindPublisherToken: (name: string, accessToken?: string) => boolean;
 };
+
+function withoutPublisherToken(
+   connection: ApiConnection,
+): Record<string, unknown> {
+   // name and withheldFields are not part of the stored config's identity.
+   const {
+      name: _name,
+      withheldFields: _withheld,
+      publisherConnection,
+      ...rest
+   } = connection;
+   const { accessToken: _token, ...publisher } = publisherConnection ?? {};
+   return { ...rest, publisherConnection: publisher };
+}
+
+/**
+ * Whether `next` differs from `stored` only by a publisher connection's bearer
+ * token, the one withheld credential a live connection reads per request.
+ * Other types hand theirs to the driver at construction (postgres passes
+ * pg.password to its pool), so only a rebuild can change it.
+ */
+export function isPublisherTokenOnlyUpdate(
+   stored: ApiConnection | undefined,
+   next: ApiConnection,
+): boolean {
+   return (
+      stored?.type === "publisher" &&
+      next.type === "publisher" &&
+      isDeepStrictEqual(
+         withoutPublisherToken(stored),
+         withoutPublisherToken(next),
+      )
+   );
+}
 
 function entryToDuckDBOptions(
    name: string,
@@ -2768,6 +2806,7 @@ export function buildEnvironmentMalloyConfig(
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
+   const livePublisherConnections = new Map<string, PublisherConnection>();
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
       config: contextOverlay({ rootDirectory: environmentPath }),
@@ -2940,6 +2979,9 @@ export function buildEnvironmentMalloyConfig(
             }
 
             const connection = await base.lookupConnection(name);
+            if (connection instanceof PublisherConnection) {
+               livePublisherConnections.set(connection.name, connection);
+            }
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -2983,6 +3025,14 @@ export function buildEnvironmentMalloyConfig(
    return {
       malloyConfig,
       apiConnections: assembled.apiConnections,
+      rebindPublisherToken: (name, accessToken) => {
+         const live = livePublisherConnections.get(name);
+         if (!live) return false;
+         // PublisherConnection sends `this.accessToken` on every request.
+         (live as unknown as { accessToken?: string }).accessToken =
+            accessToken;
+         return true;
+      },
       releaseConnections: async () => {
          const wrapperPromises: Promise<Connection>[] = [
             ...duckLakeCache.values(),
@@ -3004,6 +3054,7 @@ export function buildEnvironmentMalloyConfig(
          const endpointResults = await Promise.allSettled(
             [...proxyEndpoints.values()].map((ep) => ep.close()),
          );
+         livePublisherConnections.clear();
          duckLakeCache.clear();
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();

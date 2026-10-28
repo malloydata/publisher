@@ -12,27 +12,40 @@
  * Cases:
  *   c  unchanged tree, same connection instances
  *   b  one shared base model edited, same connection instances
- *   a  token-only connection update: a new instance with the same name and
- *      digest, which is what a connection PATCH produces
+ *   a  token-only connection update at the pool layer: a new instance with
+ *      the same name and digest, which is what a connection PATCH produced
+ *      before token-only updates kept the live instance
+ *
+ * Then, over a publisher-type connection served by a local stand-in remote
+ * (so the PATCH goes through `ConnectionService.updateConnection`):
+ *   p-a  token-only PATCH: the live instance keeps its identity
+ *   p-h  PATCH moving the host: a full rebuild, the cost any PATCH paid before
  *
  * `--heavy` (default) gives every model enough fields and views to cost real
  * compile time; `--light` is the tiny shape.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { MalloyConfig } from "@malloydata/malloy";
 import fs from "fs";
 import path from "path";
+import type { components } from "../src/api";
 import { logger } from "../src/logger";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../src/package_load/package_load_pool";
 import type { PackageLoadOutcome } from "../src/package_load/protocol";
+import { buildEnvironmentMalloyConfig } from "../src/service/connection";
+import { ConnectionService } from "../src/service/connection_service";
+import { Environment } from "../src/service/environment";
 import { Package } from "../src/service/package";
+import { startFakePublisher } from "../src/test_helpers/fake_publisher";
 import {
    duckdbMalloyConfig,
    writeTempPackage,
 } from "../src/test_helpers/temp_package";
+
+type ApiConnection = components["schemas"]["Connection"];
+type PackageConnections = Parameters<typeof Package.create>[3];
 
 const BASE_COUNT = 3;
 const ENV = "bench-env";
@@ -138,6 +151,8 @@ function modelFiles(
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
 
 async function main(): Promise<void> {
+   // The publisher connection type is opt-in per deployment.
+   process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
    const args = process.argv.slice(2);
    const shape = args.includes("--light") ? SHAPES.light : SHAPES.heavy;
    const count = args.find((a) => !a.startsWith("--"));
@@ -167,14 +182,16 @@ async function main(): Promise<void> {
          prefix: "publisher-bench-reload-",
       });
       cleanupDir = cleanup;
-      const connect = async () => {
+      const connectWarehouse = async () => {
          const warehouse = await newWarehouse(modelCount, shape);
          warehouses.push(warehouse);
-         return duckdbMalloyConfig(warehouse, "warehouse").malloyConfig;
+         return warehouse;
       };
+      const connect = async () =>
+         duckdbMalloyConfig(await connectWarehouse(), "warehouse").malloyConfig;
       const config = await connect();
 
-      const load = async (malloyConfig: MalloyConfig) => {
+      const load = async (malloyConfig: PackageConnections) => {
          const start = performance.now();
          packages.push(await Package.create(ENV, "bench", dir, malloyConfig));
          const wall = performance.now() - start;
@@ -199,7 +216,7 @@ async function main(): Promise<void> {
          };
       };
 
-      const rows = [
+      const rows: Awaited<ReturnType<typeof summarize>>[] = [
          await summarize("cold load (warm-up)", 1, () => load(config)),
          await summarize("c: unchanged tree", REPS, () => load(config)),
          await summarize("b: one shared base edited", REPS, async (rep) => {
@@ -213,6 +230,70 @@ async function main(): Promise<void> {
             load(await connect()),
          ),
       ];
+      // The same package behind a publisher connection, driven by real PATCHes.
+      const remotes = [startFakePublisher(await connectWarehouse()), null];
+      remotes[1] = startFakePublisher(warehouses[warehouses.length - 1]);
+      let stored: ApiConnection = {
+         name: "warehouse",
+         type: "publisher",
+         publisherConnection: {
+            connectionUri: remotes[0]!.connectionUri("warehouse"),
+            accessToken: "t0",
+         },
+      };
+      const envConfig = buildEnvironmentMalloyConfig([stored], dir);
+      const environment = new Environment(
+         ENV,
+         dir,
+         envConfig,
+         envConfig.apiConnections,
+      );
+      const service = new ConnectionService({
+         finishedInitialization: Promise.resolve(),
+         publisherConfigIsFrozen: false,
+         getEnvironment: async () => environment,
+         updateConnection: async (next: ApiConnection) => {
+            stored = next;
+         },
+         storageManager: {
+            getRepository: () => ({
+               getEnvironmentByName: async () => ({ id: "bench" }),
+               getConnectionByName: async () => ({ config: stored }),
+            }),
+         },
+      } as unknown as ConstructorParameters<typeof ConnectionService>[0]);
+      const patch = (uri: string, token: string) =>
+         service.updateConnection(ENV, "warehouse", {
+            publisherConnection: { connectionUri: uri, accessToken: token },
+         });
+      const loadRemote = () =>
+         load(() => environment.getEnvironmentMalloyConfig());
+      let tokenSeq = 0;
+      rows.push(
+         await summarize("p cold load (warm-up)", 1, () => loadRemote()),
+         await summarize("p-c: unchanged", REPS, () => loadRemote()),
+         await summarize("p-a: token-only PATCH", REPS, async () => {
+            await patch(
+               remotes[0]!.connectionUri("warehouse"),
+               `t${++tokenSeq}`,
+            );
+            return loadRemote();
+         }),
+         await summarize(
+            "p-h: host-moving PATCH (full rebuild)",
+            REPS,
+            async (rep) => {
+               await patch(
+                  remotes[(rep + 1) % 2]!.connectionUri("warehouse"),
+                  `t${++tokenSeq}`,
+               );
+               return loadRemote();
+            },
+         ),
+      );
+      await environment.getEnvironmentMalloyConfig().releaseConnections();
+      for (const remote of remotes) remote!.stop();
+
       console.log(
          `models=${modelCount} shape=${shape.name} (bases=${BASE_COUNT}, ` +
             `base fields=${shape.baseFields * 2 + 1}, leaf fields=${shape.leafFields * 2}, ` +

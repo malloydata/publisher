@@ -8,7 +8,14 @@ import * as path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
-import { buildEnvironmentMalloyConfig } from "./connection";
+import {
+   startFakePublisher,
+   type FakePublisher,
+} from "../test_helpers/fake_publisher";
+import {
+   buildEnvironmentMalloyConfig,
+   isPublisherTokenOnlyUpdate,
+} from "./connection";
 import { ConnectionService } from "./connection_service";
 import { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
@@ -668,6 +675,171 @@ describe("service/connection_service", () => {
          ).getCall(0);
          expect(updateCall.args[0].name).toBe("test-conn");
          expect(updateCall.args[0].type).toBe("postgres");
+      });
+   });
+
+   describe("updateConnection on a publisher connection", () => {
+      let envPath: string;
+      let remote: FakePublisher;
+      let environment: Environment;
+      let stored: ApiConnection;
+      const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+
+      const publisherConnection = (
+         connectionUri: string,
+         accessToken: string,
+      ): ApiConnection => ({
+         name: "remote",
+         type: "publisher",
+         publisherConnection: { connectionUri, accessToken },
+      });
+
+      beforeEach(async () => {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+         envPath = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-conn-token-"),
+         );
+         remote = startFakePublisher();
+         stored = publisherConnection(remote.connectionUri("remote"), "old");
+         const malloyConfig = buildEnvironmentMalloyConfig([stored], envPath);
+         environment = new Environment(
+            "test-project",
+            envPath,
+            malloyConfig,
+            malloyConfig.apiConnections,
+         );
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves({
+            id: "project-123",
+            name: "test-project",
+         });
+         (mockRepository.getConnectionByName as sinon.SinonStub).callsFake(
+            async () => ({ config: stored }),
+         );
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            environment,
+         );
+      });
+
+      afterEach(async () => {
+         await environment.getEnvironmentMalloyConfig().shutdown("close");
+         remote.stop();
+         fs.rmSync(envPath, { recursive: true, force: true });
+         if (priorFlag === undefined) {
+            delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         } else {
+            process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
+         }
+      });
+
+      const retiredCount = () =>
+         (
+            environment as unknown as {
+               retiredConnectionGenerations: Set<unknown>;
+            }
+         ).retiredConnectionGenerations.size;
+
+      it("keeps the live instance on a token-only patch and serves the new token", async () => {
+         const live = await environment.getMalloyConnection("remote");
+         const config = environment.getEnvironmentMalloyConfig();
+         await live.runSQL("select 1");
+         expect(remote.authorizations.at(-1)).toBe("Bearer old");
+
+         await connectionService.updateConnection("test-project", "remote", {
+            publisherConnection: {
+               connectionUri: remote.connectionUri("remote"),
+               accessToken: "new",
+            },
+         });
+
+         // Same object: the generation and the worker schema-cache keys hang off it.
+         expect(await environment.getMalloyConnection("remote")).toBe(live);
+         expect(environment.getEnvironmentMalloyConfig()).toBe(config);
+         expect(retiredCount()).toBe(0);
+         await live.runSQL("select 1");
+         expect(remote.authorizations.at(-1)).toBe("Bearer new");
+         expect(
+            environment.getApiConnection("remote").publisherConnection
+               ?.accessToken,
+         ).toBe("new");
+         expect(environment.listApiConnections().map((c) => c.name)).toEqual([
+            "remote",
+         ]);
+         const persisted = (
+            mockEnvironmentStore.updateConnection as sinon.SinonStub
+         ).getCall(0).args[0] as ApiConnection;
+         expect(persisted.publisherConnection?.accessToken).toBe("new");
+      });
+
+      it("rebuilds and retires when a non-credential field changes", async () => {
+         const live = await environment.getMalloyConnection("remote");
+         const other = startFakePublisher();
+         try {
+            await connectionService.updateConnection("test-project", "remote", {
+               publisherConnection: {
+                  connectionUri: other.connectionUri("remote"),
+                  accessToken: "new",
+               },
+            });
+            expect(retiredCount()).toBe(1);
+            const rebuilt = await environment.getMalloyConnection("remote");
+            expect(rebuilt).not.toBe(live);
+            await rebuilt.runSQL("select 1");
+            expect(other.authorizations.at(-1)).toBe("Bearer new");
+         } finally {
+            other.stop();
+         }
+      });
+
+      it("rebuilds when no live instance exists yet to rebind", async () => {
+         await connectionService.updateConnection("test-project", "remote", {
+            publisherConnection: {
+               connectionUri: remote.connectionUri("remote"),
+               accessToken: "new",
+            },
+         });
+         expect(retiredCount()).toBe(1);
+         const created = await environment.getMalloyConnection("remote");
+         await created.runSQL("select 1");
+         expect(remote.authorizations.at(-1)).toBe("Bearer new");
+      });
+   });
+
+   describe("isPublisherTokenOnlyUpdate", () => {
+      const publisher = (uri: string, token: string): ApiConnection => ({
+         name: "remote",
+         type: "publisher",
+         publisherConnection: { connectionUri: uri, accessToken: token },
+      });
+      const postgres = (host: string, password: string): ApiConnection => ({
+         name: "pg",
+         type: "postgres",
+         postgresConnection: { host, password },
+      });
+
+      it("accepts only a publisher bearer token change", () => {
+         expect(
+            isPublisherTokenOnlyUpdate(
+               publisher("https://a/x", "old"),
+               publisher("https://a/x", "new"),
+            ),
+         ).toBe(true);
+         expect(
+            isPublisherTokenOnlyUpdate(
+               publisher("https://a/x", "old"),
+               publisher("https://b/x", "new"),
+            ),
+         ).toBe(false);
+      });
+
+      // Postgres hands pg.password to the pool when the connection is built, so
+      // its live instance cannot take a new credential in place.
+      it("rejects a credential-only change on every other type", () => {
+         expect(
+            isPublisherTokenOnlyUpdate(
+               postgres("h", "old"),
+               postgres("h", "new"),
+            ),
+         ).toBe(false);
       });
    });
 
