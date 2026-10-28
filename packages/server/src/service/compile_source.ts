@@ -26,7 +26,10 @@ import {
    UnparseableTextError,
 } from "../errors";
 import { logger } from "../logger";
-import { getPackageLoadPool } from "../package_load/package_load_pool";
+import {
+   armedPackageSchemaRefresh,
+   getPackageLoadPool,
+} from "../package_load/package_load_pool";
 import {
    assertSafePackageName,
    assertSafeRelativeModelPath,
@@ -1071,6 +1074,12 @@ async function loadPackageInWorker(ctx: CompileContext) {
          buildManifest: ctx.boundManifestEntries,
          collectProblems: true,
          connectionsEpoch: ctx.pkg.getConnectionsEpoch(),
+         // Armed, not settled: the load that serves the package settles it. Without it
+         // this compile would fill the cache under the refreshed epoch from stale schemas.
+         refreshSchemaAt: armedPackageSchemaRefresh(
+            ctx.environmentName,
+            ctx.packageName,
+         ),
          replacement:
             source === undefined ? undefined : { modelPath: modelName, source },
       });

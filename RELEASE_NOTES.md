@@ -25,7 +25,24 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 A package keeps the compiled form of each model, and of every file a model imports, across reloads. A reload recompiles only the files whose contents changed and reuses the rest, along with the work derived from each reused model. The `Package load via worker pool completed` log line gains a `compileCacheHits` field: how many of the package's models were served from it.
 
-The cache empties when the package's connections change in anything other than a refreshed token, when a data file in the package changes, and when the package is unloaded. Two changes it does not see: a table's schema changing in the warehouse (the same window the schema cache already has), and a data file read from outside the package directory. A model reading data from the package's `public/` directory is unsupported, since that directory is not part of what the cache checks.
+The cache empties when the package's connections change in anything other than a refreshed token, when a data file in the package changes, and when the package is unloaded. Two changes it does not see: a table's schema changing in the warehouse (reload with `refreshSchema`, below, to pick it up), and a data file read from outside the package directory, whose model keeps its old schema until the connections change or the package is unloaded. A model reading data from the package's `public/` directory is unsupported, since that directory is not part of what the cache checks.
+
+## [Unreleased] — `reload_package` can skip an unchanged package, re-read warehouse schemas, and report its timings
+
+`reload_package` takes two optional inputs:
+
+- `ifChanged: true` skips the reload, answering `status: "unchanged"`, when nothing in the package directory changed since the last load: the content of model, notebook, markdown (skills, retrieval prompts), `*.styles.json` and `publisher.json` files, and the size and modification time of data files. An added or removed file, a `publisher.json` edit and a column added to a CSV all count as a change. It is not applied to a package installed from a location, or to one whose last reload failed.
+- `refreshSchema: true` makes the next load of the package read table and SQL schemas from the warehouse again, instead of reusing the schemas cached from earlier loads, and overrides `ifChanged`. Use it after a column changes in the warehouse. The refresh applies to one load: each table is fetched once for it, and it stays pending after a worker or pool failure or a failed schema fetch until a load completes without a compile error. Other packages' cached schemas are untouched.
+
+The result of `reload_package`, and the response to `GET …/packages/{pkg}?reload=true`, now carry `timings`: `compileDurationMs`, `schemaFetchDurationMs`, `schemaFetchCount` (requests from the worker to the main thread, which answers from the connection's own cache unless a refresh was asked for), `schemaCacheHits`, `compileCacheHits` and `totalMs` for the whole reload request. `timings` is a new optional field on `Package`, absent on responses that did not reload and on `unchanged`.
+
+## [Unreleased] — Rotating a publisher connection's token keeps the live connection
+
+A `PATCH` to a `publisher` connection that changes only its access token now updates the token on the live connection instead of replacing it, so the connection's cached table schemas, and the compile cache of the packages using it, survive the rotation. The new token is assumed to belong to the same principal as the old one: a token for a different principal should come with a change to the connection's URI, which replaces the connection as before.
+
+## [Unreleased] — Authorize gate counters now count on package loads
+
+`publisher_authorize_admit_all_total` and `publisher_authorize_row_level_rejected_total` are now recorded when a package loads in the worker pool; the worker's counts were not forwarded before, so on a server using the pool these counters never moved for load-time findings. They now count once per model per load, so a dashboard or alert on them will move for the first time, and a package reloaded often counts its findings on every reload. `legacy_string_gate` (a model refused at load) is the cause worth alerting on; the other load-time causes warn and leave the model served. A `compile_model` dry run does not count.
 
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 

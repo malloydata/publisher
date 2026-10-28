@@ -326,6 +326,7 @@ class ProxyConnection {
       metadata: ConnectionMetadata,
       jobId: string,
       environmentScope: string,
+      connectionsEpoch: number,
       refreshSchemaAt: number | undefined,
    ) {
       this.refreshSchemaAt = refreshSchemaAt;
@@ -335,12 +336,15 @@ class ProxyConnection {
       this.jobId = jobId;
       // The environment is in the key because a digest can be a configured
       // fingerprint, and two environments must never share what one can see.
-      // The generation retires entries when the connection is replaced.
+      // The generation retires entries when the connection is replaced; the
+      // epoch moves on a schema refresh, which only the worker that ran it
+      // has overwritten, so another worker must not answer from its old entries.
       this.cacheScope = [
          environmentScope,
          this.name,
          this.digest,
          metadata.generation,
+         connectionsEpoch,
       ].join("\0");
    }
 
@@ -711,6 +715,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                      response.metadata,
                      job.requestId,
                      job.environmentName,
+                     job.connectionsEpoch,
                      job.refreshSchemaAt,
                   );
                   proxies.set(effectiveName, proxy);

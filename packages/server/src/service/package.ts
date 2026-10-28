@@ -866,7 +866,10 @@ export class Package {
     * reload ("placeholder") keeps it as `Model.fromCompilationError` so one bad
     * file does not cost the others. `afterHydrate` runs per model before it is
     * added. `ctx.compile` skips the per-model failure log, since the compile
-    * response reports those and an iterating agent would flood the log.
+    * response reports those and an iterating agent would flood the log, and
+    * the gate counters, since a dry run is not a publish.
+    * `ctx.skipGateFindings` skips only the counters, for a recompile of models
+    * a load just counted.
     */
    private static async hydrateWorkerModels(
       outcome: LoadPackageOutcome,
@@ -876,6 +879,7 @@ export class Package {
          malloyConfig: MalloyConfig;
          buildManifest?: BuildManifest["entries"];
          compile?: boolean;
+         skipGateFindings?: boolean;
          /** The what-if text, so a failed model's placeholder carries the edit, not the saved file. */
          replacement?: LoadPackageRequest["replacement"];
       },
@@ -913,7 +917,9 @@ export class Package {
          await yielder.maybeYield();
          // Before a failed model throws: the worker counted them before failing.
          // A dry-run compile is not a publish, so it must not move the gate counters.
-         if (!ctx.compile) recordGateFindings(sm.gateFindings);
+         if (!ctx.compile && !ctx.skipGateFindings) {
+            recordGateFindings(sm.gateFindings);
+         }
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
             if (onCompileError === "throw") {
@@ -1138,13 +1144,18 @@ export class Package {
          connectionsEpoch: epoch,
          refreshSchemaAt,
       });
+      // Only an error-free outcome proves the refresh reached the warehouse: a
+      // failed fetch leaves the old worker entry, which the next load would serve.
       poolLoad.then(
-         () =>
-            settlePackageSchemaRefresh(
-               environmentName,
-               packageName,
-               refreshSchemaAt,
-            ),
+         (done) => {
+            if (done.models.every((m) => !m.compilationError)) {
+               settlePackageSchemaRefresh(
+                  environmentName,
+                  packageName,
+                  refreshSchemaAt,
+               );
+            }
+         },
          () => {},
       );
       const workerOutcome = loadOutcomeOrThrow(poolLoad);
@@ -2370,7 +2381,10 @@ export class Package {
     * a placeholder rather than aborting; pool failures propagate as
     * `ServiceUnavailableError` for the caller to retry.
     */
-   public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+   public async reloadAllModels(
+      entries: FreshnessManifest,
+      options: { recordGateFindings?: boolean } = {},
+   ): Promise<void> {
       const fingerprint = await treeFingerprint(this.packagePath);
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
@@ -2392,6 +2406,10 @@ export class Package {
             buildManifest,
             withPreaggregateCompanions: true,
             connectionsEpoch: this.connectionsEpoch(),
+            refreshSchemaAt: armedPackageSchemaRefresh(
+               this.environmentName,
+               this.packageName,
+            ),
          }),
       );
 
@@ -2406,6 +2424,7 @@ export class Package {
                packagePath: this.packagePath,
                malloyConfig: this.malloyConfig,
                buildManifest,
+               skipGateFindings: options.recordGateFindings === false,
             },
             "placeholder",
          );

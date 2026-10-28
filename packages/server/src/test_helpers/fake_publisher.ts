@@ -26,6 +26,8 @@ export function startFakePublisher(
    const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
+      // A warehouse failure answers 500, as a real remote does, rather than failing the running test.
+      error: () => new Response("warehouse failed", { status: 500 }),
       async fetch(req) {
          authorizations.push(req.headers.get("authorization") ?? "");
          const url = new URL(req.url);

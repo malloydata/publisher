@@ -16,6 +16,7 @@ import * as os from "os";
 import * as path from "path";
 import type { components } from "../../src/api";
 import {
+   armedPackageSchemaRefresh,
    dropPackageCompileCache,
    type LoadPackageOutcome,
    refreshPackageConnectionsEpoch,
@@ -195,6 +196,14 @@ describe("package compile cache", () => {
          }
       });
 
+      it("answers a load under a new epoch from the warehouse, not from the old epoch's schemas", async () => {
+         const cold = await load(1);
+         const changed = await load(2);
+         expect(changed.timings.schemaFetchCount).toBe(
+            cold.timings.schemaFetchCount,
+         );
+      });
+
       it("empties the cache when the connections change", async () => {
          await load(1);
          const changed = await load(2);
@@ -283,6 +292,8 @@ describe("package compile cache", () => {
             );
          return {
             fieldsOf,
+            lastPackage: () => packages[packages.length - 1],
+            tempDir,
             warehouse,
             remote,
             moved,
@@ -377,6 +388,79 @@ describe("package compile cache", () => {
             await env.cleanup();
          }
       });
+      it("a package-scope compile while a refresh is armed does not poison the serving load", async () => {
+         for (const model of ["base", "leaf", "other"]) {
+            fs.rmSync(path.join(packagePath, `${model}.malloy`));
+         }
+         const env = await publisherEnvironment();
+         const fetched = spyOn(env.warehouse, "fetchTableSchema");
+         try {
+            await env.load();
+            expect(env.ordersFields()).toBe('["id"]');
+            await env.warehouse.runSQL(
+               "create or replace table compile_cache_orders as select 1 as id, 2 as added_col",
+            );
+            refreshPackageConnectionsEpoch("publisher-env", "pkg");
+            const pkg = env.lastPackage();
+            await compileSource(
+               {
+                  environmentName: "publisher-env",
+                  environmentPath: env.tempDir,
+                  withPackageLock: (_name, fn) => fn(),
+                  loadPackageLocked: async () => pkg,
+               },
+               "pkg",
+               "orders.malloy",
+               undefined,
+               false,
+               undefined,
+               "package",
+            );
+            // The dry run does not settle it.
+            expect(
+               armedPackageSchemaRefresh("publisher-env", "pkg"),
+            ).toBeDefined();
+            await env.load();
+            expect(env.ordersFields()).toBe('["id","added_col"]');
+            expect(
+               armedPackageSchemaRefresh("publisher-env", "pkg"),
+            ).toBeUndefined();
+            // The first refresh fetch reached the warehouse; later ones joined its answer.
+            expect(fetched).toHaveBeenCalledTimes(2);
+         } finally {
+            await env.cleanup();
+         }
+      });
+
+      it("keeps a refresh armed when its fetch failed, so the next load still refreshes", async () => {
+         for (const model of ["base", "leaf", "other"]) {
+            fs.rmSync(path.join(packagePath, `${model}.malloy`));
+         }
+         const env = await publisherEnvironment();
+         const fetched = spyOn(env.warehouse, "fetchTableSchema");
+         try {
+            await env.load();
+            await env.warehouse.runSQL(
+               "create or replace table compile_cache_orders as select 1 as id, 2 as added_col",
+            );
+            refreshPackageConnectionsEpoch("publisher-env", "pkg");
+            fetched.mockImplementationOnce(async () => {
+               throw new Error("remote 503");
+            });
+            await expect(env.load()).rejects.toThrow();
+            expect(
+               armedPackageSchemaRefresh("publisher-env", "pkg"),
+            ).toBeDefined();
+            await env.load();
+            expect(env.ordersFields()).toBe('["id","added_col"]');
+            expect(
+               armedPackageSchemaRefresh("publisher-env", "pkg"),
+            ).toBeUndefined();
+         } finally {
+            await env.cleanup();
+         }
+      });
+
       it("a refresh asks the warehouse once for a table many models import", async () => {
          const env = await publisherEnvironment();
          const fetched = spyOn(env.warehouse, "fetchTableSchema");
@@ -498,6 +582,42 @@ source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() 
             for (const pkg of packages) {
                await pkg.getMalloyConfig().releaseConnections();
             }
+            await duckdb.close();
+            resetAuthorizeGuardTelemetryForTesting();
+            await harness.shutdown();
+         }
+      });
+   });
+
+   describe("gate metrics on a rebind", () => {
+      it("a recompile after a load does not count that load's findings again unless asked to", async () => {
+         fs.writeFileSync(
+            path.join(packagePath, "gated.malloy"),
+            `#(authorize) true
+source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() }
+`,
+         );
+         const harness = await startMetricsHarness();
+         resetAuthorizeGuardTelemetryForTesting();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         let pkg: Package | undefined;
+         try {
+            const admitAll = () =>
+               harness.collectCounter("publisher_authorize_admit_all_total");
+            pkg = await Package.create(
+               "metrics-env",
+               "pkg",
+               packagePath,
+               malloyConfig,
+            );
+            expect(await admitAll()).toBe(1);
+            await pkg.reloadAllModels({}, { recordGateFindings: false });
+            expect(await admitAll()).toBe(1);
+            await pkg.reloadAllModels({});
+            expect(await admitAll()).toBe(2);
+         } finally {
+            dropPackageCompileCache("metrics-env", "pkg");
+            await pkg?.getMalloyConfig().releaseConnections();
             await duckdb.close();
             resetAuthorizeGuardTelemetryForTesting();
             await harness.shutdown();

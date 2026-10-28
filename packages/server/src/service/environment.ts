@@ -1996,13 +1996,17 @@ export class Environment {
       if (!manifestLocation) {
          return;
       }
-      await this.bindManifest(pkg, manifestLocation);
+      // The load that built this package just counted its gate findings.
+      await this.bindManifest(pkg, manifestLocation, {
+         recordGateFindings: false,
+      });
    }
 
    /** Fetch + bind a specific manifest URI onto an already-loaded package. */
    private async bindManifest(
       pkg: Package,
       manifestLocation: string,
+      options: { recordGateFindings?: boolean } = {},
    ): Promise<void> {
       const packageName = pkg.getPackageName();
       try {
@@ -2026,7 +2030,7 @@ export class Environment {
          // reports "no manifest applied", which would be false if the new
          // storage bindings were already routing.
          if (hasColocated || hadColocated) {
-            await pkg.reloadAllModels(tableNameManifest);
+            await pkg.reloadAllModels(tableNameManifest, options);
          }
 
          if (hasStorage || hadStorage) {

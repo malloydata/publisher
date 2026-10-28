@@ -115,13 +115,15 @@ export interface LoadPackageRequest {
    /**
     * Identifies the connections the package compiles against, and moves on a
     * schema refresh; the worker empties the package's compile cache when it
-    * changes.
+    * changes and keys its schema cache on it.
     */
    connectionsEpoch: number;
    /**
     * Set on the one load that follows a schema refresh: every schema the job
     * asks for is refetched from the warehouse (as a `refreshTimestamp` fetch),
-    * past the main thread's connection cache too, and replaces the worker's entry.
+    * past the main thread's connection cache too, and fills the worker's cache
+    * under the refreshed epoch. Any load under that epoch carries it until one
+    * settles it, so none compiles from a stale schema.
     */
    refreshSchemaAt?: number;
 }
