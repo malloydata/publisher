@@ -35,6 +35,7 @@
  * fail-closed deny.
  */
 
+import type { GateFindingCounts } from "../authorize_metrics";
 import type { EligibilityRefusalReason } from "../materialization_metrics";
 import type { BuildPlanOutcome } from "../service/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
@@ -156,6 +157,10 @@ export interface SerializedModel {
    problems?: unknown[];
    /** This model's compile was served from the worker's compile cache. */
    compileCacheHit?: boolean;
+   /** What the load derived from the ModelDef was reused from an earlier load. */
+   derivationReused?: boolean;
+   /** Gate findings the compile counted, for the main thread to record (the worker's meter is a no-op). */
+   gateFindings?: GateFindingCounts;
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**

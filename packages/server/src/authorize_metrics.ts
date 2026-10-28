@@ -144,6 +144,11 @@ export function recordRowLevelGateDecision(
 export function recordRowLevelGateRejected(
    cause: RowLevelGateRejectionCause,
 ): void {
+   const counts = gateFindingSink?.();
+   if (counts) {
+      counts.rejected[cause] = (counts.rejected[cause] ?? 0) + 1;
+      return;
+   }
    rowLevelRejectionCounter().add(1, { cause });
 }
 
@@ -162,7 +167,46 @@ export function recordRowLevelGateRejected(
  * but stays because it is already on the wire.
  */
 export function recordAuthorizeAdmitAllGate(route: string): void {
+   const counts = gateFindingSink?.();
+   if (counts) {
+      counts.admitAll[route] = (counts.admitAll[route] ?? 0) + 1;
+      return;
+   }
    admitAllCounter().add(1, { route });
+}
+
+/** The load-time gate findings one model's compile counted (see {@link setGateFindingSink}). */
+export interface GateFindingCounts {
+   rejected: Partial<Record<RowLevelGateRejectionCause, number>>;
+   admitAll: Record<string, number>;
+}
+
+let gateFindingSink: (() => GateFindingCounts | undefined) | undefined;
+
+/**
+ * Route the load-time gate findings to the counts `sink` returns instead of
+ * the meter, whenever it returns any. The package-load worker's meter is a
+ * no-op, so it counts each model's findings and hands them back for the main
+ * thread to record with {@link recordGateFindings}.
+ */
+export function setGateFindingSink(
+   sink: () => GateFindingCounts | undefined,
+): void {
+   gateFindingSink = sink;
+}
+
+/** Record the findings a worker counted, as if they had fired here. */
+export function recordGateFindings(
+   counts: GateFindingCounts | undefined,
+): void {
+   for (const [cause, n] of Object.entries(counts?.rejected ?? {})) {
+      for (let i = 0; i < (n ?? 0); i++) {
+         recordRowLevelGateRejected(cause as RowLevelGateRejectionCause);
+      }
+   }
+   for (const [route, n] of Object.entries(counts?.admitAll ?? {})) {
+      for (let i = 0; i < n; i++) recordAuthorizeAdmitAllGate(route);
+   }
 }
 
 /**

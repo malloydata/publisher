@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Reloading a package reuses the compile of every file that did not change
+
+A package keeps the compiled form of each model, and of every file a model imports, across reloads. A reload recompiles only the files whose contents changed and reuses the rest, along with the work derived from each reused model. The `Package load via worker pool completed` log line gains a `compileCacheHits` field: how many of the package's models were served from it.
+
+The cache empties when the package's connections change in anything other than a refreshed token, when a data file in the package changes, and when the package is unloaded. Two changes it does not see: a table's schema changing in the warehouse (the same window the schema cache already has), and a data file read from outside the package directory. A model reading data from the package's `public/` directory is unsupported, since that directory is not part of what the cache checks.
+
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:

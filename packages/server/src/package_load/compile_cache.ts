@@ -6,27 +6,36 @@ import {
    type CachedModel,
    type URLReader,
 } from "@malloydata/malloy";
+import { logger } from "../logger";
 
 /**
- * The most files one package keeps compiled. Past it every entry is dropped:
- * a package has about one entry per file, so only path churn (a package moved
- * between directories) gets there.
+ * The most compiled files one package keeps. Past it every entry is dropped.
+ * Each model, each pre-aggregation companion and each new path a dry-run
+ * compiles takes an entry, so a package of about 250 models with companions
+ * reaches it on every load (logged once).
  */
 export const MAX_CACHED_MODELS_PER_PACKAGE = 512;
 
 /**
  * The compiled ModelDefs of one package, shared by every Runtime that
  * compiles it, so a file whose text (and whose imports' text) is unchanged is
- * not translated again. Malloy checks an entry against file contents only, so
- * the whole cache is emptied when anything else a ModelDef depends on changes
- * (see {@link beginLoad}). Restricted-mode compiles bypass it in Malloy.
+ * not translated again. Malloy checks an entry against file contents only;
+ * {@link beginLoad} empties the cache when the connections or the package's
+ * data files change. Not covered: a schema change on the warehouse side (the
+ * worker's SchemaCache has the same window) and data a model reads from
+ * outside the package directory. Restricted-mode compiles bypass it in Malloy.
  */
 export class PackageCompileCache {
    private models = new Map<string, CachedModel>();
    private sharedManager = this.newManager();
    private stamp: string | undefined;
+   private overflowLogged = false;
 
-   constructor(private readonly maxModels = MAX_CACHED_MODELS_PER_PACKAGE) {}
+   constructor(
+      /** Names the package in the overflow log. */
+      private readonly label: string,
+      private readonly maxModels = MAX_CACHED_MODELS_PER_PACKAGE,
+   ) {}
 
    /**
     * Start a load. `stamp` names what the ModelDefs depend on besides file
@@ -72,6 +81,13 @@ export class PackageCompileCache {
             const key = url.toString();
             if (models.size >= this.maxModels && !models.has(key)) {
                models.clear();
+               if (!this.overflowLogged) {
+                  this.overflowLogged = true;
+                  logger.warn(
+                     "Package compile cache overflowed; every entry was dropped",
+                     { package: this.label, maxModels: this.maxModels },
+                  );
+               }
             }
             models.set(key, cachedModel);
             return true;

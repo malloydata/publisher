@@ -45,6 +45,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
+import { recordGateFindings } from "../authorize_metrics";
 import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
 import {
@@ -363,8 +364,7 @@ export class Package {
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
    /** Identifies the connections this package compiles against (see PackageCompileCache). */
-   private connectionsEpoch: () => number = () =>
-      connectionGeneration(this.malloyConfig);
+   private readonly connectionsEpoch: () => number;
    /**
     * The skills in `skills/`, refreshed with the content sha so a skill edit is
     * covered by the reload receipt by construction.
@@ -400,7 +400,10 @@ export class Package {
       databases: ApiDatabase[],
       models: Map<string, Model>,
       malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
+      // Without an environment, the package's own config is its connections.
+      connectionsEpoch: () => number = () => connectionGeneration(malloyConfig),
    ) {
+      this.connectionsEpoch = connectionsEpoch;
       this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
@@ -882,6 +885,8 @@ export class Package {
       const yielder = createEventLoopYielder();
       for (const sm of outcome.models) {
          await yielder.maybeYield();
+         // Before a failed model throws: the worker counted them before failing.
+         recordGateFindings(sm.gateFindings);
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
             if (onCompileError === "throw") {
@@ -1188,8 +1193,8 @@ export class Package {
          databases,
          models,
          malloyConfig,
+         connectionsEpoch,
       );
-      pkg.connectionsEpoch = connectionsEpoch;
       const reportTimings = await pkg.discoverReports("load");
       // After discovery: which findings a tile explains depends on the reports.
       pkg.renderTagWarnings = pkg.surfacedRenderTagWarnings(renderTagWarnings);

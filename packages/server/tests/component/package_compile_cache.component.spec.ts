@@ -24,6 +24,8 @@ import { ConnectionService } from "../../src/service/connection_service";
 import { Environment } from "../../src/service/environment";
 import { Package } from "../../src/service/package";
 import { startFakePublisher } from "../../src/test_helpers/fake_publisher";
+import { resetAuthorizeGuardTelemetryForTesting } from "../../src/authorize_metrics";
+import { startMetricsHarness } from "../../src/test_helpers/metrics_harness";
 import {
    duckdbMalloyConfig,
    usePackageLoadPool,
@@ -129,8 +131,18 @@ describe("package compile cache", () => {
       it("serves an unchanged tree's reload from the cache, with the same models", async () => {
          const cold = await load(1);
          expect(cold.timings.compileCacheHits).toBe(0);
+         expect(cold.models.some((m) => m.derivationReused)).toBe(false);
          const warm = await load(1);
          expect(warm.timings.compileCacheHits).toBe(3);
+         // What a load derives from each ModelDef is reused once the cache holds
+         // the ModelDef that was derived; an importer's translation can replace
+         // one entry on the cold load, so the steady state is the next reload.
+         const steady = await load(1);
+         expect(steady.models.map((m) => m.derivationReused)).toEqual([
+            true,
+            true,
+            true,
+         ]);
          // Nothing was translated, so nothing asked for a schema.
          expect(warm.timings.schemaCacheHits).toBe(0);
          expect(warm.timings.schemaFetchCount).toBe(0);
@@ -140,8 +152,12 @@ describe("package compile cache", () => {
          const comparable = (outcome: LoadPackageOutcome) =>
             JSON.stringify(
                outcome.models.map(
-                  ({ compileDurationMs: _d, compileCacheHit: _h, ...model }) =>
-                     model,
+                  ({
+                     compileDurationMs: _d,
+                     compileCacheHit: _h,
+                     derivationReused: _r,
+                     ...model
+                  }) => model,
                ),
                (key, value) =>
                   key === "persist" && typeof value === "boolean"
@@ -278,6 +294,57 @@ describe("package compile cache", () => {
             } else {
                process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = previous;
             }
+         }
+      });
+   });
+
+   describe("gate metrics", () => {
+      it("records a model's load-time gate findings on every load, reused or not", async () => {
+         fs.writeFileSync(
+            path.join(packagePath, "gated.malloy"),
+            `#(authorize) true
+source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() }
+`,
+         );
+         const harness = await startMetricsHarness();
+         // Drop the cached instrument so it re-binds to this test's provider.
+         resetAuthorizeGuardTelemetryForTesting();
+         const outcomes = recordLoads();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         const packages: Package[] = [];
+         try {
+            const admitAll = () =>
+               harness.collectCounter("publisher_authorize_admit_all_total");
+            packages.push(
+               await Package.create(
+                  "metrics-env",
+                  "pkg",
+                  packagePath,
+                  malloyConfig,
+               ),
+            );
+            expect(await admitAll()).toBe(1);
+            packages.push(
+               await Package.create(
+                  "metrics-env",
+                  "pkg",
+                  packagePath,
+                  malloyConfig,
+               ),
+            );
+            const gated = outcomes[1].models.find(
+               (m) => m.modelPath === "gated.malloy",
+            );
+            expect(gated?.derivationReused).toBe(true);
+            expect(await admitAll()).toBe(2);
+         } finally {
+            dropPackageCompileCache("metrics-env", "pkg");
+            for (const pkg of packages) {
+               await pkg.getMalloyConfig().releaseConnections();
+            }
+            await duckdb.close();
+            resetAuthorizeGuardTelemetryForTesting();
+            await harness.shutdown();
          }
       });
    });

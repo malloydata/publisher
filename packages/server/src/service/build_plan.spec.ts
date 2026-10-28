@@ -1,14 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
+import {
+   InMemoryURLReader,
+   type PersistSource,
+   Runtime,
+} from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
+   collectModelBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
    deriveBuildPlan,
+   emptyBuildPlanParts,
    flattenDependsOn,
    iterGraphSources,
    projectToPublicColumns,
@@ -18,6 +24,7 @@ import {
 } from "./build_plan";
 import { computePackageBuildPlan } from "./build_plan_compile";
 import { MaterializationEligibilityError } from "../errors";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
 import {
    compilePersistSources,
    duckdbTestConnections,
@@ -827,4 +834,50 @@ source: orders is duckdb.sql("""
       },
       { timeout: 20000 },
    );
+});
+
+describe("collectModelBuildPlan", () => {
+   it("plans from the companion it is handed without compiling another", async () => {
+      const modelUrl = "file:///pkg/orders.malloy";
+      const text = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("select 10 as amount, 'A' as category") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+      const { connections } = duckdbTestConnections();
+      const runtimeWith = (overlay: ReadonlyMap<string, string>) =>
+         new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([[modelUrl, text], ...overlay]),
+            ),
+            connections,
+         });
+      const materializer = runtimeWith(new Map()).loadModel(new URL(modelUrl));
+      const malloyModel = await materializer.getModel();
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath: "/pkg",
+         modelPath: "orders.malloy",
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         contents: (malloyModel as any)._modelDef.contents,
+         getRuntime: async (overlay) => ({
+            runtime: runtimeWith(overlay),
+            importBaseURL: new URL("file:///pkg/"),
+         }),
+      });
+      expect(synthesized).toBeDefined();
+
+      const parts = emptyBuildPlanParts();
+      await collectModelBuildPlan(parts, {
+         modelPath: "orders.malloy",
+         packagePath: "/pkg",
+         materializer,
+         malloyModel,
+         getRuntime: () => {
+            throw new Error("compiled a second companion");
+         },
+         synthesized,
+      });
+      expect(Object.keys(parts.preaggregatePlans)).toHaveLength(1);
+   });
 });

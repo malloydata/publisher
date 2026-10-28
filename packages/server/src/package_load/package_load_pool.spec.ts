@@ -589,7 +589,7 @@ source: orders is duckdb.table('limit_t') extend {
       }
    }, 20000);
 
-   it("derives the plan from the companion the worker compiled for this thread, not from a second compile", async () => {
+   it("returns the companion and a plan, fetching the table once", async () => {
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental { persistence composite_sources }
@@ -600,10 +600,7 @@ source: orders is duckdb.table('shared_t') extend {
 }
 `,
       );
-      // With the worker's schema cache off, every translation fetches the
-      // table. The companion imports the model from the compile cache, so only
-      // the model's own compile fetches; a second companion compile would too
-      // hit that cache, so this no longer tells the two apart.
+      // Schema cache off; the companion imports the model from the compile cache.
       const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
       process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
       const { duckdb, tableFetches, load, tearDown } = await setUp(() =>

@@ -52,10 +52,16 @@ import {
    normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
-import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import {
+   isReportEligiblePath,
+   isUnderPublicDir,
+   readReportTagOfText,
+} from "../service/report";
+import {
+   type GateFindingCounts,
    recordAuthorizeAdmitAllGate,
    recordRowLevelGateRejected,
+   setGateFindingSink,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
@@ -245,7 +251,9 @@ function compileCacheFor(job: LoadPackageRequest): PackageCompileCache {
    const key = compileCacheKey(job.environmentName, job.packageName);
    let cache = compileCaches.get(key);
    if (!cache) {
-      cache = new PackageCompileCache();
+      cache = new PackageCompileCache(
+         `${job.environmentName}/${job.packageName}`,
+      );
       compileCaches.set(key, cache);
    }
    return cache;
@@ -262,6 +270,11 @@ interface JobContext {
 const jobContext = new AsyncLocalStorage<JobContext>();
 
 setEligibilityRefusalSink(() => jobContext.getStore()?.refusals);
+
+/** The gate findings of the model being compiled, carried across awaits. */
+const modelGateFindings = new AsyncLocalStorage<GateFindingCounts>();
+
+setGateFindingSink(() => modelGateFindings.getStore());
 
 // OpenTelemetry log export exists only on the main thread, so a job's log
 // entries are intercepted at `write` (where every call arrives as winston's
@@ -832,8 +845,10 @@ async function listPackageFiles(packagePath: string): Promise<string[]> {
 }
 
 /**
- * Path, size and mtime of every file a model can read data from (all but
- * model and markdown sources), since a cached ModelDef holds those files' schemas.
+ * Path, size and mtime of every file a model can read data from, since a
+ * cached ModelDef holds those files' schemas. Skipped: model and markdown
+ * sources, `*.styles.json` (re-read on every load), and `public/`, a data
+ * app's static assets, which a model does not read data from.
  */
 async function dataFilesDigest(
    packagePath: string,
@@ -843,7 +858,9 @@ async function dataFilesDigest(
       (p) =>
          !p.endsWith(MODEL_FILE_SUFFIX) &&
          !p.endsWith(NOTEBOOK_FILE_SUFFIX) &&
-         !p.toLowerCase().endsWith(".md"),
+         !p.toLowerCase().endsWith(".md") &&
+         !p.endsWith(".styles.json") &&
+         !isUnderPublicDir(p),
    );
    const stats = await Promise.all(
       dataFiles.map((p) =>
@@ -1047,6 +1064,8 @@ interface ModelDerivation {
    queries: ReturnType<typeof extractQueries>["queries"];
    authorizeWarnings?: string[];
    modelInfo: ReturnType<typeof modelInfoOf>;
+   /** The gate findings deriving it counted, replayed when it is reused. */
+   gateFindings?: GateFindingCounts;
 }
 
 /**
@@ -1064,6 +1083,20 @@ function textDigest(text: string | undefined): string {
       .createHash("sha1")
       .update(text ?? "")
       .digest("hex");
+}
+
+function addGateFindings(
+   into: GateFindingCounts | undefined,
+   from: GateFindingCounts | undefined,
+): void {
+   if (!into || !from) return;
+   for (const [cause, n] of Object.entries(from.rejected)) {
+      const key = cause as keyof GateFindingCounts["rejected"];
+      into.rejected[key] = (into.rejected[key] ?? 0) + (n ?? 0);
+   }
+   for (const [route, n] of Object.entries(from.admitAll)) {
+      into.admitAll[route] = (into.admitAll[route] ?? 0) + n;
+   }
 }
 
 function reusableDerivation(
@@ -1181,6 +1214,7 @@ async function deriveModel(
             ? authorizeWarningCollection.warnings
             : undefined,
       modelInfo: modelInfoOf(modelDef),
+      gateFindings: structuredClone(modelGateFindings.getStore()),
    };
    derivations.set(modelDef, {
       textDigest: textDigest(modelSourceText),
@@ -1214,6 +1248,11 @@ async function compileMalloyModel(
    const modelDef = compiled._modelDef;
 
    const modelSourceText = textFor(modelURL);
+   const reused = modelCache.hit
+      ? reusableDerivation(modelDef, modelSourceText)
+      : undefined;
+   if (reused)
+      addGateFindings(modelGateFindings.getStore(), reused.gateFindings);
    const {
       givens,
       sourceInfos,
@@ -1222,9 +1261,7 @@ async function compileMalloyModel(
       queries,
       authorizeWarnings,
       modelInfo,
-   } =
-      (modelCache.hit && reusableDerivation(modelDef, modelSourceText)) ||
-      (await deriveModel(mm, compiled, modelSourceText));
+   } = reused ?? (await deriveModel(mm, compiled, modelSourceText));
 
    const compileDurationMs = performance.now() - compileStart;
    const { renderTagResults, preaggregateCompanion } =
@@ -1259,6 +1296,7 @@ async function compileMalloyModel(
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       compileCacheHit: modelCache.hit,
+      derivationReused: reused !== undefined,
       authorizeWarnings,
       renderTagResults,
       preaggregateCompanion,
@@ -1626,6 +1664,19 @@ async function compileNotebookModel(
 }
 
 async function compileOneModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   modelPath: string,
+   load: LoadContext,
+): Promise<SerializedModel> {
+   const gateFindings: GateFindingCounts = { rejected: {}, admitAll: {} };
+   const model = await modelGateFindings.run(gateFindings, () =>
+      compileOrReportModel(job, malloyConfig, modelPath, load),
+   );
+   return { ...model, gateFindings };
+}
+
+async function compileOrReportModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
