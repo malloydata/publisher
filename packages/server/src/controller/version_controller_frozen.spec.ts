@@ -10,7 +10,7 @@ import { registerVersionRoutes, VersionController } from "./version.controller";
 
 // A frozen config (`frozenConfig: true` in publisher.config.json) refuses
 // every write to a package's version lifecycle with 403, before the version
-// rules are reached; reads stay open. The routes are mounted as server.ts
+// rules are reached; reads stay open. The routes are mounted as main_server.ts
 // mounts them, over a version service that would carry out every write.
 
 const BASE = "/api/v0/environments/env/packages/pkg";

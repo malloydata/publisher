@@ -13,91 +13,93 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { createServer } from "net";
-import { tmpdir } from "os";
+import { writeFileSync } from "fs";
 import { join } from "path";
-
-const SERVER_ENTRY = join(import.meta.dir, "../../../src/server.ts");
-
-async function freePort(): Promise<number> {
-   return new Promise((resolve, reject) => {
-      const probe = createServer();
-      probe.once("error", reject);
-      probe.listen(0, "127.0.0.1", () => {
-         const { port } = probe.address() as { port: number };
-         probe.close(() => resolve(port));
-      });
-   });
-}
+import {
+   pollUntil,
+   spawnServer,
+   type SpawnedServer,
+   tempDir,
+} from "../../harness/spawn_server";
 
 describe("server with an unusable publisher.config.json", () => {
-   const cleanups: Array<() => void> = [];
-   afterEach(() => {
-      while (cleanups.length) cleanups.pop()!();
+   const cleanups: Array<() => unknown> = [];
+   afterEach(async () => {
+      while (cleanups.length) await cleanups.pop()?.();
    });
 
-   async function boot(configText: string) {
-      const root = mkdtempSync(join(tmpdir(), "publisher-bad-config-"));
-      writeFileSync(join(root, "publisher.config.json"), configText);
-      const port = await freePort();
-      const mcpPort = await freePort();
-      const child = Bun.spawn(["bun", SERVER_ENTRY], {
-         env: {
-            ...process.env,
-            SERVER_ROOT: root,
-            PUBLISHER_PORT: String(port),
-            MCP_PORT: String(mcpPort),
-         },
-         stdout: "ignore",
-         stderr: "pipe",
-      });
-      cleanups.push(() => {
-         child.kill();
-         rmSync(root, { recursive: true, force: true });
-      });
-      return { child, port };
-   }
-
-   async function statusWithin(port: number, ms: number) {
-      const deadline = Date.now() + ms;
+   /** /status once it names an initError, or undefined if the server exits first. */
+   async function statusWithin(server: SpawnedServer, ms: number) {
+      let status: { initError?: string } | undefined;
       let last: unknown;
-      while (Date.now() < deadline) {
+      await pollUntil(async () => {
+         if (server.exited()) return true;
          try {
-            const res = await fetch(`http://127.0.0.1:${port}/api/v0/status`);
+            const res = await fetch(`${server.baseUrl}/api/v0/status`);
             const body = (await res.json()) as { initError?: string };
-            if (body.initError) return body;
+            if (body.initError) status = body;
             last = body;
          } catch (error) {
             last = error;
          }
-         await Bun.sleep(250);
-      }
+         return status !== undefined;
+      }, ms);
+      if (status || server.exited()) return status;
       throw new Error(
          `/status never reported an initError within ${ms}ms; last: ${String(
             last instanceof Error ? last.message : JSON.stringify(last),
-         )}`,
+         )}\n--- server log tail ---\n${server.output().slice(-4000)}`,
       );
    }
 
+   /**
+    * Boot on `configText` and wait for /status to name the init error. The
+    * ports are probed free and only bound seconds later by the child, so a
+    * suite running alongside can take one in between; the server then exits
+    * with "Port N in use", and that boot is retried on new ports. Any other
+    * exit fails with the server's output.
+    */
+   async function bootUntilInitError(configText: string) {
+      const root = tempDir("publisher-bad-config-");
+      cleanups.push(root.cleanup);
+      writeFileSync(join(root.dir, "publisher.config.json"), configText);
+      for (let attempt = 1; ; attempt++) {
+         const server = await spawnServer({ serverRoot: root.dir });
+         cleanups.push(() => server.stop());
+         const status = await statusWithin(server, 60_000);
+         if (status) return { server, status };
+         if (attempt < 3 && server.output().includes(" in use; pass --")) {
+            continue;
+         }
+         throw new Error(
+            `server exited before /status answered\n--- server log tail ---\n${server
+               .output()
+               .slice(-4000)}`,
+         );
+      }
+   }
+
    it("stays up, prints PUBLISHER_INIT_FAILED, and /status names the cause", async () => {
-      const { child, port } = await boot('{"environments":[],}');
-      const status = await statusWithin(port, 60_000);
+      const { server, status } = await bootUntilInitError(
+         '{"environments":[],}',
+      );
       expect(status.initError).toContain("publisher.config.json");
       expect(status.initError).toContain("JSON Parse error");
-      expect(child.exitCode).toBeNull();
-      child.kill();
-      await child.exited;
-      const stderr = await new Response(child.stderr).text();
-      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
-   }, 90_000);
+      expect(server.exited()).toBe(false);
+      // stderr arrives on its own pipe, so it can trail the /status answer.
+      expect(
+         await pollUntil(
+            () => server.stderr().includes("PUBLISHER_INIT_FAILED"),
+            10_000,
+         ),
+      ).toBe(true);
+   }, 200_000);
 
    it("stays up when the retrieval block itself is invalid", async () => {
-      const { child, port } = await boot(
+      const { server, status } = await bootUntilInitError(
          '{"environments":[],"retrieval":{"indexing":{"maxEntities":"lots"}}}',
       );
-      const status = await statusWithin(port, 60_000);
       expect(status.initError).toContain("retrieval.indexing.maxEntities");
-      expect(child.exitCode).toBeNull();
-   }, 90_000);
+      expect(server.exited()).toBe(false);
+   }, 200_000);
 });
