@@ -22,20 +22,26 @@ printHelpIfAsked(argv);
 const loaded = Settings.load({ argv });
 Settings.install(loaded);
 
-const { logger } = await import("./logger");
-for (const warning of loaded.warnings) {
-   logger.warn(warning.message);
-}
 // A value that does not parse fails startup, every one of them at once, and
 // before anything binds. A config file that cannot be read fails it alone,
-// since none of its settings can be trusted to have their defaults.
+// since none of its settings can be trusted to have their defaults. Checked
+// before the logger loads, because the logger reads two settings when it
+// loads, and one of them may be the bad value.
 const failures = loaded.fileError ? [loaded.fileError] : loaded.errors();
 if (failures.length > 0) {
+   for (const warning of loaded.warnings) {
+      process.stderr.write(`warn: ${warning.message}\n`);
+   }
    const message = new SettingsError(failures).message;
    process.stderr.write(
       `${message}\nPUBLISHER_INIT_FAILED error=${JSON.stringify(message)}\n`,
    );
    process.exit(1);
+}
+
+const { logger } = await import("./logger");
+for (const warning of loaded.warnings) {
+   logger.warn(warning.message);
 }
 
 // Checked before either server's module loads, so a contradiction fails startup
