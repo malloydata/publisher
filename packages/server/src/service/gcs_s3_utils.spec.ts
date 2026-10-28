@@ -63,6 +63,15 @@ describe("parseS3Endpoint", () => {
       expect(() => parseS3Endpoint(endpoint)).toThrow(message);
    });
 
+   it("handles a long run of slashes without backtracking", () => {
+      expect(parseS3Endpoint(`minio${"/".repeat(100_000)}`).hostAndPath).toBe(
+         "minio",
+      );
+      expect(() => parseS3Endpoint(`https://${"/".repeat(100_000)}`)).toThrow(
+         "must include a host",
+      );
+   });
+
    it("never repeats an endpoint that carries a credential", () => {
       for (const endpoint of [
          "ftp://key:secret@minio",

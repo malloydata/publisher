@@ -61,9 +61,10 @@ export function parseS3Endpoint(endpoint: string): {
          "S3 endpoint must not contain a query string or fragment",
       );
    }
-   const hostAndPath = endpoint
-      .slice(scheme ? scheme[0].length : 0)
-      .replace(/\/+$/, "");
+   // A loop, not /\/+$/: that regex backtracks on a long run of slashes.
+   let end = endpoint.length;
+   while (end > 0 && endpoint[end - 1] === "/") end--;
+   const hostAndPath = endpoint.slice(scheme ? scheme[0].length : 0, end);
    if (!hostAndPath) {
       throw new Error("S3 endpoint must include a host");
    }
