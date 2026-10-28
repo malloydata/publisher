@@ -617,7 +617,7 @@ async function valuesFor(
    if (!target || node.kind !== "dimension") return [];
    if (target.type !== "dimension" && target.type !== "dimensional_value")
       return [];
-   const phrase = target.exampleValues?.[0] ?? target.text;
+   const phrase = target.text;
    if (matched && matched.length > 0) {
       return matched
          .slice(0, 10)

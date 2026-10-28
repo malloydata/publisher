@@ -167,9 +167,6 @@ export function resultKey(request: ResolvedRequest): string {
          s.text,
       ]),
       valueSearches: request.valueSearches.map((s) => [s.targetIndex, s.text]),
-      exampleValues: [...(request.exampleValues ?? new Map())].sort(
-         (a, b) => a[0] - b[0],
-      ),
       textlessValueTargets: request.textlessValueTargets ?? 0,
       unsupported: request.unsupported,
       includeCode: request.includeCode,

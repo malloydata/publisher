@@ -10,7 +10,6 @@ import {
 import embeddings from "../../test_helpers/value_embeddings_fixture.json";
 import { normalizeText } from "../tools/get_context_value_match";
 import type { DocParts } from "./doc_parts";
-import { valueSpans } from "./value_tokens";
 import { toUnit } from "./vectors";
 import {
    buildValueIndex,
@@ -397,28 +396,5 @@ describe("value matching by meaning", () => {
       ]);
       expect(bare.searchByMeaning("NYC", vec("NYC"))).toEqual([]);
       expect(index.searchByMeaning("NYC", new Float32Array(8))).toEqual([]);
-   });
-});
-
-describe("value-looking tokens", () => {
-   const vocab = new Set(["flight", "order", "ship", "status", "sale"]);
-   const inVocab = (t: string) => vocab.has(t);
-
-   it("takes a capitalized run that is not the first word", () => {
-      expect(valueSpans("flights to Denver", inVocab)).toEqual(["Denver"]);
-      expect(valueSpans("Orders shipped to New York", inVocab)).toEqual([
-         "New York",
-      ]);
-   });
-
-   it("takes quoted strings, codes and words the catalog never uses", () => {
-      expect(valueSpans('orders with status "ixnayed"', inVocab)).toEqual([
-         "ixnayed",
-      ]);
-      expect(valueSpans("sales of sku 4X12", inVocab)).toEqual(["4X12"]);
-      expect(valueSpans("frobnicated orders", inVocab)).toEqual([
-         "frobnicated",
-      ]);
-      expect(valueSpans("flights by status", inVocab)).toEqual([]);
    });
 });

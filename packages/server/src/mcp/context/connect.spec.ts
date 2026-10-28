@@ -80,7 +80,7 @@ describe("connect", () => {
    it("prefers DIA beside the flights measure to an exact Denver in a table no flights measure reaches", () => {
       const out = run([
          t(0, "measure", "how many flights"),
-         t(1, "dimension", "flights to Denver"),
+         t(1, "dimensional_value", "Denver"),
       ]);
       expect(homes(out)).toEqual([["flights@travel.malloy", [0, 1], []]]);
       expect(keys(out, 0, 1)[0]).toBe(

@@ -172,8 +172,6 @@ describe("keyword index", () => {
       expect(
          index.search("flights", (k) => k !== "a").map((h) => h.key),
       ).toEqual(["c"]);
-      expect(index.hasTerm("denver")).toBe(false);
-      expect(index.hasTerm("airport")).toBe(true);
    });
 });
 
