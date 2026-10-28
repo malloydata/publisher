@@ -214,6 +214,8 @@ export interface LoadPackageJob {
     * `malloyConfig`'s identity.
     */
    connectionsEpoch?: number;
+   /** See {@link LoadPackageRequest.refreshSchemaAt}. */
+   refreshSchemaAt?: number;
 }
 
 /**
@@ -469,6 +471,7 @@ export class PackageLoadPool {
          connectionsEpoch:
             qj.request.connectionsEpoch ??
             connectionGeneration(qj.request.malloyConfig),
+         refreshSchemaAt: qj.request.refreshSchemaAt,
       };
       pw.worker.postMessage(message);
    }
@@ -906,21 +909,38 @@ export function connectionGeneration(conn: object): number {
    return generation;
 }
 
-/** Packages whose schemas were refreshed: the epoch they compile under, while `base` still holds. */
-const refreshedEpochs = new Map<string, { epoch: number; base?: number }>();
+/** Packages whose schemas were refreshed: the epoch they compile under while `base` holds, and the refresh not yet handed to a load. */
+const refreshedPackages = new Map<
+   string,
+   { epoch: number; base?: number; refreshAt?: number }
+>();
 
 /**
- * Give the package a fresh connections epoch, so its next load misses both
- * the worker schema cache and the compile cache. Kept across an unload, whose
- * reload would otherwise find the schemas the refresh retired.
+ * Give the package a fresh connections epoch, so its next load misses the
+ * compile cache, and arm one schema refresh for that load (see
+ * {@link takePackageSchemaRefresh}).
  */
 export function refreshPackageConnectionsEpoch(
    environmentName: string,
    packageName: string,
 ): void {
-   refreshedEpochs.set(`${environmentName}\0${packageName}`, {
+   refreshedPackages.set(`${environmentName}\0${packageName}`, {
       epoch: connectionGeneration({}),
+      refreshAt: Date.now(),
    });
+}
+
+/** The armed schema refresh, once: only the load that serves the package refetches from the warehouse. */
+export function takePackageSchemaRefresh(
+   environmentName: string,
+   packageName: string,
+): number | undefined {
+   const refreshed = refreshedPackages.get(
+      `${environmentName}\0${packageName}`,
+   );
+   const refreshAt = refreshed?.refreshAt;
+   if (refreshed) refreshed.refreshAt = undefined;
+   return refreshAt;
 }
 
 /** `base` (the environment config's generation), or the epoch a refresh gave the package while `base` is unchanged. */
@@ -930,12 +950,12 @@ export function packageConnectionsEpoch(
    base: number,
 ): number {
    const key = `${environmentName}\0${packageName}`;
-   const refreshed = refreshedEpochs.get(key);
+   const refreshed = refreshedPackages.get(key);
    if (refreshed === undefined) return base;
    refreshed.base ??= base;
    if (refreshed.base === base) return refreshed.epoch;
    // The connections changed since: the new base is already fresh.
-   refreshedEpochs.delete(key);
+   if (refreshed.refreshAt === undefined) refreshedPackages.delete(key);
    return base;
 }
 

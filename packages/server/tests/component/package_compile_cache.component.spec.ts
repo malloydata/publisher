@@ -268,8 +268,22 @@ describe("package compile cache", () => {
          const outcomes = recordLoads();
          const packages: Package[] = [];
          return {
+            warehouse,
             remote,
             moved,
+            /** The orders fields the latest load compiled. */
+            ordersFields: () =>
+               JSON.stringify(
+                  (
+                     outcomes[outcomes.length - 1].models.find(
+                        (m) => m.modelPath === "orders.malloy",
+                     )?.modelDef as {
+                        contents: {
+                           orders: { fields: Array<{ name: string }> };
+                        };
+                     }
+                  ).contents.orders.fields.map((f) => f.name),
+               ),
             patch: (uri: string) =>
                service.updateConnection("publisher-env", "warehouse", {
                   publisherConnection: {
@@ -320,31 +334,42 @@ describe("package compile cache", () => {
          }
       });
 
-      it("a schema refresh makes the next compile fetch warehouse schemas again", async () => {
+      it("a schema refresh reaches the warehouse, once, and picks up a new column", async () => {
          // Only the warehouse table: the sandbox duckdb is a new connection
          // on every load, so models over it always fetch.
          for (const model of ["base", "leaf", "other"]) {
             fs.rmSync(path.join(packagePath, `${model}.malloy`));
          }
          const env = await publisherEnvironment();
+         const fetched = spyOn(env.warehouse, "fetchTableSchema");
          const edit = (n: number) =>
             fs.writeFileSync(
                path.join(packagePath, "orders.malloy"),
                `source: orders is warehouse.table('compile_cache_orders')\n// ${n}\n`,
             );
          try {
-            expect((await env.load()).schemaFetchCount).toBe(1);
-            // A recompile with no refresh is answered by the schema cache.
+            edit(0);
+            await env.load();
+            expect(env.ordersFields()).toBe('["id"]');
+            expect(fetched).toHaveBeenCalledTimes(1);
+            await env.warehouse.runSQL(
+               "create or replace table compile_cache_orders as select 1 as id, 2 as added_col",
+            );
+            // Without a refresh the connection's cached schema answers.
             edit(1);
-            const edited = await env.load();
-            expect(edited.schemaFetchCount).toBe(0);
-            expect(edited.schemaCacheHits).toBe(1);
+            await env.load();
+            expect(env.ordersFields()).toBe('["id"]');
+            expect(fetched).toHaveBeenCalledTimes(1);
             edit(2);
             refreshPackageConnectionsEpoch("publisher-env", "pkg");
-            expect((await env.load()).schemaFetchCount).toBe(1);
-            // The refresh holds: later compiles reuse what it fetched.
+            await env.load();
+            expect(env.ordersFields()).toBe('["id","added_col"]');
+            expect(fetched).toHaveBeenCalledTimes(2);
+            // One-shot: later loads reuse what the refresh fetched.
             edit(3);
-            expect((await env.load()).schemaFetchCount).toBe(0);
+            await env.load();
+            expect(env.ordersFields()).toBe('["id","added_col"]');
+            expect(fetched).toHaveBeenCalledTimes(2);
          } finally {
             await env.cleanup();
          }
@@ -477,7 +502,7 @@ source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() 
             expect(result.unchanged).toBeUndefined();
             expect(outcomes).toHaveLength(1);
             expect(result.metadata.sourceContentSha).toBe(
-               await Package.currentContentSha(packagePath),
+               (await environment.getPackage("pkg")).getSourceContentSha(),
             );
             expect(await reload({ ifChanged: true })).toMatchObject({
                unchanged: true,
@@ -512,6 +537,97 @@ source: open_true is duckdb.sql("select 1 as x") extend { measure: c is count() 
                compileCacheHits: 2,
                totalMs: expect.any(Number),
             });
+         });
+
+         it("reloads for edits the receipt sha does not cover, and skips a rewrite with the same content", async () => {
+            const csv = path.join(packagePath, "rows.csv");
+            fs.writeFileSync(csv, "id\n1\n");
+            fs.writeFileSync(
+               path.join(packagePath, "rows.malloy"),
+               `source: rows is duckdb.table('${csv.replace(/\\/g, "/")}')\n`,
+            );
+            await reload({});
+            const outcomes = recordLoads();
+            const edits: Array<[string, () => void]> = [
+               [
+                  "publisher.json",
+                  () =>
+                     fs.writeFileSync(
+                        path.join(packagePath, "publisher.json"),
+                        JSON.stringify({ name: "pkg", description: "edited" }),
+                     ),
+               ],
+               [
+                  "a CSV column",
+                  () => fs.writeFileSync(csv, "id,added_column\n1,2\n"),
+               ],
+               [
+                  "a styles file",
+                  () =>
+                     fs.writeFileSync(
+                        path.join(packagePath, "base.styles.json"),
+                        JSON.stringify({ by_id: { renderer: "bar" } }),
+                     ),
+               ],
+            ];
+            let loads = 0;
+            for (const [, edit] of edits) {
+               edit();
+               expect(
+                  (await reload({ ifChanged: true })).unchanged,
+               ).toBeUndefined();
+               loads += 1;
+               expect(outcomes).toHaveLength(loads);
+               expect((await reload({ ifChanged: true })).unchanged).toBe(true);
+            }
+            fs.writeFileSync(path.join(packagePath, "other.malloy"), OTHER);
+            expect((await reload({ ifChanged: true })).unchanged).toBe(true);
+            expect(outcomes).toHaveLength(loads);
+         });
+
+         it("reloads, and fails, for a publisher.json rewritten to []", async () => {
+            fs.writeFileSync(path.join(packagePath, "publisher.json"), "[]");
+            await expect(reload({ ifChanged: true })).rejects.toThrow();
+         });
+
+         it("reloads after a failed reload whose edit was reverted, until a load succeeds", async () => {
+            fs.writeFileSync(
+               path.join(packagePath, "other.malloy"),
+               "source: broken is",
+            );
+            await expect(reload({})).rejects.toThrow();
+            fs.writeFileSync(path.join(packagePath, "other.malloy"), OTHER);
+            const outcomes = recordLoads();
+            expect(
+               (await reload({ ifChanged: true })).unchanged,
+            ).toBeUndefined();
+            expect(outcomes).toHaveLength(1);
+            expect(environment.getStaleCompileErrors().size).toBe(0);
+            expect((await reload({ ifChanged: true })).unchanged).toBe(true);
+         });
+
+         it("reloads next time when a write landed while the load was in flight", async () => {
+            const loadPackage = workers.pool.loadPackage.bind(workers.pool);
+            const spy = spyOn(workers.pool, "loadPackage").mockImplementation(
+               async (request) => {
+                  // After the fingerprint was taken, before the worker lists the tree.
+                  fs.writeFileSync(
+                     path.join(packagePath, "late.malloy"),
+                     `source: late is duckdb.sql("select 4 as id")\n`,
+                  );
+                  return loadPackage(request);
+               },
+            );
+            try {
+               await reload({});
+            } finally {
+               spy.mockRestore();
+            }
+            const outcomes = recordLoads();
+            expect(
+               (await reload({ ifChanged: true })).unchanged,
+            ).toBeUndefined();
+            expect(outcomes).toHaveLength(1);
          });
 
          it("reloads an unchanged tree when refreshSchema is set, from cold caches", async () => {

@@ -21,13 +21,13 @@ const reloadShape = {
       .boolean()
       .optional()
       .describe(
-         'Skip the reload when the package\'s files on disk hash to what is already served; answers status "unchanged" with the sha. Ignored for a package re-fetched from a location, whose source can change without the tree changing.',
+         'Skip the reload when nothing in the package directory changed since the last load, answering status "unchanged" with the sha. It compares the content of model, notebook, markdown (skills, retrieval prompts), styles and publisher.json files and the size and mtime of data files, so an added or removed file, a publisher.json edit or a CSV column edit counts as a change; sourceContentSha, the receipt, does not cover data, other publisher.json keys or retrieval settings. Not applied to a package re-fetched from a location, and a package whose last reload failed always reloads.',
       ),
    refreshSchema: z
       .boolean()
       .optional()
       .describe(
-         "Re-read warehouse table schemas instead of reusing the ones cached from earlier loads. Set it after a column was added or changed in the warehouse. Overrides ifChanged.",
+         "Re-read warehouse table schemas instead of reusing the ones cached from earlier loads, which a column changed in the warehouse is otherwise invisible to. Overrides ifChanged.",
       ),
 };
 
@@ -49,8 +49,8 @@ ${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster w
 
 ## Parameters
 - environmentName, packageName (required): use the names get_context returns.
-- ifChanged: skip the reload when the files on disk are already what is served; an added or removed file counts as a change. Not applied to a package re-fetched from a location.
-- refreshSchema: also re-read warehouse table schemas, which are otherwise cached across reloads; set it after a column changed in the warehouse. Overrides ifChanged.
+- ifChanged: skip the reload when nothing in the package directory changed since the last load.
+- refreshSchema: also re-read warehouse table schemas; set it after a column changed in the warehouse. Overrides ifChanged.
 
 ## Behavior
 Recompiles the package from its on-disk content under publisher_data/. A package the server installed from a location is re-fetched from it instead, which overwrites on-disk edits.

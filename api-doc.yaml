@@ -4051,7 +4051,10 @@ components:
           description: Time spent waiting on warehouse table-schema fetches.
         schemaFetchCount:
           type: integer
-          description: Schema fetches the load sent to the warehouse.
+          description: >-
+            Schema requests the worker sent to the main thread, which answers
+            from its connection's own schema cache unless a schema refresh was
+            requested.
         schemaCacheHits:
           type: integer
           description: Schema requests answered from the worker's schema cache.
@@ -4063,7 +4066,10 @@ components:
             on, were unchanged.
         totalMs:
           type: number
-          description: Wall-clock time of the whole load.
+          description: >-
+            Wall-clock time of the whole reload request, including the wait
+            for the package lock, a re-download of a package installed from a
+            location, and binding the build manifest.
     Package:
       type: object
       description: Represents a Malloy package containing models, notebooks, and

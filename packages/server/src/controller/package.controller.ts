@@ -18,7 +18,8 @@ import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { refreshPackageConnectionsEpoch } from "../package_load/package_load_pool";
 import { EnvironmentStore } from "../service/environment_store";
-import { Package } from "../service/package";
+import { treeFingerprint } from "../package_load/package_files";
+import type { Package } from "../service/package";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageLoadTimings = components["schemas"]["PackageLoadTimings"];
@@ -33,6 +34,11 @@ export interface PackageReloadResult {
    unchanged?: true;
    timings?: ApiPackageLoadTimings;
 }
+
+/** The load's timings with a `totalMs` placeholder, which {@link PackageController.reloadPackage} fills in. */
+const withTotal = (
+   timings: Omit<ApiPackageLoadTimings, "totalMs"> | undefined,
+): ApiPackageLoadTimings | undefined => timings && { ...timings, totalMs: 0 };
 
 export interface PackageReloadOptions {
    /** Skip the reload when the tree on disk hashes to what is served. */
@@ -160,12 +166,18 @@ export class PackageController {
       trigger: ReloadTrigger = "rest",
       options: PackageReloadOptions = {},
    ): Promise<PackageReloadResult> {
+      const startedAt = performance.now();
       try {
          const reloaded = await this.reloadPackageFrom(
             environmentName,
             packageName,
             options,
          );
+         // The whole request, so the lock wait, a reinstall's download and the
+         // manifest bind are in it, not only the worker load.
+         if (reloaded.timings) {
+            reloaded.timings.totalMs = performance.now() - startedAt;
+         }
          // An unchanged answer loaded nothing, so it is not a reload.
          if (!reloaded.unchanged) recordPackageReload(trigger, "success");
          return reloaded;
@@ -197,12 +209,17 @@ export class PackageController {
          // Not previously loaded, so there is nothing to reinstall from.
       }
       const location = resident?.location;
-      // A refresh asks for a warehouse-side change the tree cannot show.
-      if (cached && options.ifChanged && !options.refreshSchema && !location) {
-         const current = await Package.currentContentSha(
-            cached.getPackagePath(),
-         );
-         if (current === cached.getSourceContentSha()) {
+      // A refresh asks for a warehouse-side change the tree cannot show, and a
+      // failed reload left a stale model that matching files would hide.
+      if (
+         cached &&
+         options.ifChanged &&
+         !options.refreshSchema &&
+         !location &&
+         !environment.getStaleCompileErrors().has(packageName)
+      ) {
+         const current = await treeFingerprint(cached.getPackagePath());
+         if (current === cached.getServedFingerprint()) {
             return {
                metadata: cached.getPackageMetadata(),
                mode: "in-place",
@@ -240,14 +257,14 @@ export class PackageController {
          return {
             metadata: reinstalled.getPackageMetadata(),
             mode: "reinstalled",
-            timings: reinstalled.getLoadTimings(),
+            timings: withTotal(reinstalled.getLoadTimings()),
          };
       }
       const _package = await environment.getPackage(packageName, true);
       return {
          metadata: _package.getPackageMetadata(),
          mode: "in-place",
-         timings: _package.getLoadTimings(),
+         timings: withTotal(_package.getLoadTimings()),
       };
    }
 

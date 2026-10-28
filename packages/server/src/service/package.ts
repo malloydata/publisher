@@ -26,6 +26,7 @@ import {
    getPackageLoadPool,
    type LoadPackageOutcome,
    packageConnectionsEpoch,
+   takePackageSchemaRefresh,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
 import {
@@ -72,10 +73,7 @@ import {
    recordPackageLoadPhases,
    type PackageLoadStatus,
 } from "../package_load_metrics";
-import {
-   filterModelPaths,
-   listPackageFiles,
-} from "../package_load/package_files";
+import { treeFingerprint } from "../package_load/package_files";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import {
@@ -86,8 +84,7 @@ import {
    type PackageAgent,
 } from "../mcp/skills/package_skills";
 import {
-   agentsDeclaration,
-   boundedManifestValue,
+   canonicalJson,
    computeSourceContentSha,
    mintServedRevision,
 } from "./package_revision";
@@ -238,7 +235,10 @@ interface ReportDiscovery {
 }
 
 export type ApiPackage = components["schemas"]["Package"];
-type ApiPackageLoadTimings = components["schemas"]["PackageLoadTimings"];
+type ApiPackageLoadTimings = Omit<
+   components["schemas"]["PackageLoadTimings"],
+   "totalMs"
+>;
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -385,6 +385,8 @@ export class Package {
    private rawAgents: unknown;
    /** What the load that built this package measured; set once, by {@link loadViaWorker}. */
    private loadTimings: ApiPackageLoadTimings | undefined;
+   /** {@link treeFingerprint} of the tree as it was before the load that is served dispatched, so a write that lands mid-load reads as a change. */
+   private servedFingerprint: string | undefined;
    private packageAgents = new Map<string, PackageAgent>();
    private packageAgentWarnings: string[] = [];
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
@@ -436,6 +438,11 @@ export class Package {
    /** The timings of the load that built this package, absent for one not built by a worker load. */
    public getLoadTimings(): ApiPackageLoadTimings | undefined {
       return this.loadTimings;
+   }
+
+   /** What `reload_package`'s ifChanged compares the tree on disk against. */
+   public getServedFingerprint(): string | undefined {
+      return this.servedFingerprint;
    }
 
    /** The agent skills this package ships, in on-disk order. */
@@ -516,6 +523,16 @@ export class Package {
       const agents = readPackageAgents(this.packagePath, this.rawAgents);
       this.packageAgents = agents.agents;
       this.packageAgentWarnings = agents.warnings;
+      let declaration: string | undefined;
+      try {
+         declaration =
+            this.rawAgents === undefined
+               ? undefined
+               : canonicalJson(this.rawAgents);
+      } catch {
+         // Reload must not stop between the model swap and the serve bindings.
+         declaration = "[unhashable]";
+      }
       this.sourceContentSha = computeSourceContentSha(
          this.packagePath,
          [
@@ -524,43 +541,7 @@ export class Package {
             ...agents.paths,
          ],
          // The declaration is hashed whole, so an edit to a dropped agent moves it too.
-         agentsDeclaration(this.rawAgents),
-      );
-   }
-
-   /**
-    * The sha {@link refreshServingIdentity} would compute if the package were
-    * loaded from the tree now. Unlike the served sha, it enumerates the
-    * tree's current files, so an added or removed model, skill or agent file
-    * moves it. Undefined when publisher.json cannot be read or parsed: the
-    * caller should then load, which reports why.
-    */
-   public static async currentContentSha(
-      packagePath: string,
-   ): Promise<string | undefined> {
-      let rawAgents: unknown;
-      try {
-         const manifest = JSON.parse(
-            await fs.readFile(
-               path.join(packagePath, PACKAGE_MANIFEST_NAME),
-               "utf8",
-            ),
-         ) as { agents?: unknown } | null;
-         rawAgents = boundedManifestValue(manifest?.agents);
-      } catch {
-         return undefined;
-      }
-      const modelPaths = filterModelPaths(await listPackageFiles(packagePath));
-      return computeSourceContentSha(
-         packagePath,
-         [
-            ...modelPaths,
-            ...readSkillsDir(packagePath, PACKAGE_SKILLS_DIR).files.map(
-               (f) => f.path,
-            ),
-            ...readPackageAgents(packagePath, rawAgents).paths,
-         ],
-         agentsDeclaration(rawAgents),
+         declaration,
       );
    }
 
@@ -1137,6 +1118,7 @@ export class Package {
       manifestValidationTime: number,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
+      const fingerprint = await treeFingerprint(packagePath);
       const dispatchTime = performance.now();
       const epoch = connectionsEpoch();
       // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
@@ -1150,6 +1132,10 @@ export class Package {
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
             connectionsEpoch: epoch,
+            refreshSchemaAt: takePackageSchemaRefresh(
+               environmentName,
+               packageName,
+            ),
          }),
       );
       const [outcome, databases] = await Promise.all([
@@ -1275,8 +1261,8 @@ export class Package {
          schemaFetchCount: outcome.timings.schemaFetchCount,
          schemaCacheHits: outcome.timings.schemaCacheHits ?? 0,
          compileCacheHits: outcome.timings.compileCacheHits ?? 0,
-         totalMs: performance.now() - startTime,
       };
+      pkg.servedFingerprint = fingerprint;
       return pkg;
    }
 
@@ -2375,6 +2361,7 @@ export class Package {
     * `ServiceUnavailableError` for the caller to retry.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+      const fingerprint = await treeFingerprint(this.packagePath);
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
       const buildManifest = toTableNameManifest(entries);
@@ -2422,6 +2409,7 @@ export class Package {
       this.rawAgents = outcome.packageMetadata.agents;
       // Move the identity as soon as the new models are installed.
       this.refreshServingIdentity();
+      this.servedFingerprint = fingerprint;
       // Pick up publisher.json edits to the surface and boundary mode.
       const previousSurface = this.packageMetadata.explores;
       this.packageMetadata.explores = outcome.packageMetadata.explores;

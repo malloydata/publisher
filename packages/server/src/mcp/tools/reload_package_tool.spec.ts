@@ -6,7 +6,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { registerReloadPackageTool } from "./reload_package_tool";
-import { Package } from "../../service/package";
+import { treeFingerprint } from "../../package_load/package_files";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    EnvironmentNotFoundError,
@@ -309,26 +309,29 @@ describe("reload_package tool", () => {
             handler: Handler,
             calls: boolean[],
          ) => Promise<void>,
+         staleCompileErrors = new Map<string, unknown>(),
       ) {
          const tree = fs.mkdtempSync(path.join(os.tmpdir(), "reload-tool-"));
          try {
             fs.writeFileSync(path.join(tree, "publisher.json"), "{}");
             fs.writeFileSync(path.join(tree, "a.malloy"), "source: a is x\n");
-            const served = await Package.currentContentSha(tree);
+            fs.writeFileSync(path.join(tree, "rows.csv"), "id\n1\n");
+            const served = await treeFingerprint(tree);
             const calls: boolean[] = [];
             const resident = {
                getPackagePath: () => tree,
-               getSourceContentSha: () => served,
+               getServedFingerprint: () => served,
                getLoadTimings: () => timings,
                getPackageMetadata: () => ({
                   name: "ecommerce",
-                  sourceContentSha: served,
+                  sourceContentSha: "a".repeat(64),
                   servedRevision: "rev-1",
                }),
             };
             const handler = captureHandler({
                getEnvironment: async () =>
                   ({
+                     getStaleCompileErrors: () => staleCompileErrors,
                      getPackage: async (_pkg: string, reload: boolean) => {
                         calls.push(reload);
                         return resident as never;
@@ -367,6 +370,29 @@ describe("reload_package tool", () => {
                fs.writeFileSync(path.join(t, "a.malloy"), "source: a is y\n"),
          ],
          [
+            "publisher.json was edited",
+            (t: string) =>
+               fs.writeFileSync(
+                  path.join(t, "publisher.json"),
+                  '{"description":"d"}',
+               ),
+         ],
+         [
+            "publisher.json was rewritten to []",
+            (t: string) =>
+               fs.writeFileSync(path.join(t, "publisher.json"), "[]"),
+         ],
+         [
+            "a data file gained a column",
+            (t: string) =>
+               fs.writeFileSync(path.join(t, "rows.csv"), "id,extra\n1,2\n"),
+         ],
+         [
+            "a styles file was edited",
+            (t: string) =>
+               fs.writeFileSync(path.join(t, "a.styles.json"), '{"v":{}}'),
+         ],
+         [
             "a skill file was added",
             (t: string) => {
                fs.mkdirSync(path.join(t, "skills", "s"), { recursive: true });
@@ -381,16 +407,44 @@ describe("reload_package tool", () => {
             change(tree);
             const parsed = parse(await handler({ ...args, ifChanged: true }));
             expect(parsed.status).toBe("reloaded");
-            expect(parsed.timings).toEqual(timings);
+            expect(parsed.timings).toEqual({
+               ...timings,
+               totalMs: expect.any(Number),
+            });
             expect(calls).toContain(true);
          });
+      });
+
+      it("answers unchanged for a model file rewritten with the same content", async () => {
+         await withTree(async (tree, handler, calls) => {
+            fs.writeFileSync(path.join(tree, "a.malloy"), "source: a is x\n");
+            const parsed = parse(await handler({ ...args, ifChanged: true }));
+            expect(parsed.status).toBe("unchanged");
+            expect(calls).not.toContain(true);
+         });
+      });
+
+      it("reloads a package whose last reload failed, though its files match what was served", async () => {
+         await withTree(
+            async (_tree, handler, calls) => {
+               const parsed = parse(
+                  await handler({ ...args, ifChanged: true }),
+               );
+               expect(parsed.status).toBe("reloaded");
+               expect(calls).toContain(true);
+            },
+            new Map([["ecommerce", { message: "boom" }]]),
+         );
       });
 
       it("reloads without ifChanged even when nothing changed", async () => {
          await withTree(async (_tree, handler, calls) => {
             const parsed = parse(await handler(args));
             expect(parsed.status).toBe("reloaded");
-            expect(parsed.timings).toEqual(timings);
+            expect(parsed.timings).toEqual({
+               ...timings,
+               totalMs: expect.any(Number),
+            });
             expect(calls).toContain(true);
          });
       });
@@ -424,7 +478,10 @@ describe("reload_package tool", () => {
          );
          expect(parsed.status).toBe("reloaded");
          expect(parsed.mode).toBe("reinstalled");
-         expect(parsed.timings).toEqual(timings);
+         expect(parsed.timings).toEqual({
+            ...timings,
+            totalMs: expect.any(Number),
+         });
          expect(installCalls).toEqual(["ecommerce"]);
       });
    });

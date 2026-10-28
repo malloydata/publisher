@@ -38,6 +38,9 @@ import {
    getPackageLoadSchemaCacheBytes,
    getPackageLoadWorkerCount,
    handleWorkerLog,
+   packageConnectionsEpoch,
+   refreshPackageConnectionsEpoch,
+   takePackageSchemaRefresh,
 } from "./package_load_pool";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
 
@@ -959,5 +962,28 @@ describe("PackageLoadPool (token-only connection update)", () => {
          moved.stop();
          await warehouse.close();
       }
+   });
+});
+
+describe("a package's schema refresh", () => {
+   it("keeps its epoch while the connections hold, and yields to a changed base", () => {
+      expect(packageConnectionsEpoch("env-a", "pkg", 7)).toBe(7);
+      refreshPackageConnectionsEpoch("env-a", "pkg");
+      const refreshed = packageConnectionsEpoch("env-a", "pkg", 7);
+      expect(refreshed).not.toBe(7);
+      expect(packageConnectionsEpoch("env-a", "pkg", 7)).toBe(refreshed);
+      // Another package of the environment is not refreshed.
+      expect(packageConnectionsEpoch("env-a", "other", 7)).toBe(7);
+      takePackageSchemaRefresh("env-a", "pkg");
+      // The connections changed: the new base is already fresh, and the entry is gone.
+      expect(packageConnectionsEpoch("env-a", "pkg", 8)).toBe(8);
+      expect(packageConnectionsEpoch("env-a", "pkg", 7)).toBe(7);
+   });
+
+   it("hands the refresh to one load only", () => {
+      expect(takePackageSchemaRefresh("env-b", "pkg")).toBeUndefined();
+      refreshPackageConnectionsEpoch("env-b", "pkg");
+      expect(takePackageSchemaRefresh("env-b", "pkg")).toBeGreaterThan(0);
+      expect(takePackageSchemaRefresh("env-b", "pkg")).toBeUndefined();
    });
 });

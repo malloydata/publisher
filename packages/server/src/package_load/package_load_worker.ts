@@ -51,11 +51,7 @@ import {
    normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
-import {
-   isReportEligiblePath,
-   isUnderPublicDir,
-   readReportTagOfText,
-} from "../service/report";
+import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import {
    type GateFindingCounts,
    recordAuthorizeAdmitAllGate,
@@ -130,7 +126,11 @@ import {
 } from "../service/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { PackageCompileCache } from "./compile_cache";
-import { filterModelPaths, listPackageFiles } from "./package_files";
+import {
+   dataFilesDigest,
+   filterModelPaths,
+   listPackageFiles,
+} from "./package_files";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import {
@@ -308,32 +308,40 @@ class ProxyConnection {
    private readonly jobId: string;
    /** Prefix of this connection's schema-cache keys. */
    private readonly cacheScope: string;
+   /** Set on a schema refresh: every fetch of the job goes to the warehouse once, and overwrites the cached entry. */
+   private readonly refreshSchemaAt: number | undefined;
 
    constructor(
       metadata: ConnectionMetadata,
       jobId: string,
       environmentScope: string,
-      connectionsEpoch: number,
+      refreshSchemaAt: number | undefined,
    ) {
+      this.refreshSchemaAt = refreshSchemaAt;
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
       this.digest = metadata.digest;
       this.jobId = jobId;
       // The environment is in the key because a digest can be a configured
       // fingerprint, and two environments must never share what one can see.
-      // The generation retires entries when the connection is replaced; the
-      // epoch also moves on a package's schema refresh.
+      // The generation retires entries when the connection is replaced.
       this.cacheScope = [
          environmentScope,
          this.name,
          this.digest,
          metadata.generation,
-         connectionsEpoch,
       ].join("\0");
    }
 
    getDigest(): string {
       return this.digest;
+   }
+
+   private withRefresh(options: FetchSchemaOptions): FetchSchemaOptions {
+      return options.refreshTimestamp === undefined &&
+         this.refreshSchemaAt !== undefined
+         ? { ...options, refreshTimestamp: this.refreshSchemaAt }
+         : options;
    }
 
    async fetchSchemaForTables(
@@ -343,6 +351,7 @@ class ProxyConnection {
       schemas: Record<string, TableSourceDef>;
       errors: Record<string, string>;
    }> {
+      options = this.withRefresh(options);
       // A refresh is the main thread's to decide, since only its cache knows
       // when each schema was fetched. Its answer replaces the entries.
       if (options.refreshTimestamp !== undefined) {
@@ -451,6 +460,7 @@ class ProxyConnection {
       | { structDef: SQLSourceDef; error?: undefined }
       | { error: string; structDef?: undefined }
    > {
+      options = this.withRefresh(options);
       const cacheKey = `${this.cacheScope}\0sql\0${sentence.connection}\0${sentence.selectStr}`;
       // See fetchSchemaForTables: a refresh is the main thread's to decide.
       if (options.refreshTimestamp !== undefined) {
@@ -639,7 +649,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                      response.metadata,
                      job.requestId,
                      job.environmentName,
-                     job.connectionsEpoch,
+                     job.refreshSchemaAt,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -829,36 +839,6 @@ async function readPackageMetadata(
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
       agents: boundedManifestValue(parsed.agents),
    };
-}
-
-/**
- * Path, size and mtime of every file a model can read data from, since a
- * cached ModelDef holds those files' schemas. Skipped: model and markdown
- * sources, `*.styles.json` (re-read on every load), and `public/`, a data
- * app's static assets, which a model does not read data from.
- */
-async function dataFilesDigest(
-   packagePath: string,
-   allRelative: string[],
-): Promise<string> {
-   const dataFiles = allRelative.filter(
-      (p) =>
-         !p.endsWith(MODEL_FILE_SUFFIX) &&
-         !p.endsWith(NOTEBOOK_FILE_SUFFIX) &&
-         !p.toLowerCase().endsWith(".md") &&
-         !p.endsWith(".styles.json") &&
-         !isUnderPublicDir(p),
-   );
-   const stats = await Promise.all(
-      dataFiles.map((p) =>
-         fs.promises.stat(path.join(packagePath, p)).catch(() => undefined),
-      ),
-   );
-   const hash = crypto.createHash("sha1");
-   dataFiles.forEach((p, i) =>
-      hash.update(`${p}\0${stats[i]?.size}\0${stats[i]?.mtimeMs}\n`),
-   );
-   return hash.digest("hex");
 }
 
 // `explores` is not validated here: the policy differs by context (reject at
