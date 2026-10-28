@@ -165,6 +165,7 @@ export default function Materializations({
                packageName,
                materialization.id as string,
                dropTables,
+               versionId,
             ),
       ),
       onSuccess() {

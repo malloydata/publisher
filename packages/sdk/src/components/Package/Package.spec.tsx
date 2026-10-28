@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The reports listing follows the package's other listings; the data apps
- * do not.
+ * The reports listing and the data apps listing follow the package's other
+ * listings: each names the version on screen, and is keyed on it.
  *
- * Two exceptions that look alike and are not: `/data-apps` serves static files
- * and declares no `versionId` in the spec, while `list-reports` declares one.
- * Pinned as a pair, because the cost of confusing them is a listing that
- * answers for the wrong version.
+ * Pinned as a pair, because the data apps were once left unversioned (their
+ * route declared no `versionId`), and the cost of that is a version's page
+ * listing, and linking to, `latest`'s apps.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -24,8 +23,9 @@ const listReports = mock(
    (_environmentName: string, _packageName: string, _versionId?: string) =>
       pending(),
 );
-const listDataApps = mock((_environmentName: string, _packageName: string) =>
-   pending(),
+const listDataApps = mock(
+   (_environmentName: string, _packageName: string, _versionId?: string) =>
+      pending(),
 );
 
 mockServerProvider({
@@ -72,12 +72,22 @@ it("keys an unversioned listing beside the package's other listings", async () =
    );
 });
 
-it("still leaves the data apps unversioned", async () => {
+it("lists a version's data apps, and keys the listing on it", async () => {
    render(packageAt("v2"), { wrapper: serverWrapper });
 
    await waitFor(() => expect(listDataApps).toHaveBeenCalled());
-   expect(listDataApps.mock.calls[0]).toEqual(["env", "pkg"]);
-   expect(cacheKeys("data-apps")[0]).not.toContain('"v2"');
+   expect(listDataApps.mock.calls[0]).toEqual(["env", "pkg", "v2"]);
+   expect(cacheKeys("data-apps")[0]).toContain('"v2"');
+});
+
+it("keys an unversioned data apps listing as DataAppViewer does", async () => {
+   render(packageAt(), { wrapper: serverWrapper });
+
+   await waitFor(() => expect(listDataApps).toHaveBeenCalled());
+   expect(listDataApps.mock.calls[0]).toEqual(["env", "pkg", undefined]);
+   expect(cacheKeys("data-apps")[0]).toBe(
+      '["data-apps","env","pkg",null,"http://localhost/api/v0"]',
+   );
 });
 
 it("says so when the reports listing fails, rather than showing none", async () => {

@@ -41,10 +41,16 @@ function writeVersion(version: string, files: Record<string, string>): string {
          2,
       ),
    );
-   for (const [name, text] of Object.entries(files))
+   for (const [name, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
       fs.writeFileSync(path.join(dir, name), text);
+   }
    return dir;
 }
+
+/** A data app whose title names the version it shipped in. */
+const dataApp = (version: string) =>
+   `<!doctype html><title>Sales app ${version}</title><p>${version}</p>\n`;
 
 async function api(
    baseURL: string,
@@ -111,8 +117,18 @@ test.describe("package versions — the version switch", () => {
       });
       expect(created.ok, await created.text()).toBe(true);
       for (const [version, files] of [
-         ["1.0.0", { "orders.malloy": ORDERS }],
-         ["1.1.0", { "orders.malloy": ORDERS, "customers.malloy": CUSTOMERS }],
+         [
+            "1.0.0",
+            { "orders.malloy": ORDERS, "public/index.html": dataApp("1.0.0") },
+         ],
+         [
+            "1.1.0",
+            {
+               "orders.malloy": ORDERS,
+               "customers.malloy": CUSTOMERS,
+               "public/index.html": dataApp("1.1.0"),
+            },
+         ],
       ] as const) {
          const published = await api(
             baseURL,
@@ -186,6 +202,7 @@ test.describe("package versions — the version switch", () => {
       const listed = Promise.all([
          pinned("models"),
          pinned("materializations"),
+         pinned("data-apps"),
       ]);
       await versionRow(page, "1.0.0").click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/1\\.0\\.0$`));
@@ -195,6 +212,9 @@ test.describe("package versions — the version switch", () => {
       // 1.0.0 predates the customers model.
       await expect(page.getByText("orders.malloy")).toBeVisible();
       await expect(page.getByText("customers.malloy")).toHaveCount(0);
+      // Its data app is its own, not latest's.
+      await expect(page.getByText("Sales app 1.0.0")).toBeVisible();
+      await expect(page.getByText("Sales app 1.1.0")).toHaveCount(0);
       await shot(page, "03-pinned-1.0.0");
 
       // A model opened from a pinned version stays on that version, and the

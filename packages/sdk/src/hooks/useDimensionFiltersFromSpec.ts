@@ -93,6 +93,7 @@ export function useDimensionFiltersFromSpec(
          filterSelections: activeFilters,
          limit: queryLimit,
          fields: config.selectFields,
+         versionId: config.versionId,
       });
 
    return {

@@ -98,6 +98,7 @@ function ModelPage() {
                environmentName: params.environmentName,
                packageName: params.packageName,
                path: modelPath,
+               ...(versionId !== undefined ? { versionId } : {}),
             })}
          />
       );
@@ -159,6 +160,7 @@ function ModelPage() {
             environmentName: params.environmentName,
             packageName: params.packageName,
             path: modelPath ?? "",
+            ...(versionId !== undefined ? { versionId } : {}),
          })}
       />
    );

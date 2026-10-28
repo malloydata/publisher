@@ -67,17 +67,17 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
 
    // A pinned version rides on the page's own URL, which the page's runtime
    // reads to pin its queries; absent, the server serves `latest`.
-   const standaloneUrl = useMemo(() => {
-      const url = packageFileUrl({
-         server,
-         environmentName,
-         packageName,
-         path: dataAppPath,
-      });
-      return versionId === undefined
-         ? url
-         : `${url}${url.includes("?") ? "&" : "?"}versionId=${encodeURIComponent(versionId)}`;
-   }, [server, environmentName, packageName, dataAppPath, versionId]);
+   const standaloneUrl = useMemo(
+      () =>
+         packageFileUrl({
+            server,
+            environmentName,
+            packageName,
+            path: dataAppPath,
+            ...(versionId !== undefined ? { versionId } : {}),
+         }),
+      [server, environmentName, packageName, dataAppPath, versionId],
+   );
 
    // Use the /data-apps endpoint to grab the <title> for the header. Any error
    // here (older Publisher without /data-apps, transient network blip, 5xx) is
