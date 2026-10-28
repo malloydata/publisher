@@ -8,7 +8,10 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { API, SingleConnectionRuntime } from "@malloydata/malloy";
 import { parseAnnotation } from "@malloydata/malloy-tag";
 import { afterAll, describe, expect, it } from "bun:test";
-import { correctDrillMetadata } from "./drill_metadata";
+import {
+   DRILL_METADATA_CORRECTED,
+   wrapWithCorrectDrillMetadata,
+} from "./drill_metadata";
 
 const MODEL = `
 source: users is duckdb.sql("""
@@ -34,11 +37,15 @@ const model = new SingleConnectionRuntime({ connection } as never).loadModel(
 );
 afterAll(() => connection.close());
 
-/** The `#(malloy)` tag of the root and of each top-level field, corrected. */
-async function tags(query: string) {
+/**
+ * The `#(malloy)` tag of the root and of each top-level field, as the server
+ * sends them, or as Malloy writes them with `asMalloyWrites`.
+ */
+async function tags(query: string, asMalloyWrites = false) {
    const result = await model.loadQuery(query).run();
-   correctDrillMetadata(result);
-   const wrapped = API.util.wrapResult(result);
+   const wrapped = asMalloyWrites
+      ? API.util.wrapResult(result)
+      : wrapWithCorrectDrillMetadata(result);
    const read = (annotations?: { value: string }[]) =>
       parseAnnotation(
          (annotations ?? [])
@@ -46,6 +53,7 @@ async function tags(query: string) {
             .filter((v) => v.startsWith("#(malloy) ")),
       ).tag;
    return {
+      schema: wrapped.schema,
       root: read(wrapped.annotations),
       field: (name: string) =>
          read(wrapped.schema.fields.find((f) => f.name === name)?.annotations),
@@ -81,6 +89,11 @@ describe("correctDrillMetadata", () => {
       );
       // Still a dimension to the renderer: only the code is withheld.
       expect(field("created_at").has("calculation")).toBe(false);
+      expect(
+         (await tags("run: orders -> by_month")).schema.fields.find(
+            (f) => f.name === "created_at",
+         )?.kind,
+      ).toBe("dimension");
    });
 
    it("leaves the root of a pipeline of more than one stage undrillable", async () => {
@@ -90,5 +103,50 @@ describe("correctDrillMetadata", () => {
       expect(
          (await tags("run: orders -> by_month")).root.has("drillable"),
       ).toBe(true);
+   });
+});
+
+describe("the stamp a client requires before it offers rows", () => {
+   it("is on every result the server sends, and only on those", async () => {
+      expect(
+         (await tags("run: orders -> by_month")).root.has(
+            DRILL_METADATA_CORRECTED,
+         ),
+      ).toBe(true);
+      expect(
+         (await tags("run: orders -> staged")).root.has(
+            DRILL_METADATA_CORRECTED,
+         ),
+      ).toBe(true);
+      expect(
+         (await tags("run: orders -> by_month", true)).root.has(
+            DRILL_METADATA_CORRECTED,
+         ),
+      ).toBe(false);
+   });
+});
+
+// Each rule in drill_metadata.ts exists because Malloy writes this metadata
+// wrong. These pin that it still does. When one fails after a Malloy bump,
+// Malloy is fixed: delete the rule it names, and this test with it.
+describe("Malloy still writes the metadata the rules correct", () => {
+   it("marks the root of a multi-stage pipeline drillable (rule 1)", async () => {
+      expect(
+         (await tags("run: orders -> staged", true)).root.has("drillable"),
+      ).toBe(true);
+   });
+
+   it("writes a joined computed dimension's declaration text as its code (rule 2)", async () => {
+      const { field } = await tags("run: orders -> by_user", true);
+      expect(field("signup_year").text("drill_expression", "code")).toBe(
+         "created_at.year",
+      );
+   });
+
+   it("writes the bare field as an unnamed truncation's code (rule 3)", async () => {
+      const { field } = await tags("run: orders -> by_month", true);
+      expect(field("created_at").text("drill_expression", "code")).toBe(
+         "created_at",
+      );
    });
 });

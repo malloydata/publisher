@@ -762,7 +762,10 @@ query has one `timezone:`.
 Malloy's result metadata is wrong in three of those places as of Malloy 0.0.436: a pipeline's root reads
 as drillable, a dimension declared in a joined source carries code that reads the root source's fields, and
 an unnamed truncation in a view loses its truncation. Publisher's server corrects all three before it sends
-a result, so a client reading the metadata gets the right rows or none.
+a result, so a client reading the metadata gets the right rows or none. It then adds a
+`#(malloy) drill_metadata_corrected` tag to the result's root, and the SDK offers rows only on a result
+that carries it. Against a Publisher older than the correction, the SDK offers no rows rather than wrong
+ones.
 
 **Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
 `limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,

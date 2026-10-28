@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Result } from "@malloydata/malloy";
+import type * as Malloy from "@malloydata/malloy-interfaces";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createElement, Fragment } from "react";
 import { afterAll, describe, expect, it, setDefaultTimeout } from "bun:test";
@@ -21,7 +23,7 @@ import {
    rowsTitleParts,
 } from "./RowsDialog";
 import { withPreamble } from "./textSource";
-import { correctDrillMetadata } from "../../../../server/src/service/drill_metadata";
+import { wrapWithCorrectDrillMetadata } from "../../../../server/src/service/drill_metadata";
 
 /**
  * "Show the rows" end to end, with nothing standing in for Malloy: a tile's
@@ -174,12 +176,12 @@ function mountDrill(options: UseDrillOptions): {
    return ref;
 }
 
-/** A query's result as Publisher's server sends it: its drill metadata corrected. */
 async function run(query: string) {
-   const result = await model.loadQuery(query).run();
-   correctDrillMetadata(result);
-   return result;
+   return model.loadQuery(query).run();
 }
+
+/** A result as Publisher's server sends it: drill metadata corrected and stamped. */
+const served = wrapWithCorrectDrillMetadata;
 
 /**
  * Every body cell of `tile` clicked, through the same relay and the same
@@ -187,7 +189,11 @@ async function run(query: string) {
  * after `preamble` as a text-source report runs it. Also returns the fields
  * the binding marks clickable, which is what the affordance paints.
  */
-async function clickEveryCell(tile: string, preamble = "") {
+async function clickEveryCell(
+   tile: string,
+   preamble = "",
+   wrap: (result: Result) => Malloy.Result = served,
+) {
    const result = await run(withPreamble(preamble, `run: ${tile}`));
    const requests: DrillRowsRequest[] = [];
    // Mounted with its menu: every click opens it, and the rows are what the
@@ -201,7 +207,7 @@ async function clickEveryCell(tile: string, preamble = "") {
       // happy-dom has no layout, so a virtualized table renders no body rows.
       tableConfig: { enableDrill: true, disableVirtualization: true },
    }).createViz();
-   viz.setResult(API.util.wrapResult(result));
+   viz.setResult(wrap(result));
    // As `RenderedResult` does for a surface with drill wired.
    reportRowsWithoutFilters(viz.getMetadata()?.getRootField() as never);
    const element = document.createElement("div");
@@ -554,6 +560,19 @@ describe("which tile shapes open the rows behind a value", () => {
       expect(marked).toEqual(["sale_date"]);
    });
 
+   it("marks nothing for a result from a server that did not correct its metadata", async () => {
+      // An older Publisher sends Malloy's metadata as written, with no stamp.
+      const { marked } = await clickEveryCell(
+         "sales_tiles -> by_region",
+         "",
+         API.util.wrapResult,
+      );
+      expect(marked).toEqual([]);
+      expect((await clickEveryCell("sales_tiles -> by_region")).marked).toEqual(
+         ["region"],
+      );
+   });
+
    it("marks nothing for rows when the host turns rows off for the tile", async () => {
       const result = await run("run: sales_tiles -> by_region");
       const requests: DrillRowsRequest[] = [];
@@ -563,7 +582,7 @@ describe("which tile shapes open the rows behind a value", () => {
          false,
       );
       const viz = new MalloyRenderer({}).createViz();
-      viz.setResult(API.util.wrapResult(result));
+      viz.setResult(served(result));
       const element = document.createElement("div");
       document.body.appendChild(element);
       viz.render(element);

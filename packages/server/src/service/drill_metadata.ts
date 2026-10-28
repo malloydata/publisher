@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { Result } from "@malloydata/malloy";
+import { API, type Result } from "@malloydata/malloy";
+import type * as Malloy from "@malloydata/malloy-interfaces";
 
 /**
  * Correct the drill metadata Malloy writes into a result, where as written
@@ -27,7 +28,9 @@ import type { Result } from "@malloydata/malloy";
  *   field and truncation it was, that is written; otherwise the dimension
  *   gets no code, so a client offers no rows for it rather than wrong ones.
  *
- * Remove each rule once a Malloy release writes the metadata this way.
+ * Remove each rule once a Malloy release writes the metadata this way. Each
+ * rule has a spec in drill_metadata.spec.ts that runs Malloy without it and
+ * fails once Malloy is fixed.
  */
 export function correctDrillMetadata(result: Result): void {
    const structs = result._queryResult?.structs as unknown as
@@ -38,6 +41,29 @@ export function correctDrillMetadata(result: Result): void {
    if (root.resultMetadata?.sourceField === LAST_STAGE)
       root.resultMetadata.drillable = false;
    correctFields(root.fields ?? []);
+}
+
+/**
+ * The root tag that says a result's drill metadata was corrected. A client
+ * offers rows only when it is present, so a server without the correction
+ * (any Publisher before it) gets no rows rather than wrong ones. It stays
+ * after the rules above are removed: it then says the metadata needed no
+ * correction, and a client still has to tell an older server apart.
+ */
+export const DRILL_METADATA_CORRECTED = "drill_metadata_corrected";
+
+/**
+ * The stable result a client receives: drill metadata corrected, then
+ * wrapped, then stamped with {@link DRILL_METADATA_CORRECTED} on its root.
+ */
+export function wrapWithCorrectDrillMetadata(result: Result): Malloy.Result {
+   correctDrillMetadata(result);
+   const wrapped = API.util.wrapResult(result);
+   wrapped.annotations = [
+      ...(wrapped.annotations ?? []),
+      { value: `#(malloy) ${DRILL_METADATA_CORRECTED}\n` },
+   ];
+   return wrapped;
 }
 
 /** What Malloy names the final stage of a pipeline of more than one. */
@@ -68,8 +94,9 @@ function correctFields(fields: ResultField[]): void {
       if (meta?.fieldKind !== "dimension") continue;
       const code = drillCode(field, meta);
       // Malloy writes a code for every dimension, so to write none the
-      // field is no longer reported as one; nothing else reads `fieldKind`
-      // once the query has run.
+      // field is no longer reported as one. Malloy's other reader of
+      // `fieldKind` (`sourceWasDimension`) only decides the code too; the
+      // spec pins that the field is still a non-measure column.
       if (code === null) delete meta.fieldKind;
       else if (code !== undefined) meta.sourceExpression = code;
    }

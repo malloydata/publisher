@@ -34,8 +34,16 @@ import type { DrillField, DrillTagReader } from "./resolveDrill";
  * the row. Anything else is not clickable for rows, never a guess. Malloy's
  * metadata is wrong in places that would name the wrong rows (a pipeline's
  * root marked `drillable`, a joined dimension's code); Publisher's server
- * corrects those before it sends a result (`drill_metadata.ts`).
+ * corrects those before it sends a result (`drill_metadata.ts`), and stamps
+ * the root {@link DRILL_METADATA_CORRECTED}. A result without the stamp, from
+ * a server older than the correction, offers no rows.
  */
+
+/**
+ * The root tag Publisher's server writes on a result whose drill metadata it
+ * corrected. Spelled the same in the server's `drill_metadata.ts`.
+ */
+export const DRILL_METADATA_CORRECTED = "drill_metadata_corrected";
 
 /**
  * A renderer result field, as much as the rows behind a value read: the
@@ -125,7 +133,10 @@ export function rowsTargetOf(field: RowsField): RowsTarget | undefined {
    if (
       !source ||
       !tag?.array ||
-      tag.array("source", "parameters") !== undefined
+      tag.array("source", "parameters") !== undefined ||
+      // Without the stamp, `drillable` and the codes are Malloy's as written,
+      // which name the wrong rows in places.
+      tag.has?.(DRILL_METADATA_CORRECTED) !== true
    )
       return undefined;
    const filters: string[] = [];

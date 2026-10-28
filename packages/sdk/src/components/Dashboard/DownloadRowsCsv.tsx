@@ -16,6 +16,8 @@ const DEFAULT_TIP =
 /**
  * How long a saved file's object URL outlives the click. Revoking it at once
  * can cancel the save in Firefox and Safari; FileSaver.js waits 40 seconds.
+ * The timer deliberately outlives the dialog: revoking on close would cancel
+ * a save the reader started just before closing it.
  */
 const REVOKE_AFTER_MS = 40_000;
 
