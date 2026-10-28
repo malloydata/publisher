@@ -15,6 +15,9 @@ export abstract class SettingType<T> {
    /** What a value must be: "an integer from 0 to 65535". */
    abstract readonly expected: string;
 
+   /** What a JSON value in the file that is not a string must be, where narrower than {@link expected}. */
+   readonly expectedInFile?: string;
+
    /** A variable, a flag, or a string from the config file. */
    abstract fromString(raw: string): T;
 
@@ -43,6 +46,7 @@ const FALSE_SPELLINGS = ["0", "false", "no", "off"];
 /** `true/false`, `1/0`, `yes/no`, `on/off`, any case; a JSON boolean in the file. */
 export class BooleanType extends SettingType<boolean> {
    readonly expected = "a boolean (true/false, 1/0, yes/no or on/off)";
+   readonly expectedInFile = "true or false";
 
    fromString(raw: string): boolean {
       const spelled = raw.trim().toLowerCase();

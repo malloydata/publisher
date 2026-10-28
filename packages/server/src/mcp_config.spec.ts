@@ -439,10 +439,9 @@ describe("ensureMcpConfig", () => {
       });
 
       // Every way the bound port can differ from the requested one. Checking
-      // `requestedPort === 0` missed most of them, and the NaN case is not a
-      // typo-only scenario: Kubernetes injects MCP_PORT=tcp://10.96.0.1:4040
-      // into every pod in a namespace with a Service named `mcp`, and
-      // `Number()` of that is NaN, which bun binds ephemerally.
+      // `requestedPort === 0` missed most of them. A NaN no longer comes from
+      // MCP_PORT, since a non-numeric one fails startup, but the function
+      // still takes whatever number its caller hands it.
       const unstable: Array<[string, number]> = [
          ["--mcp_port 0", 0],
          ["a non-numeric MCP_PORT (NaN)", Number("tcp://10.96.0.1:4040")],

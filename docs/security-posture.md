@@ -83,8 +83,8 @@ Concretely:
     prose is refused with 400; gates live in the model file.
 - **Error bodies name the server's own paths, deliberately.** A filesystem access the server
   cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
-  path, and `/api/v0/status` names the config path in `initError` and the failing path in a
-  `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
+  path, and `/api/v0/status` names a server root it cannot write in `initError` and the failing
+  path in a `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
   the message is composed from the errno's fields, never copied from a driver or an SDK. Every
   other 5xx keeps the generic body, because its message can carry a warehouse host, caller SQL
   or a connection string, and a recorded load failure never says more than the response did.

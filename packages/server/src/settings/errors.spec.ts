@@ -32,13 +32,8 @@ const GOLDEN: Array<{
    },
    {
       type: "boolean, in the file",
-      error: new SettingError(
-         "frozenConfig",
-         file,
-         "a boolean (true/false, 1/0, yes/no or on/off)",
-         1,
-      ),
-      message: `frozenConfig from ${FILE}: expected a boolean (true/false, 1/0, yes/no or on/off), got 1`,
+      error: new SettingError("frozenConfig", file, "true or false", 1),
+      message: `frozenConfig from ${FILE}: expected true or false, got 1`,
    },
    {
       type: "integer with a range",

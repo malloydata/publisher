@@ -458,7 +458,7 @@ class Loader {
          const mismatch = new SettingError(
             entry.key,
             source,
-            this.expected(entry),
+            this.expected(entry, first),
             first.raw,
             entry.secret,
          );
@@ -519,7 +519,7 @@ class Loader {
       } catch (error) {
          if (!(error instanceof Mismatch))
             return { error: error as Error, source };
-         return refusal(entry.type.expected);
+         return refusal(this.typeExpected(entry, first));
       }
       try {
          today = this.parseRaw(entry, first) as boolean;
@@ -527,7 +527,7 @@ class Loader {
          if (!(error instanceof Mismatch))
             return { error: error as Error, source };
          if (entry.aliases.today?.invalid !== "warn") {
-            return refusal(this.expected(entry));
+            return refusal(this.expected(entry, first));
          }
          today = this.unnegated(entry, first, this.defaultOf(entry) as boolean);
       }
@@ -720,9 +720,23 @@ class Loader {
       return (fallback as (resolving: Resolving) => unknown)(resolving);
    }
 
-   private expected(entry: RegisteredSetting): string {
+   private expected(entry: RegisteredSetting, candidate: Candidate): string {
       return entry.aliases.today?.reads === "on-off"
          ? 'one of "on" or "off"'
+         : this.typeExpected(entry, candidate);
+   }
+
+   /**
+    * What the setting's type expects of this value. A string in the file is
+    * read as a variable is; any other JSON value is held to the file's own
+    * spelling, so `"frozenConfig": 1` is told `true or false`.
+    */
+   private typeExpected(
+      entry: RegisteredSetting,
+      candidate: Candidate,
+   ): string {
+      return candidate.kind === "file" && typeof candidate.raw !== "string"
+         ? (entry.type.expectedInFile ?? entry.type.expected)
          : entry.type.expected;
    }
 }
