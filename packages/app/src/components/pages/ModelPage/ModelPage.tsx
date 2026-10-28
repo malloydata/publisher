@@ -6,12 +6,13 @@ import {
    encodeResourceUri,
    Model,
    packageFileUrl,
+   useGivenUrlParams,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
 import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
-import { useLocation, useParams } from "react-router-dom";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import { isEditSearch } from "../../common/documentRoutes";
 import ReportPage from "../ReportPage/ReportPage";
@@ -21,8 +22,12 @@ import { PAGE_FRAME_SX } from "../pageFrame";
 function ModelPage() {
    const params = useParams();
    const { search } = useLocation();
+   const [searchParams, setSearchParams] = useSearchParams();
    const modelPath = params["*"];
    const { server } = useServer();
+   // Given values ride in the query string, beside `?source=`, so a link to a
+   // model (and its Copy link) opens with the values the page was running with.
+   const { params: givens, onGivensChange } = useGivenUrlParams();
    if (!params.environmentName) {
       return (
          <div>
@@ -116,7 +121,22 @@ function ModelPage() {
          <Box sx={PAGE_FRAME_SX}>
             <Model
                resourceUri={resourceUri}
-               runOnDemand={true}
+               // The source on screen is in the address, so a link to one opens
+               // on it. Replaced, not pushed: picking a source is a choice
+               // within this page, and Back should leave the model.
+               sourceName={searchParams.get("source") ?? undefined}
+               onSourceChange={(source) =>
+                  setSearchParams(
+                     (current) => {
+                        const next = new URLSearchParams(current);
+                        next.set("source", source);
+                        return next;
+                     },
+                     { replace: true },
+                  )
+               }
+               givens={givens}
+               onGivensChange={onGivensChange}
                maxResultSize={512 * 1024}
             />
          </Box>

@@ -345,32 +345,75 @@ const resourceUri = encodeResourceUri({
 
 ### Model
 
-A model's page: each source it exposes with its fields, read-only, and its named queries, each of which runs.
+A model's page: the model viewer (`ModelViewer`) with a Copy link action on its heading. `Model` takes every `ModelViewer` prop.
 
 ```tsx
 import { Model, encodeResourceUri } from "@malloy-publisher/sdk";
 
-interface ModelProps {
-   resourceUri: string;
-   runOnDemand?: boolean; // Default: false
-   maxResultSize?: number; // Default: 0 (no limit)
-}
-
-// Usage
 const resourceUri = encodeResourceUri({
    environmentName: "my-environment",
    packageName: "analytics",
    modelPath: "models/orders.malloy",
 });
 
-<Model resourceUri={resourceUri} runOnDemand={true} maxResultSize={512 * 1024} />;
+<Model resourceUri={resourceUri} maxResultSize={512 * 1024} />;
 ```
 
-**Features:**
+`runOnDemand` is still accepted and deprecated: every view and query runs when it is opened, never on render.
 
-- Each source with its dimensions, measures, views and joins
-- Named queries, each with a Run
-- Copy link to current view
+Copy link copies the page's address. Pass `givens` and `onGivensChange` (`useGivenUrlParams` does both for a react-router host) so the address carries the given values the page is running with, and a link opens with them applied.
+
+### ModelViewer
+
+A Malloy model, read-only, one source at a time:
+
+- a header with the source's name, its docs and access rules, and an "N sources" pill to switch source;
+- the givens the source reads, set once for every run below them (a picker's options are read when it is opened);
+- its views and the model's named queries, each running when opened, with its Malloy one click over;
+- its measures, calculations, dimensions and joins, each opening to its Malloy; a dimension tagged `#(index)` lists its most common values.
+
+```tsx
+import { ModelViewer, useGivenUrlParams } from "@malloy-publisher/sdk";
+
+const { params: givens, onGivensChange } = useGivenUrlParams();
+
+<ModelViewer
+   resourceUri={resourceUri}
+   // Optional: keep the source in the host's address. Without it the viewer keeps its own.
+   sourceName={params.get("source") ?? undefined}
+   onSourceChange={(source) => setParams({ source })}
+   // Optional: keep the given values in the host's address too.
+   givens={givens}
+   onGivensChange={onGivensChange}
+/>;
+```
+
+It reads only the Publisher API, and sends nothing until a reader opens a row or a picker. A host with more to say passes it in:
+
+| Prop                                                                      | What it adds                                                                                                    |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `givens`, `onGivensChange`                                                | The given values from the host's address, and each applied set back for it                                      |
+| `hostGivenNames`                                                          | Givens the host fills on every query (`$GROUPS`), never shown as inputs                                         |
+| `queryMetadata`, `onQueryRun`                                             | Labels on every run, and a callback as each one settles                                                         |
+| `headerActions`, `renderSourceStatus`                                     | Controls beside the heading, chips on the status row                                                            |
+| `includeHiddenFilesAndSources`                                            | Read and run what the package's `index.malloy` hides, for a reader the server lets edit it                      |
+| `entities`, `entitiesLoading`, `entitiesError`, `joinHref` (experimental) | A fuller record of the model's fields: code where the file's text isn't served, inherited columns, join targets |
+| `columnDescriptions` (experimental)                                       | Descriptions of a table's columns, for a dimension with no doc of its own, marked as generated                  |
+| `extensions` (experimental)                                               | What a hosting platform adds to rows, runs and the picker; see below                                            |
+
+`modelQueryKey` and `runQueryKey` are the viewer's cache keys for a model and a run, for a host that refreshes them or reads the same model.
+
+**`extensions` (experimental).** No host has been built on these yet, so they may change in a minor release until one has:
+
+- `renderRunActions`: actions beside an open view or query (a download), given its query, given values and cache key.
+- `fetchSamples`, `samplesGeneration`: a dimension's values from the host's own index, with a count and a reason when there are none; a new generation reads them afresh.
+- `renderFieldStatus`, `renderFieldAction`: chips and one action on a field's line.
+- `renderFieldDetail`: what an open field row shows; it is handed the viewer's own card to keep, add to or replace.
+- `showField`: which views and fields are listed, for a host's narrowed view of a source.
+- `renderSourceDetail`: a card under the source's header.
+- `describePickerSource`: a summary (marked as generated) and chips on a source's line in the picker.
+
+The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`.
 
 There is no query builder. The Explorer that `Model` used to embed is removed: it wrote structured queries back to Malloy text through `@malloydata/malloy-interfaces`, which does not escape string values yet. To query from a host page, write the Malloy yourself with each value spelled by `malloyLiteral`, and run it with `QueryResult`.
 

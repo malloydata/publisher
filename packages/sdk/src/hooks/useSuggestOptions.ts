@@ -5,6 +5,7 @@ import { useQueries } from "@tanstack/react-query";
 import { useMemo, useRef } from "react";
 import type { Given } from "../client";
 import { withPreamble } from "../components/Dashboard/textSource";
+import { malloyIdentifier } from "../components/ModelViewer/malloyRunText";
 import {
    givensToRequest,
    withHostGivens,
@@ -72,6 +73,20 @@ function outputFieldName(dimension: string): string {
 }
 
 /**
+ * A name as the query writes it: backtick-quoted, so a reserved word (`year`,
+ * `source`) or a name with a space is still read as a name. One the author
+ * already quoted is kept as written.
+ */
+function quotedName(name: string): string {
+   return /^`.*`$/.test(name) ? name : malloyIdentifier(name);
+}
+
+/** A field path with each of its segments quoted ({@link quotedName}). */
+function quotedPath(path: string): string {
+   return path.split(".").map(quotedName).join(".");
+}
+
+/**
  * The query a `suggest { source=… dimension=… }` runs.
  *
  * Exported so the spec can assert the text this hook actually sends. A test that
@@ -88,13 +103,14 @@ export function buildSuggestQuery(
    // One row past the limit, so a list that was cut off says so.
    const limit =
       (search === undefined ? SUGGEST_OPTION_LIMIT : SUGGEST_SEARCH_LIMIT) + 1;
+   const field = quotedPath(dimension);
    return (
-      `run: ${source} -> {\n` +
-      `  group_by: ${dimension}\n` +
+      `run: ${quotedName(source)} -> {\n` +
+      `  group_by: ${field}\n` +
       (search === undefined
          ? ""
-         : `  where: ${containsCondition(dimension, search)}\n`) +
-      `  order_by: ${outputFieldName(dimension)} asc\n` +
+         : `  where: ${containsCondition(field, search)}\n`) +
+      `  order_by: ${quotedName(outputFieldName(dimension))} asc\n` +
       `  limit: ${limit}\n` +
       `}`
    );
@@ -111,8 +127,8 @@ export function buildSuggestQuery(
  * Cast to string so a numeric or date dimension searches its text too. The text
  * is lowercased here, where it is known, and the column in SQL.
  */
-function containsCondition(dimension: string, search: string): string {
-   return `strpos(lower(${dimension}::string), ${malloyStringLiteral(search.toLowerCase())}) > 0`;
+function containsCondition(field: string, search: string): string {
+   return `strpos(lower(${field}::string), ${malloyStringLiteral(search.toLowerCase())}) > 0`;
 }
 
 /**
@@ -216,6 +232,12 @@ export function useSuggestOptions(
     * the viewer's own text. Absent, a suggest runs by name or by view as before.
     */
    preamble?: string,
+   /**
+    * Only these givens' options are fetched, for a page that loads a picker's
+    * list when it is opened rather than on render (the model viewer, where
+    * nothing runs until the reader asks). Absent, every picker's list is.
+    */
+   only?: ReadonlySet<string>,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -331,10 +353,12 @@ export function useSuggestOptions(
    });
 
    const results = useQueries({
-      queries: suggests.map(({ identity, run }) => {
+      queries: suggests.map(({ spec, identity, run }) => {
          return {
             queryKey: ["givenSuggest", ...identity],
-            enabled: modelPath !== undefined,
+            enabled:
+               modelPath !== undefined &&
+               (only === undefined || only.has(spec.name as string)),
             // Option lists change with the data, not with the filters, so they
             // are cached well past a single control interaction.
             staleTime: 5 * 60 * 1000,
