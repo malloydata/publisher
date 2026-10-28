@@ -113,8 +113,9 @@ export interface LoadPackageRequest {
     */
    withPreaggregateCompanions?: boolean;
    /**
-    * Identifies the connections the package compiles against; the worker
-    * empties the package's compile cache when it changes.
+    * Identifies the connections the package compiles against, and moves on a
+    * schema refresh; the worker empties the package's compile cache when it
+    * changes and keys its schema cache on it.
     */
    connectionsEpoch: number;
 }

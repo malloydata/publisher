@@ -21,9 +21,9 @@ export const MAX_CACHED_MODELS_PER_PACKAGE = 512;
  * compiles it, so a file whose text (and whose imports' text) is unchanged is
  * not translated again. Malloy checks an entry against file contents only;
  * {@link beginLoad} empties the cache when the connections or the package's
- * data files change. Not covered: a schema change on the warehouse side (the
- * worker's SchemaCache has the same window) and data a model reads from
- * outside the package directory. Restricted-mode compiles bypass it in Malloy.
+ * data files change. Not covered: a schema change on the warehouse side (only a
+ * reload with `refreshSchema` sees it, as with the worker's SchemaCache) and
+ * data a model reads from outside the package directory. Restricted-mode compiles bypass it in Malloy.
  */
 export class PackageCompileCache {
    private models = new Map<string, CachedModel>();
