@@ -212,7 +212,7 @@ silent: you asked for nothing, so it says nothing. Everything below is announced
 | The directory already has a `.mcp.json`                      | Only ever created, never edited. Yours is left exactly as it is, unread.                                                                                                         |
 | The directory is inside a git working tree                   | An untracked file in a checkout is a surprise in `git status` and gets committed by accident. Your own project is usually a repo, so this is the common case, not an exotic one. |
 | The directory is your home directory, or the filesystem root | Nobody opens an agent in either, and a process manager that leaves the working directory unset lands in `/`.                                                                     |
-| The MCP port bound is not the one requested                  | `--mcp_port 0`, or a non-numeric `MCP_PORT` under Bun (Node refuses to bind at all). That port changes every run, so a saved file would be wrong from the next boot.             |
+| The MCP port bound is not the one requested                  | `--mcp_port 0` or `MCP_PORT=0`, an ephemeral port. That port changes every run, so a saved file would be wrong from the next boot.                                               |
 | The write failed                                             | For instance a read-only directory. Nothing is broken: the server is serving, only the convenience file is missing.                                                              |
 
 The command it prints uses the default local scope, which is the scope that outranks a project
@@ -882,7 +882,10 @@ The `mcp` block of `publisher.config.json` holds settings for the MCP server. It
   the parameter from the tool's schema, so an agent is never offered it. The REST parameter of the
   same name does not depend on this setting.
 - The value is read once, at startup. Restart the server after changing it.
-- A value that is not a boolean, or an `mcp` that is not an object, is warned about and ignored.
+- Write `true` or `false`. A string another boolean setting reads as on, such as `"yes"`, is read as off
+  here, as it always has been, with a warning; a later release refuses it. A value no boolean reader
+  accepts fails startup.
+- An `mcp` that is not an object is warned about and ignored.
 
 ## Theming
 

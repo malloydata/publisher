@@ -12,7 +12,12 @@ import {
 } from "./constants";
 import { logger } from "./logger";
 import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
-import { referencedVariable, settings, Settings } from "./settings";
+import {
+   referencedVariable,
+   settings,
+   Settings,
+   type SettingValue,
+} from "./settings";
 import type {
    EmbeddingSettings,
    LlmSettings,
@@ -396,6 +401,30 @@ export interface EmbeddingConfig {
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
 
+type FileFirstEmbeddingKey =
+   | "retrieval.embedding.model"
+   | "retrieval.embedding.baseUrl"
+   | "retrieval.embedding.dimensions";
+
+/**
+ * A `retrieval.embedding` key the file gives ahead of its variable. With no
+ * `file`, because the `retrieval` block was rejected, the file's value is set
+ * aside for the variable's, as it was before the registry: a block the server
+ * refused must not choose where the embedding key is sent.
+ */
+function embeddingValue<K extends FileFirstEmbeddingKey>(
+   key: K,
+   file: RetrievalEmbeddingConfig | undefined,
+): SettingValue<K> | undefined {
+   if (file !== undefined || settings.source(key).kind !== "file") {
+      return settings.get(key);
+   }
+   const variable = settings
+      .shadowed(key)
+      .find((shadowed) => shadowed.source.kind !== "file");
+   return variable?.value as SettingValue<K> | undefined;
+}
+
 /**
  * Embedding-provider settings for semantic `get_context` retrieval, or `null`
  * when disabled (no `EMBEDDING_API_KEY`), leaving lexical ranking.
@@ -422,8 +451,9 @@ export const getEmbeddingConfig = (
    const apiKey = envKey || "ollama";
 
    // model, baseUrl and dimensions come from the file before their variables,
-   // as the registry records (retrieval.embedding.*, `fileFirst`).
-   const rawBase = settings.get("retrieval.embedding.baseUrl");
+   // as the registry records (retrieval.embedding.*, `fileFirst`), unless the
+   // block was rejected.
+   const rawBase = embeddingValue("retrieval.embedding.baseUrl", file);
    const baseUrl = (
       rawBase ||
       (provider ? defaultOpenAiBaseUrl(provider) : undefined) ||
@@ -438,9 +468,10 @@ export const getEmbeddingConfig = (
    }
 
    const model =
-      settings.get("retrieval.embedding.model") || DEFAULT_EMBEDDING_MODEL;
+      embeddingValue("retrieval.embedding.model", file) ||
+      DEFAULT_EMBEDDING_MODEL;
 
-   const dimensions = settings.get("retrieval.embedding.dimensions");
+   const dimensions = embeddingValue("retrieval.embedding.dimensions", file);
 
    return {
       apiKey,

@@ -95,4 +95,32 @@ describe("settings at startup", () => {
       expect(stderr).toContain("PUBLISHER_INIT_FAILED");
       expect(stderr).not.toContain("PUBLISHER_READY");
    });
+
+   it("reports a bad value of a setting the logger reads with the others, not as a crash", async () => {
+      // The logger reads logging.responseBodiesEnabled when it loads, so the
+      // report has to come first.
+      server = await spawnServer({
+         env: {
+            DISABLE_RESPONSE_LOGGING: "enabled",
+            PUBLISHER_RATE_LIMIT: "abc",
+         },
+      });
+
+      expect(await server.waitForExit()).not.toBe(0);
+      // stderr arrives on its own pipe, so it can trail the exit.
+      expect(
+         await pollUntil(
+            () => server!.stderr().includes("PUBLISHER_INIT_FAILED"),
+            10_000,
+         ),
+      ).toBe(true);
+      const stderr = server.stderr();
+      expect(stderr).toContain(
+         'logging.responseBodiesEnabled from DISABLE_RESPONSE_LOGGING: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
+      );
+      expect(stderr).toContain(
+         'rateLimit from PUBLISHER_RATE_LIMIT: expected an integer of at least 0, got "abc"',
+      );
+      expect(stderr).not.toContain("SettingError:");
+   });
 });

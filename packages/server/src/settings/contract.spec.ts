@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import os from "os";
 import path from "path";
-import { Settings } from ".";
+import { REGISTRY, Settings } from ".";
 import { assertServerApis } from "../server_apis";
 import { getServerApiSettings } from "../config";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
@@ -42,6 +42,13 @@ const fails = (name: string): Expected => ({ fails: name });
 
 /** Embedding settings are off without a key, so their rows set one. */
 const KEY = { EMBEDDING_API_KEY: "sk-test" };
+/**
+ * A `retrieval` block retrieval_config.ts rejects (an unknown LLM provider),
+ * holding these embedding keys. The server runs retrieval on its defaults.
+ */
+const REJECTED_RETRIEVAL = (embedding: Record<string, unknown>) => ({
+   retrieval: { llm: { provider: "bogus" }, embedding },
+});
 /** The memory governor's tunables are read only with a ceiling set. */
 const CEILING = { PUBLISHER_MAX_MEMORY_BYTES: "1000000" };
 /** The scheduler's tunables are read only with the scheduler on. */
@@ -84,6 +91,11 @@ export const CONTRACT: Record<string, Case[]> = {
          env: { FROZEN: "false" },
          file: { frozenConfig: "${FROZEN}" },
          expect: warned(true, '"frozenConfig": "${FROZEN}"'),
+      },
+      {
+         name: "a string of only whitespace is unset, where it used to freeze",
+         file: { frozenConfig: " " },
+         expect: value(false),
       },
       {
          name: "an unreadable file fails startup",
@@ -202,6 +214,11 @@ export const CONTRACT: Record<string, Case[]> = {
       },
       { name: "blank", env: { PUBLISHER_PORT: "" }, expect: value(4000) },
       {
+         name: "whitespace only is unset, where it used to be port 0",
+         env: { PUBLISHER_PORT: "  " },
+         expect: value(4000),
+      },
+      {
          name: "not a number fails",
          env: { PUBLISHER_PORT: "40a0" },
          expect: fails("PUBLISHER_PORT"),
@@ -253,6 +270,11 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "not a number",
          env: { PUBLISHER_RATE_LIMIT: "lots" },
+         expect: fails("PUBLISHER_RATE_LIMIT"),
+      },
+      {
+         name: "an exponent, which Number() read, fails",
+         env: { PUBLISHER_RATE_LIMIT: "1e2" },
          expect: fails("PUBLISHER_RATE_LIMIT"),
       },
    ],
@@ -591,6 +613,11 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: warned(false, '"mcp.includeHiddenFilesAndSources": "yes"'),
       },
       {
+         name: "a value no boolean reader accepts fails",
+         file: { mcp: { includeHiddenFilesAndSources: "maybe" } },
+         expect: fails("mcp.includeHiddenFilesAndSources"),
+      },
+      {
          name: "an mcp that is not an object is warned about and ignored",
          file: { mcp: "on" },
          expect: warned(false, 'Invalid "mcp"'),
@@ -649,6 +676,11 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "out of range",
          env: { PUBLISHER_ADMIN_PORT: "70000" },
+         expect: fails("PUBLISHER_ADMIN_PORT"),
+      },
+      {
+         name: "a decimal point, which Number() read, fails",
+         env: { PUBLISHER_ADMIN_PORT: "8080.0" },
          expect: fails("PUBLISHER_ADMIN_PORT"),
       },
    ],
@@ -1143,6 +1175,11 @@ export const CONTRACT: Record<string, Case[]> = {
          env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "1.5" },
          expect: fails("PACKAGE_LOAD_SCHEMA_CACHE_BYTES"),
       },
+      {
+         name: "an exponent, which Number() read, fails",
+         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "16e6" },
+         expect: fails("PACKAGE_LOAD_SCHEMA_CACHE_BYTES"),
+      },
    ],
 
    // ── duckdb, ducklake, persist, materialization ────────────────────────
@@ -1517,6 +1554,11 @@ export const CONTRACT: Record<string, Case[]> = {
       { name: "any case", env: { LOG_LEVEL: "WARN" }, expect: value("warn") },
       { name: "blank", env: { LOG_LEVEL: "" }, expect: value("debug") },
       {
+         name: "surrounding whitespace is trimmed, where it used to be unknown",
+         env: { LOG_LEVEL: " info" },
+         expect: value("info"),
+      },
+      {
          name: "an unknown level is debug, with a warning",
          env: { LOG_LEVEL: "loud" },
          expect: warned("debug", "LOG_LEVEL"),
@@ -1648,6 +1690,20 @@ export const CONTRACT: Record<string, Case[]> = {
          file: { retrieval: { embedding: { model: 5 } } },
          expect: fails("retrieval.embedding.model"),
       },
+      {
+         name: "a ${VAR} that is not set fails, like any value that cannot be read",
+         env: KEY,
+         file: {
+            retrieval: { embedding: { model: "${UNSET_EMBEDDING_MODEL}" } },
+         },
+         expect: fails("${UNSET_EMBEDDING_MODEL} is not set"),
+      },
+      {
+         name: "a rejected retrieval block's model is not used",
+         env: KEY,
+         file: REJECTED_RETRIEVAL({ model: "m2" }),
+         expect: value("text-embedding-3-small"),
+      },
    ],
    "retrieval.embedding.baseUrl": [
       { name: "unset", env: KEY, expect: value("https://api.openai.com/v1") },
@@ -1671,6 +1727,12 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "not a URL",
          env: { ...KEY, EMBEDDING_API_BASE: "not a url" },
          expect: fails("EMBEDDING_API_BASE"),
+      },
+      {
+         name: "a rejected retrieval block's base URL is not used",
+         env: KEY,
+         file: REJECTED_RETRIEVAL({ baseUrl: "http://f.example/v1" }),
+         expect: value("https://api.openai.com/v1"),
       },
    ],
    "retrieval.embedding.dimensions": [
@@ -1700,6 +1762,12 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "not a number",
          env: { ...KEY, EMBEDDING_DIMENSIONS: "wide" },
          expect: fails("EMBEDDING_DIMENSIONS"),
+      },
+      {
+         name: "a rejected retrieval block's dimensions are not used",
+         env: KEY,
+         file: REJECTED_RETRIEVAL({ dimensions: 512 }),
+         expect: value(undefined),
       },
    ],
    "retrieval.embedding.minSimilarity": [
@@ -1791,6 +1859,15 @@ function outcome(
 describe("settings contract", () => {
    it("has a probe for every row, and a row for every probe", () => {
       expect(Object.keys(CONTRACT).sort()).toEqual(Object.keys(PROBES).sort());
+   });
+
+   it("has rows for every registered setting", () => {
+      // The retrieval block is parsed whole by retrieval_config.ts, whose own
+      // spec covers it; its leaves the registry reads have rows here.
+      const unpinned = REGISTRY.map((entry) => entry.key).filter(
+         (key) => !(key in CONTRACT),
+      );
+      expect(unpinned).toEqual(["retrieval"]);
    });
 
    for (const [key, cases] of Object.entries(CONTRACT)) {

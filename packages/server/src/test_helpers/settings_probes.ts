@@ -205,9 +205,18 @@ function adminStorage(): unknown {
    return catalogAdminConfig()?.storage;
 }
 
-/** The embedding settings as main_server.ts resolves them at boot. */
+/**
+ * The embedding settings as main_server.ts resolves them at boot, where a
+ * rejected `retrieval` block leaves retrieval on its defaults.
+ */
 function embedding({ serverRoot }: SettingsContext) {
-   return getEmbeddingConfig(getRetrievalConfig(serverRoot)?.embedding);
+   let block: ReturnType<typeof getRetrievalConfig>;
+   try {
+      block = getRetrievalConfig(serverRoot);
+   } catch {
+      block = undefined;
+   }
+   return getEmbeddingConfig(block?.embedding);
 }
 
 /** Whether a read that throws on a bad value accepts this one. */
