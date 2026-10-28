@@ -82,6 +82,7 @@ import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
    CloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
+   parseS3Endpoint,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
@@ -1901,10 +1902,16 @@ export function buildCloudStorageSecretSQL(
          // Additive: an S3-compatible endpoint behind a host role is a real
          // combination.
          if (credentials.endpoint) {
+            const { hostAndPath, useSsl } = parseS3Endpoint(
+               credentials.endpoint,
+            );
             clauses.push(
-               `ENDPOINT '${escapeSQL(credentials.endpoint)}'`,
+               `ENDPOINT '${escapeSQL(hostAndPath)}'`,
                "URL_STYLE 'path'",
             );
+            if (!useSsl) {
+               clauses.push("USE_SSL false");
+            }
          }
          createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
@@ -1912,7 +1919,10 @@ export function buildCloudStorageSecretSQL(
             );
          `;
       } else if (credentials.endpoint) {
-         const escapedEndpoint = escapeSQL(credentials.endpoint);
+         const { hostAndPath, useSsl } = parseS3Endpoint(credentials.endpoint);
+         const escapedEndpoint = escapeSQL(hostAndPath);
+         // `true` is never written: it is DuckDB's default, and a secret for an
+         // https or bare endpoint stays byte-for-byte what it was.
          createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
                TYPE s3,
@@ -1920,7 +1930,7 @@ export function buildCloudStorageSecretSQL(
                SECRET '${escapedSecret}',
                REGION '${region}',
                ENDPOINT '${escapedEndpoint}',
-               URL_STYLE 'path'
+               URL_STYLE 'path'${useSsl ? "" : ",\n               USE_SSL false"}
             );
          `;
       } else if (credentials.sessionToken) {

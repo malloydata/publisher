@@ -30,6 +30,36 @@ const S3_PROVIDERS = ["config", "credential_chain"] as const;
 // (workstation flows).
 export const DEFAULT_S3_CREDENTIAL_CHAIN = "env;web_identity;instance";
 
+/**
+ * An S3-compatible endpoint as DuckDB and the AWS SDK each need it. DuckDB's
+ * `ENDPOINT` is a bare `host[:port][/path]` and speaks TLS unless the secret
+ * says `USE_SSL false`; given a scheme it requests `https://http://…`. The SDK
+ * needs the full URL and rejects a bare host as `Invalid URL`. So an endpoint
+ * may be written either way, and `http://` is the one form that turns TLS off.
+ */
+export function parseS3Endpoint(endpoint: string): {
+   hostAndPath: string;
+   useSsl: boolean;
+   url: string;
+} {
+   const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(.*)$/.exec(endpoint.trim());
+   const scheme = match ? match[1].toLowerCase() : "https";
+   if (scheme !== "http" && scheme !== "https") {
+      throw new Error(
+         `S3 endpoint '${endpoint}' has scheme '${scheme}'; use host[:port], https://host[:port] or http://host[:port]`,
+      );
+   }
+   const hostAndPath = (match ? match[2] : endpoint.trim()).replace(/\/+$/, "");
+   if (!hostAndPath) {
+      throw new Error(`S3 endpoint '${endpoint}' names no host`);
+   }
+   return {
+      hostAndPath,
+      useSsl: scheme === "https",
+      url: `${scheme}://${hostAndPath}`,
+   };
+}
+
 export interface CloudStorageCredentials {
    type: CloudStorageType;
    accessKeyId: string;
@@ -238,7 +268,11 @@ export function createCloudStorageClient(
       !isGCS && credentials.provider === "credential_chain";
 
    const client = new S3Client({
-      endpoint: isGCS ? "https://storage.googleapis.com" : credentials.endpoint,
+      endpoint: isGCS
+         ? "https://storage.googleapis.com"
+         : credentials.endpoint
+           ? parseS3Endpoint(credentials.endpoint).url
+           : undefined,
       region: isGCS ? "auto" : credentials.region || "us-east-1",
       ...(useHostCredentials
          ? {}

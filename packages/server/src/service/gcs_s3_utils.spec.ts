@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
    createCloudStorageClient,
+   parseS3Endpoint,
    DEFAULT_S3_CREDENTIAL_CHAIN,
    s3ConnectionToCredentials,
    validateS3ProviderShape,
@@ -26,6 +27,30 @@ afterEach(() => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
    }
+});
+
+describe("parseS3Endpoint", () => {
+   it("reads a bare host as TLS", () => {
+      expect(parseS3Endpoint("minio:9000")).toEqual({
+         hostAndPath: "minio:9000",
+         useSsl: true,
+         url: "https://minio:9000",
+      });
+   });
+
+   it("turns TLS off only for http://, in any case, and drops trailing slashes", () => {
+      expect(parseS3Endpoint("HTTP://minio:9000/")).toEqual({
+         hostAndPath: "minio:9000",
+         useSsl: false,
+         url: "http://minio:9000",
+      });
+      expect(parseS3Endpoint("https://s3.example.com/base").useSsl).toBe(true);
+   });
+
+   it("refuses another scheme and an empty host", () => {
+      expect(() => parseS3Endpoint("ftp://minio")).toThrow("scheme 'ftp'");
+      expect(() => parseS3Endpoint("http://")).toThrow("names no host");
+   });
 });
 
 describe("createCloudStorageClient", () => {
@@ -56,6 +81,22 @@ describe("createCloudStorageClient", () => {
       const resolved = await client.config.credentials();
       expect(resolved.accessKeyId).toBe(CHAIN_ENV.AWS_ACCESS_KEY_ID);
       expect(resolved.accessKeyId).not.toBe("");
+   });
+
+   // The SDK rejects a bare host as `Invalid URL`; DuckDB's form must reach it as a URL.
+   it("gives the SDK a URL for an endpoint written as a bare host", async () => {
+      const client = createCloudStorageClient(
+         s3ConnectionToCredentials({
+            accessKeyId: "AKIA",
+            secretAccessKey: "s",
+            region: "us-east-1",
+            endpoint: "minio:9000",
+         }),
+      );
+      const endpoint = await client.config.endpoint!();
+      expect(
+         `${endpoint.protocol}//${endpoint.hostname}:${endpoint.port}`,
+      ).toBe("https://minio:9000");
    });
 
    it("leaves GCS on its HMAC key pair", async () => {
