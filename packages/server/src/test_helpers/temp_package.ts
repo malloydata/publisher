@@ -52,15 +52,23 @@ export async function seededDuckdb(seedSql = ""): Promise<DuckDBConnection> {
    return duckdb;
 }
 
-/** An in-memory DuckDB as the `duckdb` connection of a MalloyConfig. */
-export function duckdbMalloyConfig(duckdb?: DuckDBConnection): {
+/**
+ * An in-memory DuckDB as the `name` (default `duckdb`) connection of a
+ * MalloyConfig. A package resolves `duckdb` to its own sandbox database, so a
+ * spec that needs the worker's schema requests proxied to this connection
+ * passes another name.
+ */
+export function duckdbMalloyConfig(
+   duckdb?: DuckDBConnection,
+   name = "duckdb",
+): {
    malloyConfig: MalloyConfig;
    duckdb: DuckDBConnection;
 } {
-   const connection = duckdb ?? new DuckDBConnection("duckdb", ":memory:");
+   const connection = duckdb ?? new DuckDBConnection(name, ":memory:");
    const connections = new FixedConnectionMap(
-      new Map([["duckdb", connection]]),
-      "duckdb",
+      new Map([[name, connection]]),
+      name,
    );
    const malloyConfig = new MalloyConfig({ connections: {} });
    malloyConfig.wrapConnections(() => connections);

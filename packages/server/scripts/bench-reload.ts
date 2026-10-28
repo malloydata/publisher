@@ -2,22 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Reload benchmark: loads a synthetic DuckDB-backed package once, then reloads
- * it three ways through the production load path (`Package.create` over the
- * worker pool) and prints the worker's phase split for each.
+ * Reload benchmark: loads a synthetic DuckDB-backed package once (cold, which
+ * also warms the worker), then reloads it three ways through the production
+ * load path (`Package.create` over the worker pool) and prints the median of
+ * REPS runs of the worker's phase split for each.
  *
- *   bun run bench:reload [modelCount]      (default 73)
+ *   bun run bench:reload [modelCount] [--light]      (default 73, heavy shape)
  *
- * Cases, each measured after the cold load:
+ * Cases:
  *   c  unchanged tree, same connection instances
- *   b  one leaf model edited, same connection instances
+ *   b  one shared base model edited, same connection instances
  *   a  token-only connection update: a new instance with the same name and
  *      digest, which is what a connection PATCH produces
+ *
+ * `--heavy` (default) gives every model enough fields and views to cost real
+ * compile time; `--light` is the tiny shape.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
+import type { MalloyConfig } from "@malloydata/malloy";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { logger } from "../src/logger";
 import {
@@ -26,75 +29,122 @@ import {
 } from "../src/package_load/package_load_pool";
 import type { PackageLoadOutcome } from "../src/package_load/protocol";
 import { Package } from "../src/service/package";
+import {
+   duckdbMalloyConfig,
+   writeTempPackage,
+} from "../src/test_helpers/temp_package";
 
 const BASE_COUNT = 3;
 const ENV = "bench-env";
+const REPS = 5;
 
-/** `warehouse` is not `duckdb`, so the worker fetches its schemas over the proxy. */
-function warehouseConfig(connection: DuckDBConnection): MalloyConfig {
-   const config = new MalloyConfig({ connections: {} });
-   config.wrapConnections(
-      () =>
-         new FixedConnectionMap(
-            new Map([["warehouse", connection]]),
-            "warehouse",
-         ),
-   );
-   return config;
+interface Shape {
+   name: string;
+   baseFields: number;
+   leafFields: number;
+   views: number;
 }
+const SHAPES: Record<"heavy" | "light", Shape> = {
+   heavy: { name: "heavy", baseFields: 20, leafFields: 40, views: 120 },
+   light: { name: "light", baseFields: 2, leafFields: 2, views: 3 },
+};
 
-async function newWarehouse(modelCount: number): Promise<DuckDBConnection> {
+const cols = (prefix: string, n: number) =>
+   Array.from({ length: n }, (_, k) => `${prefix}${k}`);
+
+/** A `warehouse` table per model; the worker fetches their schemas over the proxy. */
+async function newWarehouse(
+   modelCount: number,
+   shape: Shape,
+): Promise<DuckDBConnection> {
    const connection = new DuckDBConnection("warehouse", ":memory:");
-   for (let i = 0; i < modelCount; i++) {
+   const dims = cols("d", shape.leafFields);
+   const vals = cols("v", shape.leafFields);
+   const baseDims = cols("d", shape.baseFields);
+   const baseVals = cols("v", shape.baseFields);
+   const select = (id: number, d: string[], v: string[], extra: string) =>
+      `select ${id} as id, ${extra}${d.map((c, k) => `'${c}_${id}' as ${c}`).join(", ")}, ${v.map((c, k) => `${id + k}.5 as ${c}`).join(", ")}`;
+   for (let i = 0; i < BASE_COUNT; i++) {
       await connection.runSQL(
-         `create table if not exists t_${i} as select ${i} as id, 'n${i}' as name, ${i}.5 as amount`,
+         `create table if not exists b_${i} as ${select(i, baseDims, baseVals, "")}`,
+      );
+   }
+   for (let i = BASE_COUNT; i < modelCount; i++) {
+      await connection.runSQL(
+         `create table if not exists t_${i} as ${select(i, dims, vals, `${i % BASE_COUNT} as base_id, `)}`,
       );
    }
    return connection;
 }
 
-/** A few shared bases; every other model imports one and adds a source with 3 views. */
-function writeModels(dir: string, modelCount: number, leafSuffix = ""): void {
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "bench" }),
-   );
-   for (let b = 0; b < BASE_COUNT; b++) {
-      fs.writeFileSync(
-         path.join(dir, `base_${b}.malloy`),
-         `source: base_${b} is warehouse.table('t_${b}') extend {
-  measure: total is amount.sum()
-  dimension: label is name
-}
-`,
-      );
-   }
-   for (let i = BASE_COUNT; i < modelCount; i++) {
-      const b = i % BASE_COUNT;
-      const edit = i === modelCount - 1 ? leafSuffix : "";
-      fs.writeFileSync(
-         path.join(dir, `model_${i}.malloy`),
-         `import "base_${b}.malloy"
-source: m_${i} is warehouse.table('t_${i}') extend {
-  measure: total is amount.sum()
-  view: by_name is { group_by: name aggregate: total }
-  view: top_n is { group_by: id aggregate: total limit: 5 }
-  view: overall is { aggregate: total, rows is count() }
-}
-source: joined_${i} is base_${b} extend {
-  view: by_label is { group_by: label aggregate: total }
-}
-${edit}`,
-      );
-   }
+function baseModel(b: number, shape: Shape, edit = 0): string {
+   const dims = cols("d", shape.baseFields);
+   const vals = cols("v", shape.baseFields);
+   return `source: base_${b} is warehouse.table('b_${b}') extend {
+  primary_key: id
+${dims.map((d) => `  dimension: ${d}_u is upper(${d})`).join("\n")}
+${vals.map((v) => `  measure: ${v}_sum is ${v}.sum()`).join("\n")}
+${edit ? `  measure: edit_${edit} is count()\n` : ""}}
+`;
 }
 
+/** Each leaf imports one base, joins it, and defines fields plus grouped and nested views. */
+function leafModel(i: number, shape: Shape): string {
+   const b = i % BASE_COUNT;
+   const dims = cols("d", shape.leafFields);
+   const vals = cols("v", shape.leafFields);
+   const views = Array.from({ length: shape.views }, (_, k) => {
+      const g = dims[k % dims.length];
+      const m = `${vals[k % vals.length]}_sum`;
+      const nested =
+         k % 2 === 1
+            ? `\n    nest: sub is { group_by: ${dims[(k + 1) % dims.length]}_l aggregate: ${m} limit: 3 }`
+            : "";
+      return `  view: view_${k} is {
+    group_by: ${g}
+    bd is jb.${cols("d", shape.baseFields)[k % shape.baseFields]}_u
+    aggregate: ${m}
+    bm is jb.${cols("v", shape.baseFields)[k % shape.baseFields]}_sum
+    rows is count()${nested}
+    order_by: ${m} desc
+    limit: 10
+  }`;
+   });
+   return `import "base_${b}.malloy"
+source: m_${i} is warehouse.table('t_${i}') extend {
+  join_one: jb is base_${b} on jb.id = base_id
+${dims.map((d) => `  dimension: ${d}_l is lower(${d})`).join("\n")}
+${vals.map((v) => `  measure: ${v}_sum is ${v}.sum()`).join("\n")}
+${views.join("\n")}
+}
+`;
+}
+
+function modelFiles(
+   modelCount: number,
+   shape: Shape,
+   baseEdit = 0,
+): Record<string, string> {
+   const files: Record<string, string> = {};
+   for (let b = 0; b < BASE_COUNT; b++) {
+      files[`base_${b}.malloy`] = baseModel(b, shape, b === 0 ? baseEdit : 0);
+   }
+   for (let i = BASE_COUNT; i < modelCount; i++) {
+      files[`model_${i}.malloy`] = leafModel(i, shape);
+   }
+   return files;
+}
+
+const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
+
 async function main(): Promise<void> {
-   const modelCount = Number(process.argv[2] ?? 73);
+   const args = process.argv.slice(2);
+   const shape = args.includes("--light") ? SHAPES.light : SHAPES.heavy;
+   const count = args.find((a) => !a.startsWith("--"));
+   const modelCount = Number(count ?? 73);
    if (!Number.isInteger(modelCount) || modelCount <= BASE_COUNT) {
       throw new Error(`modelCount must be an integer above ${BASE_COUNT}`);
    }
-   process.env.PACKAGE_LOAD_WORKERS = "1";
    const pool = new PackageLoadPool(1);
    await __setPackageLoadPoolForTests(pool);
 
@@ -108,50 +158,72 @@ async function main(): Promise<void> {
    // Package.create logs per load; keep the table readable.
    logger.level = "error";
 
-   const dir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "publisher-bench-reload-"),
-   );
-   const warehouse = await newWarehouse(modelCount);
-   const tokenUpdated = await newWarehouse(modelCount);
+   const warehouses: DuckDBConnection[] = [];
+   const packages: Package[] = [];
+   let cleanupDir = () => {};
    try {
-      writeModels(dir, modelCount);
-      const config = warehouseConfig(warehouse);
+      const { dir, cleanup } = writeTempPackage(modelFiles(modelCount, shape), {
+         name: "bench",
+         prefix: "publisher-bench-reload-",
+      });
+      cleanupDir = cleanup;
+      const connect = async () => {
+         const warehouse = await newWarehouse(modelCount, shape);
+         warehouses.push(warehouse);
+         return duckdbMalloyConfig(warehouse, "warehouse").malloyConfig;
+      };
+      const config = await connect();
 
-      const rows: Record<string, string | number>[] = [];
-      const measure = async (label: string, malloyConfig: MalloyConfig) => {
+      const load = async (malloyConfig: MalloyConfig) => {
          const start = performance.now();
-         await Package.create(ENV, "bench", dir, malloyConfig);
+         packages.push(await Package.create(ENV, "bench", dir, malloyConfig));
          const wall = performance.now() - start;
-         const { timings } = outcomes[outcomes.length - 1];
-         rows.push({
+         return { wall, timings: outcomes[outcomes.length - 1].timings };
+      };
+      const summarize = async (
+         label: string,
+         reps: number,
+         run: (rep: number) => ReturnType<typeof load>,
+      ) => {
+         const samples = [];
+         for (let r = 0; r < reps; r++) samples.push(await run(r));
+         const med = (pick: (s: (typeof samples)[number]) => number) =>
+            Math.round(median(samples.map(pick)));
+         return {
             case: label,
-            wallMs: Math.round(wall),
-            compileDurationMs: Math.round(timings.compileDurationMs),
-            schemaFetchDurationMs: Math.round(timings.schemaFetchDurationMs),
-            schemaFetchCount: timings.schemaFetchCount,
-            schemaCacheHits: timings.schemaCacheHits ?? 0,
-         });
+            wallMs: med((s) => s.wall),
+            compileDurationMs: med((s) => s.timings.compileDurationMs),
+            schemaFetchDurationMs: med((s) => s.timings.schemaFetchDurationMs),
+            schemaFetchCount: med((s) => s.timings.schemaFetchCount),
+            schemaCacheHits: med((s) => s.timings.schemaCacheHits ?? 0),
+         };
       };
 
-      await measure("cold load", config);
-      await measure("c: unchanged tree", config);
-      writeModels(
-         dir,
-         modelCount,
-         `source: edited is m_${modelCount - 1} extend {}\n`,
+      const rows = [
+         await summarize("cold load (warm-up)", 1, () => load(config)),
+         await summarize("c: unchanged tree", REPS, () => load(config)),
+         await summarize("b: one shared base edited", REPS, async (rep) => {
+            fs.writeFileSync(
+               path.join(dir, "base_0.malloy"),
+               baseModel(0, shape, rep + 1),
+            );
+            return load(config);
+         }),
+         await summarize("a: token-only connection update", REPS, async () =>
+            load(await connect()),
+         ),
+      ];
+      console.log(
+         `models=${modelCount} shape=${shape.name} (bases=${BASE_COUNT}, ` +
+            `base fields=${shape.baseFields * 2 + 1}, leaf fields=${shape.leafFields * 2}, ` +
+            `views/leaf=${shape.views}, one join per leaf); median of ${REPS} reps`,
       );
-      await measure("b: one leaf edited", config);
-      await measure(
-         "a: token-only connection update",
-         warehouseConfig(tokenUpdated),
-      );
-
-      console.log(`models=${modelCount} (bases=${BASE_COUNT})`);
       console.table(rows);
    } finally {
-      await warehouse.close();
-      await tokenUpdated.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      for (const pkg of packages)
+         await pkg.getMalloyConfig().releaseConnections();
+      for (const warehouse of warehouses) await warehouse.close();
+      cleanupDir();
       await __setPackageLoadPoolForTests(null);
    }
 }
