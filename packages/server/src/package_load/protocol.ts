@@ -22,6 +22,7 @@
  * is no in-process fallback).
  *
  *   main  ──▶ worker:  LoadPackageRequest, ShutdownRequest,
+ *                      DropCompileCacheRequest,
  *                      *Response (correlated by requestId)
  *   worker ──▶ main:   LoadPackageResult | LoadPackageError, ReadyMessage,
  *                      WorkerLogMessage, and the proxy requests
@@ -36,7 +37,11 @@
 
 import type { EligibilityRefusalReason } from "../materialization_metrics";
 import type { BuildPlanOutcome } from "../service/build_plan";
-import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
+import type {
+   InvalidationKey,
+   SQLSourceDef,
+   TableSourceDef,
+} from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
    PackageScope,
@@ -110,6 +115,11 @@ export interface LoadPackageRequest {
     * that serve the package; a compile preview does not serve it.
     */
    withPreaggregateCompanions?: boolean;
+   /**
+    * Identifies the connections the package compiles against; the worker
+    * empties the package's compile cache when it changes.
+    */
+   connectionsEpoch: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -148,6 +158,14 @@ export interface SerializedModel {
    compileDurationMs?: number;
    /** Non-fatal compiler diagnostics emitted while compiling this model. */
    problems?: unknown[];
+   /**
+    * The invalidation keys `modelDef` was compiled against, so the main
+    * thread can seed its own compile cache with it (see
+    * ModelCompileCache.invalidationKeysFor).
+    */
+   compileCacheKeys?: Record<string, InvalidationKey>;
+   /** This model's compile was served from the worker's compile cache. */
+   compileCacheHit?: boolean;
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**
@@ -233,6 +251,8 @@ export interface LoadPackageResult {
       schemaFetchCount: number;
       /** Schema requests answered from the worker's own cache. */
       schemaCacheHits?: number;
+      /** Models whose compile was served from the package's compile cache. */
+      compileCacheHits?: number;
    };
    /**
     * Present when `computeBuildPlan` was set and every model compiled and
@@ -412,6 +432,13 @@ export interface ShutdownRequest {
    type: "shutdown";
 }
 
+/** Drop a package's compile cache: the package was unloaded. */
+export interface DropCompileCacheRequest {
+   type: "drop-compile-cache";
+   environmentName: string;
+   packageName: string;
+}
+
 export interface ReadyMessage {
    type: "ready";
 }
@@ -427,7 +454,8 @@ export type MainToWorkerMessage =
    | SchemaForSqlResponse
    | ReadUrlResponse
    | RpcErrorResponse
-   | ShutdownRequest;
+   | ShutdownRequest
+   | DropCompileCacheRequest;
 
 export type WorkerToMainMessage =
    | LoadPackageResult

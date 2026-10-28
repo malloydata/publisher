@@ -381,6 +381,8 @@ async function openCompileContext(
       buildManifest: boundManifestEntries
          ? { entries: boundManifestEntries, strict: false }
          : undefined,
+      // The package's own cache, so an unchanged import is not translated again.
+      cacheManager: pkg.compileCacheManagerFor(virtualUrl),
    });
 
    // Tag each diagnostic with the package-relative model `at.url` points at;
@@ -1070,6 +1072,7 @@ async function loadPackageInWorker(ctx: CompileContext) {
          defaultConnectionName: "duckdb",
          buildManifest: ctx.boundManifestEntries,
          collectProblems: true,
+         connectionsEpoch: ctx.pkg.getConnectionsEpoch(),
          replacement:
             source === undefined ? undefined : { modelPath: modelName, source },
       });

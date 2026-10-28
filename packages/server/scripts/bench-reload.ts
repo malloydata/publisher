@@ -213,6 +213,7 @@ async function main(): Promise<void> {
             schemaFetchDurationMs: med((s) => s.timings.schemaFetchDurationMs),
             schemaFetchCount: med((s) => s.timings.schemaFetchCount),
             schemaCacheHits: med((s) => s.timings.schemaCacheHits ?? 0),
+            compileCacheHits: med((s) => s.timings.compileCacheHits ?? 0),
          };
       };
 

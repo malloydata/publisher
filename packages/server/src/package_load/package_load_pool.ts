@@ -47,6 +47,7 @@ import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys"
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
+   DropCompileCacheRequest,
    LoadPackageError,
    LoadPackageRequest,
    LoadPackageResult,
@@ -208,6 +209,11 @@ export interface LoadPackageJob {
    computeBuildPlan?: boolean;
    /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
    withPreaggregateCompanions?: boolean;
+   /**
+    * See {@link LoadPackageRequest.connectionsEpoch}; defaults to
+    * `malloyConfig`'s identity.
+    */
+   connectionsEpoch?: number;
 }
 
 /**
@@ -333,6 +339,16 @@ export class PackageLoadPool {
       });
    }
 
+   /** Tell every worker to drop the package's compile cache. */
+   dropCompileCache(environmentName: string, packageName: string): void {
+      const message: DropCompileCacheRequest = {
+         type: "drop-compile-cache",
+         environmentName,
+         packageName,
+      };
+      for (const pw of this.workers) this.postToWorker(pw, message);
+   }
+
    /**
     * Drain every in-flight job and terminate the workers. Safe to
     * call multiple times. Awaits each worker's `exit` event.
@@ -450,6 +466,9 @@ export class PackageLoadPool {
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
+         connectionsEpoch:
+            qj.request.connectionsEpoch ??
+            connectionGeneration(qj.request.malloyConfig),
       };
       pw.worker.postMessage(message);
    }
@@ -877,7 +896,7 @@ const connectionGenerations = new WeakMap<object, number>();
 let lastConnectionGeneration = 0;
 
 /** A number unique to `conn`'s instance (see ConnectionMetadata.generation). */
-function connectionGeneration(conn: object): number {
+export function connectionGeneration(conn: object): number {
    let generation = connectionGenerations.get(conn);
    if (generation === undefined) {
       lastConnectionGeneration += 1;
@@ -948,6 +967,14 @@ export function getPackageLoadPool(): PackageLoadPool {
       );
    }
    return singleton;
+}
+
+/** Drop a package's worker compile caches, if a pool was ever started. */
+export function dropPackageCompileCache(
+   environmentName: string,
+   packageName: string,
+): void {
+   singleton?.dropCompileCache(environmentName, packageName);
 }
 
 /** Test-only: replace the singleton (and shut down the previous one). */

@@ -65,6 +65,7 @@ import {
 } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
+import { dropPackageCompileCache } from "../package_load/package_load_pool";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import {
    compileSource,
@@ -1846,6 +1847,7 @@ export class Environment {
                oldPackage.getMalloyConfig().shutdown("close"),
             );
          }
+         dropPackageCompileCache(this.environmentName, packageName);
          this.packages.delete(packageName);
       }
       logger.debug("install.phase2.rollback", {
@@ -2404,6 +2406,7 @@ export class Environment {
          // Before the early return: a failed package is never in `packages`,
          // and a stale entry would report a loadError for an unconfigured one.
          this.clearPackageLoadFailure(packageName);
+         dropPackageCompileCache(this.environmentName, packageName);
 
          const _package = this.packages.get(packageName);
          if (!_package) {
@@ -2500,6 +2503,7 @@ export class Environment {
          );
          // Eviction and clearing a recorded failure belong together.
          this.clearPackageLoadFailure(packageName);
+         dropPackageCompileCache(this.environmentName, packageName);
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
       });
@@ -2584,6 +2588,9 @@ export class Environment {
                { error: result.reason },
             );
          }
+      }
+      for (const packageName of this.packages.keys()) {
+         dropPackageCompileCache(this.environmentName, packageName);
       }
       this.packages.clear();
       this.packageStatuses.clear();

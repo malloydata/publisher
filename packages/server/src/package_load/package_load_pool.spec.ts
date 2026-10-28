@@ -600,9 +600,10 @@ source: orders is duckdb.table('shared_t') extend {
 }
 `,
       );
-      // With the worker's schema cache off, every compile fetches the table:
-      // the model's, the companion's, and a second companion's if the plan
-      // compiled its own.
+      // With the worker's schema cache off, every translation fetches the
+      // table. The companion imports the model from the compile cache, so only
+      // the model's own compile fetches; a second companion compile would too
+      // hit that cache, so this no longer tells the two apart.
       const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
       process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
       const { duckdb, tableFetches, load, tearDown } = await setUp(() =>
@@ -619,7 +620,7 @@ source: orders is duckdb.table('shared_t') extend {
          expect(outcome.buildPlan?.ok).toBe(true);
          expect(
             tableFetches.filter((paths) => paths.includes("shared_t")),
-         ).toHaveLength(2);
+         ).toHaveLength(1);
       } finally {
          if (cacheBytes === undefined) {
             delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
@@ -919,8 +920,10 @@ describe("PackageLoadPool (token-only connection update)", () => {
          },
       } as unknown as ConstructorParameters<typeof ConnectionService>[0]);
       const pool = new PackageLoadPool(1);
-      const load = async () =>
-         (
+      const load = async () => {
+         // Otherwise the compile cache answers a reload without a schema request.
+         pool.dropCompileCache("env", "pkg");
+         return (
             await pool.loadPackage({
                packagePath: tempDir,
                packageName: "pkg",
@@ -929,6 +932,7 @@ describe("PackageLoadPool (token-only connection update)", () => {
                defaultConnectionName: "warehouse",
             })
          ).timings;
+      };
       try {
          const cold = await load();
          expect(cold.schemaFetchCount).toBe(1);

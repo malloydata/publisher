@@ -1325,6 +1325,8 @@ source: from_sql is warehouse.sql("select 1 as ${token}")
          try {
             await duckdb.runSQL(`create table ${token} as select 1 as a`);
             await Package.create(`${token}-a`, "pkg", tempDir, malloyConfig);
+            // Otherwise the compile cache answers the reload without a schema request.
+            workers.pool.dropCompileCache(`${token}-a`, "pkg");
             await Package.create(`${token}-a`, "pkg", tempDir, malloyConfig);
             await Package.create(`${token}-b`, "pkg", tempDir, malloyConfig);
             // A connection edit swaps in a new instance with the same name and

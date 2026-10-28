@@ -8,6 +8,7 @@ import { pathToFileURL } from "url";
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
+   type CacheManager,
    Connection,
    ConnectionRuntime,
    contextOverlay,
@@ -22,9 +23,11 @@ import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
+   connectionGeneration,
    getPackageLoadPool,
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
+import { PackageCompileCache } from "../package_load/compile_cache";
 import type { LoadPackageRequest } from "../package_load/protocol";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -361,6 +364,11 @@ export class Package {
     */
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
+   /** Identifies the connections this package compiles against (see PackageCompileCache). */
+   private connectionsEpoch: () => number = () =>
+      connectionGeneration(this.malloyConfig);
+   /** This thread's compile cache for `/compile`, seeded by the load. */
+   private readonly compileCache = new PackageCompileCache();
    /**
     * The skills in `skills/`, refreshed with the content sha so a skill edit is
     * covered by the reload receipt by construction.
@@ -737,12 +745,21 @@ export class Package {
                ? environmentMalloyConfig
                : () => Package.toMalloyConfig(environmentMalloyConfig),
          );
+         // The environment's config, not the package's: that one is new on
+         // every load, and only a connection change should empty the cache.
+         const connectionsEpoch = () =>
+            connectionGeneration(
+               typeof environmentMalloyConfig === "function"
+                  ? environmentMalloyConfig()
+                  : environmentMalloyConfig,
+            );
 
          return await Package.loadViaWorker(
             environmentName,
             packageName,
             packagePath,
             malloyConfig,
+            connectionsEpoch,
             startTime,
             manifestValidationTime,
          );
@@ -1069,11 +1086,13 @@ export class Package {
       packageName: string,
       packagePath: string,
       malloyConfig: MalloyConfig,
+      connectionsEpoch: () => number,
       startTime: number,
       manifestValidationTime: number,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
+      const epoch = connectionsEpoch();
       // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
       const workerOutcome = loadOutcomeOrThrow(
          pool.loadPackage({
@@ -1084,6 +1103,7 @@ export class Package {
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
+            connectionsEpoch: epoch,
          }),
       );
       const [outcome, databases] = await Promise.all([
@@ -1103,6 +1123,7 @@ export class Package {
          schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
          schemaFetchCount: outcome.timings.schemaFetchCount,
          schemaCacheHits: outcome.timings.schemaCacheHits,
+         compileCacheHits: outcome.timings.compileCacheHits,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -1172,6 +1193,8 @@ export class Package {
          models,
          malloyConfig,
       );
+      pkg.connectionsEpoch = connectionsEpoch;
+      await pkg.seedCompileCache(outcome, epoch);
       const reportTimings = await pkg.discoverReports("load");
       // After discovery: which findings a tile explains depends on the reports.
       pkg.renderTagWarnings = pkg.surfacedRenderTagWarnings(renderTagWarnings);
@@ -2279,6 +2302,41 @@ export class Package {
       return this.malloyConfig;
    }
 
+   /** See {@link LoadPackageRequest.connectionsEpoch}. */
+   public getConnectionsEpoch(): number {
+      return this.connectionsEpoch();
+   }
+
+   /**
+    * The cache a `/compile` of `url` compiles with: this package's, except
+    * that `url` itself is always translated, since its problems are reported.
+    */
+   public compileCacheManagerFor(url: URL): CacheManager {
+      return this.compileCache.forModel(this.connectionsEpoch(), url, {
+         translate: true,
+      });
+   }
+
+   /** Seed this thread's compile cache with the load's ModelDefs, under the worker's keys. */
+   private async seedCompileCache(
+      outcome: LoadPackageOutcome,
+      epoch: number,
+   ): Promise<void> {
+      const manager = this.compileCache.managerFor(epoch);
+      for (const model of outcome.models) {
+         if (!model.modelDef || !model.compileCacheKeys) continue;
+         await manager.setCachedModelDef(
+            pathToFileURL(
+               path.join(this.packagePath, model.modelPath),
+            ).toString(),
+            {
+               modelDef: model.modelDef,
+               invalidationKeys: model.compileCacheKeys,
+            },
+         );
+      }
+   }
+
    public getPackagePath(): string {
       return this.packagePath;
    }
@@ -2313,6 +2371,7 @@ export class Package {
             defaultConnectionName: "duckdb",
             buildManifest,
             withPreaggregateCompanions: true,
+            connectionsEpoch: this.connectionsEpoch(),
          }),
       );
 

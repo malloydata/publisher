@@ -16,6 +16,7 @@ import {
    contextOverlay,
    isSourceDef,
    type BuildManifestEntry,
+   type CacheManager,
    type Connection,
    type FetchSchemaOptions,
    type LookupConnection,
@@ -122,6 +123,7 @@ import {
    type SynthesizedRuntimeFactory,
 } from "../service/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
+import { PackageCompileCache } from "./compile_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import {
@@ -230,6 +232,23 @@ type CachedSchema = TableSourceDef | SQLSourceDef;
 const schemaCache = new SchemaCache<CachedSchema>(
    (workerData as { schemaCacheBytes?: number } | null)?.schemaCacheBytes ?? 0,
 );
+
+/** Each package's compile cache, kept across its loads until it is unloaded. */
+const compileCaches = new Map<string, PackageCompileCache>();
+
+function compileCacheKey(environmentName: string, packageName: string): string {
+   return `${environmentName}\0${packageName}`;
+}
+
+function compileCacheFor(job: LoadPackageRequest): PackageCompileCache {
+   const key = compileCacheKey(job.environmentName, job.packageName);
+   let cache = compileCaches.get(key);
+   if (!cache) {
+      cache = new PackageCompileCache();
+      compileCaches.set(key, cache);
+   }
+   return cache;
+}
 
 /** What a job carries while it runs in this worker (see runJob). */
 interface JobContext {
@@ -927,10 +946,12 @@ function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    urlReader: { readURL: (url: URL) => Promise<string> },
+   cacheManager: CacheManager,
 ): Runtime {
    return new Runtime({
       urlReader,
       config: malloyConfig,
+      cacheManager,
       buildManifest:
          job.buildManifest !== undefined && job.buildManifest !== null
             ? {
@@ -947,14 +968,17 @@ function jobRuntime(
 function buildRuntimeForModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
+   cacheManager: CacheManager,
 ): {
    runtime: Runtime;
    urlReader: HackyDataStylesAccumulator;
    textFor: (url: URL) => string | undefined;
 } {
+   // A cache hit still reads every file of the closure (Malloy re-reads to
+   // check its key), so textFor and the data styles see what a miss would.
    const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
    const urlReader = new HackyDataStylesAccumulator(reader);
-   const runtime = jobRuntime(job, malloyConfig, urlReader);
+   const runtime = jobRuntime(job, malloyConfig, urlReader, cacheManager);
    return { runtime, urlReader, textFor };
 }
 
@@ -999,9 +1023,15 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
+   const modelCache = compileCacheFor(job).forModel(
+      job.connectionsEpoch,
+      modelURL,
+      { translate: job.collectProblems === true },
+   );
    const { runtime, urlReader, textFor } = buildRuntimeForModel(
       job,
       malloyConfig,
+      modelCache,
    );
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
@@ -1123,6 +1153,8 @@ async function compileMalloyModel(
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
+      compileCacheHit: modelCache.hit,
+      compileCacheKeys: modelCache.invalidationKeysFor(modelDef),
       authorizeWarnings:
          authorizeWarningCollection.warnings.length > 0
             ? authorizeWarningCollection.warnings
@@ -1209,14 +1241,19 @@ async function prepareForMainThread(
    const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
       const files = makeWorkerUrlReader(job);
       return {
-         runtime: jobRuntime(job, malloyConfig, {
-            readURL: (url: URL) => {
-               const text = overlay.get(url.href);
-               return text !== undefined
-                  ? Promise.resolve(text)
-                  : files.readURL(url);
+         runtime: jobRuntime(
+            job,
+            malloyConfig,
+            {
+               readURL: (url: URL) => {
+                  const text = overlay.get(url.href);
+                  return text !== undefined
+                     ? Promise.resolve(text)
+                     : files.readURL(url);
+               },
             },
-         }),
+            compileCacheFor(job).managerFor(job.connectionsEpoch),
+         ),
          importBaseURL,
       };
    };
@@ -1292,7 +1329,11 @@ async function compileNotebookModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
+   const { runtime, urlReader } = buildRuntimeForModel(
+      job,
+      malloyConfig,
+      compileCacheFor(job).managerFor(job.connectionsEpoch),
+   );
    const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
@@ -1578,6 +1619,7 @@ async function loadPackage(
    const schemaFetchDurationMs = schemaWait.waitMs;
    const schemaFetchCount = schemaWait.fetches;
    const schemaCacheHits = schemaCache.hits - schemaCacheHitsAtStart;
+   const compileCacheHits = models.filter((m) => m.compileCacheHit).length;
    const buildPlan = await finishWorkerBuildPlan(
       malloyConfig,
       modelPaths,
@@ -1601,6 +1643,7 @@ async function loadPackage(
          schemaFetchDurationMs,
          schemaFetchCount,
          schemaCacheHits,
+         compileCacheHits,
       },
       buildPlan,
    };
@@ -1679,6 +1722,12 @@ port.on("message", (message: MainToWorkerMessage) => {
    if (message.type === "shutdown") {
       shuttingDown = true;
       maybeExit();
+      return;
+   }
+   if (message.type === "drop-compile-cache") {
+      compileCaches.delete(
+         compileCacheKey(message.environmentName, message.packageName),
+      );
       return;
    }
    if (message.type === "load-package") {
