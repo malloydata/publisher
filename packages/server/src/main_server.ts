@@ -40,7 +40,6 @@ import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
    getDuckDBTempDirectory,
-   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
    getEmbeddingSettings,
    getExtensionFetchPolicy,
    getLlmSettings,
@@ -55,7 +54,6 @@ import {
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
-import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
 import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
    addCommand,
@@ -234,14 +232,23 @@ if (llmSettings) {
          `Fix: set LLM_API_KEY in the server's environment.`,
    );
 }
-const semanticIndexMaxEntities =
-   retrievalConfig?.indexing?.maxEntities ??
-   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
-setMaxEmbeddedEntities(semanticIndexMaxEntities);
-if (embeddingConfig) {
-   logger.info(
-      `Semantic index entity cap: ${semanticIndexMaxEntities} (retrieval.indexing.maxEntities)`,
+if (retrievalConfig?.indexing?.maxEntities !== undefined) {
+   logger.warn(
+      "retrieval.indexing.maxEntities in publisher.config.json no longer does anything: the search index has no entity cap. Fix: remove the key.",
    );
+}
+for (const key of [
+   "maxDimensions",
+   "maxValuesPerDimension",
+   "timeoutMs",
+   "budgetMs",
+   "cacheTtlMs",
+] as const) {
+   if (retrievalConfig?.dimensionValues?.[key] !== undefined) {
+      logger.warn(
+         `retrieval.dimensionValues.${key} in publisher.config.json no longer does anything: value search reads values once, when a package's search index is built. Fix: remove the key.`,
+      );
+   }
 }
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
@@ -250,8 +257,10 @@ const memoryGovernor = memoryGovernorConfig
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
 observePackageStates(environmentStore);
-// Build the semantic index as each package loads, not on the first question.
-// This only queues work; with no embedding provider the job returns at once.
+// Build each package's search index as it loads, not on the first question.
+// This only queues the build. The build runs with or without an embedding
+// provider: without one it still builds the catalog, the keyword index and
+// the value index of #(index) dimensions, and skips only the vectors.
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );

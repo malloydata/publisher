@@ -79,6 +79,7 @@ describe("anthropic adapter", () => {
          validate: (v) => v as { ok: boolean },
       });
       expect(out.value.ok).toBe(true);
+      expect(out.repaired).toBeUndefined();
       expect(requests[0].body.max_tokens).toBe(1024);
       expect(requests[0].body.system).toContain("JSON");
    });
@@ -132,8 +133,56 @@ describe("anthropic adapter", () => {
          },
       });
       expect(out.value.v).toBe(1);
+      expect(out.repaired).toBe(true);
       expect(requests).toHaveLength(2);
       expect(requests[1].body.messages[0].content).toContain("missing v");
+   });
+
+   it("sends temperature 0 only to models that take it, and turns Haiku 5 thinking off", async () => {
+      const bodyFor = async (model: string) => {
+         const { fetchFn, requests } = stubFetch([() => reply("ok")]);
+         await createChatModel(llm({ model }), {
+            fetchFn,
+            retry: instantRetry(),
+         }).complete({ prompt: "p" });
+         const { temperature, thinking } = requests[0].body;
+         return { temperature, thinking };
+      };
+      // Older models and ids in another shape keep temperature 0.
+      expect(await bodyFor("claude-haiku-4-5")).toEqual({
+         temperature: 0,
+         thinking: undefined,
+      });
+      expect(await bodyFor("claude-haiku-4-5-20251001")).toEqual({
+         temperature: 0,
+         thinking: undefined,
+      });
+      expect(await bodyFor("claude-opus-4-6")).toEqual({
+         temperature: 0,
+         thinking: undefined,
+      });
+      expect(await bodyFor("claude-3-5-haiku-20241022")).toEqual({
+         temperature: 0,
+         thinking: undefined,
+      });
+      // 4.7 and later answer 400 to any temperature.
+      expect(await bodyFor("claude-opus-4-7")).toEqual({
+         temperature: undefined,
+         thinking: undefined,
+      });
+      expect(await bodyFor("claude-sonnet-5-5")).toEqual({
+         temperature: undefined,
+         thinking: undefined,
+      });
+      expect(await bodyFor("claude-fable-5-1")).toEqual({
+         temperature: undefined,
+         thinking: undefined,
+      });
+      // Haiku 5.5 thinks by default and the thinking counts against max_tokens.
+      expect(await bodyFor("claude-haiku-5-5")).toEqual({
+         temperature: undefined,
+         thinking: { type: "disabled" },
+      });
    });
 
    it("has no embeddings and says so", () => {
@@ -194,6 +243,28 @@ describe("google (Gemini API) adapter", () => {
       expect(requests[0].body.generationConfig.responseMimeType).toBe(
          "application/json",
       );
+   });
+
+   it("counts thinking as output, as it is billed", async () => {
+      const { fetchFn } = stubFetch([
+         () =>
+            jsonResponse({
+               candidates: [{ content: { parts: [{ text: "hi" }] } }],
+               usageMetadata: {
+                  promptTokenCount: 9,
+                  candidatesTokenCount: 4,
+                  thoughtsTokenCount: 30,
+               },
+            }),
+      ]);
+      const chat = createChatModel(llm({ provider: "google" }), {
+         fetchFn,
+         retry: instantRetry(),
+      });
+      expect((await chat.complete({ prompt: "p" })).usage).toEqual({
+         inputTokens: 9,
+         outputTokens: 34,
+      });
    });
 
    it("does not retry a 403", async () => {

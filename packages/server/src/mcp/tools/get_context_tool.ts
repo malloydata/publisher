@@ -3,27 +3,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EnvironmentStore } from "../../service/environment_store";
-import { embeddingConfigured } from "../../service/embedding_provider";
 import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri } from "../handler_utils";
 import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
-import { assembleCards } from "./get_context_assembly";
-import {
-   PIPELINE_SETTINGS,
-   runCardStages,
-   runRankStages,
-   type CardState,
-   type CardStage,
-   type PipelineContext,
-   type RankStage,
-   type RankedState,
-   type Retriever,
-} from "./get_context_pipeline";
-import { activeLlmSettings } from "../../providers/active";
-import { LlmMeter, StageError } from "./get_context_llm";
-import { refineStage } from "./get_context_refine";
-import { rerankStage } from "./get_context_rerank";
+import { runFcjQuery, type TraceMode } from "../context/engine";
 import {
    convergedContextShape,
    matchesScope,
@@ -31,37 +15,21 @@ import {
    type GetContextParams,
 } from "./get_context_request";
 import {
-   budgetCutWarning,
    contextError,
-   entityCutWarning,
-   indexingResponse,
    listingPageWarning,
    makeWarningsFor,
    projectEntity,
-   rerankCutWarning,
-   semanticUnavailableError,
-   shapeCards,
    skillsFor,
-   sourceCutWarning,
-   stageFailureError,
    toSourceResults,
    truncationWarning,
    unsupportedTargetWarnings,
 } from "./get_context_response";
-import {
-   sourceMatchActive,
-   sourceMatchStage,
-} from "./get_context_source_match";
-import { resolveLlmStages } from "./get_context_stage_settings";
-import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
-import type { PackageIndex, ResolvedRequest } from "./get_context_types";
-import { indexSettingsOf } from "./index_settings";
+import type {
+   ListingContext,
+   PackageIndex,
+   ResolvedRequest,
+} from "./get_context_types";
 import { getPackageIndex, sourceContextKey } from "./package_entities";
-import {
-   currentSummaryHashes,
-   loadSourceSummaries,
-   type StoredSourceSummary,
-} from "./source_summaries";
 
 // server.ts and package.controller.ts import these from here.
 export {
@@ -76,22 +44,22 @@ export {
 const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most relevant to a plain-English question.
 
 ## Contract rules
-- Use the names it returns verbatim; never invent one that is not in the results.
-- One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
-- scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
+- Use returned names verbatim; never invent one.
+- One call answers: describe the fields you need as search_targets; sources return with them nested.
+- scopes is REQUIRED: exactly one environment and package (list_packages).
 - Read warnings and any error/stale field before trusting a number or calling data absent.
 - A source's joins are all listed: empty means none. In an answer, never write a join; tell the user.
-- Read a source's doc before querying: it carries grain and population rules its fields do not.
+- Read a source's doc before querying: it holds grain and population rules.
 - accessFilter/authorize mean gated; a deny-all source never appears here.
-- Empty sources: nothing cleared the floor, or the LLM steps pruned every candidate.
+- Empty sources: nothing cleared the floor, or the LLM steps pruned all.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. dimensional_value: search_text is one value as typed, beside its dimension target; stored strings return in entities[].values (gated sources need givens, as in execute_query). scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages results. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why the model kept it).
-ranking, returned of total_available sources, next_offset on a listing, warnings[]. Over 35,000 characters, whole sources are dropped and warnings say so.
-below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon. Errors carry retrieval_reason; "llm-stage-failed" names the failed step in retrieval_stage.`;
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, values[] {value, relevance}, matched_targets[].match_reason.
+ranking, returned of total_available sources, next_offset: more pages, warnings[]. Past 35,000 characters whole sources are dropped; warnings say so.
+below_cutoff_count of total_entities rejected. retrieval "indexing": still building, retry soon. Errors carry retrieval_reason ("llm-stage-failed" names retrieval_stage).`;
 
 /**
  * Whether the package's most recent reload failed, as a warning to attach.
@@ -126,7 +94,7 @@ async function staleNoteFor(
 
 /** Tier 3: nothing to rank, so enumerate what the targets name. */
 function runListing(
-   ctx: PipelineContext,
+   ctx: ListingContext,
    uri: string,
 ): ReturnType<typeof jsonResource> {
    const { request, pkgIndex } = ctx;
@@ -221,24 +189,16 @@ function runListing(
    });
 }
 
-const RETRIEVERS: readonly Retriever[] = [semanticRetriever, lexicalRetriever];
-// Source match is listed only for a request it applies to, so a trace shows
-// no row for it otherwise.
-const rankStages = (ctx: PipelineContext): RankStage[] =>
-   sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
-const CARD_STAGES: readonly CardStage[] = [rerankStage];
-
 /**
- * Tier 3 (enumerate) and tier 4 (rank) over one package, driven by an already
- * resolved request. Ranking is semantic when an embedding provider is
- * configured and lexical (lunr/BM25) otherwise, over the package's cached
- * entity index (see getPackageIndex).
+ * One call, resolved: a request with no search text enumerates what its
+ * targets name (a listing, answered here from the package's entity index);
+ * anything else is ranked by the find, list, judge engine (../context/engine.ts).
  */
 async function runContextQuery(
    resolved: ResolvedRequest,
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
-   traceSummary = false,
+   traceMode: TraceMode = "none",
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
@@ -249,7 +209,6 @@ async function runContextQuery(
       listingOnly: resolved.listingOnly,
    });
 
-   // Tiers 3 and 4 need the package's entity index.
    let pkgIndex: PackageIndex;
    try {
       pkgIndex = await getPackageIndex(
@@ -279,212 +238,51 @@ async function runContextQuery(
       "get-context",
    );
 
+   // A ranked result is held for a while (../context/pages.ts), so `offset`
+   // resumes it. A listing other than the catalog browse has no order to
+   // resume from.
+   if (
+      resolved.offset > 0 &&
+      resolved.listingOnly &&
+      !resolved.pureSourceListing
+   ) {
+      // Refused rather than ignored: silently ignoring the offset would hand
+      // back page 1 as if it were page 2.
+      return contextError(
+         uri,
+         `${environmentName}/${packageName}`,
+         // InvalidArgumentError, not a bare Error: an unclassified throw is
+         // reported by classifyToolError as an internal fault.
+         new InvalidArgumentError(
+            "Invalid offset: paging works on a ranked search (a target with search_text) and on a pure source listing (every search_target of type `source`, none with search_text). Fix: drop `offset`, or add search_text to a target.",
+         ),
+      );
+   }
+
    const staleNote = await staleNoteFor(
       environmentStore,
       environmentName,
       packageName,
    );
-   const ctx: PipelineContext = {
+   const ctx: ListingContext = {
       request: resolved,
-      environmentStore,
       pkgIndex,
       warnings: [staleNote, ...extraWarnings].filter(
          (warning): warning is string => Boolean(warning),
       ),
-      embeddingConfigured: embeddingConfigured(),
-      settings: PIPELINE_SETTINGS,
-      trace: [],
-      meter: new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null),
-   };
-   const warningsFor = makeWarningsFor(ctx);
-   // Spread into a ranked payload; {} without the trace header. With
-   // PUBLISHER_MCP_TRACE=retrieval the summary also goes to the server log.
-   const traceFields = () => {
-      const logTrace = traceToLog();
-      if (!traceSummary && !logTrace) return {};
-      const retrieval_trace = {
-         stages: (ctx.trace ?? []).map((t) => ({
-            name: t.name,
-            status: t.status,
-            ms: t.ms,
-            in: t.in,
-            out: t.out,
-            llm_calls: t.llmCalls,
-            tokens: t.tokens,
-         })),
-      };
-      if (logTrace) {
-         logger.info("[MCP Tool getContext] Retrieval trace", {
-            environmentName,
-            packageName,
-            retrieval_trace,
-         });
-      }
-      return traceSummary ? { retrieval_trace } : {};
    };
 
-   const request = ctx.request;
+   // Nothing to rank -> enumerate what the targets name.
+   if (resolved.listingOnly) return runListing(ctx, uri);
 
-   // Tier 3: nothing to rank -> enumerate what the targets name.
-   if (request.listingOnly) return runListing(ctx, uri);
-
-   // Tier 4. With an embedding provider configured, ranking is ONLY semantic:
-   // a still-building index answers "indexing" and an unusable one an error,
-   // never a lexical fallback that quietly ranks differently. Lexical is the
-   // mode only when no provider is configured.
-   // LLM stage settings are read before retrieval because source match takes
-   // the source targets away from the retrievers.
-   try {
-      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
-   } catch (error) {
-      if (error instanceof StageError) {
-         return stageFailureError(uri, error, traceFields());
-      }
-      throw error;
-   }
-   // Read once, for both the response and the source match prompt.
-   ctx.sourceSummaries = await loadStoredSummaries(
+   return runFcjQuery({
+      request: resolved,
       environmentStore,
       pkgIndex,
-      environmentName,
-      packageName,
-   );
-   // With source match on, source targets are answered by the model, so the
-   // retrievers rank only the other targets. With none left there is nothing
-   // to retrieve; the response keeps the shape of the mode the server is in.
-   const matchingSources = sourceMatchActive(ctx);
-   const retrievalCtx: PipelineContext = matchingSources
-      ? {
-           ...ctx,
-           request: {
-              ...request,
-              searches: request.searches.filter(
-                 (s) => s.targetType !== "source",
-              ),
-           },
-        }
-      : ctx;
-   let ranked: RankedState | undefined;
-   if (matchingSources && retrievalCtx.request.searches.length === 0) {
-      ranked = {
-         rows: [],
-         belowCutoffCount: 0,
-         retrieval: ctx.embeddingConfigured ? "semantic" : "lexical",
-      };
-   }
-   for (const retriever of ranked ? [] : RETRIEVERS) {
-      const result = await retriever.retrieve(retrievalCtx);
-      if ("unavailable" in result) {
-         // "unconfigured" means no provider: the next retriever is the mode.
-         if (result.unavailable === "unconfigured") continue;
-         return result.unavailable === "indexing"
-            ? indexingResponse(uri, ctx, result)
-            : semanticUnavailableError(uri, result);
-      }
-      ranked = { ...result, retrieval: retriever.name };
-      break;
-   }
-   if (!ranked) throw new Error("No retriever produced a result");
-   // A failed LLM stage is the answer (an error naming the stage), never an
-   // unrefined ranking.
-   let cards: CardState;
-   try {
-      ranked = await runRankStages(rankStages(ctx), ranked, ctx);
-      cards = await runCardStages(CARD_STAGES, assembleCards(ranked, ctx), ctx);
-   } catch (error) {
-      if (error instanceof StageError) {
-         return stageFailureError(uri, error, traceFields());
-      }
-      throw error;
-   }
-   const { sources, totalSources, entitiesDropped, budgetDropped } = shapeCards(
-      cards,
-      ctx,
-   );
-   // Sources the size budget removed were returned by the page, so the page
-   // warning counts them as returned and only the budget warning speaks of them.
-   const pageReturned = sources.length + budgetDropped;
-   const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
-   // Cards rerank kept out of its top N are beyond any page's reach, so they
-   // get their own warning and are left out of the page-cut one.
-   const rerankDropped = cards.discarded ?? 0;
-   const rerankWarning = rerankCutWarning(
-      rerankDropped,
-      ctx.llmStages?.rerank?.topSources,
-   );
-   if (ranked.retrieval === "semantic") {
-      return jsonResource(uri, {
-         sources,
-         ranking: "relevance" as const,
-         total_available: totalSources,
-         returned: sources.length,
-         retrieval: "semantic",
-         // Always present, including 0, and paired with total_entities: the
-         // ratio carries the signal (see SemanticSearchResult).
-         below_cutoff_count: ranked.belowCutoffCount,
-         ...(ranked.totalEntities !== undefined
-            ? { total_entities: ranked.totalEntities }
-            : {}),
-         ...skillsFor(ctx),
-         ...warningsFor(
-            sourceCutWarning(pageReturned, totalSources - rerankDropped),
-            rerankWarning,
-            budgetWarning,
-            entityCutWarning(entitiesDropped),
-         ),
-         ...traceFields(),
-      });
-   }
-   // Lexical (no embedding provider): no `retrieval` marker.
-   return jsonResource(uri, {
-      sources,
-      ranking: "relevance" as const,
-      total_available: totalSources,
-      returned: sources.length,
-      ...skillsFor(ctx),
-      ...warningsFor(
-         sourceCutWarning(pageReturned, totalSources),
-         budgetWarning,
-         entityCutWarning(entitiesDropped),
-      ),
-      ...traceFields(),
+      uri,
+      warnings: ctx.warnings,
+      traceMode,
    });
-}
-
-/**
- * The package's stored source summaries that still describe its sources, or
- * undefined when summaries are off or none is current. A summary is served
- * only if its input hash matches the source as it is now, since a reload
- * leaves the old one stored until the next sync. A read failure is logged and
- * answered without them: the sync, not this read, is where failure is loud.
- */
-async function loadStoredSummaries(
-   environmentStore: EnvironmentStore,
-   pkgIndex: PackageIndex,
-   environmentName: string,
-   packageName: string,
-): Promise<ReadonlyMap<string, StoredSourceSummary> | undefined> {
-   const settings = indexSettingsOf(pkgIndex.pkg).sourceSummary;
-   if (!settings) return undefined;
-   try {
-      const stored = await loadSourceSummaries(
-         environmentStore.storageManager.getDuckDbConnection(),
-         environmentName,
-         packageName,
-         currentSummaryHashes(pkgIndex.directEntities, settings),
-      );
-      return stored.size > 0 ? stored : undefined;
-   } catch (error) {
-      logger.warn(
-         "[MCP Tool getContext] Stored source summaries could not be read; answering without them",
-         {
-            environmentName,
-            packageName,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
-      return undefined;
-   }
 }
 
 /** The part of the MCP request context this tool reads: the HTTP headers. */
@@ -500,21 +298,14 @@ interface RequestExtra {
  */
 export const TRACE_HEADER = "x-publisher-retrieval-trace";
 
-function wantsTrace(extra: RequestExtra | undefined): boolean {
-   const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
-   const value = Array.isArray(raw) ? raw[0] : raw;
-   return value?.trim().toLowerCase() === "summary";
-}
-
 /**
- * `PUBLISHER_MCP_TRACE=retrieval` writes the trace summary to the server log,
- * one line per ranked call, and adds nothing to any response. Read on each
- * call so a test can change it.
+ * The trace the request asked for. `summary` is the block of stage rows;
+ * `full` adds what each stage kept.
  */
-export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
-
-function traceToLog(): boolean {
-   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+function traceModeOf(extra: RequestExtra | undefined): TraceMode {
+   const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
+   const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase();
+   return value === "summary" || value === "full" ? value : "none";
 }
 
 export function registerGetContextTool(
@@ -527,31 +318,11 @@ export function registerGetContextTool(
       convergedContextShape,
       async (params: GetContextParams, extra?: RequestExtra) => {
          const request = resolveRequest(params);
-         if (request.offset > 0 && !request.pureSourceListing) {
-            // Refused rather than ignored: a ranked response has no
-            // reproducible order to resume from, and silently ignoring the
-            // offset would hand back page 1 as if it were page 2.
-            return contextError(
-               buildMalloyUri(
-                  {
-                     environment: request.environmentName,
-                     package: request.packageName,
-                  },
-                  "get-context",
-               ),
-               `${request.environmentName}/${request.packageName}`,
-               // InvalidArgumentError, not a bare Error: an unclassified throw
-               // is reported by classifyToolError as an internal fault.
-               new InvalidArgumentError(
-                  "Invalid offset: paging works only on a pure source listing (every search_target of type `source`, none with search_text), which is the one response with a resumable order. Fix: drop `offset`, and narrow with search_text or scopes instead.",
-               ),
-            );
-         }
          return runContextQuery(
             request,
             environmentStore,
             unsupportedTargetWarnings(request),
-            wantsTrace(extra),
+            traceModeOf(extra),
          );
       },
    );

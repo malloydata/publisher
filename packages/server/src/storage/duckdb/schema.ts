@@ -215,6 +215,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    await createEntityEmbeddingsTable(db);
    await createEntityKeyphrasesTable(db);
    await createSourceSummariesTable(db);
+   await createCatalogTables(db);
 }
 
 async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
@@ -614,19 +615,11 @@ async function dropPreFacetEntityEmbeddings(
 }
 
 /**
- * Vector cache for semantic `get_context` retrieval (see
- * mcp/tools/embedding_index.ts). One row per (entity, facet): an entity's
- * name is embedded separately from its documentation, and long docs are
- * split across `doc:N` facets, so a hit is scored on its best-matching
- * facet rather than on one averaged vector. That is what stops a long doc
- * from burying the entity's own name — see embedding_index.entityFacets.
- *
- * Rows are content-addressed per facet (`content_hash` plus
- * `embedding_model`), so editing a doc re-embeds only the doc facets; a
- * dimensionality change is healed at query time, and wiping the table only
- * costs re-embedding. `embedding` is searched by brute-force
- * list_cosine_similarity, which at one Publisher's entity counts beats a
- * vector-index extension.
+ * The vector cache of the search an earlier release used for `get_context`:
+ * one row per (entity, facet). Nothing writes it now (the engine's vectors are
+ * in `catalog_embeddings`). The table stays so a database from an earlier
+ * release keeps its shape, and deleting a package or environment clears its
+ * rows (see mcp/tools/embedding_index.ts).
  */
 export async function createEntityEmbeddingsTable(
    db: DuckDBConnection,
@@ -652,16 +645,11 @@ export async function createEntityEmbeddingsTable(
 }
 
 /**
- * LLM-written search phrases for entities (see mcp/tools/keyphrases.ts). One
- * row per entity. A row is reused only while all three of `input_hash` (the
- * fields sent to the model), `prompt_hash` (the instructions in force) and
- * `model` still match, so a keyphrase is regenerated exactly when its inputs,
- * the prompt or the model changed, and an unchanged entity costs no LLM call
- * on a restart, a reload or a republish.
- *
- * `entity_key` is the JSON array [kind, source, name], which cannot collide
- * whatever characters an identifier contains. Losing the table only costs
- * regenerating.
+ * LLM-written search phrases for entities, from an earlier release's search.
+ * Nothing writes it now; it stays so a database from an earlier release keeps
+ * its shape, and deleting a package or environment clears its rows (see
+ * mcp/tools/embedding_index.ts). `entity_key` is the JSON array
+ * [kind, source, name].
  */
 export async function createEntityKeyphrasesTable(
    db: DuckDBConnection,
@@ -704,6 +692,112 @@ export async function createSourceSummariesTable(
       one_line_summary VARCHAR NOT NULL,
       created_at TIMESTAMP NOT NULL,
       PRIMARY KEY (environment_name, package_name, model_path, source_name)
+    )
+  `);
+}
+
+/**
+ * The find, connect, judge engine's catalog (see mcp/context/catalog.ts): one
+ * row per node and per edge of a package, rewritten whole when the package
+ * loads. The engine searches its in-memory copy; these rows are what an
+ * operator reads to see what the catalog holds.
+ *
+ * Additive: new tables, nothing existing is altered. Losing them costs only a
+ * rebuild on the next load.
+ */
+export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_nodes (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      node_key VARCHAR NOT NULL,
+      entity_id VARCHAR NOT NULL,
+      kind VARCHAR NOT NULL,
+      source_key VARCHAR NOT NULL,
+      name VARCHAR NOT NULL,
+      model_paths VARCHAR NOT NULL,
+      derived_text VARCHAR NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, node_key)
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_edges (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      kind VARCHAR NOT NULL,
+      from_key VARCHAR NOT NULL,
+      to_key VARCHAR NOT NULL,
+      path VARCHAR NOT NULL,
+      PRIMARY KEY (environment_name, package_name, kind, from_key, to_key, path)
+    )
+  `);
+   // Index-time LLM output of the same engine (mcp/context/llm_cache.ts): a
+   // doc split into parts, and the questions written for a node. A row is
+   // reused only while its input, prompt and model hashes all match.
+   for (const table of ["doc_parts", "node_questions"]) {
+      await db.run(`
+    CREATE TABLE IF NOT EXISTS ${table} (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      item_key VARCHAR NOT NULL,
+      input_hash VARCHAR NOT NULL,
+      prompt_hash VARCHAR NOT NULL,
+      model VARCHAR NOT NULL,
+      output VARCHAR NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, item_key)
+    )
+  `);
+   }
+   // The engine's embedding rows: one per (node, facet), with the hash of the
+   // text that was embedded, so a sync re-embeds only what changed. Kept apart
+   // from entity_embeddings, whose sync deletes any row it did not write.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_embeddings (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      node_key VARCHAR NOT NULL,
+      facet VARCHAR NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      embedding_model VARCHAR NOT NULL,
+      dims INTEGER NOT NULL,
+      embedding FLOAT[] NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, node_key, facet)
+    )
+  `);
+   // The engine's value index (mcp/context/values_index.ts): stored values of
+   // `#(index)` dimensions on ungated sources, and value lists from docs.
+   // Rewritten at each load; the engine searches its in-memory copy.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_values (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      dimension_key VARCHAR NOT NULL,
+      value VARCHAR NOT NULL,
+      normalized VARCHAR NOT NULL,
+      count BIGINT NOT NULL,
+      origin VARCHAR NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    )
+  `);
+   // The embeddings of those values (`retrieval.fcj.valueEmbeddings`): one row
+   // per distinct value string (node_key is the value, facet is "value"), the
+   // same columns and sync rule as catalog_embeddings, so a reload embeds only
+   // values it has not seen. A gated source's values are never here.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS value_embeddings (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      node_key VARCHAR NOT NULL,
+      facet VARCHAR NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      embedding_model VARCHAR NOT NULL,
+      dims INTEGER NOT NULL,
+      embedding FLOAT[] NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, node_key, facet)
     )
   `);
 }
@@ -752,6 +846,13 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "entity_embeddings",
       "entity_keyphrases",
       "source_summaries",
+      "catalog_nodes",
+      "catalog_edges",
+      "doc_parts",
+      "node_questions",
+      "catalog_embeddings",
+      "dimension_values",
+      "value_embeddings",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

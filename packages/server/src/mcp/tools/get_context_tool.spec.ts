@@ -1,47 +1,31 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   beforeEach,
-   describe,
-   expect,
-   it,
-} from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { sanitizeLunrQuery as sanitize } from "./retrieval_shared";
 import { entityId } from "./get_context_response";
 import { registerGetContextTool } from "./get_context_tool";
 import { registerListPackagesTool } from "./list_packages_tool";
 import { docOnlyText, docText } from "./package_entities";
-import { embeddingText } from "./embedding_index";
-import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
+import { setRetrievalConfig } from "../../retrieval_config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
-import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import {
-   EmbeddingProvider,
    _clearEmbeddingProviderForTests,
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
-import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
-import { embeddingSyncQueue } from "./embedding_sync_queue";
-import { pollFor } from "../../test_helpers/poll";
 
-// Pin the baseline: every test in this file runs unconfigured (lexical)
-// unless it sets a provider itself, regardless of ambient EMBEDDING_* env
-// vars in the developer's shell.
+// Pin the baseline: every test in this file runs with no embedding provider,
+// regardless of ambient EMBEDDING_* env vars in the developer's shell.
+// Value search is off here: the dimensional_value tests in this file pin what a
+// server with it turned off answers. The on-mode is get_context_values.spec.ts.
 beforeEach(() => {
    _setEmbeddingProviderForTests(null);
-   _resetEmbeddingIndexStateForTests();
+   setRetrievalConfig({ dimensionValues: { enabled: false } });
 });
 afterAll(() => {
    _clearEmbeddingProviderForTests();
+   setRetrievalConfig(undefined);
 });
 
 describe("get_context docText", () => {
@@ -100,26 +84,6 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
             "#(doc) Secured orders.",
          ]),
       ).toBe("Secured orders.");
-   });
-
-   it("an #(access_filter)-only entity produces no embedding text beyond its name", () => {
-      // End-to-end: what embeddingText actually sends for a governed,
-      // undocumented entity is the humanized name only, never the predicate.
-      const embedDoc = docOnlyText([
-         "#(access_filter) \"$ROLE = 'admin'\"",
-         "#(access_filter) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
-      ]);
-      const text = embeddingText({
-         kind: "source",
-         name: "orders_secured",
-         source: "orders_secured",
-         modelPath: "m.malloy",
-         embedDoc,
-      });
-      expect(text).toBe("orders secured");
-      expect(text).not.toContain("accessFilter");
-      expect(text).not.toContain("ROLE");
-      expect(text).not.toContain("acme");
    });
 });
 
@@ -408,18 +372,6 @@ const mockDistinctSpellingDefs = {
 
 // Three parallel sources carrying the same concept, the shape that produced
 // the largest measured failure class.
-const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
-const mockSiblingModel = {
-   getSourceInfos: () =>
-      SIBLING_SOURCES.map((name) => ({
-         name,
-         annotations: [],
-         schema: {
-            fields: [{ kind: "dimension", name: "site", annotations: [] }],
-         },
-      })),
-   getQueries: () => [],
-};
 // Two names that humanize identically but are NOT one column: a raw amount
 // and a filtered measure. Neither is declared as the other, and that -- not
 // their docs -- is what keeps them apart now.
@@ -452,11 +404,6 @@ const mockDistinctSpellingModel = {
 const mockDistinctSpellingPackage = {
    listModels: async () => [{ path: "d.malloy" }],
    getModel: () => mockDistinctSpellingModel,
-   listSkills: () => [],
-};
-const mockSiblingPackage = {
-   listModels: async () => [{ path: "sib.malloy" }],
-   getModel: () => mockSiblingModel,
    listSkills: () => [],
 };
 
@@ -742,8 +689,8 @@ describe("get_context discovery tiers", () => {
       expect(payload.warnings.join(" ")).toContain("reload_package");
    });
 
-   it("tier 4: retrieval against a stale package carries the note too", async () => {
-      // Tier 4 is the path that goes straight from a question to field names
+   it("a ranked request against a stale package carries the note too", async () => {
+      // A ranked request is the path that goes straight from a question to field names
       // to a query, so it is the one an agent is most likely to trust blind.
       const handler = captureHandler({
          getEnvironment: async () =>
@@ -844,38 +791,14 @@ describe("get_context discovery tiers", () => {
       expect(warnings).not.toContain("curation gap");
    });
 
-   it("offset on a ranked request is a caller error, not a server fault", async () => {
-      // The refusal is deliberate and states its fix, but it threw a bare
-      // Error, which classifyToolError can only read as an internal fault --
-      // so it came back as "An unexpected internal error occurred during
-      // getContext.: Invalid offset: ...". That reads as a bug to report and
-      // invites the retry that cannot work.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockPackage),
-      });
-      const payload = parse(
-         await handler({
-            search_targets: [
-               { target_type: "measure", search_text: "revenue" },
-            ],
-            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
-            offset: 5,
-         }),
-      );
-      expect(payload.error).toContain("Invalid offset");
-      expect(payload.error).not.toContain("unexpected internal error");
-      expect(payload.suggestions.join(" ")).toContain("not transient");
-      expect(payload.sources).toEqual([]);
-   });
-
-   it("tier 4: a query retrieves the matching entity", async () => {
+   it("a listing returns a dimension under its source", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
       const results = rankedEntities(
          parse(
             await handler({
-               search_targets: anyKind("state"),
+               search_targets: everyKind(),
                scopes: [
                   { environment: "malloy-samples", package: "ecommerce" },
                ],
@@ -889,7 +812,7 @@ describe("get_context discovery tiers", () => {
       ).toBe(true);
    });
 
-   it("tier 4: retrieves a declared join, carrying its cardinality", async () => {
+   it("lists a declared join, carrying its cardinality", async () => {
       // Joins were skipped by the collector, so an agent could not see that
       // the model declared one and concluded it had to bridge the tables
       // itself. The join's #(doc) was likewise unreachable.
@@ -899,7 +822,7 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               search_targets: anyKind("building"),
+               search_targets: everyKind(),
                scopes: [
                   { environment: "malloy-samples", package: "ecommerce" },
                ],
@@ -947,7 +870,7 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               search_targets: anyKind("state"),
+               search_targets: everyKind(),
                scopes: [
                   { environment: "malloy-samples", package: "ecommerce" },
                ],
@@ -1001,7 +924,7 @@ describe("get_context discovery tiers", () => {
       );
    });
 
-   it("tier 4: indexes a joined field under its dotted path", async () => {
+   it("lists a joined field under its dotted path", async () => {
       // The path is what a query needs and what nothing else in the response
       // can supply: JoinInfo inlines the target's schema without naming the
       // target source, so an agent holding only the join entity cannot derive
@@ -1012,7 +935,7 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            search_targets: anyKind("Zzyzx"),
+            search_targets: everyKind(),
             scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
@@ -1052,7 +975,7 @@ describe("get_context discovery tiers", () => {
       expect(rankedEntities(payload)).toEqual([]);
    });
 
-   it("delivers the parent source's doc and joins alongside a field hit", async () => {
+   it("delivers the parent source's doc and joins on the card a field is listed under", async () => {
       // A field hit used to arrive with only its own doc: the source's grain
       // and population rules reached the agent only when the source itself
       // happened to rank for the same query, so guidance placement depended
@@ -1062,7 +985,7 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            search_targets: anyKind("state"),
+            search_targets: everyKind(),
             scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
@@ -1092,48 +1015,18 @@ describe("get_context discovery tiers", () => {
       });
    });
 
-   it("reports each source once, however many of its entities matched", async () => {
+   it("reports each source once, however many of its entities are listed", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
       const payload = parse(
          await handler({
-            search_targets: anyKind("order building state"),
+            search_targets: everyKind(),
             scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect(rankedEntities(payload).length).toBeGreaterThan(1);
       expect(sourceNames(payload)).toEqual(["order_items"]);
-   });
-
-   it("truncates a long source doc in context but not in the result itself", async () => {
-      // The context copy exists to deliver the caveat, not to reproduce the
-      // model file; a source that is itself the hit still returns in full.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockLongDocPackage),
-      });
-      const matched = parse(
-         await handler({
-            search_targets: anyKind("rooms"),
-            scopes: [{ environment: "e", package: "p" }],
-         }),
-      );
-      // The source itself ranked, so its docs come back whole.
-      expect(matched.sources[0].source_info.docs).toBe(LONG_SOURCE_DOC.trim());
-      expect(matched.sources[0].source_info.docs.length).toBeGreaterThan(500);
-
-      // Reached only as the parent of a field hit, the same doc is the
-      // truncated context copy: enough to deliver the caveat, not the file.
-      const viaField = parse(
-         await handler({
-            search_targets: anyKind("occupancy_pct"),
-            scopes: [{ environment: "e", package: "p" }],
-         }),
-      );
-      const docs = viaField.sources[0].source_info.docs;
-      expect(docs.length).toBeLessThanOrEqual(501);
-      expect(docs.endsWith("…")).toBe(true);
-      expect(docs).toStartWith("Rooms in the facilities inventory.");
    });
 
    it("reports an empty joins list for a source that declares none", async () => {
@@ -1184,7 +1077,7 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               search_targets: anyKind("site"),
+               search_targets: everyKind(),
                scopes: [{ environment: "e", package: "p" }],
             }),
          ),
@@ -1359,7 +1252,7 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               search_targets: anyKind("height"),
+               search_targets: everyKind(),
                scopes: [{ environment: "e", package: "p" }],
             }),
          ),
@@ -1406,7 +1299,7 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               search_targets: anyKind("site"),
+               search_targets: everyKind(),
                scopes: [{ environment: "e", package: "p" }],
             }),
          ),
@@ -1444,32 +1337,6 @@ describe("get_context discovery tiers", () => {
       // returned against total_available is how a caller sees it was capped.
       expect(payload.returned).toBe(5);
       expect(payload.total_available).toBe(12);
-   });
-
-   it("tier 4: without a provider the payload has no retrieval marker or scores", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockPackage),
-      });
-      const payload = parse(
-         await handler({
-            search_targets: anyKind("state"),
-            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
-         }),
-      );
-      expect(payload.retrieval).toBeUndefined();
-      // The shape is the shape with or without a provider: source cards and
-      // their joins are metadata every caller benefits from. Only the marker
-      // and the relevance scores are provider-only.
-      expect(Object.keys(payload)).toEqual([
-         "sources",
-         "ranking",
-         "total_available",
-         "returned",
-      ]);
-      for (const r of rankedEntities(payload)) {
-         expect(r.relevance).toBeUndefined();
-      }
-      expect(payload.sources[0].relevance).toBeUndefined();
    });
 
    it("tier 3 drill-down: sourceName lists that source's fields, views and queries", async () => {
@@ -1628,1449 +1495,6 @@ describe("get_context discovery tiers", () => {
          ["view", "by_month"],
          ["dimension", "status"],
       ]);
-   });
-
-   it("omits the retrieval field entirely when no embedding provider is configured", async () => {
-      // Pins what the tool description now promises: absent, not defaulted. A
-      // caller that branches on `retrieval` must not see a value invented for it.
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
-      });
-      const payload = parse(
-         await handler({
-            search_targets: anyKind("state"),
-            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
-         }),
-      );
-      expect("retrieval" in payload).toBe(false);
-      expect(rankedEntities(payload).every((e) => !("relevance" in e))).toBe(
-         true,
-      );
-   });
-});
-
-describe("get_context semantic retrieval", () => {
-   let tempDir: string;
-   let db: DuckDBConnection;
-
-   beforeAll(async () => {
-      tempDir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "get-context-semantic-spec-"),
-      );
-      db = new DuckDBConnection(path.join(tempDir, "test.db"));
-      await db.initialize();
-      await createEntityEmbeddingsTable(db);
-   });
-
-   afterAll(async () => {
-      // Close before removing: Windows refuses to delete a directory
-      // holding DuckDB's open file handle.
-      await db.close();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-   });
-
-   afterEach(() => {
-      _setEmbeddingProviderForTests(null);
-   });
-
-   const VECTORS: Record<string, number[]> = {
-      // An entity's name and its doc embed as separate facets, so both need
-      // a stub vector. A missing entry throws, which is what makes this map
-      // double as a pin on exactly what gets embedded: the join's facets and
-      // those of the field reached THROUGH it are both here, because both are
-      // indexed. A joined field embeds under its dotted path, so its name
-      // facet is the humanized path, not the bare field name.
-      "order items": [0, 1],
-      "order items: One row per product sold on an order.": [0, 1],
-      state: [1, 0],
-      "current building": [0, 1],
-      "current building: Building this asset sits in.": [0, 1],
-      "current building building name": [0, 1],
-      "current building building name: Zzyzx joined-source field.": [0, 1],
-      "where do customers live": [1, 0],
-      "what building is this in": [0, 1],
-      // Points away from both entity axes, so it scores about -0.707 against
-      // every facet in the package and nothing clears the floor. This is the
-      // true negative: the question is not modelled here at all.
-      "seismic retrofit of bridge pilings": [-1, -1],
-   };
-
-   /** A provider over an explicit text -> vector map. Unknown text throws, */
-   /** so the map pins exactly which facets get embedded. */
-   function stubProviderFor(
-      vectors: Record<string, number[]>,
-      options: { fail?: boolean; onRequest?: (inputs: string[]) => void } = {},
-   ): EmbeddingProvider {
-      const fetchStub = (async (
-         _url: RequestInfo | URL,
-         init?: RequestInit,
-      ) => {
-         if (options.fail) return new Response("down", { status: 500 });
-         const body = JSON.parse(String(init?.body)) as { input: string[] };
-         options.onRequest?.(body.input);
-         const data = body.input.map((text, index) => {
-            const embedding = vectors[text];
-            if (!embedding) throw new Error(`no stub vector for "${text}"`);
-            return { index, embedding };
-         });
-         return new Response(JSON.stringify({ data }), { status: 200 });
-      }) as typeof fetch;
-      return new EmbeddingProvider(
-         {
-            apiKey: "test",
-            model: "stub-model",
-            baseUrl: "https://stub.example.com/v1",
-            minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
-         },
-         fetchStub,
-      );
-   }
-
-   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
-      return stubProviderFor(VECTORS, options);
-   }
-
-   /**
-    * A store over the given package, backed by the temp DB. The package is
-    * served with the `facets` representation: the stub vectors above name the
-    * name row and the doc row of each entity separately, and these tests are
-    * about that faceted index. (The default is now `single`; its rows are
-    * covered in embedding_representation.spec.ts and the payload pin.)
-    */
-   function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
-      const facetsPkg = Object.assign(pkg as object, {
-         getRetrievalSettings: () => ({
-            representation: "facets",
-            keyphrases: "never",
-            prompts: {},
-         }),
-      });
-      return {
-         getEnvironment: async () => envWith(async () => facetsPkg),
-         storageManager: {
-            getDuckDbConnection: () => db,
-         } as never,
-      };
-   }
-
-   /** A store whose package is a fresh instance, backed by the temp DB. */
-   function semanticStore(): Partial<EnvironmentStore> {
-      return semanticStoreFor({
-         listModels: async () => [{ path: "ecommerce.malloy" }],
-         getModel: () => mockModel,
-      });
-   }
-
-   async function callUntilSemantic(
-      handler: Handler,
-      params: Record<string, unknown>,
-   ) {
-      return pollFor(
-         async () => parse(await handler(params)),
-         (payload) => payload.retrieval === "semantic",
-      );
-   }
-
-   // Two sources declaring the same field name, which is the shape an
-   // `extend` sibling produces. humanizeName(name) carries no source, so both
-   // name facets embed from ONE map entry here -- reproducing the identical
-   // embedding rather than asserting it.
-   const siblingMeasure = (doc: string) => ({
-      kind: "measure",
-      name: "total_amount",
-      annotations: [`#(doc) ${doc}`],
-   });
-   const OPEN_DOC = "Total order amount.";
-   const GATED_DOC = "Total order amount, after the access gate.";
-   const siblingSourcesModel = (securedMeasureDoc: string) => ({
-      getSourceInfos: () => [
-         {
-            name: "sales",
-            annotations: ["#(doc) Every order."],
-            schema: { fields: [siblingMeasure(OPEN_DOC)] },
-         },
-         {
-            name: "sales_secured",
-            annotations: ["#(doc) Only orders this caller may see."],
-            schema: { fields: [siblingMeasure(securedMeasureDoc)] },
-         },
-      ],
-      getQueries: () => [],
-   });
-   const SIBLING_VECTORS: Record<string, number[]> = {
-      sales: [0, 1],
-      "sales: Every order.": [0, 1],
-      "sales secured": [0, 1],
-      "sales secured: Only orders this caller may see.": [0, 1],
-      // ONE entry, read by both sources' name facet.
-      "total amount": [1, 0],
-      [`total amount: ${OPEN_DOC}`]: [0, 1],
-      [`total amount: ${GATED_DOC}`]: [0, 1],
-      "total order amount": [1, 0],
-   };
-   const siblingHandler = (securedMeasureDoc: string) =>
-      captureHandler(
-         semanticStoreFor({
-            listModels: async () => [{ path: "s.malloy" }],
-            getModel: () => siblingSourcesModel(securedMeasureDoc),
-         }),
-      );
-
-   it("orders equal semantic scores by source, whatever order the model declares them in", async () => {
-      // Two sources each declare `total_amount`, with identical text and so an
-      // identical vector: an exact score tie. The order of a tie was left to
-      // DuckDB (which broke it by name alone, and the names are equal here), so
-      // it followed insertion order and could differ between servers and
-      // between runs. It is now score, then source, then name.
-      const provider = stubProviderFor({
-         "zebra sales": [0, 1],
-         "alpha sales": [0, 1],
-         "total amount": [1, 0],
-         "total order amount": [1, 0],
-      });
-      const sourceWith = (name: string) => ({
-         name,
-         annotations: [],
-         schema: {
-            fields: [
-               { kind: "measure", name: "total_amount", annotations: [] },
-            ],
-         },
-      });
-      const run = async (declared: string[], packageName: string) => {
-         _setEmbeddingProviderForTests(provider);
-         const handler = captureHandler(
-            semanticStoreFor({
-               listModels: async () => [{ path: "t.malloy" }],
-               getModel: () => ({
-                  getSourceInfos: () => declared.map(sourceWith),
-                  getQueries: () => [],
-               }),
-            }),
-         );
-         const payload = await callUntilSemantic(handler, {
-            search_targets: anyKind("total order amount"),
-            scopes: [{ environment: "specs", package: packageName }],
-         });
-         return sourceNames(payload);
-      };
-      const zebraFirst = await run(["zebra_sales", "alpha_sales"], "tie-a");
-      const alphaFirst = await run(["alpha_sales", "zebra_sales"], "tie-b");
-      expect(zebraFirst).toEqual(["alpha_sales", "zebra_sales"]);
-      expect(alphaFirst).toEqual(["alpha_sales", "zebra_sales"]);
-   });
-
-   it("treats only exactly equal scores as tied, not scores that round to the same four places", async () => {
-      // `zebra` has the slightly better match (cosine 0.9999875), `alpha` the
-      // slightly worse (0.9999595). Both publish as 1 at four decimals, so a
-      // tie-break on the published score would list alpha first by name. Their
-      // real scores differ, so zebra comes first.
-      const provider = stubProviderFor({
-         "zebra sales": [0, 1],
-         "alpha sales": [0, 1],
-         "m one": [1, 0.005],
-         "m two": [1, 0.009],
-         "find it": [1, 0],
-      });
-      const sourceWith = (name: string, field: string) => ({
-         name,
-         annotations: [],
-         schema: {
-            fields: [{ kind: "measure", name: field, annotations: [] }],
-         },
-      });
-      _setEmbeddingProviderForTests(provider);
-      const handler = captureHandler(
-         semanticStoreFor({
-            listModels: async () => [{ path: "t.malloy" }],
-            getModel: () => ({
-               getSourceInfos: () => [
-                  sourceWith("alpha_sales", "m_two"),
-                  sourceWith("zebra_sales", "m_one"),
-               ],
-               getQueries: () => [],
-            }),
-         }),
-      );
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("find it"),
-         scopes: [{ environment: "specs", package: "near-tie" }],
-      });
-      expect(sourceNames(payload)).toEqual(["zebra_sales", "alpha_sales"]);
-   });
-
-   it("returns every resolving model path, like the lexical path does", async () => {
-      // The vector cache holds ONE row per (kind, source, name) -- the text is
-      // identical whichever file resolves the source -- and the scan fans that
-      // hit back out to every live entity sharing the key. The merge that
-      // follows has to keep those apart: keyed on the bare name it collapsed
-      // them straight back to one and kept whichever landed last, so the same
-      // question answered with one model_path on semantic and all of them on
-      // lexical. lunr never had the bug because its ref is the per-path id.
-      const provider = stubProviderFor({
-         shared: [1, 0],
-         "shared: A source two files resolve.": [1, 0],
-         amount: [1, 0],
-         "the shared source": [1, 0],
-      });
-      _setEmbeddingProviderForTests(provider);
-
-      const sharedSource = {
-         name: "shared",
-         annotations: ["#(doc) A source two files resolve."],
-         schema: {
-            fields: [{ kind: "dimension", name: "amount", annotations: [] }],
-         },
-      };
-      const handler = captureConverged(
-         semanticStoreFor({
-            listModels: async () => [
-               { path: "defs.malloy" },
-               { path: "uses.malloy" },
-            ],
-            // Both files resolve `shared`, so it is queryable under both.
-            getModel: () => ({
-               getSourceInfos: () => [sharedSource],
-               getQueries: () => [],
-            }),
-         }),
-      );
-      const params = {
-         search_targets: [
-            { target_type: "source", search_text: "the shared source" },
-         ],
-         scopes: [{ environment: "specs", package: "multipath" }],
-      };
-      const payload = await callUntilSemantic(handler, params);
-
-      const paths = payload.sources.map(
-         (c: { source_info: { resource_id: { model_path: string } } }) =>
-            c.source_info.resource_id.model_path,
-      );
-      expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
-      expect(payload.returned).toBe(2);
-      expect(payload.total_available).toBe(2);
-   });
-
-   it("lists the model paths of one tied source in path order, not in the order the package lists them", async () => {
-      // One embedded row fans out to a card per model path that resolves the
-      // source, all with the same score. Their order was the package's own
-      // listing order.
-      _setEmbeddingProviderForTests(
-         stubProviderFor({
-            shared: [1, 0],
-            "shared: A source two files resolve.": [1, 0],
-            "the shared source": [1, 0],
-         }),
-      );
-      const handler = captureConverged(
-         semanticStoreFor({
-            listModels: async () => [
-               { path: "uses.malloy" },
-               { path: "defs.malloy" },
-            ],
-            getModel: () => ({
-               getSourceInfos: () => [
-                  {
-                     name: "shared",
-                     annotations: ["#(doc) A source two files resolve."],
-                     schema: { fields: [] },
-                  },
-               ],
-               getQueries: () => [],
-            }),
-         }),
-      );
-      const payload = await callUntilSemantic(handler, {
-         search_targets: [
-            { target_type: "source", search_text: "the shared source" },
-         ],
-         scopes: [{ environment: "specs", package: "multipath-order" }],
-      });
-      expect(
-         payload.sources.map(
-            (c: { source_info: { resource_id: { model_path: string } } }) =>
-               c.source_info.resource_id.model_path,
-         ),
-      ).toEqual(["defs.malloy", "uses.malloy"]);
-   });
-
-   it("a source-scoped call does not delete the rest of the package's vectors", async () => {
-      // The destructive shape this must never regress into. syncPackageEmbeddings
-      // reads EVERY row for the package and deletes the ones absent from the
-      // desired set it is handed, so handing it a scope-filtered entity list
-      // means "make the cache match this subset" -- and it obliges, deleting
-      // every other source's vectors. Reported against an older build as one
-      // scoped question dropping 2448 of 2603 rows and taking the package
-      // lexical for the life of the Package instance.
-      //
-      // What keeps it correct is that the scope is applied INSIDE the scan
-      // (trySemanticSearch's `sourceName`), while the sync is handed the whole
-      // package: getContext passes pkgIndex.retrievalEntities, and the filtered
-      // list is a separate `inScope` used only for the enumeration tiers. This
-      // pins that separation from the outside, where a future refactor that
-      // collapsed the two would be caught.
-      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
-      const handler = captureHandler(
-         semanticStoreFor({
-            listModels: async () => [{ path: "s.malloy" }],
-            getModel: () => siblingSourcesModel(GATED_DOC),
-         }),
-      );
-      const target = [
-         { target_type: "measure", search_text: "total order amount" },
-      ];
-      const scope = { environment: "specs", package: "scope-safety" };
-
-      // Warm the whole package, so there are other sources' rows to lose.
-      await callUntilSemantic(handler, {
-         search_targets: target,
-         scopes: [scope],
-      });
-      const rowsFor = async () =>
-         (
-            await db.all<{ n: number }>(
-               "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE package_name = 'scope-safety'",
-            )
-         )[0].n;
-      const warmRows = await rowsFor();
-      // Both sources and both measures are cached, or there is nothing for a
-      // scoped call to delete and this test would pass vacuously.
-      expect(warmRows).toBeGreaterThan(2);
-      const sourcesCached = await db.all<{ entity_source: string }>(
-         "SELECT DISTINCT entity_source FROM entity_embeddings WHERE package_name = 'scope-safety'",
-      );
-      expect(sourcesCached.map((r) => r.entity_source).sort()).toEqual([
-         "sales",
-         "sales_secured",
-      ]);
-
-      // Now the scoped question, repeated: a fire-and-forget sync started by
-      // any one of these would have landed by the last. Retrieval modes are
-      // collected rather than asserted here, so the row check below is what
-      // fails first -- losing the siblings' vectors is the harm, and going
-      // lexical is only how it shows up on the next call.
-      const modes: unknown[] = [];
-      for (let i = 0; i < 5; i++) {
-         modes.push(
-            parse(
-               await handler({
-                  search_targets: target,
-                  scopes: [{ ...scope, source: "sales" }],
-               }),
-            ).retrieval,
-         );
-         await embeddingSyncQueue.idle();
-      }
-
-      // Nothing was deleted: the scope narrowed the SCAN, not the cache.
-      expect(await rowsFor()).toBe(warmRows);
-      // And the scoped calls stayed semantic throughout, which they cannot be
-      // if the cache was rewritten underneath them.
-      expect(modes).toEqual(Array(5).fill("semantic"));
-   });
-
-   it("embeds every target in ONE provider request and scans once", async () => {
-      // The claim the multi-target design rests on: N targets cost one round
-      // trip, not N. embedBatch already batches and the scan cross-joins the
-      // vectors, so this is observable as the number of requests a WARM index
-      // makes for a three-target question.
-      const requests: string[][] = [];
-      const provider = stubProviderFor(
-         {
-            ...SIBLING_VECTORS,
-            "orders this caller may see": [0, 1],
-            "amount of the order": [1, 0],
-         },
-         { onRequest: (inputs) => requests.push(inputs) },
-      );
-      _setEmbeddingProviderForTests(provider);
-
-      const handler = captureConverged(
-         semanticStoreFor({
-            listModels: async () => [{ path: "s.malloy" }],
-            getModel: () => siblingSourcesModel(GATED_DOC),
-         }),
-      );
-      const params = {
-         search_targets: [
-            { target_type: "measure", search_text: "total order amount" },
-            {
-               target_type: "dimension",
-               search_text: "orders this caller may see",
-            },
-            { target_type: "view", search_text: "amount of the order" },
-         ],
-         scopes: [{ environment: "specs", package: "sib-batch" }],
-      };
-      // Warm the index first: the cold call triggers the bulk sync, and that
-      // sync's own requests are not what this measures.
-      await callUntilSemantic(handler, params);
-
-      requests.length = 0;
-      const payload = parse(await handler(params));
-      expect(payload.retrieval).toBe("semantic");
-      expect(requests).toHaveLength(1);
-      // And that one request carried all three texts, in the caller's order.
-      expect(requests[0]).toEqual([
-         "total order amount",
-         "orders this caller may see",
-         "amount of the order",
-      ]);
-
-      // Semantic IS where matched_targets belongs: cosine is an absolute
-      // scale, so the number means something on its own and across targets.
-      const hit = rankedEntities(payload).find((e) => e.matched_targets);
-      expect(hit).toBeDefined();
-      expect(hit!.relevance).toBeGreaterThan(0);
-      for (const m of hit!.matched_targets!) {
-         expect(requests[0]).toContain(m.search_text);
-         expect(m.relevance).toBeGreaterThan(0);
-      }
-   });
-
-   it("never loses a target's answer when other targets join the call", async () => {
-      // The invariant the source-bucketed window exists for. Adding targets to
-      // a call adds questions; it must not subtract answers from the ones
-      // already there. Under an entity-counted limit it did: asking for a
-      // measure alone returned 3 hits and asking for it beside a dimension and
-      // a view returned 2.
-      //
-      // The guarantee is a SUPERSET, not equality, and the difference is real
-      // rather than a hedge: `limit` counts sources, so other targets can pull
-      // further sources into the window, and those sources carry hits for this
-      // target too. Measured against malloy-samples, a measure target returned
-      // 3 hits alone and 4 in a set of three. More is fine; fewer is the bug.
-      const model = {
-         getSourceInfos: () => [
-            {
-               name: "s",
-               annotations: [],
-               schema: {
-                  fields: [
-                     { kind: "measure", name: "m1", annotations: [] },
-                     { kind: "measure", name: "m2", annotations: [] },
-                     { kind: "measure", name: "m3", annotations: [] },
-                     { kind: "dimension", name: "d1", annotations: [] },
-                     { kind: "dimension", name: "d2", annotations: [] },
-                     { kind: "dimension", name: "d3", annotations: [] },
-                  ],
-               },
-            },
-         ],
-         getQueries: () => [],
-      };
-      _setEmbeddingProviderForTests(
-         stubProviderFor({
-            s: [-1, -1],
-            // Dimensions all score 1.0, so under a shared budget they would
-            // take every slot and starve the measures.
-            d1: [1, 0],
-            d2: [1, 0],
-            d3: [1, 0],
-            m1: [0, 1],
-            m2: [0.3, 0.954],
-            m3: [0.5, 0.866],
-            meas: [0, 1],
-            dims: [1, 0],
-         }),
-      );
-      const handler = captureConverged(
-         semanticStoreFor({
-            listModels: async () => [{ path: "s.malloy" }],
-            getModel: () => model,
-         }),
-      );
-      const scopes = [{ environment: "specs", package: "no-loss" }];
-      const measures = (payload: {
-         sources: Array<{
-            entities?: Array<{ name: string; entity_type: string }>;
-         }>;
-      }) =>
-         payload.sources
-            .flatMap((c) => c.entities ?? [])
-            .filter((e) => e.entity_type === "measure")
-            .map((e) => e.name);
-
-      const alone = await callUntilSemantic(handler, {
-         search_targets: [{ target_type: "measure", search_text: "meas" }],
-         scopes,
-         limit: 3,
-      });
-      const inASet = await callUntilSemantic(handler, {
-         search_targets: [
-            { target_type: "measure", search_text: "meas" },
-            { target_type: "dimension", search_text: "dims" },
-         ],
-         scopes,
-         limit: 3,
-      });
-
-      expect(measures(alone)).toEqual(["m1", "m2", "m3"]);
-      // Every answer the target had alone survives the company of others.
-      for (const name of measures(alone)) {
-         expect(measures(inASet)).toContain(name);
-      }
-      // And the added target is answered too, rather than trading places.
-      expect(
-         inASet.sources
-            .flatMap(
-               (c: { entities?: Array<{ entity_type: string }> }) =>
-                  c.entities ?? [],
-            )
-            .some(
-               (e: { entity_type: string }) => e.entity_type === "dimension",
-            ),
-      ).toBe(true);
-   });
-
-   it("gives every target a share of the window, not just the strongest", async () => {
-      // Found against malloy-samples: three targets, limit 4, and the
-      // dimension target's hits at 0.63 took every slot -- the measure
-      // target's own best (0.42) and the view target's (0.53) were absent, not
-      // ranked lower. One call asking three questions answered one of them.
-      // Here the three dimensions all score 1.0 and would sweep a global cut.
-      const model = {
-         getSourceInfos: () => [
-            {
-               name: "s",
-               annotations: [],
-               schema: {
-                  fields: [
-                     { kind: "dimension", name: "d1", annotations: [] },
-                     { kind: "dimension", name: "d2", annotations: [] },
-                     { kind: "dimension", name: "d3", annotations: [] },
-                     { kind: "measure", name: "m1", annotations: [] },
-                     { kind: "view", name: "v1", annotations: [] },
-                  ],
-               },
-            },
-         ],
-         getQueries: () => [],
-      };
-      _setEmbeddingProviderForTests(
-         stubProviderFor({
-            s: [-1, -1],
-            d1: [1, 0],
-            d2: [1, 0],
-            d3: [1, 0],
-            m1: [0.5, 0.866],
-            v1: [0.7, 0.714],
-            dims: [1, 0],
-            meas: [0, 1],
-            vw: [0, 1],
-         }),
-      );
-      const handler = captureConverged(
-         semanticStoreFor({
-            listModels: async () => [{ path: "s.malloy" }],
-            getModel: () => model,
-         }),
-      );
-      const payload = await callUntilSemantic(handler, {
-         search_targets: [
-            { target_type: "dimension", search_text: "dims" },
-            { target_type: "measure", search_text: "meas" },
-            { target_type: "view", search_text: "vw" },
-         ],
-         scopes: [{ environment: "specs", package: "share" }],
-         limit: 3,
-      });
-      // Every target answered. Bucketing by source is what guarantees it:
-      // targets no longer spend from one pool, so a broad target cannot
-      // starve a narrow one.
-      const kinds = new Set(rankedEntities(payload).map((e) => e.entity_type));
-      expect([...kinds].sort()).toEqual(["dimension", "measure", "view"]);
-   });
-
-   it("returns a same-named measure from every source that declares it", async () => {
-      // Two sources, one measure name, identical scores -- both rows come
-      // back, each under its own card. Nothing folds across sources, because
-      // a shared name is not a shared number: `sales_secured` is `sales`
-      // narrowed by an access gate, and the caller picks between them by
-      // reading each source's doc.
-      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
-      const payload = await callUntilSemantic(siblingHandler(GATED_DOC), {
-         search_targets: anyKind("total order amount"),
-         scopes: [{ environment: "specs", package: "sib-semantic-differing" }],
-      });
-      const rows = rankedEntities(payload).filter(
-         (e) => e.name === "total_amount",
-      );
-      expect(rows).toHaveLength(2);
-      expect(rows[0].relevance).toBe(rows[1].relevance);
-      expect(rows.map((r) => r.source).sort()).toEqual([
-         "sales",
-         "sales_secured",
-      ]);
-      expect(rows.map((r) => r.description).sort()).toEqual(
-         [OPEN_DOC, GATED_DOC].sort(),
-      );
-   });
-
-   it("returns both sources even when the measure docs are IDENTICAL", async () => {
-      // The case the old collapse got most wrong. An inherited measure
-      // carries its parent's doc verbatim, so a doc comparison sees no
-      // difference and folded one row away -- while the SOURCE doc, the only
-      // place "only orders this caller may see" is written, said the numbers
-      // differ. Identical field docs are not evidence of identical numbers.
-      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
-      const payload = await callUntilSemantic(siblingHandler(OPEN_DOC), {
-         search_targets: anyKind("total order amount"),
-         scopes: [{ environment: "specs", package: "sib-semantic-identical" }],
-      });
-      const rows = rankedEntities(payload).filter(
-         (e) => e.name === "total_amount",
-      );
-      expect(rows).toHaveLength(2);
-      expect(rows.map((r) => r.source).sort()).toEqual([
-         "sales",
-         "sales_secured",
-      ]);
-
-      const cards = payload.sources as Array<{
-         source_info: { resource_id: { source: string }; docs?: string };
-         entities?: unknown[];
-      }>;
-      expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
-         ["sales", "sales_secured"],
-      );
-      // Each card carries its OWN doc, which is what the caller reads to
-      // choose -- and every card carries entities now, where a folded
-      // sibling used to arrive empty.
-      const cardFor = (name: string) =>
-         cards.find((c) => c.source_info.resource_id.source === name);
-      expect(cardFor("sales")?.source_info.docs).toContain("Every order");
-      expect(cardFor("sales_secured")?.source_info.docs).toContain(
-         "this caller may see",
-      );
-      expect(cards.every((c) => (c.entities ?? []).length > 0)).toBe(true);
-      expect(payload.total_available).toBe(2);
-      // returned never exceeds the caller's window now: a folded sibling's
-      // card used to be materialised outside it.
-      expect(payload.returned).toBe(cards.length);
-   });
-
-   it("ranks semantically once the index syncs, with scores and a marker", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "semantic-pkg" }],
-      };
-
-      // Cold start: the sync is still building, so this call says so and
-      // returns nothing, rather than answering lexically.
-      const first = parse(await handler(params));
-      expect(first.retrieval).toBe("indexing");
-      expect(first.sources).toEqual([]);
-
-      const payload = await callUntilSemantic(handler, params);
-      const results = rankedEntities(payload);
-      expect(results[0].name).toBe("state");
-      expect(results[0].entity_type).toBe("dimension");
-      expect(results[0].relevance).toBeCloseTo(1.0, 3);
-      // "order items" is orthogonal to the query: below the similarity
-      // floor, so it must not pad the results.
-      expect(results.some((r) => r.name === "order_items")).toBe(false);
-   });
-
-   it("carries the same entity facts on the lexical and semantic paths", async () => {
-      // The two paths score differently and are MEANT to: only the semantic
-      // one publishes a relevance, and only it names matched_targets. What
-      // they must not differ on is what an entity IS -- its type, its Malloy
-      // data type, the join traversal reaching it, its doc, its identity.
-      //
-      // That drifted twice, because each path wrote the projection out by
-      // hand: sibling collapse shipped on the semantic path before the
-      // lexical one had it, and matched_targets never reached the semantic
-      // path at all. Neither showed up as a failing test, because a dropped
-      // field makes a response smaller, not wrong. projectEntity is now the
-      // single projection; this pins that the paths agree through it.
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         // join-pkg, and this phrasing, on purpose: the shared entities have
-         // to CARRY the optional fields for comparing them to mean anything.
-         // A bare dimension has no relationship, join_path, doc or data_type,
-         // so the same assertion over semantic-pkg passes without testing
-         // anything. "current building" also matches lexically (it humanizes
-         // to the join's own name) and has a stub vector, so both paths
-         // return it.
-         search_targets: anyKind("current building"),
-         scopes: [{ environment: "specs", package: "join-pkg" }],
-      };
-
-      // The lexical answer is the no-provider mode now, so ask for it with
-      // no provider configured: it carries no `retrieval` marker at all.
-      _setEmbeddingProviderForTests(null);
-      const lexical = parse(await handler(params));
-      expect(lexical).not.toHaveProperty("retrieval");
-      _setEmbeddingProviderForTests(stubProvider());
-      const semantic = await callUntilSemantic(handler, params);
-
-      type Ranked = ReturnType<typeof rankedEntities>[number];
-      const identityOf = (e: Ranked) => ({
-         name: e.name,
-         source: e.source,
-         entity_type: e.entity_type,
-         entity_id: e.entity_id,
-         description: e.description,
-         data_type: e.data_type,
-         join_path: e.join_path,
-         relationship: e.relationship,
-         aliases: e.aliases,
-      });
-      const byId = (rows: Ranked[]) =>
-         new Map(rows.map((e) => [e.entity_id as string, identityOf(e)]));
-
-      const lexicalById = byId(rankedEntities(lexical));
-      const semanticById = byId(rankedEntities(semantic));
-
-      // Guard the guard: if the two paths shared no entity the comparison
-      // below would pass by matching nothing.
-      const shared = [...semanticById.keys()].filter((id) =>
-         lexicalById.has(id),
-      );
-      expect(shared.length).toBeGreaterThan(0);
-      // Guard the guard, part two: comparing entities that carry none of the
-      // optional fields would agree trivially. At least one shared row must
-      // carry each field that has ever drifted between the paths.
-      //
-      // join_path and data_type are NOT covered, and not by choice: the
-      // lexical index feeds lunr the raw `e.name`, so a dotted joined field
-      // like `current_building.building_name` is one token and no plain-English
-      // phrasing reaches it. Only entities the lexical path can return by name
-      // can be compared, and none of those carry a join path. Widening this
-      // test needs that fixed first.
-      const sharedRows = shared.map((id) => semanticById.get(id)!);
-      expect(sharedRows.some((e) => e.description !== undefined)).toBe(true);
-      expect(sharedRows.some((e) => e.relationship !== undefined)).toBe(true);
-      for (const id of shared) {
-         expect(semanticById.get(id)).toEqual(lexicalById.get(id)!);
-      }
-
-      // And the fields that SHOULD differ still do, so the assertion above
-      // is not passing because both paths went quiet.
-      const semanticRows = rankedEntities(semantic);
-      expect(semanticRows.some((e) => e.relevance !== undefined)).toBe(true);
-      expect(
-         rankedEntities(lexical).every((e) => e.relevance === undefined),
-      ).toBe(true);
-   });
-
-   it("ranks a join semantically and writes it to the embedding index", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("what building is this in"),
-         scopes: [{ environment: "specs", package: "join-pkg" }],
-      });
-      const join = rankedEntities(payload).find(
-         (r) => r.name === "current_building",
-      );
-      expect(join).toBeDefined();
-      expect(join!.entity_type).toBe("join");
-      expect(join!.relationship).toBe("one");
-      expect(join!.relevance).toBeCloseTo(1.0, 3);
-
-      // The vector cache holds it under its own kind, so it survives a
-      // restart and takes part in the incremental hash diff like any other
-      // entity — including being faceted, so a join's doc cannot bury the
-      // join's own name.
-      const rows = await db.all<{ facet: string }>(
-         `SELECT facet FROM entity_embeddings
-          WHERE package_name = ? AND entity_kind = 'join' AND entity_name = ?
-          ORDER BY facet`,
-         ["join-pkg", "current_building"],
-      );
-      expect(rows.map((r) => r.facet)).toEqual(["doc:0", "name"]);
-   });
-
-   it("delivers a source's doc even when the source itself scores below the floor", async () => {
-      // The §5 fix, on the path that produced it. "where do customers live"
-      // is orthogonal to the order_items source entity, so the source is
-      // dropped by MIN_SIMILARITY and, before this, its doc went with it —
-      // the agent got a field with no idea of the source's grain. The doc now
-      // rides on the response regardless of how the source itself scored.
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "context-pkg" }],
-      });
-      // The source itself never cleared the floor, so it is in the response
-      // only as the parent of a field that did. Its relevance is therefore
-      // derived from its best entity, which is what the published schema
-      // specifies when source-level matching is unavailable -- a matched
-      // source is never reported at null for a caller ranking sources.
-      expect(payload.sources[0].relevance).toBeCloseTo(1.0, 3);
-      expect(payload.sources).toEqual([
-         {
-            relevance: 1,
-            // ...and it is still the container its field hit nests in, which
-            // is what carries the doc through regardless of the source's score.
-            source_info: {
-               resource_id: {
-                  environment: "specs",
-                  package: "context-pkg",
-                  model_path: "ecommerce.malloy",
-                  source: "order_items",
-               },
-               one_line_summary: "One row per product sold on an order.",
-               docs: "One row per product sold on an order.",
-               joins: [
-                  {
-                     name: "current_building",
-                     relationship: "one",
-                     doc: "Building this asset sits in.",
-                  },
-               ],
-            },
-            entities: [
-               {
-                  name: "state",
-                  entity_type: "dimension",
-                  entity_id: "dimension:order_items:state",
-                  relevance: 1,
-                  // Which target found it, and how well. A strict toEqual is
-                  // deliberate here: it is the one assertion in this file that
-                  // fails when a field ships without anyone deciding to add it.
-                  matched_targets: [
-                     {
-                        search_text: "where do customers live",
-                        relevance: 1,
-                     },
-                  ],
-               },
-            ],
-         },
-      ]);
-   });
-
-   it("says the index is still building while it builds, with progress, and stops once semantic", async () => {
-      // A cold index is not an error and not a lexical answer: it is an empty
-      // result that says how far the build has got and that asking again will
-      // work.
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "reason-pkg" }],
-      };
-      const result = await handler(params);
-      expect(result.isError).toBe(false);
-      const first = parse(result);
-      expect(first.retrieval).toBe("indexing");
-      expect(first.sources).toEqual([]);
-      expect(first.returned).toBe(0);
-      expect(first.retrieval_progress.total).toBeGreaterThan(0);
-      expect(first.retrieval_progress.embedded).toBeLessThanOrEqual(
-         first.retrieval_progress.total,
-      );
-      expect(first.warnings.join(" ")).toContain("still being built");
-      expect(first).not.toHaveProperty("retrieval_reason");
-
-      const warm = await callUntilSemantic(handler, params);
-      expect(warm).not.toHaveProperty("retrieval_reason");
-      expect(warm).not.toHaveProperty("retrieval_progress");
-   });
-
-   it("reports a dead provider as provider-error, then as cooldown, each as an error", async () => {
-      // Two different remedies: the first call learns the endpoint is down,
-      // and every call in the window after it is short-circuited deliberately
-      // rather than re-probing. Both are errors that name the reason.
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "dead-provider-pkg" }],
-      };
-      await callUntilSemantic(handler, params);
-
-      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const failedResult = await handler(params);
-      expect(failedResult.isError).toBe(true);
-      const failed = parse(failedResult);
-      expect(failed.retrieval).toBe("error");
-      expect(failed.retrieval_reason).toBe("provider-error");
-      expect(failed.sources).toEqual([]);
-      expect(failed.error).toContain("failed to embed the search text");
-
-      const cooledResult = await handler(params);
-      expect(cooledResult.isError).toBe(true);
-      const cooled = parse(cooledResult);
-      expect(cooled.retrieval_reason).toBe("cooldown");
-      expect(cooled.error).toContain("paused");
-   });
-
-   it("keeps a listing working while the index builds and while it is in error", async () => {
-      // A listing has no search text, so it needs no embeddings: it must not
-      // be refused just because the index cannot rank.
-      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const handler = captureHandler(semanticStore());
-      const search = {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "listing-state-pkg" }],
-      };
-      const listing = {
-         search_targets: [{ target_type: "source" }],
-         scopes: [{ environment: "specs", package: "listing-state-pkg" }],
-      };
-
-      // Building: the search says so, the listing answers.
-      expect(parse(await handler(search)).retrieval).toBe("indexing");
-      const whileIndexing = await handler(listing);
-      expect(whileIndexing.isError).toBe(false);
-      expect(parse(whileIndexing).sources.length).toBeGreaterThan(0);
-      expect(parse(whileIndexing)).not.toHaveProperty("retrieval");
-
-      // The sync fails (the provider answers 500), so the search is now an
-      // error. Wait for the cooldown to be reached, then check the listing.
-      await pollFor(
-         () => handler(search),
-         (result) => result.isError === true,
-      );
-      const inError = await handler(listing);
-      expect(inError.isError).toBe(false);
-      expect(parse(inError).sources.length).toBeGreaterThan(0);
-   });
-
-   // A source that matches on its own terms becomes the CARD, not a row under
-   // it, so returned-entities and matched-rows are different units. Pairing
-   // them reported a cut that never happened. Both directions pinned here.
-   const truncModel = {
-      getSourceInfos: () => [
-         {
-            name: "orders",
-            annotations: ["#(doc) Orders placed by customers."],
-            schema: {
-               fields: [
-                  { kind: "dimension", name: "state", annotations: [] },
-                  { kind: "dimension", name: "city", annotations: [] },
-               ],
-            },
-         },
-      ],
-      getQueries: () => [],
-   };
-   const TRUNC_VECTORS: Record<string, number[]> = {
-      orders: [1, 0],
-      "orders: Orders placed by customers.": [1, 0],
-      state: [1, 0],
-      city: [1, 0],
-      "where do customers live": [1, 0],
-   };
-   const truncStore = () =>
-      semanticStoreFor({
-         listModels: async () => [{ path: "orders.malloy" }],
-         getModel: () => truncModel,
-      });
-
-   it("reports more sources available than returned when the cap cuts", async () => {
-      // total_available and returned were both set from the returned cards,
-      // so the pair read "N of N" on every search including a cut one. Counted
-      // over everything that matched, the cap is visible in the numbers.
-      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
-      const handler = captureHandler(truncStore());
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "avail-pkg" }],
-         limit: 10,
-      });
-      expect(payload.total_available).toBe(1);
-      expect(payload.returned).toBe(1);
-   });
-
-   it("stays silent on the semantic path when a matched source fills no slot", async () => {
-      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
-      const handler = captureHandler(truncStore());
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "trunc-pkg" }],
-         limit: 10,
-      });
-
-      // Three rows matched (the source and its two fields) and all three came
-      // back; the source became the card, leaving two nested entities.
-      expect(payload.sources).toHaveLength(1);
-      expect(payload.sources[0].relevance).toBeCloseTo(1.0, 3);
-      expect(rankedEntities(payload)).toHaveLength(2);
-      expect("warnings" in payload).toBe(false);
-   });
-
-   it("stays silent when the limit cut no SOURCE", async () => {
-      // limit counts sources. This package has one, so limit 1 leaves nothing
-      // out however many entities nest in it, and a warning would be false.
-      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
-      const handler = captureHandler(truncStore());
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "trunc-cut-pkg" }],
-         limit: 1,
-      });
-      expect(payload.sources).toHaveLength(1);
-      expect("warnings" in payload).toBe(false);
-   });
-
-   it("reports below_cutoff_count on semantic responses, never on lexical ones", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "cutoff-pkg" }],
-      };
-
-      // Cold start ranks nothing: there is no floor on that path, so
-      // reporting a count would be meaningless.
-      const first = parse(await handler(params));
-      expect(first.retrieval).toBe("indexing");
-      expect(first).not.toHaveProperty("below_cutoff_count");
-
-      // order_items, its join and the field reached through the join are
-      // orthogonal to this query, so they are dropped by the floor and counted
-      // rather than silently missing. The joined field is weighed because this
-      // stand-in has no compiled model: nothing can rebuild it from a source
-      // of its own, so it stays in the semantic index (see directEntitiesOf).
-      const payload = await callUntilSemantic(handler, params);
-      expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
-      expect(payload.below_cutoff_count).toBe(3);
-      // The denominator ships with it. Without it the count is a bare number
-      // an agent cannot scale: 3 rejected is a tight match out of 4 and a
-      // catastrophe out of 200, and nothing else in the response says which.
-      expect(payload.total_entities).toBe(4);
-   });
-
-   it("fills a measure target's window with measures, not with nearer dimensions", async () => {
-      // Three dimensions sit exactly on the query text and the one measure a
-      // little off it. limit 1 over-fetches three rows, so a window cut
-      // BEFORE the kind claim holds only dimensions, and the claim then
-      // empties it: sources [] beside below_cutoff_count 0, the pair the
-      // contract rules out, with a description telling the agent to rephrase
-      // when the measure it wanted cleared the floor.
-      _setEmbeddingProviderForTests(
-         stubProviderFor({
-            orders: [0, 1],
-            "orders: Every order.": [0, 1],
-            "dim a": [1, 0],
-            "dim b": [1, 0],
-            "dim c": [1, 0],
-            revenue: [0.9, 0.436],
-            "total revenue": [1, 0],
-         }),
-      );
-      const handler = captureHandler(
-         semanticStoreFor({
-            listModels: async () => [{ path: "w.malloy" }],
-            getModel: () => ({
-               getSourceInfos: () => [
-                  {
-                     name: "orders",
-                     annotations: ["#(doc) Every order."],
-                     schema: {
-                        fields: [
-                           {
-                              kind: "dimension",
-                              name: "dim_a",
-                              annotations: [],
-                           },
-                           {
-                              kind: "dimension",
-                              name: "dim_b",
-                              annotations: [],
-                           },
-                           {
-                              kind: "dimension",
-                              name: "dim_c",
-                              annotations: [],
-                           },
-                           {
-                              kind: "measure",
-                              name: "revenue",
-                              annotations: [],
-                           },
-                        ],
-                     },
-                  },
-               ],
-               getQueries: () => [],
-            }),
-         }),
-      );
-      const payload = await callUntilSemantic(handler, {
-         search_targets: [
-            { target_type: "measure", search_text: "total revenue" },
-         ],
-         scopes: [{ environment: "specs", package: "kind-window" }],
-         limit: 1,
-      });
-      expect(rankedEntities(payload).map((e) => e.name)).toEqual(["revenue"]);
-      // The counts are scoped the same way: a dimension is never weighed for
-      // a measure target, so it is in neither number.
-      expect(payload.total_entities).toBe(1);
-      expect(payload.below_cutoff_count).toBe(0);
-   });
-
-   describe("a scope narrows the counts as well as the rows", () => {
-      // The counts come from the scan, the rows from the scan filtered by the
-      // caller's scope -- so a scope the scan does not know about leaves the
-      // two describing different sets. `model_path` is not a column in the
-      // vector cache and an `entity_name` scope exempts source rows, so
-      // neither can be a predicate; both go in as the rows the scan may
-      // consider.
-      const scopedPackage = () =>
-         semanticStoreFor({
-            listModels: async () => [{ path: "w.malloy" }],
-            getModel: () => ({
-               getSourceInfos: () => [
-                  {
-                     name: "orders",
-                     annotations: ["#(doc) Every order."],
-                     schema: {
-                        fields: [
-                           {
-                              kind: "dimension",
-                              name: "dim_a",
-                              annotations: [],
-                           },
-                           {
-                              kind: "dimension",
-                              name: "dim_b",
-                              annotations: [],
-                           },
-                           {
-                              kind: "measure",
-                              name: "revenue",
-                              annotations: [],
-                           },
-                        ],
-                     },
-                  },
-               ],
-               getQueries: () => [],
-            }),
-         });
-      const scopedVectors = {
-         orders: [0, 1],
-         "orders: Every order.": [0, 1],
-         "dim a": [1, 0],
-         "dim b": [1, 0],
-         revenue: [0, 1],
-         "total revenue": [0, 1],
-      };
-
-      it("counts the scoped set when the pinned entity matches nothing", async () => {
-         // A pin nothing answers returns the source cards and no entities
-         // under them. The counts have to describe THAT set: read against an
-         // unpinned total_entities of 4, a below_cutoff_count of 0 beside no
-         // entities says every entity cleared the floor and none came back,
-         // which is not a state the contract allows and not what happened.
-         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
-         const handler = captureHandler(scopedPackage());
-         const payload = await callUntilSemantic(handler, {
-            search_targets: anyKind("total revenue"),
-            scopes: [
-               {
-                  environment: "specs",
-                  package: "scope-counts-miss",
-                  entity_name: "no_such_field",
-               },
-            ],
-         });
-         expect(rankedEntities(payload)).toEqual([]);
-         // Only the source row is in scope: an entity_name scope exempts it,
-         // because it is the card a named entity nests in. The package's
-         // three fields are not weighed and so are in neither count.
-         expect(payload.total_entities).toBe(1);
-         expect(payload.below_cutoff_count).toBe(0);
-      });
-
-      it("counts only what the pin admits when it does match", async () => {
-         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
-         const handler = captureHandler(scopedPackage());
-         const payload = await callUntilSemantic(handler, {
-            search_targets: anyKind("total revenue"),
-            scopes: [
-               {
-                  environment: "specs",
-                  package: "scope-counts-hit",
-                  entity_name: "revenue",
-               },
-            ],
-         });
-         expect(rankedEntities(payload).map((e) => e.name)).toEqual([
-            "revenue",
-         ]);
-         // The source row survives an entity_name scope -- it is the card the
-         // entity nests in -- so the scoped set is `orders` and `revenue`,
-         // not the package's four entities.
-         expect(payload.total_entities).toBe(2);
-         expect(payload.below_cutoff_count).toBe(0);
-      });
-   });
-
-   it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
-      // The contract this replaces said "0 with no results means nothing is
-      // related". That state is unreachable: every entity in scope is either
-      // at-or-above the floor (and could be a hit) or below it (and is
-      // counted), so zero-below means every entity was above, which would
-      // have produced hits. Measured against a real provider, an ecommerce
-      // package asked about seismic retrofits returned 0 results with
-      // below_cutoff_count equal to its full entity count -- which the old
-      // wording told the agent to read as "too diffuse, rephrase", the exact
-      // opposite of the truth. Pin the reachable shape so the description
-      // cannot drift back.
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         search_targets: anyKind("seismic retrofit of bridge pilings"),
-         scopes: [{ environment: "specs", package: "cutoff-pkg" }],
-      };
-
-      const payload = await callUntilSemantic(handler, params);
-      expect(payload.sources).toEqual([]);
-      expect(payload.total_entities).toBeGreaterThan(0);
-      expect(payload.below_cutoff_count).toBe(payload.total_entities);
-   });
-
-   it("returns a sibling family's shared field once per source", async () => {
-      // The case that motivated cross-source folding: "site of the building"
-      // returns `site` at an identical score from fac_building,
-      // fclt_building and fclt_building_hist. Folding them into one row
-      // named the alternatives but dropped two rows' docs, data_types and
-      // entity_ids, and the three are not one column -- a `_hist` table is
-      // not the live one. All three come back, each under its own card, and
-      // the caller chooses by reading those cards' docs.
-      _setEmbeddingProviderForTests(
-         stubProviderFor({
-            site: [1, 0],
-            "fac building": [0, 1],
-            "fclt building": [0, 1],
-            "fclt building hist": [0, 1],
-            "site of the building": [1, 0],
-         }),
-      );
-      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("site of the building"),
-         scopes: [{ environment: "specs", package: "sibling-pkg" }],
-      });
-      const sites = rankedEntities(payload).filter((r) => r.name === "site");
-      expect(sites).toHaveLength(3);
-      expect(sites.map((r) => r.source).sort()).toEqual(
-         [...SIBLING_SOURCES].sort(),
-      );
-      // One card per source, and each is a real card rather than the empty
-      // stand-in a folded sibling used to get.
-      const cards = payload.sources as Array<{
-         source_info: { resource_id: { source: string } };
-         entities?: unknown[];
-      }>;
-      expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
-         [...SIBLING_SOURCES].sort(),
-      );
-      expect(cards.every((c) => (c.entities ?? []).length > 0)).toBe(true);
-   });
-
-   it("narrows to the scoped source, leaving its siblings out", async () => {
-      _setEmbeddingProviderForTests(
-         stubProviderFor({
-            site: [1, 0],
-            "fac building": [0, 1],
-            "fclt building": [0, 1],
-            "fclt building hist": [0, 1],
-            "site of the building": [1, 0],
-         }),
-      );
-      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
-      const payload = await callUntilSemantic(handler, {
-         search_targets: anyKind("site of the building"),
-         scopes: [
-            {
-               environment: "specs",
-               package: "sibling-scoped-pkg",
-               source: "fclt_building",
-            },
-         ],
-      });
-      const drilled = rankedEntities(payload);
-      expect(drilled).toHaveLength(1);
-      expect(drilled[0].source).toBe("fclt_building");
-   });
-
-   it("returns an error, not a lexical answer, when the provider goes down after indexing", async () => {
-      // Index healthily first, so this pins the query-embed failure
-      // path, not just the cold start.
-      _setEmbeddingProviderForTests(stubProvider());
-      const handler = captureHandler(semanticStore());
-      const params = {
-         search_targets: anyKind("where do customers live"),
-         scopes: [{ environment: "specs", package: "failing-pkg" }],
-      };
-      await callUntilSemantic(handler, params);
-
-      // Same model and config, but the endpoint now returns 500s: the
-      // per-call query embed fails and the call is an error naming the
-      // provider failure, with no ranking of any kind.
-      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const result = await handler({
-         ...params,
-         search_targets: anyKind("state"),
-      });
-      expect(result.isError).toBe(true);
-      const payload = parse(result);
-      expect(payload.retrieval).toBe("error");
-      expect(payload.retrieval_reason).toBe("provider-error");
-      expect(payload.sources).toEqual([]);
-   });
-
-   it("returns an error (never lexical) when the storage handle is unavailable", async () => {
-      _setEmbeddingProviderForTests(stubProvider());
-      const store = semanticStore();
-      delete (store as { storageManager?: unknown }).storageManager;
-      const handler = captureHandler(store);
-      const result = await handler({
-         search_targets: anyKind("state"),
-         scopes: [{ environment: "specs", package: "no-storage-pkg" }],
-      });
-      expect(result.isError).toBe(true);
-      const payload = parse(result);
-      expect(payload.retrieval_reason).toBe("unavailable");
-      expect(payload.sources).toEqual([]);
-   });
-
-   it("returns an error naming the variable (never throws) when the real config is malformed", async () => {
-      // Exercises the tool-path catch with REAL env parsing, not the
-      // _setEmbeddingProviderForTests override: a malformed base makes
-      // getEmbeddingProvider() throw, and tier 4 must report it as an error
-      // that names the variable (embeddingConfigured() is still true).
-      const saved = {
-         key: process.env.EMBEDDING_API_KEY,
-         base: process.env.EMBEDDING_API_BASE,
-      };
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_API_BASE = "not a url";
-      _clearEmbeddingProviderForTests();
-      try {
-         const handler = captureHandler(semanticStore());
-         const result = await handler({
-            search_targets: anyKind("state"),
-            scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
-         });
-         expect(result.isError).toBe(true);
-         const payload = parse(result);
-         expect(payload.retrieval_reason).toBe("unavailable");
-         expect(payload.error).toContain("EMBEDDING_API_BASE");
-         expect(payload.sources).toEqual([]);
-      } finally {
-         if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
-         else process.env.EMBEDDING_API_KEY = saved.key;
-         if (saved.base === undefined) delete process.env.EMBEDDING_API_BASE;
-         else process.env.EMBEDDING_API_BASE = saved.base;
-         _clearEmbeddingProviderForTests();
-         _setEmbeddingProviderForTests(null);
-      }
    });
 });
 
@@ -3615,31 +2039,6 @@ describe("get_context truncation reporting", () => {
       expect(payload.warnings.join(" ")).toContain("Raise limit");
    });
 
-   it("says how many entities the per-source cap left out", async () => {
-      // The two cuts are reported in their own units and have different
-      // remedies. `limit` drops whole sources; this one drops entities inside
-      // a source it kept, so raising the limit would not recover them --
-      // scoping to the source is what does.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => widePackage),
-      });
-      const payload = parse(
-         await handler({
-            search_targets: anyKind("revenue"),
-            scopes: [{ environment: "specs", package: "wide" }],
-            limit: 3,
-         }),
-      );
-      // 12 matched in one source; the cap keeps 10 of them.
-      expect(rankedEntities(payload)).toHaveLength(10);
-      const warning = payload.warnings.join(" ");
-      expect(warning).toContain("2 further entities");
-      expect(warning).toContain("per source per target");
-      expect(warning).toContain("Scope to one source");
-      // Not the source warning: no source was dropped.
-      expect(warning).not.toContain("matching sources");
-   });
-
    it("stays silent when nothing was cut", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => widePackage),
@@ -3821,12 +2220,12 @@ describe("get_context duplicate and visibility handling", () => {
       ).toEqual(["_internal_key"]);
    });
 
-   it("states a source's doc once, not once per matching entity", async () => {
+   it("states a source's doc once, not once per listed entity", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
       const result = await handler({
-         search_targets: anyKind("order state"),
+         search_targets: everyKind(),
          scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
       });
       const text = JSON.stringify(parse(result).sources);
@@ -3882,7 +2281,7 @@ describe("get_context same-named fields in sibling sources", () => {
       const doc = "Total order amount.";
       const payload = parse(
          await handlerFor(siblingModel(doc, doc))({
-            search_targets: anyKind("total order amount"),
+            search_targets: everyKind(),
             scopes: [{ environment: "specs", package: "sib" }],
          }),
       );
@@ -3906,7 +2305,7 @@ describe("get_context same-named fields in sibling sources", () => {
                "Total order amount visible to this caller, after the access gate.",
             ),
          )({
-            search_targets: anyKind("total order amount"),
+            search_targets: everyKind(),
             scopes: [{ environment: "specs", package: "sib" }],
          }),
       );
@@ -3924,7 +2323,7 @@ describe("get_context same-named fields in sibling sources", () => {
       const doc = "Total order amount.";
       const payload = parse(
          await handlerFor(siblingModel(doc, doc))({
-            search_targets: anyKind("total order amount"),
+            search_targets: everyKind(),
             scopes: [{ environment: "specs", package: "sib", source: "sales" }],
          }),
       );
@@ -4158,8 +2557,8 @@ describe("get_context converged request shape", () => {
       const payload = parse(
          await handler()({
             search_targets: [
-               { target_type: "measure", search_text: "revenue" },
-               { target_type: "dimension", search_text: "category" },
+               { target_type: "measure" },
+               { target_type: "dimension" },
             ],
             scopes: scope,
          }),
@@ -4171,13 +2570,13 @@ describe("get_context converged request shape", () => {
          .sort();
       expect(names).toContain("orders.revenue");
       expect(names).toContain("orders.category");
-      expect(payload.ranking).toBe("relevance");
+      expect(payload.ranking).toBe("prominence");
    });
 
    it("a target only claims the kinds it selects", async () => {
       const payload = parse(
          await handler()({
-            search_targets: [{ target_type: "measure", search_text: "order" }],
+            search_targets: [{ target_type: "measure" }],
             scopes: scope,
          }),
       );
@@ -4223,7 +2622,7 @@ describe("get_context converged request shape", () => {
                   }),
                })),
          })({
-            search_targets: [{ target_type: "view", search_text: "revenue" }],
+            search_targets: [{ target_type: "view" }],
             scopes: scope,
          }),
       );
@@ -4231,75 +2630,6 @@ describe("get_context converged request shape", () => {
       expect(names).toContain("revenue_rollup");
       expect(names).not.toContain("revenue_by_category");
       expect(payload.total_available).toBe(payload.returned);
-   });
-
-   it("budgets the lexical window per target, so one target cannot crowd another out of a source", async () => {
-      // Eleven measures all match the measure target and one dimension
-      // matches the dimension target, in ONE source. The per-source cap is
-      // 10 per target (MAX_ENTITIES_PER_SOURCE_TARGET). Under a single shared
-      // cap the measures fill it and the dimension, the answer to the
-      // caller's other concept, is dropped from the response entirely.
-      const measures = Array.from({ length: 11 }, (_, i) => ({
-         kind: "measure",
-         name: `revenue_${i}`,
-         annotations: ["#(doc) Order revenue."],
-      }));
-      const payload = parse(
-         await captureConverged({
-            getEnvironment: async () =>
-               envWith(async () => ({
-                  listModels: async () => [{ path: "m.malloy" }],
-                  getModel: () => ({
-                     getSourceInfos: () => [
-                        {
-                           name: "orders",
-                           annotations: ["#(doc) One row per order."],
-                           schema: {
-                              fields: [
-                                 ...measures,
-                                 {
-                                    kind: "dimension",
-                                    name: "category",
-                                    annotations: ["#(doc) Product category."],
-                                 },
-                              ],
-                           },
-                        },
-                     ],
-                     getQueries: () => [],
-                  }),
-               })),
-         })({
-            search_targets: [
-               { target_type: "measure", search_text: "revenue" },
-               { target_type: "dimension", search_text: "category" },
-            ],
-            scopes: scope,
-         }),
-      );
-      const names = rankedEntities(payload).map((e) => e.name);
-      expect(names).toContain("category");
-      expect(names.filter((n) => n.startsWith("revenue_"))).toHaveLength(10);
-   });
-
-   it("withholds matched_targets on the lexical path", async () => {
-      // relevance is REQUIRED inside matched_targets, so emitting it here
-      // would publish a lunr score -- the exact number this path already
-      // withholds from the entity's own `relevance`, because it is relative
-      // to its own query and comparing two of them means nothing. Naming the
-      // matched target is not worth contradicting that.
-      const payload = parse(
-         await handler()({
-            search_targets: [
-               { target_type: "measure", search_text: "revenue" },
-            ],
-            scopes: scope,
-         }),
-      );
-      const revenue = rankedEntities(payload).find((e) => e.name === "revenue");
-      expect(revenue).toBeDefined();
-      expect(revenue!.relevance).toBeUndefined();
-      expect(revenue!.matched_targets).toBeUndefined();
    });
 
    it("enumerates instead of ranking when no target carries text", async () => {
@@ -4530,9 +2860,7 @@ describe("get_context catalog browse", () => {
    it("refuses an offset on a response with no resumable order", async () => {
       const payload = parse(
          await handler()({
-            search_targets: [
-               { target_type: "measure", search_text: "revenue" },
-            ],
+            search_targets: [{ target_type: "measure" }],
             scopes,
             offset: 10,
          }),

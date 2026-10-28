@@ -187,6 +187,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // rule anyway, since a harness that cannot identify an entity
          // cannot score retrieval at all.
          "entity_id",
+         // Value search: without these an agent never learns that a typed
+         // value can be resolved to the stored string, or where it arrives.
+         "dimensional_value",
+         "values[]",
       ]) {
          expect(description).toContain(term);
       }
