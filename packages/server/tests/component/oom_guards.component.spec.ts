@@ -42,6 +42,7 @@ import {
    resetQueryConcurrencyTelemetryForTesting,
 } from "../../src/query_concurrency";
 import type { EnvironmentStore } from "../../src/service/environment_store";
+import { installSettings } from "../../src/test_helpers/settings_env";
 
 function buildApp(
    runSQL: sinon.SinonStub,
@@ -115,34 +116,33 @@ function buildApp(
 }
 
 describe("OOM guardrails: end-to-end chain", () => {
-   const savedEnv = {
-      max: process.env.PUBLISHER_MAX_QUERY_ROWS,
-      timeout: process.env.PUBLISHER_QUERY_TIMEOUT_MS,
-      concurrency: process.env.PUBLISHER_MAX_CONCURRENT_QUERIES,
-      metadata: process.env.PUBLISHER_QUERY_METADATA,
-   };
+   /** Puts back this suite's settings, so none bleed into later tests. */
+   let restoreSettings: (() => void) | undefined;
+
+   /**
+    * Install this case's settings: query metadata on (it ships dark; the happy
+    * path below asserts the correlation id the response carries, which needs
+    * it on) plus `env`. Replaces the case's earlier install.
+    */
+   function installEnv(env: Record<string, string> = {}): void {
+      restoreSettings?.();
+      restoreSettings = installSettings({
+         env: { PUBLISHER_QUERY_METADATA: "on", ...env },
+      }).restore;
+   }
 
    beforeEach(() => {
       resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
-      // Query metadata ships dark; the happy path below asserts the correlation
-      // id the response carries, which needs it on.
-      process.env.PUBLISHER_QUERY_METADATA = "on";
+      installEnv();
    });
 
    afterEach(() => {
       sinon.restore();
       resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
-      // Restore env so later tests don't see this suite's bleed-through.
-      const restore = (key: keyof typeof savedEnv, envVar: string): void => {
-         if (savedEnv[key] === undefined) delete process.env[envVar];
-         else process.env[envVar] = savedEnv[key]!;
-      };
-      restore("max", "PUBLISHER_MAX_QUERY_ROWS");
-      restore("timeout", "PUBLISHER_QUERY_TIMEOUT_MS");
-      restore("concurrency", "PUBLISHER_MAX_CONCURRENT_QUERIES");
-      restore("metadata", "PUBLISHER_QUERY_METADATA");
+      restoreSettings?.();
+      restoreSettings = undefined;
    });
 
    it("admission gate fires FIRST: 503 before the connector is touched", async () => {
@@ -167,7 +167,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("concurrency cap fires SECOND: 503 before the controller is touched, once the slot pool is full", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1";
+      installEnv({ PUBLISHER_MAX_CONCURRENT_QUERIES: "1" });
       // The first query holds its slot until the second request has been
       // answered. Ordered by events, not timers: a fixed head start for the
       // first request and a fixed hold time for its query lost the race on a
@@ -215,7 +215,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("timeout fires THIRD: 504 when the driver outlasts PUBLISHER_QUERY_TIMEOUT_MS, and the abort signal is delivered to the driver", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      installEnv({ PUBLISHER_QUERY_TIMEOUT_MS: "20" });
       let observedSignal: AbortSignal | undefined;
       const runSQL = sinon.stub().callsFake(
          (_sql: string, opts: RunSQLOptions) =>
@@ -242,7 +242,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("row cap fires LAST: 413 when the driver overshoots PUBLISHER_MAX_QUERY_ROWS", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "2";
+      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "2" });
       // Driver returns 3 rows even though we asked for cap+1 = 3
       // — the sentinel pattern catches this and 413s.
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];

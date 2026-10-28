@@ -121,19 +121,14 @@ describe("a query that bakes a default-less given loads", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
-   const originalWorkers = process.env.PACKAGE_LOAD_WORKERS;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (originalWorkers === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = originalWorkers;
    });
 
    beforeEach(() => {

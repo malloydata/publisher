@@ -80,26 +80,13 @@ import {
    registerDataAppListRoute,
    registerDataAppStaticRoutes,
 } from "./routes/data_apps";
-import {
-   createAdminApp,
-   resolveAdminHost,
-   resolveAdminPort,
-} from "./routes/admin";
-import {
-   CatalogAdmin,
-   catalogAdminConfigFromEnv,
-} from "./service/catalog_admin";
-import { createMcpApp, resolveMcpHost } from "./routes/mcp";
+import { createAdminApp } from "./routes/admin";
+import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
+import { createMcpApp } from "./routes/mcp";
 import { registerSpaFallback } from "./routes/spa";
-import {
-   RATE_LIMIT_ENV,
-   parseRateLimit,
-   rateLimitMiddleware,
-} from "./rate_limit";
-import {
-   FRAME_ANCESTORS_ENV,
-   frameAncestorsMiddleware,
-} from "./frame_ancestors";
+import { rateLimitMiddleware } from "./rate_limit";
+import { frameAncestorsMiddleware } from "./frame_ancestors";
+import { externalEnv, settings } from "./settings";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
 
 // These getters throw on an invalid value. Read once at boot so a typo fails
@@ -113,52 +100,51 @@ getQueryMetadataMode();
 // package load on the main thread would otherwise refuse a SQL Server model.
 acceptBundledExperimentalDialects();
 
-const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
-const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
-const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+const PUBLISHER_PORT = settings.get("port");
+const PUBLISHER_HOST = settings.get("host");
+const MCP_PORT = settings.get("mcp.port");
 // The MCP endpoint is unauthenticated and exposes every tool, so it binds
-// loopback by default. Precedence: MCP_HOST, an explicit PUBLISHER_HOST (so
-// `--host` moves both listeners), then loopback.
-const MCP_HOST = resolveMcpHost(process.env);
-// The admin listener (routes/admin.ts) is off unless a port is given. Resolved
+// loopback by default; `mcp.host`'s default follows an explicit `host` (so
+// `--host` moves both listeners).
+const MCP_HOST = settings.get("mcp.host");
+// The admin listener (routes/admin.ts) is off unless a port is given. Read
 // here so a malformed port fails startup before anything binds.
-const ADMIN_PORT = resolveAdminPort(process.env);
-const ADMIN_HOST = resolveAdminHost(process.env);
+const ADMIN_PORT = settings.get("admin.port") ?? null;
+const ADMIN_HOST = settings.get("admin.host");
 // The catalog database the admin API finds catalogs in, read here so a malformed
 // storage setting fails startup. Null leaves the catalog routes answering 503.
-const ADMIN_CATALOG_CONFIG =
-   ADMIN_PORT === null ? null : catalogAdminConfigFromEnv(process.env);
+const ADMIN_CATALOG_CONFIG = ADMIN_PORT === null ? null : catalogAdminConfig();
 const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
    ? new CatalogAdmin(ADMIN_CATALOG_CONFIG)
    : null;
 // Resolved at module scope, not in the listen callback: it throws on a typo,
 // and a throw there would be an uncaughtException after both ports are bound.
 const MCP_CONFIG_ENABLED = mcpConfigEnabled();
-const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
-   process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
+const SHUTDOWN_DRAIN_DURATION_SECONDS = settings.get(
+   "shutdown.drainDurationSeconds",
 );
-const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
-   process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
+const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = settings.get(
+   "shutdown.gracefulCloseTimeoutSeconds",
 );
 // The app directory sits next to this bundled file, under ESM and under npx.
 const __filename_esm = fileURLToPath(import.meta.url);
 const ROOT = path.join(path.dirname(__filename_esm), "app");
-const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
+const SERVER_ROOT = path.resolve(process.cwd(), settings.get("root"));
 const API_PREFIX = "/api/v0";
-const isDevelopment = process.env["NODE_ENV"] === "development";
+const isDevelopment = externalEnv("NODE_ENV") === "development";
 
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
 // Ahead of every early-answering middleware (the rate limiter's 429 included),
 // so the frame-ancestors policy is on every response.
-app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
+app.use(frameAncestorsMiddleware(settings.get("frameAncestors")));
 // Health probes come before every middleware they do not need, such as
 // static-file serving, which would stat the filesystem first.
 registerHealthEndpoints(app);
-// Opt-in (PUBLISHER_RATE_LIMIT) and mounted before every route; probes and
-// /metrics are exempt inside the middleware.
-app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
+// Opt-in (`rateLimit`) and mounted before every route; probes and /metrics
+// are exempt inside the middleware.
+app.use(rateLimitMiddleware(settings.get("rateLimit")));
 // Advisory only: warns when --max-old-space-size looks low for the default
 // row/byte caps, so operators check that before chasing OOMKills.
 checkHeapConfiguration();
@@ -196,9 +182,12 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // fails loudly with its fix rather than on the first question. The provider
 // getters read them back from module state. Logs name the host, never the key.
 //
-// An unreadable config must not kill the process: the environment store reads
-// the same file, reports it as `initError` / PUBLISHER_INIT_FAILED and keeps
-// the server up so /status can name it. So this read logs and carries on.
+// A config file that cannot be read or parsed has already failed startup in
+// server.ts. What can still fail here must not kill the process: an unset
+// `${VAR}` in the environments, which the environment store reports as
+// `initError` / PUBLISHER_INIT_FAILED with the server kept up so /status can
+// name it, and a rejected `retrieval` block, which leaves retrieval at its
+// defaults. So this read logs and carries on.
 let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
 try {
    retrievalConfig = getRetrievalConfig(SERVER_ROOT);
@@ -288,7 +277,7 @@ export function startMaterializationSchedulerFromEnv(
 // The sweep timer is unref'd, so it never keeps the process alive.
 startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
-const themeController = new ThemeController(themeStore, SERVER_ROOT);
+const themeController = new ThemeController(themeStore);
 
 export const mcpApp = createMcpApp(environmentStore);
 
@@ -413,10 +402,7 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
    }
    // `--watch-env` / PUBLISHER_WATCH: those envs' packages are mounted in
    // place (see `loadEnvironmentIntoDisk`), so the watcher sees source edits.
-   const watchEnvList = (process.env.PUBLISHER_WATCH || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+   const watchEnvList = settings.get("watchEnvironments");
    if (watchEnvList.length > 0) {
       // WatchModeController holds one watcher, so only the first env
       // auto-reloads; the rest are still mounted in place.
@@ -448,8 +434,8 @@ const mcpServer = mcpApp.listen(
    MCP_PORT,
    MCP_HOST,
    function (this: import("net").Server) {
-      // Read back rather than reusing MCP_PORT: `--mcp_port 0` (or, under
-      // bun, a non-numeric value) binds an ephemeral port.
+      // Read back rather than reusing MCP_PORT: `--mcp_port 0` binds an
+      // ephemeral port.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
       // The bind address, deliberately not resolveClientHost: the docs tell
       // readers this line is the address really bound, which is how they

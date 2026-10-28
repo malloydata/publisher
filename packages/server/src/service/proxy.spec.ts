@@ -26,6 +26,7 @@ import {
    openProxy,
    type ProxyEndpoint,
 } from "./proxy";
+import { installSettings, withSettings } from "../test_helpers/settings_env";
 
 // ── Key material generated once for the test suite ────────────────────────────
 
@@ -314,8 +315,7 @@ describe("openProxy — SSH tunnel", () => {
    it("fails closed when hostKey is absent and the unverified opt-in is off", async () => {
       // No hostKey and no opt-in: an unverified host key admits a MITM on the
       // publisher->bastion hop, so the tunnel is refused rather than connected.
-      const prev = process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
-      delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+      const { restore } = installSettings({ env: {} });
       try {
          await expect(
             openProxy(
@@ -332,9 +332,7 @@ describe("openProxy — SSH tunnel", () => {
             ),
          ).rejects.toThrow(/host-key verification is required/);
       } finally {
-         if (prev === undefined)
-            delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
-         else process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = prev;
+         restore();
       }
    });
 
@@ -346,8 +344,7 @@ describe("openProxy — SSH tunnel", () => {
       // real connect and key exchange against the tenant's bastion on every
       // query. Counting accepts on a stand-in listener is what distinguishes the
       // two positions; the message assertion above passes either way.
-      const prev = process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
-      delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+      const { restore } = installSettings({ env: {} });
       let accepts = 0;
       const standIn = net.createServer((socket) => {
          accepts += 1;
@@ -372,9 +369,7 @@ describe("openProxy — SSH tunnel", () => {
          ).rejects.toThrow(/host-key verification is required/);
          expect(accepts).toBe(0);
       } finally {
-         if (prev === undefined)
-            delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
-         else process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = prev;
+         restore();
          await new Promise<void>((done) => standIn.close(() => done()));
       }
    });
@@ -382,8 +377,9 @@ describe("openProxy — SSH tunnel", () => {
    it("connects unpinned when the unverified opt-in is set", async () => {
       // The operator escape hatch: with PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY
       // set, an unpinned tunnel connects (the SSH transport is still encrypted).
-      const prev = process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
-      process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = "true";
+      const { restore } = installSettings({
+         env: { PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY: "true" },
+      });
       let ep: ProxyEndpoint | undefined;
       try {
          ep = await openProxy(
@@ -403,9 +399,7 @@ describe("openProxy — SSH tunnel", () => {
       } finally {
          const opened = ep;
          if (opened) await closeQuietly(() => opened.close());
-         if (prev === undefined)
-            delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
-         else process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = prev;
+         restore();
       }
    });
 
@@ -503,19 +497,16 @@ describe("openProxy — SSH tunnel", () => {
 // connection through a path this module does not control. The loud rejection of
 // a misspelling lives at config load instead.
 describe("allowUnverifiedHostKey env parsing", () => {
-   const withEnv = (value: string | undefined, run: () => void) => {
-      const prev = process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
-      if (value === undefined)
-         delete process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
-      else process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] = value;
-      try {
-         run();
-      } finally {
-         if (prev === undefined)
-            delete process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
-         else process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] = prev;
-      }
-   };
+   const withEnv = (value: string | undefined, run: () => void) =>
+      withSettings(
+         {
+            env:
+               value === undefined
+                  ? {}
+                  : { [ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV]: value },
+         },
+         run,
+      );
 
    for (const value of ["true", "TRUE", " true ", "1", "yes", "on"]) {
       it(`opts in on ${JSON.stringify(value)}`, () => {

@@ -166,7 +166,7 @@ docker run --rm --entrypoint sh -v <mount> ms2data/malloy-publisher \
 
 For a read-only mount, the same with `cat <file> >/dev/null && echo readable`.
 
-When the server cannot make a write it needs, the response names the errno (`EACCES: permission denied, mkdir '…'`) rather than answering a bare `Internal server error.`. A package that cannot be mounted at boot, or added at runtime, is listed under `loadErrors` in `GET /api/v0/status` with that message, until it is added successfully or deleted. If the server cannot start at all, for example on a read-only root filesystem or with a config file it cannot read, `/api/v0/status` stays `initializing` and `initError` says why.
+When the server cannot make a write it needs, the response names the errno (`EACCES: permission denied, mkdir '…'`) rather than answering a bare `Internal server error.`. A package that cannot be mounted at boot, or added at runtime, is listed under `loadErrors` in `GET /api/v0/status` with that message, until it is added successfully or deleted. If the server cannot finish starting, for example on a read-only root filesystem, `/api/v0/status` stays `initializing` and `initError` says why. A config file it cannot read or parse stops it before it listens, with the reason after `PUBLISHER_INIT_FAILED` on stderr.
 
 If you cannot change the ownership yet, `--user 0` runs the server as root, as earlier images did. The image sets `HOME=/home/bun`, so a root run still finds the baked DuckDB extensions.
 

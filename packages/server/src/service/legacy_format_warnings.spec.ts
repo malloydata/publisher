@@ -31,7 +31,6 @@ import {
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const ROWS = `duckdb.sql("select * from (values (1,'east'),(2,'west')) as t(id, region)")`;
 
 const FILTERED_MODEL = `#(filter) dimension=region type=in
@@ -54,15 +53,12 @@ describe("warnings for content on a deprecated format", () => {
    let duckdb: DuckDBConnection;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {

@@ -24,7 +24,6 @@ const FIXTURE_DIR = path.resolve(
    "../../../tests/fixtures/notebooks-malloyyo-surface",
 );
 const NOTEBOOK = "notebooks/cells.malloy";
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
@@ -36,7 +35,6 @@ describe("execute_query on a served notebook", () => {
    let handler: Handler;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-nb-"));
       fs.cpSync(FIXTURE_DIR, tempDir, { recursive: true });
@@ -67,8 +65,6 @@ describe("execute_query on a served notebook", () => {
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 

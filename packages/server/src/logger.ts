@@ -1,30 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv, settings } from "./settings";
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
 
-const isTelemetryEnabled = Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
-
-// LOG_LEVEL, default "debug".
-const VALID_LOG_LEVELS = ["error", "warn", "info", "verbose", "debug", "silly"];
-const getLogLevel = (): string => {
-   if (process.env.LOG_LEVEL) {
-      const logLevel = process.env.LOG_LEVEL.toLowerCase();
-      if (VALID_LOG_LEVELS.includes(logLevel)) {
-         return logLevel;
-      } else {
-         console.error(
-            `Invalid log level: ${process.env.LOG_LEVEL}. Valid log levels are: ${VALID_LOG_LEVELS.join(", ")}. Defaulting to "debug".`,
-         );
-      }
-   }
-   return "debug";
-};
+const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
 
 export const logger = winston.createLogger({
-   level: getLogLevel(),
+   // An unknown level is the default, debug, with a startup warning.
+   level: settings.get("logging.level"),
    format: isTelemetryEnabled
       ? winston.format.combine(
            winston.format.uncolorize(),
@@ -61,9 +47,7 @@ function extractTraceIdFromTraceparent(
    return undefined;
 }
 
-const DISABLE_RESPONSE_LOGGING =
-   process.env.DISABLE_RESPONSE_LOGGING === "true" ||
-   process.env.DISABLE_RESPONSE_LOGGING === "1";
+const DISABLE_RESPONSE_LOGGING = !settings.get("logging.responseBodiesEnabled");
 
 /** `1234.5` -> `"1.23s"`, `12.3` -> `"12.30ms"`. */
 export function formatDuration(durationMs: number): string {

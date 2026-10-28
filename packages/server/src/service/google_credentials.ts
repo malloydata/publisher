@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv } from "../settings";
 import * as fs from "fs";
 import { ServerConfigurationError } from "../errors";
 
@@ -14,7 +15,7 @@ import { ServerConfigurationError } from "../errors";
  * failures (missing file, EACCES) are left to google-auth, which names them.
  */
 export function assertGoogleCredentialsIsNotADirectory(): void {
-   const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+   const keyFile = externalEnv("GOOGLE_APPLICATION_CREDENTIALS");
    if (!keyFile) return;
    let isDirectory = false;
    try {

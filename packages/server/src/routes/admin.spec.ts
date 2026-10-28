@@ -9,11 +9,25 @@ import { EnvironmentNotFoundError } from "../errors";
 import {
    type CatalogAdmin,
    CatalogAdminError,
-   catalogAdminConfigFromEnv,
+   catalogAdminConfig,
    connectionStringAsRole,
 } from "../service/catalog_admin";
+import { settings } from "../settings";
 import { buildRouteApp } from "../test_helpers/route_app";
-import { createAdminApp, resolveAdminHost, resolveAdminPort } from "./admin";
+import { withSettings } from "../test_helpers/settings_env";
+import { createAdminApp } from "./admin";
+
+/** The admin port the variables `env` give a server. */
+const adminPort = (env: Record<string, string>) =>
+   withSettings({ env }, () => settings.get("admin.port"));
+
+/** The admin host the variables `env` give a server. */
+const adminHost = (env: Record<string, string>) =>
+   withSettings({ env }, () => settings.get("admin.host"));
+
+/** The catalog configuration the variables `env` give a server. */
+const catalogConfigFrom = (env: Record<string, string>) =>
+   withSettings({ env }, () => catalogAdminConfig());
 
 const catalogs = (over: Partial<CatalogAdmin>): CatalogAdmin =>
    over as unknown as CatalogAdmin;
@@ -49,20 +63,18 @@ const watch = {
 
 describe("the admin listener", () => {
    it("is off unless a port is given, and refuses one that is not a port", () => {
-      expect(resolveAdminPort({})).toBeNull();
-      expect(resolveAdminPort({ PUBLISHER_ADMIN_PORT: " " })).toBeNull();
-      expect(resolveAdminPort({ PUBLISHER_ADMIN_PORT: "4050" })).toBe(4050);
-      expect(() => resolveAdminPort({ PUBLISHER_ADMIN_PORT: "fifty" })).toThrow(
-         /must be a port number/,
+      expect(adminPort({})).toBeUndefined();
+      expect(adminPort({ PUBLISHER_ADMIN_PORT: " " })).toBeUndefined();
+      expect(adminPort({ PUBLISHER_ADMIN_PORT: "4050" })).toBe(4050);
+      expect(() => adminPort({ PUBLISHER_ADMIN_PORT: "fifty" })).toThrow(
+         'admin.port from PUBLISHER_ADMIN_PORT: expected an integer from 0 to 65535, got "fifty"',
       );
    });
 
    it("binds loopback unless told otherwise, and does not follow the main API's host", () => {
-      expect(resolveAdminHost({})).toBe("127.0.0.1");
-      expect(resolveAdminHost({ PUBLISHER_HOST: "0.0.0.0" })).toBe("127.0.0.1");
-      expect(resolveAdminHost({ PUBLISHER_ADMIN_HOST: "0.0.0.0" })).toBe(
-         "0.0.0.0",
-      );
+      expect(adminHost({})).toBe("127.0.0.1");
+      expect(adminHost({ PUBLISHER_HOST: "0.0.0.0" })).toBe("127.0.0.1");
+      expect(adminHost({ PUBLISHER_ADMIN_HOST: "0.0.0.0" })).toBe("0.0.0.0");
    });
 
    it("serves /metrics only when handed the handler, as an admin-only process is", async () => {
@@ -199,13 +211,13 @@ describe("the admin listener", () => {
 
 describe("the admin listener's configuration", () => {
    it("is null without a catalog database, and reads each storage provider", () => {
-      expect(catalogAdminConfigFromEnv({})).toBeNull();
+      expect(catalogConfigFrom({})).toBeNull();
       const db = "host=h dbname=ducklake user=a password=p";
       expect(
-         catalogAdminConfigFromEnv({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
+         catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
       ).toEqual({ catalogDatabase: db, storage: undefined });
       expect(
-         catalogAdminConfigFromEnv({
+         catalogConfigFrom({
             PUBLISHER_ADMIN_CATALOG_DATABASE: db,
             PUBLISHER_ADMIN_STORAGE_PROVIDER: "gcs",
             PUBLISHER_ADMIN_STORAGE_KEY_ID: "k",
@@ -213,7 +225,7 @@ describe("the admin listener's configuration", () => {
          })?.storage,
       ).toEqual({ gcsConnection: { keyId: "k", secret: "s" } });
       expect(
-         catalogAdminConfigFromEnv({
+         catalogConfigFrom({
             PUBLISHER_ADMIN_CATALOG_DATABASE: db,
             PUBLISHER_ADMIN_STORAGE_PROVIDER: "s3_credential_chain",
             PUBLISHER_ADMIN_STORAGE_REGION: "us-east-1",
@@ -226,13 +238,15 @@ describe("the admin listener's configuration", () => {
    it("fails startup on a provider it cannot use", () => {
       const db = "host=h";
       expect(() =>
-         catalogAdminConfigFromEnv({
+         catalogConfigFrom({
             PUBLISHER_ADMIN_CATALOG_DATABASE: db,
             PUBLISHER_ADMIN_STORAGE_PROVIDER: "azure",
          }),
-      ).toThrow(/must be s3, s3_credential_chain or gcs/);
+      ).toThrow(
+         'admin.storage.provider from PUBLISHER_ADMIN_STORAGE_PROVIDER: expected one of "s3", "s3_credential_chain" or "gcs", got "azure"',
+      );
       expect(() =>
-         catalogAdminConfigFromEnv({
+         catalogConfigFrom({
             PUBLISHER_ADMIN_CATALOG_DATABASE: db,
             PUBLISHER_ADMIN_STORAGE_PROVIDER: "s3",
          }),
@@ -275,7 +289,7 @@ describe("the admin listener's configuration", () => {
          "postgres://a@h/db?options=-cfoo",
       ]) {
          expect(() =>
-            catalogAdminConfigFromEnv({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
+            catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
          ).toThrow(/must not set `options`/);
       }
    });

@@ -14,15 +14,7 @@ import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "./service/embedding_provider";
-
-const VARS = [
-   "LLM_API_KEY",
-   "EMBEDDING_API_KEY",
-   "EMBEDDING_API_BASE",
-   "EMBEDDING_MODEL",
-   "EMBEDDING_DIMENSIONS",
-   "EMBEDDING_MIN_SIMILARITY",
-];
+import { installSettings, withSettings } from "./test_helpers/settings_env";
 
 describe("retrieval.llm validation", () => {
    it("applies the documented defaults", () => {
@@ -215,20 +207,15 @@ describe("retrieval.embedding and retrieval.egress validation", () => {
 });
 
 describe("settings resolution and precedence", () => {
-   const saved: Record<string, string | undefined> = {};
+   // No LLM or embedding variable is set unless a case installs one.
+   let restoreSettings: () => void;
    beforeEach(() => {
-      for (const v of VARS) {
-         saved[v] = process.env[v];
-         delete process.env[v];
-      }
+      restoreSettings = installSettings().restore;
       setRetrievalConfig(undefined);
       _clearEmbeddingProviderForTests();
    });
    afterEach(() => {
-      for (const v of VARS) {
-         if (saved[v] === undefined) delete process.env[v];
-         else process.env[v] = saved[v];
-      }
+      restoreSettings();
       setRetrievalConfig(undefined);
       _clearEmbeddingProviderForTests();
    });
@@ -242,12 +229,12 @@ describe("settings resolution and precedence", () => {
    });
 
    it("LLM is on with a key, and with no key for ollama and vertex", () => {
-      process.env.LLM_API_KEY = "  sk-llm  ";
       const keyed = parseRetrievalConfig({
          llm: { provider: "anthropic", model: "m" },
       })!;
-      expect(getLlmSettings(keyed.llm)?.apiKey).toBe("sk-llm");
-      delete process.env.LLM_API_KEY;
+      withSettings({ env: { LLM_API_KEY: "  sk-llm  " } }, () => {
+         expect(getLlmSettings(keyed.llm)?.apiKey).toBe("sk-llm");
+      });
       const ollama = parseRetrievalConfig({
          llm: { provider: "ollama", model: "llama" },
       })!;
@@ -264,14 +251,17 @@ describe("settings resolution and precedence", () => {
    });
 
    it("an ambient OPENAI_API_KEY does not turn anything on", () => {
+      // Set where a live read would see it and in the settings' variables.
       const before = process.env.OPENAI_API_KEY;
       process.env.OPENAI_API_KEY = "sk-ambient";
       try {
          const cfg = parseRetrievalConfig({
             llm: { provider: "openai", model: "m" },
          })!;
-         expect(getLlmSettings(cfg.llm)).toBeNull();
-         expect(getEmbeddingSettings(undefined)).toBeNull();
+         withSettings({ env: { OPENAI_API_KEY: "sk-ambient" } }, () => {
+            expect(getLlmSettings(cfg.llm)).toBeNull();
+            expect(getEmbeddingSettings(undefined)).toBeNull();
+         });
       } finally {
          if (before === undefined) delete process.env.OPENAI_API_KEY;
          else process.env.OPENAI_API_KEY = before;
@@ -279,60 +269,86 @@ describe("settings resolution and precedence", () => {
    });
 
    it("embedding env variables alone still work (the fallback)", () => {
-      process.env.EMBEDDING_API_KEY = "sk-e";
-      process.env.EMBEDDING_API_BASE = "https://env.example.com/v1/";
-      process.env.EMBEDDING_MODEL = "env-model";
-      process.env.EMBEDDING_DIMENSIONS = "256";
-      expect(getEmbeddingConfig()).toMatchObject({
-         apiKey: "sk-e",
-         baseUrl: "https://env.example.com/v1",
-         model: "env-model",
-         dimensions: 256,
-      });
+      withSettings(
+         {
+            env: {
+               EMBEDDING_API_KEY: "sk-e",
+               EMBEDDING_API_BASE: "https://env.example.com/v1/",
+               EMBEDDING_MODEL: "env-model",
+               EMBEDDING_DIMENSIONS: "256",
+            },
+         },
+         () => {
+            expect(getEmbeddingConfig()).toMatchObject({
+               apiKey: "sk-e",
+               baseUrl: "https://env.example.com/v1",
+               model: "env-model",
+               dimensions: 256,
+            });
+         },
+      );
    });
 
    it("a file key wins over the matching variable, and a variable fills what the file omits", () => {
-      process.env.EMBEDDING_API_KEY = "sk-e";
-      process.env.EMBEDDING_API_BASE = "https://env.example.com/v1";
-      process.env.EMBEDDING_MODEL = "env-model";
-      process.env.EMBEDDING_DIMENSIONS = "256";
-      const file = parseRetrievalConfig({
-         embedding: {
-            provider: "openai-compatible",
-            baseUrl: "https://file.example.com/v1",
-            model: "file-model",
-            dimensions: 512,
-         },
-      })!.embedding;
-      expect(getEmbeddingConfig(file)).toMatchObject({
+      const env = {
+         EMBEDDING_API_KEY: "sk-e",
+         EMBEDDING_API_BASE: "https://env.example.com/v1",
+         EMBEDDING_MODEL: "env-model",
+         EMBEDDING_DIMENSIONS: "256",
+      };
+      // Each block is the settings' config file too, as at startup.
+      const fullBlock = {
+         provider: "openai-compatible",
          baseUrl: "https://file.example.com/v1",
          model: "file-model",
          dimensions: 512,
-      });
+      };
+      const file = parseRetrievalConfig({ embedding: fullBlock })!.embedding;
+      withSettings(
+         { env, file: { retrieval: { embedding: fullBlock } } },
+         () => {
+            expect(getEmbeddingConfig(file)).toMatchObject({
+               baseUrl: "https://file.example.com/v1",
+               model: "file-model",
+               dimensions: 512,
+            });
+         },
+      );
       // Only the model in the file: the rest comes from the variables.
+      const partialBlock = { model: "file-model" };
       const partial = parseRetrievalConfig({
-         embedding: { model: "file-model" },
+         embedding: partialBlock,
       })!.embedding;
-      expect(getEmbeddingConfig(partial)).toMatchObject({
-         baseUrl: "https://env.example.com/v1",
-         model: "file-model",
-         dimensions: 256,
-      });
+      withSettings(
+         { env, file: { retrieval: { embedding: partialBlock } } },
+         () => {
+            expect(getEmbeddingConfig(partial)).toMatchObject({
+               baseUrl: "https://env.example.com/v1",
+               model: "file-model",
+               dimensions: 256,
+            });
+         },
+      );
    });
 
    it("the default embedding model stays text-embedding-3-small and dimensions stay unset", () => {
-      process.env.EMBEDDING_API_KEY = "sk-e";
-      const cfg = getEmbeddingConfig();
+      const cfg = withSettings({ env: { EMBEDDING_API_KEY: "sk-e" } }, () =>
+         getEmbeddingConfig(),
+      );
       expect(cfg?.model).toBe("text-embedding-3-small");
       expect(cfg?.baseUrl).toBe("https://api.openai.com/v1");
       expect(cfg?.dimensions).toBeUndefined();
    });
 
    it("ollama needs no key and defaults to the local endpoint, not OpenAI's", () => {
-      const file = parseRetrievalConfig({
+      // The block is the settings' config file too: the model is read there.
+      const block = {
          embedding: { provider: "ollama", model: "nomic-embed-text" },
-      })!.embedding;
-      const settings = getEmbeddingSettings(file);
+      };
+      const file = parseRetrievalConfig(block)!.embedding;
+      const settings = withSettings({ file: { retrieval: block } }, () =>
+         getEmbeddingSettings(file),
+      );
       expect(settings).toMatchObject({
          provider: "ollama",
          model: "nomic-embed-text",
@@ -346,9 +362,9 @@ describe("settings resolution and precedence", () => {
          embedding: { provider: "google", model: "e" },
       })!.embedding;
       expect(getEmbeddingSettings(google)).toBeNull();
-      process.env.EMBEDDING_API_KEY = "gk";
-      expect(getEmbeddingSettings(google)?.apiKey).toBe("gk");
-      delete process.env.EMBEDDING_API_KEY;
+      withSettings({ env: { EMBEDDING_API_KEY: "gk" } }, () => {
+         expect(getEmbeddingSettings(google)?.apiKey).toBe("gk");
+      });
       const vertex = parseRetrievalConfig({
          embedding: {
             provider: "vertex",
@@ -366,27 +382,31 @@ describe("settings resolution and precedence", () => {
    });
 
    it("prefixes from the file reach the settings and the provider", () => {
-      process.env.EMBEDDING_API_KEY = "sk-e";
       setRetrievalConfig(
          parseRetrievalConfig({
             embedding: { queryPrefix: "q: ", documentPrefix: "d: " },
          }),
       );
-      expect(embeddingConfigured()).toBe(true);
-      const provider = getEmbeddingProvider();
-      expect(provider?.queryPrefix).toBe("q: ");
-      expect(provider?.documentPrefix).toBe("d: ");
+      withSettings({ env: { EMBEDDING_API_KEY: "sk-e" } }, () => {
+         expect(embeddingConfigured()).toBe(true);
+         const provider = getEmbeddingProvider();
+         expect(provider?.queryPrefix).toBe("q: ");
+         expect(provider?.documentPrefix).toBe("d: ");
+      });
    });
 
    it("getEmbeddingProvider follows a changed file setting on the next call", () => {
-      process.env.EMBEDDING_API_KEY = "sk-e";
-      setRetrievalConfig(
-         parseRetrievalConfig({ embedding: { model: "model-a" } }),
-      );
-      expect(getEmbeddingProvider()?.model).toBe("model-a");
-      setRetrievalConfig(
-         parseRetrievalConfig({ embedding: { model: "model-b" } }),
-      );
-      expect(getEmbeddingProvider()?.model).toBe("model-b");
+      // The model is read through the settings, so each block is their
+      // config file too, as at startup.
+      const modelFor = (model: string) => {
+         const block = { embedding: { model } };
+         setRetrievalConfig(parseRetrievalConfig(block));
+         return withSettings(
+            { env: { EMBEDDING_API_KEY: "sk-e" }, file: { retrieval: block } },
+            () => getEmbeddingProvider()?.model,
+         );
+      };
+      expect(modelFor("model-a")).toBe("model-a");
+      expect(modelFor("model-b")).toBe("model-b");
    });
 });

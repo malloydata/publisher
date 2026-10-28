@@ -21,6 +21,7 @@ import {
    ProcessedEnvironment,
    ProcessedPublisherConfig,
 } from "../config";
+import { settings } from "../settings";
 import {
    API_PREFIX,
    PUBLISHER_CONFIG_NAME,
@@ -363,9 +364,9 @@ export function formatReadinessLine(counts: {
    packages: number;
    loadErrors: number;
 }): string {
-   const host = displayHost(process.env.PUBLISHER_HOST || "0.0.0.0");
-   const port = Number(process.env.PUBLISHER_PORT || 4000);
-   const mcpPort = Number(process.env.MCP_PORT || 4040);
+   const host = displayHost(settings.get("host"));
+   const port = settings.get("port");
+   const mcpPort = settings.get("mcp.port");
    return (
       `PUBLISHER_READY url=http://${host}:${port} ` +
       `mcp=http://${host}:${mcpPort} ` +
@@ -426,14 +427,12 @@ export class EnvironmentStore {
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
       this.mcpIncludeHiddenFilesAndSources =
-         isMcpIncludeHiddenFilesAndSources(serverRootPath);
+         isMcpIncludeHiddenFilesAndSources();
       this.gcsClient = new Storage();
 
-      const watchEnvList = (process.env.PUBLISHER_WATCH || "")
-         .split(",")
-         .map((s) => s.trim())
-         .filter((s) => s.length > 0);
-      for (const envName of watchEnvList) this.inPlaceEnvs.add(envName);
+      for (const envName of settings.get("watchEnvironments")) {
+         this.inPlaceEnvs.add(envName);
+      }
 
       const storageConfig: StorageConfig = {
          type: "duckdb",
@@ -676,15 +675,13 @@ export class EnvironmentStore {
    }
 
    private async initialize() {
-      const reInit = process.env.INITIALIZE_STORAGE === "true";
+      const reInit = settings.get("initializeStorage");
       const initialTime = performance.now();
 
       try {
          await this.storageManager.initialize(reInit);
 
-         this.publisherConfigIsFrozen = isPublisherConfigFrozen(
-            this.serverRootPath,
-         );
+         this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
          const environmentManifest =
             await EnvironmentStore.reloadEnvironmentManifest(
@@ -1244,7 +1241,7 @@ export class EnvironmentStore {
    }
 
    private async cleanupAndCreatePublisherPath() {
-      const reInit = process.env.INITIALIZE_STORAGE === "true";
+      const reInit = settings.get("initializeStorage");
 
       // mkdir rather than stat: Bun on Windows resolves fs.promises.stat to
       // undefined instead of throwing.
@@ -1319,7 +1316,7 @@ export class EnvironmentStore {
          timestamp: Date.now(),
          environments: [],
          initialized: this.isInitialized,
-         frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
+         frozenConfig: isPublisherConfigFrozen(),
          operationalState,
          version: SERVER_VERSION,
       };
@@ -1748,7 +1745,7 @@ export class EnvironmentStore {
                      });
                   }
                }
-               return { frozenConfig: false, environments };
+               return { environments };
             } catch (lsError) {
                // An Error's fields are not enumerable; `{ error }` logs {}.
                logger.error(`Error listing directories in ${serverRootPath}`, {
@@ -1757,7 +1754,7 @@ export class EnvironmentStore {
                         ? lsError.message
                         : String(lsError),
                });
-               return { frozenConfig: false, environments: [] };
+               return { environments: [] };
             }
          }
       }

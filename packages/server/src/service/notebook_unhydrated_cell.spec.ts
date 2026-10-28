@@ -24,21 +24,17 @@ const FIXTURE_DIR = path.resolve(
    __dirname,
    "../../tests/fixtures/notebooks-malloyyo-surface",
 );
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const NOTEBOOK = "notebooks/legacy_open.malloynb";
 
 describe("a .malloynb cell with no hydrated query", () => {
    const tempDirs: string[] = [];
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       for (const dir of tempDirs)
          fs.rmSync(dir, { recursive: true, force: true });
    });

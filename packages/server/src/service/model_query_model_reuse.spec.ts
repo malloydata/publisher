@@ -31,6 +31,26 @@ import { logger } from "../logger";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import type { Package } from "./package";
+import { installSettings } from "../test_helpers/settings_env";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 /**
  * A hydrated Model builds its Malloy `QueryModel` once and every render-tag
@@ -222,10 +242,6 @@ describe("one QueryModel per materializer a query compiles against", () => {
       failNextBuild = false;
    });
 
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    afterAll(async () => {
       for (const d of dirs) {
          await fs.rm(d, { recursive: true, force: true }).catch(() => {});
@@ -334,7 +350,7 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
    it(
       "builds the storage serve shape's QueryModel once, not per query",
       async () => {
-         process.env.PERSIST_STORAGE_MODE = "on";
+         setStorageMode("on");
          const text = `source: qm_orders is duckdb.sql("SELECT 10 AS amount") extend {
   measure: total is amount.sum()
 }

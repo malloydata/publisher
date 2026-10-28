@@ -69,8 +69,8 @@ export interface DeclinedScript {
    host?: string;
    /**
     * The value written as `--host=<value>`, which Publisher's own argument
-    * parser does not accept (cli_args.ts matches `arg === "--host"` and takes the
-    * next argv entry), so the flag is dropped in silence and the bind falls back
+    * parser does not accept (it matches the whole argv entry `--host` and takes
+    * the next one), so the flag is dropped in silence and the bind falls back
     * to 0.0.0.0. Carried alongside `reason: "no-host-flag"`, which is what such a
     * script really is as far as the server is concerned, so a caller can say
     * which of the two shapes it saw without guessing.
@@ -1568,23 +1568,24 @@ function isSingleServerInvocation(script: string): boolean {
 /**
  * The value of the last `--host <value>` in a command line, if it carries one.
  *
- * Whitespace only, because that is the whole of what Publisher accepts:
- * `packages/server/src/cli_args.ts` walks argv with
- * `} else if (arg === "--host" && args[i + 1]) {`, a strict equality against a
- * separate argv entry. `--host=127.0.0.1` matches no branch in that chain, and
- * the chain has no unknown-flag error, so the flag is dropped in silence and
- * PUBLISHER_HOST falls back to "0.0.0.0" for the REST listener. The MCP listener
- * reads MCP_HOST first and defaults to loopback on its own, so a dropped --host
- * exposes REST and leaves MCP where it was.
+ * Whitespace only, because that is the whole of what Publisher accepts: the
+ * flag reader in `packages/server/src/settings/settings.ts` looks each argv
+ * entry up by its exact name and takes the next entry as its value.
+ * `--host=127.0.0.1` is the name of no flag, and an unknown flag is only warned
+ * about, so the flag is dropped and PUBLISHER_HOST falls back to "0.0.0.0" for
+ * the REST listener. The MCP listener reads MCP_HOST first and defaults to
+ * loopback on its own, so a dropped --host exposes REST and leaves MCP where it
+ * was.
  *
  * Accepting the `=` form here was worse than useless: it made the one shape that
  * looks private and is not the one shape this tool called safest, suppressing the
  * exposure warning that a script with no --host at all correctly gets.
  */
 /**
- * The server flags that consume the following argv entry, mirroring the
- * `arg === "--x" && args[i + 1]` chain in `packages/server/src/cli_args.ts`.
- * `--init` and `--help` take no value and so are deliberately absent.
+ * The server flags that consume the following argv entry, mirroring
+ * `flagsTakingAValue()` in `packages/server/src/settings/settings.ts`: every
+ * setting's flag but a boolean's. `--init` and `--help` take no value and so
+ * are deliberately absent.
  */
 export const SERVER_VALUE_FLAGS = new Set([
    "--port",
@@ -1679,9 +1680,9 @@ function hostFlagOf(script: string): string | undefined {
    for (let i = spec + 1; i < tokens.length; i++) {
       const token = tokens[i];
       const next = tokens[i + 1];
-      // Mirrors `arg === "--x" && args[i + 1]`: a value flag followed by
-      // nothing, or by the one falsy argv entry there is, matches no branch and
-      // so consumes nothing.
+      // Mirrors the server's flag reader, which takes the next entry only when
+      // it is not empty: a value flag followed by nothing, or by the one falsy
+      // argv entry there is, consumes nothing.
       if (!SERVER_VALUE_FLAGS.has(token) || !next) {
          continue;
       }

@@ -26,16 +26,25 @@ import request from "supertest";
 
 import { resetActiveQueryCountForTesting } from "./query_concurrency";
 import { buildRouteApp, registeredRoutes } from "./test_helpers/route_app";
+import { installSettings } from "./test_helpers/settings_env";
 
-/** Restored after each case so a cap set here cannot leak into another file. */
-const ORIGINAL_CAP = process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+/**
+ * Puts back the settings a case installed, so a cap set here cannot leak into
+ * another file.
+ */
+let restoreSettings: (() => void) | undefined;
+
+/** Install the concurrency cap for this case, before its app is built. */
+function installCap(cap: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PUBLISHER_MAX_CONCURRENT_QUERIES: cap },
+   }).restore;
+}
 
 afterEach(() => {
-   if (ORIGINAL_CAP === undefined) {
-      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
-   } else {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = ORIGINAL_CAP;
-   }
+   restoreSettings?.();
+   restoreSettings = undefined;
    // The slot counter is module-global and this file runs in a process with 170
    // other spec files. A case that leaked a slot would not fail here; it would
    // make a later cap-of-1 case fail on its FIRST request rather than on the
@@ -90,7 +99,7 @@ async function secondRequestStatusWhileFirstIsInFlight(
    path: string,
    body: Record<string, unknown>,
 ): Promise<{ second: number; first: number }> {
-   process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1";
+   installCap("1");
    const gate = deferred<void>();
    const app = buildApp(gate.promise);
 
@@ -147,7 +156,7 @@ describe("compile and sqlSource are admission-controlled", () => {
    it("serves both when the cap is disabled, so the 503 above is the gate and not the harness", async () => {
       // limit === 0 makes the middleware a pass-through. If this also returned 503
       // the cases above would prove nothing about admission control.
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "0";
+      installCap("0");
       const gate = deferred<void>();
       const app = compileApp(gate.promise);
 

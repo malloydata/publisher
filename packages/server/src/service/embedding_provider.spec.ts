@@ -12,6 +12,7 @@ import {
    prepareEmbeddingInput,
 } from "./embedding_provider";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY, EmbeddingConfig } from "../config";
+import { installSettings, withSettings } from "../test_helpers/settings_env";
 
 const CONFIG: EmbeddingConfig = {
    apiKey: "test-key",
@@ -253,27 +254,16 @@ describe("EmbeddingProvider", () => {
 });
 
 describe("getEmbeddingProvider / embeddingConfigured", () => {
-   const ENV_KEYS = [
-      "EMBEDDING_API_KEY",
-      "EMBEDDING_MODEL",
-      "EMBEDDING_API_BASE",
-      "EMBEDDING_DIMENSIONS",
-   ];
-   const saved: Record<string, string | undefined> = {};
+   // No embedding variable is set unless a case installs one.
+   let restoreSettings: () => void;
 
    beforeEach(() => {
-      for (const key of ENV_KEYS) {
-         saved[key] = process.env[key];
-         delete process.env[key];
-      }
+      restoreSettings = installSettings().restore;
       _clearEmbeddingProviderForTests();
    });
 
    afterEach(() => {
-      for (const key of ENV_KEYS) {
-         if (saved[key] === undefined) delete process.env[key];
-         else process.env[key] = saved[key];
-      }
+      restoreSettings();
       _clearEmbeddingProviderForTests();
    });
 
@@ -283,11 +273,14 @@ describe("getEmbeddingProvider / embeddingConfigured", () => {
    });
 
    it("ignores an ambient OPENAI_API_KEY", () => {
+      // Set where a live read would see it and in the settings' variables.
       const before = process.env.OPENAI_API_KEY;
       process.env.OPENAI_API_KEY = "ambient";
       try {
-         expect(getEmbeddingProvider()).toBeNull();
-         expect(embeddingConfigured()).toBe(false);
+         withSettings({ env: { OPENAI_API_KEY: "ambient" } }, () => {
+            expect(getEmbeddingProvider()).toBeNull();
+            expect(embeddingConfigured()).toBe(false);
+         });
       } finally {
          if (before === undefined) delete process.env.OPENAI_API_KEY;
          else process.env.OPENAI_API_KEY = before;
@@ -295,39 +288,53 @@ describe("getEmbeddingProvider / embeddingConfigured", () => {
    });
 
    it("builds a provider with defaults when the key is set", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      const provider = getEmbeddingProvider();
-      expect(provider).not.toBeNull();
-      expect(provider!.model).toBe("text-embedding-3-small");
-      expect(embeddingConfigured()).toBe(true);
+      withSettings({ env: { EMBEDDING_API_KEY: "k" } }, () => {
+         const provider = getEmbeddingProvider();
+         expect(provider).not.toBeNull();
+         expect(provider!.model).toBe("text-embedding-3-small");
+         expect(embeddingConfigured()).toBe(true);
+      });
    });
 
    it("rebuilds the provider when the configuration changes", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      const first = getEmbeddingProvider();
-      expect(getEmbeddingProvider()).toBe(first);
-      process.env.EMBEDDING_MODEL = "other-model";
-      const second = getEmbeddingProvider();
+      const first = withSettings({ env: { EMBEDDING_API_KEY: "k" } }, () => {
+         const provider = getEmbeddingProvider();
+         expect(getEmbeddingProvider()).toBe(provider);
+         return provider;
+      });
+      const second = withSettings(
+         { env: { EMBEDDING_API_KEY: "k", EMBEDDING_MODEL: "other-model" } },
+         () => getEmbeddingProvider(),
+      );
       expect(second).not.toBe(first);
       expect(second!.model).toBe("other-model");
    });
 
    it("does not stick to null after the key appears", () => {
       expect(getEmbeddingProvider()).toBeNull();
-      process.env.EMBEDDING_API_KEY = "k";
-      expect(getEmbeddingProvider()).not.toBeNull();
+      withSettings({ env: { EMBEDDING_API_KEY: "k" } }, () => {
+         expect(getEmbeddingProvider()).not.toBeNull();
+      });
    });
 
    it("throws on a malformed base URL but still reports configured", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_API_BASE = "not a url";
-      expect(() => getEmbeddingProvider()).toThrow("EMBEDDING_API_BASE");
-      expect(embeddingConfigured()).toBe(true);
+      withSettings(
+         { env: { EMBEDDING_API_KEY: "k", EMBEDDING_API_BASE: "not a url" } },
+         () => {
+            expect(() => getEmbeddingProvider()).toThrow("EMBEDDING_API_BASE");
+            expect(embeddingConfigured()).toBe(true);
+         },
+      );
    });
 
    it("throws on a malformed EMBEDDING_DIMENSIONS", () => {
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_DIMENSIONS = "lots";
-      expect(() => getEmbeddingProvider()).toThrow("EMBEDDING_DIMENSIONS");
+      withSettings(
+         { env: { EMBEDDING_API_KEY: "k", EMBEDDING_DIMENSIONS: "lots" } },
+         () => {
+            expect(() => getEmbeddingProvider()).toThrow(
+               'retrieval.embedding.dimensions from EMBEDDING_DIMENSIONS: expected an integer of at least 1, got "lots"',
+            );
+         },
+      );
    });
 });

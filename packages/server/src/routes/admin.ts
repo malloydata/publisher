@@ -27,32 +27,6 @@ import {
 export const ADMIN_API_PREFIX = "/api/v0";
 
 /**
- * The port, or null when the listener is off (unset or empty). A value that is
- * not a port throws, so a typo fails startup rather than silently leaving an
- * orchestrator nothing to call.
- */
-export function resolveAdminPort(env: NodeJS.ProcessEnv): number | null {
-   const raw = env.PUBLISHER_ADMIN_PORT?.trim();
-   if (!raw) return null;
-   const port = Number(raw);
-   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-      throw new Error(
-         `PUBLISHER_ADMIN_PORT must be a port number, got '${raw}'.`,
-      );
-   }
-   return port;
-}
-
-/**
- * PUBLISHER_ADMIN_HOST, else loopback. Unlike the MCP listener it does not
- * follow PUBLISHER_HOST: moving the main API onto every interface must not
- * expose the admin operations with it.
- */
-export function resolveAdminHost(env: NodeJS.ProcessEnv): string {
-   return env.PUBLISHER_ADMIN_HOST || "127.0.0.1";
-}
-
-/**
  * A JSON route: the handler's value is the body with `status`; an admin refusal
  * answers its own status with `{code, message, reason}`; anything else maps as
  * every other route's error does.

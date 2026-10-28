@@ -13,15 +13,24 @@ import path from "path";
 import { PUBLISHER_CONFIG_NAME } from "../../../src/constants";
 import { ThemeStore } from "../../../src/service/theme_store";
 import { StorageManager } from "../../../src/storage/StorageManager";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 
 const TEST_ROOT = path.join(process.cwd(), "test-temp-theme-store");
 
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Write the config at TEST_ROOT and read the settings from it, as a server
+ * started on that root does.
+ */
 function writeConfig(json: object) {
    if (!fs.existsSync(TEST_ROOT)) fs.mkdirSync(TEST_ROOT, { recursive: true });
    fs.writeFileSync(
       path.join(TEST_ROOT, PUBLISHER_CONFIG_NAME),
       JSON.stringify(json),
    );
+   restoreSettings?.();
+   restoreSettings = installSettings({ cwd: TEST_ROOT }).restore;
 }
 
 async function makeStorage(): Promise<StorageManager> {
@@ -40,6 +49,8 @@ describe("ThemeStore", () => {
       }
    });
    afterEach(() => {
+      restoreSettings?.();
+      restoreSettings = undefined;
       if (fs.existsSync(TEST_ROOT)) {
          fs.rmSync(TEST_ROOT, { recursive: true, force: true });
       }

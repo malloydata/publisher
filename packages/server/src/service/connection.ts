@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv } from "../settings";
 import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
@@ -685,8 +686,8 @@ function mapUriQuery(uri: string, fn: (params: string[]) => string[]): string {
  */
 function libpqSslmodeInRawString(connectionString: string): string {
    const envNoVerify =
-      process.env.PGSSLMODE?.toLowerCase() === "no-verify" &&
-      !process.env.PGSERVICE;
+      externalEnv("PGSSLMODE")?.toLowerCase() === "no-verify" &&
+      !externalEnv("PGSERVICE");
    const rewritten = `sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`;
    if (isUriConnectionString(connectionString)) {
       return mapUriQuery(connectionString, (params) => {
@@ -858,7 +859,7 @@ export function buildPgConnectionString(
       }
    }
 
-   const pgSSLMode = process.env.PGSSLMODE;
+   const pgSSLMode = externalEnv("PGSSLMODE");
 
    if (pgSSLMode) {
       const mapping: Record<string, string> = {
@@ -1656,7 +1657,7 @@ export interface ProxiedAttachTrust {
 
 export function defaultProxiedAttachTrust(): ProxiedAttachTrust {
    return {
-      caBundle: process.env.NODE_EXTRA_CA_CERTS || undefined,
+      caBundle: externalEnv("NODE_EXTRA_CA_CERTS") || undefined,
       ambientBundle: ambientTrustBundlePath,
    };
 }
@@ -1676,7 +1677,7 @@ let ambientTrustDir: string | undefined;
  * startup, so the build trusts what the query path does. Exported for tests.
  */
 export function ambientTrustBundlePath(): string {
-   const extra = process.env.NODE_EXTRA_CA_CERTS || undefined;
+   const extra = externalEnv("NODE_EXTRA_CA_CERTS") || undefined;
    const cached = ambientTrustBundles.get(extra);
    if (cached) return cached;
    let extraPem: string | undefined;
@@ -2488,7 +2489,7 @@ function buildSnowflakePrivateKeyConnection(
 // `no-verify` encrypts without checking, `disable` uses no TLS. `verify-full`
 // needs an `ssl` object with `servername` (see resolveProxiedTls).
 export function buildProxiedSslQuery(name: string, sslmode?: string): string {
-   const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+   const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
    // Default to encrypting so a force-SSL target (common on RDS) is not
    // rejected for plaintext.
    const mode = sslmode ?? "no-verify";

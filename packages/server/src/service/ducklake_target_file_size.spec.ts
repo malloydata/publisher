@@ -13,6 +13,20 @@ import {
    applyDuckLakeTargetFileSize,
 } from "./connection";
 import { assertDuckDBResourceConfig } from "../config";
+import { installSettings } from "../test_helpers/settings_env";
+
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 function recorder(): { conn: DuckDBConnection; sql: string[] } {
    const sql: string[] = [];
@@ -26,19 +40,15 @@ function recorder(): { conn: DuckDBConnection; sql: string[] } {
 }
 
 describe("applyDuckLakeTargetFileSize", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES;
-      delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
-   });
-
    it("issues nothing when unset, so an existing deployment attaches exactly as before", async () => {
+      installEnv({});
       const { conn, sql } = recorder();
       await applyDuckLakeTargetFileSize(conn, "lake");
       expect(sql).toEqual([]);
    });
 
    it("scopes the option to the catalog, not the session", async () => {
-      process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "256MB";
+      installEnv({ PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: "256MB" });
       const { conn, sql } = recorder();
       await applyDuckLakeTargetFileSize(conn, "lake");
       expect(sql).toEqual([
@@ -48,7 +58,7 @@ describe("applyDuckLakeTargetFileSize", () => {
 
    it("does not fail the attach when the catalog refuses the option", async () => {
       // A lake this deployment may read but not re-configure must still serve.
-      process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "256MB";
+      installEnv({ PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: "256MB" });
       const conn = {
          runSQL: async () => {
             throw new Error("permission denied for table ducklake_metadata");
@@ -63,7 +73,7 @@ describe("applyDuckLakeTargetFileSize", () => {
    // because a future refactor that folds one into the other would still pass a
    // test that only checked they can be set together.
    it("is independent of the row group bound in both directions", async () => {
-      process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "32MB";
+      installEnv({ PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: "32MB" });
       const rowGroupOnly = recorder();
       await applyDuckLakeRowGroupBound(rowGroupOnly.conn, "lake");
       await applyDuckLakeTargetFileSize(rowGroupOnly.conn, "lake");
@@ -72,8 +82,7 @@ describe("applyDuckLakeTargetFileSize", () => {
          "CALL \"lake\".set_option('parquet_row_group_size_bytes', '32MB')",
       ]);
 
-      delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
-      process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "256MB";
+      installEnv({ PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: "256MB" });
       const fileSizeOnly = recorder();
       await applyDuckLakeRowGroupBound(fileSizeOnly.conn, "lake");
       await applyDuckLakeTargetFileSize(fileSizeOnly.conn, "lake");
@@ -84,12 +93,8 @@ describe("applyDuckLakeTargetFileSize", () => {
 });
 
 describe("target file size configuration", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES;
-   });
-
    it("rejects a byte size with no unit, which DuckDB cannot read", () => {
-      process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "268435456";
+      installEnv({ PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: "268435456" });
       expect(() => assertDuckDBResourceConfig()).toThrow(
          /PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES/,
       );
@@ -102,7 +107,7 @@ describe("target file size configuration", () => {
    it.each(["1TB", "1TIB", "1tb", "512MB", "1.5GB", "0.5GiB"])(
       "accepts %s, which DuckDB accepts",
       (value) => {
-         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = value;
+         installEnv({ PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: value });
          expect(() => assertDuckDBResourceConfig()).not.toThrow();
       },
    );
@@ -110,7 +115,7 @@ describe("target file size configuration", () => {
    it.each(["1PB", "268435456", "1GBB", "MB", "0MB", "0"])(
       "rejects %s, which DuckDB refuses or stores uselessly",
       (value) => {
-         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = value;
+         installEnv({ PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: value });
          expect(() => assertDuckDBResourceConfig()).toThrow(
             /PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES/,
          );

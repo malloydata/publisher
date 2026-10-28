@@ -1,84 +1,79 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
-import { applyCliArgs } from "./cli_args";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { printHelpIfAsked } from "./cli_args";
+import { settings } from "./settings";
+import { withSettings } from "./test_helpers/settings_env";
 
-const apply = (args: string[], env: NodeJS.ProcessEnv = {}) => {
-   applyCliArgs(args, env);
-   return env;
-};
-
-describe("applyCliArgs", () => {
-   it.each([
-      ["--port", "PUBLISHER_PORT"],
-      ["--host", "PUBLISHER_HOST"],
-      ["--server_root", "SERVER_ROOT"],
-      ["--config", "PUBLISHER_CONFIG_PATH"],
-      ["--mcp_port", "MCP_PORT"],
-      ["--mcp_host", "MCP_HOST"],
-      ["--admin_port", "PUBLISHER_ADMIN_PORT"],
-      ["--admin_host", "PUBLISHER_ADMIN_HOST"],
-      ["--shutdown_drain_duration_seconds", "SHUTDOWN_DRAIN_DURATION_SECONDS"],
-      [
-         "--shutdown_graceful_close_timeout_seconds",
-         "SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS",
-      ],
-   ])("sets %s into %s", (flag, variable) => {
-      expect(apply([flag, "x"], { NODE_ENV: "test" })[variable]).toBe("x");
-   });
-
-   it("ignores a value flag with no value", () => {
-      expect(apply(["--port"], { NODE_ENV: "test" }).PUBLISHER_PORT).toBe(
-         undefined,
+/**
+ * Flags are read by the settings loader. Each flag's own rows (its value, a
+ * flag with no value, a flag over its variable, the bundled-config default)
+ * are in settings/contract.spec.ts and settings/settings.spec.ts; these are
+ * the combinations of a flag and a variable those rows leave out.
+ */
+describe("flags read with the variables", () => {
+   it("turns each API off with its --no- switch, over a variable that turns it on", () => {
+      withSettings(
+         {
+            env: {
+               PUBLISHER_SERVING_API_ENABLED: "true",
+               PUBLISHER_ADMIN_API_ENABLED: "true",
+            },
+            argv: ["--no-serving-api-enabled", "--no-admin-api-enabled"],
+         },
+         () => {
+            expect(settings.get("servingApiEnabled")).toBe(false);
+            expect(settings.get("adminApiEnabled")).toBe(false);
+         },
       );
    });
 
-   it("maps the boolean flags", () => {
-      const env = apply(["--init", "--no-mcp-config"], { NODE_ENV: "test" });
-      expect(env.INITIALIZE_STORAGE).toBe("true");
-      expect(env.PUBLISHER_NO_MCP_CONFIG).toBe("true");
-   });
-
-   it("maps each API switch to its variable, on bare and off with no-, overriding the variable", () => {
-      const env = apply(["--no-serving-api-enabled", "--admin-api-enabled"], {
-         NODE_ENV: "test",
-         PUBLISHER_SERVING_API_ENABLED: "true",
-         PUBLISHER_ADMIN_API_ENABLED: "false",
-      });
-      expect(env.PUBLISHER_SERVING_API_ENABLED).toBe("false");
-      expect(env.PUBLISHER_ADMIN_API_ENABLED).toBe("true");
-      const off = apply(["--serving-api-enabled", "--no-admin-api-enabled"], {
-         NODE_ENV: "test",
-      });
-      expect(off.PUBLISHER_SERVING_API_ENABLED).toBe("true");
-      expect(off.PUBLISHER_ADMIN_API_ENABLED).toBe("false");
-   });
-
    it("appends repeated --watch-env to an existing PUBLISHER_WATCH", () => {
-      const env = apply(["--watch-env", "b", "--watch-env", "c"], {
-         NODE_ENV: "test",
-         PUBLISHER_WATCH: "a",
-      });
-      expect(env.PUBLISHER_WATCH).toBe("a,b,c");
+      withSettings(
+         {
+            env: { PUBLISHER_WATCH: "a" },
+            argv: ["--watch-env", "b", "--watch-env", "c"],
+         },
+         () => {
+            expect(settings.get("watchEnvironments")).toEqual(["a", "b", "c"]);
+         },
+      );
+   });
+});
+
+describe("printHelpIfAsked", () => {
+   const spies: Array<{ mockRestore: () => void }> = [];
+
+   afterEach(() => {
+      while (spies.length) spies.pop()!.mockRestore();
    });
 
-   it("opts a zero-config run into the bundled sample config", () => {
-      expect(apply([], {}).PUBLISHER_USE_BUNDLED_DEFAULT).toBe("true");
-   });
+   const watch = () => {
+      const log = spyOn(console, "log").mockImplementation(() => {});
+      const exit = spyOn(process, "exit").mockImplementation(
+         (() => undefined) as never,
+      );
+      spies.push(log, exit);
+      return { log, exit };
+   };
 
-   it.each([["--server_root"], ["--config"]])(
-      "does not use the bundled config when %s names a location",
+   it.each([["--help"], ["-h"]])(
+      "prints the usage and exits 0 on %s",
       (flag) => {
-         expect(apply([flag, "/x"], {}).PUBLISHER_USE_BUNDLED_DEFAULT).toBe(
-            undefined,
-         );
+         const { log, exit } = watch();
+         printHelpIfAsked(["--port", "4100", flag]);
+         expect(log).toHaveBeenCalledWith("Usage: malloy-publisher [options]");
+         expect(exit).toHaveBeenCalledTimes(1);
+         expect(exit).toHaveBeenCalledWith(0);
       },
    );
 
-   it("never uses the bundled config under NODE_ENV=test", () => {
-      expect(
-         apply([], { NODE_ENV: "test" }).PUBLISHER_USE_BUNDLED_DEFAULT,
-      ).toBe(undefined);
+   it("neither prints nor exits without --help, so the server starts", () => {
+      const { log, exit } = watch();
+      printHelpIfAsked([]);
+      printHelpIfAsked(["--port", "4100", "--init", "--help-me"]);
+      expect(log).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
    });
 });

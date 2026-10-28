@@ -7,14 +7,31 @@ import path from "path";
 import {
    convertConnectionsToApiConnections,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
+   getDefaultQueryRowLimit,
    getEmbeddingConfig,
+   getMaxConcurrentQueries,
+   getMaxQueryRows,
+   getMaxResponseBytes,
+   getMemoryGovernorConfig,
    getPersistCollisionEnforce,
+   getPostgresPoolMax,
    getProcessedPublisherConfig,
    getPublisherConfig,
    getPublisherConfigDir,
+   getQueryTimeoutMs,
+   isPublisherConfigFrozen,
    type PublisherConfig,
 } from "./config";
-import { PUBLISHER_CONFIG_NAME } from "./constants";
+import {
+   DEFAULT_MAX_CONCURRENT_QUERIES,
+   DEFAULT_MAX_QUERY_ROWS,
+   DEFAULT_MAX_RESPONSE_BYTES,
+   DEFAULT_POSTGRES_POOL_MAX,
+   DEFAULT_QUERY_ROW_LIMIT,
+   DEFAULT_QUERY_TIMEOUT_MS,
+   PUBLISHER_CONFIG_NAME,
+} from "./constants";
+import { withSettings } from "./test_helpers/settings_env";
 
 describe("Config Environment Variable Substitution", () => {
    const testServerRoot = path.join(process.cwd(), "test-temp-config");
@@ -77,7 +94,6 @@ describe("Config Environment Variable Substitution", () => {
          const locationWithVar = "./path/${UNDEFINED_VAR}/end" as const;
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -103,7 +119,6 @@ describe("Config Environment Variable Substitution", () => {
          const locationWithVar = "gs://${BUCKET_NAME}/packages" as const;
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -131,7 +146,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.BUCKET_NAME = "my-test-bucket";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -158,7 +172,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.PROJECT_ID = "analytics-2024";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -186,7 +199,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.PROJECT_ID = "prod-analytics";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -214,7 +226,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.BUCKET_2 = "bucket-two";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -248,7 +259,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.DB_HOST = "localhost";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -317,7 +327,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.PROJECT_ID = "my-project";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -346,7 +355,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.PROD_BUCKET = "prod-data";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "development",
@@ -476,7 +484,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.BUCKET_NAME = "my-bucket";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -548,7 +555,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.EMPTY_VAR = "";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -572,7 +578,7 @@ describe("Config Environment Variable Substitution", () => {
       });
 
       it("should handle non-string values without modification", () => {
-         const config: PublisherConfig = {
+         const config = {
             frozenConfig: true,
             environments: [
                {
@@ -612,7 +618,10 @@ describe("Config Environment Variable Substitution", () => {
             tags: string[];
          };
 
-         expect(result.frozenConfig).toBe(true);
+         // frozenConfig is a setting, which the settings read from the file.
+         withSettings({ cwd: testServerRoot }, () => {
+            expect(isPublisherConfigFrozen()).toBe(true);
+         });
          expect(projectWithExtras.count).toBe(42);
          expect(projectWithExtras.enabled).toBe(true);
          expect(projectWithExtras.ratio).toBe(3.14);
@@ -622,7 +631,6 @@ describe("Config Environment Variable Substitution", () => {
 
       it("should handle config with no environment variables", () => {
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -645,7 +653,6 @@ describe("Config Environment Variable Substitution", () => {
 
       it("should handle empty environments array", () => {
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [],
          };
 
@@ -661,8 +668,11 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          expect(result).toEqual({
-            frozenConfig: false,
             environments: [],
+         });
+         // With no file, the frozenConfig setting is at its default.
+         withSettings({ cwd: testServerRoot }, () => {
+            expect(isPublisherConfigFrozen()).toBe(false);
          });
       });
 
@@ -670,7 +680,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.BUCKET_NAME = "test-bucket";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -699,7 +708,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.PROD_BUCKET = "production-data";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "development",
@@ -738,7 +746,6 @@ describe("Config Environment Variable Substitution", () => {
 
       it("should preserve variable syntax if not matching pattern", () => {
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "test-project",
@@ -803,7 +810,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.PROJECT_ID = "company-project-staging";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "${ENV}",
@@ -841,7 +847,6 @@ describe("Config Environment Variable Substitution", () => {
          process.env.DB_CONNECTION = "production-db";
 
          const config: PublisherConfig = {
-            frozenConfig: false,
             environments: [
                {
                   name: "production",
@@ -1153,13 +1158,9 @@ describe("Config path resolution (--config and bundled default)", () => {
       if (!fs.existsSync(emptyServerRoot)) {
          fs.mkdirSync(emptyServerRoot, { recursive: true });
       }
-      delete process.env.PUBLISHER_CONFIG_PATH;
-      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
    });
 
    afterEach(() => {
-      delete process.env.PUBLISHER_CONFIG_PATH;
-      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
       if (fs.existsSync(customConfigPath)) {
          fs.unlinkSync(customConfigPath);
       }
@@ -1169,11 +1170,14 @@ describe("Config path resolution (--config and bundled default)", () => {
    });
 
    it("falls back to the bundled default config when serverRoot has no publisher.config.json and bundled-default opt-in is set", () => {
-      // The bundled default is opt-in (server.ts sets the env var when
-      // the user passed neither --server_root nor --config) so embedded
-      // callers don't get a surprise filesystem read.
-      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
-      const result = getPublisherConfig(emptyServerRoot);
+      // The bundled default is opt-in (useBundledDefault is on by default
+      // only when no flag names a root or config, and never under
+      // NODE_ENV=test) so embedded callers don't get a surprise filesystem
+      // read.
+      const result = withSettings(
+         { env: { PUBLISHER_USE_BUNDLED_DEFAULT: "true" } },
+         () => getPublisherConfig(emptyServerRoot),
+      );
 
       expect(result.environments.length).toBeGreaterThan(0);
       const env = result.environments[0];
@@ -1188,7 +1192,9 @@ describe("Config path resolution (--config and bundled default)", () => {
       // No PUBLISHER_USE_BUNDLED_DEFAULT, no PUBLISHER_CONFIG_PATH, no
       // file in emptyServerRoot — result should be the original empty
       // shape, preserving prior behavior for embeds and tests.
-      const result = getPublisherConfig(emptyServerRoot);
+      const result = withSettings({}, () =>
+         getPublisherConfig(emptyServerRoot),
+      );
       expect(result.environments).toEqual([]);
    });
 
@@ -1200,64 +1206,60 @@ describe("Config path resolution (--config and bundled default)", () => {
          ],
       };
       fs.writeFileSync(customConfigPath, JSON.stringify(customConfig));
-      process.env.PUBLISHER_CONFIG_PATH = customConfigPath;
 
-      const result = getPublisherConfig(emptyServerRoot);
+      const result = withSettings(
+         { env: { PUBLISHER_CONFIG_PATH: customConfigPath } },
+         () => getPublisherConfig(emptyServerRoot),
+      );
       expect(result.environments[0].name).toBe("custom-env");
    });
 
    it("returns empty environments (not the bundled default) when --config points at a missing file", () => {
-      process.env.PUBLISHER_CONFIG_PATH = path.join(
-         process.cwd(),
-         "does-not-exist.json",
-      );
       // Even with bundled-default opt-in, --config with a missing target
       // is a user error and we don't paper over it.
-      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
-      const result = getPublisherConfig(emptyServerRoot);
+      const result = withSettings(
+         {
+            env: {
+               PUBLISHER_CONFIG_PATH: path.join(
+                  process.cwd(),
+                  "does-not-exist.json",
+               ),
+               PUBLISHER_USE_BUNDLED_DEFAULT: "true",
+            },
+         },
+         () => getPublisherConfig(emptyServerRoot),
+      );
       expect(result.environments).toEqual([]);
    });
 });
 
 describe("getMemoryGovernorConfig", () => {
-   const GOVERNOR_ENV_VARS = [
-      "PUBLISHER_MAX_MEMORY_BYTES",
-      "PUBLISHER_MEMORY_HIGH_WATER_FRACTION",
-      "PUBLISHER_MEMORY_LOW_WATER_FRACTION",
-      "PUBLISHER_MEMORY_CHECK_INTERVAL_MS",
-      "PUBLISHER_MEMORY_BACKPRESSURE",
-   ];
+   /** The governor's settings with exactly `env` as the variables. */
+   const governor = (env: Record<string, string>) =>
+      withSettings({ env }, () => getMemoryGovernorConfig());
 
-   beforeEach(() => {
-      for (const v of GOVERNOR_ENV_VARS) delete process.env[v];
-   });
-   afterEach(() => {
-      for (const v of GOVERNOR_ENV_VARS) delete process.env[v];
+   it("returns null when PUBLISHER_MAX_MEMORY_BYTES is unset", () => {
+      expect(governor({})).toBeNull();
    });
 
-   it("returns null when PUBLISHER_MAX_MEMORY_BYTES is unset", async () => {
-      const { getMemoryGovernorConfig } = await import("./config");
-      expect(getMemoryGovernorConfig()).toBeNull();
-   });
-
-   it("parses defaults when only PUBLISHER_MAX_MEMORY_BYTES is set", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = String(2 * 1024 * 1024 * 1024);
-      const { getMemoryGovernorConfig } = await import("./config");
-      const cfg = getMemoryGovernorConfig();
+   it("parses defaults when only PUBLISHER_MAX_MEMORY_BYTES is set", () => {
+      const cfg = governor({
+         PUBLISHER_MAX_MEMORY_BYTES: String(2 * 1024 * 1024 * 1024),
+      });
       expect(cfg).not.toBeNull();
       expect(cfg!.maxMemoryBytes).toBe(2 * 1024 * 1024 * 1024);
       expect(cfg!.backpressureEnabled).toBe(true);
       expect(cfg!.highWaterFraction).toBeGreaterThan(cfg!.lowWaterFraction);
    });
 
-   it("honours fraction and interval overrides", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
-      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "0.85";
-      process.env.PUBLISHER_MEMORY_LOW_WATER_FRACTION = "0.7";
-      process.env.PUBLISHER_MEMORY_CHECK_INTERVAL_MS = "10000";
-      process.env.PUBLISHER_MEMORY_BACKPRESSURE = "false";
-      const { getMemoryGovernorConfig } = await import("./config");
-      const cfg = getMemoryGovernorConfig();
+   it("honours fraction and interval overrides", () => {
+      const cfg = governor({
+         PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+         PUBLISHER_MEMORY_HIGH_WATER_FRACTION: "0.85",
+         PUBLISHER_MEMORY_LOW_WATER_FRACTION: "0.7",
+         PUBLISHER_MEMORY_CHECK_INTERVAL_MS: "10000",
+         PUBLISHER_MEMORY_BACKPRESSURE: "false",
+      });
       expect(cfg).not.toBeNull();
       expect(cfg!.highWaterFraction).toBe(0.85);
       expect(cfg!.lowWaterFraction).toBe(0.7);
@@ -1265,335 +1267,253 @@ describe("getMemoryGovernorConfig", () => {
       expect(cfg!.backpressureEnabled).toBe(false);
    });
 
-   it("treats PUBLISHER_MAX_MEMORY_BYTES=0 as disabled (returns null)", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = "0";
-      const { getMemoryGovernorConfig } = await import("./config");
-      expect(getMemoryGovernorConfig()).toBeNull();
+   it("treats PUBLISHER_MAX_MEMORY_BYTES=0 as disabled (returns null)", () => {
+      expect(governor({ PUBLISHER_MAX_MEMORY_BYTES: "0" })).toBeNull();
    });
 
-   it("rejects a negative PUBLISHER_MAX_MEMORY_BYTES", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = "-1";
-      const { getMemoryGovernorConfig } = await import("./config");
-      expect(() => getMemoryGovernorConfig()).toThrow();
+   it("rejects a negative PUBLISHER_MAX_MEMORY_BYTES", () => {
+      expect(() => governor({ PUBLISHER_MAX_MEMORY_BYTES: "-1" })).toThrow();
    });
 
-   it("rejects low >= high", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
-      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "0.7";
-      process.env.PUBLISHER_MEMORY_LOW_WATER_FRACTION = "0.8";
-      const { getMemoryGovernorConfig } = await import("./config");
-      expect(() => getMemoryGovernorConfig()).toThrow();
+   it("rejects low >= high", () => {
+      expect(() =>
+         governor({
+            PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+            PUBLISHER_MEMORY_HIGH_WATER_FRACTION: "0.7",
+            PUBLISHER_MEMORY_LOW_WATER_FRACTION: "0.8",
+         }),
+      ).toThrow();
    });
 
-   it("rejects an out-of-range fraction", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
-      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "1.5";
-      const { getMemoryGovernorConfig } = await import("./config");
-      expect(() => getMemoryGovernorConfig()).toThrow();
+   it("rejects an out-of-range fraction", () => {
+      expect(() =>
+         governor({
+            PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+            PUBLISHER_MEMORY_HIGH_WATER_FRACTION: "1.5",
+         }),
+      ).toThrow();
    });
 
-   it("rejects a check interval below the safety floor", async () => {
-      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
-      process.env.PUBLISHER_MEMORY_CHECK_INTERVAL_MS = "10";
-      const { getMemoryGovernorConfig } = await import("./config");
-      expect(() => getMemoryGovernorConfig()).toThrow();
+   it("rejects a check interval below the safety floor", () => {
+      expect(() =>
+         governor({
+            PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+            PUBLISHER_MEMORY_CHECK_INTERVAL_MS: "10",
+         }),
+      ).toThrow();
    });
 });
 
+/**
+ * `read()` with `variable` set to `value`, or with nothing set when `value`
+ * is undefined.
+ */
+const readWith = <T>(
+   variable: string,
+   value: string | undefined,
+   read: () => T,
+): T =>
+   withSettings({ env: value === undefined ? {} : { [variable]: value } }, () =>
+      read(),
+   );
+
 describe("getMaxQueryRows", () => {
-   beforeEach(() => {
-      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-   });
-   afterEach(() => {
-      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+   const rows = (value?: string) =>
+      readWith("PUBLISHER_MAX_QUERY_ROWS", value, getMaxQueryRows);
+
+   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is unset", () => {
+      expect(rows()).toBe(DEFAULT_MAX_QUERY_ROWS);
    });
 
-   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is unset", async () => {
-      const { getMaxQueryRows } = await import("./config");
-      const { DEFAULT_MAX_QUERY_ROWS } = await import("./constants");
-      expect(getMaxQueryRows()).toBe(DEFAULT_MAX_QUERY_ROWS);
+   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is empty", () => {
+      expect(rows("")).toBe(DEFAULT_MAX_QUERY_ROWS);
    });
 
-   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is empty", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "";
-      const { getMaxQueryRows } = await import("./config");
-      const { DEFAULT_MAX_QUERY_ROWS } = await import("./constants");
-      expect(getMaxQueryRows()).toBe(DEFAULT_MAX_QUERY_ROWS);
+   it("returns the override when the env var is set", () => {
+      expect(rows("5000")).toBe(5000);
    });
 
-   it("returns the override when the env var is set", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "5000";
-      const { getMaxQueryRows } = await import("./config");
-      expect(getMaxQueryRows()).toBe(5000);
+   it("accepts 0 (used to opt out of row cap)", () => {
+      expect(rows("0")).toBe(0);
    });
 
-   it("accepts 0 (used to opt out of row cap)", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
-      const { getMaxQueryRows } = await import("./config");
-      expect(getMaxQueryRows()).toBe(0);
+   it("rejects a negative override", () => {
+      expect(() => rows("-1")).toThrow();
    });
 
-   it("rejects a negative override", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "-1";
-      const { getMaxQueryRows } = await import("./config");
-      expect(() => getMaxQueryRows()).toThrow();
+   it("rejects a non-integer override", () => {
+      expect(() => rows("1.5")).toThrow();
    });
 
-   it("rejects a non-integer override", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1.5";
-      const { getMaxQueryRows } = await import("./config");
-      expect(() => getMaxQueryRows()).toThrow();
-   });
-
-   it("rejects a non-numeric override", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "lots";
-      const { getMaxQueryRows } = await import("./config");
-      expect(() => getMaxQueryRows()).toThrow();
+   it("rejects a non-numeric override", () => {
+      expect(() => rows("lots")).toThrow();
    });
 });
 
 describe("getMaxResponseBytes", () => {
-   beforeEach(() => {
-      delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
-   });
-   afterEach(() => {
-      delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+   const bytes = (value?: string) =>
+      readWith("PUBLISHER_MAX_RESPONSE_BYTES", value, getMaxResponseBytes);
+
+   it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is unset", () => {
+      expect(bytes()).toBe(DEFAULT_MAX_RESPONSE_BYTES);
    });
 
-   it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is unset", async () => {
-      const { getMaxResponseBytes } = await import("./config");
-      const { DEFAULT_MAX_RESPONSE_BYTES } = await import("./constants");
-      expect(getMaxResponseBytes()).toBe(DEFAULT_MAX_RESPONSE_BYTES);
+   it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is empty", () => {
+      expect(bytes("")).toBe(DEFAULT_MAX_RESPONSE_BYTES);
    });
 
-   it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is empty", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "";
-      const { getMaxResponseBytes } = await import("./config");
-      const { DEFAULT_MAX_RESPONSE_BYTES } = await import("./constants");
-      expect(getMaxResponseBytes()).toBe(DEFAULT_MAX_RESPONSE_BYTES);
+   it("returns the override when the env var is set", () => {
+      expect(bytes("1048576")).toBe(1048576);
    });
 
-   it("returns the override when the env var is set", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "1048576";
-      const { getMaxResponseBytes } = await import("./config");
-      expect(getMaxResponseBytes()).toBe(1048576);
+   it("accepts 0 (used to opt out of byte cap)", () => {
+      expect(bytes("0")).toBe(0);
    });
 
-   it("accepts 0 (used to opt out of byte cap)", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
-      const { getMaxResponseBytes } = await import("./config");
-      expect(getMaxResponseBytes()).toBe(0);
+   it("rejects a negative override", () => {
+      expect(() => bytes("-1")).toThrow();
    });
 
-   it("rejects a negative override", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "-1";
-      const { getMaxResponseBytes } = await import("./config");
-      expect(() => getMaxResponseBytes()).toThrow();
+   it("rejects a non-integer override", () => {
+      expect(() => bytes("1.5")).toThrow();
    });
 
-   it("rejects a non-integer override", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "1.5";
-      const { getMaxResponseBytes } = await import("./config");
-      expect(() => getMaxResponseBytes()).toThrow();
-   });
-
-   it("rejects a non-numeric override", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "big";
-      const { getMaxResponseBytes } = await import("./config");
-      expect(() => getMaxResponseBytes()).toThrow();
+   it("rejects a non-numeric override", () => {
+      expect(() => bytes("big")).toThrow();
    });
 });
 
 describe("getDefaultQueryRowLimit", () => {
-   beforeEach(() => {
-      delete process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
-   });
-   afterEach(() => {
-      delete process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+   const limit = (value?: string) =>
+      readWith(
+         "PUBLISHER_DEFAULT_QUERY_ROW_LIMIT",
+         value,
+         getDefaultQueryRowLimit,
+      );
+
+   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is unset", () => {
+      expect(limit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
    });
 
-   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is unset", async () => {
-      const { getDefaultQueryRowLimit } = await import("./config");
-      const { DEFAULT_QUERY_ROW_LIMIT } = await import("./constants");
-      expect(getDefaultQueryRowLimit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
+   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is empty", () => {
+      expect(limit("")).toBe(DEFAULT_QUERY_ROW_LIMIT);
    });
 
-   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is empty", async () => {
-      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "";
-      const { getDefaultQueryRowLimit } = await import("./config");
-      const { DEFAULT_QUERY_ROW_LIMIT } = await import("./constants");
-      expect(getDefaultQueryRowLimit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
+   it("returns the override when the env var is set", () => {
+      expect(limit("250")).toBe(250);
    });
 
-   it("returns the override when the env var is set", async () => {
-      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "250";
-      const { getDefaultQueryRowLimit } = await import("./config");
-      expect(getDefaultQueryRowLimit()).toBe(250);
+   it("rejects 0 (a default of 'zero rows' is always a misconfiguration)", () => {
+      expect(() => limit("0")).toThrow();
    });
 
-   it("rejects 0 (a default of 'zero rows' is always a misconfiguration)", async () => {
-      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "0";
-      const { getDefaultQueryRowLimit } = await import("./config");
-      expect(() => getDefaultQueryRowLimit()).toThrow();
+   it("rejects a negative override", () => {
+      expect(() => limit("-1")).toThrow();
    });
 
-   it("rejects a negative override", async () => {
-      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "-1";
-      const { getDefaultQueryRowLimit } = await import("./config");
-      expect(() => getDefaultQueryRowLimit()).toThrow();
+   it("rejects a non-integer override", () => {
+      expect(() => limit("1.5")).toThrow();
    });
 
-   it("rejects a non-integer override", async () => {
-      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "1.5";
-      const { getDefaultQueryRowLimit } = await import("./config");
-      expect(() => getDefaultQueryRowLimit()).toThrow();
-   });
-
-   it("rejects a non-numeric override", async () => {
-      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "lots";
-      const { getDefaultQueryRowLimit } = await import("./config");
-      expect(() => getDefaultQueryRowLimit()).toThrow();
+   it("rejects a non-numeric override", () => {
+      expect(() => limit("lots")).toThrow();
    });
 });
 
 describe("getQueryTimeoutMs", () => {
-   beforeEach(() => {
-      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-   });
-   afterEach(() => {
-      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   const timeout = (value?: string) =>
+      readWith("PUBLISHER_QUERY_TIMEOUT_MS", value, getQueryTimeoutMs);
+
+   it("returns DEFAULT_QUERY_TIMEOUT_MS when the env var is unset", () => {
+      expect(timeout()).toBe(DEFAULT_QUERY_TIMEOUT_MS);
    });
 
-   it("returns DEFAULT_QUERY_TIMEOUT_MS when the env var is unset", async () => {
-      const { getQueryTimeoutMs } = await import("./config");
-      const { DEFAULT_QUERY_TIMEOUT_MS } = await import("./constants");
-      expect(getQueryTimeoutMs()).toBe(DEFAULT_QUERY_TIMEOUT_MS);
+   it("returns the override when the env var is set", () => {
+      expect(timeout("30000")).toBe(30000);
    });
 
-   it("returns the override when the env var is set", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "30000";
-      const { getQueryTimeoutMs } = await import("./config");
-      expect(getQueryTimeoutMs()).toBe(30000);
+   it("accepts 0 (used to opt out of the timeout)", () => {
+      expect(timeout("0")).toBe(0);
    });
 
-   it("accepts 0 (used to opt out of the timeout)", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "0";
-      const { getQueryTimeoutMs } = await import("./config");
-      expect(getQueryTimeoutMs()).toBe(0);
+   it("rejects a negative override", () => {
+      expect(() => timeout("-1")).toThrow();
    });
 
-   it("rejects a negative override", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "-1";
-      const { getQueryTimeoutMs } = await import("./config");
-      expect(() => getQueryTimeoutMs()).toThrow();
+   it("rejects a non-integer override", () => {
+      expect(() => timeout("1.5")).toThrow();
    });
 
-   it("rejects a non-integer override", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "1.5";
-      const { getQueryTimeoutMs } = await import("./config");
-      expect(() => getQueryTimeoutMs()).toThrow();
-   });
-
-   it("rejects a non-numeric override", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "slow";
-      const { getQueryTimeoutMs } = await import("./config");
-      expect(() => getQueryTimeoutMs()).toThrow();
+   it("rejects a non-numeric override", () => {
+      expect(() => timeout("slow")).toThrow();
    });
 });
 
 describe("getMaxConcurrentQueries", () => {
-   beforeEach(() => {
-      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
-   });
-   afterEach(() => {
-      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+   const concurrent = (value?: string) =>
+      readWith(
+         "PUBLISHER_MAX_CONCURRENT_QUERIES",
+         value,
+         getMaxConcurrentQueries,
+      );
+
+   it("returns DEFAULT_MAX_CONCURRENT_QUERIES when the env var is unset", () => {
+      expect(concurrent()).toBe(DEFAULT_MAX_CONCURRENT_QUERIES);
    });
 
-   it("returns DEFAULT_MAX_CONCURRENT_QUERIES when the env var is unset", async () => {
-      const { getMaxConcurrentQueries } = await import("./config");
-      const { DEFAULT_MAX_CONCURRENT_QUERIES } = await import("./constants");
-      expect(getMaxConcurrentQueries()).toBe(DEFAULT_MAX_CONCURRENT_QUERIES);
+   it("returns the override when the env var is set", () => {
+      expect(concurrent("8")).toBe(8);
    });
 
-   it("returns the override when the env var is set", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "8";
-      const { getMaxConcurrentQueries } = await import("./config");
-      expect(getMaxConcurrentQueries()).toBe(8);
+   it("accepts 0 (used to opt out of the cap)", () => {
+      expect(concurrent("0")).toBe(0);
    });
 
-   it("accepts 0 (used to opt out of the cap)", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "0";
-      const { getMaxConcurrentQueries } = await import("./config");
-      expect(getMaxConcurrentQueries()).toBe(0);
+   it("rejects a negative override", () => {
+      expect(() => concurrent("-1")).toThrow();
    });
 
-   it("rejects a negative override", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "-1";
-      const { getMaxConcurrentQueries } = await import("./config");
-      expect(() => getMaxConcurrentQueries()).toThrow();
+   it("rejects a non-integer override", () => {
+      expect(() => concurrent("1.5")).toThrow();
    });
 
-   it("rejects a non-integer override", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1.5";
-      const { getMaxConcurrentQueries } = await import("./config");
-      expect(() => getMaxConcurrentQueries()).toThrow();
-   });
-
-   it("rejects a non-numeric override", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "many";
-      const { getMaxConcurrentQueries } = await import("./config");
-      expect(() => getMaxConcurrentQueries()).toThrow();
+   it("rejects a non-numeric override", () => {
+      expect(() => concurrent("many")).toThrow();
    });
 });
 
 describe("getPostgresPoolMax", () => {
-   beforeEach(() => {
-      delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
-   });
-   afterEach(() => {
-      delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
-   });
+   const poolMax = (value?: string) =>
+      readWith("PUBLISHER_POSTGRES_POOL_MAX", value, getPostgresPoolMax);
 
-   it("returns DEFAULT_POSTGRES_POOL_MAX when the env var is unset", async () => {
-      const { getPostgresPoolMax } = await import("./config");
-      const { DEFAULT_POSTGRES_POOL_MAX } = await import("./constants");
+   it("returns DEFAULT_POSTGRES_POOL_MAX when the env var is unset", () => {
       expect(DEFAULT_POSTGRES_POOL_MAX).toBe(5);
-      expect(getPostgresPoolMax()).toBe(DEFAULT_POSTGRES_POOL_MAX);
+      expect(poolMax()).toBe(DEFAULT_POSTGRES_POOL_MAX);
    });
 
-   it("returns DEFAULT_POSTGRES_POOL_MAX when the env var is empty", async () => {
-      process.env.PUBLISHER_POSTGRES_POOL_MAX = "";
-      const { getPostgresPoolMax } = await import("./config");
-      expect(getPostgresPoolMax()).toBe(5);
+   it("returns DEFAULT_POSTGRES_POOL_MAX when the env var is empty", () => {
+      expect(poolMax("")).toBe(5);
    });
 
-   it("returns the override when the env var is set", async () => {
-      process.env.PUBLISHER_POSTGRES_POOL_MAX = "12";
-      const { getPostgresPoolMax } = await import("./config");
-      expect(getPostgresPoolMax()).toBe(12);
+   it("returns the override when the env var is set", () => {
+      expect(poolMax("12")).toBe(12);
    });
 
-   it("rejects 0, which would leave the pool unable to open a session", async () => {
-      process.env.PUBLISHER_POSTGRES_POOL_MAX = "0";
-      const { getPostgresPoolMax } = await import("./config");
-      expect(() => getPostgresPoolMax()).toThrow(
-         "PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got 0)",
+   it("rejects 0, which would leave the pool unable to open a session", () => {
+      expect(() => poolMax("0")).toThrow(
+         'postgres.poolMax from PUBLISHER_POSTGRES_POOL_MAX: expected an integer of at least 1, got "0"',
       );
    });
 
-   it("rejects a negative override", async () => {
-      process.env.PUBLISHER_POSTGRES_POOL_MAX = "-1";
-      const { getPostgresPoolMax } = await import("./config");
-      expect(() => getPostgresPoolMax()).toThrow(
-         "PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got -1)",
+   it("rejects a negative override", () => {
+      expect(() => poolMax("-1")).toThrow(
+         'postgres.poolMax from PUBLISHER_POSTGRES_POOL_MAX: expected an integer of at least 1, got "-1"',
       );
    });
 
-   it("rejects a non-integer override", async () => {
-      process.env.PUBLISHER_POSTGRES_POOL_MAX = "1.5";
-      const { getPostgresPoolMax } = await import("./config");
-      expect(() => getPostgresPoolMax()).toThrow(
-         "Invalid value for PUBLISHER_POSTGRES_POOL_MAX",
+   it("rejects a non-integer override", () => {
+      expect(() => poolMax("1.5")).toThrow(
+         'postgres.poolMax from PUBLISHER_POSTGRES_POOL_MAX: expected an integer of at least 1, got "1.5"',
       );
    });
 });
@@ -1601,26 +1521,16 @@ describe("getPostgresPoolMax", () => {
 describe("getPublisherConfigDir", () => {
    const testRoot = path.join(process.cwd(), "test-temp-config-dir");
    const elsewhere = path.join(testRoot, "elsewhere");
-   const savedConfigPath = process.env.PUBLISHER_CONFIG_PATH;
+   /** The anchor with exactly `env` as the variables. */
+   const anchorWith = (env: Record<string, string>) =>
+      withSettings({ env }, () => getPublisherConfigDir(testRoot));
 
    beforeEach(() => {
       fs.mkdirSync(elsewhere, { recursive: true });
-      // Both knobs feed resolvePublisherConfigPath, and every spec file shares
-      // one process, so clear both rather than inherit whatever ran before.
-      delete process.env.PUBLISHER_CONFIG_PATH;
-      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
    });
 
    afterEach(() => {
       fs.rmSync(testRoot, { recursive: true, force: true });
-      // Clear both, not just the one this describe saves: every spec file shares
-      // one process, so a knob left set here follows whatever runs next.
-      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
-      if (savedConfigPath === undefined) {
-         delete process.env.PUBLISHER_CONFIG_PATH;
-      } else {
-         process.env.PUBLISHER_CONFIG_PATH = savedConfigPath;
-      }
    });
 
    it("returns the server root when the config sits there", () => {
@@ -1628,7 +1538,7 @@ describe("getPublisherConfigDir", () => {
          path.join(testRoot, PUBLISHER_CONFIG_NAME),
          JSON.stringify({ environments: [] }),
       );
-      expect(getPublisherConfigDir(testRoot)).toBe(testRoot);
+      expect(anchorWith({})).toBe(testRoot);
    });
 
    it("follows PUBLISHER_CONFIG_PATH to a config outside the server root", () => {
@@ -1636,12 +1546,11 @@ describe("getPublisherConfigDir", () => {
       // the config that declares it, not at whatever cwd the server booted in.
       const configPath = path.join(elsewhere, PUBLISHER_CONFIG_NAME);
       fs.writeFileSync(configPath, JSON.stringify({ environments: [] }));
-      process.env.PUBLISHER_CONFIG_PATH = configPath;
-      expect(getPublisherConfigDir(testRoot)).toBe(elsewhere);
+      expect(anchorWith({ PUBLISHER_CONFIG_PATH: configPath })).toBe(elsewhere);
    });
 
    it("returns null when no config resolves, so callers fall back to the server root", () => {
-      expect(getPublisherConfigDir(testRoot)).toBeNull();
+      expect(anchorWith({})).toBeNull();
    });
 
    it("returns an absolute anchor even when --config is relative", () => {
@@ -1655,8 +1564,7 @@ describe("getPublisherConfigDir", () => {
          path.join(elsewhere, PUBLISHER_CONFIG_NAME),
          JSON.stringify({ environments: [] }),
       );
-      process.env.PUBLISHER_CONFIG_PATH = rel;
-      const anchor = getPublisherConfigDir(testRoot);
+      const anchor = anchorWith({ PUBLISHER_CONFIG_PATH: rel });
       expect(anchor).not.toBeNull();
       expect(path.isAbsolute(anchor as string)).toBe(true);
       expect(anchor).toBe(elsewhere);
@@ -1666,8 +1574,7 @@ describe("getPublisherConfigDir", () => {
       // existsSync is true for a directory, so without a file check the anchor
       // would silently become that directory's PARENT, for a config that never
       // loads (getPublisherConfig catches the read error and returns empty).
-      process.env.PUBLISHER_CONFIG_PATH = elsewhere;
-      expect(getPublisherConfigDir(testRoot)).toBeNull();
+      expect(anchorWith({ PUBLISHER_CONFIG_PATH: elsewhere })).toBeNull();
    });
 
    it("returns null for the bundled default rather than anchoring inside the install", () => {
@@ -1675,8 +1582,7 @@ describe("getPublisherConfigDir", () => {
       // inside the package. Anchoring a user's relative location under
       // node_modules would be meaningless, so the caller falls back to the
       // server root, which is what this did before the anchor moved.
-      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
-      expect(getPublisherConfigDir(testRoot)).toBeNull();
+      expect(anchorWith({ PUBLISHER_USE_BUNDLED_DEFAULT: "true" })).toBeNull();
    });
 });
 
@@ -1685,36 +1591,30 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
    // mis-parsing it leaves the check warn-only — failing open in exactly the
    // direction it exists to prevent. An ad-hoc `=== "true"` did that for `1`,
    // `yes` and `on`.
-   const prev = process.env.PERSIST_COLLISION_ENFORCE;
-   afterEach(() => {
-      if (prev === undefined) delete process.env.PERSIST_COLLISION_ENFORCE;
-      else process.env.PERSIST_COLLISION_ENFORCE = prev;
-   });
+   const enforce = (value?: string) =>
+      readWith("PERSIST_COLLISION_ENFORCE", value, getPersistCollisionEnforce);
 
    it("defaults to warn-only when unset or empty", () => {
-      delete process.env.PERSIST_COLLISION_ENFORCE;
-      expect(getPersistCollisionEnforce()).toBe(false);
-      process.env.PERSIST_COLLISION_ENFORCE = "   ";
-      expect(getPersistCollisionEnforce()).toBe(false);
+      expect(enforce()).toBe(false);
+      expect(enforce("   ")).toBe(false);
    });
 
    it("enforces for every spelling of true an operator might use", () => {
       for (const raw of ["true", "TRUE", " True ", "1", "yes", "on"]) {
-         process.env.PERSIST_COLLISION_ENFORCE = raw;
-         expect(getPersistCollisionEnforce()).toBe(true);
+         expect(enforce(raw)).toBe(true);
       }
    });
 
    it("stays warn-only for every spelling of false", () => {
       for (const raw of ["false", "FALSE", "0", "no", "off"]) {
-         process.env.PERSIST_COLLISION_ENFORCE = raw;
-         expect(getPersistCollisionEnforce()).toBe(false);
+         expect(enforce(raw)).toBe(false);
       }
    });
 
    it("throws on a value that is neither, rather than guessing", () => {
-      process.env.PERSIST_COLLISION_ENFORCE = "enabled";
-      expect(() => getPersistCollisionEnforce()).toThrow(/expected a boolean/i);
+      expect(() => enforce("enabled")).toThrow(
+         'persist.collisionEnforcementEnabled from PERSIST_COLLISION_ENFORCE: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
+      );
    });
 });
 
@@ -1726,44 +1626,42 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
    // field because picking up a config change needs --init, which wipes
    // publisher_data and the embedding cache with it -- a full paid re-embed
    // on every tuning pass, for a value meant to be tuned iteratively.
-   const saved = { ...process.env };
-   beforeEach(() => {
-      process.env.EMBEDDING_API_KEY = "test-key";
-   });
-   afterEach(() => {
-      process.env = { ...saved };
-   });
+   /** The embedding config, on, with the floor set to `value` if given. */
+   const config = (value?: string) =>
+      withSettings(
+         {
+            env: {
+               EMBEDDING_API_KEY: "test-key",
+               ...(value === undefined
+                  ? {}
+                  : { EMBEDDING_MIN_SIMILARITY: value }),
+            },
+         },
+         () => getEmbeddingConfig(),
+      );
+   /** The message a floor outside [0, 1), or not a number, fails with. */
+   const invalid = (value: string) =>
+      `retrieval.embedding.minSimilarity from EMBEDDING_MIN_SIMILARITY: expected a number of at least 0 and less than 1, got "${value}"`;
 
    it("defaults to 0.20, the hosted pipeline's min_score", () => {
-      delete process.env.EMBEDDING_MIN_SIMILARITY;
-      expect(getEmbeddingConfig()?.minSimilarity).toBe(
-         DEFAULT_EMBEDDING_MIN_SIMILARITY,
-      );
+      expect(config()?.minSimilarity).toBe(DEFAULT_EMBEDDING_MIN_SIMILARITY);
       expect(DEFAULT_EMBEDDING_MIN_SIMILARITY).toBe(0.2);
    });
 
    it("takes an operator override", () => {
-      process.env.EMBEDDING_MIN_SIMILARITY = "0.35";
-      expect(getEmbeddingConfig()?.minSimilarity).toBe(0.35);
+      expect(config("0.35")?.minSimilarity).toBe(0.35);
    });
 
    it("accepts 0, which disables the floor rather than meaning unset", () => {
-      process.env.EMBEDDING_MIN_SIMILARITY = "0";
-      expect(getEmbeddingConfig()?.minSimilarity).toBe(0);
+      expect(config("0")?.minSimilarity).toBe(0);
    });
 
    // Rejected, never clamped and never ignored: a floor of 1 returns nothing
    // and a negative one returns everything, and both read as a broken index
    // rather than a bad setting. An invalid value must not go on to drive
    // retrieval.
-   it.each([
-      ["1", /in \[0, 1\)/],
-      ["1.5", /in \[0, 1\)/],
-      ["-0.1", /in \[0, 1\)/],
-      ["high", /expected a finite number/i],
-   ])("rejects %s at startup", (value, message) => {
-      process.env.EMBEDDING_MIN_SIMILARITY = value;
-      expect(() => getEmbeddingConfig()).toThrow(message);
+   it.each(["1", "1.5", "-0.1", "high"])("rejects %s at startup", (value) => {
+      expect(() => config(value)).toThrow(invalid(value));
    });
 
    it.each(["0.5abc", "0.5 0.6", "0x10", "1abc"])(
@@ -1773,21 +1671,16 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
          // these used to yield 0.5, 0.5, 0 and 1 -- an invalid setting that
          // went on to drive retrieval, which is exactly what the docs promise
          // does not happen.
-         process.env.EMBEDDING_MIN_SIMILARITY = value;
-         expect(() => getEmbeddingConfig()).toThrow(/expected a finite number/);
+         expect(() => config(value)).toThrow(invalid(value));
       },
    );
 
    it.each(["0.50", ".5", "5e-1"])("accepts %s", (value) => {
       // The forms a round-trip check like parseIntEnv's would wrongly reject.
-      process.env.EMBEDDING_MIN_SIMILARITY = value;
-      expect(getEmbeddingConfig()?.minSimilarity).toBeCloseTo(0.5, 6);
+      expect(config(value)?.minSimilarity).toBeCloseTo(0.5, 6);
    });
 
-   it("names the variable and a working value in the error", () => {
-      process.env.EMBEDDING_MIN_SIMILARITY = "2";
-      expect(() => getEmbeddingConfig()).toThrow(
-         /EMBEDDING_MIN_SIMILARITY.*Fix: EMBEDDING_MIN_SIMILARITY=0\.35/s,
-      );
+   it("names the variable and the range it takes in the error", () => {
+      expect(() => config("2")).toThrow(invalid("2"));
    });
 });

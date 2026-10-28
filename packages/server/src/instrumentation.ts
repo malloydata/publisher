@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv } from "./settings";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
@@ -43,7 +44,7 @@ export async function shutdownSDK(): Promise<void> {
 }
 
 function instrument() {
-   const otelCollectorUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+   const otelCollectorUrl = externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT");
 
    prometheusExporter = new PrometheusExporter({
       preventServerStart: true,

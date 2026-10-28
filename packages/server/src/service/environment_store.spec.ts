@@ -1,15 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
    chmodSync,
    existsSync,
@@ -23,10 +15,10 @@ import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
-import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
+import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -321,13 +313,6 @@ describe("EnvironmentStore Service", () => {
       failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
       environmentStore = new EnvironmentStore(serverRootPath);
    });
 
@@ -1939,13 +1924,6 @@ describe("Project Service Error Recovery", () => {
       sandbox = sinon.createSandbox();
       mkdirSync(serverRootPath, { recursive: true });
 
-      // Mock the configuration to prevent initialization errors
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
-
-      // Create project store after mocking
       environmentStore = new EnvironmentStore(serverRootPath);
    });
 
@@ -2141,10 +2119,6 @@ describe("EnvironmentStore path-injection guards", () => {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
       mkdirSync(serverRootPath);
-      mock(isPublisherConfigFrozen).mockReturnValue(false);
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       environmentStore = new EnvironmentStore(serverRootPath);
       await environmentStore.finishedInitialization;
    });
@@ -2537,27 +2511,14 @@ describe("CloneProgressReporter", () => {
 });
 
 describe("formatReadinessLine", () => {
-   const SAVED = ["PUBLISHER_HOST", "PUBLISHER_PORT", "MCP_PORT"] as const;
-   let saved: Record<string, string | undefined>;
-
-   beforeEach(() => {
-      saved = {};
-      for (const key of SAVED) {
-         saved[key] = process.env[key];
-         delete process.env[key];
-      }
-   });
-
-   afterEach(() => {
-      for (const key of SAVED) {
-         if (saved[key] === undefined) delete process.env[key];
-         else process.env[key] = saved[key];
-      }
-   });
+   const readinessLine = (
+      input: SettingsInput,
+      counts: { environments: number; packages: number; loadErrors: number },
+   ) => withSettings(input, () => formatReadinessLine(counts));
 
    it("uses the server defaults and displays the wildcard bind as localhost", () => {
       expect(
-         formatReadinessLine({ environments: 1, packages: 3, loadErrors: 0 }),
+         readinessLine({}, { environments: 1, packages: 3, loadErrors: 0 }),
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=3 load_errors=0",
@@ -2565,9 +2526,11 @@ describe("formatReadinessLine", () => {
    });
 
    it("brackets an IPv6 literal host so the URL is dialable", () => {
-      process.env.PUBLISHER_HOST = "::1";
       expect(
-         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+         readinessLine(
+            { env: { PUBLISHER_HOST: "::1" } },
+            { environments: 1, packages: 1, loadErrors: 0 },
+         ),
       ).toBe(
          "PUBLISHER_READY url=http://[::1]:4000 mcp=http://[::1]:4040 " +
             "environments=1 packages=1 load_errors=0",
@@ -2575,26 +2538,49 @@ describe("formatReadinessLine", () => {
    });
 
    it("displays the :: wildcard bind as localhost", () => {
-      process.env.PUBLISHER_HOST = "::";
       expect(
-         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+         readinessLine(
+            { env: { PUBLISHER_HOST: "::" } },
+            { environments: 1, packages: 1, loadErrors: 0 },
+         ),
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=1 load_errors=0",
       );
    });
 
-   it("respects the flag-derived env vars", () => {
-      // parseArgs writes --host/--port/--mcp_port here before the store exists.
-      process.env.PUBLISHER_HOST = "127.0.0.1";
-      process.env.PUBLISHER_PORT = "4321";
-      process.env.MCP_PORT = "4361";
-      expect(
-         formatReadinessLine({ environments: 2, packages: 5, loadErrors: 1 }),
-      ).toBe(
+   it("respects the host and ports given by flag or by variable", () => {
+      const expected =
          "PUBLISHER_READY url=http://127.0.0.1:4321 mcp=http://127.0.0.1:4361 " +
-            "environments=2 packages=5 load_errors=1",
-      );
+         "environments=2 packages=5 load_errors=1";
+      const counts = { environments: 2, packages: 5, loadErrors: 1 };
+      expect(
+         readinessLine(
+            {
+               argv: [
+                  "--host",
+                  "127.0.0.1",
+                  "--port",
+                  "4321",
+                  "--mcp_port",
+                  "4361",
+               ],
+            },
+            counts,
+         ),
+      ).toBe(expected);
+      expect(
+         readinessLine(
+            {
+               env: {
+                  PUBLISHER_HOST: "127.0.0.1",
+                  PUBLISHER_PORT: "4321",
+                  MCP_PORT: "4361",
+               },
+            },
+            counts,
+         ),
+      ).toBe(expected);
    });
 });
 
@@ -2621,9 +2607,6 @@ describe("readiness line emission", () => {
          rmSync(readinessRoot, { recursive: true, force: true });
       }
       mkdirSync(readinessRoot, { recursive: true });
-      mock.module("../config", () => ({
-         isPublisherConfigFrozen: () => false,
-      }));
       stderrWrites = [];
       stderrSpy = spyOn(process.stderr, "write").mockImplementation(
          (chunk: string | Uint8Array) => {

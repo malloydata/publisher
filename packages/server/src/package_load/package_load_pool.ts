@@ -38,6 +38,7 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { Settings, settings } from "../settings";
 import type {
    PackageMaterializationConfig,
    PackageScope,
@@ -68,58 +69,23 @@ import type {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * The configured pool size (`PACKAGE_LOAD_WORKERS`, default 1). Throws on 0 or
- * a non-positive / non-numeric value: compiling on the main event loop is what
- * fails the liveness probe, so there is deliberately no way to disable the pool.
+ * The configured pool size (`packageLoad.workers`, `PACKAGE_LOAD_WORKERS`,
+ * default 1). There is deliberately no way to turn the pool off: compiling on
+ * the main event loop is what fails the liveness probe.
  */
 export function getPackageLoadWorkerCount(): number {
-   const raw = process.env.PACKAGE_LOAD_WORKERS;
-   if (raw === undefined) return 1;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed < 1) {
-      throw new Error(
-         `PACKAGE_LOAD_WORKERS must be a positive integer (got ${JSON.stringify(raw)}). ` +
-            `Refusing to start without a package-load worker pool.`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.workers");
 }
 
-/** Default for {@link getPackageLoadSchemaCacheBytes}. */
-export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;
+export { DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES } from "../constants";
 
 /**
  * Serialized bytes of schema each worker caches across loads
- * (`PACKAGE_LOAD_SCHEMA_CACHE_BYTES`; see `schema_cache.ts`). Unset or empty
- * takes the default and 0 disables it; any other non-integer refuses to start
- * rather than be silently ignored.
+ * (`packageLoad.schemaCacheBytes`; see `schema_cache.ts`); 0 disables it.
  */
 export function getPackageLoadSchemaCacheBytes(): number {
-   const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   if (raw === undefined || raw.trim() === "") {
-      return DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   }
-   const parsed = Number(raw.trim());
-   if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new Error(
-         `PACKAGE_LOAD_SCHEMA_CACHE_BYTES must be a non-negative integer number of bytes (got ${JSON.stringify(raw)}).`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.schemaCacheBytes");
 }
-
-/**
- * Compile budget for one load-package job, so a hung worker cannot leak a
- * Promise forever. Generous enough for cold starts. Overridable via
- * `PACKAGE_LOAD_JOB_TIMEOUT_MS`.
- */
-const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
-   const raw = process.env.PACKAGE_LOAD_JOB_TIMEOUT_MS;
-   if (raw === undefined) return 120_000;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed <= 0) return 120_000;
-   return parsed;
-})();
 
 /**
  * The share of a job's timeout the worker spends on work for the main thread,
@@ -129,7 +95,7 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
 const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
 
 /**
- * How many times `PACKAGE_LOAD_JOB_TIMEOUT_MS` the pool lets a job run. The
+ * How many times `packageLoad.jobTimeoutMs` the pool lets a job run. The
  * timeout bounds the compile; the main-thread work interleaved with it starts
  * no new piece past MAIN_THREAD_WORK_BUDGET_SHARE, so a job whose compile fits
  * the timeout finishes within twice it.
@@ -293,7 +259,7 @@ export class PackageLoadPool {
       options: {
          /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
          mainThreadWorkBudgetMs?: number;
-         /** Overrides PACKAGE_LOAD_JOB_TIMEOUT_MS. */
+         /** Overrides `packageLoad.jobTimeoutMs`. */
          jobTimeoutMs?: number;
       } = {},
    ) {
@@ -307,7 +273,10 @@ export class PackageLoadPool {
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
       this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
-      this.jobTimeoutMs = options.jobTimeoutMs ?? PACKAGE_LOAD_JOB_TIMEOUT_MS;
+      // The compile budget of one job, so a hung worker cannot leak a Promise
+      // forever. Generous enough for cold starts.
+      this.jobTimeoutMs =
+         options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
       this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
@@ -487,7 +456,12 @@ export class PackageLoadPool {
       );
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
-         workerData: { schemaCacheBytes: this.schemaCacheBytes },
+         // The worker reads its settings (the logger's, today) from these
+         // rather than from its copy of the environment, which no flag reaches.
+         workerData: {
+            schemaCacheBytes: this.schemaCacheBytes,
+            settings: Settings.current().toWorkerData(),
+         },
       });
 
       let readyResolve!: () => void;

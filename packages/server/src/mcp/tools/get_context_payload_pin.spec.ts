@@ -40,6 +40,7 @@ import * as path from "path";
 import { registerGetContextTool } from "./get_context_tool";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { pollFor } from "../../test_helpers/poll";
+import { withSettings } from "../../test_helpers/settings_env";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -671,26 +672,25 @@ describe("get_context payload pin: embedding configured", () => {
    });
 
    it("fallback: unavailable (malformed embedding configuration)", async () => {
-      const saved = {
-         key: process.env.EMBEDDING_API_KEY,
-         base: process.env.EMBEDDING_API_BASE,
-      };
-      process.env.EMBEDDING_API_KEY = "k";
-      process.env.EMBEDDING_API_BASE = "not a url";
       _clearEmbeddingProviderForTests();
       try {
-         const handler = captureHandler(storeFor(shop()));
-         const payload = await call(handler, {
-            search_targets: [target("dimension", "state the order ships to")],
-            scopes: [{ environment: "pin", package: "fb-badcfg" }],
-         });
-         expect(payload.retrieval_reason).toBe("unavailable");
-         pin("fallback/unavailable malformed config", payload);
+         await withSettings(
+            {
+               env: { EMBEDDING_API_KEY: "k", EMBEDDING_API_BASE: "not a url" },
+            },
+            async () => {
+               const handler = captureHandler(storeFor(shop()));
+               const payload = await call(handler, {
+                  search_targets: [
+                     target("dimension", "state the order ships to"),
+                  ],
+                  scopes: [{ environment: "pin", package: "fb-badcfg" }],
+               });
+               expect(payload.retrieval_reason).toBe("unavailable");
+               pin("fallback/unavailable malformed config", payload);
+            },
+         );
       } finally {
-         if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
-         else process.env.EMBEDDING_API_KEY = saved.key;
-         if (saved.base === undefined) delete process.env.EMBEDDING_API_BASE;
-         else process.env.EMBEDDING_API_BASE = saved.base;
          _clearEmbeddingProviderForTests();
          _setEmbeddingProviderForTests(null);
       }

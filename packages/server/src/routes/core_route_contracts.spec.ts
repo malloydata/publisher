@@ -17,6 +17,7 @@ import {
    type ClosingListener,
 } from "../test_helpers/closing_listener";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
+import { installSettings } from "../test_helpers/settings_env";
 
 describe("PUT …/models/{path} (report write)", () => {
    it("answers 403 under frozenConfig", async () => {
@@ -34,17 +35,17 @@ describe("PUT …/models/{path} (report write)", () => {
 describe("POST /connections/test", () => {
    const SECRET = "hunter2-route-secret";
    let unreachable: ClosingListener;
-   const allowSetupSql = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+   let restoreSettings: () => void;
    beforeAll(async () => {
       unreachable = await startClosingListener();
       // A DuckDB connection needs setupSQL or an attachment to be valid at all.
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      restoreSettings = installSettings({
+         env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+      }).restore;
    });
    afterAll(async () => {
       await unreachable.close();
-      if (allowSetupSql === undefined)
-         delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-      else process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = allowSetupSql;
+      restoreSettings();
    });
 
    const test = (body: unknown) =>

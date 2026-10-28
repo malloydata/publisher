@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A publisher.config.json the server cannot parse must leave the server up,
- * with /status naming the cause and PUBLISHER_INIT_FAILED on stderr. The
- * Docker smoke script checks the unreadable-file case (S7); this runs the real
- * entry point with a malformed file so the same contract is held without Docker.
+ * A publisher.config.json the server cannot parse fails startup, with the
+ * cause and PUBLISHER_INIT_FAILED on stderr, before anything binds: no
+ * setting may fall back to its default because the file could not be read
+ * (docs/configuration-design.md, Validation). The Docker smoke script checks
+ * the unreadable-file case (S7); this runs the real entry point with a
+ * malformed file so the same contract is held without Docker.
  *
- * The `retrieval` block is read at the top of server.ts, before the
- * environment store starts. If that read throws, the process dies and nothing
- * answers /status.
+ * A file that parses but whose `retrieval` block is invalid is the retrieval
+ * parser's to report: the server stays up and /status names it.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -79,21 +80,30 @@ describe("server with an unusable publisher.config.json", () => {
       }
    }
 
-   it("stays up, prints PUBLISHER_INIT_FAILED, and /status names the cause", async () => {
-      const { server, status } = await bootUntilInitError(
+   it("fails startup, naming the file and the cause, with PUBLISHER_INIT_FAILED", async () => {
+      const root = tempDir("publisher-bad-config-");
+      cleanups.push(root.cleanup);
+      writeFileSync(
+         join(root.dir, "publisher.config.json"),
          '{"environments":[],}',
       );
-      expect(status.initError).toContain("publisher.config.json");
-      expect(status.initError).toContain("JSON Parse error");
-      expect(server.exited()).toBe(false);
-      // stderr arrives on its own pipe, so it can trail the /status answer.
+      const server = await spawnServer({ serverRoot: root.dir });
+      cleanups.push(() => server.stop());
+      expect(await server.waitForExit(60_000)).not.toBe(0);
+      // stderr arrives on its own pipe, so it can trail the exit.
       expect(
          await pollUntil(
             () => server.stderr().includes("PUBLISHER_INIT_FAILED"),
             10_000,
          ),
       ).toBe(true);
-   }, 200_000);
+      expect(server.stderr()).toContain("publisher.config.json");
+      expect(server.stderr()).toContain("JSON Parse error");
+      // Nothing bound: no setting ran with its default.
+      expect(
+         await fetch(`${server.baseUrl}/api/v0/status`).catch(() => null),
+      ).toBeNull();
+   }, 90_000);
 
    it("stays up when the retrieval block itself is invalid", async () => {
       const { server, status } = await bootUntilInitError(

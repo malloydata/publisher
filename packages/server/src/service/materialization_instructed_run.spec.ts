@@ -15,6 +15,7 @@ import { createMocks } from "../test_helpers/materialization_service_harness";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import { startMetricsHarness } from "../test_helpers/metrics_harness";
+import { installSettings } from "../test_helpers/settings_env";
 
 /**
  * Instructed builds (executeInstructedBuild): resolving each instruction,
@@ -1001,8 +1002,9 @@ describe("executeInstructedBuild", () => {
       // first CTAS: a mid-loop throw would leave the pair's first table already
       // replaced, and nothing puts the overwritten rows back — the failure path
       // reclaims storage tables only, and a reclaim cannot restore data.
-      const prev = process.env.PERSIST_COLLISION_ENFORCE;
-      process.env.PERSIST_COLLISION_ENFORCE = "true";
+      const { restore } = installSettings({
+         env: { PERSIST_COLLISION_ENFORCE: "true" },
+      });
       const runSQL = sinon.stub().resolves();
       try {
          const promise = collidingBuild(runSQL);
@@ -1014,8 +1016,7 @@ describe("executeInstructedBuild", () => {
          );
          expect(createsFrom(runSQL)).toHaveLength(0);
       } finally {
-         if (prev === undefined) delete process.env.PERSIST_COLLISION_ENFORCE;
-         else process.env.PERSIST_COLLISION_ENFORCE = prev;
+         restore();
       }
    });
 

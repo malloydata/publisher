@@ -14,6 +14,7 @@ import {
 } from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
+import { withSettings } from "../../test_helpers/settings_env";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
    EnvironmentNotFoundError,
@@ -79,15 +80,19 @@ function captureTool(
          handler = h;
       },
    };
-   registerExecuteQueryTool(
-      fakeServer as never,
-      {
-         // What EnvironmentStore's constructor reads from the config, once.
-         mcpIncludeHiddenFilesAndSources:
-            isMcpIncludeHiddenFilesAndSources(serverRootPath),
-         ...store,
-         serverRootPath,
-      } as EnvironmentStore,
+   // Registered with the settings read from this server root, so a tool that
+   // read the config itself, rather than the store, would see it.
+   withSettings({ cwd: serverRootPath }, () =>
+      registerExecuteQueryTool(
+         fakeServer as never,
+         {
+            // What EnvironmentStore's constructor reads from the config, once.
+            mcpIncludeHiddenFilesAndSources:
+               isMcpIncludeHiddenFilesAndSources(),
+            ...store,
+            serverRootPath,
+         } as EnvironmentStore,
+      ),
    );
    if (!handler || !shape) throw new Error("handler was not registered");
    return { handler, shape };
@@ -546,14 +551,12 @@ describe("execute_query includeHiddenFilesAndSources", () => {
  * real tool handler and a real loaded Package with a root index.malloy.
  */
 describe("execute_query includeHiddenFilesAndSources on a real package", () => {
-   const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
    let tempDir: string;
    let duckdb: { close: () => Promise<void> };
    let handler: Handler;
    let store: Partial<EnvironmentStore>;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-hidden-"));
       fs.writeFileSync(
@@ -605,8 +608,6 @@ export { customers }`,
    afterAll(async () => {
       await duckdb?.close();
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 

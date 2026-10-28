@@ -19,6 +19,8 @@ import { registerGetContextTool } from "./get_context_tool";
 import { _setEmbeddingProviderForTests } from "../../service/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { ChatModel } from "../../providers/types";
+import { settings } from "../../settings";
+import { installSettings, withSettings } from "../../test_helpers/settings_env";
 
 function ctxWithTrace(): PipelineContext {
    return { trace: [], meter: new LlmMeter() } as unknown as PipelineContext;
@@ -258,15 +260,20 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
    // The eval loop's serve.py sets this variable for a local run. It writes the
    // trace to the server log and never adds it to a response, so the agent that
    // answers the questions sees the same results as without it.
-   const saved = process.env.PUBLISHER_MCP_TRACE;
+   // Unset unless a case installs it.
+   let restoreSettings: () => void;
    beforeEach(() => {
+      restoreSettings = installSettings().restore;
       _setEmbeddingProviderForTests(null);
       _resetEmbeddingIndexStateForTests();
    });
    afterEach(() => {
-      if (saved === undefined) delete process.env.PUBLISHER_MCP_TRACE;
-      else process.env.PUBLISHER_MCP_TRACE = saved;
+      restoreSettings();
    });
+
+   /** `fn` with PUBLISHER_MCP_TRACE set to `value`. */
+   const tracing = <T>(value: string, fn: () => Promise<T>) =>
+      withSettings({ env: { PUBLISHER_MCP_TRACE: value } }, fn);
 
    const traceLines = (info: ReturnType<typeof spyOn>) =>
       info.mock.calls.filter(
@@ -285,10 +292,9 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
 
    it("logs the stage trace for each ranked call", async () => {
       const expected = await headerTrace();
-      process.env.PUBLISHER_MCP_TRACE = "retrieval";
       const info = spyOn(logger, "info");
       try {
-         await run();
+         await tracing("retrieval", () => run());
          const lines = traceLines(info);
          expect(lines).toHaveLength(1);
          expect(lines[0][1]).toEqual({
@@ -303,18 +309,14 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
 
    it("does not change the response", async () => {
       const plain = await run();
-      process.env.PUBLISHER_MCP_TRACE = "retrieval";
-      const traced = await run();
+      const traced = await tracing("retrieval", () => run());
       expect("retrieval_trace" in traced).toBe(false);
       expect(JSON.stringify(traced)).toBe(JSON.stringify(plain));
    });
 
-   it("is off when the variable is unset or has another value", async () => {
+   it("is off when the variable is unset", async () => {
       const info = spyOn(logger, "info");
       try {
-         delete process.env.PUBLISHER_MCP_TRACE;
-         await run();
-         process.env.PUBLISHER_MCP_TRACE = "all";
          await run();
          expect(traceLines(info)).toHaveLength(0);
       } finally {
@@ -322,16 +324,25 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
       }
    });
 
+   it("refuses another value, which used to read as off", () => {
+      withSettings({ env: { PUBLISHER_MCP_TRACE: "all" } }, () => {
+         expect(() => settings.get("mcp.trace")).toThrow(
+            'mcp.trace from PUBLISHER_MCP_TRACE: expected "retrieval", got "all"',
+         );
+      });
+   });
+
    it("with the header too: the log line and the response block", async () => {
       const expected = await headerTrace();
-      process.env.PUBLISHER_MCP_TRACE = "retrieval";
       const info = spyOn(logger, "info");
       try {
-         const payload = await run({
-            requestInfo: {
-               headers: { "x-publisher-retrieval-trace": "summary" },
-            },
-         });
+         const payload = await tracing("retrieval", () =>
+            run({
+               requestInfo: {
+                  headers: { "x-publisher-retrieval-trace": "summary" },
+               },
+            }),
+         );
          expect(payload.retrieval_trace).toEqual(expected);
          expect(traceLines(info)).toHaveLength(1);
       } finally {

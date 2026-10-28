@@ -3730,9 +3730,11 @@ components:
             Present only when initialization failed, and says why. Such a
             server stays up but never becomes ready, so operationalState stays
             initializing; without this field that reads as a server still
-            starting. Typical causes are a config file the server cannot read
-            or parse, and a server root it cannot write (where it creates
-            publisher.db), such as a read-only root filesystem. A package or
+            starting. Typical causes are a server root it cannot write (where
+            it creates publisher.db), such as a read-only root filesystem, and
+            a ${VAR} in the config file's environments that is not set. A
+            config file the server cannot read or parse stops it at startup,
+            before it answers at all. A package or
             environment that fails to load is reported under loadErrors
             instead. Fix the cause and restart.
         loadErrors:

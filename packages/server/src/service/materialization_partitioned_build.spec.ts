@@ -17,6 +17,20 @@ import {
    createTableAndDescribe,
    orderByPartitionColumns,
 } from "./materialization_build_session";
+import { installSettings } from "../test_helpers/settings_env";
+
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 const ROWS = `SELECT * FROM (VALUES (1,7,'a'),(2,9,'b'),(1,8,'c')) AS t(org_id, user_id, s)`;
 
@@ -116,12 +130,8 @@ describe("createTableAndDescribe: statements issued", () => {
 });
 
 describe("createTableAndDescribe: the flush threshold", () => {
-   afterEach(() => {
-      delete process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD;
-   });
-
    it("issues the configured value", async () => {
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "2048";
+      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "2048" });
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
          sourceType: "postgres",
@@ -132,7 +142,7 @@ describe("createTableAndDescribe: the flush threshold", () => {
    it("`off` turns the whole treatment off: no threshold, no ordering, no single thread", async () => {
       // One switch, because the three only work together: a source that built
       // fine before is better served by none of them than by the sort alone.
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
+      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "off" });
       const { conn, sql } = recorder();
       await createTableAndDescribe(conn, '"lake"."t"', ROWS, ["org_id"], {
          sourceType: "postgres",
@@ -306,10 +316,6 @@ describe("a wide, many-partition insert at a low memory limit", () => {
       return { conn, dispose };
    }
 
-   afterEach(() => {
-      delete process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD;
-   });
-
    it("without the ORDER BY, the insert fails before a row is flushed, whatever the threshold", async () => {
       // The statements createTableAndDescribe issues, minus the ordering: the
       // control that shows the ORDER BY is load-bearing, not the threshold alone.
@@ -330,7 +336,7 @@ describe("a wide, many-partition insert at a low memory limit", () => {
    }, 120000);
 
    it("with the ORDER BY but DuckDB's own threshold, the insert still fails", async () => {
-      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD = "off";
+      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "off" });
       const { conn, dispose } = await lake();
       try {
          await expect(

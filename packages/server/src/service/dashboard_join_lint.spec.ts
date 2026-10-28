@@ -25,8 +25,6 @@ import {
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
-
 const MODEL = `##! experimental.givens
 
 source: products is duckdb.sql("select 1 as id, 'toys' as category") extend {
@@ -58,15 +56,12 @@ describe("dashboard lint: suggest over a joined dimension", () => {
    let pool: PackageLoadPool;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {

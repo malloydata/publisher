@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { externalEnv } from "../settings";
 import { ClientSecretCredential } from "@azure/identity";
 import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
@@ -187,11 +188,11 @@ async function createBigQueryClient(
       }
    } else if (
       Object.keys(connection.bigqueryConnection).length === 0 &&
-      process.env.GOOGLE_APPLICATION_CREDENTIALS
+      externalEnv("GOOGLE_APPLICATION_CREDENTIALS")
    ) {
       // Note: The BigQuery client will infer the project ID from the ADC file.
       assertGoogleCredentialsIsNotADirectory();
-      config.keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
+      config.keyFilename = externalEnv("GOOGLE_APPLICATION_CREDENTIALS") || "";
    } else {
       throw new Error(
          "BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",

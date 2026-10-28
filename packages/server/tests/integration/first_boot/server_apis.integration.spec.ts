@@ -158,6 +158,9 @@ describe("servingApiEnabled and adminApiEnabled", () => {
       );
       const { code, output } = await exitOf(child);
       expect(code).not.toBe(0);
-      expect(output).toContain('"adminApiEnabled" must be true or false');
+      expect(output).toContain("adminApiEnabled from ");
+      expect(output).toContain(
+         'expected a boolean (true/false, 1/0, yes/no or on/off), got "no"',
+      );
    });
 });
