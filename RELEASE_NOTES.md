@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — A click on a value opens a menu, and the rows behind it can be shown and downloaded
+## [0.10.3] — A click on a value opens a menu, and the rows behind it can be shown and downloaded
 
 Clicking a value in a dashboard, a report or a notebook cell now always opens a small menu that says what each entry does, even when there is only one. Before, what a click did depended on a `# drill` tag the reader could not see: one destination navigated or filtered at once, two or more opened a menu, and an untagged value opened its rows.
 
