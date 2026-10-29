@@ -1315,6 +1315,7 @@ function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
       maximumBytesBilled: connection.bigqueryConnection?.maximumBytesBilled,
       timeoutMs: connection.bigqueryConnection?.queryTimeoutMilliseconds,
       billingProjectId: connection.bigqueryConnection?.billingProjectId,
+      dbmeta: connection.bigqueryConnection?.dbmeta,
    };
 }
 
