@@ -8163,7 +8163,9 @@ components:
           type: array
           description: >-
             sourceIDs of the sources on the tables this source reads. Sources on
-            one table (a source and its extensions) read none of each other.
+            one table (a source and its extensions) read none of each other. A
+            source Malloy cannot plan, which is refused rather than built, lists
+            none.
           items:
             type: string
 

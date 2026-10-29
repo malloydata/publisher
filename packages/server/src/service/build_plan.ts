@@ -498,7 +498,7 @@ export interface SourceBuild {
    /**
     * sourceID -> the sourceIDs on the tables it reads. Sources on one table
     * read none of each other: an extension is its base's table, not a reader
-    * of it.
+    * of it. An unbuildable source lists none.
     */
    dependsOn: Record<string, string[]>;
 }
@@ -519,6 +519,7 @@ export function sourceBuildOf(
          dependsOn[source.sourceID] = reads;
       }
    }
+   // Malloy reports an unbuildable source without the tables it reads.
    for (const { source } of unbuildable) {
       if (source.connectionName !== build.connectionName) continue;
       order.push(source.sourceID);
