@@ -9,6 +9,7 @@ import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
 import { DashboardView } from "../Dashboard/DashboardView";
+import type { RowsActions } from "../Dashboard/RowsDialog";
 import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
@@ -89,6 +90,12 @@ export interface ReportProps {
     * the end of the title's line rather than on a row of their own above it.
     */
    actions?: ReactNode;
+   /**
+    * The host's actions for the rows behind a clicked value (a download),
+    * drawn in the rows dialog's title row. Omitted, the dialog offers its own
+    * Download CSV; return `null` for none.
+    */
+   rowsActions?: RowsActions;
 }
 
 /**
@@ -112,6 +119,7 @@ export function Report({
    chrome,
    manifestStaleTime,
    actions,
+   rowsActions,
 }: ReportProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -240,6 +248,7 @@ export function Report({
          maxResultSize={maxResultSize}
          chrome={chrome}
          {...(actions !== undefined ? { actions } : {})}
+         {...(rowsActions !== undefined ? { rowsActions } : {})}
       />
    );
    return (

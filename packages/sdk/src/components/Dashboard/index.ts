@@ -15,4 +15,6 @@ export {
    withPreamble,
 } from "./textSource";
 export { TILE_MIN_HEIGHT, TileCard, TileHeading } from "./TileCard";
+export type { RowsActions, RowsActionsContext } from "./RowsDialog";
+export { DownloadRowsCsv } from "./DownloadRowsCsv";
 export type { TileHeadingSlots } from "./TileCard";

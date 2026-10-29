@@ -4,7 +4,6 @@
 import { Box } from "@mui/material";
 import React, {
    Suspense,
-   useCallback,
    useEffect,
    useLayoutEffect,
    useMemo,
@@ -22,6 +21,7 @@ import {
    contentNodeDepth,
    measureContentHeight,
    remeasuresAfterReady,
+   RESULT_SCROLLER_CLASS,
    resultSizing,
    type ResultSizing,
    TIGHT_ATTR,
@@ -39,7 +39,11 @@ import {
    markDrillableCells,
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
-import type { DrillClickPayload } from "../drill/resolveDrill";
+import {
+   drillClickRelay,
+   reportRowsWithoutFilters,
+   type RendererDrill,
+} from "../drill/drillClickRelay";
 import { loadMalloyTag } from "../ReportBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
@@ -120,6 +124,7 @@ const FILL_ATTR = "data-publisher-fill";
 const createRenderer = async (
    theme: ResolvedTheme,
    onClick?: DrillBinding["onClick"],
+   onDrill?: (data: RendererDrill) => void,
 ): Promise<MalloyVizHandle> => {
    if (typeof window === "undefined") {
       throw new Error("MalloyRenderer can only be used in browser environment");
@@ -128,6 +133,9 @@ const createRenderer = async (
    const { MalloyRenderer } = await loadMalloyRenderer();
    const renderer = new MalloyRenderer({
       onClick,
+      // A table cell's row reaches the host only through the renderer's drill,
+      // which it reports only with `enableDrill` set; see `drillClickRelay`.
+      ...(onDrill ? { onDrill, tableConfig: { enableDrill: true } } : {}),
       vegaConfigOverride: buildVegaThemeOverride(theme),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
@@ -391,6 +399,14 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    color: var(--publisher-drill-link) !important;
    text-decoration: underline;
 }
+/* The renderer's own drill, on so a click can report its row, paints the
+   whole hovered row as a link. Which cells click is the marking above. */
+.malloy-render .malloy-table .td.highlight {
+   color: inherit;
+}
+.malloy-render .malloy-table .td.highlight:not(.${DRILL_CELL_CLASS}) {
+   cursor: inherit;
+}
 `;
 
 /**
@@ -431,9 +447,11 @@ function RenderedResultInner({
    // one safely.
    const drillRef = useRef(drill);
    drillRef.current = drill;
-   const handleDrillClick = useCallback((payload: DrillClickPayload) => {
-      drillRef.current?.onClick(payload);
-   }, []);
+   // The click and the row the renderer reports for it, joined; see the relay.
+   const relay = useMemo(
+      () => drillClickRelay((payload) => drillRef.current?.onClick(payload)),
+      [],
+   );
    // Whether any drill is wired at all, which is what the effect reacts to: a
    // surface that gains or loses the capability has to (re)mark its cells, but
    // a new inline binding with the same capability must not rebuild anything.
@@ -548,10 +566,22 @@ function RenderedResultInner({
          // A filled table root is as tall as its box, which would read back as its content.
          const stretched = element.hasAttribute(FILL_ATTR);
          if (stretched) element.removeAttribute(FILL_ATTR);
+         // Measured as if the tile's scroller shows no scrollbar. Its scrollbar
+         // narrows the result, a narrower table can wrap its header onto a
+         // second line, and the taller height reported back is what decides
+         // whether the scroller needs that scrollbar. Measured at whichever
+         // width is on screen, a table at the threshold reports two heights
+         // in turn and its tile grows and shrinks on every frame.
+         const scroller = element.closest<HTMLElement>(
+            `.${RESULT_SCROLLER_CLASS}`,
+         );
+         const scrollerOverflow = scroller?.style.overflowY;
+         if (scroller) scroller.style.overflowY = "hidden";
          const renderedHeight = measureContentHeight(
             root,
             contentNodeDepth(renderAs),
          );
+         if (scroller) scroller.style.overflowY = scrollerOverflow ?? "";
          if (stretched) element.setAttribute(FILL_ATTR, "");
 
          if (renderedHeight > 0) {
@@ -591,7 +621,11 @@ function RenderedResultInner({
          if (!isCurrent()) return;
 
          try {
-            viz = await createRenderer(effectiveTheme, handleDrillClick);
+            viz = await createRenderer(
+               effectiveTheme,
+               relay.onClick,
+               drillable ? relay.onDrill : undefined,
+            );
          } catch (error) {
             console.error("Failed to create renderer:", error);
             return;
@@ -692,6 +726,9 @@ function RenderedResultInner({
             try {
                const metadata = viz.getMetadata();
                const root = metadata?.getRootField();
+               // A row's clauses are wanted only for its dimensions; see
+               // `reportRowsWithoutFilters`.
+               if (drillable) reportRowsWithoutFilters(root);
                renderAs = root?.renderAs();
                // The plugin's own `sizingStrategy`, which decides this outright
                // where there is one. Read from the PLUGIN; the field entry's
@@ -971,7 +1008,7 @@ function RenderedResultInner({
       };
    }, [
       result,
-      handleDrillClick,
+      relay,
       drillable,
       onSizeChange,
       onSizing,
