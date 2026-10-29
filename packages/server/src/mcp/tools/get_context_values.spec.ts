@@ -231,8 +231,8 @@ describe("the lookup query over a real model (gates are the query path's)", () =
       const read1 = await read("open_segments");
       expect(read1.truncated).toBe(false);
       expect(sorted(read1)).toEqual([
-         "Home Gardeners (In-Season)",
          "Home Gardeners (Former)",
+         "Home Gardeners (In-Season)",
          "Home Shoppers",
          "Travel Seekers",
       ]);
@@ -280,8 +280,8 @@ describe("the lookup query over a real model (gates are the query path's)", () =
          timeoutMs: 10_000,
       });
       expect(sorted(filtered)).toEqual([
-         "Home Gardeners (In-Season)",
          "Home Gardeners (Former)",
+         "Home Gardeners (In-Season)",
       ]);
    });
 

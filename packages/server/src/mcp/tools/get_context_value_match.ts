@@ -29,7 +29,7 @@ export interface ValueHit {
 
 /**
  * The comparison form of a string: lowercase, accents removed, anything that is
- * not a letter or digit turned into a space, spaces collapsed. "Home
+ * not a letter or digit turned into a space, spaces collapsed. "Auto
  * Gardeners (In-Season)" and "home  gardeners in season" compare equal.
  */
 export function normalizeText(text: string): string {
