@@ -1108,6 +1108,29 @@ describe("assembleEnvironmentConnections — bigquery projectId", () => {
    });
 });
 
+describe("assembleEnvironmentConnections — bigquery dbmeta", () => {
+   const bigquery = (dbmeta?: boolean): ApiConnection => ({
+      name: "bq",
+      type: "bigquery",
+      bigqueryConnection: { defaultProjectId: "data-project", dbmeta },
+   });
+
+   it("forwards dbmeta to the core entry", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(true)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(true);
+   });
+
+   it("leaves dbmeta off when the connection does not set it", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery()]);
+      expect(pojo.connections["bq"].dbmeta).toBeUndefined();
+   });
+
+   it("forwards an explicit false", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(false)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(false);
+   });
+});
+
 describe("assembleEnvironmentConnections — bigquery impersonation", () => {
    const impersonated: ApiConnection = {
       name: "bigquery",

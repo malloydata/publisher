@@ -71,6 +71,21 @@ describe("get_context docText", () => {
       expect(docText()).toBe("");
       expect(docText([])).toBe("");
    });
+
+   it("uses the #(dbmeta) description when there is no #(doc)", () => {
+      expect(
+         docText([{ value: '#(dbmeta) description="Customer identifier."\n' }]),
+      ).toBe("Customer identifier.");
+   });
+
+   it("prefers #(doc) over the #(dbmeta) description", () => {
+      expect(
+         docText([
+            '#(dbmeta) description="From the database."\n',
+            "#(doc) Written in the model.",
+         ]),
+      ).toBe("Written in the model.");
+   });
 });
 
 describe("get_context docOnlyText (embedding-input safety)", () => {
@@ -91,6 +106,31 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
             "#(malloy) drillable",
          ]),
       ).toBe("");
+   });
+
+   it("keeps only the #(dbmeta) description when mixed with predicate annotations", () => {
+      expect(
+         docOnlyText([
+            "#(access_filter) \"$TENANT = 'acme'\"",
+            '#(dbmeta) description="Orders."\n',
+         ]),
+      ).toBe("Orders.");
+   });
+
+   it("reads quotes and line breaks back from the description", () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="Uses \\"active\\" status.\\nSecond line."\n',
+         ]),
+      ).toBe('Uses "active" status. Second line.');
+   });
+
+   it("ignores a #(dbmeta) annotation that does not parse", () => {
+      expect(docOnlyText(['#(dbmeta) description="unterminated\n'])).toBe("");
+   });
+
+   it("ignores a #(dbmeta) annotation without a description", () => {
+      expect(docOnlyText(["#(dbmeta) other=1\n"])).toBe("");
    });
 
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {

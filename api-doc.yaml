@@ -7273,6 +7273,12 @@ components:
         queryTimeoutMilliseconds:
           type: string
           description: Query timeout in milliseconds
+        dbmeta:
+          type: boolean
+          description: >-
+            Copy table and column descriptions from BigQuery onto the schema as
+            `#(dbmeta) description` annotations. get_context uses a column's
+            description for a field that has no `#(doc)`. Off unless set.
 
     SnowflakeConnection:
       type: object

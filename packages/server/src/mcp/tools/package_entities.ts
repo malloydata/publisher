@@ -4,6 +4,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import lunr from "lunr";
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
@@ -39,26 +40,39 @@ function truncateDoc(doc: string, max: number): string {
    return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
+function dbmetaDescription(lines: string[]): string {
+   for (const line of lines) {
+      if (!/^#\(dbmeta\)\s/.test(line)) continue;
+      const { tag, log } = parseAnnotation(line);
+      if (log.length > 0) continue;
+      const description = tag.text("description")?.trim();
+      if (description) return description;
+   }
+   return "";
+}
+
 /**
- * Extract ONLY `#(doc)` annotation text, empty when there is none. The safe
- * input for embedding: unlike docText it never falls back to raw annotation
- * lines, so `#(access_filter)` rules, tenant lists and `#(malloy)` internals
- * never reach an external embedding provider.
+ * Extract ONLY `#(doc)` annotation text, else the `#(dbmeta)` description,
+ * empty when there is neither. The safe input for embedding: unlike docText it
+ * never falls back to raw annotation lines, so `#(access_filter)` rules, tenant
+ * lists and `#(malloy)` internals never reach an external embedding provider.
  */
 export function docOnlyText(
    annotations?: Array<string | { value: string }>,
 ): string {
    if (!annotations || annotations.length === 0) return "";
-   const docs = annotations
-      .map((a) => (typeof a === "string" ? a : a.value))
+   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
+   const docs = lines
       .map((a) => a.match(/#\(doc\)\s*(.*)/)?.[1]?.trim() ?? "")
       .filter(Boolean);
-   return docs.join(" ").replace(/\s+/g, " ").trim();
+   const text = docs.length > 0 ? docs.join(" ") : dbmetaDescription(lines);
+   return text.replace(/\s+/g, " ").trim();
 }
 
 /**
- * Human-facing doc text for the response `doc` field: `#(doc)` text, falling
- * back to the raw annotation lines. Never embedding input (see docOnlyText).
+ * Human-facing doc text for the response `doc` field: `#(doc)` or `#(dbmeta)`
+ * text, falling back to the raw annotation lines. Never embedding input (see
+ * docOnlyText).
  * Accepts Annotation objects (sources, fields) and raw strings (queries).
  */
 export function docText(
