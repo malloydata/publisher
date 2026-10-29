@@ -185,10 +185,37 @@ export async function loadStorageTable(params: {
       if (params.format === "xlsx") {
          await installAndLoadExtension(session, "excel");
       }
-      return await writeTableAs(session, params, reader);
+      try {
+         return await writeTableAs(session, params, reader);
+      } catch (error) {
+         throw readerRefusal(error, params.uri) ?? error;
+      }
    } finally {
       await dispose();
    }
+}
+
+/**
+ * A load the file reader refused, as the person who sent the file should read it: a 400
+ * carrying DuckDB's own words ("No magic bytes found", "Could not convert string 'N/A' to
+ * DOUBLE"), which name the fix, rather than a 500 a caller can only retry. The object's URI,
+ * an internal staging path, is replaced by its file name, and the SQL DuckDB echoes after
+ * `LINE` is dropped. Null for anything else (a storage or catalog failure), which stays a 500.
+ */
+export function readerRefusal(
+   error: unknown,
+   uri: string,
+): BadRequestError | null {
+   if (!(error instanceof Error)) return null;
+   if (!/^(Invalid Input|Conversion|Out of Range) Error:/.test(error.message))
+      return null;
+   const fileName = path.posix.basename(uri);
+   const words = error.message
+      .split(/\n\s*LINE \d+:/)[0]
+      .split(uri)
+      .join(fileName)
+      .trim();
+   return new BadRequestError(words);
 }
 
 /**

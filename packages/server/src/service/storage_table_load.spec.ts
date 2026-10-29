@@ -1,10 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
-import { loadStorageTable, readerSql } from "./storage_table_load";
+import {
+   loadStorageTable,
+   readerRefusal,
+   readerSql,
+} from "./storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -99,5 +107,69 @@ describe("loadStorageTable refuses before attaching", () => {
             uri: "gs://bucket/ds_x/a.csv",
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
+   });
+});
+
+describe("readerRefusal: what a person sent and the reader refused", () => {
+   const uri = "s3://lake/org_1/db_2/staging/orders/0e1f/broken.parquet";
+
+   it("is a 400 in the reader's own words, naming the file rather than the staging path, without the SQL", () => {
+      const refusal = readerRefusal(
+         new Error(
+            `Invalid Input Error: No magic bytes found at end of file '${uri}'\n\nLINE 1: ...CREATE OR REPLACE TABLE "db_2"."main"."orders" AS SELECT * FROM read_parquet('${uri}')`,
+         ),
+         uri,
+      );
+      expect(refusal).toBeInstanceOf(BadRequestError);
+      expect(refusal?.message).toBe(
+         "Invalid Input Error: No magic bytes found at end of file 'broken.parquet'",
+      );
+   });
+
+   it("covers a value the reader cannot convert", () => {
+      expect(
+         readerRefusal(
+            new Error(
+               "Conversion Error: Could not convert string 'N/A' to DOUBLE",
+            ),
+            uri,
+         )?.message,
+      ).toBe("Conversion Error: Could not convert string 'N/A' to DOUBLE");
+   });
+
+   it("leaves a storage or catalog failure alone, to answer 500", () => {
+      expect(
+         readerRefusal(
+            new Error("IO Error: Connection error for HTTP HEAD"),
+            uri,
+         ),
+      ).toBeNull();
+      expect(readerRefusal("not an error", uri)).toBeNull();
+   });
+
+   // The message shape the patterns above are written against, read from DuckDB itself.
+   it("matches what DuckDB says for a file that is not Parquet", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reader-refusal-"));
+      const file = path.join(dir, "broken.parquet");
+      fs.writeFileSync(file, "this is not a parquet file\n".repeat(64));
+      const db = new DuckDBConnection("reader-refusal");
+      try {
+         let thrown: unknown;
+         try {
+            await db.runSQL(
+               `CREATE TABLE t AS SELECT * FROM read_parquet('${file}')`,
+            );
+         } catch (error) {
+            thrown = error;
+         }
+         const refusal = readerRefusal(thrown, file);
+         expect(refusal?.message).toMatch(
+            /^Invalid Input Error: No magic bytes found/,
+         );
+         expect(refusal?.message).not.toContain(dir);
+      } finally {
+         await db.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
    });
 });
