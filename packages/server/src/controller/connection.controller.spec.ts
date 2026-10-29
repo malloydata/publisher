@@ -1678,3 +1678,91 @@ describe("ConnectionController getTable DuckLake paths", () => {
       );
    });
 });
+
+describe("raw SQL on a managed database", () => {
+   afterEach(() => sinon.restore());
+
+   function controllerOn(apiConnection: Record<string, unknown>) {
+      const runSQL = sinon.stub().resolves({ rows: [{ n: 1 }], totalRows: 1 });
+      const manifestTemporaryTable = sinon.stub().resolves("tmp_1");
+      const fakeStore = {
+         getEnvironment: sinon
+            .stub()
+            .resolves({ assertCanAdmitQuery: sinon.stub() }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      const internals = controller as unknown as {
+         getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+         getApiConnectionForLookup: (...args: unknown[]) => unknown;
+      };
+      sinon
+         .stub(internals, "getMalloyConnection")
+         .resolves({ runSQL, manifestTemporaryTable } as unknown as Connection);
+      sinon.stub(internals, "getApiConnectionForLookup").returns(apiConnection);
+      return { controller, runSQL, manifestTemporaryTable };
+   }
+
+   const managed = { name: "sales", type: "ducklake", managed: true };
+
+   it("runs a single SELECT", async () => {
+      const { controller, runSQL } = controllerOn(managed);
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "sales",
+         "SELECT * FROM sales.main.orders",
+         "",
+      );
+      expect(runSQL.calledOnce).toBe(true);
+      expect(JSON.parse(result.data!)).toEqual({
+         rows: [{ n: 1 }],
+         totalRows: 1,
+      });
+   });
+
+   it.each([
+      [
+         "a statement that is not a SELECT",
+         "CREATE SECRET s (TYPE s3, PROVIDER config)",
+      ],
+      ["a SELECT followed by another statement", "SELECT 1; SET threads = 1"],
+   ])(
+      "refuses %s with a 400, before the connection runs anything",
+      async (_label, sql) => {
+         const { controller, runSQL } = controllerOn(managed);
+         const refused = controller.getConnectionQueryData(
+            "env",
+            "sales",
+            sql,
+            "",
+         );
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.called).toBe(false);
+      },
+   );
+
+   it("refuses a temporary table, which is a CREATE", async () => {
+      const { controller, manifestTemporaryTable } = controllerOn(managed);
+      const refused = controller.getConnectionTemporaryTable(
+         "env",
+         "sales",
+         "SELECT 1",
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      await expect(refused).rejects.toThrow("cannot create a temporary table");
+      expect(manifestTemporaryTable.called).toBe(false);
+   });
+
+   it("leaves a connection that is not managed as it was: a script runs", async () => {
+      const { controller, runSQL } = controllerOn({
+         name: "lake",
+         type: "ducklake",
+      });
+      await controller.getConnectionQueryData(
+         "env",
+         "lake",
+         "SELECT 1; SELECT 2",
+         "",
+      );
+      expect(runSQL.calledOnce).toBe(true);
+   });
+});
