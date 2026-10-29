@@ -346,11 +346,24 @@ describe("a pyproject.toml", () => {
 
     expect(run("9.9.9", file)).toMatchObject({ code: 0, stdout: "1" });
     const after = readFileSync(file, "utf8");
-    expect(after).toContain('\nversion = "9.9.9"\n');
-    // Exactly one line differs.
+    // Split on /\r?\n/, because the Windows leg of cross-platform-tests checks
+    // this file out with CRLF line endings, which the script keeps. Exactly one
+    // line differs, and the line endings are the ones the file came with.
+    const originalLines = original.split(/\r?\n/);
     const changed = after
-      .split("\n")
-      .filter((line, i) => line !== original.split("\n")[i]);
+      .split(/\r?\n/)
+      .filter((line, i) => line !== originalLines[i]);
     expect(changed).toEqual(['version = "9.9.9"']);
+    expect(after.split("\r\n").length).toBe(original.split("\r\n").length);
+  });
+
+  it("keeps CRLF line endings", () => {
+    const crlf = PYPROJECT.replaceAll("\n", "\r\n");
+    const { "pyproject.toml": file } = workspace({ "pyproject.toml": crlf });
+
+    expect(run("0.10.3", file)).toMatchObject({ code: 0, stdout: "1" });
+    expect(readFileSync(file, "utf8")).toBe(
+      crlf.replace('version = "0.10.2"', 'version = "0.10.3"'),
+    );
   });
 });
