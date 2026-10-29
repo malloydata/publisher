@@ -14,6 +14,7 @@ import { Box } from "@mui/material";
 import { useEffect, useMemo, useRef } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
+import { usePackageRoute } from "../../common/usePackageRoute";
 import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 import { useDrawn } from "../useDrawn";
 
@@ -54,7 +55,13 @@ export default function ReportPage({
    // Control values ride in the query string, so a link reproduces the view;
    // a drill pushes a route.
    const { params: givens, onGivensChange } = useGivenUrlParams();
-   const onNavigate = useDrillNavigate(environmentName, packageName);
+   // A drill stays on the version on screen, `latest` included.
+   const { versionSegment } = usePackageRoute();
+   const onNavigate = useDrillNavigate(
+      environmentName,
+      packageName,
+      versionSegment,
+   );
    const onLinkNavigate = useRouterClickHandler();
    // The event names the report by path; the sink adds where it is.
    const onEvent = useMemo(
