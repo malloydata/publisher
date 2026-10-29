@@ -21,10 +21,24 @@ on:
       # client; that is a few minutes on a rare kind of PR, and the alternative
       # is a check nothing ever runs before it is relied on.
       - ".github/workflows/python-sdk.yml"
+  # Builds and smoke-tests on any branch; it publishes nothing. Publishing is
+  # release.yml's, and only release.yml's (see `build` below).
   workflow_dispatch:
+  # release.yml's `build-python-sdk`, on the release branch. This workflow
+  # still holds no publishing credential when called: the upload is a job in
+  # release.yml itself, because PyPI does not support trusted publishing from
+  # a reusable workflow. CONTEXT.md, *Publishing to PyPI*, has the rest.
+  workflow_call:
+    inputs:
+      ref:
+        description: "The ref to build and smoke-test (the release branch)"
+        required: true
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # The smoke job's server build. Kept equal to the other workflows' pin.
+  BUN_VERSION: 1.3.13
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
 # declares it itself.
@@ -37,20 +51,17 @@ jobs:
   # behaviour, different registry and a different place to read the version from
   # (`[project] version` in pyproject.toml, not a package.json).
   #
-  # READ THIS BEFORE TRUSTING IT: today this check cannot catch a missing bump,
-  # because `malloy-publisher-sdk` is not on PyPI at all. The `publish` job below
-  # is gated on a `refs/tags/sdk-python-*` ref, but this workflow's `on: push`
-  # names `branches:` and no `tags:` — so a tag push does not trigger the
-  # workflow and that job has never run. Nothing has ever been published, the
-  # project URL 404s, and this check reads that as "the version is free", which
-  # is the correct answer to the question it asks. It is here so the rule is
-  # uniform across all three published trains and so the coverage exists the
-  # day the Python client actually ships; it is NOT evidence that anything is
-  # currently guarded. It can still go red — an unreadable pyproject.toml, a
-  # version that is not major.minor.patch, or a registry answering neither 200
-  # nor 404 — so a green here is "nothing to check", not "nothing to fix".
-  # `.github/workflows/CONTEXT.md` records the trigger gap, including the one
-  # way that publish job IS reachable today (a `workflow_dispatch` on a tag ref).
+  # READ THIS BEFORE TRUSTING IT: until the first upload lands this check cannot
+  # catch a missing bump, because `malloy-publisher-sdk` is not on PyPI at all.
+  # The project URL 404s, and this check reads that as "the version is free",
+  # which is the correct answer to the question it asks. It is here so the rule
+  # is uniform across all three published trains and so the coverage exists the
+  # moment the Python client ships; until then it is NOT evidence that anything
+  # is guarded. It can still go red — an unreadable pyproject.toml, a version
+  # that is not major.minor.patch, or a registry answering neither 200 nor 404 —
+  # so a green here is "nothing to check", not "nothing to fix".
+  # `.github/workflows/CONTEXT.md` covers the first publish under *Publishing
+  # to PyPI*.
   check_version:
     name: Require a version bump when the published content changes
     if: github.event_name == 'pull_request'
@@ -241,12 +252,35 @@ jobs:
 
           echo "::notice title=Version::$NAME $DECLARED is free and above PyPI's latest ($LATEST)"
 
+  # Generates the client, runs its tests, builds the wheel and sdist and
+  # verifies them. On every PR and push that touches the client, and, called
+  # from release.yml, on the release branch for that release's PyPI upload. One
+  # path for both, so a green PR has built and verified exactly the kind of
+  # artifact a release uploads, rather than the guards first running on the day
+  # a PyPI filename is spent.
+  #
+  # Holds NO publishing credential, and must not gain one. This is the build
+  # half of the split PyPI's trusted-publishing security model asks for:
+  # `id-token: write` lets ANY step in a job mint a PyPI upload token, and this
+  # job executes a lot of third-party code — uv, the generator, black, ruff,
+  # pyright, pytest and the wheel's own runtime dependencies in the importability
+  # check. Here a compromised one can at worst produce a bad artifact, which the
+  # guards below and the smoke job exist to catch; in a job holding id-token it
+  # could mint a token and upload anything under this project's name. The upload
+  # itself is release.yml's `publish-python-sdk`, which runs no repository code.
   build:
+    name: Build and verify the wheel and sdist
     runs-on: ubuntu-latest
-    # Runs the same generation-and-test script as publish, minus the upload.
+    # Bounded for the reason its siblings are, and generously, because it does
+    # the most work here.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release branch when release.yml calls this, so the wheel is
+          # generated from the api-doc.yaml of the server being released; the
+          # triggering ref otherwise.
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -257,102 +291,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install uv
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Build + test SDK
-        run: packages/python-client/scripts/build-python-sdk.sh
-
-  publish:
-    name: Publish to PyPI
-    # The job holding PYPI_TOKEN and doing the most work: uv install, client
-    # generation, tests, build, the importability guard, then twine. Bounded for
-    # the reason its siblings are, and generously, because it is the one job here
-    # whose failure mode is an unusable upload rather than a red check.
-    timeout-minutes: 30
-    # The same gate skills-npm.yml and create-malloy-package-npm.yml carry, and
-    # for the same reason: workflow_dispatch offers every branch in the ref
-    # dropdown, and the definition that runs is the one on the ref you pick, so
-    # `needs: build` is no protection — that job would build the same branch.
-    # release.yml's publish-packages dispatches this workflow on main, so the
-    # guard holds on that path too.
-    #
-    # This REPLACED `startsWith(github.ref, 'refs/tags/sdk-python-')`, which had
-    # never run once: `on: push` named `branches: [main]` and no `tags:`, so a
-    # tag push did not trigger this workflow at all and the job was unreachable.
-    # It is not repaired as a tag trigger, it is replaced, because a tag push
-    # cannot be made to work here without giving up the `paths:` filter above —
-    # a tag pointed at a commit already on main pushes no new commits, so a
-    # `paths` filter has no changed files to match and would filter the run out.
-    # Publishing now goes the same way the other two trains go: dispatched on
-    # main by publish-packages, or dispatched on main by hand.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # The sibling of skills-npm.yml's "Verify this version is not already
-      # published", and the reason is stronger here, not weaker: a PyPI filename
-      # can never be reused even after a delete, so a second upload of a version
-      # is refused for good rather than overwritten.
-      #
-      # This is for the human path. release.yml asks the same question before it
-      # dispatches and simply does not dispatch a version already on PyPI. First
-      # publish of a project answers 404 here and proceeds, which is correct and
-      # is the one run where nothing has been proven end to end before — see
-      # CONTEXT.md on the first publish.
-      - name: Verify this version is not already published
-        run: |
-          read -r NAME DECLARED SLUG <<<"$(python -c '
-          import re, tomllib
-          with open("packages/python-client/pyproject.toml", "rb") as f:
-              p = tomllib.load(f)["project"]
-          print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())
-          ')"
-          if [ -z "$NAME" ] || [ -z "$DECLARED" ] || [ -z "$SLUG" ]; then
-            echo "::error title=Version::could not read name and version from packages/python-client/pyproject.toml"
-            exit 1
-          fi
-          # Same pattern as the bump check above and as the npm siblings, so what
-          # counts as a version has one answer across all three trains.
-          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            printf '%s\n' "$DECLARED" | sed 's/^/[pyproject] /'
-            echo "::error title=Version::the version in packages/python-client/pyproject.toml (logged above) is not a plain major.minor.patch with an optional -prerelease or +build"
-            exit 1
-          fi
-          # The STATUS is the answer; no --fail, because a 404 is an answer and
-          # not a failure. A transport failure makes curl print 000, which falls
-          # through to "did not answer" rather than to a green light.
-          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
-            "https://pypi.org/pypi/${SLUG}/${DECLARED}/json" 2>&1)" || STATUS=000
-          case "$STATUS" in
-            404)
-              echo "::notice title=Version::$NAME $DECLARED is not on PyPI; publishing"
-              ;;
-            200)
-              echo "::error title=Version::$NAME $DECLARED is already on PyPI, and a PyPI filename can never be reused. Bump the version in packages/python-client/pyproject.toml."
-              exit 1
-              ;;
-            *)
-              printf '%s\n' "$STATUS" | sed 's/^/[pypi] /'
-              echo "::error title=Version::PyPI answered ${STATUS} for $NAME $DECLARED; an unanswered registry is not a green light"
-              exit 1
-              ;;
-          esac
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # `pip install build && python -m build` is NOT enough here, and got this
-      # wrong for as long as the job was unreachable. Almost none of this package
-      # is in git: packages/python-client/.gitignore is `malloy_publisher_sdk/*`
-      # with `!malloy_publisher_sdk/__init__.py`, so a checkout contains exactly
-      # ONE tracked python file, and that file's line 6 is
-      # `from .client import AuthenticatedClient, Client` — a module generated
-      # from api-doc.yaml and never committed. `needs: build` does not help: that
-      # job regenerates on its own runner and shares no artifact.
+      # wrong for as long as the old publish job was unreachable. Almost none of
+      # this package is in git: packages/python-client/.gitignore is
+      # `malloy_publisher_sdk/*` with `!malloy_publisher_sdk/__init__.py`, so a
+      # checkout contains exactly ONE tracked python file, and that file's line 6
+      # is `from .client import AuthenticatedClient, Client` — a module generated
+      # from api-doc.yaml and never committed.
       #
       # Measured against a `git archive` of the tracked tree: `python -m build`
       # SUCCEEDS, the wheel installs, and `import malloy_publisher_sdk` raises
@@ -360,20 +307,11 @@ jobs:
       # first upload would have been a dead package under a filename PyPI can
       # never reuse.
       #
-      # Run the one script that knows how to produce this package instead, the
-      # same one the build job runs. BUILD_PACKAGE=true is what makes its step 9
-      # emit dist/, and it validates the spec, regenerates the client, formats it
-      # and runs the tests on the way.
-      - name: Install uv via pip
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install uv
-          # Quoted, unlike the copy in `build` above. Same step otherwise: the
-          # two jobs run the same script and cannot share steps without a
-          # composite action.
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Generate the client and build wheel and sdist
+      # Run the one script that knows how to produce this package instead.
+      # BUILD_PACKAGE=true is what makes its step 9 emit dist/, and it validates
+      # the spec, regenerates the client, formats it and runs the tests on the
+      # way.
+      - name: Generate, test, and build the wheel and sdist
         env:
           BUILD_PACKAGE: "true"
         run: packages/python-client/scripts/build-python-sdk.sh
@@ -384,8 +322,9 @@ jobs:
       # importing it. That import is exactly what a user's first `pip install`
       # does, it is the statement that was broken, and it costs seconds.
       #
-      # Deliberately BEFORE twine, because a PyPI filename cannot be reused: a
-      # check afterwards would only tell you which version you had burned.
+      # Deliberately BEFORE the upload, and in this job rather than the publish
+      # one, because a PyPI filename cannot be reused: a check afterwards would
+      # only tell you which version you had burned.
       - name: Verify the wheel is importable before uploading it
         run: |
           set -euo pipefail
@@ -399,9 +338,10 @@ jobs:
             echo "::error title=Publish::no wheel in packages/python-client/dist/, so there is nothing to verify or upload"
             exit 1
           fi
-          # Exactly one, or the check attests to a file `twine upload dist/*` may
-          # not be uploading. build-python-sdk.sh does `rm -rf dist/` first, so
-          # more than one means something else put a wheel there.
+          # Exactly one, or the check attests to a file the publish job may not
+          # be uploading: it uploads everything in dist/. build-python-sdk.sh
+          # does `rm -rf dist/` first, so more than one means something else put
+          # a wheel there.
           if [ "${#WHEELS[@]}" -ne 1 ]; then
             printf '[dist] %s\n' "${WHEELS[@]}"
             echo "::error title=Publish::expected exactly one wheel in dist/, found ${#WHEELS[@]}; it is not clear which one would be published"
@@ -409,8 +349,8 @@ jobs:
           fi
           WHEEL="${WHEELS[0]}"
 
-          # The sdist too, because `twine upload dist/*` ships BOTH and a PyPI
-          # filename can never be reused for either. Almost nothing resolves an
+          # The sdist too, because the publish job ships BOTH and a PyPI filename
+          # can never be reused for either. Almost nothing resolves an
           # sdist for a pure-python wheel, which is why this is a containment
           # check rather than an install: it asserts the generated client is
           # actually inside the tarball, which is the failure that motivated all
@@ -459,11 +399,196 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to PyPI
+      # Only after every guard above has passed, so nothing downstream can be
+      # handed a dist/ that was not verified. The artifact is the only thing that
+      # crosses into release.yml's publish job, which holds id-token.
+      - name: Hand the verified dist/ on
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-client-dist
+          path: packages/python-client/dist/
+          if-no-files-found: error
+          # Long enough to "Re-run failed jobs" on a release whose PyPI upload
+          # failed at the registry, which reuses this artifact rather than
+          # rebuilding it.
+          retention-days: 7
+
+  # Drives a real Publisher server through the wheel `build` produced, on every
+  # Python version the package says it supports.
+  #
+  # The unit tests mock httpx, so they show the generated client agrees with
+  # itself. This shows what they cannot: that api-doc.yaml, the generator and
+  # the server agree about the wire format, because every answer has to parse
+  # into the generated models (scripts/smoke-test-wheel.py). And it shows the
+  # package metadata is honest: `requires-python` once said >=3.9 while the
+  # generated code cannot even be imported on 3.9, and nothing here noticed,
+  # because every job ran 3.11.
+  #
+  # The server is built from the same checkout, so on a release this is the SDK
+  # against exactly the server being released.
+  smoke:
+    name: Drive a Publisher server through the built wheel
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PUBLISHER_PORT: "4010"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+
+      # The same build and start build.yml's runtime_test uses for its
+      # bun-direct leg, against the same packages/server/publisher.config.json.
+      - name: Build the server
         env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
         run: |
-          pip install twine
-          cd packages/python-client
-          twine upload dist/* --non-interactive
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Start the server
+        working-directory: packages/server
+        run: |
+          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --server_root ./ \
+            > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/server.pid"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # uv provisions every other interpreter below itself, so this is the only
+      # Python the runner has to supply.
+      - name: Install uv via pip
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Download the verified dist/
+        uses: actions/download-artifact@v4
+        with:
+          name: python-client-dist
+          path: ${{ runner.temp }}/dist
+
+      - name: Wait for the server to reach 'serving'
+        run: |
+          SERVER_PID="$(cat "$RUNNER_TEMP/server.pid")"
+          for i in $(seq 1 90); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error title=SDK smoke::the Publisher server exited before serving (log below)"
+              sed 's/^/[server] /' "$RUNNER_TEMP/server.log"
+              exit 1
+            fi
+            state="$(curl -sf --max-time 5 "http://localhost:${PUBLISHER_PORT}/api/v0/status" \
+              | python -c 'import json, sys; print(json.load(sys.stdin).get("operationalState", ""))' 2>/dev/null || true)"
+            if [ "$state" = "serving" ]; then
+              echo "serving after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error title=SDK smoke::the Publisher server did not reach 'serving' within 90s (log below)"
+          sed 's/^/[server] /' "$RUNNER_TEMP/server.log"
+          exit 1
+
+      # Every version the package claims, read from pyproject.toml rather than
+      # listed here, so the claim and the test cannot drift: the floor of
+      # `requires-python` plus each `Programming Language :: Python :: 3.N`
+      # classifier. Adding a classifier adds a leg; lowering the floor puts the
+      # lower version under test before it can ship.
+      - name: Install the wheel into a clean venv per Python, and drive the server
+        run: |
+          set -euo pipefail
+          # Through `if !` and then a non-empty check, never a bare
+          # `read <<<"$(...)"`: a failed substitution there leaves VERSIONS
+          # empty, the loop below runs zero times, and the step reports a pass.
+          if ! OUT="$(python -c '
+          import re, sys, tomllib
+          with open("packages/python-client/pyproject.toml", "rb") as f:
+              p = tomllib.load(f)["project"]
+          floor = re.fullmatch(r">=\s*(3\.\d+)", p["requires-python"].strip())
+          if not floor:
+              sys.exit("requires-python is " + repr(p["requires-python"]) + "; this step reads only a bare >=3.N floor, so extend it before changing that shape")
+          found = {floor.group(1)}
+          for c in p.get("classifiers", []):
+              m = re.fullmatch(r"Programming Language :: Python :: (3\.\d+)", c)
+              if m:
+                  found.add(m.group(1))
+          print(" ".join(sorted(found, key=lambda v: int(v.split(".")[1]))))
+          ' 2>&1)"; then
+            printf '%s\n' "$OUT" | sed 's/^/[pyproject] /'
+            echo "::error title=SDK smoke::could not read the supported Python versions from packages/python-client/pyproject.toml (logged above)"
+            exit 1
+          fi
+          # The last line only: anything Python warned on a successful run is
+          # in OUT too, through the 2>&1 above.
+          read -r -a VERSIONS <<<"$(printf '%s\n' "$OUT" | tail -n 1)"
+          if [ "${#VERSIONS[@]}" -eq 0 ]; then
+            echo "::error title=SDK smoke::pyproject.toml yielded no Python versions to test, so nothing would be checked"
+            exit 1
+          fi
+          echo "Python versions under test: ${VERSIONS[*]}"
+
+          shopt -s nullglob
+          WHEELS=("$RUNNER_TEMP"/dist/*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "::error title=SDK smoke::expected exactly one wheel in the downloaded dist/, found ${#WHEELS[@]}"
+            exit 1
+          fi
+
+          FAILED=()
+          for v in "${VERSIONS[@]}"; do
+            echo "::group::Python $v"
+            venv="$RUNNER_TEMP/venv-$v"
+            # All three inside the `if`, so a version uv cannot provision or
+            # the wheel cannot install on fails its own leg, by name, rather
+            # than ending the step under set -e before the others have run.
+            # uv downloads a managed interpreter when the runner has none.
+            #
+            # The smoke script runs by path and with -I, from outside the
+            # checkout, so neither the working directory nor PYTHONPATH can put
+            # the source tree on sys.path; see the script's docstring.
+            if uv venv --python "$v" "$venv" \
+               && VIRTUAL_ENV="$venv" uv pip install "${WHEELS[0]}" \
+               && (cd "$RUNNER_TEMP" && "$venv/bin/python" -I \
+                  "$GITHUB_WORKSPACE/packages/python-client/scripts/smoke-test-wheel.py" \
+                  --base-url "http://localhost:${PUBLISHER_PORT}/api/v0" \
+                  --config "$GITHUB_WORKSPACE/packages/server/publisher.config.json" \
+                  --query-environment examples \
+                  --query-package storefront \
+                  --query-model storefront.malloy \
+                  --query 'run: regions -> { aggregate: region_count is count() }'); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error title=SDK smoke::the built wheel could not be installed, or failed against the server, on Python $v (its group above says which)"
+              FAILED+=("$v")
+            fi
+          done
+          # Every version runs before this fails, so one red run names every
+          # broken interpreter rather than the first.
+          if [ "${#FAILED[@]}" -ne 0 ]; then
+            echo "- SDK smoke failed on Python ${FAILED[*]}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- SDK smoke passed on Python ${VERSIONS[*]}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Server log
+        if: failure()
+        run: sed 's/^/[server] /' "$RUNNER_TEMP/server.log" || true

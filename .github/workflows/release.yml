@@ -1,7 +1,7 @@
 # Copyright (c) Credible Data Inc.
 # SPDX-License-Identifier: MIT
 
-name: Release (NPM + Docker)
+name: Release (NPM + Docker + PyPI)
 
 on:
   workflow_dispatch:
@@ -304,14 +304,191 @@ jobs:
       current_version: ${{ needs.prepare.outputs.new_version }}
       ref: ${{ needs.prepare.outputs.branch_name }}
 
-  # skills, create-malloy-package and python-client version on their own lines,
-  # so this job triggers them rather than versioning them. The first two publish
-  # to npm through publish_indep_pkg, which decides their version at release
-  # time (scripts/independent-version.mjs) rather than reading one committed to
-  # their package.json; python-client publishes to PyPI through the older
-  # publish_pkg, which still reads its version straight from pyproject.toml.
-  # Both share publish_resolved for the registry-agnostic tail: the watched-path
-  # guard, the "main moved" compare, the dispatch, and the poll loop.
+  # The Python SDK (`malloy-publisher-sdk` on PyPI), at the same level as
+  # publish-npm and publish-docker: built and smoke-tested from the release
+  # branch by python-sdk.yml, then uploaded by the job below it.
+  #
+  # Two jobs where its neighbours have one `uses:`, and the split is forced, not
+  # chosen. PyPI does not support trusted publishing from a reusable workflow,
+  # so the upload has to be a job defined in THIS file, and PyPI's trusted
+  # publisher for the project names `release.yml`. That is the opposite of npm's
+  # rule, which matches the top-level caller: PyPI matches the
+  # `job_workflow_ref` claim, the file that defines the uploading job. Moving
+  # `publish-python-sdk` into python-sdk.yml (or any other file) breaks
+  # publishing until the PyPI entry is changed to match.
+  #
+  # The SDK versions on its own line, by a committed bump of
+  # packages/python-client/pyproject.toml that python-sdk.yml's PR check
+  # enforces, so most releases have nothing new for PyPI and the publish job
+  # skips. Skipped too on a prerelease of sdk/app/server, for the reason
+  # publish-packages skips there: the SDK's own version carries no hyphen, so
+  # PyPI would take it as a full release.
+  #
+  # Deliberately NOT in gh-release's needs, for the reason publish-packages is
+  # not: a failed PyPI upload must not leave sdk/app/server half-released and
+  # un-re-runnable at the same version. A failure here still reddens the run,
+  # and "Re-run failed jobs" retries the upload with the same verified artifact.
+  build-python-sdk:
+    needs: prepare
+    if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+    # python-sdk.yml needs no more than this: it holds no publishing credential.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/python-sdk.yml
+    with:
+      # The release branch, like publish-npm and publish-docker, so the SDK is
+      # generated from the api-doc.yaml of the server this release ships, and
+      # smoke-tested against that server. prepare bumps only sdk/app/server, so
+      # packages/python-client is the same as on the ref this run started from.
+      ref: ${{ needs.prepare.outputs.branch_name }}
+
+  # The only job in the release that can mint a PyPI token, so it runs no
+  # repository code and installs nothing: it downloads the dist/ that
+  # python-sdk.yml's `build` verified (and its `smoke` drove against the
+  # server), asks PyPI whether that version is new, and hands it to PyPA's
+  # action. The build half runs third-party code (uv, the generator, linters,
+  # pytest) and holds no id-token for exactly that reason; see python-sdk.yml.
+  #
+  # Trusted publishing (OIDC), not a stored token. There is no PYPI_TOKEN and
+  # one should not be added back. The PyPI entry: project
+  # `malloy-publisher-sdk`, owner `malloydata`, repository `publisher`,
+  # workflow `release.yml`, environment `pypi`.
+  #
+  # The environment is the boundary. release.yml carries no ref guard (see
+  # CONTEXT.md, *Hardening that is not in place yet*), and PyPI does not check
+  # the ref. It does refuse a token whose `environment` claim is not `pypi`, so
+  # a branch copy of this file that drops `environment:` cannot publish, and
+  # with the `pypi` environment's deployment branches restricted to `main`, a
+  # release dispatched from any other branch never starts this job.
+  publish-python-sdk:
+    name: Publish the Python SDK to PyPI
+    needs: [ prepare, build-python-sdk ]
+    if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+    runs-on: ubuntu-latest
+    # A download, two registry questions and an upload. PyPI's minted token is
+    # valid for 15 minutes, so a job still running past this would be failing
+    # at the registry anyway.
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/malloy-publisher-sdk/
+    # Only id-token, so every other GITHUB_TOKEN scope is none: this job
+    # checks nothing out and calls no GitHub API. `id-token: write` is what
+    # the action exchanges with PyPI for an upload token, and what it signs
+    # the PEP 740 attestations with.
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the verified dist/
+        uses: actions/download-artifact@v4
+        with:
+          name: python-client-dist
+          path: dist/
+
+      # Read from the wheel's own METADATA, not from pyproject.toml: it is the
+      # artifact being uploaded, so it is the only answer that cannot disagree
+      # with what PyPI receives. The runner's python3 and stdlib only, nothing
+      # installed, because this job holds id-token.
+      #
+      # "Already on PyPI" is the ordinary outcome, not an error: the SDK's
+      # version moves only when someone bumps it, so most releases skip here.
+      # A PyPI filename can never be reused, so uploading anyway would fail.
+      - name: Decide whether this version is new on PyPI
+        id: decide
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "::error title=PyPI::expected exactly one wheel in the verified dist/, found ${#WHEELS[@]}. NOTHING was uploaded."
+            exit 1
+          fi
+          if ! OUT="$(python3 -c '
+          import email, re, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as wheel:
+              meta = [n for n in wheel.namelist() if n.endswith(".dist-info/METADATA")]
+              if len(meta) != 1:
+                  sys.exit("expected one .dist-info/METADATA in the wheel, found " + str(len(meta)))
+              m = email.message_from_bytes(wheel.read(meta[0]))
+          print(m["Name"], m["Version"], re.sub(r"[-_.]+", "-", m["Name"]).lower())
+          ' "${WHEELS[0]}" 2>&1)"; then
+            printf '%s\n' "$OUT" | sed 's/^/[wheel] /'
+            echo "::error title=PyPI::could not read the name and version from ${WHEELS[0]} (logged above). NOTHING was uploaded."
+            exit 1
+          fi
+          read -r NAME VERSION SLUG <<<"$(printf '%s\n' "$OUT" | tail -n 1)"
+          # The trusted publisher is registered for this one project, and a
+          # pending publisher creates the project from the upload's name. A
+          # renamed package would otherwise fail at the registry with "Non-user
+          # identities cannot create new projects", which names neither cause.
+          if [ "$NAME" != "malloy-publisher-sdk" ]; then
+            printf '%s\n' "$NAME" | sed 's/^/[wheel] /'
+            echo "::error title=PyPI::the wheel's project name (logged above) is not malloy-publisher-sdk, the project PyPI's trusted publisher is registered for. NOTHING was uploaded."
+            exit 1
+          fi
+          # Plain major.minor.patch only, validated before it reaches a URL or
+          # an annotation. python-sdk.yml's bump check compares versions with
+          # `sort -V`, which does not implement PEP 440 ordering, and nothing in
+          # the release decides what a prerelease of the SDK should be tagged.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '%s\n' "$VERSION" | sed 's/^/[wheel] /'
+            echo "::error title=PyPI::the wheel's version (logged above) is not a plain major.minor.patch; a release publishes only those. NOTHING was uploaded."
+            exit 1
+          fi
+          # The STATUS is the answer; no --fail, because a 404 is an answer and
+          # not a failure. A transport failure makes curl print 000, which falls
+          # through to "did not answer" rather than to a green light.
+          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+            "https://pypi.org/pypi/${SLUG}/${VERSION}/json" 2>&1)" || STATUS=000
+          case "$STATUS" in
+            404)
+              echo "::notice title=PyPI::${NAME} ${VERSION} is not on PyPI; publishing"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            200)
+              echo "::notice title=PyPI::${NAME} ${VERSION} is already on PyPI; nothing to publish. Bump packages/python-client/pyproject.toml to release a new SDK."
+              echo "- \`${NAME}==${VERSION}\` was already on PyPI, skipped" >> "$GITHUB_STEP_SUMMARY"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              printf '%s\n' "$STATUS" | sed 's/^/[pypi] /'
+              echo "::error title=PyPI::PyPI answered ${STATUS} for ${NAME} ${VERSION}; an unanswered registry is not a green light. NOTHING was uploaded."
+              exit 1
+              ;;
+          esac
+          echo "spec=${NAME}==${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Pinned by commit SHA, like the repo's other third-party actions that
+      # hold a credential (trivy, cosign-installer): this one runs with the
+      # ability to mint an upload token for the project. v1.14.3 carries the fix
+      # for GHSA-5xjx-3w67-w9x9.
+      #
+      # With trusted publishing it also generates and uploads PEP 740
+      # attestations by default, so each file on PyPI is bound to this
+      # workflow and commit.
+      - name: Publish to PyPI
+        if: steps.decide.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          # Each file's sha256 in the log, so a run can be matched to what PyPI
+          # holds without re-downloading the artifact.
+          print-hash: true
+
+      - name: Record the publish
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          SPEC: ${{ steps.decide.outputs.spec }}
+        run: echo "- \`${SPEC}\` published to PyPI" >> "$GITHUB_STEP_SUMMARY"
+
+  # skills and create-malloy-package version on their own lines, so this job
+  # triggers them rather than versioning them. Both publish to npm through
+  # publish_indep_pkg, which decides their version at release time
+  # (scripts/independent-version.mjs) rather than reading one committed to
+  # their package.json, and shares publish_resolved for the tail: the
+  # watched-path guard, the "main moved" compare, the dispatch, and the poll
+  # loop. The Python SDK is not one of these any more; it is build-python-sdk
+  # and publish-python-sdk above.
   #
   # It triggers them but does NOT align their version numbers with sdk/app/
   # server, and that is not an omission to be tidied up later. malloydata/malloy
@@ -320,9 +497,8 @@ jobs:
   # versions are immutable, so there is no path back to a shared number. skills
   # is skipped when its published content is unchanged since npm latest's
   # gitHead; create-malloy-package publishes on every non-prerelease release
-  # and is skipped only on a re-run (its publisherServer already matches);
-  # python-client is paused. A computed version already on npm is an error for
-  # either, never a skip.
+  # and is skipped only on a re-run (its publisherServer already matches). A
+  # computed version already on npm is an error for either, never a skip.
   #
   # They are DISPATCHED through the Actions API rather than called with
   # workflow_call, deliberately. npm allows one trusted publisher per package
@@ -370,19 +546,19 @@ jobs:
     # (wait_for_server_latest).
     needs: [ prepare, publish-npm ]
     runs-on: ubuntu-latest
-    # THREE full poll budgets (25m each, below), plus the scaffolder's wait for
+    # TWO full poll budgets (25m each, below), plus the scaffolder's wait for
     # the server's `latest` (SERVER_LATEST_BUDGET_SECONDS, 15m), plus checkout
     # and setup, with margin. Keep this above the sum of those budgets, or the
     # LAST package timing out is killed by the job cap before it can print which
     # package failed — which is the one diagnostic that says whether a publish
-    # happened. A fourth package means raising this too.
-    timeout-minutes: 105
+    # happened. A third package means raising this too.
+    timeout-minutes: 80
     permissions:
       contents: read
       # For the workflow-dispatch API. Not id-token: this job never publishes,
       # it only asks the registry and triggers the children.
       #
-      # actions: write cannot be narrowed to "dispatch these three workflows"; it
+      # actions: write cannot be narrowed to "dispatch these two workflows"; it
       # also covers cancelling runs and deleting run logs repo-wide. Keep this
       # job dependency-free for that reason: checkout and setup-node only, no
       # bun install and no third-party actions, so there is nothing here for a
@@ -392,13 +568,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # main, never needs.prepare.outputs.branch_name. prepare bumps only
-          # sdk/app/server, so the release branch's copies of these three
-          # packages are identical to main, and all three children guard on
+          # sdk/app/server, so the release branch's copies of these two
+          # packages are identical to main, and both children guard on
           # github.ref == 'refs/heads/main'. Dispatched on a release branch their
           # publish jobs SKIP, and a skipped job reports success, so the release
-          # would go green having published nothing. python-sdk.yml gained that
-          # guard when it joined this job; its old gate was an unreachable tag
-          # ref, which would have skipped here too, and just as silently.
+          # would go green having published nothing.
           ref: main
           # Nothing here authenticates to git: the only local git call is
           # rev-parse, and the live sha comes over the API. Without this,
@@ -415,14 +589,13 @@ jobs:
         with:
           node-version: "24"
 
-      # python-client's PyPI publish is paused (work in progress); see the end of
-      # scripts/publish-packages.sh.
       - name: Publish skills and create-malloy-package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Through env, not interpolated into the script body.
           NEW_VERSION: ${{ needs.prepare.outputs.new_version }}
         run: scripts/publish-packages.sh
+
   gh-release:
     needs: [ prepare, publish-npm, publish-docker ]
     runs-on: ubuntu-latest
