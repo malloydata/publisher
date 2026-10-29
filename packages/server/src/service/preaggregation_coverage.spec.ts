@@ -117,6 +117,23 @@ describe("an aggregate over the rollup's own rows refuses it", () => {
          "count() reached through a measure an inline extend derives",
          "run: orders extend { measure: n is count(), m is n * 2 } -> { aggregate: m }",
       ],
+      // Refused only because Malloy expands a named view into the query's IR.
+      [
+         "count() inside a nested named view",
+         "run: orders extend { view: v is { aggregate: c is count() } } -> { group_by: category; nest: v }",
+      ],
+      [
+         "count() inside a named view run directly",
+         "run: orders extend { view: v is { aggregate: c is count() } } -> v",
+      ],
+      [
+         "count() added by refining a named view",
+         "run: orders extend { view: v is { group_by: category } } -> v + { aggregate: c is count() }",
+      ],
+      [
+         "count() inside a calculate:",
+         "run: orders -> { group_by: category; aggregate: total; calculate: p is lag(count()) }",
+      ],
    ];
 
    for (const [label, query] of REFUSED) {
@@ -135,6 +152,15 @@ describe("an aggregate over the rollup's own rows refuses it", () => {
          "run: orders -> { group_by: category; nest: n is { select: qty } }",
       ],
    ];
+
+   it("a field reached through a join the query adds", async () => {
+      const query =
+         "run: orders extend { join_one: b is base on b.qty = qty } -> { group_by: category; aggregate: bt is b.total }";
+      expect(await resolvedMember(COLOCATED, query)).toBe("r");
+      expect(await violation(COLOCATED, query)).toStartWith(
+         "r: reference b.total",
+      );
+   });
 
    for (const [label, query] of ROW_STAGES) {
       it(label, async () => {

@@ -121,10 +121,16 @@ export function rollupCoverageViolation(
    /**
     * A reference into the member. A merged measure is the one sanctioned
     * aggregate; anything else defined on the member (a measure an inline
-    * `extend` added, a dimension) is followed into its definition.
+    * `extend` added, a dimension) is followed into its definition. A path
+    * through a join is refused rather than followed: a rollup declares no
+    * joins, so one reached here was added by the query.
     */
    const visitRef = (path: readonly string[] | undefined) => {
-      if (!path || path.length !== 1) return;
+      if (!path) return;
+      if (path.length !== 1) {
+         violation = `reference ${path.join(".")} reaches past the rollup's own fields`;
+         return;
+      }
       const name = path[0];
       if (merged.has(name) || followed.has(name)) return;
       followed.add(name);
