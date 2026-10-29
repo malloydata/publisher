@@ -31,7 +31,7 @@ import {
 // rules of MaterializationService.reclaimVersionTables (a table another
 // committed run still references; an orchestrated run's tables; anything
 // under `scope: package`), the startup sweep that finishes a reclaim a crash
-// cut short, and the archive hook and sweep as server.ts wires them onto a
+// cut short, and the archive hook and sweep as main_server.ts wires them onto a
 // real EnvironmentStore. Builds are real, into a DuckDB file every version
 // reaches (the environment's `warehouse` connection), so a dropped table is
 // really gone and a kept one really answers.
@@ -620,10 +620,10 @@ describe("reclaiming an archived version's tables", () => {
 
 // ---------------------------------------------------------------------------
 // The production wiring: a real EnvironmentStore, its archive hook and its
-// startup sweep registered exactly as server.ts registers them.
+// startup sweep registered exactly as main_server.ts registers them.
 // ---------------------------------------------------------------------------
 
-describe("the archive hook and the startup sweep, as server.ts wires them", () => {
+describe("the archive hook and the startup sweep, as main_server.ts wires them", () => {
    const ENV = "wired";
    const TABLE_V1 = versionTable(ENV, "1.0.0");
    const TABLE_V2 = versionTable(ENV, "2.0.0");
@@ -647,8 +647,8 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
 
    /**
     * A server over `serverRoot`. With `wired`, its archive hook and startup
-    * sweep are registered as server.ts registers them (the closures below
-    * are server.ts's, verbatim); without, it is a process that stops before
+    * sweep are registered as main_server.ts registers them (the closures below
+    * are main_server.ts's, verbatim); without, it is a process that stops before
     * any reclaim runs. reclaimVersionTables is observed, never replaced.
     */
    async function openServer({ wired = true } = {}): Promise<Server> {
@@ -898,9 +898,9 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
       },
    );
 
-   it("server.ts registers that hook and that sweep on the materialization service", () => {
-      // The two tests above register server.ts's closures on a real store;
-      // this pins that server.ts registers them, which its module body does
+   it("main_server.ts registers that hook and that sweep on the materialization service", () => {
+      // The two tests above register main_server.ts's closures on a real store;
+      // this pins that main_server.ts registers them, which its module body does
       // at boot and no test can import without starting the server.
       const squash = (text: string) =>
          text
@@ -910,7 +910,7 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
             .replace(/,(?=[)}])/g, "");
       const server = squash(
          fs.readFileSync(
-            path.resolve(import.meta.dir, "../../../src/server.ts"),
+            path.resolve(import.meta.dir, "../../../src/main_server.ts"),
             "utf8",
          ),
       );
