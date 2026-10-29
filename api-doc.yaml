@@ -6678,10 +6678,15 @@ components:
             `SET search_path = '<name>.main'` after the attach, so a model's
             `<name>.table('t')`, which compiles to the bare table name, resolves
             inside the catalog: DuckDB does not search an attached catalog for
-            an unqualified name otherwise. And each statement run on it emits a
+            an unqualified name otherwise. Each statement run on it emits a
             `statement_usage` log record and counts in
             `publisher_statement_usage_total`, for whoever meters the catalog.
-            Absent or false is the pre-existing behavior.
+            And raw SQL on it runs only as a single SELECT: `sqlQuery` and
+            `sqlSource` answer 400 for anything else (another statement type, or
+            more than one statement), and `sqlTemporaryTable` answers 400 always.
+            This is a rule on statements, not on what a SELECT reads: that is
+            bounded by the session's storage secret and catalog role. Absent or
+            false is the pre-existing behavior.
         fingerprint:
           type: string
           description: >
