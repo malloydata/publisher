@@ -10,6 +10,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../logger";
 import { duckdbTestConnections } from "../test_helpers/incremental_test_harness";
+import { plannedSources } from "./build_plan";
 import {
    tryCompileSynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
@@ -99,10 +100,12 @@ describe("tryCompileSynthesizedPreaggregation", () => {
       expect(factory.overlays[0].get(`${MODEL_URL}.preagg.malloy`)).toBe(
          result?.text,
       );
-      // The compiled model's build plan is the rollup to build.
-      const rollupNames = Object.values(
-         result?.model.getBuildPlan().sources ?? {},
-      ).map((s) => s.name);
+      // The compiled model's build targets are the rollup to build.
+      const rollupNames = result
+         ? plannedSources(
+              await result.runtime.getBuildTargets(result.model),
+           ).map((s) => s.name)
+         : [];
       expect(rollupNames).toContain(
          result?.plans[0].rollupSourceName as string,
       );

@@ -1097,6 +1097,7 @@ async function compileMalloyModel(
          modelPath,
          materializer: mm,
          model: compiled,
+         runtime,
          importBaseURL,
          queries,
          sources,
@@ -1148,6 +1149,7 @@ async function prepareForMainThread(
       modelPath: string;
       materializer: ModelMaterializer;
       model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      runtime: Runtime;
       importBaseURL: URL;
       queries: Parameters<typeof renderTagTargets>[0];
       sources: Parameters<typeof renderTagTargets>[1];
@@ -1254,6 +1256,7 @@ async function prepareForMainThread(
             packagePath: job.packagePath,
             materializer,
             malloyModel: model.model,
+            runtime: model.runtime,
             getRuntime: companionRuntime,
             synthesized: companion,
          });
@@ -1639,11 +1642,11 @@ async function finishWorkerBuildPlan(
             getMalloyConnection: (name: string) =>
                malloyConfig.connections.lookupConnection(name),
          },
-         parts.graphs.map((g) => g.connectionName),
+         parts.builds.map((b) => b.connectionName),
       );
       const connectionDigests = await resolveConnectionDigests(
          connections,
-         parts.graphs,
+         parts.builds,
          (name) => digestSkipped.push(name),
       );
       const outcome = deriveBuildPlanOutcome(

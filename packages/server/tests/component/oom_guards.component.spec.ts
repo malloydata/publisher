@@ -54,7 +54,11 @@ function buildApp(
    const fakeConnection = { runSQL } as unknown as Connection;
    const assertCanAdmitQuery =
       opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
-   const fakeEnv = { assertCanAdmitQuery };
+   const fakeEnv = {
+      assertCanAdmitQuery,
+      // Not a managed database, so the single-SELECT check does not apply.
+      getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
+   };
    const fakeStore = {
       getEnvironment: sinon.stub().resolves(fakeEnv),
    } as unknown as EnvironmentStore;

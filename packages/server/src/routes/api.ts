@@ -30,11 +30,7 @@ import {
    type VersionController,
 } from "../controller/version.controller";
 import type { WatchModeController } from "../controller/watch-mode.controller";
-import {
-   BadRequestError,
-   PackageVersionError,
-   ServiceUnavailableError,
-} from "../errors";
+import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { logger, redactSensitive } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -44,11 +40,15 @@ import {
    parseNonNegativeIntParam,
 } from "../query_param_utils";
 import { timeReportRead } from "../report_metrics";
-import { booleanParamOr400, setCollectionReloadError } from "../route_params";
+import {
+   assertListingTakesNoVersionId,
+   booleanParamOr400,
+   queryVersionIdOf,
+   setCollectionReloadError,
+} from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { ThemeStore } from "../service/theme_store";
-import { LATEST_VERSION_ALIAS } from "../service/versions/version_service";
 import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
@@ -499,17 +499,7 @@ function registerPackageRoutes(
    app.get(
       `${env}/packages`,
       jsonRoute((req, res) => {
-         // Listing is not package-scoped and takes no version. An empty one is
-         // what a proxy forwarding a page's query string may send: no version.
-         // `latest` is what the listing answers with anyway.
-         if (
-            req.query.versionId &&
-            req.query.versionId !== LATEST_VERSION_ALIAS
-         ) {
-            throw new BadRequestError(
-               "A package listing takes no versionId: it lists every package, each as its latest version. Read one version with GET .../packages/{packageName}?versionId=.",
-            );
-         }
+         assertListingTakesNoVersionId(req.query.versionId);
          if (req.query.reload !== undefined) {
             setCollectionReloadError(
                res,
@@ -881,22 +871,4 @@ function registerMaterializationRoutes(
          res.status(204).send();
       }),
    );
-}
-
-/**
- * The version a model query names: in the body, or in the URL as on every
- * other package route. Both may be given only if they agree.
- */
-function queryVersionIdOf(req: express.Request): unknown {
-   const fromBody = req.body?.versionId;
-   const fromUrl = req.query.versionId;
-   const named = (value: unknown) =>
-      value !== undefined && value !== null && value !== "";
-   if (named(fromBody) && named(fromUrl) && fromBody !== fromUrl) {
-      throw new PackageVersionError(
-         "VERSION_ID_INVALID",
-         "The body and the URL name different versions; name one, or the same one.",
-      );
-   }
-   return named(fromBody) ? fromBody : fromUrl;
 }

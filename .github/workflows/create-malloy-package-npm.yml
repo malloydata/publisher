@@ -15,7 +15,7 @@ name: create-malloy-package
 # is what runs on a PR) on every PR, so this workflow should never run on a push
 # or a PR.
 #
-# The "Release (NPM + Docker)" workflow also triggers this one, so a single
+# The "Release (NPM + Docker + PyPI)" workflow also triggers this one, so a single
 # release publishes every package. It dispatches this file through the Actions
 # API rather than calling it with workflow_call, which is what keeps this
 # workflow_dispatch entry point working as well; see the trusted-publishing note

@@ -7,8 +7,13 @@
  */
 
 import type { Request, Response } from "express";
-import { BadRequestError, internalErrorToHttpError } from "./errors";
+import {
+   BadRequestError,
+   internalErrorToHttpError,
+   PackageVersionError,
+} from "./errors";
 import { invalidBooleanMessage, parseBooleanParam } from "./query_param_utils";
+import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 
 /**
  * Read a boolean query param, keeping absent distinct from `false`, and answer
@@ -65,4 +70,38 @@ export function setCollectionReloadError(
       ),
    );
    res.status(status).json(json);
+}
+
+/**
+ * Refuse a version on a package listing. Listing is not package-scoped and
+ * takes no version. An empty one is what a proxy forwarding a page's query
+ * string may send: no version. `latest` is what the listing answers with
+ * anyway.
+ */
+export function assertListingTakesNoVersionId(versionId: unknown): void {
+   if (versionId && versionId !== LATEST_VERSION_ALIAS) {
+      throw new BadRequestError(
+         "A package listing takes no versionId: it lists every package, each as its latest version. Read one version with GET .../packages/{packageName}?versionId=.",
+      );
+   }
+}
+
+/**
+ * The version a model query names: in the body, or in the URL as on every
+ * other package route. Both may be given only if they agree.
+ */
+export function queryVersionIdOf(
+   req: Pick<Request, "body" | "query">,
+): unknown {
+   const fromBody = req.body?.versionId;
+   const fromUrl = req.query.versionId;
+   const named = (value: unknown) =>
+      value !== undefined && value !== null && value !== "";
+   if (named(fromBody) && named(fromUrl) && fromBody !== fromUrl) {
+      throw new PackageVersionError(
+         "VERSION_ID_INVALID",
+         "The body and the URL name different versions; name one, or the same one.",
+      );
+   }
+   return named(fromBody) ? fromBody : fromUrl;
 }
