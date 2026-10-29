@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -126,17 +126,6 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
       );
    });
 
-   it("covers a value the reader cannot convert", () => {
-      expect(
-         readerRefusal(
-            new Error(
-               "Conversion Error: Could not convert string 'N/A' to DOUBLE",
-            ),
-            uri,
-         )?.message,
-      ).toBe("Conversion Error: Could not convert string 'N/A' to DOUBLE");
-   });
-
    it("leaves a storage or catalog failure alone, to answer 500", () => {
       expect(
          readerRefusal(
@@ -144,34 +133,78 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
             uri,
          ),
       ).toBeNull();
+      // Arithmetic, which a `SELECT *` from a reader never does.
+      expect(
+         readerRefusal(
+            new Error(
+               "Out of Range Error: Overflow in multiplication of INT8 (100 * 2)!",
+            ),
+            uri,
+         ),
+      ).toBeNull();
       expect(readerRefusal("not an error", uri)).toBeNull();
    });
 
-   // The message shape the patterns above are written against, read from DuckDB itself.
-   it("matches what DuckDB says for a file that is not Parquet", async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reader-refusal-"));
-      // Forward slashes, as an object URI has: DuckDB reads them on Windows too.
-      const file = path.join(dir, "broken.parquet").replaceAll(path.sep, "/");
-      fs.writeFileSync(file, "this is not a parquet file\n".repeat(64));
-      const db = new DuckDBConnection("reader-refusal");
-      try {
-         let thrown: unknown;
+   // The message shapes the patterns above are written against, read from DuckDB
+   // itself, so a DuckDB upgrade that rewords one fails here rather than quietly
+   // answering 500 again.
+   describe("matches what DuckDB says", () => {
+      /** The error DuckDB throws for `CREATE TABLE t AS SELECT * FROM <reader>`. */
+      async function readerError(reader: string): Promise<unknown> {
+         const db = new DuckDBConnection("reader-refusal");
          try {
-            await db.runSQL(
-               `CREATE TABLE t AS SELECT * FROM read_parquet('${file}')`,
-            );
+            await db.runSQL(`CREATE TABLE t AS SELECT * FROM ${reader}`);
+            return undefined;
          } catch (error) {
-            thrown = error;
+            return error;
+         } finally {
+            await db.close();
          }
-         const refusal = readerRefusal(thrown, file);
+      }
+
+      // Forward slashes, as an object URI has: DuckDB reads them on Windows too.
+      const dir = fs
+         .mkdtempSync(path.join(os.tmpdir(), "reader-refusal-"))
+         .replaceAll(path.sep, "/");
+      afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+      it("for a file that is not Parquet", async () => {
+         const file = `${dir}/broken.parquet`;
+         fs.writeFileSync(file, "this is not a parquet file\n".repeat(64));
+         const refusal = readerRefusal(
+            await readerError(`read_parquet('${file}')`),
+            file,
+         );
          expect(refusal?.message).toMatch(
             /^Invalid Input Error: No magic bytes found/,
          );
-         expect(refusal?.message).not.toContain(path.dirname(file));
          expect(refusal?.message).toContain("'broken.parquet'");
-      } finally {
-         await db.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
+         expect(refusal?.message).not.toContain(dir);
+         // The SQL DuckDB echoes after `LINE 1:` names the staging path again.
+         expect(refusal?.message).not.toContain("CREATE TABLE");
+      });
+
+      it("for a CSV value the column's type cannot hold", async () => {
+         const file = `${dir}/orders.csv`;
+         fs.writeFileSync(file, "id,amount\n1,10.5\n2,N/A\n3,7\n");
+         // A type the reader is told, as a column already in the table is on a
+         // replace; a sniffed three-line file would read the column as text.
+         const refusal = readerRefusal(
+            await readerError(
+               `read_csv('${file}', types = {'amount': 'DOUBLE'})`,
+            ),
+            file,
+         );
+         expect(refusal?.message).toMatch(
+            /^Conversion Error: CSV Error on Line: 3\n/,
+         );
+         expect(refusal?.message).toContain(
+            `Could not convert string "N/A" to 'DOUBLE'`,
+         );
+         // The reader's own report names the file: by name, not by staging path.
+         expect(refusal?.message).toContain("file = orders.csv");
+         expect(refusal?.message).not.toContain(dir);
+         expect(refusal?.message).not.toContain("CREATE TABLE");
+      });
    });
 });
