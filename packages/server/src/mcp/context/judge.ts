@@ -31,6 +31,8 @@ import {
    DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS,
    JUDGE_READINGS_RULES,
    JUDGE_REPLY_FORMAT,
+   JUDGE_VALUE_RULES,
+   JUDGE_VALUE_RULES_FULL,
    judgeSplitRules,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
@@ -48,6 +50,7 @@ import {
    type RouteOption,
 } from "./routes";
 import type { FindTarget } from "./find";
+import type { ValueMatch } from "./values_index";
 import type { FcjIndex } from "./index_build";
 
 /** One numbered line the judge may pick. */
@@ -75,6 +78,13 @@ export interface JudgePick {
    readings?: boolean;
    /** Near-identical twins `twinRule` took out, for the trace. */
    droppedTwins?: string[];
+   /**
+    * For a value target under the `full` preset, the stored values the judge
+    * named, by candidate key. A key is here when the reply had a `values`
+    * list and the judge was shown that candidate's values; respond keeps only
+    * what {@link keptValues} allows. A key that is absent keeps every value.
+    */
+   values?: Record<string, string[]>;
 }
 
 export interface JudgeVerdict {
@@ -85,6 +95,89 @@ export interface JudgeVerdict {
    routeOptions?: number;
    /** The first reply was not usable JSON and the re-ask fixed it, for the trace. */
    jsonRepaired?: boolean;
+}
+
+/** How many of a candidate's matched values the judge is shown under the `full` preset. */
+export const JUDGE_VALUES_SHOWN = 5;
+
+/** The judge's word for each way a value matched. */
+const HOW_SHOWN: Record<ValueMatch["how"], string> = {
+   exact: "exact",
+   words: "words",
+   ngram: "typo",
+   meaning: "meaning",
+};
+
+/** A value's label: its candidate's number and a letter, "3a". */
+function valueLabel(option: number, i: number): string {
+   return `${option}${String.fromCharCode(97 + i)}`;
+}
+
+/** The stored values that nominated `key` for target `t` in this cluster, best first. */
+function matchedValues(
+   cluster: Cluster,
+   t: number,
+   key: string,
+): readonly ValueMatch[] {
+   return (
+      cluster.candidates.get(t)?.find((c) => c.key === key)?.found.values ?? []
+   );
+}
+
+/**
+ * Every value label the judge is shown, by `<target index>:<label>`. Only a
+ * `dimensional_value` target under the `full` preset shows any.
+ */
+export function valueLabels(
+   cluster: Cluster,
+   targets: readonly FindTarget[],
+   options: readonly JudgeOption[],
+): Map<string, { key: string; value: string }> {
+   const out = new Map<string, { key: string; value: string }>();
+   if (getEgressPreset() !== "full") return out;
+   for (const t of targets) {
+      if (t.type !== "dimensional_value") continue;
+      for (const o of options) {
+         if (!o.targets.includes(t.index) || o.route) continue;
+         matchedValues(cluster, t.index, o.key)
+            .slice(0, JUDGE_VALUES_SHOWN)
+            .forEach((v, i) =>
+               out.set(`${t.index}:${valueLabel(o.number, i)}`, {
+                  key: o.key,
+                  value: v.value,
+               }),
+            );
+      }
+   }
+   return out;
+}
+
+/**
+ * The values a picked dimension keeps for a value target: all of them when
+ * the judge named none for it (`named` undefined: it was shown none, or its
+ * reply had no `values`). Otherwise a value is kept when the judge named it,
+ * when it holds a named value as whole words ("Denver Metro" for "Denver"),
+ * or when it was past the ones shown; a shown value the judge passed over is
+ * dropped.
+ */
+export function keptValues<T extends { value: string }>(
+   all: readonly T[],
+   named: readonly string[] | undefined,
+): T[] {
+   if (named === undefined) return [...all];
+   const words = named.map(
+      (n) =>
+         new RegExp(
+            `(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`,
+            "iu",
+         ),
+   );
+   return all.filter(
+      (v, i) =>
+         i >= JUDGE_VALUES_SHOWN ||
+         named.includes(v.value) ||
+         words.some((w) => w.test(v.value)),
+   );
 }
 
 /** Doc text the judge reads for one candidate; long docs are cut here, not dropped. */
@@ -342,18 +435,25 @@ export function renderJudgePrompt(
       ? peerLines(index, cluster)
       : homeLines(index, cluster);
    const noteOf = (t: FindTarget, o: JudgeOption) => {
-      const found = cluster.candidates
-         .get(t.index)
-         ?.find((c) => c.key === o.key)?.found;
-      const values = found?.values;
-      return values && values.length > 0
-         ? full
-            ? `stored values matching the target: ${values
-                 .slice(0, 5)
-                 .map((v) => JSON.stringify(v.value))
-                 .join(", ")}`
-            : `a stored value matches the target's value (${values[0].how})`
-         : undefined;
+      const values = matchedValues(cluster, t.index, o.key);
+      if (values.length === 0)
+         return t.type === "dimensional_value" ? "no stored values" : undefined;
+      const how = (v: ValueMatch) =>
+         `${HOW_SHOWN[v.how]}, ${v.score.toFixed(2)}`;
+      if (!full)
+         return `stored values matched the target (${values
+            .slice(0, JUDGE_VALUES_SHOWN)
+            .map(how)
+            .join("; ")}); the values are not shown`;
+      const shown = values
+         .slice(0, JUDGE_VALUES_SHOWN)
+         .map((v, i) =>
+            t.type === "dimensional_value"
+               ? `${valueLabel(o.number, i)} ${JSON.stringify(v.value)} (${how(v)})`
+               : `${JSON.stringify(v.value)} (${how(v)})`,
+         );
+      const more = values.length - shown.length;
+      return `stored values matching the target: ${shown.join(", ")}${more > 0 ? `, and ${more} more not shown` : ""}`;
    };
    lines.push("", "<targets>");
    targets.forEach((t, i) => {
@@ -490,6 +590,8 @@ function peerLines(index: FcjIndex, cluster: Cluster): string[] {
 export function validateVerdict(
    targets: readonly FindTarget[],
    options: readonly JudgeOption[],
+   /** {@link valueLabels}: the value labels shown, empty when none were. */
+   labels: ReadonlyMap<string, { key: string; value: string }> = new Map(),
 ) {
    const byNumber = new Map(options.map((o) => [o.number, o]));
    return (
@@ -512,6 +614,7 @@ export function validateVerdict(
             reason?: unknown;
             best?: unknown;
             readings?: unknown;
+            values?: unknown;
          };
          const tn = typeof p.target === "number" ? p.target : Number(p.target);
          if (!Number.isInteger(tn) || tn < 1 || tn > targets.length) {
@@ -539,11 +642,38 @@ export function validateVerdict(
             keys.splice(keys.indexOf(best), 1);
             keys.unshift(best);
          }
+         const target = targets[tn - 1].index;
+         // A reply that names values decides, for every picked candidate it
+         // was shown values of, which of them stay; one with no "values"
+         // list leaves them all.
+         let named: Record<string, string[]> | undefined;
+         if (Array.isArray(p.values)) {
+            named = {};
+            for (const k of keys) {
+               for (const [id, v] of labels)
+                  if (id.startsWith(`${target}:`) && v.key === k) named[k] = [];
+            }
+            for (const x of p.values) {
+               const shown = labels.get(
+                  `${target}:${String(x).trim().toLowerCase()}`,
+               );
+               if (!shown) {
+                  bad.push(
+                     `value ${JSON.stringify(x)} was not listed under target ${tn}`,
+                  );
+                  continue;
+               }
+               if (named[shown.key] && !named[shown.key].includes(shown.value))
+                  named[shown.key].push(shown.value);
+            }
+            if (Object.keys(named).length === 0) named = undefined;
+         }
          picks.push({
-            target: targets[tn - 1].index,
+            target,
             keys,
             ...(best !== undefined && keys.includes(best) ? { best } : {}),
             ...(p.readings === true ? { readings: true } : {}),
+            ...(named ? { values: named } : {}),
             ...(typeof p.reason === "string" && p.reason.trim()
                ? { reason: p.reason.trim().slice(0, 300) }
                : {}),
@@ -688,8 +818,19 @@ export async function judge(args: {
                ? DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS
                : DEFAULT_JUDGE_LIST_INSTRUCTIONS
             : DEFAULT_JUDGE_INSTRUCTIONS);
+      const labels = valueLabels(cluster, args.targets, options);
+      const valueRules = args.targets.some(
+         (t) => t.type === "dimensional_value",
+      )
+         ? [
+              getEgressPreset() === "full"
+                 ? JUDGE_VALUE_RULES_FULL
+                 : JUDGE_VALUE_RULES,
+           ]
+         : [];
       const system = [
          base,
+         ...valueRules,
          ...(args.readingsRule ? [JUDGE_READINGS_RULES] : []),
          ...(args.splitRules ? [judgeSplitRules(args.itemPicks ?? 0)] : []),
       ].join("\n\n");
@@ -703,7 +844,7 @@ export async function judge(args: {
             cap,
          ),
          maxTokens: judgeMaxTokens(args.targets.length, options.length),
-         validate: validateVerdict(args.targets, options),
+         validate: validateVerdict(args.targets, options, labels),
       });
       const shown = options.filter((o) => o.route).length;
       return {

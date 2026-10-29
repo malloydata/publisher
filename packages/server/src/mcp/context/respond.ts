@@ -64,7 +64,7 @@ import { nodeKeyOf, type CatalogNode, type CatalogSource } from "./catalog";
 import type { Cluster, ConnectResult, PeerSource } from "./connect";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
-import { PATHS_SHOWN, type JudgeVerdict } from "./judge";
+import { keptValues, PATHS_SHOWN, type JudgeVerdict } from "./judge";
 import { parseRouteKey, routesFrom } from "./routes";
 
 /** Distinct values the query-time lookup reads for a gated dimension. */
@@ -235,7 +235,8 @@ export async function respond(args: {
                home,
                homePath,
                target,
-               found?.found.values,
+               found?.found.values &&
+                  keptValues(found.found.values, pick.values?.[key]),
                warnings,
             );
             for (const p of placed) {
@@ -622,6 +623,14 @@ async function valuesFor(
       return matched
          .slice(0, 10)
          .map((v) => ({ value: v.value, score: v.score, searchText: phrase }));
+   }
+   // A field the description search offered for a value, whose values were
+   // never read: say so, rather than let it read as holding the value.
+   if (target.type === "dimensional_value" && !owner.gated && !node.indexed) {
+      warnings.push(
+         `${node.source}.${node.name} was offered for ${JSON.stringify(phrase)} by its description. Its values are not indexed (it is not tagged #(index)), so whether it holds that value was not checked; read its values with execute_query.`,
+      );
+      return [];
    }
    // A gated source's values are never in the shared index; a value target
    // asks the query path with the caller's givens instead.
