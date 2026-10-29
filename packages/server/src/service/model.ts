@@ -50,6 +50,11 @@ import {
    type RollupPlan,
 } from "./preaggregation_synthesis";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import {
+   RollupCoverageError,
+   rollupCoverageViolation,
+   rollupMeasuresByMember,
+} from "./preaggregation_coverage";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
@@ -5773,29 +5778,38 @@ export class Model {
                );
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               // info, not debug: a fallback is otherwise silent (the query
-               // succeeds), so this is how an operator learns why a package
-               // never serves from storage. The compiler's "undefined object"
-               // reads the same for an unpersisted and a stale source, so both
-               // sets are reported.
-               const { shapeSources, staleSources } = serveShapeDiagnostics(
-                  this.storageServe.serveBindings,
-                  this.storageServe.freshServeBindings(Date.now()),
-               );
-               logger.info(
-                  "storage serve-shape ineligible for this query; serving live",
-                  {
-                     modelPath: this.modelPath,
-                     error:
-                        shapeErr instanceof Error
-                           ? shapeErr.message
-                           : String(shapeErr),
-                     // A name absent from both sets is not materialized at all.
-                     shapeSources,
-                     // Bound, but withheld by the freshness gate for this query.
-                     staleSources,
-                  },
-               );
+               // A rollup refused for this query's aggregates is per-query and
+               // expected, not a reason the package never serves from storage.
+               if (shapeErr instanceof RollupCoverageError) {
+                  logger.debug(
+                     "storage rollup cannot answer this query; serving live",
+                     { modelPath: this.modelPath, error: shapeErr.message },
+                  );
+               } else {
+                  // info, not debug: a fallback is otherwise silent (the query
+                  // succeeds), so this is how an operator learns why a package
+                  // never serves from storage. The compiler's "undefined
+                  // object" reads the same for an unpersisted and a stale
+                  // source, so both sets are reported.
+                  const { shapeSources, staleSources } = serveShapeDiagnostics(
+                     this.storageServe.serveBindings,
+                     this.storageServe.freshServeBindings(Date.now()),
+                  );
+                  logger.info(
+                     "storage serve-shape ineligible for this query; serving live",
+                     {
+                        modelPath: this.modelPath,
+                        error:
+                           shapeErr instanceof Error
+                              ? shapeErr.message
+                              : String(shapeErr),
+                        // A name absent from both sets is not materialized at all.
+                        shapeSources,
+                        // Bound, but withheld by the freshness gate for this query.
+                        staleSources,
+                     },
+                  );
+               }
             }
          }
 
@@ -5837,13 +5851,20 @@ export class Model {
                   givens: querySurfaceGivens,
                   buildManifest,
                });
+               // Compiling proves only that the chosen member DEFINES every
+               // field used; `count()` uses none and resolves to a rollup.
+               const uncovered = rollupCoverageViolation(
+                  (await candidate.getPreparedQuery())._query,
+                  rollupMeasuresByMember(this.preaggregateRollupPlans),
+               );
+               if (uncovered) throw new RollupCoverageError(uncovered);
                runnable = candidate;
                preaggRouted = true;
             } catch (preaggErr) {
                // Expected and common: the companion imports only the sources it
-               // rolls up.
+               // rolls up, and a rollup stores only its declared measures.
                logger.debug(
-                  "query does not compile against the pre-aggregation model; serving live",
+                  "query cannot be served from the pre-aggregation model; serving live",
                   {
                      modelPath: this.modelPath,
                      error:

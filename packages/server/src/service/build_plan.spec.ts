@@ -4,124 +4,188 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
-import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
+   collectModelBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
    deriveBuildPlan,
-   flattenDependsOn,
-   iterGraphSources,
+   emptyBuildPlanParts,
+   plannedSources,
    projectToPublicColumns,
    resolveFreshness,
    resolveQueryMetadata,
    resolvePackageConnections,
+   sourceBuildsOf,
+   sourcesInBuildOrder,
+   type SourceBuild,
 } from "./build_plan";
 import { computePackageBuildPlan } from "./build_plan_compile";
 import { MaterializationEligibilityError } from "../errors";
 import {
    compilePersistSources,
    duckdbTestConnections,
+   loadTestRuntime,
    tempBuildPlanPackages,
 } from "../test_helpers/incremental_test_harness";
 import { fakeSource } from "../test_helpers/materialization_test_fixtures";
 
-describe("flattenDependsOn", () => {
-   it("maps nested dependsOn entries to a flat sourceID list", () => {
+describe("source builds from getBuildTargets", () => {
+   // a <- b <- c, plus `a_ext`, which extends `a` without changing its SQL and
+   // so shares its table.
+   const CHAIN = `##! experimental.persistence
+source: base is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
+#@ persist
+source: a is base -> { group_by: category; aggregate: total is amount.sum() }
+source: a_ext is a extend { dimension: label is concat('x', category) }
+#@ persist
+source: b is a -> { group_by: category; aggregate: t2 is total.sum() }
+#@ persist
+source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
+`;
+
+   async function buildsOf(model: string) {
+      const { connections } = duckdbTestConnections();
+      const { runtime, materializer } = loadTestRuntime(connections, model);
+      const targets = await runtime.getBuildTargets(
+         await materializer.getModel(),
+      );
+      return { builds: sourceBuildsOf(targets), targets };
+   }
+
+   const name = (sourceID: string) => sourceID.split("@")[0];
+
+   it("orders every source after the tables it reads", async () => {
+      const { builds } = await buildsOf(CHAIN);
+      expect(builds).toHaveLength(1);
+      const order = builds[0].order.map(name);
+      expect(order.sort()).toEqual(["a", "a_ext", "b", "c"].sort());
+      const at = (n: string) => builds[0].order.map(name).indexOf(n);
+      expect(at("a")).toBeLessThan(at("b"));
+      expect(at("a_ext")).toBeLessThan(at("b"));
+      expect(at("b")).toBeLessThan(at("c"));
+   });
+
+   it("gives every source every table it reads, and an extension none", async () => {
+      // The wire graphs are a host's only view of these edges, for a rerun's
+      // upstream closure, freshness inheritance and lineage. `b -> a` sits
+      // below the first level, where a walk of roots alone loses it.
+      const { builds } = await buildsOf(CHAIN);
+      const deps = Object.fromEntries(
+         Object.entries(builds[0].dependsOn).map(([id, on]) => [
+            name(id),
+            on.map(name).sort(),
+         ]),
+      );
+      expect(deps).toEqual({
+         a: [],
+         a_ext: [],
+         b: ["a", "a_ext"],
+         c: ["b"],
+      });
+   });
+
+   it("projects those edges into the wire graphs", async () => {
+      const { builds, targets } = await buildsOf(CHAIN);
+      const sources = Object.fromEntries(
+         plannedSources(targets).map((src) => [src.sourceID, src]),
+      );
+      const plan = deriveBuildPlan(builds, sources, { duckdb: "dig" });
+      const edges = plan.graphs.flatMap((g) =>
+         g.nodes
+            .flat()
+            .flatMap((n) =>
+               (n.dependsOn ?? []).map((d) => `${name(d)}>${name(n.sourceID)}`),
+            ),
+      );
+      expect(edges.sort()).toEqual(["a>b", "a_ext>b", "b>c"]);
+   });
+
+   it("builds a dependency two sources share once, before both", async () => {
+      const { builds } = await buildsOf(`##! experimental.persistence
+source: base is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
+#@ persist
+source: shared is base -> { group_by: category; aggregate: total is amount.sum() }
+#@ persist
+source: r1 is shared -> { group_by: category; aggregate: t1 is total.sum() }
+#@ persist
+source: r2 is shared -> { group_by: category; aggregate: t2 is total.max() }
+`);
+      const order = builds[0].order.map(name);
+      expect(order.filter((n) => n === "shared")).toHaveLength(1);
+      expect(order[0]).toBe("shared");
+      expect(order.slice(1).sort()).toEqual(["r1", "r2"]);
+      const deps = Object.fromEntries(
+         Object.entries(builds[0].dependsOn).map(([id, on]) => [
+            name(id),
+            on.map(name),
+         ]),
+      );
+      expect(deps).toEqual({ shared: [], r1: ["shared"], r2: ["shared"] });
+   });
+
+   it("puts a source that cannot compile last, with no table to read", async () => {
+      const { builds, targets } =
+         await buildsOf(`##! experimental { persistence givens }
+given: TENANT :: string
+source: base is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
+#@ persist
+source: scoped is base -> { where: category = $TENANT; group_by: category }
+#@ persist
+source: open is base -> { group_by: category }
+`);
+      expect(targets.unbuildable.map((u) => u.source.name)).toEqual(["scoped"]);
+      expect(builds[0].order.map(name)).toEqual(["open", "scoped"]);
+      expect(builds[0].dependsOn[builds[0].order[1]]).toEqual([]);
+   });
+
+   it("walks only the sources a plan holds", () => {
+      const a = fakeSource({ name: "a", sourceEntityId: "ba" });
+      const b = fakeSource({ name: "b", sourceEntityId: "bb" });
+      const build: SourceBuild = {
+         connectionName: "duckdb",
+         order: ["a@m", "missing@m", "b@m"],
+         dependsOn: {},
+      };
       expect(
-         flattenDependsOn({
-            dependsOn: [{ sourceID: "a" }, { sourceID: "b" }],
-         }),
+         [...sourcesInBuildOrder(build, { "a@m": a, "b@m": b })].map(
+            (src) => src.name,
+         ),
       ).toEqual(["a", "b"]);
    });
 });
 
-describe("iterGraphSources", () => {
-   it("yields resolvable sources in dependency order, skipping missing ones", () => {
-      const a = fakeSource({ name: "a", sourceEntityId: "ba" });
-      const b = fakeSource({ name: "b", sourceEntityId: "bb" });
-      const graph = {
-         connectionName: "duckdb",
-         nodes: [
-            [{ sourceID: "a@m", dependsOn: [] }],
-            [
-               { sourceID: "missing@m", dependsOn: [] },
-               { sourceID: "b@m", dependsOn: [] },
-            ],
-         ],
-      } as unknown as MalloyBuildGraph;
-
-      const names = [...iterGraphSources(graph, { "a@m": a, "b@m": b })].map(
-         (s) => s.name,
+describe("detectDroppedPersistSources under getBuildTargets", () => {
+   it("reports a persisted filtered pass-through of a table, which the walk does not plan", async () => {
+      const { duckdb, connections } = duckdbTestConnections();
+      await duckdb.runSQL("CREATE TABLE t AS SELECT 1 AS a");
+      const { runtime, materializer } = loadTestRuntime(
+         connections,
+         `##! experimental.persistence
+#@ persist
+source: filtered is duckdb.table('t') extend { where: a > 0 }
+#@ persist
+source: rolled is duckdb.table('t') -> { group_by: a }
+`,
       );
-      expect(names).toEqual(["a", "b"]);
-   });
+      const parts = emptyBuildPlanParts();
+      await collectModelBuildPlan(parts, {
+         modelPath: "m.malloy",
+         packagePath: "/test",
+         materializer,
+         malloyModel: await materializer.getModel(),
+         runtime,
+         getRuntime: () => {
+            throw new Error("no pre-aggregation in this model");
+         },
+         synthesized: null,
+      });
 
-   it("walks each root's nested dependsOn tree, deps before dependents", () => {
-      // root -> mid -> leaf, with only `root` at the graph's node level — this
-      // mirrors malloy getBuildPlan(): terminal persist sources are the nodes,
-      // and every transitive persist dependency is nested in dependsOn. All
-      // three must be yielded (so all get built), leaf-first so a downstream
-      // build reads its upstream's freshly materialized table.
-      const root = fakeSource({ name: "root", sourceEntityId: "br" });
-      const mid = fakeSource({ name: "mid", sourceEntityId: "bm" });
-      const leaf = fakeSource({ name: "leaf", sourceEntityId: "bl" });
-      const graph = {
-         connectionName: "duckdb",
-         nodes: [
-            [
-               {
-                  sourceID: "root@m",
-                  dependsOn: [
-                     {
-                        sourceID: "mid@m",
-                        dependsOn: [{ sourceID: "leaf@m", dependsOn: [] }],
-                     },
-                  ],
-               },
-            ],
-         ],
-      } as unknown as MalloyBuildGraph;
-
-      const names = [
-         ...iterGraphSources(graph, {
-            "root@m": root,
-            "mid@m": mid,
-            "leaf@m": leaf,
-         }),
-      ].map((s) => s.name);
-      expect(names).toEqual(["leaf", "mid", "root"]);
-   });
-
-   it("deduplicates a shared (diamond) dependency across roots", () => {
-      // r1 and r2 both depend on `shared`; it must be yielded exactly once and
-      // before both dependents.
-      const r1 = fakeSource({ name: "r1", sourceEntityId: "b1" });
-      const r2 = fakeSource({ name: "r2", sourceEntityId: "b2" });
-      const shared = fakeSource({ name: "shared", sourceEntityId: "bs" });
-      const graph = {
-         connectionName: "duckdb",
-         nodes: [
-            [
-               {
-                  sourceID: "r1@m",
-                  dependsOn: [{ sourceID: "shared@m", dependsOn: [] }],
-               },
-               {
-                  sourceID: "r2@m",
-                  dependsOn: [{ sourceID: "shared@m", dependsOn: [] }],
-               },
-            ],
-         ],
-      } as unknown as MalloyBuildGraph;
-
-      const names = [
-         ...iterGraphSources(graph, {
-            "r1@m": r1,
-            "r2@m": r2,
-            "shared@m": shared,
-         }),
-      ].map((s) => s.name);
-      expect(names).toEqual(["shared", "r1", "r2"]);
+      expect(Object.values(parts.sources).map((src) => src.name)).toEqual([
+         "rolled",
+      ]);
+      expect(parts.droppedPersistSources).toEqual([
+         { name: "filtered", modelPath: "m.malloy" },
+      ]);
    });
 });
 
@@ -262,7 +326,7 @@ describe("deriveBuildPlan", () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       try {
          const { connections } = duckdbTestConnections();
-         const { sources, materializer } = await compilePersistSources(
+         const { sources } = await compilePersistSources(
             connections,
             `##! experimental { persistence givens }
 given:
@@ -281,12 +345,17 @@ source: opps is raw -> { select: * } extend {
   dimension: visible is g.opp_id is not null
 }`,
          );
-         const compiled = await materializer.getModel();
          const bySourceID = Object.fromEntries(
             Object.values(sources).map((src) => [src.sourceID, src]),
          );
          const plan = deriveBuildPlan(
-            compiled.getBuildPlan().graphs,
+            [
+               {
+                  connectionName: "duckdb",
+                  order: Object.keys(bySourceID),
+                  dependsOn: {},
+               },
+            ],
             bySourceID,
             { duckdb: "dig" },
          );
@@ -317,19 +386,14 @@ source: opps is raw -> { select: * } extend {
       }
    });
 
-   it("projects graphs and sources into the wire build plan", () => {
+   it("projects builds and sources into the wire build plan", () => {
       const orders = fakeSource({
          name: "orders",
          sourceEntityId: "bid-orders",
          sql: "SELECT 1",
       });
       const plan = deriveBuildPlan(
-         [
-            {
-               connectionName: "duckdb",
-               nodes: [[{ sourceID: "orders@m", dependsOn: [] }]],
-            },
-         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         [{ connectionName: "duckdb", order: ["orders@m"], dependsOn: {} }],
          { "orders@m": orders },
          { duckdb: "dig" },
       );
@@ -362,14 +426,10 @@ source: opps is raw -> { select: * } extend {
          [
             {
                connectionName: "duckdb",
-               nodes: [
-                  [
-                     { sourceID: "declared@m", dependsOn: [] },
-                     { sourceID: "unset@m", dependsOn: [] },
-                  ],
-               ],
+               order: ["declared@m", "unset@m"],
+               dependsOn: {},
             },
-         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         ],
          { "declared@m": declared, "unset@m": unset },
          { duckdb: "dig" },
       );
@@ -400,9 +460,10 @@ source: opps is raw -> { select: * } extend {
          [
             {
                connectionName: "duckdb",
-               nodes: [[{ sourceID: "a@m", dependsOn: [] }]],
+               order: ["a@m"],
+               dependsOn: {},
             },
-         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         ],
          { "a@m": a, "b@m": b },
          { duckdb: "dig" },
          ["a"],
@@ -418,9 +479,10 @@ source: opps is raw -> { select: * } extend {
          [
             {
                connectionName: "duckdb",
-               nodes: [[{ sourceID: "a@m", dependsOn: [] }]],
+               order: ["a@m"],
+               dependsOn: {},
             },
-         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         ],
          { "a@m": a, "b@m": b },
          { duckdb: "dig" },
          undefined,
@@ -632,9 +694,10 @@ describe("deriveBuildPlan freshness", () => {
          [
             {
                connectionName: "duckdb",
-               nodes: [[{ sourceID: "s@m", dependsOn: [] }]],
+               order: ["s@m"],
+               dependsOn: {},
             },
-         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         ],
          { "s@m": source },
          { duckdb: "dig" },
          undefined,

@@ -21,6 +21,31 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The build plan lists every persist source, with every table it reads
+
+The build plan is computed from Malloy's `Runtime.getBuildTargets` instead of the deprecated `Model.getBuildPlan`. Its wire shape is unchanged, but its `graphs` now carry the whole dependency graph: each graph is a single level holding every persist source in build order, and each node's `dependsOn` names the sources on every table it reads. The graphs used to list only root sources with their direct dependencies, so a host reading them for a rerun's upstream closure, freshness inheritance or lineage lost every edge below the first level. Sources that share a table, a source and its extensions, no longer list each other as dependencies. A persist source whose SQL does not compile on its own (one that reads a `given:` with no default) is refused per source, as before, and lists no dependencies, since Malloy does not report the tables it would read.
+
+Two things to check if you read `graphs` yourself:
+
+- **The one level is not parallel.** `nodes` was documented as levels that each run in parallel, in order. It is now a single level in build order, so a host that builds each level's nodes concurrently would build a source alongside the sources it reads. Order builds by `dependsOn`, or run the level serially.
+- **A walk of `dependsOn` reaches further.** A rerun that includes upstream sources, or a freshness rule that follows dependencies, now reaches every source below the first level. Expect such a rerun to rebuild more, and so to cost more warehouse work, than it did before.
+
+## [Unreleased] — A `count()` over a pre-aggregated source counts the source's rows, not the rollup's
+
+A query with an aggregate written in the query itself, against a source with a `#@ preaggregate` rollup, could be answered from the rollup and return a wrong number. `run: orders -> { aggregate: n is count() }` returned the number of rollup rows, and `qty.sum()` with `qty` in the grain summed one `qty` per rollup row. The same held in a `nest:`, a `having:`, and a measure an inline `extend` defined, and on both colocated and `storage=` rollups. A `select:` or `index:` stage was answered from the rollup too, returning one row per grain group rather than the source's rows. Such queries are now answered from the base. A rollup answers only when every aggregate in the query is a pre-aggregated measure or an expression over them. To accelerate a count, declare and annotate it as a measure (`#@ preaggregate grain="category"` on `order_count is count()`). See the "What does not route" section of [docs/preaggregation.md](docs/preaggregation.md#what-does-not-route).
+
+## [0.10.3] — A click on a value opens a menu, and the rows behind it can be shown and downloaded
+
+Clicking a value in a dashboard, a report or a notebook cell now always opens a small menu that says what each entry does, even when there is only one. Before, what a click did depended on a `# drill` tag the reader could not see: one destination navigated or filtered at once, two or more opened a menu, and an untagged value opened its rows.
+
+- **Entries name what they act on.** `Filter to Region: EU` for `# drill { to=self }` (this was `Filter this view`), `Open Regional review (Region: EU)` for each `# drill { to=… }`, and `Show rows (Region: EU, Month: 2025-12)`.
+- **A tag no longer replaces the rows.** A tagged value lists its tag actions and `Show rows` side by side.
+- **The rows are filtered by every value of the clicked row.** A table grouped by two or more dimensions failed before with "Must provide a value for all dimensions". Refined views, named queries, inline queries and text-source reports now open their rows too.
+- **A cell reads as clickable only when its menu lists something.** A tile whose rows cannot be named exactly is not offered rows: a pipeline of more than one stage, an unnamed time truncation inside a view (`group_by: created_at.month`), a row holding a value a filter cannot spell (a uuid, JSON), or a nest whose levels use different time zones.
+- **The server corrects Malloy's drill metadata in query results.** A multi-stage pipeline's root no longer reads as `drillable`, a dimension declared in a joined source carries its dotted name as `drill_expression.code` (`users.signup_year`, not `created_at.year`), and an unnamed truncation whose truncation Malloy lost carries no code. A client that builds filters from that metadata now gets the right rows or none, instead of wrong rows. Each corrected result carries a `#(malloy) drill_metadata_corrected` root tag, and the SDK offers rows only when it is present, so a newer SDK against an older Publisher offers no rows rather than wrong ones.
+- **Download CSV.** The rows dialog's title row has a button that runs the same query with no `limit:`, so only the server's row cap bounds the file. When the file reaches that cap, its name and tooltip say so.
+
+For SDK hosts: `DashboardView` and `Report` take a new `rowsActions` prop that draws your own actions (an export, a download) in the rows dialog in place of Download CSV; it receives the unlimited query, the givens and a file name. `DownloadRowsCsv` is exported for hosts that want it beside their own. `useDrill`'s `selfLabel` option is removed: every `to=self` entry reads `Filter to <Field>: <value>`.
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:

@@ -58,7 +58,7 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
  *   `#@ persist queryMetadata { owner=@env.… }`.
  *
  * The `persist` keyword is load-bearing in both repros: without it a source
- * never enters `getBuildPlan().sources` and nothing is read. The braced
+ * never enters the build plan's sources and nothing is read. The braced
  * `#@ persist { name=… }` happens not to reach (`text()` on a block is
  * undefined) — not a mitigation. That path needs its own fix; this guard does
  * not cover it.

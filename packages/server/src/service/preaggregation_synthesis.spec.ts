@@ -13,7 +13,7 @@ import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { BuildManifest, FixedConnectionMap } from "@malloydata/malloy";
 import { InMemoryURLReader, Runtime } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { computeSourceEntityId } from "./build_plan";
+import { computeSourceEntityId, plannedSources } from "./build_plan";
 import {
    duckdbTestConnections,
    loadTestModel,
@@ -757,10 +757,14 @@ async function synthesizeAndBuild(body: string): Promise<{
       );
 
    const digest = await duckdb.getDigest();
-   const plan = (await load("synth.malloy").getModel()).getBuildPlan();
+   const planned = plannedSources(
+      await new Runtime({ urlReader, connections }).getBuildTargets(
+         await load("synth.malloy").getModel(),
+      ),
+   );
    const entries: BuildManifest["entries"] = {};
    const tables: string[] = [];
-   for (const built of Object.values(plan.sources)) {
+   for (const built of planned) {
       // A table name DuckDB accepts unquoted, from a name that may be long.
       const table = `mz_${built.name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
       await duckdb.runSQL(
@@ -1180,10 +1184,14 @@ source: orders is duckdb.sql("""${ROWS}""") extend {
          );
 
       const digest = await duckdb.getDigest();
-      const plan = (await load("synth.malloy").getModel()).getBuildPlan();
+      const planned = plannedSources(
+         await new Runtime({ urlReader, connections }).getBuildTargets(
+            await load("synth.malloy").getModel(),
+         ),
+      );
       const entries: BuildManifest["entries"] = {};
       let table = "";
-      for (const built of Object.values(plan.sources)) {
+      for (const built of planned) {
          table = `mz_${built.name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
          await duckdb.runSQL(
             `CREATE OR REPLACE TABLE ${table} AS ${built.getSQL()}`,
@@ -1237,12 +1245,13 @@ describe("THE IDENTITY TEST: two independent syntheses agree on sourceEntityId",
                [`${root}synth.malloy`, synth],
             ]),
          );
-         const model = await new Runtime({ urlReader, connections })
+         const runtime = new Runtime({ urlReader, connections });
+         const model = await runtime
             .loadModel(new URL(`${root}synth.malloy`), {
                importBaseURL: new URL(root),
             })
             .getModel();
-         const built = Object.values(model.getBuildPlan().sources);
+         const built = plannedSources(await runtime.getBuildTargets(model));
          expect(built).toHaveLength(1);
          ids.push(computeSourceEntityId(built[0], { duckdb: digest }));
       }

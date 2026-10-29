@@ -59,6 +59,7 @@ export async function compilePackageBuildPlan(
          packagePath: pkg.getPackagePath(),
          materializer,
          malloyModel,
+         runtime,
          getRuntime: (overlay) =>
             Model.getModelRuntime(
                pkg.getPackagePath(),
@@ -71,11 +72,11 @@ export async function compilePackageBuildPlan(
 
    const connections = await resolvePackageConnections(
       pkg,
-      parts.graphs.map((g) => g.connectionName),
+      parts.builds.map((b) => b.connectionName),
    );
    const connectionDigests = await resolveConnectionDigests(
       connections,
-      parts.graphs,
+      parts.builds,
       (connectionName) => {
          // The connection failed to resolve (already warned in
          // resolvePackageConnections). Surface it as a discrete correctness
@@ -88,7 +89,7 @@ export async function compilePackageBuildPlan(
    );
 
    return {
-      graphs: parts.graphs,
+      builds: parts.builds,
       sources: parts.sources,
       connectionDigests,
       connections,

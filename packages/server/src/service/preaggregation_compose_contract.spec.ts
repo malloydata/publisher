@@ -20,7 +20,7 @@
 // trap).
 //
 // Follows the real-compile pattern of incremental_compiler_contract.spec.ts:
-// in-memory DuckDB + Runtime + getBuildPlan(), with a real CTAS so the table the
+// in-memory DuckDB + Runtime + getBuildTargets(), with a real CTAS so the table the
 // manifest points at actually exists, and the serve-time manifest assembled by
 // the production `filterFreshManifest` rather than by hand.
 //
@@ -39,11 +39,12 @@ import type {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { FreshnessManifest } from "../storage/DatabaseInterface";
-import { computeSourceEntityId } from "./build_plan";
+import { computeSourceEntityId, plannedSources } from "./build_plan";
 import { filterFreshManifest } from "./freshness";
 import {
    duckdbTestConnections,
    loadTestModel,
+   loadTestRuntime,
 } from "../test_helpers/incremental_test_harness";
 
 let connections: FixedConnectionMap;
@@ -101,14 +102,16 @@ source: orders is compose(${members})
 const WITH_ROLLUP = modelText(`${ROLLUP_NAME}, orders__base`);
 const BASE_ONLY = modelText("orders__base");
 
-/** The rollup's PersistSource off a real getBuildPlan(). */
+/** The rollup's PersistSource off a real getBuildTargets(). */
 async function rollupSource(text: string): Promise<PersistSource> {
-   const compiled = await loadTestModel(connections, text).getModel();
-   const sources = Object.values(compiled.getBuildPlan().sources);
+   const { runtime, materializer } = loadTestRuntime(connections, text);
+   const sources = plannedSources(
+      await runtime.getBuildTargets(await materializer.getModel()),
+   );
    const rollup = sources.find((s) => s.name === ROLLUP_NAME);
    if (!rollup) {
       throw new Error(
-         `getBuildPlan() did not include ${ROLLUP_NAME}; saw [${sources
+         `getBuildTargets() did not include ${ROLLUP_NAME}; saw [${sources
             .map((s) => s.name)
             .join(", ")}]`,
       );
@@ -181,7 +184,7 @@ const UNCOVERED =
    "run: orders -> { group_by: category; aggregate: total_revenue; where: amount > 100 }";
 
 describe("compiler contract: a persist source as a compose() member", () => {
-   it("1. getBuildPlan() sees the rollup, and it builds", async () => {
+   it("1. getBuildTargets() sees the rollup, and it builds", async () => {
       const rollup = await rollupSource(WITH_ROLLUP);
       // Reachable from modelDef.contents even though nothing outside compose()
       // references it — the fact that lets a synthesized rollup be built at all.

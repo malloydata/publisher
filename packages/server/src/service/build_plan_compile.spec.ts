@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -44,7 +43,7 @@ describe("compilePackageBuildPlan (real compiler)", () => {
 
          const compiled = await compilePackageBuildPlan(pkg);
 
-         expect(compiled.graphs.map((g) => g.connectionName)).toEqual([
+         expect(compiled.builds.map((b) => b.connectionName)).toEqual([
             "duckdb",
          ]);
          const [[sourceID, source]] = Object.entries(compiled.sources);
@@ -94,7 +93,7 @@ source: broken is duckdb.sql("select 1 as id") extend { dimension: x is no_such_
 
             const compiled = await compilePackageBuildPlan(pkg);
 
-            expect(compiled.graphs).toHaveLength(1);
+            expect(compiled.builds).toHaveLength(1);
             expect(compiled.connections.size).toBe(0);
             expect(compiled.connectionDigests).not.toHaveProperty("duckdb");
             expect(
@@ -127,7 +126,7 @@ describe("compilePackageBuildPlan", () => {
 
             const compiled = await compilePackageBuildPlan(pkg);
 
-            expect(compiled.graphs).toEqual([]);
+            expect(compiled.builds).toEqual([]);
             expect(getModelRuntime.called).toBe(false);
          } finally {
             getModelRuntime.restore();
@@ -161,31 +160,44 @@ describe("compilePackageBuildPlan", () => {
    });
 
    it("skips a model lacking ##! experimental.persistence instead of aborting the package", async () => {
-      // getBuildPlan() THROWS on a model without the flag (it does not return
-      // empty), so a header-less non-persist model — e.g. an imported base that
-      // only defines raw sources — must be skipped, or it would abort the whole
-      // package plan and drop the persist source in the sibling model.
-      const fakeModel = (hasFlag: boolean, graphs: MalloyBuildGraph[]) => ({
+      // getBuildTargets() THROWS on a model without the flag (it does not
+      // return empty), so a header-less non-persist model — e.g. an imported
+      // base that only defines raw sources — must be skipped, or it would abort
+      // the whole package plan and drop the persist source in the sibling model.
+      const fakeModel = (hasFlag: boolean, sourceIDs: string[]) => ({
+         hasFlag,
+         sourceIDs,
          modelAnnotations: {
             parseAsTag: () => ({ tag: { has: () => hasFlag } }),
          },
-         getBuildPlan: () => {
-            if (!hasFlag) {
-               throw new Error(
-                  "Model must have ##! experimental.persistence to use getBuildPlan()",
-               );
-            }
-            return { graphs, sources: {}, tagParseLog: [] };
-         },
+         givens: new Map(),
+         _modelDef: { contents: {} },
       });
       const models: Record<string, ReturnType<typeof fakeModel>> = {
          "base.malloy": fakeModel(false, []), // header-less: must be skipped
-         "agg.malloy": fakeModel(true, [
-            {
-               connectionName: "duckdb",
-               nodes: [[{ sourceID: "daily@agg", dependsOn: [] }]],
-            },
-         ] as unknown as MalloyBuildGraph[]),
+         "agg.malloy": fakeModel(true, ["daily@agg"]),
+      };
+      const getBuildTargets = async (model: ReturnType<typeof fakeModel>) => {
+         if (!model.hasFlag) {
+            throw new Error(
+               "Model must have ##! experimental.persistence to use _walkPersistSources()",
+            );
+         }
+         const sources = model.sourceIDs.map((sourceID) => ({
+            sourceID,
+            name: sourceID.split("@")[0],
+            connectionName: "duckdb",
+         }));
+         return {
+            connections: [
+               {
+                  connectionName: "duckdb",
+                  targets: [{ buildId: "b", dependsOn: [], sources }],
+               },
+            ],
+            tagParseLog: [],
+            unbuildable: [],
+         };
       };
       const getModelRuntime = sinon
          .stub(Model, "getModelRuntime")
@@ -194,6 +206,7 @@ describe("compilePackageBuildPlan", () => {
                loadModel: () => ({
                   getModel: async () => models[modelPath as string],
                }),
+               getBuildTargets,
             },
             modelURL: new URL(`file:///${modelPath}`),
             importBaseURL: new URL("file:///"),
@@ -207,12 +220,12 @@ describe("compilePackageBuildPlan", () => {
             getMalloyConnection: async () => ({ getDigest: async () => "dig" }),
          } as unknown as Parameters<typeof compilePackageBuildPlan>[0];
 
-         // Would throw here before the guard (base.malloy's getBuildPlan).
+         // Would throw here before the guard (base.malloy's getBuildTargets).
          const compiled = await compilePackageBuildPlan(pkg);
 
          // The header-less model is skipped; the persist source in agg survives.
-         expect(compiled.graphs).toHaveLength(1);
-         expect(compiled.graphs[0].nodes[0][0].sourceID).toBe("daily@agg");
+         expect(compiled.builds).toHaveLength(1);
+         expect(compiled.builds[0].order).toEqual(["daily@agg"]);
       } finally {
          getModelRuntime.restore();
       }
@@ -360,6 +373,34 @@ describe("computePackageBuildPlan", () => {
          await computePackageBuildPlan(pkg);
       expect(plan).toBeNull();
       expect(droppedPersistSources).toEqual([]);
+   });
+
+   describe("a persist source Malloy cannot plan", () => {
+      const packages = tempBuildPlanPackages();
+      afterEach(() => packages.cleanup());
+
+      it(
+         "is refused, not reported as dropped, even as its connection's only persist source",
+         async () => {
+            const pkg =
+               await packages.create(`##! experimental { persistence givens }
+given: TENANT :: string
+source: base is duckdb.sql("select 1 as amount, 'A' as category")
+#@ persist name="scoped"
+source: scoped is base -> { where: category = $TENANT; group_by: category }
+`);
+
+            const { plan, droppedPersistSources } =
+               await computePackageBuildPlan(pkg);
+
+            expect(droppedPersistSources).toEqual([]);
+            const refused = Object.values(plan?.refusedSources ?? {});
+            expect(refused.map((r) => [r.name, r.reason])).toEqual([
+               ["scoped", "given_in_persisted_query"],
+            ]);
+         },
+         { timeout: 20000 },
+      );
    });
 
    describe("colocatedSourceEligibility", () => {
