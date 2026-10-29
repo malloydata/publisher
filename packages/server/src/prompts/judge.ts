@@ -116,6 +116,24 @@ export function judgeSplitRules(itemPicks: number): string {
 }
 
 /**
+ * Added to the judge's instructions on a request with a `dimensional_value`
+ * target, under the `full` egress preset: the judge sees each candidate's
+ * matched stored values, labelled, and names the ones it means. A shown value
+ * it does not name is dropped from the answer (judge.ts, keptValues).
+ */
+export const JUDGE_VALUE_RULES_FULL = `- For a value target (type dimensional_value), each candidate field lists the stored values that matched the target, each with a label (such as "3a"), how it matched (exact, words, typo or meaning) and a score. Pick a field when one of its listed values is the target's value or a form of it: a typo, a different case, an abbreviation or a synonym. In that target's pick, add "values": [<the labels of the values you mean>]. A listed value you do not name is left out of the answer.
+- When no listed value is the target's value or a form of it, pick nothing for the target. A value that only looks alike (another city, another product) does not answer it.
+- A field listed with no stored values has no values indexed. Pick it only when its doc says it holds values like the target's.`;
+
+/**
+ * The value-target rules under any preset below `full`: the judge is told how
+ * each candidate's values matched and their scores, never the values, so it
+ * names none and every value is kept.
+ */
+export const JUDGE_VALUE_RULES = `- For a value target (type dimensional_value), each candidate field says how its stored values matched the target (exact, words, typo or meaning) and their scores; the values themselves are not shown. An exact or words match is strong; a typo or meaning match is weaker, so read the field's doc as well. Pick nothing for the target when no candidate's values matched well and no doc says the field holds values like it.
+- A field listed with no stored values has no values indexed. Pick it only when its doc says it holds values like the target's.`;
+
+/**
  * Added to the judge's instructions with `readingsRule` on, for any default
  * or a package's own: the readings rule for every target type (the measure
  * rule already says it for measures) and the building blocks of a rate.

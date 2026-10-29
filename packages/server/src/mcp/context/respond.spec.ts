@@ -203,6 +203,51 @@ describe("respond", () => {
       ]);
    });
 
+   it("keeps only the stored values the judge named for a value target", async () => {
+      const targets = [
+         t(0, "measure", "how many flights"),
+         t(1, "dimensional_value", "Denver"),
+      ];
+      const ARRIVES = "dimension:flights@travel.malloy:arrives_at";
+      const valuesOf = async (named: string[] | undefined) => {
+         const out = await answer(targets, (home) =>
+            home === "flights@travel.malloy"
+               ? [
+                    {
+                       target: 1,
+                       keys: [ARRIVES],
+                       ...(named ? { values: { [ARRIVES]: named } } : {}),
+                    },
+                 ]
+               : [],
+         );
+         return (out.sources as Card[])[0].entities!.find(
+            (e) => e.entity_id === "dimension:flights:arrives_at",
+         )!.values;
+      };
+      expect(await valuesOf(["Denver International (DIA)"])).toHaveLength(1);
+      expect(await valuesOf(undefined)).toHaveLength(1);
+      // Shown and passed over: the field stays, the value does not.
+      expect(await valuesOf([])).toBeUndefined();
+   });
+
+   it("says a field offered for a value has no values indexed", async () => {
+      const out = await answer([t(0, "dimensional_value", "DIA")], (home) =>
+         home === "flights@travel.malloy"
+            ? [
+                 {
+                    target: 0,
+                    keys: ["dimension:flights@travel.malloy:origin_code"],
+                 },
+              ]
+            : [],
+      );
+      expect(ids(out.sources)).toContain("dimension:flights:origin_code");
+      expect(out.warnings).toContain(
+         'flights.origin_code was offered for "DIA" by its description. Its values are not indexed (it is not tagged #(index)), so whether it holds that value was not checked; read its values with execute_query.',
+      );
+   });
+
    it("gives a coverage table for several clusters and names a target no cluster answered", async () => {
       const out = await answer(
          [
