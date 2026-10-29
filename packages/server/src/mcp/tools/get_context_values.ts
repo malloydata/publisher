@@ -3,7 +3,7 @@
 
 /**
  * The lookup query behind value search: "which string does the data store for
- * what the user typed?" ("Auto Intenders" -> `Auto Intenders (In-Market)` on
+ * what the user typed?" ("Home Gardeners" -> `Home Gardeners (In-Season)` on
  * `segment_name`). It reads a dimension's distinct values with a bounded
  * `group_by` through the NORMAL query path (`Model.getQueryResults`, the call
  * `execute_query` makes). The engine's value index (../context/values_index.ts)

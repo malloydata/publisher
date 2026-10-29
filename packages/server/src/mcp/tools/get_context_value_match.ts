@@ -30,7 +30,7 @@ export interface ValueHit {
 /**
  * The comparison form of a string: lowercase, accents removed, anything that is
  * not a letter or digit turned into a space, spaces collapsed. "Auto
- * Intenders (In-Market)" and "auto  intenders in market" compare equal.
+ * Gardeners (In-Season)" and "home  gardeners in season" compare equal.
  */
 export function normalizeText(text: string): string {
    return text
@@ -47,7 +47,7 @@ function tokensOf(normalized: string): string[] {
 
 /**
  * Edit distance counting a swap of two neighbouring letters as one edit
- * (optimal string alignment), so "intedners" is one edit from "intenders".
+ * (optimal string alignment), so "gardneers" is one edit from "gardeners".
  * Stops early when the distance must exceed `limit`.
  */
 export function editDistance(a: string, b: string, limit: number): number {
@@ -110,8 +110,8 @@ function wordScore(word: string, valueWords: string[]): number {
  * - Otherwise each search word is matched to the value's words (a whole word
  *   scores 1, a word one is a prefix of 0.9, a word within the allowed edits
  *   0.75 or 0.65). The mean over the search words is scaled up to 20% down by
- *   how little of the value the match covers, so "auto intenders" prefers
- *   "Auto Intenders" over "Auto Intenders (In-Market) 2024".
+ *   how little of the value the match covers, so "home gardeners" prefers
+ *   "Home Gardeners" over "Home Gardeners (In-Season) 2024".
  */
 export function scoreValue(phrase: string, value: string): number {
    if (value === phrase) return 1;

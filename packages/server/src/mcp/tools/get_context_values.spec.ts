@@ -35,22 +35,22 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("value matching", () => {
-   const STORED = "Auto Intenders (In-Market)";
+   const STORED = "Home Gardeners (In-Season)";
 
    it("scores each kind of match at its published number", () => {
       const score = (q: string) => scoreValue(q, STORED);
-      expect(score("Auto Intenders (In-Market)")).toBe(1);
+      expect(score("Home Gardeners (In-Season)")).toBe(1);
       // Same after case, punctuation and spacing are normalized.
-      expect(score("auto intenders in market")).toBe(0.98);
-      expect(score("AUTO  INTENDERS")).toBe(0.9167);
-      // Prefix of a word ("intender" of "intenders").
-      expect(score("auto intender")).toBe(0.8629);
+      expect(score("home gardeners in season")).toBe(0.98);
+      expect(score("HOME  GARDENERS")).toBe(0.9167);
+      // Prefix of a word ("gardener" of "gardeners").
+      expect(score("home gardener")).toBe(0.8629);
       // One edit, and a swap of two letters counted as one edit.
-      expect(score("auto intendrs")).toBe(0.7948);
-      expect(score("auto intedners")).toBe(0.8021);
+      expect(score("home gardenrs")).toBe(0.7948);
+      expect(score("home gardneers")).toBe(0.8021);
       // Part of the value.
-      expect(score("in-market")).toBe(0.875);
-      expect(score("market")).toBe(0.85);
+      expect(score("in-season")).toBe(0.875);
+      expect(score("season")).toBe(0.85);
       // No word in common.
       expect(score("home shoppers")).toBe(0);
    });
@@ -58,22 +58,22 @@ describe("value matching", () => {
    it("does not match a value on one word of a two-word phrase", () => {
       // Found live: "region 3" returned every "Region N" at 0.5 each.
       expect(scoreValue("region 3", "Region 0")).toBe(0);
-      expect(scoreValue("auto buyers", "Auto Intenders")).toBe(0);
+      expect(scoreValue("home buyers", "Home Gardeners")).toBe(0);
       expect(scoreValue("region 3", "Region 3")).toBe(0.98);
    });
 
    it("ranks a closer value above a longer one and breaks ties stably", () => {
-      const hits = matchValues("auto intenders", [
+      const hits = matchValues("home gardeners", [
          "Home Shoppers",
-         "Auto Intenders (In-Market) 2024",
-         "Auto Intenders",
-         "Auto Intenders (In-Market)",
+         "Home Gardeners (In-Season) 2024",
+         "Home Gardeners",
+         "Home Gardeners (In-Season)",
          "Travel Seekers",
       ]);
       expect(hits).toEqual([
-         { value: "Auto Intenders", score: 0.98 },
-         { value: "Auto Intenders (In-Market)", score: 0.9167 },
-         { value: "Auto Intenders (In-Market) 2024", score: 0.8966 },
+         { value: "Home Gardeners", score: 0.98 },
+         { value: "Home Gardeners (In-Season)", score: 0.9167 },
+         { value: "Home Gardeners (In-Season) 2024", score: 0.8966 },
       ]);
    });
 
@@ -88,12 +88,12 @@ describe("value matching", () => {
    });
 
    it("counts a swap of neighbouring letters as one edit", () => {
-      expect(editDistance("intedners", "intenders", 2)).toBe(1);
+      expect(editDistance("gardneers", "gardeners", 2)).toBe(1);
       expect(editDistance("abc", "xyz", 1)).toBe(2);
    });
 
    it("builds the text-filter stem from the longest word, four letters", () => {
-      expect(filterStem("the Auto Intenders")).toBe("inte");
+      expect(filterStem("the Home Gardeners")).toBe("gard");
       expect(filterStem("ab")).toBeUndefined();
    });
 });
@@ -155,9 +155,9 @@ given:
 
 source: seg_data is duckdb.sql("""
   select * from (values
-    ('acme',   'Auto Intenders (In-Market)', 'US'),
+    ('acme',   'Home Gardeners (In-Season)', 'US'),
     ('acme',   'Home Shoppers',              'US'),
-    ('globex', 'Auto Intenders (Lapsed)',    'EU'),
+    ('globex', 'Home Gardeners (Former)',    'EU'),
     ('globex', 'Travel Seekers',             'EU')
   ) t(tenant, segment_name, market)
 """)
@@ -231,8 +231,8 @@ describe("the lookup query over a real model (gates are the query path's)", () =
       const read1 = await read("open_segments");
       expect(read1.truncated).toBe(false);
       expect(sorted(read1)).toEqual([
-         "Auto Intenders (In-Market)",
-         "Auto Intenders (Lapsed)",
+         "Home Gardeners (Former)",
+         "Home Gardeners (In-Season)",
          "Home Shoppers",
          "Travel Seekers",
       ]);
@@ -252,12 +252,12 @@ describe("the lookup query over a real model (gates are the query path's)", () =
    it("returns values only from the rows an #(access_filter) admits, and none when the gate cannot apply", async () => {
       const acme = await read("tenant_segments", { TENANTS: ["acme"] });
       expect(sorted(acme)).toEqual([
-         "Auto Intenders (In-Market)",
+         "Home Gardeners (In-Season)",
          "Home Shoppers",
       ]);
       const globex = await read("tenant_segments", { TENANTS: ["globex"] });
       expect(sorted(globex)).toEqual([
-         "Auto Intenders (Lapsed)",
+         "Home Gardeners (Former)",
          "Travel Seekers",
       ]);
       // A tenant that owns no rows sees no values, with no error.
@@ -276,12 +276,12 @@ describe("the lookup query over a real model (gates are the query path's)", () =
          source: "open_segments",
          dimension: "segment",
          limit: 100,
-         stem: "inte",
+         stem: "gard",
          timeoutMs: 10_000,
       });
       expect(sorted(filtered)).toEqual([
-         "Auto Intenders (In-Market)",
-         "Auto Intenders (Lapsed)",
+         "Home Gardeners (Former)",
+         "Home Gardeners (In-Season)",
       ]);
    });
 

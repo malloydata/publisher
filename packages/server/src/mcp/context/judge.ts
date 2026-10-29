@@ -391,7 +391,7 @@ export const SOURCE_DOC_MAX_CHARS = 300;
 /**
  * The start of a source's own doc, in its author's words: its first
  * sentences up to SOURCE_DOC_MAX_CHARS. This is where an author says which
- * rows a source holds ("Total Universe only", "for per-audience use ..."),
+ * rows a source holds ("all channels combined", "for per-store use ..."),
  * which a generated summary can drop and an inherited field's doc never
  * says. Undefined when the source has no doc, or (unless asked otherwise)
  * when the source's line already shows it: the stored summary is that same

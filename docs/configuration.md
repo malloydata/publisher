@@ -561,8 +561,8 @@ with the first line of its doc. Listings (a `source` target with no text) are un
 
 ### Dimension value search
 
-A `get_context` target `{"target_type": "dimensional_value", "search_text": "Auto Intenders"}` returns the
-string the data stores for what the user typed (`Auto Intenders (In-Market)`) and the dimension that
+A `get_context` target `{"target_type": "dimensional_value", "search_text": "Home Gardeners"}` returns the
+string the data stores for what the user typed (`Home Gardeners (In-Season)`) and the dimension that
 holds it, as `values[]` on that dimension's entity: `{value, relevance, search_text}`, best first, at most
 10 per dimension. Only a `dimensional_value` target searches values. A `dimension` target's text is never
 searched as a value: send each value the user named as its own `dimensional_value` target, beside the

@@ -55,7 +55,7 @@ source: impressions is duckdb.sql("select 1 as id, 5 as n, 'A' as audience") ext
   measure: impression_count is n.sum()
 }
 
-#(doc) Impressions for the total universe only.
+#(doc) Impressions for all audiences combined.
 source: impressions_total is impressions extend { where: audience = 'A' }
 
 source: impressions_plain is impressions extend { dimension: aud is audience }
