@@ -7,10 +7,12 @@ import { BadRequestError } from "../errors";
 /**
  * Raw SQL on a managed DuckLake connection (`Connection.managed`) runs only when
  * it is exactly one SELECT. The connection view is read-only, but a session that
- * accepts arbitrary statements can create a secret or `SET` its configuration,
- * and the storage secret's `SCOPE` does not reach a secret the session made
- * itself. One SELECT can do neither, so it can be no worse than a model's query,
- * whose `sql()` sources the compiler already places inside a subquery.
+ * accepts arbitrary statements can create a secret or `SET` its configuration.
+ * One SELECT can do neither, so it can be no worse than a model's query, whose
+ * `sql()` sources the compiler already places inside a subquery. It is not a read
+ * boundary: a SELECT still reads whatever the session's secrets, catalog role and
+ * filesystem reach, so the storage secret's `SCOPE` (#1444) is what keeps it to
+ * the catalog's prefix.
  *
  * Classified by DuckDB's own parser, the same engine the statement runs on:
  * `json_serialize_sql` serializes SELECT statements only, and answers one entry
@@ -21,7 +23,10 @@ let parser: Promise<DuckDBInstance> | undefined;
 
 async function parserInstance(): Promise<DuckDBInstance> {
    if (!parser) {
-      parser = DuckDBInstance.create(":memory:").catch((error) => {
+      parser = DuckDBInstance.create(":memory:", {
+         threads: "1",
+         enable_external_access: "false",
+      }).catch((error) => {
          parser = undefined;
          throw error;
       });

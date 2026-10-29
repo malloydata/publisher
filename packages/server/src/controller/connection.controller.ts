@@ -307,8 +307,9 @@ export class ConnectionController {
             this.getApiConnectionForLookup(environment, connectionName)
                .managed === true
          );
-      } catch {
-         return false;
+      } catch (error) {
+         if (error instanceof ConnectionNotFoundError) return false;
+         throw error;
       }
    }
 
@@ -607,6 +608,15 @@ export class ConnectionController {
       sqlStatement: string,
       packageName?: string,
    ): Promise<ApiSqlSource> {
+      // A managed database runs one SELECT and nothing else (single_select.ts).
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      if (this.isManagedConnection(environment, connectionName)) {
+         await assertSingleSelect(connectionName, sqlStatement);
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,

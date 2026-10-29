@@ -32,6 +32,9 @@ import {
    lookupFailureDriverMessage,
 } from "./connection.controller";
 
+/** A fake environment's lookup: a connection that is not a managed database. */
+const unmanagedConnection = () => ({ name: "warehouse", type: "postgres" });
+
 /**
  * Tests for the row-cap path inside
  * {@link ConnectionController.getConnectionQueryData}. Mocks the
@@ -63,7 +66,10 @@ function buildController(
    const fakeConnection = { runSQL } as unknown as Connection;
    const assertCanAdmitQuery =
       opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
-   const fakeEnv = { assertCanAdmitQuery };
+   const fakeEnv = {
+      assertCanAdmitQuery,
+      getApiConnection: unmanagedConnection,
+   };
    const fakeStore = {
       getEnvironment: sinon.stub().resolves(fakeEnv),
    } as unknown as EnvironmentStore;
@@ -453,9 +459,10 @@ describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
          },
       } as unknown as Connection;
       const fakeStore = {
-         getEnvironment: sinon
-            .stub()
-            .resolves({ assertCanAdmitQuery: sinon.stub().returns(undefined) }),
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: unmanagedConnection,
+         }),
       } as unknown as EnvironmentStore;
       const controller = new ConnectionController(fakeStore);
       sinon
@@ -531,6 +538,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
       } as unknown as StreamingConnection;
       const fakeEnv = {
          assertCanAdmitQuery: sinon.stub().returns(undefined),
+         getApiConnection: unmanagedConnection,
       };
       const fakeStore = {
          getEnvironment: sinon.stub().resolves(fakeEnv),
@@ -808,7 +816,10 @@ function buildTemporaryTableController(
    const fakeConnection = { manifestTemporaryTable } as unknown as Connection;
    const assertCanAdmitQuery =
       opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
-   const fakeEnv = { assertCanAdmitQuery };
+   const fakeEnv = {
+      assertCanAdmitQuery,
+      getApiConnection: unmanagedConnection,
+   };
    const fakeStore = {
       getEnvironment: sinon.stub().resolves(fakeEnv),
    } as unknown as EnvironmentStore;
@@ -1302,6 +1313,7 @@ describe("ConnectionController.getConnectionQueryData statement rejection", () =
       const fakeStore = {
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: unmanagedConnection,
          }),
       } as unknown as EnvironmentStore;
       const controller = new ConnectionController(fakeStore);
@@ -1386,9 +1398,10 @@ describe("ConnectionController on a database that cannot be reached", () => {
 
    function controllerOn(malloyConnection: Connection): ConnectionController {
       const fakeStore = {
-         getEnvironment: sinon
-            .stub()
-            .resolves({ assertCanAdmitQuery: sinon.stub() }),
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: unmanagedConnection,
+         }),
       } as unknown as EnvironmentStore;
       const controller = new ConnectionController(fakeStore);
       const internals = controller as unknown as {
@@ -1545,6 +1558,7 @@ describe("ConnectionController connection lookup failures", () => {
       const fakeStore = {
          getEnvironment: sinon.stub().resolves({
             assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: unmanagedConnection,
             getMalloyConnection: sinon.stub().rejects(error),
          }),
       } as unknown as EnvironmentStore;
@@ -1682,24 +1696,30 @@ describe("ConnectionController getTable DuckLake paths", () => {
 describe("raw SQL on a managed database", () => {
    afterEach(() => sinon.restore());
 
-   function controllerOn(apiConnection: Record<string, unknown>) {
+   function controllerOn(apiConnection: Record<string, unknown> | Error) {
       const runSQL = sinon.stub().resolves({ rows: [{ n: 1 }], totalRows: 1 });
       const manifestTemporaryTable = sinon.stub().resolves("tmp_1");
+      const fetchSelectSchema = sinon.stub().resolves({ fields: [] });
       const fakeStore = {
-         getEnvironment: sinon
-            .stub()
-            .resolves({ assertCanAdmitQuery: sinon.stub() }),
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: unmanagedConnection,
+         }),
       } as unknown as EnvironmentStore;
       const controller = new ConnectionController(fakeStore);
       const internals = controller as unknown as {
          getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
          getApiConnectionForLookup: (...args: unknown[]) => unknown;
       };
-      sinon
-         .stub(internals, "getMalloyConnection")
-         .resolves({ runSQL, manifestTemporaryTable } as unknown as Connection);
-      sinon.stub(internals, "getApiConnectionForLookup").returns(apiConnection);
-      return { controller, runSQL, manifestTemporaryTable };
+      sinon.stub(internals, "getMalloyConnection").resolves({
+         runSQL,
+         manifestTemporaryTable,
+         fetchSelectSchema,
+      } as unknown as Connection);
+      const lookup = sinon.stub(internals, "getApiConnectionForLookup");
+      if (apiConnection instanceof Error) lookup.throws(apiConnection);
+      else lookup.returns(apiConnection);
+      return { controller, runSQL, manifestTemporaryTable, fetchSelectSchema };
    }
 
    const managed = { name: "sales", type: "ducklake", managed: true };
@@ -1764,5 +1784,40 @@ describe("raw SQL on a managed database", () => {
          "",
       );
       expect(runSQL.calledOnce).toBe(true);
+   });
+
+   it("reads a single SELECT's schema", async () => {
+      const { controller, fetchSelectSchema } = controllerOn(managed);
+      await controller.getConnectionSqlSource(
+         "env",
+         "sales",
+         "SELECT * FROM sales.main.orders",
+      );
+      expect(fetchSelectSchema.calledOnce).toBe(true);
+   });
+
+   it("refuses a schema read of anything else, before the connection runs it", async () => {
+      const { controller, fetchSelectSchema } = controllerOn(managed);
+      const refused = controller.getConnectionSqlSource(
+         "env",
+         "sales",
+         "SELECT 1; SET threads = 1",
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      expect(fetchSelectSchema.called).toBe(false);
+   });
+
+   it("fails closed when the connection lookup fails for a reason other than not found", async () => {
+      const { controller, runSQL } = controllerOn(
+         new Error("config unreadable"),
+      );
+      const refused = controller.getConnectionQueryData(
+         "env",
+         "sales",
+         "SELECT 1; SET threads = 1",
+         "",
+      );
+      await expect(refused).rejects.toThrow("config unreadable");
+      expect(runSQL.called).toBe(false);
    });
 });

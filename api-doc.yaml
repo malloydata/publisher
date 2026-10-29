@@ -6681,9 +6681,11 @@ components:
             an unqualified name otherwise. Each statement run on it emits a
             `statement_usage` log record and counts in
             `publisher_statement_usage_total`, for whoever meters the catalog.
-            And raw SQL on it runs only as a single SELECT: `sqlQuery` answers 400
-            for anything else (another statement type, or more than one
-            statement), and `sqlTemporaryTable` answers 400 always. Absent or
+            And raw SQL on it runs only as a single SELECT: `sqlQuery` and
+            `sqlSource` answer 400 for anything else (another statement type, or
+            more than one statement), and `sqlTemporaryTable` answers 400 always.
+            This is a rule on statements, not on what a SELECT reads: that is
+            bounded by the session's storage secret and catalog role. Absent or
             false is the pre-existing behavior.
         fingerprint:
           type: string
