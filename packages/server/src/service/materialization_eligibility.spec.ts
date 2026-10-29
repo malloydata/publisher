@@ -16,7 +16,7 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
-import { deriveAnnotationFields } from "./build_plan";
+import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
@@ -51,7 +51,9 @@ async function persistSources(
       .loadModel(new URL(`${ROOT}m.malloy`), { importBaseURL: new URL(ROOT) })
       .getModel();
    const byName: Record<string, PersistSource> = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
+   for (const source of plannedSources(
+      await runtime.getBuildTargets(compiled),
+   )) {
       byName[source.name] = source;
    }
    return byName;

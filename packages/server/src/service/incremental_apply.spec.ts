@@ -7,11 +7,11 @@
 // incremental_compiler_contract.spec.ts; here we check the SQL we compose, and
 // that it really runs.
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { FixedConnectionMap, ModelMaterializer } from "@malloydata/malloy";
+import type { FixedConnectionMap } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
+   compilePersistSources,
    duckdbTestConnections,
-   loadTestModel,
 } from "../test_helpers/incremental_test_harness";
 import {
    canonicalBoundValue,
@@ -40,10 +40,6 @@ let duckdb: DuckDBConnection;
 beforeAll(() => {
    ({ duckdb, connections } = duckdbTestConnections());
 });
-
-function materialize(model: string): ModelMaterializer {
-   return loadTestModel(connections, model);
-}
 
 const MODEL = `##! experimental.persistence
 source: raw is duckdb.sql("""
@@ -222,10 +218,8 @@ describe("deltaSelect", () => {
       // return a single json `row` column on Postgres (Dialect.hasFinalStage) and
       // the INSERT would fail on the first column it named. Pinned in
       // incremental_compiler_contract.spec.ts.
-      const compiled = await materialize(MODEL).getModel();
-      const source = Object.values(compiled.getBuildPlan().sources).find(
-         (s) => s.name === "daily",
-      );
+      const { sources } = await compilePersistSources(connections, MODEL);
+      const source = sources.daily;
       const sql = deltaSelect({
          dialect: "duckdb",
          sourceSQL: source!.getSQL({ buildManifest: { entries: {} } }),
@@ -250,10 +244,8 @@ describe("deltaSelect", () => {
    });
 
    it("selects nothing for a range the source has no rows in", async () => {
-      const compiled = await materialize(MODEL).getModel();
-      const source = Object.values(compiled.getBuildPlan().sources).find(
-         (s) => s.name === "daily",
-      );
+      const { sources } = await compilePersistSources(connections, MODEL);
+      const source = sources.daily;
       const result = await duckdb.runSQL(
          deltaSelect({
             dialect: "duckdb",

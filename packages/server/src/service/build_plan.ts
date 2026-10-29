@@ -3,15 +3,16 @@
 
 import type {
    AtomicField,
-   BuildGraph as MalloyBuildGraph,
-   BuildNode,
+   ConnectionBuild,
    MalloyConfig,
    Connection as MalloyConnection,
    Model as MalloyModel,
    ModelDef,
    ModelMaterializer,
    PersistSource,
+   Runtime,
    SourceDef,
+   UnbuildableSource,
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
@@ -105,7 +106,7 @@ export interface BuildPlanPackage {
  * the full structure.
  */
 export interface CompiledBuildPlan {
-   graphs: MalloyBuildGraph[];
+   builds: SourceBuild[];
    sources: Record<string, PersistSource>;
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
@@ -116,8 +117,8 @@ export interface CompiledBuildPlan {
     */
    sourceModelPaths?: Record<string, string>;
    /**
-    * `#@ persist` sources Malloy's getBuildPlan() did NOT recognize as build
-    * roots (see {@link detectDroppedPersistSources}). Callers surface these as a
+    * `#@ persist` sources Malloy's build walk did NOT recognize as persistable
+    * (see {@link detectDroppedPersistSources}). Callers surface these as a
     * load-time warning and a hard build failure so the annotation is never a
     * silent no-op.
     */
@@ -480,45 +481,99 @@ export function composeDeclaredQueryMetadata(layers: {
    return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
-/** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
-export function flattenDependsOn(node: {
-   dependsOn: { sourceID: string }[];
-}): string[] {
-   return node.dependsOn.map((d) => d.sourceID);
+/**
+ * One connection's persist sources in the order they build, from Malloy's
+ * `Runtime.getBuildTargets`: every source on every table, the tables a source
+ * reads before it. Sources whose SQL does not compile on their own come last;
+ * they have no table, and are refused per source like any other.
+ *
+ * Holds sourceIDs, resolved against a plan's `sources` when walked, so a
+ * pre-aggregation companion that reaches an author's persisted source walks
+ * the author's own `PersistSource` for it.
+ */
+export interface SourceBuild {
+   connectionName: string;
+   /** sourceIDs, dependencies first; the sources of one table are adjacent */
+   order: string[];
+   /**
+    * sourceID -> the sourceIDs on the tables it reads. Sources on one table
+    * read none of each other: an extension is its base's table, not a reader
+    * of it. An unbuildable source lists none.
+    */
+   dependsOn: Record<string, string[]>;
+}
+
+/** Project Malloy's targets for one connection into a {@link SourceBuild}. */
+export function sourceBuildOf(
+   build: ConnectionBuild,
+   unbuildable: UnbuildableSource[],
+): SourceBuild {
+   const order: string[] = [];
+   const dependsOn: Record<string, string[]> = {};
+   for (const target of build.targets) {
+      const reads = target.dependsOn.flatMap((t) =>
+         t.sources.map((s) => s.sourceID),
+      );
+      for (const source of target.sources) {
+         order.push(source.sourceID);
+         dependsOn[source.sourceID] = reads;
+      }
+   }
+   // Malloy reports an unbuildable source without the tables it reads.
+   for (const { source } of unbuildable) {
+      if (source.connectionName !== build.connectionName) continue;
+      order.push(source.sourceID);
+      dependsOn[source.sourceID] = [];
+   }
+   return { connectionName: build.connectionName, order, dependsOn };
 }
 
 /**
- * Yield every persist source of one graph in dependency order, skipping nodes
- * whose source is absent from `sources`.
- *
- * `getBuildPlan()` puts only ROOT persist sources in `graph.nodes`; transitive
- * dependencies are nested in each node's `dependsOn` tree, so walking only
- * `graph.nodes` would never materialize an intermediate source. Post-order DFS
- * builds dependencies first and dedups diamonds by sourceID, mirroring
- * malloy-cli's `flattenBuildNodes` (src/malloy/build_graph.ts).
+ * {@link sourceBuildOf} for every connection `getBuildTargets` answered,
+ * including one whose only persist sources were unbuildable.
  */
-export function* iterGraphSources(
-   graph: MalloyBuildGraph,
+export function sourceBuildsOf(targets: {
+   connections: ConnectionBuild[];
+   unbuildable: UnbuildableSource[];
+}): SourceBuild[] {
+   const builds = targets.connections.map((c) =>
+      sourceBuildOf(c, targets.unbuildable),
+   );
+   const planned = new Set(builds.map((b) => b.connectionName));
+   for (const { source } of targets.unbuildable) {
+      if (planned.has(source.connectionName)) continue;
+      planned.add(source.connectionName);
+      builds.push(
+         sourceBuildOf(
+            { connectionName: source.connectionName, targets: [] },
+            targets.unbuildable,
+         ),
+      );
+   }
+   return builds;
+}
+
+/** Every persist source `getBuildTargets` named, planned or unbuildable. */
+export function plannedSources(targets: {
+   connections: ConnectionBuild[];
+   unbuildable: UnbuildableSource[];
+}): PersistSource[] {
+   return [
+      ...targets.connections.flatMap((c) =>
+         c.targets.flatMap((t) => t.sources),
+      ),
+      ...targets.unbuildable.map((u) => u.source),
+   ];
+}
+
+/** The sources of `build` in build order, skipping any absent from `sources`. */
+export function* sourcesInBuildOrder(
+   build: SourceBuild,
    sources: Record<string, PersistSource>,
 ): Iterable<PersistSource> {
-   const seen = new Set<string>();
-
-   function* visit(node: BuildNode): Iterable<PersistSource> {
-      if (seen.has(node.sourceID)) return;
-      // Dependencies first: later builds resolve upstream references against
-      // tables built earlier (see executeInstructedBuild's Manifest threading).
-      for (const dep of node.dependsOn) {
-         yield* visit(dep);
-      }
-      seen.add(node.sourceID);
-      const source = sources[node.sourceID];
+   for (const sourceID of build.order) {
+      const source = sources[sourceID];
       if (source) yield source;
-   }
-
-   for (const level of graph.nodes) {
-      for (const node of level) {
-         yield* visit(node);
-      }
    }
 }
 
@@ -617,8 +672,8 @@ export async function resolvePackageConnections(
  * Names of sources carrying `#@ persist` that are absent from the model's build
  * plan.
  *
- * Backstop for a Malloy getBuildPlan() gap: it silently returns no graph for a
- * persist source it doesn't treat as a build root (e.g. a filtered pass-through
+ * Backstop for a gap in Malloy's build walk: it silently plans nothing for a
+ * persist source it doesn't treat as persistable (e.g. a filtered pass-through
  * `X is <table> extend { where … }`, which stays type `table`), making the
  * annotation a silent no-op. Detecting it here lets callers refuse loudly.
  *
@@ -724,7 +779,7 @@ export async function classifyPersistSourceGate(
  * compiled, so a load does not compile the package a second time.
  */
 export interface BuildPlanParts {
-   graphs: MalloyBuildGraph[];
+   builds: SourceBuild[];
    sources: Record<string, PersistSource>;
    sourceModelPaths: Record<string, string>;
    droppedPersistSources: { name: string; modelPath: string }[];
@@ -734,7 +789,7 @@ export interface BuildPlanParts {
 
 export function emptyBuildPlanParts(): BuildPlanParts {
    return {
-      graphs: [],
+      builds: [],
       sources: {},
       sourceModelPaths: {},
       droppedPersistSources: [],
@@ -752,7 +807,7 @@ export function mergeBuildPlanParts(
    into: BuildPlanParts,
    from: BuildPlanParts,
 ): void {
-   into.graphs.push(...from.graphs);
+   into.builds.push(...from.builds);
    Object.assign(into.sources, from.sources);
    Object.assign(into.sourceModelPaths, from.sourceModelPaths);
    into.droppedPersistSources.push(...from.droppedPersistSources);
@@ -761,11 +816,12 @@ export function mergeBuildPlanParts(
 }
 
 /**
- * Add one compiled `.malloy` model's build graphs, persist sources, dropped
+ * Add one compiled `.malloy` model's builds, persist sources, dropped
  * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
  * must be the one that compiled `malloyModel` (gate classification grafts
- * probes onto it). `getRuntime` builds the runtime a synthesized
- * pre-aggregation model compiles in.
+ * probes onto it), and `runtime` the one it compiled in, which plans the
+ * build. `getRuntime` builds the runtime a synthesized pre-aggregation model
+ * compiles in.
  *
  * Imports nothing from `./model`: the package-load worker runs this, and the
  * renderer `./model` loads must not enter that isolate.
@@ -777,6 +833,7 @@ export async function collectModelBuildPlan(
       packagePath: string;
       materializer: ModelMaterializer;
       malloyModel: MalloyModel;
+      runtime: Runtime;
       getRuntime: SynthesizedRuntimeFactory;
       /**
        * The model's pre-aggregation companion when the caller already compiled
@@ -785,8 +842,14 @@ export async function collectModelBuildPlan(
       synthesized?: SynthesizedPreaggregation | null;
    },
 ): Promise<void> {
-   const { modelPath, packagePath, materializer, malloyModel, getRuntime } =
-      args;
+   const {
+      modelPath,
+      packagePath,
+      materializer,
+      malloyModel,
+      runtime,
+      getRuntime,
+   } = args;
    // Pre-aggregation runs BEFORE the early `return`s below: a model may declare
    // `#@ preaggregate` with no persist source and no `experimental.persistence`
    // flag — the SYNTHESIZED model carries both — and must still get its rollup.
@@ -801,16 +864,13 @@ export async function collectModelBuildPlan(
               contents: (malloyModel as any)._modelDef?.contents ?? {},
            });
    if (synthesized) {
-      const rollupPlan = synthesized.model.getBuildPlan();
-      const rollupNames = new Set(
-         synthesized.plans.map((p) => p.rollupSourceName),
+      const rollupTargets = await synthesized.runtime.getBuildTargets(
+         synthesized.model,
       );
-      // Graphs wholesale: they carry the edge to a persisted base, without
-      // which a rollup could build before the table it reads.
-      parts.graphs.push(...rollupPlan.graphs);
-      // Sources: only the rollups. The author's persist sources appear here
-      // too (same sourceID, since it embeds the declaring model) and are added
-      // by the normal path below.
+      // Builds whole: they order a rollup after the persisted base it reads.
+      // The base's sourceID embeds the author's model, so walking the build
+      // resolves it to the author's own source, added below.
+      parts.builds.push(...sourceBuildsOf(rollupTargets));
       const planByName = new Map(
          synthesized.plans.map((p) => [p.rollupSourceName, p]),
       );
@@ -818,8 +878,9 @@ export async function collectModelBuildPlan(
       let rollupClassificationCtx:
          | { modelDef: ModelDef; deps: GateClassificationDeps }
          | undefined;
-      for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
-         if (!rollupNames.has(source.name)) continue;
+      for (const source of plannedSources(rollupTargets)) {
+         if (!planByName.has(source.name)) continue;
+         const sourceID = source.sourceID;
          parts.sources[sourceID] = source;
          // The AUTHOR's model path: that is where the annotation is changed.
          parts.sourceModelPaths[sourceID] = modelPath;
@@ -847,14 +908,14 @@ export async function collectModelBuildPlan(
       }
    }
 
-   // getBuildPlan() THROWS on a model without `##! experimental.persistence`,
+   // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
    // which would abort the whole package's plan. Such a model cannot carry a
    // persist source anyway, so skip it, mirroring Malloy's own guard.
    const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
    if (!modelTag.has("experimental", "persistence")) return;
 
-   const buildPlan = malloyModel.getBuildPlan();
-   for (const msg of buildPlan.tagParseLog) {
+   const targets = await runtime.getBuildTargets(malloyModel);
+   for (const msg of targets.tagParseLog) {
       logger.warn("Persist annotation issue", {
          modelPath,
          message: msg.message,
@@ -862,11 +923,10 @@ export async function collectModelBuildPlan(
       });
    }
 
-   // BEFORE the empty-graphs `return`, so a model whose only persist source is
+   // BEFORE the empty-plan `return`, so a model whose only persist source is
    // a dropped shape is still caught.
-   const recognizedNames = new Set(
-      Object.values(buildPlan.sources).map((s) => s.name),
-   );
+   const planned = plannedSources(targets);
+   const recognizedNames = new Set(planned.map((s) => s.name));
    for (const name of detectDroppedPersistSources(
       malloyModel,
       recognizedNames,
@@ -874,14 +934,15 @@ export async function collectModelBuildPlan(
       parts.droppedPersistSources.push({ name, modelPath });
    }
 
-   if (buildPlan.graphs.length === 0) return;
+   if (planned.length === 0) return;
 
-   parts.graphs.push(...buildPlan.graphs);
+   parts.builds.push(...sourceBuildsOf(targets));
    // Lazily built on the first persist source.
    let classificationCtx:
       | { modelDef: ModelDef; deps: GateClassificationDeps }
       | undefined;
-   for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
+   for (const source of planned) {
+      const sourceID = source.sourceID;
       parts.sources[sourceID] = source;
       parts.sourceModelPaths[sourceID] = modelPath;
       if (!classificationCtx) {
@@ -907,34 +968,34 @@ export async function collectModelBuildPlan(
 }
 
 /**
- * Digest each connection the graphs build on. A connection that does not
+ * Digest each connection the builds run on. A connection that does not
  * resolve is reported through `onSkipped` and left out, so its sources'
  * entity ids are computed without a digest.
  */
 export async function resolveConnectionDigests(
    connections: Map<string, { getDigest(): string | Promise<string> }>,
-   graphs: MalloyBuildGraph[],
+   builds: { connectionName: string }[],
    onSkipped: (connectionName: string) => void,
 ): Promise<Record<string, string>> {
    const connectionDigests: Record<string, string> = {};
-   for (const graph of graphs) {
-      const conn = connections.get(graph.connectionName);
+   for (const build of builds) {
+      const conn = connections.get(build.connectionName);
       if (!conn) {
-         onSkipped(graph.connectionName);
+         onSkipped(build.connectionName);
          continue;
       }
-      if (!connectionDigests[graph.connectionName]) {
+      if (!connectionDigests[build.connectionName]) {
          // Fingerprint-aware (applyConnectionFingerprint), so credential
          // rotation does not re-address sources.
-         connectionDigests[graph.connectionName] = await conn.getDigest();
+         connectionDigests[build.connectionName] = await conn.getDigest();
       }
    }
    return connectionDigests;
 }
 
-/** Project the Malloy build plan into the trimmed wire BuildPlan. */
+/** Project the compiled plan into the trimmed wire BuildPlan. */
 export function deriveBuildPlan(
-   graphs: MalloyBuildGraph[],
+   builds: SourceBuild[],
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
    sourceNames?: string[],
@@ -947,14 +1008,17 @@ export function deriveBuildPlan(
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
-   const wireGraphs: WireBuildGraph[] = graphs.map((graph) => ({
-      connectionName: graph.connectionName,
-      nodes: graph.nodes.map((level) =>
-         level.map((node) => ({
-            sourceID: node.sourceID,
-            dependsOn: flattenDependsOn(node),
+   // One level holding every source with every table it reads. A host walks
+   // these edges for a rerun's upstream closure, freshness inheritance and
+   // lineage, so none may be left out.
+   const wireGraphs: WireBuildGraph[] = builds.map((build) => ({
+      connectionName: build.connectionName,
+      nodes: [
+         build.order.map((sourceID) => ({
+            sourceID,
+            dependsOn: build.dependsOn[sourceID] ?? [],
          })),
-      ),
+      ],
    }));
 
    const wireSources: Record<string, WirePersistSourcePlan> = {};
@@ -1119,10 +1183,10 @@ export function deriveBuildPlanOutcome(
       compiled.sources,
    );
    const plan =
-      compiled.graphs.length === 0
+      compiled.builds.length === 0
          ? null
          : deriveBuildPlan(
-              compiled.graphs,
+              compiled.builds,
               compiled.sources,
               compiled.connectionDigests,
               undefined,

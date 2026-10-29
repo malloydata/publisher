@@ -10,11 +10,11 @@ SPDX-License-Identifier: MIT
 
 # Backstop: a `#@ persist` source Malloy drops is refused, not silently ignored
 
-Malloy's `getBuildPlan()` does not recognize a filtered pass-through source
-(`X is <table> extend { where … }`) as a materializable build root — it returns
-no graph for it, so the `#@ persist` annotation would otherwise be a **silent
-no-op**: no build, no error, served live. (The underlying fix belongs in Malloy;
-this scenario guards the publisher's backstop against the silent drop.)
+Malloy's `getBuildTargets()` does not plan a filtered pass-through source
+(`X is <table> extend { where … }`) — no target holds it, so the `#@ persist`
+annotation would otherwise be a **silent no-op**: no build, no error, served
+live. (The underlying fix belongs in Malloy; this scenario guards the
+publisher's backstop against the silent drop.)
 
 The publisher must instead refuse loudly: surface an operator warning at load,
 and fail the build. This is the "never a silent fallback" invariant — every

@@ -20,7 +20,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { classifyPersistSourceGate } from "./build_plan";
+import { classifyPersistSourceGate, plannedSources } from "./build_plan";
 import {
    createGateClassificationDeps,
    type GateClassificationDeps,
@@ -56,7 +56,9 @@ async function compileModel(model: string): Promise<{
    });
    const compiled = await materializer.getModel();
    const sources: Record<string, PersistSource> = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
+   for (const source of plannedSources(
+      await runtime.getBuildTargets(compiled),
+   )) {
       sources[source.name] = source;
    }
    const givens = Array.from(
