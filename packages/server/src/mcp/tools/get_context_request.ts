@@ -29,8 +29,9 @@ const DEFAULT_RANKED_LIMIT = 20;
  * Divergences: `scopes` is required (exactly one environment + package),
  * because indexes are built per package and lazily, so an unscoped search
  * could not tell "not modelled" from "not indexed yet"; and `target_type` adds
- * `join`. `dimensional_value` is answered by reading the data through the
- * query path (see get_context_values.ts), not from an index; with
+ * `join`. `dimensional_value` is answered from the value index built at load
+ * (context/values_index.ts), and for a gated source by a lookup through the
+ * query path with the caller's givens (get_context_values.ts); with
  * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
  * a warning.
  */
@@ -74,7 +75,7 @@ export const convergedContextShape = {
                .max(500)
                .nullish()
                .describe(
-                  'Plain-English description of what you need, e.g. "the total revenue". For a `dimensional_value` target, one value exactly as the user typed it, e.g. "Denvr": it is matched by spelling, typos included, and with an embedding provider by meaning, and the stored string ("Denver") returns in `entities[].values` on the dimension that holds it. Send each value as its own target beside the `dimension` target for its field ("the city of the store"), and keep it out of that target\'s text. Scoping to the source narrows the search. Omit or null to enumerate this type instead of ranking it.',
+                  'Plain-English description of what you need, e.g. "the total revenue". For a `dimensional_value` target, one value exactly as the user typed it, e.g. "Denvr": it is matched by spelling, typos included, and with an embedding provider by meaning, and the stored string ("Denver") returns in `entities[].values` on the dimension that holds it. Send each value as its own target beside the `dimension` target for its field ("the city of the store"), and keep it out of that target\'s text. Once you know the field, scope the value search to it with `scopes[].source` and `entity_name`: an unscoped value search is allowed but slower, and can return look-alike values from other fields. Omit or null to enumerate this type instead of ranking it.',
                ),
          }),
       )
