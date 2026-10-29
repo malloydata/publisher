@@ -100,6 +100,29 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
       expect(edges.sort()).toEqual(["a>b", "a_ext>b", "b>c"]);
    });
 
+   it("builds a dependency two sources share once, before both", async () => {
+      const { builds } = await buildsOf(`##! experimental.persistence
+source: base is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
+#@ persist
+source: shared is base -> { group_by: category; aggregate: total is amount.sum() }
+#@ persist
+source: r1 is shared -> { group_by: category; aggregate: t1 is total.sum() }
+#@ persist
+source: r2 is shared -> { group_by: category; aggregate: t2 is total.max() }
+`);
+      const order = builds[0].order.map(name);
+      expect(order.filter((n) => n === "shared")).toHaveLength(1);
+      expect(order[0]).toBe("shared");
+      expect(order.slice(1).sort()).toEqual(["r1", "r2"]);
+      const deps = Object.fromEntries(
+         Object.entries(builds[0].dependsOn).map(([id, on]) => [
+            name(id),
+            on.map(name),
+         ]),
+      );
+      expect(deps).toEqual({ shared: [], r1: ["shared"], r2: ["shared"] });
+   });
+
    it("puts a source that cannot compile last, with no table to read", async () => {
       const { builds, targets } =
          await buildsOf(`##! experimental { persistence givens }

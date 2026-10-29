@@ -375,6 +375,34 @@ describe("computePackageBuildPlan", () => {
       expect(droppedPersistSources).toEqual([]);
    });
 
+   describe("a persist source Malloy cannot plan", () => {
+      const packages = tempBuildPlanPackages();
+      afterEach(() => packages.cleanup());
+
+      it(
+         "is refused, not reported as dropped, even as its connection's only persist source",
+         async () => {
+            const pkg =
+               await packages.create(`##! experimental { persistence givens }
+given: TENANT :: string
+source: base is duckdb.sql("select 1 as amount, 'A' as category")
+#@ persist name="scoped"
+source: scoped is base -> { where: category = $TENANT; group_by: category }
+`);
+
+            const { plan, droppedPersistSources } =
+               await computePackageBuildPlan(pkg);
+
+            expect(droppedPersistSources).toEqual([]);
+            const refused = Object.values(plan?.refusedSources ?? {});
+            expect(refused.map((r) => [r.name, r.reason])).toEqual([
+               ["scoped", "given_in_persisted_query"],
+            ]);
+         },
+         { timeout: 20000 },
+      );
+   });
+
    describe("colocatedSourceEligibility", () => {
       const packages = tempBuildPlanPackages();
       afterEach(() => packages.cleanup());
