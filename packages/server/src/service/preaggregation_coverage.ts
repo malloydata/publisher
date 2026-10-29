@@ -166,7 +166,7 @@ export function rollupCoverageViolation(
    const visitStage = (stage: IrStage | undefined) => {
       if (violation) return;
       if (stage?.type === "project" || stage?.type === "index") {
-         violation = `a ${stage.type === "project" ? "select" : "index"} over the rollup returns one row per grain group, not the source's rows`;
+         violation = `${stage.type === "project" ? "a select:" : "an index:"} stage over the rollup returns one row per grain group, not the source's rows`;
          return;
       }
       for (const field of stage?.queryFields ?? []) {

@@ -140,7 +140,7 @@ describe("an aggregate over the rollup's own rows refuses it", () => {
       it(label, async () => {
          expect(await resolvedMember(COLOCATED, query)).toBe("r");
          expect(await violation(COLOCATED, query)).toMatch(
-            /^r: a (select|index) over the rollup/,
+            /^r: (a select|an index): stage over the rollup/,
          );
       });
    }
