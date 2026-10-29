@@ -547,7 +547,7 @@ describe("package versions across promotion modes and package kinds", () => {
          );
       });
 
-      it("answers latest through the deprecated /projects aliases, which take no version", async () => {
+      it("answers through the deprecated /projects aliases as through /environments, latest or a named version", async () => {
          const aliased = [
             "GET package",
             "GET models",
@@ -557,17 +557,25 @@ describe("package versions across promotion modes and package kinds", () => {
             "GET databases",
             "GET connection schemas",
          ];
+         // The aliases that declared versionId. The connection routes never
+         // took one there.
+         const versioned = aliased.filter(
+            (n) => n !== "GET connection schemas",
+         );
          const legacyApi = `${baseUrl}/api/v0/projects/${ENV_NAME}/packages/ver`;
-         const viaEnvironments: Record<string, Probe> = {};
-         const viaProjects: Record<string, Probe> = {};
-         for (const r of ROUTES.filter((r) => aliased.includes(r.name))) {
-            viaEnvironments[r.name] = await r.call(pkgApi("ver"), undefined);
-            viaProjects[r.name] = await r.call(legacyApi, undefined);
+         for (const [versionId, names] of [
+            [undefined, aliased],
+            // Not latest, so an alias that dropped it would answer 1.1.0.
+            ["1.0.0", versioned],
+         ] as const) {
+            const viaEnvironments: Record<string, Probe> = {};
+            const viaProjects: Record<string, Probe> = {};
+            for (const r of ROUTES.filter((r) => names.includes(r.name))) {
+               viaEnvironments[r.name] = await r.call(pkgApi("ver"), versionId);
+               viaProjects[r.name] = await r.call(legacyApi, versionId);
+            }
+            expect(viaProjects).toEqual(viaEnvironments);
          }
-         expect(viaProjects).toEqual(viaEnvironments);
-         // A version named there is refused, never answered from latest.
-         const named = await route("GET models").call(legacyApi, "1.0.0");
-         expect(named.status).toBe(501);
       });
 
       it("refuses an in-place change: a publish of different content under a version, and a dashboard write", async () => {
