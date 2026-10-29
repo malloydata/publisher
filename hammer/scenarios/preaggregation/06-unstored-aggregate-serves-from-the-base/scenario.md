@@ -131,6 +131,24 @@ Expect:
 | - |
 | 4 |
 
+## Query rows
+
+A `select:` reads rows, and the rollup has one per grain group. From the rollup this
+returned two rows, one each for `books` and `tools`.
+
+```malloy
+run: orders -> { select: order_id, category, qty; order_by: order_id asc }
+```
+
+Expect:
+
+| order_id | category | qty |
+| -------- | -------- | --- |
+| 1        | books    | 1   |
+| 2        | books    | 1   |
+| 3        | tools    | 2   |
+| 4        | tools    | 2   |
+
 ## Mutate orders_pg.pu_orders
 
 | order_id:int | category:text | qty:int | amount:num |

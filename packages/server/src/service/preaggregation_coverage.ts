@@ -23,14 +23,34 @@
  * measure an inline `extend` defines) refuses the rollup, and the caller serves
  * the query from the base.
  *
+ * A `select:` or `index:` stage is refused outright, wherever it is: both read
+ * rows, and a rollup has one per grain group where the source has one per row.
+ *
  * Deliberately strict: `count(grain_dim)`, `min` and `max` over a grain
  * dimension are correct from a rollup but are refused too, so the rule an author
  * reads is one line. Refusing costs acceleration, never an answer.
+ *
+ * Fails open: a query whose IR names no member, or names one that is not a
+ * rollup, is not checked. That is safe only while the IR keeps the shape read
+ * here, which is why preaggregation_coverage.spec.ts compiles real queries and
+ * asserts the member each one resolved to. Keep it on real IR across a
+ * `@malloydata/malloy` bump rather than moving it to fixtures.
  *
  * Pure: reads the compiled IR, touches no I/O.
  */
 
 import type { RollupPlan } from "./preaggregation_synthesis";
+
+/**
+ * A rollup refused for a query it cannot answer: an expected, per-query outcome
+ * rather than a misconfiguration, so callers log it quietly.
+ */
+export class RollupCoverageError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "RollupCoverageError";
+   }
+}
 
 /** The IR fragments read here; everything else is walked generically. */
 interface IrNode {
@@ -47,6 +67,7 @@ interface IrField {
 }
 
 interface IrStage {
+   type?: string;
    queryFields?: readonly (IrField & {
       type?: string;
       path?: readonly string[];
@@ -143,6 +164,11 @@ export function rollupCoverageViolation(
    // Only a stage that reads the member: a later stage reads the previous
    // stage's output, where `count()` means what it says.
    const visitStage = (stage: IrStage | undefined) => {
+      if (violation) return;
+      if (stage?.type === "project" || stage?.type === "index") {
+         violation = `a ${stage.type === "project" ? "select" : "index"} over the rollup returns one row per grain group, not the source's rows`;
+         return;
+      }
       for (const field of stage?.queryFields ?? []) {
          if (field.type === "fieldref") visitRef(field.path);
          else if (field.type === "turtle") visitStage(field.pipeline?.[0]);

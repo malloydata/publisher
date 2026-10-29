@@ -125,6 +125,26 @@ describe("an aggregate over the rollup's own rows refuses it", () => {
       });
    }
 
+   // Not an aggregate at all: a stage that reads rows, of which a rollup has
+   // one per grain group.
+   const ROW_STAGES: [string, string][] = [
+      ["a select: stage", "run: orders -> { select: category, qty }"],
+      ["an index: stage", "run: orders -> { index: category }"],
+      [
+         "a select: inside a nest",
+         "run: orders -> { group_by: category; nest: n is { select: qty } }",
+      ],
+   ];
+
+   for (const [label, query] of ROW_STAGES) {
+      it(label, async () => {
+         expect(await resolvedMember(COLOCATED, query)).toBe("r");
+         expect(await violation(COLOCATED, query)).toMatch(
+            /^r: a (select|index) over the rollup/,
+         );
+      });
+   }
+
    it("over a virtual member, as the storage tier serves it", async () => {
       // The member name has to be readable off a virtual source too, or the
       // storage path would never be checked.

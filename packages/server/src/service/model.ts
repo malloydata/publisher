@@ -51,6 +51,7 @@ import {
 } from "./preaggregation_synthesis";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
 import {
+   RollupCoverageError,
    rollupCoverageViolation,
    rollupMeasuresByMember,
 } from "./preaggregation_coverage";
@@ -5777,29 +5778,38 @@ export class Model {
                );
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               // info, not debug: a fallback is otherwise silent (the query
-               // succeeds), so this is how an operator learns why a package
-               // never serves from storage. The compiler's "undefined object"
-               // reads the same for an unpersisted and a stale source, so both
-               // sets are reported.
-               const { shapeSources, staleSources } = serveShapeDiagnostics(
-                  this.storageServe.serveBindings,
-                  this.storageServe.freshServeBindings(Date.now()),
-               );
-               logger.info(
-                  "storage serve-shape ineligible for this query; serving live",
-                  {
-                     modelPath: this.modelPath,
-                     error:
-                        shapeErr instanceof Error
-                           ? shapeErr.message
-                           : String(shapeErr),
-                     // A name absent from both sets is not materialized at all.
-                     shapeSources,
-                     // Bound, but withheld by the freshness gate for this query.
-                     staleSources,
-                  },
-               );
+               // A rollup refused for this query's aggregates is per-query and
+               // expected, not a reason the package never serves from storage.
+               if (shapeErr instanceof RollupCoverageError) {
+                  logger.debug(
+                     "storage rollup cannot answer this query; serving live",
+                     { modelPath: this.modelPath, error: shapeErr.message },
+                  );
+               } else {
+                  // info, not debug: a fallback is otherwise silent (the query
+                  // succeeds), so this is how an operator learns why a package
+                  // never serves from storage. The compiler's "undefined
+                  // object" reads the same for an unpersisted and a stale
+                  // source, so both sets are reported.
+                  const { shapeSources, staleSources } = serveShapeDiagnostics(
+                     this.storageServe.serveBindings,
+                     this.storageServe.freshServeBindings(Date.now()),
+                  );
+                  logger.info(
+                     "storage serve-shape ineligible for this query; serving live",
+                     {
+                        modelPath: this.modelPath,
+                        error:
+                           shapeErr instanceof Error
+                              ? shapeErr.message
+                              : String(shapeErr),
+                        // A name absent from both sets is not materialized at all.
+                        shapeSources,
+                        // Bound, but withheld by the freshness gate for this query.
+                        staleSources,
+                     },
+                  );
+               }
             }
          }
 
@@ -5847,7 +5857,7 @@ export class Model {
                   (await candidate.getPreparedQuery())._query,
                   rollupMeasuresByMember(this.preaggregateRollupPlans),
                );
-               if (uncovered) throw new Error(uncovered);
+               if (uncovered) throw new RollupCoverageError(uncovered);
                runnable = candidate;
                preaggRouted = true;
             } catch (preaggErr) {

@@ -38,6 +38,7 @@ import {
    type SourceLocation,
 } from "./materialization_serve_transform";
 import {
+   RollupCoverageError,
    rollupCoverageViolation,
    rollupMeasuresByMember,
 } from "./preaggregation_coverage";
@@ -236,7 +237,7 @@ export class StorageServeShape {
             (await runnable.getPreparedQuery())._query,
             rollupMeasuresByMember(this.host.rollupPlans()),
          );
-         if (uncovered) throw new Error(uncovered);
+         if (uncovered) throw new RollupCoverageError(uncovered);
       }
       // Paths quoted exactly as the virtualMap substitutes them, so the match
       // below compares like with like.

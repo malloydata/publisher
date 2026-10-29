@@ -600,6 +600,15 @@ source: orders is duckdb.sql("""
          "run: orders extend { measure: n is count() } -> { aggregate: n }",
          [{ n: 3 }],
       ],
+      [
+         "a select: returns the source's rows, not one per grain group",
+         "run: orders -> { select: category, qty; order_by: category, qty }",
+         [
+            { category: "A", qty: 1 },
+            { category: "A", qty: 1 },
+            { category: "B", qty: 2 },
+         ],
+      ],
    ];
 
    for (const [label, query, expected] of FROM_THE_BASE) {
