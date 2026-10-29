@@ -150,7 +150,8 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
    // The message shape the patterns above are written against, read from DuckDB itself.
    it("matches what DuckDB says for a file that is not Parquet", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reader-refusal-"));
-      const file = path.join(dir, "broken.parquet");
+      // Forward slashes, as an object URI has: DuckDB reads them on Windows too.
+      const file = path.join(dir, "broken.parquet").replaceAll(path.sep, "/");
       fs.writeFileSync(file, "this is not a parquet file\n".repeat(64));
       const db = new DuckDBConnection("reader-refusal");
       try {
@@ -166,7 +167,8 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(refusal?.message).toMatch(
             /^Invalid Input Error: No magic bytes found/,
          );
-         expect(refusal?.message).not.toContain(dir);
+         expect(refusal?.message).not.toContain(path.dirname(file));
+         expect(refusal?.message).toContain("'broken.parquet'");
       } finally {
          await db.close();
          fs.rmSync(dir, { recursive: true, force: true });
