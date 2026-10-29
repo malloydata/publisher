@@ -50,6 +50,10 @@ import {
    type RollupPlan,
 } from "./preaggregation_synthesis";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import {
+   rollupCoverageViolation,
+   rollupMeasuresByMember,
+} from "./preaggregation_coverage";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
@@ -5837,13 +5841,20 @@ export class Model {
                   givens: querySurfaceGivens,
                   buildManifest,
                });
+               // Compiling proves only that the chosen member DEFINES every
+               // field used; `count()` uses none and resolves to a rollup.
+               const uncovered = rollupCoverageViolation(
+                  (await candidate.getPreparedQuery())._query,
+                  rollupMeasuresByMember(this.preaggregateRollupPlans),
+               );
+               if (uncovered) throw new Error(uncovered);
                runnable = candidate;
                preaggRouted = true;
             } catch (preaggErr) {
                // Expected and common: the companion imports only the sources it
-               // rolls up.
+               // rolls up, and a rollup stores only its declared measures.
                logger.debug(
-                  "query does not compile against the pre-aggregation model; serving live",
+                  "query cannot be served from the pre-aggregation model; serving live",
                   {
                      modelPath: this.modelPath,
                      error:

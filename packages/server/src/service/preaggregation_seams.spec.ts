@@ -550,6 +550,119 @@ source: regions is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
+// An aggregate the rollup stores no partial for. The composite resolver checks
+// only that a member DEFINES the fields a query uses, so `count()` (no field)
+// and `qty.sum()` (a grain field) both resolve to the rollup and count or sum
+// its GROUPS. The grain here holds 2 groups over 3 rows, so a routed answer is
+// visibly wrong rather than coincidentally right.
+// ---------------------------------------------------------------------------
+
+describe("an aggregate the rollup stores no partial for", () => {
+   const ROWS_MODEL = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A', 1), (20, 'A', 1), (30, 'B', 2)) AS t(amount, category, qty)
+""") extend {
+  #@ preaggregate grain="category, qty"
+  measure: total is amount.sum()
+}
+`;
+
+   async function rows(pkg: Package, query: string) {
+      return runGatedQuery(pkg, query, {});
+   }
+
+   const FROM_THE_BASE: [string, string, Record<string, unknown>[]][] = [
+      [
+         "a bare count() counts base rows, not rollup rows",
+         "run: orders -> { aggregate: n is count() }",
+         [{ n: 3 }],
+      ],
+      [
+         "a sum over a grain dimension sums base rows",
+         "run: orders -> { aggregate: s is qty.sum() }",
+         [{ s: 4 }],
+      ],
+      [
+         "count() inside a nest",
+         "run: orders -> { group_by: category; nest: d is { aggregate: n is count() }; order_by: category }",
+         [
+            { category: "A", d: { n: 2 } },
+            { category: "B", d: { n: 1 } },
+         ],
+      ],
+      [
+         "count() in a having: clause",
+         "run: orders -> { group_by: category; aggregate: total; having: count() > 1 }",
+         [{ category: "A", total: 30 }],
+      ],
+      [
+         "count() defined by an inline extend",
+         "run: orders extend { measure: n is count() } -> { aggregate: n }",
+         [{ n: 3 }],
+      ],
+   ];
+
+   for (const [label, query, expected] of FROM_THE_BASE) {
+      it(
+         label,
+         async () => {
+            // Unbuilt, so a routed query would recompute the rollup's GROUP BY
+            // and answer from its rows: the wrong number, not an error.
+            expect(await rows(await loadPackage(ROWS_MODEL), query)).toEqual(
+               expected,
+            );
+         },
+         { timeout: 60000 },
+      );
+   }
+
+   it(
+      "is served from the base even when the rollup is built",
+      async () => {
+         // Bound to a table that does not exist: a query that routed would
+         // fail loudly, so an answer proves it never touched the rollup.
+         const pkg = await loadPackage(ROWS_MODEL);
+         bindMissingRollupTables(pkg);
+         expect(
+            await rows(pkg, "run: orders -> { aggregate: n is count() }"),
+         ).toEqual([{ n: 3 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "still routes a query built only from stored measures",
+      async () => {
+         // The other side of the same binding: the check must not refuse what
+         // a rollup answers, or the fix is a silent loss of acceleration.
+         const pkg = await loadPackage(ROWS_MODEL);
+         bindMissingRollupTables(pkg);
+         await expect(
+            rows(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total, half is total / 2 }",
+            ),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+});
+
+/** Bind every rollup to a table that does not exist, so routing is observable. */
+function bindMissingRollupTables(pkg: Package) {
+   const rollupIds = [...pkg.getPreaggregateEntityIds()];
+   expect(rollupIds.length).toBeGreaterThan(0);
+   pkg.bindColocatedServeManifest(
+      Object.fromEntries(
+         rollupIds.map((id) => [
+            id,
+            { tableName: "no_such_rollup_table", connectionName: "duckdb" },
+         ]),
+      ),
+   );
+}
+
+// ---------------------------------------------------------------------------
 // Pre-aggregation x row-level `#(access_filter)`. Nothing covered the combination,
 // and the two tiers guard differently: `routingBlockedByRowLevelGate` was
 // `&&`-ed with `storageRoutingPossible` and guarded only the storage branch,

@@ -37,6 +37,10 @@ import {
    type ServeShapeGiven,
    type SourceLocation,
 } from "./materialization_serve_transform";
+import {
+   rollupCoverageViolation,
+   rollupMeasuresByMember,
+} from "./preaggregation_coverage";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { type RollupPlan } from "./preaggregation_synthesis";
 
@@ -224,6 +228,16 @@ export class StorageServeShape {
       // compiles lazily, and an error at prepare/run would bypass the live
       // fallback.
       const probeSQL = await runnable.getSQL({ virtualMap, givens });
+      // A rollup group has no base member, so this is the only thing standing
+      // between a `count()` and the rollup's row count (see
+      // preaggregation_coverage.ts). The caller catches it and serves live.
+      if (groups.length > 0) {
+         const uncovered = rollupCoverageViolation(
+            (await runnable.getPreparedQuery())._query,
+            rollupMeasuresByMember(this.host.rollupPlans()),
+         );
+         if (uncovered) throw new Error(uncovered);
+      }
       // Paths quoted exactly as the virtualMap substitutes them, so the match
       // below compares like with like.
       const rollupPaths = [

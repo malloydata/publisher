@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A `count()` over a pre-aggregated source counts the source's rows, not the rollup's
+
+A query with an aggregate written in the query itself, against a source with a `#@ preaggregate` rollup, could be answered from the rollup and return a wrong number. `run: orders -> { aggregate: n is count() }` returned the number of rollup rows, and `qty.sum()` with `qty` in the grain summed one `qty` per rollup row. The same held in a `nest:`, a `having:`, and a measure an inline `extend` defined, and on both colocated and `storage=` rollups. Such a query is now answered from the base. A rollup answers only when every aggregate in the query is a pre-aggregated measure or an expression over them. To accelerate a count, declare and annotate it as a measure (`#@ preaggregate grain="category"` on `order_count is count()`). See the "What does not route" section of [docs/preaggregation.md](docs/preaggregation.md#what-does-not-route).
+
 ## [Unreleased] — A click on a value opens a menu, and the rows behind it can be shown and downloaded
 
 Clicking a value in a dashboard, a report or a notebook cell now always opens a small menu that says what each entry does, even when there is only one. Before, what a click did depended on a `# drill` tag the reader could not see: one destination navigated or filtered at once, two or more opened a menu, and an untagged value opened its rows.
