@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Releasing Publisher
 
-A release is one `workflow_dispatch` of `Release (NPM + Docker)`
+A release is one `workflow_dispatch` of `Release (NPM + Docker + PyPI)`
 (`.github/workflows/release.yml`), followed by one pull request: the
 `release/v<version>` branch the release published from, merged back into
 `main`. That branch already carries the version bump and the stamped release
@@ -211,8 +211,10 @@ the next release, which republishes the scaffolder anyway.
 `package.json` files, `build-python-sdk` calls `python-sdk.yml` on the release
 branch (build and verify; the smoke test against a server is `build.yml`'s, on
 every PR, like the Docker image's), and `publish-python-sdk` uploads the
-verified wheel and sdist through PyPI trusted publishing. It skips only a
-version already on PyPI, which in lockstep means a re-run. Nothing has been
+verified wheel and sdist through PyPI trusted publishing once `publish-npm` and
+`publish-docker` have succeeded, so PyPI never holds a version whose server did
+not ship. It skips only a version already on PyPI, which in lockstep means a
+re-run, and both jobs skip a prerelease or `+build` version. Nothing has been
 uploaded yet; before the release that would be the first, read *Publishing to
 PyPI* in
 `.github/workflows/CONTEXT.md`. The PyPI pending publisher has to name project
@@ -481,7 +483,9 @@ after the merge (the first command in step 3).
 - **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
   unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
   the publish job skips a version PyPI already holds, and reuses the verified
-  artifact. **Do not re-run the release.**
+  artifact. **Do not re-run the release.** If `publish-npm` or `publish-docker`
+  is red instead, `publish-python-sdk` shows as skipped, not failed: it waits
+  for both, and *Re-run failed jobs* runs it once they pass.
 - **Only `publish-packages` is red** → the sdk/app/server release completed and
   the tag exists; that job sits outside `gh-release`'s `needs`. Use *Re-run
   failed jobs*, which re-enters that job alone and skips whatever already landed.

@@ -408,8 +408,15 @@ and `publish-docker`, and not by `publish-packages`:
   otherwise uploads with `pypa/gh-action-pypi-publish`, pinned by SHA. It runs no repository code
   and installs nothing.
 
-Both skip on a prerelease of sdk/app/server, as `publish-packages` does, and neither is in
-`gh-release`'s `needs`, for the same reason `publish-packages` is not.
+Both skip a prerelease or a `+build` version of sdk/app/server, by the same `[-+]` test `prepare`
+uses for the release-notes stamp; `publish-python-sdk` admits only a plain major.minor.patch.
+Neither is in `gh-release`'s `needs`, for the same reason `publish-packages` is not.
+
+**The upload waits for `publish-npm` and `publish-docker`; the build does not.** A PyPI filename
+can never be reused, so a release abandoned after a failed npm or Docker publish, in favour of the
+next version, would otherwise leave `malloy-publisher-sdk==X` on PyPI for a server `X` that never
+shipped. With the wait, PyPI only ever holds versions whose server published. The build runs beside
+npm and Docker, so the wait costs only the upload itself.
 
 **The smoke test is `build.yml`'s, on every PR, not the release's**, the same split as the Docker
 image (`build.yml`'s `docker_smoke_test` on every PR; `docker-image.yml` only builds and pushes).
@@ -448,8 +455,24 @@ place yet*), and PyPI does not check the ref. It does refuse a token whose `envi
 not `pypi` (case-insensitively), so a branch copy of `release.yml` that drops `environment:` cannot
 publish. Restrict the `pypi` environment's deployment branches to `main`, with no required
 reviewers, and a release dispatched from any other branch never starts the job either. GitHub
-creates the environment on first use if it does not exist, with no restrictions at all, so set the
-restriction up rather than relying on the first run.
+creates the environment on first use if it does not exist, with no restrictions at all, so **create
+it, restricted, before registering the pending publisher**. In the other order, anyone with write
+access could dispatch `release.yml` from a branch, have GitHub create `pypi` unrestricted on the
+spot, and publish without review on `main`. An admin creates it with:
+
+```bash
+gh api -X PUT repos/malloydata/publisher/environments/pypi \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/malloydata/publisher/environments/pypi/deployment-branch-policies \
+  -f name=main -f type=branch
+# Expect one policy, `main`:
+gh api repos/malloydata/publisher/environments/pypi/deployment-branch-policies \
+  --jq '.branch_policies[].name'
+```
+
+A custom policy naming `main`, not "protected branches": that option admits every branch with a
+protection rule, which is wider than `main`.
 
 #### What the first publish needed, and why it took this long
 
@@ -460,9 +483,13 @@ listed token scope as the likely cause. The log says otherwise: the step's envir
 `PYPI_TOKEN` secret at all. twine sent an empty password. Trusted publishing removes the secret
 entirely.
 
-Preconditions CI cannot check, for the release that carries the first upload:
+Preconditions CI cannot check, for the release that carries the first upload, in this order:
 
-- **A pending publisher whose project name matches exactly.** A pending publisher creates the
+- **The `pypi` environment, restricted to `main`**, created as above before anything on PyPI
+  names it.
+- **A pending publisher whose project name matches exactly**: `malloy-publisher-sdk`, `malloydata`,
+  `publisher`, `release.yml`, `pypi`, with the environment named rather than left as "(Any)", which
+  would make the restriction above irrelevant. A pending publisher creates the
   project on first upload, under the name it was registered with. A pending publisher registered as
   `malloy-publisher` mints a token without complaint and the upload then fails with "Non-user
   identities cannot create new projects". `publish-python-sdk` checks the wheel's name before
@@ -472,7 +499,10 @@ Preconditions CI cannot check, for the release that carries the first upload:
   404s today; anyone can take it before the first upload.
 - **The first upload is the release's version**, because `prepare` stamps it into
   `pyproject.toml` (lockstep with sdk/app/server). `main` declares the last released version, as
-  the three `package.json` files do, and the release PR merges each new one back.
+  the three `package.json` files do, and the release PR merges each new one back. `Release sync`
+  (`release-sync.yml`) fails a PR whose `pyproject.toml` version differs from
+  `packages/sdk/package.json`'s, so the two cannot drift apart on `main` the way they did when
+  #1496 moved sdk/app/server to 0.10.3 while this file still said 0.10.2.
 
 #### Packaging traps the guards exist for
 
@@ -697,9 +727,9 @@ repair beyond moving forward.
 
 There are **three** npm trusted-publisher entries, not two: `release.yml` (for sdk, app, and server),
 `skills-npm.yml`, and `create-malloy-package-npm.yml`. Any hardening has to cover all three.
-PyPI's one entry (`release.yml`, for `malloy-publisher-sdk`) is already bound to the `pypi`
-environment; what it still needs is the environment's branch restriction (see *Publishing to
-PyPI*).
+PyPI's one entry (`release.yml`, for `malloy-publisher-sdk`) is bound to the `pypi` environment,
+and that environment's deployment branches are restricted to `main` (created 2026-10-29, ahead of
+the PyPI pending publisher; see *Publishing to PyPI* for why that order matters).
 
 The `github.ref == 'refs/heads/main'` guards on the two child publish jobs are a guardrail, not a
 boundary: npm matches repo plus filename and never a ref, so anyone who can dispatch can push a

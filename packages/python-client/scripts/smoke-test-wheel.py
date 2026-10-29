@@ -82,11 +82,11 @@ def check_installed() -> None:
     module_file = Path(malloy_publisher_sdk.__file__).resolve()
     if not module_file.is_relative_to(Path(sys.prefix).resolve()):
         fail(f"malloy_publisher_sdk imported from {module_file}, outside {sys.prefix}")
-    # build-python-sdk.sh stamps __version__ from pyproject.toml with sed; the
-    # wheel's metadata comes from the same file through hatchling. A sed that
-    # stopped matching leaves the generator's placeholder in __version__.
-    # getattr, so a build that dropped the line fails here by name rather
-    # than as an AttributeError traceback.
+    # build-python-sdk.sh appends __version__ from pyproject.toml to
+    # __init__.py and asserts the line landed; the wheel's metadata comes from
+    # the same file through hatchling. This checks the two still agree in the
+    # installed wheel. getattr, so a build that lost the line fails here by
+    # name rather than as an AttributeError traceback.
     stamped = getattr(malloy_publisher_sdk, "__version__", None)
     declared = importlib.metadata.version(DIST_NAME)
     if stamped != declared:

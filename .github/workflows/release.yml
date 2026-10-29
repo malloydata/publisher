@@ -324,9 +324,17 @@ jobs:
   # The SDK releases in lockstep with sdk/app/server: prepare stamps this
   # release's version into packages/python-client/pyproject.toml on the
   # release branch, so every release publishes the SDK at its own version and
-  # there is no bump for a PR to forget. Both jobs skip on a prerelease:
-  # nothing in the release decides how a prerelease should reach PyPI, where
-  # `pip install` would not pick it up without --pre anyway.
+  # there is no bump for a PR to forget. Both jobs skip a prerelease or a
+  # `+build` version, the same `[-+]` test prepare's release-notes stamp uses:
+  # nothing in the release decides how either should reach PyPI, where
+  # `pip install` would not pick a prerelease up without --pre anyway, and the
+  # publish job admits only a plain major.minor.patch.
+  #
+  # The upload waits for publish-npm and publish-docker, so PyPI never holds a
+  # version of a server that did not ship. A PyPI filename can never be reused:
+  # a release abandoned after a failed npm or Docker publish, in favour of the
+  # next version, would otherwise leave malloy-publisher-sdk==X behind for an X
+  # that does not exist. The build does not wait; it runs beside them.
   #
   # Deliberately NOT in gh-release's needs, for the reason publish-packages is
   # not: a failed PyPI upload must not leave sdk/app/server half-released and
@@ -334,7 +342,7 @@ jobs:
   # and "Re-run failed jobs" retries the upload with the same verified artifact.
   build-python-sdk:
     needs: prepare
-    if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+    if: ${{ !contains(needs.prepare.outputs.new_version, '-') && !contains(needs.prepare.outputs.new_version, '+') }}
     # python-sdk.yml needs no more than this: it holds no publishing credential.
     permissions:
       contents: read
@@ -368,8 +376,8 @@ jobs:
   # release dispatched from any other branch never starts this job.
   publish-python-sdk:
     name: Publish the Python SDK to PyPI
-    needs: [ prepare, build-python-sdk ]
-    if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+    needs: [ prepare, build-python-sdk, publish-npm, publish-docker ]
+    if: ${{ !contains(needs.prepare.outputs.new_version, '-') && !contains(needs.prepare.outputs.new_version, '+') }}
     runs-on: ubuntu-latest
     # A download, two registry questions and an upload. PyPI's minted token is
     # valid for 15 minutes, so a job still running past this would be failing
@@ -440,8 +448,9 @@ jobs:
             exit 1
           fi
           # Plain major.minor.patch only, validated before it reaches a URL or
-          # an annotation. Both Python SDK jobs skip a prerelease, so anything
-          # else here means the wheel's version came from somewhere unexpected.
+          # an annotation. Both Python SDK jobs skip a prerelease and a
+          # `+build` version, so anything else here means the wheel's version
+          # came from somewhere unexpected.
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             printf '%s\n' "$VERSION" | sed 's/^/[wheel] /'
             echo "::error title=PyPI::the wheel's version (logged above) is not a plain major.minor.patch; a release publishes only those. NOTHING was uploaded."

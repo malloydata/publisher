@@ -9,8 +9,9 @@ build-backend = "hatchling.build"
 name = "malloy-publisher-sdk"
 # Set by release.yml's prepare on the release branch, in lockstep with
 # packages/{sdk,app,server}/package.json, and merged back with the release PR.
-# Do not bump it by hand.
-version = "0.10.2"
+# Do not bump it by hand; release-sync.yml fails a PR where it differs from
+# packages/sdk/package.json.
+version = "0.10.3"
 # 3.10, not 3.9: the generated client annotates with PEP 604 unions
 # (`Error | list[Package] | None`) and no `from __future__ import annotations`,
 # which 3.9 cannot evaluate. Measured: the 0.1.1 wheel installs on 3.9 under
@@ -21,10 +22,10 @@ version = "0.10.2"
 requires-python = ">=3.10"
 description = "Auto-generated Python client for the Malloy Publisher REST API"
 authors = [
-    {name = "Malloy Publisher", email = "xxx@ms2.co"}
+    {name = "malloydata-publisher"}
 ]
 maintainers = [
-    {name = "Malloy Publisher", email = "xxx@ms2.co"}
+    {name = "malloydata-publisher"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
