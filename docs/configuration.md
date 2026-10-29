@@ -467,9 +467,20 @@ between releases.
 The judge is one chat call per request (one per group with `connect: "clusters"`). It sees the targets
 verbatim, and for each target the candidates with their kind, type, source, route and full `#(doc)`
 text, rules included. It never sees an access predicate or a field's code (unless `egress.preset` is
-`full`), and a stored value is described as matched, not shown, below the `full` preset. A target
-the judge picks nothing for comes back in `unresolved_targets`, which is the agent's signal to ask or to
-search again.
+`full`). A target the judge picks nothing for comes back in `unresolved_targets`, which is the agent's
+signal to ask or to search again.
+
+For a `dimensional_value` target, each candidate field says how its stored values matched (exact, words,
+typo or meaning) and their scores. Under the `full` preset it also lists the values themselves, each with
+a label, and the judge names the ones it means. A listed value it does not name is left out of the
+answer; a value that holds a named one as whole words, and a value past the five it was shown, stay. It
+picks nothing when no listed value is the target's value or a form of it (a typo, a different case, an
+abbreviation, a synonym). Below `full` it never sees a value, so it names none and every matched value is
+returned.
+
+**A search has 90 seconds.** One that runs out of time answers every target in `unresolved_targets`, with a
+warning that names a narrower scope to retry with (`scopes[].source`, and for a value
+`scopes[].entity_name`). It does not fall back to a cheaper search.
 
 `retrieval.llm.maxCallsPerRequest` (default 20) bounds the chat requests one `get_context` call sends.
 It counts HTTP requests to the vendor: a retry after a 429 and the re-ask that repairs a JSON reply each
@@ -566,7 +577,12 @@ string the data stores for what the user typed (`Home Gardeners (In-Season)`) an
 holds it, as `values[]` on that dimension's entity: `{value, relevance, search_text}`, best first, at most
 10 per dimension. Only a `dimensional_value` target searches values. A `dimension` target's text is never
 searched as a value: send each value the user named as its own `dimensional_value` target, beside the
-`dimension` target for its field.
+`dimension` target for its field. Once you know the field, scope the value search to it with `scopes[].source`
+and `entity_name`; an unscoped value search is allowed, but slower, and can return look-alike values from
+other fields.
+
+A value target also searches field descriptions by keyword, so a field whose values are not indexed can
+still be offered for it. Its card then carries no `values`, and a warning says its values were not checked.
 
 **Which values are searched.** The index build reads the distinct values of `#(index)` dimensions on
 ungated sources, and the value lists a doc gives ("one of DTC, B2B, Amazon"), once, through the same
