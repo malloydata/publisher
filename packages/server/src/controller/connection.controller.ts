@@ -33,6 +33,7 @@ import {
    toPublicConnections,
 } from "../service/connection_public_view";
 import { validateDuckdbApiSurface } from "../service/connection_config";
+import { assertSingleSelect } from "../service/single_select";
 import { ConnectionService } from "../service/connection_service";
 import {
    getSchemasForConnection,
@@ -290,6 +291,26 @@ export class ConnectionController {
          };
       }
       return environment.getApiConnection(connectionName);
+   }
+
+   /**
+    * A managed DuckLake connection (a platform database's connection view). A
+    * name the environment does not configure is not one; the lookup that
+    * follows answers it.
+    */
+   private isManagedConnection(
+      environment: Environment,
+      connectionName: string,
+   ): boolean {
+      try {
+         return (
+            this.getApiConnectionForLookup(environment, connectionName)
+               .managed === true
+         );
+      } catch (error) {
+         if (error instanceof ConnectionNotFoundError) return false;
+         throw error;
+      }
    }
 
    /**
@@ -605,6 +626,15 @@ export class ConnectionController {
       packageName?: string,
       versionId?: unknown,
    ): Promise<ApiSqlSource> {
+      // A managed database runs one SELECT and nothing else (single_select.ts).
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      if (this.isManagedConnection(environment, connectionName)) {
+         await assertSingleSelect(connectionName, sqlStatement);
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
@@ -763,6 +793,11 @@ export class ConnectionController {
       const environmentForAdmission =
          await this.environmentStore.getEnvironment(environmentName, false);
       environmentForAdmission.assertCanAdmitQuery();
+
+      // A managed database runs one SELECT and nothing else (single_select.ts).
+      if (this.isManagedConnection(environmentForAdmission, connectionName)) {
+         await assertSingleSelect(connectionName, sqlStatement);
+      }
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -929,6 +964,13 @@ export class ConnectionController {
       const environmentForAdmission =
          await this.environmentStore.getEnvironment(environmentName, false);
       environmentForAdmission.assertCanAdmitQuery();
+
+      // A CREATE is not a SELECT: refused on a managed database outright.
+      if (this.isManagedConnection(environmentForAdmission, connectionName)) {
+         throw new BadRequestError(
+            `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, so it cannot create a temporary table.`,
+         );
+      }
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,

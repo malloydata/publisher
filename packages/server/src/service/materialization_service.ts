@@ -52,7 +52,7 @@ import {
    computeSourceEntityId,
    deriveAnnotationFields,
    projectToPublicColumns,
-   iterGraphSources,
+   sourcesInBuildOrder,
    resolveQueryMetadata,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
@@ -768,7 +768,7 @@ export class MaterializationService {
                     compilePackageBuildPlan(pkg, signal),
                  );
 
-         // Refuse a `#@ persist` source that Malloy's getBuildPlan() silently
+         // Refuse a `#@ persist` source that Malloy's build walk silently
          // dropped (see detectDroppedPersistSources); otherwise the build
          // succeeds with an empty manifest and the source serves live. Scoped to
          // this build's targets so a dropped sibling does not block it.
@@ -1276,9 +1276,9 @@ export class MaterializationService {
       const cleared = new Map<string, EligibilityTier>();
       const seen = new Set<string>();
 
-      for (const graph of compiled.graphs) {
-         for (const persistSource of iterGraphSources(
-            graph,
+      for (const build of compiled.builds) {
+         for (const persistSource of sourcesInBuildOrder(
+            build,
             compiled.sources,
          )) {
             if (include && !include.has(persistSource.name)) continue;
@@ -1889,7 +1889,7 @@ export class MaterializationService {
        */
       sourcesRefused: number;
    }> {
-      const { graphs, sources, connectionDigests, connections } = compiled;
+      const { builds, sources, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
       const run: InstructedRun = {
          compiled,
@@ -1910,22 +1910,22 @@ export class MaterializationService {
          builtSources: [],
          writtenTargets: new Map(),
       };
-      assertNoTableCollisions(graphs, sources, connectionDigests, index);
+      assertNoTableCollisions(builds, sources, connectionDigests, index);
 
       try {
-         for (const graph of graphs) {
-            const connection = connections.get(graph.connectionName);
+         for (const build of builds) {
+            const connection = connections.get(build.connectionName);
             if (!connection) {
                throw new BadRequestError(
-                  `Connection '${graph.connectionName}' not found`,
+                  `Connection '${build.connectionName}' not found`,
                );
             }
-            for (const persistSource of iterGraphSources(graph, sources)) {
+            for (const persistSource of sourcesInBuildOrder(build, sources)) {
                if (signal.aborted) throw new Error("Build cancelled");
                await this.buildInstructedSource(
                   run,
                   persistSource,
-                  graph.connectionName,
+                  build.connectionName,
                   connection,
                );
             }
@@ -2050,7 +2050,7 @@ export class MaterializationService {
 
       // One physical table, written once. A base and its extension (`#@
       // persist` is inherited) compile to the same address, and a source used
-      // across models appears in several graphs. Only the same-content case is
+      // across models appears in several builds. Only the same-content case is
       // decided here; DIFFERENT definitions on one table were reported (and
       // refused under PERSIST_COLLISION_ENFORCE) by assertNoTableCollisions, so
       // reaching here means the deployment chose to warn and write anyway.

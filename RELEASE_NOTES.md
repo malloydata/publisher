@@ -9,7 +9,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 ## How this file is used
 
-The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
+The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
 For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
@@ -53,8 +53,20 @@ A package loaded from `publisher.config.json`, registered from a directory with 
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
+## [0.10.4] — The build plan lists every persist source, with every table it reads
 
-## [Unreleased] — A click on a value opens a menu, and the rows behind it can be shown and downloaded
+The build plan is computed from Malloy's `Runtime.getBuildTargets` instead of the deprecated `Model.getBuildPlan`. Its wire shape is unchanged, but its `graphs` now carry the whole dependency graph: each graph is a single level holding every persist source in build order, and each node's `dependsOn` names the sources on every table it reads. The graphs used to list only root sources with their direct dependencies, so a host reading them for a rerun's upstream closure, freshness inheritance or lineage lost every edge below the first level. Sources that share a table, a source and its extensions, no longer list each other as dependencies. A persist source whose SQL does not compile on its own (one that reads a `given:` with no default) is refused per source, as before, and lists no dependencies, since Malloy does not report the tables it would read.
+
+Two things to check if you read `graphs` yourself:
+
+- **The one level is not parallel.** `nodes` was documented as levels that each run in parallel, in order. It is now a single level in build order, so a host that builds each level's nodes concurrently would build a source alongside the sources it reads. Order builds by `dependsOn`, or run the level serially.
+- **A walk of `dependsOn` reaches further.** A rerun that includes upstream sources, or a freshness rule that follows dependencies, now reaches every source below the first level. Expect such a rerun to rebuild more, and so to cost more warehouse work, than it did before.
+
+## [0.10.4] — A `count()` over a pre-aggregated source counts the source's rows, not the rollup's
+
+A query with an aggregate written in the query itself, against a source with a `#@ preaggregate` rollup, could be answered from the rollup and return a wrong number. `run: orders -> { aggregate: n is count() }` returned the number of rollup rows, and `qty.sum()` with `qty` in the grain summed one `qty` per rollup row. The same held in a `nest:`, a `having:`, and a measure an inline `extend` defined, and on both colocated and `storage=` rollups. A `select:` or `index:` stage was answered from the rollup too, returning one row per grain group rather than the source's rows. Such queries are now answered from the base. A rollup answers only when every aggregate in the query is a pre-aggregated measure or an expression over them. To accelerate a count, declare and annotate it as a measure (`#@ preaggregate grain="category"` on `order_count is count()`). See the "What does not route" section of [docs/preaggregation.md](docs/preaggregation.md#what-does-not-route).
+
+## [0.10.3] — A click on a value opens a menu, and the rows behind it can be shown and downloaded
 
 Clicking a value in a dashboard, a report or a notebook cell now always opens a small menu that says what each entry does, even when there is only one. Before, what a click did depended on a `# drill` tag the reader could not see: one destination navigated or filtered at once, two or more opened a menu, and an untagged value opened its rows.
 

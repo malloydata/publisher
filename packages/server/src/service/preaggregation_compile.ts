@@ -46,6 +46,8 @@ export interface SynthesizedPreaggregation {
     * one covers it.
     */
    materializer: ModelMaterializer;
+   /** The runtime the synthesized model compiled in, which plans its build. */
+   runtime: Runtime;
    /** The generated text, for logging. */
    text: string;
 }
@@ -98,7 +100,7 @@ async function compileSynthesizedPreaggregation(args: {
    );
    const materializer = runtime.loadModel(synthesizedURL, { importBaseURL });
    const model = await materializer.getModel();
-   return { plans, model, materializer, text };
+   return { plans, model, materializer, runtime, text };
 }
 
 /**

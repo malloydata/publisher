@@ -58,7 +58,7 @@ POLL_MAX_REGISTRY_ERRORS="${POLL_MAX_REGISTRY_ERRORS:-3}"
 # before dispatching the scaffolder (see wait_for_server_latest). npm
 # took about 7 minutes to show 0.7.0 after publish-npm printed it as
 # published. Counted in release.yml's timeout-minutes alongside the
-# three poll budgets.
+# two poll budgets.
 SERVER_LATEST_BUDGET_SECONDS="${SERVER_LATEST_BUDGET_SECONDS:-900}"
 
 # Registry and API output can contain anything, including a line starting with
@@ -131,21 +131,21 @@ validate_content_paths() {
 validate_content_paths "@malloy-publisher/skills" "${SKILLS_CONTENT_PATHS[@]}" || exit 1
 validate_content_paths "@malloy-publisher/create-malloy-package" "${SCAFFOLDER_CONTENT_PATHS[@]}" || exit 1
 
-# The two registries differ in exactly two places — how a manifest is
-# read and how the registry is asked — so those are the only two things
-# parameterised. Everything else in publish_pkg below (the watched-path
-# guard, the "main moved" compare, the dispatch, the poll loop, the
-# summary lines) is registry-agnostic and must stay that way: a second
-# copy of this function for PyPI is how the two would drift.
+# How a manifest is read and how the registry is asked are the two
+# registry-specific steps, so they are the two functions parameterised on
+# a registry kind. npm is the only kind since the Python SDK moved to
+# release.yml's own build-python-sdk/publish-python-sdk jobs; the kind
+# stays a parameter so that a registry-specific step stays visibly one,
+# and an unrecognised kind still fails closed (see registry_has).
 #
 # Prints "<name> <version> <slug>" on success, nothing on failure.
 # The slug is what goes in a URL; for npm it is unused and echoes the
-# name back so both kinds print three fields.
+# name back.
 #
 # For skills and create-malloy-package the version this prints is unused —
-# independent-version.mjs computes the real one — but the name (and, for
-# python-client, the version too) still comes from here, because the name is
-# not something a release should be deciding.
+# independent-version.mjs computes the real one — but the name still
+# comes from here, because the name is not something a release should be
+# deciding.
 read_manifest() {
   local kind="$1" dir="$2"
   case "$kind" in
@@ -155,38 +155,6 @@ read_manifest() {
       # does not try to.
       node -p "const p=require('./packages/${dir}/package.json'); \
                [p.name, p.version, p.name].join(' ')" 2>&1
-      ;;
-    pypi)
-      # tomllib, the same read build-python-sdk.sh and the bump check
-      # use, so the three cannot disagree about where the version
-      # lives. The slug is PEP 503 normalisation.
-      #
-      # tomllib is stdlib from Python 3.11, and this job installs
-      # NOTHING on purpose — it holds actions: write, so the fewer
-      # third-party actions and downloads in it the better. That makes
-      # the interpreter an assumption, so assert it instead of
-      # provisioning it: ubuntu-24.04 ships 3.12 as python3 today, and
-      # without this check a runner image that moved back below 3.11
-      # would report "could not read its manifest", which reads as a
-      # corrupt pyproject.toml and sends someone to the wrong file.
-      #
-      # Failing here rather than up front is deliberate. It costs the
-      # npm packages nothing: they are dispatched before this and
-      # re-running the job skips whatever already published, so the
-      # blast radius is one undispatched package with an accurate
-      # message, not two blocked publishes.
-      if ! python3 -c 'import tomllib' 2>/dev/null; then
-        echo "python3 reports $(python3 -V 2>&1) and has no tomllib; reading pyproject.toml needs Python 3.11 or newer on the runner"
-        return 1
-      fi
-      # One line on purpose. A multi-line `python3 -c '...'` has to sit
-      # at this run: block's BASE indentation for YAML to strip it back
-      # to column 0, which inside a nested shell function means source
-      # lines dedented out of the block that contains them — it reads as
-      # a mistake and one wrong space either ends the block scalar early
-      # or hands Python an IndentationError. python-sdk.yml can indent
-      # its copy because that one is at the top level of its step.
-      python3 -c 'import re, sys, tomllib; p = tomllib.load(open("packages/" + sys.argv[1] + "/pyproject.toml", "rb"))["project"]; print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())' "$dir" 2>&1
       ;;
   esac
 }
@@ -209,18 +177,6 @@ registry_has() {
       fi
       printf '%s' "$answer"
       case "$answer" in *E404*) return 1 ;; *) return 2 ;; esac
-      ;;
-    pypi)
-      # PyPI has no `npm view`; the JSON endpoint's STATUS CODE is the
-      # answer, so the code is read rather than the exit status and
-      # there is no --fail (a 404 is an answer, not a failure). A
-      # transport failure makes curl print 000, which lands in the
-      # "did not answer" branch, and `|| answer=000` catches the case
-      # where curl fails before printing anything at all.
-      answer="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
-        "https://pypi.org/pypi/${slug}/${version}/json" 2>&1)" || answer=000
-      printf 'HTTP %s' "$answer"
-      case "$answer" in 200) return 0 ;; 404) return 1 ;; *) return 2 ;; esac
       ;;
     # NOT optional, and not defensive. A `case` that matches nothing
     # succeeds, so without this an unrecognised kind returns 0, which
@@ -247,10 +203,9 @@ registry_has() {
 # the silent wrong answer this exists to prevent.
 wait_for_server_latest() {
   local deadline errors=0 answer seen="(no answer yet)"
-  # A failure here returns 1 to the top-level publish_pkg call, and
-  # `set -e` ends the job there, so python-client is never reached.
-  # Re-running the job covers both: skills is skipped as already
-  # published, and this wait runs again.
+  # A failure here returns 1 to the top-level publish_indep_pkg call,
+  # and `set -e` ends the job there. Re-running the job covers it:
+  # skills is skipped as already published, and this wait runs again.
   local SERVER_LATEST_RECOVERY="Once \`npm view @malloy-publisher/server dist-tags.latest\` reads ${NEW_VERSION}, re-run THIS JOB (Re-run failed jobs). Do not re-run the whole release: that bumps and republishes sdk/app/server."
   deadline=$((SECONDS + SERVER_LATEST_BUDGET_SECONDS))
   while :; do
@@ -269,24 +224,24 @@ wait_for_server_latest() {
       errors=$((errors + 1))
       echo_untrusted_output "$answer"
       if [ "$errors" -ge "$POLL_MAX_REGISTRY_ERRORS" ]; then
-        echo "::error title=Server pin::npm stopped answering for @malloy-publisher/server dist-tags.latest (${errors} consecutive failures), so create-malloy-package was NOT dispatched, and neither was python-client after it. ${SERVER_LATEST_RECOVERY}"
-        echo "- \`create-malloy-package\` NOT dispatched: npm did not answer for the server's \`latest\`. \`python-client\` was not reached." >> "$GITHUB_STEP_SUMMARY"
+        echo "::error title=Server pin::npm stopped answering for @malloy-publisher/server dist-tags.latest (${errors} consecutive failures), so create-malloy-package was NOT dispatched. ${SERVER_LATEST_RECOVERY}"
+        echo "- \`create-malloy-package\` NOT dispatched: npm did not answer for the server's \`latest\`." >> "$GITHUB_STEP_SUMMARY"
         return 1
       fi
     fi
     [ "$SECONDS" -ge "$deadline" ] && break
     sleep "$POLL_SLEEP"
   done
-  echo "::error title=Server pin::@malloy-publisher/server latest still reads '${seen}', not ${NEW_VERSION}, after $((SERVER_LATEST_BUDGET_SECONDS / 60))m, so create-malloy-package was NOT dispatched (it would pin the previous server), and neither was python-client after it. ${SERVER_LATEST_RECOVERY}"
-  echo "- \`create-malloy-package\` NOT dispatched: the server's npm \`latest\` never read ${NEW_VERSION}. \`python-client\` was not reached." >> "$GITHUB_STEP_SUMMARY"
+  echo "::error title=Server pin::@malloy-publisher/server latest still reads '${seen}', not ${NEW_VERSION}, after $((SERVER_LATEST_BUDGET_SECONDS / 60))m, so create-malloy-package was NOT dispatched (it would pin the previous server). ${SERVER_LATEST_RECOVERY}"
+  echo "- \`create-malloy-package\` NOT dispatched: the server's npm \`latest\` never read ${NEW_VERSION}." >> "$GITHUB_STEP_SUMMARY"
   return 1
 }
 
 # ---- Release-time version decisions for skills and create-malloy-package --
 #
-# skills and create-malloy-package are dispatched through the same guarded
-# path (watched-path guard, "main moved" compare, dispatch, poll) as
-# python-client, but their VERSION is decided here, at release time, by
+# skills and create-malloy-package are dispatched through one guarded
+# path (watched-path guard, "main moved" compare, dispatch, poll), and
+# their VERSION is decided here, at release time, by
 # scripts/independent-version.mjs — pure decision logic, unit-tested on its
 # own — from facts this script gathers: what npm's `latest` is, what commit
 # it was published from, and whether anything publishable has changed since.
@@ -490,73 +445,6 @@ gather_scaffolder_facts() {
 # reading packages/skills/package.json, which the scaffolder's watched-path
 # list no longer includes for exactly that reason).
 SKILLS_VERSION_FOR_SCAFFOLDER=""
-
-publish_pkg() {
-  local dir="$1" wf="$2" reg="$3" name version slug spec out rc
-  # Read through `if !`, and validate. A bare assignment under set -e
-  # dies with a raw Node stack trace, no annotation and no summary
-  # line, which is the silent failure the summary lines exist to
-  # prevent. And `node -p` prints the string "undefined" with exit 0
-  # for a missing field, so a manifest that lost its name would build
-  # the spec `undefined@0.1.3`; the package named `undefined` exists on
-  # npm, so that spec can resolve and be read as "already published".
-  if ! out="$(read_manifest "$reg" "$dir")" || [ -z "$out" ]; then
-    echo_untrusted_output "$out"
-    echo "::error title=${dir}::could not read the ${reg} manifest for packages/${dir}, so ${wf} was not dispatched"
-    echo "- \`${dir}\` NOT dispatched: could not read its manifest" >> "$GITHUB_STEP_SUMMARY"
-    return 1
-  fi
-  # `tail -n 1`, because both read_manifest arms end in `2>&1` so a
-  # failure has something to show — and node and python write warnings
-  # there on a SUCCESSFUL run too (ExperimentalWarning,
-  # DeprecationWarning). A bare `read` takes the FIRST line, so one
-  # warning becomes the name and version: both non-empty, neither the
-  # literal "undefined", so both guards below pass, the spec is
-  # nonsense, the registry 404s on it (reading as "free"), the child is
-  # dispatched and may publish correctly, and then the poll asks about
-  # the bogus spec for the full budget and reddens a release that
-  # worked. The npm steps in this repo use `tail -n 1` for exactly this.
-  read -r name version slug <<<"$(printf '%s\n' "$out" | tail -n 1)"
-  # "undefined" is checked because `node -p` prints exactly that, with
-  # exit 0, for a missing field — and the package literally named
-  # `undefined` exists on npm, so that spec can resolve and be read as
-  # "already published".
-  if [ -z "$name" ] || [ "$name" = "undefined" ] \
-     || [ -z "$version" ] || [ "$version" = "undefined" ] || [ -z "$slug" ]; then
-    echo "::error title=${dir}::the ${reg} manifest for packages/${dir} declares name='${name}' version='${version}'; refusing to publish an unnamed or unversioned package. ${wf} was not dispatched."
-    echo "- \`${dir}\` NOT dispatched: its manifest has no usable name or version" >> "$GITHUB_STEP_SUMMARY"
-    return 1
-  fi
-  spec="${name}@${version}"
-
-  # Three outcomes, and the third is why this is not a boolean:
-  # published means there is nothing to do, free means carry on, and
-  # "the registry did not answer" is NOT a green light. `|| rc=$?`
-  # rather than a bare call, because a non-zero return under set -e
-  # would kill the step before the case below could read it.
-  #
-  # "Already published" is a legitimate skip here, not an error: this
-  # version came from a manifest a human (or a prior CI run) already
-  # committed, so finding it on npm just means there was nothing new to
-  # publish.
-  if out="$(registry_has "$reg" "$name" "$version" "$slug")"; then rc=0; else rc=$?; fi
-  case "$rc" in
-    0)
-      echo "::notice title=${name}::${spec} is already published; nothing to do"
-      echo "- \`${spec}\` was already published, skipped" >> "$GITHUB_STEP_SUMMARY"
-      return 0
-      ;;
-    1) : ;; # the version is free, carry on
-    *)
-      echo_untrusted_output "$out"
-      echo "::error title=${name}::could not ask the ${reg} registry whether ${spec} is taken"
-      echo "- \`${spec}\` NOT dispatched: the ${reg} registry did not answer whether it is already published" >> "$GITHUB_STEP_SUMMARY"
-      return 1
-      ;;
-  esac
-
-  publish_resolved "$dir" "$wf" "$reg" "$name" "$version" "$slug" "$spec"
-}
 
 # skills and create-malloy-package: the name (and the watched-path/"main
 # moved" guards below) still come from the manifest, but the VERSION is
@@ -799,15 +687,9 @@ publish_resolved() {
   # The child workflow file is in every list because a dispatch runs
   # whatever definition main holds at dispatch time, not the one this
   # job read.
-  #
-  # python-client is GENERATED from api-doc.yaml by build-python-sdk.sh,
-  # so the OpenAPI spec is a published-content input exactly the way the
-  # skills tree is for skills: an api-doc.yaml-only commit changes the
-  # wheel with nothing in packages/python-client/ touched.
   case "$dir" in
     skills) paths=("${SKILLS_CONTENT_PATHS[@]}" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
     create-malloy-package) paths=("${SCAFFOLDER_CONTENT_PATHS[@]}" "scripts/set-version.mjs" "scripts/independent-version.mjs") ;;
-    python-client) paths=("packages/${dir}/" "api-doc.yaml") ;;
     *) paths=("packages/${dir}/") ;;
   esac
   paths+=(".github/workflows/${wf}")
@@ -1052,26 +934,15 @@ publish_resolved() {
   return 1
 }
 
-# Order is not optional for the first two. create-malloy-package pins
-# its skills dependency from the version skills just published (or its npm
+# Order is not optional. create-malloy-package pins its skills
+# dependency from the version skills just published (or its npm
 # latest, when skills was skipped) and its server from npm `latest`, so
 # skills has to be decided and, if publishing, confirmed on npm before the
 # scaffolder is dispatched. Dispatching both at once races and fails the
 # scaffolder.
 #
-# python-client has no such coupling — nothing depends on it and it
-# depends on nothing here — so it is last only because it is the one
-# whose first publish is still unproven. A failure there leaves the two
-# npm packages already published, which the job summary records.
+# The Python SDK is not dispatched from here: it is release.yml's
+# build-python-sdk and publish-python-sdk jobs, because PyPI's trusted
+# publisher has to name the file that defines the uploading job.
 publish_indep_pkg skills skills-npm.yml
 publish_indep_pkg create-malloy-package create-malloy-package-npm.yml
-
-# Work in progress: the PyPI publish of python-client is paused. Its first
-# publish (malloy-publisher-sdk==0.1.0) never appeared on PyPI, and waiting
-# for it failed the release after the npm packages had already published.
-# The publish path is kept intact; restore the line below to re-enable it.
-# python-sdk.yml's publish job runs only on a workflow_dispatch on main, so
-# while this stays commented out nothing publishes to PyPI from a release.
-# publish_pkg python-client python-sdk.yml pypi
-echo "::notice title=python-client::PyPI publish is paused (work in progress); python-sdk.yml was not dispatched"
-echo "- \`python-client\` NOT dispatched: PyPI publish is paused (work in progress)" >> "$GITHUB_STEP_SUMMARY"
