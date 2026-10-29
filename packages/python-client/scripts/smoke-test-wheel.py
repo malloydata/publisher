@@ -3,9 +3,9 @@
 
 """Drive a running Publisher through the INSTALLED malloy-publisher-sdk.
 
-python-sdk.yml's `smoke` job runs this once per supported Python, each time
-with the interpreter of a fresh venv holding only the built wheel, by path and
-with `-I`. Run by path, sys.path[0] is this scripts/ directory, and `-I` drops
+build.yml's `python_sdk_smoke_test` job runs this on every PR, once per
+supported Python, each time with the interpreter of a fresh venv holding only
+the built wheel, by path and with `-I`. Run by path, sys.path[0] is this scripts/ directory, and `-I` drops
 PYTHONPATH and the user site, so the source tree cannot satisfy an import:
 what is exercised is what a user's `pip install` gets.
 

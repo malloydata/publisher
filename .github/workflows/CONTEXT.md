@@ -13,8 +13,9 @@ workflow owns what, and the publishing rules that bite.
 `build.yml` is the entry point (pushes and PRs). It does not run the test suites itself: it holds
 `lint` (typecheck), `lint_format` (prettier, eslint, and the DuckDB/pg version-consistency guards),
 `runtime_test` (starts the built server bin under both `npx` with the Node shebang and a direct
-`bun run` on the bundle), `docker_smoke_test`, and `cross_platform_test`, which calls
-`cross-platform-tests.yml`.
+`bun run` on the bundle), `docker_smoke_test`, `python_sdk_build` (calls `python-sdk.yml`),
+`python_sdk_smoke_test` (drives a server built from the PR through the built Python SDK wheel; see
+*Publishing to PyPI*), and `cross_platform_test`, which calls `cross-platform-tests.yml`.
 
 `cross-platform-tests.yml` is `workflow_call`-only and is where the tests actually run, across Linux,
 macOS, and Windows: the server unit and integration suites, the skills package tests, and the
@@ -25,9 +26,9 @@ The two npm publish workflows below do re-run their own package's suite, against
 published, because a PR run proves nothing about the ref a dispatch actually targets. What they do
 not repeat is the server suites and the Linux-only e2e suite.
 
-`app-playwright.yml` runs the browser suite on PRs. `python-sdk.yml` builds and verifies the Python
-client on every PR into `main` and on pushes, and smoke-tests it against a server built from the same
-checkout; `release.yml` calls it (build only) and publishes to PyPI from a job of its own. Nothing has been uploaded yet, so read *Publishing to PyPI* below before cutting the
+`app-playwright.yml` runs the browser suite on PRs. `python-sdk.yml` is `workflow_call`-only (plus a
+manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
+`release.yml`, which publishes it to PyPI from a job of its own. Nothing has been uploaded yet, so read *Publishing to PyPI* below before cutting the
 release that would be its first.
 
 **Not every publish workflow is purely a publish workflow, so a red check on a PR that touches one
@@ -39,14 +40,8 @@ package can come from its own file rather than from `build.yml`.** Know which jo
   time* below).
 - `create-malloy-package-npm.yml` is genuinely dispatch-only: `workflow_dispatch` is its only
   trigger. Its `pull_request` trigger and `check_version` job are both gone.
-- `python-sdk.yml`'s `check_version` runs on every PR into `main` and scopes itself: when the PR
-  touches neither `api-doc.yaml` nor `packages/python-client/`, it reports a notice and passes.
-  Otherwise it enforces the "declared version ahead of PyPI" rule the other two used to enforce
-  against npm.
-
-`python-sdk.yml` keeps its own bump check because `python-client` still versions by a committed
-`pyproject.toml` bump; skills and create-malloy-package no longer do, so they have nothing left for
-a PR-time check to enforce.
+- `python-sdk.yml` has no PR trigger and no version check: the Python SDK releases in lockstep
+  with sdk/app/server, so `prepare` sets its version and there is nothing for a PR to bump.
 
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
@@ -54,14 +49,15 @@ Two workflows hold real warehouse credentials, and both should be treated as suc
 
 ## Publishing
 
-There are three npm trains and one PyPI train, and they do not share a version.
+There are three npm trains and one PyPI train. The PyPI train shares sdk/app/server's version;
+the other two npm trains each have their own.
 
 | Packages | Registry | Version | Published by | Missing bump caught by |
 |---|---|---|---|---|
 | `@malloy-publisher/sdk`, `app`, `server` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
 | `@malloy-publisher/skills` | npm | Decided at release time by `scripts/independent-version.mjs`; `package.json` carries a fixed `0.0.0-dev` placeholder | `skills-npm.yml` | n/a — nothing to forget, the decision reads npm itself |
 | `@malloy-publisher/create-malloy-package` | npm | Decided at release time the same way; `package.json` also carries `0.0.0-dev` | `create-malloy-package-npm.yml` | n/a, same reason |
-| `malloy-publisher-sdk` | PyPI | Its own line | `release.yml`'s `publish-python-sdk`, built by `python-sdk.yml` | a `pull_request` check in `python-sdk.yml` |
+| `malloy-publisher-sdk` | PyPI | Lockstep with sdk/app/server, set by `release.yml` in `pyproject.toml` | `release.yml`'s `publish-python-sdk`, built by `python-sdk.yml` | n/a — the release sets it |
 
 ### The versioning policy
 
@@ -79,11 +75,10 @@ correct; do not "fix" it with an explicit version. The move itself needs
 
 Two of the other three do not, and the checks in Part 1 do not make them: they
 enforce *ahead of the registry*, not the shape of the number. `create-malloy-package`
-is on `0.0.8`, so `^` pins it exactly, the same trap the policy exists to close;
-and `malloy-publisher-sdk` (Python) declares `0.1.1`, sharing `0.1.x` with `skills` —
-the very collision the sdk/app/server line skips `0.1.x` to avoid. Both are cheap
-to move, on their next release, and neither is urgent: the scaffolder has no
-dependents, and the Python client has no published versions at all.
+is on `0.0.8`, so `^` pins it exactly, the same trap the policy exists to close.
+It is cheap to move, on its next release, and not urgent: the scaffolder has no
+dependents. `malloy-publisher-sdk` (Python) follows sdk/app/server's number, so it
+follows whatever that line does.
 
 `bun.lock` is a fourth reader of these numbers and is deliberately left alone. It
 records `0.0.209` for the three workspace packages, so once a release PR merges
@@ -204,22 +199,13 @@ and the root `package.json` are in the skills diff's watched paths directly (the
 they were outside `skills-npm.yml`'s `paths:` trigger and a lockfile-only PR never reached the
 check at all. A lockfile-only change now counts as "changed" and triggers a publish on its own.
 
-One gap remains, named rather than assumed: the **PyPI** check (`python-sdk.yml`, unchanged by
-this) has nothing to *catch* until the first publish lands, because nothing is on PyPI and a
-project-level 404 is the pass. It is not incapable of failing — an unreadable `pyproject.toml`, a
-version that is not `major.minor.patch`, or a registry that answers neither 200 nor 404 all redden
-it. **This is the one entry here with an expiry date**: the moment `malloy-publisher-sdk` has a
-version on PyPI, this check starts enforcing for real, and the 404 branch stops being the path
-every run takes. See *Publishing to PyPI* below.
-
-**The PyPI check can be a required status check.** `python-sdk.yml`'s `pull_request` trigger has
-no `paths:` filter (so the smoke job sees server-only changes), which means every PR into `main`
-produces the check, and one that touches no SDK input passes with a notice. A path-filtered
-trigger would have left it at `expected` forever on unrelated PRs; do not add one back to a
-workflow whose checks are required.
+The Python SDK had a PR-time bump check of the same kind (`check_version` in `python-sdk.yml`),
+and it is gone for a different reason: the SDK no longer has a version of its own. `prepare`
+stamps the release version into `packages/python-client/pyproject.toml` with the three
+`package.json` files, so a PR has nothing to bump and a release always has a new number to upload.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
-bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/v<version>`
+bumps sdk/app/server and the Python SDK, stamps the release notes, commits both to a fresh `release/v<version>`
 branch cut from `main`, and pushes it; `npm-sdk.yml` and `docker-image.yml` are then called with that
 ref. `build-python-sdk` calls `python-sdk.yml` with it too, and `publish-python-sdk` uploads what that
 built (see *Publishing to PyPI*). `publish-packages` triggers the two other npm trains (see below).
@@ -228,8 +214,9 @@ only after npm and Docker have both succeeded.
 
 **The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
 heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same
-commit that sets the three `packages/{sdk,app,server}/package.json` versions
-(`scripts/set-version.mjs`). `gh-release` then puts the sections headed `[<version>]` on the release
+commit that sets the three `packages/{sdk,app,server}/package.json` versions and
+`packages/python-client/pyproject.toml`'s (`scripts/set-version.mjs`, which sets a pyproject's
+`[project]` version). `gh-release` then puts the sections headed `[<version>]` on the release
 page (`release-notes.mjs extract <version>`) and prints a compare link. A person opens
 `release/v<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
 one PR is the whole post-release step. It does **not** touch `packages/skills/package.json` or
@@ -410,28 +397,30 @@ everything in this file that follows from them changes with it.
 `malloy-publisher-sdk` is published by two jobs in `release.yml`, at the same level as `publish-npm`
 and `publish-docker`, and not by `publish-packages`:
 
-- **`build-python-sdk`** calls `python-sdk.yml` on the release branch. Its `build` job generates the
-  client, runs the tests, builds the wheel and sdist, verifies them and uploads `dist/` as the
-  `python-client-dist` artifact. It holds no publishing credential. The release passes
-  `skip_smoke: true`, so `python-sdk.yml`'s `smoke` job does not run here (see below).
+- **`build-python-sdk`** calls `python-sdk.yml` on the release branch, which carries the version
+  `prepare` stamped into `pyproject.toml`. Its `build` job generates the client, runs the tests,
+  builds the wheel and sdist, verifies them and uploads `dist/` as the `python-client-dist`
+  artifact. It holds no publishing credential.
 - **`publish-python-sdk`** is a plain job in `release.yml`, with `environment: pypi` and
   `permissions: id-token: write` and nothing else. It downloads the artifact, reads the name and
-  version from the wheel's own `METADATA`, skips when that version is already on PyPI (the ordinary
-  case: the SDK's version moves only when someone bumps `pyproject.toml`), and otherwise uploads with
-  `pypa/gh-action-pypi-publish`, pinned by SHA. It runs no repository code and installs nothing.
+  version from the wheel's own `METADATA`, refuses a version that is not this release's (a stamp
+  that did not reach the wheel), skips one already on PyPI (a re-run after the upload landed), and
+  otherwise uploads with `pypa/gh-action-pypi-publish`, pinned by SHA. It runs no repository code
+  and installs nothing.
 
 Both skip on a prerelease of sdk/app/server, as `publish-packages` does, and neither is in
 `gh-release`'s `needs`, for the same reason `publish-packages` is not.
 
-**The smoke test runs on PRs, not in the release**, the same split as the Docker image
-(`build.yml`'s `docker_smoke_test` on every PR; `docker-image.yml` only builds and pushes). On every
-PR into `main`, `python-sdk.yml` runs the same `build` the release runs, then `smoke` installs that
-wheel into a clean venv for every Python the package declares, starts a server built from the PR,
-and drives it through the SDK (`packages/python-client/scripts/smoke-test-wheel.py`): status,
-environments, packages, every model, the compiled models and a query, each answer parsed into the
-generated models. No `paths:` filter, because a server change can break the SDK's wire format
-without touching `api-doc.yaml`. So a green `main` has built, verified and exercised the same kind
-of artifact a release uploads, and the release does not wait on a server build to upload it.
+**The smoke test is `build.yml`'s, on every PR, not the release's**, the same split as the Docker
+image (`build.yml`'s `docker_smoke_test` on every PR; `docker-image.yml` only builds and pushes).
+`python_sdk_build` calls `python-sdk.yml`, the same build the release runs, then
+`python_sdk_smoke_test` installs that wheel into a clean venv for every Python the package declares,
+starts a server built from the PR, and drives it through the SDK
+(`packages/python-client/scripts/smoke-test-wheel.py`): status, environments, packages, every
+model, the compiled models and a query, each answer parsed into the generated models. Every PR,
+not only SDK ones, because a server change can break the SDK's wire format without touching
+`api-doc.yaml`. So a green `main` has built, verified and exercised the same kind of artifact a
+release uploads, and the release does not wait on a server build to upload it.
 
 **Trusted publishing (OIDC), not a token.** There is no `PYPI_TOKEN`, and one should not be added
 back. The trusted publisher on PyPI is: project `malloy-publisher-sdk`, owner `malloydata`,
@@ -481,11 +470,9 @@ Preconditions CI cannot check, for the release that carries the first upload:
 - **The name is not reserved by the pending publisher.** PyPI: a pending publisher "does not create
   a project or reserve a project's name until it is actually used to publish". `malloy-publisher-sdk`
   404s today; anyone can take it before the first upload.
-- **`0.1.1` is what would ship**, because that is what `packages/python-client/pyproject.toml`
-  declares. Note it shares its minor with `@malloy-publisher/skills`' `0.1.x` — different registries,
-  so not a collision, but see the versioning policy above on why the sdk train skips `0.1.x`. If it
-  is going to move, move it *before* the first publish: PyPI filenames can never be reused, so a
-  version is spent the moment it uploads.
+- **The first upload is the release's version**, because `prepare` stamps it into
+  `pyproject.toml` (lockstep with sdk/app/server). `main` declares the last released version, as
+  the three `package.json` files do, and the release PR merges each new one back.
 
 #### Packaging traps the guards exist for
 
@@ -507,13 +494,13 @@ wheel that installs cleanly and cannot be imported:
   sdist targets so that switching the ignore rules off does not start packing `.venv/`, `dist/` and
   `__pycache__`. An explicit `packages` **alone does not fix it** — the ignore rules still apply.
 
-Two more, found by the smoke job the first time it ran:
+Two more, found by the smoke test the first time it ran:
 
 - **`requires-python` said `>=3.9`, and the wheel cannot be imported on 3.9.** The generated client
   annotates with PEP 604 unions (`Error | list[Package] | None`) and no
   `from __future__ import annotations`, so 3.9 raises `TypeError: unsupported operand type(s) for |`
   on the first import, after pip installed it without complaint. Every job here ran 3.11. The floor
-  is now 3.10, and `smoke` tests the floor plus every `Programming Language :: Python :: 3.N`
+  is now 3.10, and the smoke test runs the floor plus every `Programming Language :: Python :: 3.N`
   classifier, read from `pyproject.toml`, so the metadata cannot claim a version nothing ran.
 - **`__version__` was never set.** `build-python-sdk.sh` step 5 was a sed replacing an existing
   `__version__ = "..."` line in the generated `__init__.py`, which has none; sed matched nothing and
@@ -540,10 +527,11 @@ on surfaces ~929 findings and is a separate decision — and recorded because it
 packaging bug above, one directory that is deliberately gitignored while being the package's entire
 content, and now three independent tools quietly deciding what that means.
 
-The guards against all of this run in `build` and `smoke`, before the artifact can reach
+The guards against all of this run in `python-sdk.yml`'s `build` and `build.yml`'s smoke test, before
+the artifact can reach
 `publish-python-sdk`: `Verify the wheel is importable before uploading it` installs the built wheel
 into a throwaway venv and imports it from `/tmp`, and checks the sdist contains the generated client;
-`smoke`, on every PR, then uses it against a real server on every declared Python. They assert the
+the smoke test, on every PR, uses it against a real server on every declared Python. They assert the
 artifact rather than the intent, because "we remembered to regenerate" is what failed, and they run
 before the upload — a check afterwards would only name the version you had burned.
 
@@ -558,8 +546,8 @@ with a different local version, and step 9's `rm -rf build/` deletes the tracked
 scope (`@malloydata`, not `@malloy-publisher`) and no workflow publishes it, so it looks shippable
 while nothing ships it. Decide separately whether to mark it `private: true` or bring it into
 `publish-packages` — and if the latter, it needs the whole *Adding a published package* dance below,
-plus a version-decision path like skills and create-malloy-package's, or a committed-version PR check
-like `malloy-publisher-sdk`'s.
+plus a version-decision path like skills and create-malloy-package's, or a place in `prepare`'s
+lockstep stamp like `malloy-publisher-sdk`'s.
 
 For completeness: `api-doc.yaml`'s `info.version: v0` is the REST API version behind the `/api/v0`
 path prefix, not a package version. It is unrelated to any of this and should not be bumped with a

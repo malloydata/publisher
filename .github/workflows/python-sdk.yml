@@ -1,52 +1,39 @@
 # Copyright (c) Credible Data Inc.
 # SPDX-License-Identifier: MIT
 
+# Builds the Python SDK (`malloy-publisher-sdk`): generates the client from
+# api-doc.yaml, tests it, builds the wheel and sdist, verifies them and uploads
+# dist/ as the `python-client-dist` artifact. It publishes nothing and tests
+# nothing against a server; those are its callers' jobs:
+#
+# - build.yml calls it on every PR into main and push to main, then its
+#   python_sdk_smoke_test drives a server built from the same checkout through
+#   the wheel, the way docker_smoke_test boots the image.
+# - release.yml calls it on the release branch, then its publish-python-sdk
+#   uploads the artifact to PyPI. The upload cannot live here: PyPI does not
+#   support trusted publishing from a reusable workflow. CONTEXT.md, *Publishing
+#   to PyPI*, has the rest.
+#
+# The version is not this workflow's to check either. The SDK releases in
+# lockstep with sdk/app/server: release.yml's prepare stamps the release version
+# into packages/python-client/pyproject.toml on the release branch, so there is
+# no bump for a PR to forget.
+
 name: python-sdk
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "api-doc.yaml"
-      - "packages/python-client/**"
-      - ".github/workflows/python-sdk.yml"
-  # Every PR into main, with no paths filter, the way build.yml runs
-  # docker_smoke_test. `smoke` drives the SDK against a server built from the
-  # PR, and a server change can alter what goes over the wire without touching
-  # api-doc.yaml or packages/python-client/, so a path-filtered trigger would
-  # skip exactly the PRs most likely to break the SDK. `check_version` scopes
-  # itself with its own diff, so running it everywhere costs one notice.
-  pull_request:
-    branches: [main]
-  # Builds and smoke-tests on any branch; it publishes nothing. Publishing is
-  # release.yml's, and only release.yml's (see `build` below).
-  workflow_dispatch:
-  # release.yml's `build-python-sdk`, on the release branch, with the smoke job
-  # skipped. This workflow still holds no publishing credential when called:
-  # the upload is a job in release.yml itself, because PyPI does not support
-  # trusted publishing from a reusable workflow. CONTEXT.md, *Publishing to
-  # PyPI*, has the rest.
   workflow_call:
     inputs:
       ref:
-        description: "The ref to build (the release branch)"
-        required: true
-        type: string
-      # Named as a skip, not as `smoke: true`, because the smoke job's `if:`
-      # also runs on pull_request and push, where `inputs` is empty. GitHub
-      # compares null with a boolean as numbers (null is 0, false is 0), so
-      # `inputs.smoke != false` would be false on every PR and skip the
-      # smoke there silently. `!inputs.skip_smoke` is true for a null.
-      skip_smoke:
-        description: "Skip the smoke job (release.yml does; it runs on PRs and pushes)"
+        description: "The ref to build; the caller's own ref when empty"
         required: false
-        default: false
-        type: boolean
+        default: ""
+        type: string
+  # Build and verify on any branch by hand. It publishes nothing.
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # The smoke job's server build. Kept equal to the other workflows' pin.
-  BUN_VERSION: 1.3.13
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
 # declares it itself.
@@ -54,217 +41,12 @@ permissions:
   contents: read
 
 jobs:
-  # The sibling of skills-npm.yml's and create-malloy-package-npm.yml's bump
-  # checks, against PyPI instead of npm. Same predicate, same fail-closed
-  # behaviour, different registry and a different place to read the version from
-  # (`[project] version` in pyproject.toml, not a package.json).
-  #
-  # READ THIS BEFORE TRUSTING IT: until the first upload lands this check cannot
-  # catch a missing bump, because `malloy-publisher-sdk` is not on PyPI at all.
-  # The project URL 404s, and this check reads that as "the version is free",
-  # which is the correct answer to the question it asks. It is here so the rule
-  # is uniform across all three published trains and so the coverage exists the
-  # moment the Python client ships; until then it is NOT evidence that anything
-  # is guarded. It can still go red — an unreadable pyproject.toml, a version
-  # that is not major.minor.patch, or a registry answering neither 200 nor 404 —
-  # so a green here is "nothing to check", not "nothing to fix".
-  # `.github/workflows/CONTEXT.md` covers the first publish under *Publishing
-  # to PyPI*.
-  check_version:
-    name: Require a version bump when the published content changes
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    # This job only asks a registry two questions. Every call it makes is
-    # --max-time bounded, but a bound per call is not a bound on the job, and
-    # without this a hung step would sit on a runner for GitHub's 6-hour default
-    # blocking a PR on a check that can neither pass nor fail.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The check diffs this PR against its base, which needs the merge base
-          # in the clone. The default depth-1 checkout of a pull_request is a
-          # merge commit with no parents fetched, so `origin/<base>` does not
-          # resolve and the diff cannot be computed.
-          fetch-depth: 0
-
-      # For tomllib, which is stdlib from 3.11. The same reason and the same
-      # version the build job below pins.
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Check the version against PyPI
-        env:
-          # Through env rather than interpolated into the script body, as every
-          # other registry-facing step in this repo does.
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-
-          # Scoped to what the published wheel is built FROM, which for a
-          # generated client is two things: the package directory, and the
-          # OpenAPI spec it is generated out of (build-python-sdk.sh runs
-          # openapi-python-client against ../../api-doc.yaml). This workflow file
-          # is deliberately not here: editing it changes no published byte.
-          PATHS=(api-doc.yaml packages/python-client)
-
-          # Assert every entry exists: `git diff -- does/not/exist` exits 0 with
-          # EMPTY output, which lands in the skip branch below and reports "no
-          # published content changed", so a typo or a rename silently switches
-          # this check off for good while the trigger keeps firing.
-          for p in "${PATHS[@]}"; do
-            [ -e "$p" ] && continue
-            echo "::error title=Version::watched path '${p}' does not exist in this checkout, so the scoping diff can never match it and this check would silently pass everything. Fix the PATHS list in this workflow."
-            exit 1
-          done
-
-          # Fails CLOSED: if the diff cannot be computed the check RUNS, it does
-          # not skip. A skip is the outcome that lets an unbumped change through,
-          # so it has to be reached deliberately and never by accident.
-          SCOPED=1
-          CHANGED=""
-          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
-            echo "::warning title=Version::could not resolve origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
-            SCOPED=0
-          elif ! CHANGED="$(git diff --name-only "origin/${BASE_REF}...HEAD" -- "${PATHS[@]}")"; then
-            echo "::warning title=Version::could not diff against origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
-            SCOPED=0
-          fi
-
-          if [ "$SCOPED" = 1 ] && [ -z "$CHANGED" ]; then
-            echo "::notice title=Version::no published python-client content changed in this PR (checked ${PATHS[*]}); no version bump required"
-            exit 0
-          fi
-
-          # The same tomllib read build-python-sdk.sh uses for the version it
-          # stamps into __init__.py, so the two cannot disagree about where the
-          # version lives. Name, version and the URL slug in one interpreter
-          # start; the slug is PEP 503 normalisation (runs of `-_.` collapse to a
-          # single `-`, lowercased). `tr -s '_.-' '-'` would do that correctly, but
-          # the name has to come out of the TOML anyway, so a second process buys
-          # only a second place for the normalisation to drift from the spec — and
-          # a slug that is subtly wrong builds a URL that 404s for the wrong
-          # reason, which this check would then read as "nothing published".
-          read -r NAME DECLARED SLUG <<<"$(python -c '
-          import re, tomllib
-          with open("packages/python-client/pyproject.toml", "rb") as f:
-              p = tomllib.load(f)["project"]
-          print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())
-          ')"
-          if [ -z "$NAME" ] || [ -z "$DECLARED" ] || [ -z "$SLUG" ]; then
-            echo "::error title=Version::could not read name and version from packages/python-client/pyproject.toml"
-            exit 1
-          fi
-
-          # VALIDATED before it reaches a URL, a `sort -V` or an annotation, the
-          # same way the npm siblings validate theirs, and for the same three
-          # reasons. It is interpolated into the PyPI URL below, so a value with a
-          # slash or a `?` asks a different question than the one this check
-          # reports. It is echoed into ::error lines, and it comes from the PR's
-          # own pyproject.toml, so a newline plus `::` forges workflow commands.
-          # And `sort -V` needs two comparable versions or the ahead-of-latest
-          # test is meaningless.
-          #
-          # Byte-for-byte the npm siblings' pattern, deliberately, so "what is a
-          # version here" has one answer across all three trains. PEP 440 is much
-          # wider (`1!2.0`, `0.2.0.post1`, `1.0b2`) and every one of those is
-          # refused: the release machinery derives and compares plain
-          # major.minor.patch, and `sort -V` does not implement PEP 440 ordering,
-          # so a version this lets through would be ranked by rules nobody
-          # intended. Widen it here, in the npm siblings and in release.yml
-          # together, or not at all.
-          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            printf '%s\n' "$DECLARED" | sed 's/^/[pyproject] /'
-            echo "::error title=Version::the version in packages/python-client/pyproject.toml (logged above) is not a plain major.minor.patch with an optional -prerelease or +build, so it cannot be compared with PyPI"
-            exit 1
-          fi
-
-          # Only the status code is ever printed; a JSON body would be untrusted
-          # text. No `--fail`: a 404 is an ANSWER here, not a failure, so the
-          # code is read rather than the exit status. A transport failure prints
-          # 000, and `${code:-000}` covers a curl that printed nothing at all.
-          pypi_status() {
-            local code
-            # --max-time, like every other registry call in these workflows.
-            # Without it a PyPI edge that accepts the connection and never
-            # answers hangs this step, and a job-level timeout-minutes only
-            # caps the damage at 10 minutes rather than preventing it — a bound
-            # per call is what turns a hang into a diagnosable failure.
-            code="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
-              "https://pypi.org/pypi/$1/json" 2>/dev/null)" || true
-            printf '%s' "${code:-000}"
-          }
-
-          # Nothing published at all. Distinguished from "this version is free"
-          # because it is the state today and a reader who sees a green check
-          # should know which of the two it means.
-          PROJECT_STATUS="$(pypi_status "$SLUG")"
-          if [ "$PROJECT_STATUS" = "404" ]; then
-            echo "::notice title=Version::$NAME is not on PyPI at all, so $DECLARED is free. Nothing is currently enforced by this check — see the comment on this job."
-            exit 0
-          fi
-          if [ "$PROJECT_STATUS" != "200" ]; then
-            echo "::error title=Version::PyPI answered $PROJECT_STATUS for $NAME; an unanswered registry is not a green light"
-            exit 1
-          fi
-
-          # Named once, so the error below cannot claim this PR touched published
-          # content when the scoping diff is the very thing that failed.
-          if [ "$SCOPED" = 1 ]; then
-            WHY="this PR changes published python-client content"
-          else
-            WHY="this PR's changed paths could not be determined"
-          fi
-
-          # Is this exact version already released? Per-version 404 is the
-          # free-version answer, the same shape as npm's E404.
-          VERSION_STATUS="$(pypi_status "$SLUG/$DECLARED")"
-          if [ "$VERSION_STATUS" = "200" ]; then
-            echo "::error title=Version::${WHY}, and $NAME $DECLARED is already on PyPI. Bump the version in packages/python-client/pyproject.toml."
-            exit 1
-          fi
-          if [ "$VERSION_STATUS" != "404" ]; then
-            echo "::error title=Version::PyPI answered $VERSION_STATUS for $NAME $DECLARED; an unanswered registry is not a green light"
-            exit 1
-          fi
-
-          # And is it above the latest release? A free version can still be below
-          # it, and publishing that would leave `pip install malloy-publisher-sdk`
-          # resolving something newer than what this repo declares.
-          if ! LATEST="$(curl -sS --max-time 20 "https://pypi.org/pypi/$SLUG/json" \
-                 | python -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')" \
-             || [ -z "$LATEST" ]; then
-            echo "::error title=Version::could not read $NAME's latest version from PyPI"
-            exit 1
-          fi
-          # Same `sort -V` prerelease inversion as the npm siblings (it ranks
-          # 0.2.0-rc.1 above 0.2.0), and the same resolution — skip the test
-          # rather than implement semver ordering in shell. The reason it is safe
-          # differs, though, and is weaker: python-sdk.yml has NO dist-tag
-          # routing, so nothing here withholds a prerelease from being "latest"
-          # the way npm-sdk.yml does. What holds instead is on the consumer side:
-          # pip does not install a prerelease unless asked with --pre. If this
-          # package ever ships a prerelease, verify that assumption first.
-          if [[ "$DECLARED" == *-* ]]; then
-            echo "::notice title=Version::$NAME $DECLARED is free; skipping the above-latest test because it is a prerelease"
-            exit 0
-          fi
-
-          if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
-            echo "::error title=Version::packages/python-client/pyproject.toml declares $DECLARED, which is BELOW PyPI's latest ($LATEST). Bump above $LATEST."
-            exit 1
-          fi
-
-          echo "::notice title=Version::$NAME $DECLARED is free and above PyPI's latest ($LATEST)"
-
   # Generates the client, runs its tests, builds the wheel and sdist and
-  # verifies them. On every PR and push that touches the client, and, called
-  # from release.yml, on the release branch for that release's PyPI upload. One
-  # path for both, so a green PR has built and verified exactly the kind of
-  # artifact a release uploads, rather than the guards first running on the day
-  # a PyPI filename is spent.
+  # verifies them. Called from build.yml on every PR into main (ahead of its
+  # python_sdk_smoke_test), and from release.yml on the release branch for that
+  # release's PyPI upload. One path for both, so a green PR has built and
+  # verified exactly the kind of artifact a release uploads, rather than the
+  # guards first running on the day a PyPI filename is spent.
   #
   # Holds NO publishing credential, and must not gain one. This is the build
   # half of the split PyPI's trusted-publishing security model asks for:
@@ -272,9 +54,10 @@ jobs:
   # job executes a lot of third-party code — uv, the generator, black, ruff,
   # pyright, pytest and the wheel's own runtime dependencies in the importability
   # check. Here a compromised one can at worst produce a bad artifact, which the
-  # guards below and the smoke job exist to catch; in a job holding id-token it
-  # could mint a token and upload anything under this project's name. The upload
-  # itself is release.yml's `publish-python-sdk`, which runs no repository code.
+  # guards below and build.yml's smoke test exist to catch; in a job holding
+  # id-token it could mint a token and upload anything under this project's
+  # name. The upload itself is release.yml's `publish-python-sdk`, which runs
+  # no repository code.
   build:
     name: Build and verify the wheel and sdist
     runs-on: ubuntu-latest
@@ -286,7 +69,7 @@ jobs:
         with:
           # The release branch when release.yml calls this, so the wheel is
           # generated from the api-doc.yaml of the server being released; the
-          # triggering ref otherwise.
+          # caller's own ref (the PR) otherwise.
           ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python
@@ -407,8 +190,9 @@ jobs:
           fi
 
       # Only after every guard above has passed, so nothing downstream can be
-      # handed a dist/ that was not verified. The artifact is the only thing that
-      # crosses into release.yml's publish job, which holds id-token.
+      # handed a dist/ that was not verified: build.yml's python_sdk_smoke_test
+      # on a PR, release.yml's publish-python-sdk (which holds id-token) on a
+      # release.
       - name: Hand the verified dist/ on
         uses: actions/upload-artifact@v4
         with:
@@ -419,189 +203,3 @@ jobs:
           # failed at the registry, which reuses this artifact rather than
           # rebuilding it.
           retention-days: 7
-
-  # Drives a real Publisher server through the wheel `build` produced, on every
-  # Python version the package says it supports.
-  #
-  # The unit tests mock httpx, so they show the generated client agrees with
-  # itself. This shows what they cannot: that api-doc.yaml, the generator and
-  # the server agree about the wire format, because every answer has to parse
-  # into the generated models (scripts/smoke-test-wheel.py). And it shows the
-  # package metadata is honest: `requires-python` once said >=3.9 while the
-  # generated code cannot even be imported on 3.9, and nothing here noticed,
-  # because every job ran 3.11.
-  #
-  # On every PR into main and on pushes, not in the release: the same split as
-  # the Docker image, which build.yml's docker_smoke_test boots on every PR
-  # while docker-image.yml only builds and pushes it. release.yml calls this
-  # workflow with `skip_smoke: true`, so a release runs `build` alone and its
-  # upload does not wait on a server build. The server here is built from the
-  # same checkout as the wheel, so a server change that breaks the SDK's wire
-  # format fails the PR that makes it.
-  smoke:
-    name: Drive a Publisher server through the built wheel
-    needs: build
-    if: ${{ !inputs.skip_smoke }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      PUBLISHER_PORT: "4010"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
-
-      # The same build and start build.yml's runtime_test uses for its
-      # bun-direct leg, against the same packages/server/publisher.config.json.
-      - name: Build the server
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Start the server
-        working-directory: packages/server
-        run: |
-          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --server_root ./ \
-            > "$RUNNER_TEMP/server.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/server.pid"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # uv provisions every other interpreter below itself, so this is the only
-      # Python the runner has to supply.
-      - name: Install uv via pip
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Download the verified dist/
-        uses: actions/download-artifact@v4
-        with:
-          name: python-client-dist
-          path: ${{ runner.temp }}/dist
-
-      - name: Wait for the server to reach 'serving'
-        run: |
-          SERVER_PID="$(cat "$RUNNER_TEMP/server.pid")"
-          for i in $(seq 1 90); do
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "::error title=SDK smoke::the Publisher server exited before serving (log below)"
-              sed 's/^/[server] /' "$RUNNER_TEMP/server.log"
-              exit 1
-            fi
-            state="$(curl -sf --max-time 5 "http://localhost:${PUBLISHER_PORT}/api/v0/status" \
-              | python -c 'import json, sys; print(json.load(sys.stdin).get("operationalState", ""))' 2>/dev/null || true)"
-            if [ "$state" = "serving" ]; then
-              echo "serving after ${i}s"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error title=SDK smoke::the Publisher server did not reach 'serving' within 90s (log below)"
-          sed 's/^/[server] /' "$RUNNER_TEMP/server.log"
-          exit 1
-
-      # Every version the package claims, read from pyproject.toml rather than
-      # listed here, so the claim and the test cannot drift: the floor of
-      # `requires-python` plus each `Programming Language :: Python :: 3.N`
-      # classifier. Adding a classifier adds a leg; lowering the floor puts the
-      # lower version under test before it can ship.
-      - name: Install the wheel into a clean venv per Python, and drive the server
-        run: |
-          set -euo pipefail
-          # Through `if !` and then a non-empty check, never a bare
-          # `read <<<"$(...)"`: a failed substitution there leaves VERSIONS
-          # empty, the loop below runs zero times, and the step reports a pass.
-          if ! OUT="$(python -c '
-          import re, sys, tomllib
-          with open("packages/python-client/pyproject.toml", "rb") as f:
-              p = tomllib.load(f)["project"]
-          floor = re.fullmatch(r">=\s*(3\.\d+)", p["requires-python"].strip())
-          if not floor:
-              sys.exit("requires-python is " + repr(p["requires-python"]) + "; this step reads only a bare >=3.N floor, so extend it before changing that shape")
-          found = {floor.group(1)}
-          for c in p.get("classifiers", []):
-              m = re.fullmatch(r"Programming Language :: Python :: (3\.\d+)", c)
-              if m:
-                  found.add(m.group(1))
-          print(" ".join(sorted(found, key=lambda v: int(v.split(".")[1]))))
-          ' 2>&1)"; then
-            printf '%s\n' "$OUT" | sed 's/^/[pyproject] /'
-            echo "::error title=SDK smoke::could not read the supported Python versions from packages/python-client/pyproject.toml (logged above)"
-            exit 1
-          fi
-          # The last line only: anything Python warned on a successful run is
-          # in OUT too, through the 2>&1 above.
-          read -r -a VERSIONS <<<"$(printf '%s\n' "$OUT" | tail -n 1)"
-          if [ "${#VERSIONS[@]}" -eq 0 ]; then
-            echo "::error title=SDK smoke::pyproject.toml yielded no Python versions to test, so nothing would be checked"
-            exit 1
-          fi
-          echo "Python versions under test: ${VERSIONS[*]}"
-
-          shopt -s nullglob
-          WHEELS=("$RUNNER_TEMP"/dist/*.whl)
-          if [ "${#WHEELS[@]}" -ne 1 ]; then
-            echo "::error title=SDK smoke::expected exactly one wheel in the downloaded dist/, found ${#WHEELS[@]}"
-            exit 1
-          fi
-
-          FAILED=()
-          for v in "${VERSIONS[@]}"; do
-            echo "::group::Python $v"
-            venv="$RUNNER_TEMP/venv-$v"
-            # All three inside the `if`, so a version uv cannot provision or
-            # the wheel cannot install on fails its own leg, by name, rather
-            # than ending the step under set -e before the others have run.
-            # uv downloads a managed interpreter when the runner has none.
-            #
-            # The smoke script runs by path and with -I, from outside the
-            # checkout, so neither the working directory nor PYTHONPATH can put
-            # the source tree on sys.path; see the script's docstring.
-            if uv venv --python "$v" "$venv" \
-               && VIRTUAL_ENV="$venv" uv pip install "${WHEELS[0]}" \
-               && (cd "$RUNNER_TEMP" && "$venv/bin/python" -I \
-                  "$GITHUB_WORKSPACE/packages/python-client/scripts/smoke-test-wheel.py" \
-                  --base-url "http://localhost:${PUBLISHER_PORT}/api/v0" \
-                  --config "$GITHUB_WORKSPACE/packages/server/publisher.config.json" \
-                  --query-environment examples \
-                  --query-package storefront \
-                  --query-model storefront.malloy \
-                  --query 'run: regions -> { aggregate: region_count is count() }'); then
-              echo "::endgroup::"
-            else
-              echo "::endgroup::"
-              echo "::error title=SDK smoke::the built wheel could not be installed, or failed against the server, on Python $v (its group above says which)"
-              FAILED+=("$v")
-            fi
-          done
-          # Every version runs before this fails, so one red run names every
-          # broken interpreter rather than the first.
-          if [ "${#FAILED[@]}" -ne 0 ]; then
-            echo "- SDK smoke failed on Python ${FAILED[*]}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "- SDK smoke passed on Python ${VERSIONS[*]}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Server log
-        if: failure()
-        run: sed 's/^/[server] /' "$RUNNER_TEMP/server.log" || true

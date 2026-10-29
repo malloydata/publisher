@@ -261,3 +261,96 @@ describe("the real manifests it is pointed at", () => {
     }
   });
 });
+
+// The Python SDK's pyproject.toml, which `prepare` stamps alongside the three
+// package.json files so the SDK releases in lockstep. A tool table carrying its
+// own `version` sits on either side of [project], which is what the table-scoped
+// match has to see past.
+const PYPROJECT = `[build-system]
+requires = ["hatchling"]
+
+[tool.before]
+version = "7.7.7"
+
+[project]
+name = "malloy-publisher-sdk"
+version = "0.10.2"
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+
+[tool.after]
+version = "8.8.8"
+`;
+
+describe("a pyproject.toml", () => {
+  it("rewrites the [project] version and nothing else", () => {
+    const { "pyproject.toml": file } = workspace({
+      "pyproject.toml": PYPROJECT,
+    });
+
+    const { code, stdout } = run("0.10.3", file);
+
+    expect(code).toBe(0);
+    expect(stdout).toBe("1");
+    expect(readFileSync(file, "utf8")).toBe(
+      PYPROJECT.replace('version = "0.10.2"', 'version = "0.10.3"'),
+    );
+  });
+
+  it("is set in the same call as the package.json files", () => {
+    const files = workspace({
+      "package.json": MANIFEST,
+      "pyproject.toml": PYPROJECT,
+    });
+
+    expect(run("0.10.3", ...Object.values(files))).toMatchObject({
+      code: 0,
+      stdout: "2",
+    });
+  });
+
+  it("fails when [project] has no version, rather than setting another table's", () => {
+    const { "pyproject.toml": file } = workspace({
+      "pyproject.toml": PYPROJECT.replace('version = "0.10.2"\n', ""),
+    });
+
+    const { code, stderr } = run("0.10.3", file);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("[project] table");
+    expect(readFileSync(file, "utf8")).toBe(
+      PYPROJECT.replace('version = "0.10.2"\n', ""),
+    );
+  });
+
+  it("fails on a file with no [project] table", () => {
+    const { "pyproject.toml": file } = workspace({
+      "pyproject.toml": '[tool.only]\nversion = "1.0.0"\n',
+    });
+
+    expect(run("0.10.3", file).code).toBe(1);
+  });
+
+  it("sets the version in a copy of the real pyproject.toml", () => {
+    // release.yml passes this path literally, so a reformat that moved the
+    // version out of [project]'s reach would otherwise be found by a release.
+    const repoRoot = path.join(import.meta.dir, "..");
+    const original = readFileSync(
+      path.join(repoRoot, "packages", "python-client", "pyproject.toml"),
+      "utf8",
+    );
+    const { "pyproject.toml": file } = workspace({
+      "pyproject.toml": original,
+    });
+
+    expect(run("9.9.9", file)).toMatchObject({ code: 0, stdout: "1" });
+    const after = readFileSync(file, "utf8");
+    expect(after).toContain('\nversion = "9.9.9"\n');
+    // Exactly one line differs.
+    const changed = after
+      .split("\n")
+      .filter((line, i) => line !== original.split("\n")[i]);
+    expect(changed).toEqual(['version = "9.9.9"']);
+  });
+});

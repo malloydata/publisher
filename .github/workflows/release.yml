@@ -73,7 +73,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json"
+          # The Python SDK's pyproject.toml rides along: it releases in lockstep
+          # with sdk/app/server, so the release stamps its version here and the
+          # release PR merges it back, the same as the three package.json files.
+          # set-version.mjs sets its [project] version.
+          PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json packages/python-client/pyproject.toml"
 
           # Rewriting the top-level "version" field in each workspace
           # package.json lives in scripts/set-version.mjs rather than a shell
@@ -234,12 +238,12 @@ jobs:
 
           # A release whose version main already declares has nothing to bump.
           # It is reachable when neither `release/v<v>` nor `v<v>` exists: a
-          # hand-edit of those three files, or a release branch AND its tag both
+          # hand-edit of those four files, or a release branch AND its tag both
           # deleted. `version_taken` above catches every other route here. It
           # would fail closed regardless, so this buys a readable message.
           # shellcheck disable=SC2086
           if git diff --quiet -- $PKGS; then
-            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three package.json files were edited by hand. Pick the next free version instead."
+            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those four version files were edited by hand. Pick the next free version instead."
             exit 1
           fi
 
@@ -271,7 +275,7 @@ jobs:
           # shellcheck disable=SC2086
           git add $PKGS RELEASE_NOTES.md
           git commit -s -m "chore(release): ${NEW_VERSION}" \
-            -m "Stamps ${STAMPED} release-note section(s) and sets sdk, app and server to ${NEW_VERSION}."
+            -m "Stamps ${STAMPED} release-note section(s) and sets sdk, app, server and the Python SDK to ${NEW_VERSION}."
 
           git push origin "$BRANCH_NAME"
 
@@ -317,12 +321,12 @@ jobs:
   # `publish-python-sdk` into python-sdk.yml (or any other file) breaks
   # publishing until the PyPI entry is changed to match.
   #
-  # The SDK versions on its own line, by a committed bump of
-  # packages/python-client/pyproject.toml that python-sdk.yml's PR check
-  # enforces, so most releases have nothing new for PyPI and the publish job
-  # skips. Skipped too on a prerelease of sdk/app/server, for the reason
-  # publish-packages skips there: the SDK's own version carries no hyphen, so
-  # PyPI would take it as a full release.
+  # The SDK releases in lockstep with sdk/app/server: prepare stamps this
+  # release's version into packages/python-client/pyproject.toml on the
+  # release branch, so every release publishes the SDK at its own version and
+  # there is no bump for a PR to forget. Both jobs skip on a prerelease:
+  # nothing in the release decides how a prerelease should reach PyPI, where
+  # `pip install` would not pick it up without --pre anyway.
   #
   # Deliberately NOT in gh-release's needs, for the reason publish-packages is
   # not: a failed PyPI upload must not leave sdk/app/server half-released and
@@ -336,17 +340,14 @@ jobs:
       contents: read
     uses: ./.github/workflows/python-sdk.yml
     with:
-      # The release branch, like publish-npm and publish-docker, so the SDK is
-      # generated from the api-doc.yaml of the server this release ships.
-      # prepare bumps only sdk/app/server, so packages/python-client is the
-      # same as on the ref this run started from.
+      # The release branch, like publish-npm and publish-docker: it carries the
+      # version prepare stamped into pyproject.toml, and the SDK is generated
+      # from the api-doc.yaml of the server this release ships. No smoke test
+      # here, the same as the image: build.yml's python_sdk_smoke_test drives
+      # the SDK against a server on every PR, and the release keeps build's own
+      # guards (one wheel and one sdist, the client in the sdist, the wheel
+      # importing from a clean venv).
       ref: ${{ needs.prepare.outputs.branch_name }}
-      # The smoke job (the wheel driven against a server) runs on PRs and
-      # pushes, the way build.yml's docker_smoke_test does for the image that
-      # publish-docker only builds and pushes. The release keeps build's own
-      # guards: one wheel and one sdist, the client in the sdist, and the
-      # wheel importing from a clean venv.
-      skip_smoke: true
 
   # The only job in the release that can mint a PyPI token, so it runs no
   # repository code and installs nothing: it downloads the dist/ that
@@ -395,11 +396,18 @@ jobs:
       # with what PyPI receives. The runner's python3 and stdlib only, nothing
       # installed, because this job holds id-token.
       #
-      # "Already on PyPI" is the ordinary outcome, not an error: the SDK's
-      # version moves only when someone bumps it, so most releases skip here.
-      # A PyPI filename can never be reused, so uploading anyway would fail.
+      # The wheel must carry this release's version: prepare stamped it into
+      # pyproject.toml, and a stamp that did not reach the wheel would publish
+      # the previous release's number, or fail on it, under this release.
+      #
+      # "Already on PyPI" is a skip, not an error. With the version in
+      # lockstep it means a re-run after this job's own upload landed, and a
+      # PyPI filename can never be reused, so uploading again would fail.
       - name: Decide whether this version is new on PyPI
         id: decide
+        env:
+          # Through env, not interpolated into the script body.
+          NEW_VERSION: ${{ needs.prepare.outputs.new_version }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -432,12 +440,17 @@ jobs:
             exit 1
           fi
           # Plain major.minor.patch only, validated before it reaches a URL or
-          # an annotation. python-sdk.yml's bump check compares versions with
-          # `sort -V`, which does not implement PEP 440 ordering, and nothing in
-          # the release decides what a prerelease of the SDK should be tagged.
+          # an annotation. Both Python SDK jobs skip a prerelease, so anything
+          # else here means the wheel's version came from somewhere unexpected.
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             printf '%s\n' "$VERSION" | sed 's/^/[wheel] /'
             echo "::error title=PyPI::the wheel's version (logged above) is not a plain major.minor.patch; a release publishes only those. NOTHING was uploaded."
+            exit 1
+          fi
+          # Lockstep: prepare stamped this release's version into pyproject.toml
+          # on the release branch, and the wheel was built from that branch.
+          if [ "$VERSION" != "$NEW_VERSION" ]; then
+            echo "::error title=PyPI::the wheel declares ${VERSION}, but this release is ${NEW_VERSION}, so prepare's stamp of packages/python-client/pyproject.toml did not reach the wheel. NOTHING was uploaded."
             exit 1
           fi
           # The STATUS is the answer; no --fail, because a 404 is an answer and
@@ -451,7 +464,7 @@ jobs:
               echo "publish=true" >> "$GITHUB_OUTPUT"
               ;;
             200)
-              echo "::notice title=PyPI::${NAME} ${VERSION} is already on PyPI; nothing to publish. Bump packages/python-client/pyproject.toml to release a new SDK."
+              echo "::notice title=PyPI::${NAME} ${VERSION} is already on PyPI (a re-run after the upload landed); nothing to publish"
               echo "- \`${NAME}==${VERSION}\` was already on PyPI, skipped" >> "$GITHUB_STEP_SUMMARY"
               echo "publish=false" >> "$GITHUB_OUTPUT"
               ;;
@@ -573,7 +586,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # main, never needs.prepare.outputs.branch_name. prepare bumps only
-          # sdk/app/server, so the release branch's copies of these two
+          # sdk/app/server and the Python SDK, so the release branch's copies of
+          # these two
           # packages are identical to main, and both children guard on
           # github.ref == 'refs/heads/main'. Dispatched on a release branch their
           # publish jobs SKIP, and a skipped job reports success, so the release
