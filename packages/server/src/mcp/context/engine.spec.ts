@@ -34,6 +34,7 @@ import {
 import { ServiceUnavailableError } from "../../errors";
 import { pollFor, pollUntil } from "../../test_helpers/poll";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
+import { _setFcjDeadlineForTests } from "./engine";
 import { _setFcjValueFetcherForTests, fcjStateOf } from "./engine_state";
 import type { IndexValueFetcher } from "./values_index";
 import type { Package } from "../../service/package";
@@ -339,6 +340,57 @@ describe("the search engine", () => {
       } finally {
          if (saved[0] !== undefined) process.env.JUDGE_LLM_API_KEY = saved[0];
          if (saved[1] !== undefined) process.env.LLM_API_KEY = saved[1];
+         _clearChatModelForTests();
+      }
+   });
+});
+
+describe("fcj request deadline", () => {
+   it("answers every target as unresolved, naming a narrower scope, when the search runs out of time", async () => {
+      const reply = JSON.stringify({
+         picks: [{ target: 1, candidates: [1] }],
+         caveats: [],
+      });
+      // The judge answers, but only after the deadline has passed.
+      const chat = scriptedChat((prompt) =>
+         prompt.includes("<targets>")
+            ? new Promise((resolve) => setTimeout(() => resolve(reply), 1_000))
+            : reply,
+      );
+      _setChatModelForTests(chat.model);
+      try {
+         const { pkg } = await compileFcjFixture();
+         const handler = harness.handlerFor(pkg);
+         const request = {
+            search_targets: [
+               { target_type: "measure", search_text: "number of flights" },
+               { target_type: "dimensional_value", search_text: "Denver" },
+            ],
+            scopes,
+         };
+         await pollUntilBuilt(handler, request);
+         _setFcjDeadlineForTests(200);
+         const { payload } = await callPayload(handler, request);
+         expect(payload.sources).toEqual([]);
+         expect(payload.unresolved_targets).toEqual([
+            {
+               target_index: 0,
+               target_type: "measure",
+               search_text: "number of flights",
+            },
+            {
+               target_index: 1,
+               target_type: "dimensional_value",
+               search_text: "Denver",
+            },
+         ]);
+         expect(payload.warnings.at(-1)).toBe(
+            "The search ran out of time after 0.2 seconds, so no target was answered. Search again with a narrower scope: name the source in scopes[].source, and for a value its field in scopes[].entity_name, or send fewer targets.",
+         );
+      } finally {
+         _setFcjDeadlineForTests(undefined);
+         // Let the abandoned judge call finish before the next test.
+         await new Promise((resolve) => setTimeout(resolve, 1_100));
          _clearChatModelForTests();
       }
    });

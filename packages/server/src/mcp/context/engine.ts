@@ -223,14 +223,75 @@ export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
    }));
 }
 
-export async function runFcjQuery(args: {
+/** How long one `get_context` search may run before its targets are answered as unresolved. */
+export const FCJ_REQUEST_DEADLINE_MS = 90_000;
+let deadlineForTests: number | undefined;
+/** Tests only: a shorter deadline (undefined restores the default). */
+export function _setFcjDeadlineForTests(ms: number | undefined): void {
+   deadlineForTests = ms;
+}
+
+type FcjQueryArgs = {
    request: ResolvedRequest;
    environmentStore: EnvironmentStore;
    pkgIndex: PackageIndex;
    uri: string;
    warnings: string[];
    traceMode: TraceMode;
-}): Promise<ReturnType<typeof jsonResource>> {
+};
+
+/**
+ * Answer a ranked request within {@link FCJ_REQUEST_DEADLINE_MS}. A search
+ * that runs out of time answers every target as unresolved, with a warning
+ * naming the narrower scope to retry with; it never falls back to a cheaper
+ * search. The abandoned search's model calls finish on their own and their
+ * result is discarded.
+ */
+export async function runFcjQuery(
+   args: FcjQueryArgs,
+): Promise<ReturnType<typeof jsonResource>> {
+   const ms = deadlineForTests ?? FCJ_REQUEST_DEADLINE_MS;
+   const search = runFcjSearch(args);
+   // Past the deadline nobody awaits it; a later failure is not unhandled.
+   search.catch(() => undefined);
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const late = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => resolve("late"), ms);
+   });
+   try {
+      const out = await Promise.race([search, late]);
+      if (out !== "late") return out;
+   } finally {
+      clearTimeout(timer);
+   }
+   const state = fcjStateOf(args.pkgIndex.pkg);
+   const index = state?.status === "ready" ? state.index : undefined;
+   return jsonResource(args.uri, {
+      sources: [],
+      ranking: "relevance" as const,
+      total_available: 0,
+      returned: 0,
+      retrieval:
+         index && index.vectors.size > 0
+            ? ("semantic" as const)
+            : ("lexical" as const),
+      clusters: [],
+      unresolved_targets: findTargetsOf(args.request).map((t) => ({
+         target_index: t.index,
+         target_type: t.type,
+         search_text: t.text,
+      })),
+      ...skillsFor({ pkgIndex: args.pkgIndex }),
+      warnings: [
+         ...args.warnings,
+         `The search ran out of time after ${ms / 1000} seconds, so no target was answered. Search again with a narrower scope: name the source in scopes[].source, and for a value its field in scopes[].entity_name, or send fewer targets.`,
+      ],
+   });
+}
+
+async function runFcjSearch(
+   args: FcjQueryArgs,
+): Promise<ReturnType<typeof jsonResource>> {
    const { request, environmentStore, pkgIndex, uri, traceMode } = args;
    const pkg = pkgIndex.pkg;
    const state = fcjStateOf(pkg);
