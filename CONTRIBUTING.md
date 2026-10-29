@@ -80,19 +80,20 @@ Use `uv pip install -e ".[test]"` inside `packages/python-client` to install dev
 pytest tests/ -q
 ```
 
-CI also builds the wheel and sdist, installs the wheel into a clean venv on every Python version
-`pyproject.toml` declares, and drives a real Publisher server through it
-(`scripts/smoke-test-wheel.py`). A PR that changes `requires-python` or the version classifiers
-changes what that job tests.
+On every PR into `main`, CI also builds the wheel and sdist, starts a Publisher server built from
+the PR, installs the wheel into a clean venv on every Python version `pyproject.toml` declares, and
+drives the server through it (`scripts/smoke-test-wheel.py`). That runs on server-only PRs too,
+since a server change can break the SDK without touching `api-doc.yaml`. A PR that changes
+`requires-python` or the version classifiers changes what that job tests.
 
 ### Releasing to PyPI
 
 1. Bump `version` in `pyproject.toml` in your PR, as a plain `major.minor.patch`. The
    `python-sdk.yml` check fails a PR that changes the client or `api-doc.yaml` without a version that
    is free on PyPI and above its latest.
-2. Merge it. The next Publisher release (`release.yml`) builds the SDK from its release branch,
-   smoke-tests it against that release's server, and uploads it to PyPI through trusted publishing
-   (OIDC; there is no API token). A release whose SDK version is already on PyPI skips the upload.
+2. Merge it. The next Publisher release (`release.yml`) builds and verifies the SDK from its release
+   branch and uploads it to PyPI through trusted publishing (OIDC; there is no API token). A release
+   whose SDK version is already on PyPI skips the upload.
 
 There are no tags to push and nothing to dispatch by hand. See *Publishing to PyPI* in
 `.github/workflows/CONTEXT.md`.

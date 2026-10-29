@@ -10,30 +10,38 @@ on:
       - "api-doc.yaml"
       - "packages/python-client/**"
       - ".github/workflows/python-sdk.yml"
+  # Every PR into main, with no paths filter, the way build.yml runs
+  # docker_smoke_test. `smoke` drives the SDK against a server built from the
+  # PR, and a server change can alter what goes over the wire without touching
+  # api-doc.yaml or packages/python-client/, so a path-filtered trigger would
+  # skip exactly the PRs most likely to break the SDK. `check_version` scopes
+  # itself with its own diff, so running it everywhere costs one notice.
   pull_request:
-    paths:
-      - "api-doc.yaml"
-      - "packages/python-client/**"
-      # This file, so a change to `check_version` below is exercised by the PR
-      # that makes it — the same reason skills-npm.yml and
-      # create-malloy-package-npm.yml list their own files. It does mean a
-      # YAML-only edit also runs `build`, which installs uv and regenerates the
-      # client; that is a few minutes on a rare kind of PR, and the alternative
-      # is a check nothing ever runs before it is relied on.
-      - ".github/workflows/python-sdk.yml"
+    branches: [main]
   # Builds and smoke-tests on any branch; it publishes nothing. Publishing is
   # release.yml's, and only release.yml's (see `build` below).
   workflow_dispatch:
-  # release.yml's `build-python-sdk`, on the release branch. This workflow
-  # still holds no publishing credential when called: the upload is a job in
-  # release.yml itself, because PyPI does not support trusted publishing from
-  # a reusable workflow. CONTEXT.md, *Publishing to PyPI*, has the rest.
+  # release.yml's `build-python-sdk`, on the release branch, with the smoke job
+  # skipped. This workflow still holds no publishing credential when called:
+  # the upload is a job in release.yml itself, because PyPI does not support
+  # trusted publishing from a reusable workflow. CONTEXT.md, *Publishing to
+  # PyPI*, has the rest.
   workflow_call:
     inputs:
       ref:
-        description: "The ref to build and smoke-test (the release branch)"
+        description: "The ref to build (the release branch)"
         required: true
         type: string
+      # Named as a skip, not as `smoke: true`, because the smoke job's `if:`
+      # also runs on pull_request and push, where `inputs` is empty. GitHub
+      # compares null with a boolean as numbers (null is 0, false is 0), so
+      # `inputs.smoke != false` would be false on every PR and skip the
+      # smoke there silently. `!inputs.skip_smoke` is true for a null.
+      skip_smoke:
+        description: "Skip the smoke job (release.yml does; it runs on PRs and pushes)"
+        required: false
+        default: false
+        type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -99,8 +107,7 @@ jobs:
           # generated client is two things: the package directory, and the
           # OpenAPI spec it is generated out of (build-python-sdk.sh runs
           # openapi-python-client against ../../api-doc.yaml). This workflow file
-          # is in the `paths:` trigger and deliberately not here: editing it
-          # changes no published byte.
+          # is deliberately not here: editing it changes no published byte.
           PATHS=(api-doc.yaml packages/python-client)
 
           # Assert every entry exists: `git diff -- does/not/exist` exits 0 with
@@ -424,11 +431,17 @@ jobs:
   # generated code cannot even be imported on 3.9, and nothing here noticed,
   # because every job ran 3.11.
   #
-  # The server is built from the same checkout, so on a release this is the SDK
-  # against exactly the server being released.
+  # On every PR into main and on pushes, not in the release: the same split as
+  # the Docker image, which build.yml's docker_smoke_test boots on every PR
+  # while docker-image.yml only builds and pushes it. release.yml calls this
+  # workflow with `skip_smoke: true`, so a release runs `build` alone and its
+  # upload does not wait on a server build. The server here is built from the
+  # same checkout as the wheel, so a server change that breaks the SDK's wire
+  # format fails the PR that makes it.
   smoke:
     name: Drive a Publisher server through the built wheel
     needs: build
+    if: ${{ !inputs.skip_smoke }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

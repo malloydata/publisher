@@ -213,8 +213,9 @@ nor 404.) It starts enforcing for real the moment a version is up there, so trea
 the Python version as unenforced only until then.
 
 **It publishes from `release.yml` itself**, not from `publish-packages`:
-`build-python-sdk` calls `python-sdk.yml` on the release branch (build, verify,
-smoke-test against that branch's server) and `publish-python-sdk` uploads the
+`build-python-sdk` calls `python-sdk.yml` on the release branch (build and
+verify; the smoke test against a server runs on every PR instead, like the
+Docker image's) and `publish-python-sdk` uploads the
 verified wheel and sdist through PyPI trusted publishing, skipping when the
 version is already on PyPI. Nothing has been uploaded yet; before the release
 that would be the first, read *Publishing to PyPI* in
@@ -496,8 +497,7 @@ after the merge (the first command in step 3).
 - **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
   unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
   the publish job skips a version PyPI already holds, and reuses the verified
-  artifact. A red `smoke` is a real SDK-vs-server finding; fix it on `main`.
-  **Do not re-run the release.**
+  artifact. **Do not re-run the release.**
 - **Only `publish-packages` is red** → the sdk/app/server release completed and
   the tag exists; that job sits outside `gh-release`'s `needs`. Use *Re-run
   failed jobs*, which re-enters that job alone and skips whatever already landed.

@@ -305,8 +305,8 @@ jobs:
       ref: ${{ needs.prepare.outputs.branch_name }}
 
   # The Python SDK (`malloy-publisher-sdk` on PyPI), at the same level as
-  # publish-npm and publish-docker: built and smoke-tested from the release
-  # branch by python-sdk.yml, then uploaded by the job below it.
+  # publish-npm and publish-docker: built and verified from the release branch
+  # by python-sdk.yml, then uploaded by the job below it.
   #
   # Two jobs where its neighbours have one `uses:`, and the split is forced, not
   # chosen. PyPI does not support trusted publishing from a reusable workflow,
@@ -337,16 +337,21 @@ jobs:
     uses: ./.github/workflows/python-sdk.yml
     with:
       # The release branch, like publish-npm and publish-docker, so the SDK is
-      # generated from the api-doc.yaml of the server this release ships, and
-      # smoke-tested against that server. prepare bumps only sdk/app/server, so
-      # packages/python-client is the same as on the ref this run started from.
+      # generated from the api-doc.yaml of the server this release ships.
+      # prepare bumps only sdk/app/server, so packages/python-client is the
+      # same as on the ref this run started from.
       ref: ${{ needs.prepare.outputs.branch_name }}
+      # The smoke job (the wheel driven against a server) runs on PRs and
+      # pushes, the way build.yml's docker_smoke_test does for the image that
+      # publish-docker only builds and pushes. The release keeps build's own
+      # guards: one wheel and one sdist, the client in the sdist, and the
+      # wheel importing from a clean venv.
+      skip_smoke: true
 
   # The only job in the release that can mint a PyPI token, so it runs no
   # repository code and installs nothing: it downloads the dist/ that
-  # python-sdk.yml's `build` verified (and its `smoke` drove against the
-  # server), asks PyPI whether that version is new, and hands it to PyPA's
-  # action. The build half runs third-party code (uv, the generator, linters,
+  # python-sdk.yml's `build` verified, asks PyPI whether that version is new,
+  # and hands it to PyPA's action. The build half runs third-party code (uv, the generator, linters,
   # pytest) and holds no id-token for exactly that reason; see python-sdk.yml.
   #
   # Trusted publishing (OIDC), not a stored token. There is no PYPI_TOKEN and
