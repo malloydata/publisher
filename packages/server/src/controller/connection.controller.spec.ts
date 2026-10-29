@@ -1615,3 +1615,66 @@ describe("lookupFailureDriverMessage", () => {
       ).toBeUndefined();
    });
 });
+
+/**
+ * A DuckLake connection's table path as the remote connection sends it: the
+ * path's first segment as the schema. A bare `lake.table('orders')` must read
+ * the catalog's default schema, not a schema named `orders`.
+ */
+describe("ConnectionController getTable DuckLake paths", () => {
+   afterEach(() => sinon.restore());
+
+   async function describedPath(
+      schemaName: string,
+      tablePath: string,
+   ): Promise<string> {
+      const fetchTableSchema = sinon.stub().resolves({
+         type: "table",
+         name: "orders",
+         dialect: "duckdb",
+         tablePath,
+         connection: "lake",
+         fields: [],
+      });
+      const fakeConnection = { fetchTableSchema } as unknown as Connection;
+      const fakeEnv = {
+         getApiConnection: sinon
+            .stub()
+            .returns({ name: "lake", type: "ducklake" }),
+      };
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves(fakeEnv),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+      await controller.getTable("env", "lake", schemaName, tablePath);
+      return fetchTableSchema.firstCall.args[1] as string;
+   }
+
+   it("reads a bare name the remote connection sends from the default schema", async () => {
+      expect(await describedPath("orders", "orders")).toBe("lake.orders");
+   });
+
+   it("reads a bare name under a schema the route names", async () => {
+      expect(await describedPath("main", "orders")).toBe("lake.main.orders");
+   });
+
+   it("prefixes a schema-qualified path with the catalog", async () => {
+      expect(await describedPath("main", "main.orders")).toBe(
+         "lake.main.orders",
+      );
+   });
+
+   it("leaves a path already naming the catalog as it is", async () => {
+      expect(await describedPath("lake", "lake.main.orders")).toBe(
+         "lake.main.orders",
+      );
+   });
+});

@@ -32,6 +32,7 @@ import {
    createIsolatedBuildSession,
    dropStorageTable,
 } from "./materialization_build_session";
+import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { quoteIdentifier } from "./quoting";
 import { withStatementUsage } from "./statement_usage";
@@ -113,6 +114,15 @@ export function catalogAdminConfigFromEnv(
             throw new Error(
                "PUBLISHER_ADMIN_STORAGE_PROVIDER=s3 needs PUBLISHER_ADMIN_STORAGE_KEY_ID and PUBLISHER_ADMIN_STORAGE_SECRET.",
             );
+         }
+         if (env.PUBLISHER_ADMIN_STORAGE_ENDPOINT) {
+            try {
+               parseS3Endpoint(env.PUBLISHER_ADMIN_STORAGE_ENDPOINT);
+            } catch (error) {
+               throw new Error(
+                  `PUBLISHER_ADMIN_STORAGE_ENDPOINT: ${(error as Error).message}`,
+               );
+            }
          }
          storage = {
             s3Connection: {

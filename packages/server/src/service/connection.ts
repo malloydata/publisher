@@ -81,6 +81,7 @@ import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
    CloudStorageCredentials,
+   checkS3Endpoint,
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
@@ -1879,6 +1880,7 @@ export function buildCloudStorageSecretSQL(
          );
       }
 
+      let clauses: string[];
       if (credentials.provider === "credential_chain") {
          // CHAIN is required: omitted, DuckDB resolves against `config` alone,
          // which cannot work in a container.
@@ -1891,59 +1893,49 @@ export function buildCloudStorageSecretSQL(
          // arms refresh (the aws extension stores `refresh_info` only for it;
          // any other value silently does nothing). Not caller-configurable: a
          // frozen snapshot of an expiring credential has no use.
-         const clauses = [
+         clauses = [
             "TYPE s3",
             "PROVIDER credential_chain",
             `CHAIN '${chain}'`,
             "REFRESH 'auto'",
             `REGION '${region}'`,
          ];
-         // Additive: an S3-compatible endpoint behind a host role is a real
-         // combination.
-         if (credentials.endpoint) {
-            clauses.push(
-               `ENDPOINT '${escapeSQL(credentials.endpoint)}'`,
-               "URL_STYLE 'path'",
-            );
+      } else {
+         clauses = [
+            "TYPE s3",
+            `KEY_ID '${escapedKeyId}'`,
+            `SECRET '${escapedSecret}'`,
+            `REGION '${region}'`,
+         ];
+      }
+      // Additive on both arms: an S3-compatible endpoint behind a host role is a
+      // real combination, and so is one with temporary keys.
+      if (credentials.endpoint) {
+         const { hostAndPath, useSsl } = checkS3Endpoint(
+            credentials.endpoint,
+            credentials.provider,
+         );
+         clauses.push(
+            `ENDPOINT '${escapeSQL(hostAndPath)}'`,
+            "URL_STYLE 'path'",
+         );
+         // `true` is never written: it is DuckDB's default, so a secret for an
+         // https or bare endpoint is what a bare one always was.
+         if (!useSsl) {
+            clauses.push("USE_SSL false");
          }
-         createSecretCommand = `
+      }
+      if (
+         credentials.provider !== "credential_chain" &&
+         credentials.sessionToken
+      ) {
+         clauses.push(`SESSION_TOKEN '${escapeSQL(credentials.sessionToken)}'`);
+      }
+      createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
                ${clauses.join(",\n               ")}
             );
          `;
-      } else if (credentials.endpoint) {
-         const escapedEndpoint = escapeSQL(credentials.endpoint);
-         createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               TYPE s3,
-               KEY_ID '${escapedKeyId}',
-               SECRET '${escapedSecret}',
-               REGION '${region}',
-               ENDPOINT '${escapedEndpoint}',
-               URL_STYLE 'path'
-            );
-         `;
-      } else if (credentials.sessionToken) {
-         const escapedToken = escapeSQL(credentials.sessionToken);
-         createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               TYPE s3,
-               KEY_ID '${escapedKeyId}',
-               SECRET '${escapedSecret}',
-               REGION '${region}',
-               SESSION_TOKEN '${escapedToken}'
-            );
-         `;
-      } else {
-         createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               TYPE s3,
-               KEY_ID '${escapedKeyId}',
-               SECRET '${escapedSecret}',
-               REGION '${region}'
-            );
-         `;
-      }
    }
 
    return createSecretCommand;
