@@ -1,10 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { afterAll, describe, expect, it } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
-import { loadStorageTable, readerSql } from "./storage_table_load";
+import {
+   loadStorageTable,
+   readerRefusal,
+   readerSql,
+} from "./storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -99,5 +107,104 @@ describe("loadStorageTable refuses before attaching", () => {
             uri: "gs://bucket/ds_x/a.csv",
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
+   });
+});
+
+describe("readerRefusal: what a person sent and the reader refused", () => {
+   const uri = "s3://lake/org_1/db_2/staging/orders/0e1f/broken.parquet";
+
+   it("is a 400 in the reader's own words, naming the file rather than the staging path, without the SQL", () => {
+      const refusal = readerRefusal(
+         new Error(
+            `Invalid Input Error: No magic bytes found at end of file '${uri}'\n\nLINE 1: ...CREATE OR REPLACE TABLE "db_2"."main"."orders" AS SELECT * FROM read_parquet('${uri}')`,
+         ),
+         uri,
+      );
+      expect(refusal).toBeInstanceOf(BadRequestError);
+      expect(refusal?.message).toBe(
+         "Invalid Input Error: No magic bytes found at end of file 'broken.parquet'",
+      );
+   });
+
+   it("leaves a storage or catalog failure alone, to answer 500", () => {
+      expect(
+         readerRefusal(
+            new Error("IO Error: Connection error for HTTP HEAD"),
+            uri,
+         ),
+      ).toBeNull();
+      // Arithmetic, which a `SELECT *` from a reader never does.
+      expect(
+         readerRefusal(
+            new Error(
+               "Out of Range Error: Overflow in multiplication of INT8 (100 * 2)!",
+            ),
+            uri,
+         ),
+      ).toBeNull();
+      expect(readerRefusal("not an error", uri)).toBeNull();
+   });
+
+   // The message shapes the patterns above are written against, read from DuckDB
+   // itself, so a DuckDB upgrade that rewords one fails here rather than quietly
+   // answering 500 again.
+   describe("matches what DuckDB says", () => {
+      /** The error DuckDB throws for `CREATE TABLE t AS SELECT * FROM <reader>`. */
+      async function readerError(reader: string): Promise<unknown> {
+         const db = new DuckDBConnection("reader-refusal");
+         try {
+            await db.runSQL(`CREATE TABLE t AS SELECT * FROM ${reader}`);
+            return undefined;
+         } catch (error) {
+            return error;
+         } finally {
+            await db.close();
+         }
+      }
+
+      // Forward slashes, as an object URI has: DuckDB reads them on Windows too.
+      const dir = fs
+         .mkdtempSync(path.join(os.tmpdir(), "reader-refusal-"))
+         .replaceAll(path.sep, "/");
+      afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+      it("for a file that is not Parquet", async () => {
+         const file = `${dir}/broken.parquet`;
+         fs.writeFileSync(file, "this is not a parquet file\n".repeat(64));
+         const refusal = readerRefusal(
+            await readerError(`read_parquet('${file}')`),
+            file,
+         );
+         expect(refusal?.message).toMatch(
+            /^Invalid Input Error: No magic bytes found/,
+         );
+         expect(refusal?.message).toContain("'broken.parquet'");
+         expect(refusal?.message).not.toContain(dir);
+         // The SQL DuckDB echoes after `LINE 1:` names the staging path again.
+         expect(refusal?.message).not.toContain("CREATE TABLE");
+      });
+
+      it("for a CSV value the column's type cannot hold", async () => {
+         const file = `${dir}/orders.csv`;
+         fs.writeFileSync(file, "id,amount\n1,10.5\n2,N/A\n3,7\n");
+         // A type the reader is told, as a column already in the table is on a
+         // replace; a sniffed three-line file would read the column as text.
+         const refusal = readerRefusal(
+            await readerError(
+               `read_csv('${file}', types = {'amount': 'DOUBLE'})`,
+            ),
+            file,
+         );
+         expect(refusal?.message).toMatch(
+            /^Conversion Error: CSV Error on Line: 3\n/,
+         );
+         expect(refusal?.message).toContain(
+            `Could not convert string "N/A" to 'DOUBLE'`,
+         );
+         // The reader's own report names the file: by name, not by staging path.
+         expect(refusal?.message).toContain("file = orders.csv");
+         expect(refusal?.message).not.toContain(dir);
+         expect(refusal?.message).not.toContain("CREATE TABLE");
+      });
    });
 });

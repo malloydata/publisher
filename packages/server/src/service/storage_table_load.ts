@@ -4,7 +4,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../api";
-import { BadRequestError, ConflictError } from "../errors";
+import { BadRequestError, ConflictError, logInternalFailure } from "../errors";
 import {
    applySessionResourceLimits,
    attachDuckLakeReadOnly,
@@ -185,10 +185,43 @@ export async function loadStorageTable(params: {
       if (params.format === "xlsx") {
          await installAndLoadExtension(session, "excel");
       }
-      return await writeTableAs(session, params, reader);
+      return await writeTableAs(session, params, reader, (error) =>
+         readerRefusal(error, params.uri),
+      );
    } finally {
       await dispose();
    }
+}
+
+/**
+ * A load the file reader refused, as the person who sent the file should read it: a 400
+ * carrying DuckDB's own words ("No magic bytes found", `Could not convert string "N/A" to
+ * 'DOUBLE'`), which name the fix, rather than a 500 a caller can only retry. The object's URI,
+ * an internal staging path, is replaced by its file name, and the SQL DuckDB echoes after
+ * `LINE` is dropped. Null for anything else (a storage or catalog failure), which stays a 500.
+ *
+ * Applied only to the `CREATE TABLE ... AS SELECT` that runs the reader (see
+ * {@link writeTableAs}): the flush, count and describe after it run against the
+ * catalog, not the file, so their failures stay 500 whatever their prefix.
+ *
+ * A 400 is not logged on its own, and the route logs only the message returned, so
+ * the original -- the staging path and the SQL -- is logged here at warn for the
+ * operator reading an odd 400.
+ */
+export function readerRefusal(
+   error: unknown,
+   uri: string,
+): BadRequestError | null {
+   if (!(error instanceof Error)) return null;
+   if (!/^(Invalid Input|Conversion) Error:/.test(error.message)) return null;
+   logInternalFailure("Load refused by the file reader", error, "warn");
+   const fileName = path.posix.basename(uri);
+   const words = error.message
+      .split(/\n\s*LINE \d+:/)[0]
+      .split(uri)
+      .join(fileName)
+      .trim();
+   return new BadRequestError(words);
 }
 
 /**
@@ -286,6 +319,11 @@ const COPY_SOURCE_ALIAS = "__copy_source";
  * `CREATE [OR REPLACE] TABLE <destination>.<schema>.<table> AS SELECT * FROM
  * <from>` on a session that has the destination attached read-write, with
  * inlining off, and the table's row count and columns after.
+ *
+ * `refused` classifies a failure of that statement alone: the error it returns
+ * is thrown in place of the original (the load passes {@link readerRefusal}).
+ * It never sees the flush, count or describe that follow, which fail against the
+ * catalog after the table is committed, so a retry would meet the table.
  */
 async function writeTableAs(
    session: DuckDBConnection,
@@ -296,6 +334,7 @@ async function writeTableAs(
       mode: "create" | "replace";
    },
    from: string,
+   refused?: (error: unknown) => Error | null,
 ): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
    const { destinationName, schemaName, tableName } = params;
    // Rows go to Parquet, never into the catalog database: inlining off for this
@@ -318,7 +357,7 @@ async function writeTableAs(
             `Table '${schemaName}.${tableName}' already exists in '${destinationName}'.`,
          );
       }
-      throw error;
+      throw refused?.(error) ?? error;
    }
    // The SET above is only DuckLake's default: a catalog that records its own
    // data_inlining_row_limit (dataInliningRowLimit on POST/PATCH) keeps it, so a
