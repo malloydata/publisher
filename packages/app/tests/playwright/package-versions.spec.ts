@@ -170,6 +170,24 @@ test.describe("package versions — the version switch", () => {
       await shot(page, "01-latest-package-page");
    });
 
+   test("a path with no version canonicalizes onto latest's", async ({
+      page,
+   }) => {
+      // An old link or a typed URL. customers.malloy is only in 1.1.0, the
+      // latest, so the page that opens can only be latest's.
+      await page.goto(`/${env}/${PKG}/customers.malloy?from=old-link`);
+      await expect(page).toHaveURL(
+         new RegExp(
+            `/${env}/${PKG}/latest/customers\\.malloy\\?from=old-link$`,
+         ),
+      );
+      await expect(
+         page
+            .getByRole("navigation", { name: "breadcrumb" })
+            .getByText("customers.malloy"),
+      ).toBeVisible();
+   });
+
    test("the switch lists every version, highest first, latest marked", async ({
       page,
    }) => {
