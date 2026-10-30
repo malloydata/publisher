@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
-import { getS3CredentialChainPolicy } from "../config";
+import { ConnectionOrigin, getS3CredentialChainPolicy } from "../config";
 import { logger } from "../logger";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
@@ -114,6 +114,9 @@ export interface CloudStorageCredentials {
    // with; `chain` is the provider order to try.
    provider?: "config" | "credential_chain";
    chain?: string;
+   // The URL prefix the secret is restricted to (`SCOPE`); unset keeps DuckDB's
+   // default scope, the whole scheme.
+   scope?: string;
 }
 
 interface CloudStorageBucket {
@@ -174,7 +177,7 @@ export function validateS3ProviderShape(
    connectionName: string | undefined,
    // The credential-chain policy turns on this. Unstated means the
    // author-supplied case, the one worth refusing.
-   origin: "connection" | "storage-destination" = "connection",
+   origin: ConnectionOrigin = "connection",
 ): void {
    const provider = s3Connection.provider as unknown;
    if (provider !== undefined) {
@@ -237,7 +240,7 @@ export function validateS3ProviderShape(
 export function resolveCloudStorageCredentials(
    attachedDb: ApiAttachedDatabase,
    // Forwarded to validateS3ProviderShape; unstated means author-supplied.
-   origin: "connection" | "storage-destination" = "connection",
+   origin: ConnectionOrigin = "connection",
 ): CloudStorageCredentials {
    if (attachedDb.type === "gcs") {
       if (!attachedDb.gcsConnection) {
