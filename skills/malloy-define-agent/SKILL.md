@@ -46,7 +46,7 @@ Agents live under the `agents` object of the package's `publisher.json`, keyed b
 | --- | --- |
 | name (the key) | `^[a-z0-9]+(-[a-z0-9]+)*$`, at most 64 characters. |
 | `description` | Required. One line saying what the agent is for. |
-| `instructions` | Required. Package-relative path of a a `.md` file with no frontmatter. At most 16 KB. |
+| `instructions` | Required. Package-relative path of a `.md` file with no frontmatter. At most 16 KB. |
 | `model` | Optional. A model name, or `inherit` (the default) for the caller's own. |
 | `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/`). Frontmatter `name` must match the directory name. All of the agent's skill files together are at most 256 KB; over that, the agent is dropped, not truncated. |
 | `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field cron expression in UTC, and the package-relative path of a Markdown task file of at most 16 KB. |
