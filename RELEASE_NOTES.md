@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A package agent can declare a run budget
+
+An agent in `publisher.json` can now set `budget`: optional `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Publisher validates it and serves it from `get_agent` and the agent endpoints, and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A bad value or an unknown sub-key drops the agent, like any other invalid key. **Earlier releases do not know the key and drop any agent that sets it**, so a package should not use `budget` until every server that serves it runs this release. The new `malloy-define-agent` skill covers writing an agent definition. See [docs/packages.md](docs/packages.md#agents).
+
 ## [0.10.4] — The build plan lists every persist source, with every table it reads
 
 The build plan is computed from Malloy's `Runtime.getBuildTargets` instead of the deprecated `Model.getBuildPlan`. Its wire shape is unchanged, but its `graphs` now carry the whole dependency graph: each graph is a single level holding every persist source in build order, and each node's `dependsOn` names the sources on every table it reads. The graphs used to list only root sources with their direct dependencies, so a host reading them for a rerun's upstream closure, freshness inheritance or lineage lost every edge below the first level. Sources that share a table, a source and its extensions, no longer list each other as dependencies. A persist source whose SQL does not compile on its own (one that reads a `given:` with no default) is refused per source, as before, and lists no dependencies, since Malloy does not report the tables it would read.

@@ -73,6 +73,91 @@ describe("readPackageAgents", () => {
       });
    });
 
+   describe("budget", () => {
+      it("serves a valid budget, and none when the manifest sets none", () => {
+         const budget = {
+            turns: 40,
+            wall_clock_minutes: 90,
+            llm_tokens: 2_000_000,
+            job_minutes: 30,
+         };
+         const agents = read({ analyst: analyst({ budget }) });
+         expect(agents.warnings).toEqual([]);
+         expect(agents.agents.get("analyst")!.budget).toEqual(budget);
+         expect(
+            read({ analyst: analyst() }).agents.get("analyst")!.budget,
+         ).toBe(undefined);
+      });
+
+      it("serves a partial budget as written", () => {
+         const result = read({ analyst: analyst({ budget: { turns: 5 } }) });
+         expect(result.agents.get("analyst")!.budget).toEqual({ turns: 5 });
+      });
+
+      it("moves definitionSha when the budget changes", () => {
+         const sha = (extra: Record<string, unknown>) =>
+            read({ analyst: analyst(extra) }).agents.get("analyst")!
+               .definitionSha;
+         expect(sha({ budget: { turns: 5 } })).not.toBe(
+            sha({ budget: { turns: 6 } }),
+         );
+         expect(sha({ budget: { turns: 5 } })).not.toBe(sha({}));
+      });
+
+      it.each([
+         ["zero", { turns: 0 }],
+         ["negative", { llm_tokens: -1 }],
+         ["fractional", { wall_clock_minutes: 1.5 }],
+         ["a string", { job_minutes: "30" }],
+         ["null", { turns: null }],
+         ["not finite", { turns: Infinity }],
+      ])("drops an agent whose budget value is %s", (_label, budget) => {
+         expect(dropped({ analyst: analyst({ budget }) })).toContain(
+            "positive integer",
+         );
+      });
+
+      it.each([
+         ["a list", [1]],
+         ["a string", "big"],
+         ["null", null],
+      ])("drops an agent whose budget is %s", (_label, budget) => {
+         expect(dropped({ analyst: analyst({ budget }) })).toContain(
+            "'budget' must be an object",
+         );
+      });
+
+      it("drops an agent whose budget sets an unknown sub-key, naming it", () => {
+         const warning = dropped({
+            analyst: analyst({ budget: { turns: 5, cost_usd: 3 } }),
+         });
+         expect(warning).toContain("cost_usd");
+         expect(warning).toContain("turns");
+      });
+
+      it.each([{}, { "x-why": "none yet" }])(
+         "serves no budget for an empty one (%j)",
+         (budget) => {
+            const result = read({ analyst: analyst({ budget }) });
+            expect(result.warnings).toEqual([]);
+            const agent = result.agents.get("analyst")!;
+            expect(agent.budget).toBeUndefined();
+            expect(agent.definitionSha).toBe(
+               read({ analyst: analyst() }).agents.get("analyst")!
+                  .definitionSha,
+            );
+         },
+      );
+
+      it("ignores an x- note inside a budget", () => {
+         const result = read({
+            analyst: analyst({ budget: { turns: 5, "x-why": "cheap" } }),
+         });
+         expect(result.warnings).toEqual([]);
+         expect(result.agents.get("analyst")!.budget).toEqual({ turns: 5 });
+      });
+   });
+
    it("resolves a full agent to the contract shape", () => {
       const result = read({ analyst: analyst() });
       expect(result.warnings).toEqual([]);

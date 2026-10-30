@@ -4707,6 +4707,28 @@ components:
             The task file's Markdown. Only on the resolved agent, not the
             listing.
 
+    AgentBudget:
+      type: object
+      readOnly: true
+      description: >-
+        The run limits an agent declares. Validated and exposed only: the
+        server never enforces them. A platform that runs the agent decides
+        how to apply them and may clamp each to its own maximum. Absent when
+        the manifest sets none.
+      properties:
+        turns:
+          type: integer
+          minimum: 1
+        wall_clock_minutes:
+          type: integer
+          minimum: 1
+        llm_tokens:
+          type: integer
+          minimum: 1
+        job_minutes:
+          type: integer
+          minimum: 1
+
     AgentSummary:
       type: object
       readOnly: true
@@ -4724,6 +4746,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AgentSchedule"
+        budget:
+          $ref: "#/components/schemas/AgentBudget"
 
     AgentSkillFile:
       type: object
@@ -4816,6 +4840,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AgentSchedule"
+        budget:
+          $ref: "#/components/schemas/AgentBudget"
         warnings:
           type: array
           items:
