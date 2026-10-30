@@ -133,6 +133,38 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
       expect(docOnlyText(["#(dbmeta) other=1\n"])).toBe("");
    });
 
+   it("reads a description that mentions #(doc) as a description", () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="Net revenue. Document fields with #(doc) per the style guide."\n',
+         ]),
+      ).toBe("Net revenue. Document fields with #(doc) per the style guide.");
+   });
+
+   it("never adds a description that mentions #(doc) to an authored #(doc)", () => {
+      expect(
+         docOnlyText([
+            "#(doc) Authored.\n",
+            '#(dbmeta) description="See #(doc) here."\n',
+         ]),
+      ).toBe("Authored.");
+   });
+
+   it('prefers a #" doc string over the #(dbmeta) description', () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="From the database."\n',
+            '#" Net of refunds.\n',
+         ]),
+      ).toBe("Net of refunds.");
+   });
+
+   it('prefers #(doc) over a #" doc string', () => {
+      expect(docOnlyText(['#" Doc string.\n', "#(doc) Authored.\n"])).toBe(
+         "Authored.",
+      );
+   });
+
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {
       expect(
          docOnlyText([

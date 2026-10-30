@@ -241,7 +241,7 @@ annotation text) are embedded and searched by cosine similarity, so synonyms and
 names match by meaning.
 
 By default (`retrieval.representation: "single"`) each entity is embedded as **one** row whose text
-is its keyphrase if it has one, else its `#(doc)` text (cut to 1,024 characters), else its
+is its keyphrase if it has one, else its doc text (cut to 1,024 characters), else its
 humanized name; see "Keyphrases" below. A package can ask for `"facets"` instead, in publisher.json:
 an entity's name and its documentation are embedded **separately**, a long doc is split into
 several parts, and an entity scores as its best-matching part. Facets exist because a single
@@ -257,8 +257,8 @@ settings" and "Package settings" below.
 
 What to know before turning it on:
 
-- What leaves the machine: entity names, their annotation text (the `#(doc)` docs, or an entity's
-  other `#` annotation lines when it has no `#(doc)`), and the query strings agents pass to
+- What leaves the machine: entity names, their doc text (`#(doc)`, else `#"`, else the database's
+  description on a connection with `dbmeta` on), and the query strings agents pass to
   `get_context`. Model source code, data, and query results are never sent. Point
   `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM) to keep everything
   on-machine; with a local server, also set `EMBEDDING_MODEL` to a model that server actually
@@ -405,7 +405,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                                    |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                               |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                                   |
-| `egress.preset`                                                     | `default`: entity names, `#(doc)` text and schema context may be sent to the LLM. `full`: also the field's code. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that.                        |
+| `egress.preset`                                                     | `default`: entity names, doc text (an entity's `#(doc)` lines, else its `#"` doc strings, else the database's description of its table or column on a connection with `dbmeta` on) and schema context may be sent to the LLM. `full`: also the field's code. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that.                        |
 | `indexing.maxEntities`                                              | See "Entity cap" above.                                                                                                                                                                                                                          |
 
 **Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
@@ -495,7 +495,7 @@ A keyphrase is a short search phrase for an entity (at most about twelve words),
 would ask for it. It is written at index time, once, and stored in the `entity_keyphrases` table of
 `publisher.db`. With `keyphrases: "auto"` and an LLM configured:
 
-- a description (`#(doc)` text) of 1 to 8 words (1 to 12 for a view) **is** the keyphrase, with no
+- a description (doc text) of 1 to 8 words (1 to 12 for a view) **is** the keyphrase, with no
   LLM call;
 - an entity with no description, or a longer one, gets an LLM-written keyphrase, ten entities per
   call.
@@ -513,7 +513,7 @@ the keyphrases the LLM wrote and leaves description keyphrases alone; the entiti
 text comes back different are then re-embedded and no others. A prompt file replaces the
 **instructions** only: the entity list and the reply format are always added by the server.
 
-What is sent to the LLM: name, kind, source, data type and `#(doc)` text, with every annotation line
+What is sent to the LLM: name, kind, source, data type and doc text, with every annotation line
 other than the doc removed. Access predicates never leave the process. The entity text is fenced as
 data and the instructions tell the model to ignore anything in it.
 
@@ -531,24 +531,24 @@ embedding sync, so it runs only when the server has an LLM **and** an embedding 
 `sourceSummary.enabled: "auto"` (the default) it is on whenever an LLM is configured; `true` with no
 LLM configured stops the package from loading; `false` turns it off.
 
-For each source the model gets one call. It is shown the source name, the source's `#(doc)` text (or
+For each source the model gets one call. It is shown the source name, the source's doc text (or
 `No source docs.`), and the source's fields in four groups, Dimensions, Measures, Views and Joins,
 each line `name (type): doc text on one line`. Each joined source is nested under the source with its
 own fields, up to three joins deep and 20 joined sources. A source or joined source with more than
 200 fields shows 200 of them, spread over the groups, and says `Showing 200 of N fields`. Nothing
-else is sent: no code, and no access predicate (every annotation line other than `#(doc)` is removed).
+else is sent: no code, and no access predicate (every annotation line other than the doc is removed).
 A source with no fields of its own is skipped, as is a source the package hides or locks (it is not an
 entity).
 
 The reply is `{"summary": "...", "one_line_summary": "..."}`. The summary is prose that names fields in
-backticks; the one-liner is one sentence of at most 120 characters. A source with no `#(doc)` text
+backticks; the one-liner is one sentence of at most 120 characters. A source with no doc text
 must get exactly ``The `<name>` source.``, so the model cannot invent a purpose. A reply that breaks
 a rule is shown back to the model once with the reason; if it is still wrong, the sync fails.
 
 A source is identified by its model file and its name, so two files that each define `orders` get
 their own summary, and a join expands the source in the file it names. A request shows a stored
 summary only while it still matches the source as it is now, so a reload that changed a source
-stops its old summary being shown until the sync rewrites it. One field's `#(doc)` is cut to 500
+stops its old summary being shown until the sync rewrites it. One field's doc text is cut to 500
 characters in the prompt, and a prompt over 60,000 characters shows fewer joined sources, then fewer
 fields, with a line that says what was left out. For a local model (`llm.provider` `ollama`) the cap
 is 6,000 characters, and each stored summary is cut to 300 characters when source matching shows it
@@ -646,7 +646,7 @@ request. Chat requests made while a person waits retry once, after at most one s
 `Retry-After` fails the call at once); the index sync keeps the full retry ladder.
 
 **What is sent.** Entity names, kinds, data types, source names, model paths, the package name and
-`#(doc)` text (a source's own docs for rerank). Never any other annotation, so an access predicate
+doc text (a source's own docs for rerank). Never any other annotation, so an access predicate
 cannot leave the process whatever the egress preset says. Dimension values would be sent only under
 `egress.preset: "full"`; none are indexed yet, so none are sent.
 
@@ -698,7 +698,7 @@ The candidates are every source in scope (the request's `scopes`). A source that
 `index.malloy` hides is not an entity, and a source whose `#(authorize)` is an unconditional
 `false` is dropped when the index is built, so neither is ever sent. The server sends them in
 batches of 10, up to `retrieval.llm.concurrency` batches at a time. Each candidate is
-`[i] package/model/source` and a `Documentation:` line: the source's `#(doc)` text on one line, cut
+`[i] package/model/source` and a `Documentation:` line: the source's doc text on one line, cut
 to 500 characters with `...`, or, if it has none, `Source <name> with joined sources: a, b` (or
 `Source <name> (no joined sources)`). A source that has a stored summary (see "Source summaries") also
 gets a `Summary:` line with the whole summary on one line. The model rates a source `HIGH` when the phrase is about what
@@ -719,7 +719,7 @@ Calls count against `retrieval.llm.maxCallsPerRequest`, and the trace names the 
 `source_match`. If a call fails after the provider layer's retries and its one re-ask,
 `get_context` returns an error result naming `source_match` with `retrieval_stage: "source_match"`.
 It never falls back to embeddings. The text sent is the same kind as for rerank: names, paths and
-`#(doc)` text only.
+doc text only.
 
 ## Semantic ranking for `search_database_schema`
 

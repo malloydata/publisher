@@ -12,9 +12,10 @@
  * `entity_keyphrases`, regenerated only when inputs, prompt or model change,
  * and saved per batch so a restart resumes.
  *
- * What is sent: name, kind, source, data type and `#(doc)` text, plus code
- * under the `full` egress preset. Never an access predicate: doc text is
- * `#(doc)`-only and scrubbed again here in case that upstream filter changes.
+ * What is sent: name, kind, source, data type and doc text (see docOnlyText),
+ * plus code under the `full` egress preset. Never an access predicate: doc
+ * text is doc-only and scrubbed again here in case that upstream filter
+ * changes.
  */
 
 import { createHash } from "crypto";
@@ -99,7 +100,7 @@ export function shortDescriptionLimit(kind: string): number {
 
 /**
  * Drop everything an access predicate could ride on. Doc text reaches here
- * already limited to `#(doc)` lines; this removes any other annotation that
+ * already limited to doc lines; this removes any other annotation that
  * got into it (a `#(access_filter)` or `#(authorize)` predicate, a persist
  * line) from its marker to the end of that line.
  */

@@ -85,7 +85,7 @@ export interface EmbeddableEntity {
    name: string;
    source: string | undefined;
    modelPath: string;
-   // #(doc) or #(dbmeta) text (see get_context_tool docOnlyText).
+   // Doc text only (see package_entities docOnlyText).
    // Deliberately NOT the response `doc`, which can fall back to raw
    // annotation lines and would leak #(authorize) predicates to the
    // embedding provider.
@@ -159,7 +159,7 @@ export function humanizeName(name: string): string {
 }
 
 /**
- * An entity's doc-facet text: humanized name plus its `#(doc)` text (the name
+ * An entity's doc-facet text: humanized name plus its doc text (the name
  * facet is embedded separately; see entityFacets). A punctuation-only
  * identifier (`_` is legal Malloy) humanizes to nothing, so it falls back to
  * the raw name.

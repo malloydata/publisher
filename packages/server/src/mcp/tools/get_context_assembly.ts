@@ -344,6 +344,7 @@ function expandJoins(
             modelPath: place.modelPath,
             doc: row.doc,
             ...(row.embedDoc ? { embedDoc: row.embedDoc } : {}),
+            ...(row.docSource ? { docSource: row.docSource } : {}),
             relationship: fanout,
             joinPath: path,
             ...(row.dataType ? { dataType: row.dataType } : {}),

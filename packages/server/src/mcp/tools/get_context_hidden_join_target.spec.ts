@@ -228,3 +228,110 @@ source: orders is duckdb.sql("select 1 as id, 1 as ledger_id, 1 as c_id") extend
       expect(sourceDescription(withReach, orders)).toContain("ok_country");
    });
 });
+
+const VAULT_SQL = "select 1 as id, 9 as salary";
+const COUNTRY_SQL = "select 1 as id, 'US' as code";
+const SECRETS = [
+   "Payroll vault",
+   "Employee salaries",
+   "Gross salary",
+   "Salaries",
+] as const;
+
+const DOCUMENTED_MODEL_TEXT = `
+#(doc) Payroll vault.
+source: ${HIDDEN} is duckdb.sql("${VAULT_SQL}") extend {
+  #(doc) Salaries.
+  dimension: pay is salary
+}
+
+source: ok_country is duckdb.sql("${COUNTRY_SQL}") extend {
+  join_one: inner_vault is ${HIDDEN} on inner_vault.id = id
+}
+
+source: orders is duckdb.sql("select 1 as id, 1 as vault_id, 1 as c_id") extend {
+  join_one: vault is ${HIDDEN} on vault.id = vault_id
+  #(doc) Payroll lookup.
+  join_one: vault_own is ${HIDDEN} on vault_own.id = vault_id
+  join_one: shipping is ok_country on shipping.id = c_id
+}
+`;
+
+async function indexWithDocumentedHiddenTarget() {
+   const { pkg } = await compileJoinFixture("m.malloy", {
+      modelText: DOCUMENTED_MODEL_TEXT,
+      apiSources: [
+         { name: HIDDEN, authorize: ["false"] },
+         { name: "ok_country" },
+         { name: "orders" },
+      ],
+      dbmeta: {
+         [VAULT_SQL]: {
+            table: "Employee salaries, one row per pay period.",
+            columns: { salary: "Gross salary." },
+         },
+         [COUNTRY_SQL]: { table: "Country codes." },
+      },
+   });
+   return getPackageIndex(storeServing(pkg), "env", "pkg");
+}
+
+describe("a deny-all source with a #(doc) and database descriptions, joined", () => {
+   it("documents no join to it, and no field reached through it", async () => {
+      const index = await indexWithDocumentedHiddenTarget();
+      const entities = [...index.byId.values()];
+      for (const e of entities) {
+         for (const secret of SECRETS) {
+            expect(`${e.name}: ${e.doc} ${e.embedDoc}`).not.toContain(secret);
+         }
+      }
+      const vault = entities.find(
+         (e) => e.kind === "join" && e.name === "vault",
+      );
+      expect(vault).toMatchObject({ doc: "", embedDoc: "" });
+      expect(vault?.docSource).toBeUndefined();
+      expect(entities.find((e) => e.name === "vault.pay")?.embedDoc).toBe("");
+      expect(
+         entities.find((e) => e.name === "shipping.inner_vault.pay"),
+      ).toMatchObject({ doc: "", embedDoc: "" });
+   });
+
+   it("keeps the doc a join writes itself", async () => {
+      const index = await indexWithDocumentedHiddenTarget();
+      const own = [...index.byId.values()].find(
+         (e) => e.kind === "join" && e.name === "vault_own",
+      );
+      expect(own).toMatchObject({
+         doc: "Payroll lookup.",
+         embedDoc: "Payroll lookup.",
+      });
+   });
+
+   it("still documents a join to a visible source from the database", async () => {
+      const index = await indexWithDocumentedHiddenTarget();
+      const shipping = [...index.byId.values()].find(
+         (e) => e.kind === "join" && e.name === "shipping",
+      );
+      expect(shipping).toMatchObject({
+         doc: "Country codes.",
+         docSource: "dbmeta",
+      });
+   });
+
+   it("is not described in the summary or source-match prompts", async () => {
+      const index = await indexWithDocumentedHiddenTarget();
+      const inputs = buildSourceSummaryInputs(index.directEntities);
+      const ctx = { pkgIndex: index } as unknown as PipelineContext;
+      for (const name of ["orders", "ok_country"]) {
+         const prompt = inputs.find((i) => i.source === name)?.prompt;
+         expect(prompt).toBeDefined();
+         const source = index.directEntities.find(
+            (e) => e.kind === "source" && e.name === name,
+         )!;
+         for (const secret of SECRETS) {
+            expect(prompt).not.toContain(secret);
+            expect(sourceDescription(ctx, source)).not.toContain(secret);
+         }
+      }
+   });
+});
