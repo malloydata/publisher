@@ -55,6 +55,8 @@ import {
 } from "./documentLocation";
 import { invalidateReportQueries } from "./reportQueries";
 import { useReportListing } from "./useDocumentLocation";
+import { usePackageVersions } from "./usePackageVersions";
+import { VersionSwitch } from "./VersionSwitch";
 
 /**
  * The pinned README: a report at the package root whose basename is README,
@@ -93,6 +95,13 @@ interface PackageProps {
    resourceUri: string;
    /** What the New report dialog creates, or why it could not; see `ReportEvent`. */
    onEvent?: ReportEventHandler;
+   /**
+    * Open another version of the package, picked from the title's version
+    * switch. Absent, the page navigates to the Console's own route for it,
+    * `/<env>/<pkg>/<version>`. Only a package with published versions shows
+    * the switch.
+    */
+   onSelectVersion?: (versionId: string, event?: React.MouseEvent) => void;
 }
 
 export default function Package({
@@ -100,6 +109,7 @@ export default function Package({
    onOpenDocument,
    resourceUri,
    onEvent,
+   onSelectVersion,
 }: PackageProps) {
    const { apiClients, server, mutable } = useServer();
    const queryClient = useQueryClient();
@@ -110,6 +120,17 @@ export default function Package({
       });
    const { environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
+   // A package with published versions is immutable: it shows which version
+   // is on screen, and offers nothing that writes into the package.
+   const { versions } = usePackageVersions(environmentName, packageName);
+   const versioned = versions.length > 0;
+   const selectVersion =
+      onSelectVersion ??
+      ((id: string, event?: React.MouseEvent) =>
+         onClick(
+            `/${encodeURIComponent(environmentName)}/${encodeURIComponent(packageName)}/${encodeURIComponent(id)}`,
+            event,
+         ));
    const openDocument =
       onOpenDocument ??
       ((request: OpenDocumentRequest, event?: React.MouseEvent) => {
@@ -204,17 +225,16 @@ export default function Package({
    // Goes through the configured API client so consumers using a non-default
    // baseURL or Bearer auth (via <ServerProvider>) get the same plumbing as
    // every other endpoint.
-   // No versionId in the key: /data-apps serves static files, which aren't
-   // versioned (listDataApps takes only env + package), so keying on
-   // versionId would fragment the cache and prevent DataAppViewer's identical
-   // query from deduping.
+   // A published version lists its own data apps, each `resource` naming that
+   // version, so the key carries it, the same key DataAppViewer reads.
    const dataAppsQuery = useQueryWithApiError({
-      queryKey: ["data-apps", environmentName, packageName],
+      queryKey: ["data-apps", environmentName, packageName, versionId],
       queryFn: async () => {
          try {
             return await apiClients.dataApps.listDataApps(
                environmentName,
                packageName,
+               versionId,
             );
          } catch (e) {
             // A 404 or transport-level failure (older Publisher without the
@@ -262,7 +282,7 @@ export default function Package({
       workspace.state === "ready"
          ? createRoute({
               authoritative: workspace.chosen?.authoritative === true,
-              mutable,
+              mutable: mutable && !versioned,
               canStore: workspace.chosen?.writeable === true,
               ...(versionId === undefined ? {} : { versionId }),
            })
@@ -331,12 +351,54 @@ export default function Package({
    // one parallel request's latency.
    const isLoading = !reportListing.settled;
 
+   const versionSwitch = versioned ? (
+      <VersionSwitch
+         environmentName={environmentName}
+         packageName={packageName}
+         versions={versions}
+         {...(versionId !== undefined ? { selectedVersionId: versionId } : {})}
+         onSelectVersion={selectVersion}
+         // Deleting the only version deletes the package: back to its
+         // environment.
+         onPackageDeleted={() =>
+            onClick(`/${encodeURIComponent(environmentName)}`)
+         }
+         canManage={mutable}
+      />
+   ) : null;
+
+   const title = (
+      <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 0.5 }}>
+         <Typography
+            variant="h4"
+            component="h1"
+            sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
+         >
+            {packageName}
+         </Typography>
+         {versionSwitch}
+      </Stack>
+   );
+
    if (pkgQuery.isError) {
-      return (
+      const error = (
          <ApiErrorDisplay
             error={pkgQuery.error}
             context={`${environmentName} > ${packageName}`}
          />
+      );
+      // A version that cannot be served (archived, unknown, or no `latest`
+      // yet) still offers the switch, the way to one that can.
+      return versionSwitch ? (
+         <Container
+            maxWidth={false}
+            sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
+         >
+            <Box sx={{ mb: 4 }}>{title}</Box>
+            {error}
+         </Container>
+      ) : (
+         error
       );
    }
 
@@ -346,17 +408,7 @@ export default function Package({
          sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
       >
          <Box sx={{ mb: 4 }}>
-            <Typography
-               variant="h4"
-               component="h1"
-               sx={{
-                  fontWeight: 600,
-                  letterSpacing: "-0.025em",
-                  mb: 0.5,
-               }}
-            >
-               {packageName}
-            </Typography>
+            {title}
             {description && (
                <Typography variant="body2" color="text.secondary">
                   {description}
@@ -656,7 +708,10 @@ export default function Package({
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
 
-               <Materializations resourceUri={resourceUri} />
+               <Materializations
+                  resourceUri={resourceUri}
+                  versioned={versioned}
+               />
 
                {readmePath && (
                   <Box sx={{ mt: 6 }}>

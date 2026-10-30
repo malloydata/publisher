@@ -61,24 +61,32 @@ export function serverBaseUrl(server: string): string {
  * the served path does not include it and a caller passing a path a reader typed
  * would otherwise produce `public/public/<file>`, which 404s. The server's own
  * redirect drops it for the same reason.
+ *
+ * `versionId` pins a published version: the static route reads it from the
+ * URL, and a page's runtime reads it there to pin its own queries. Absent, the
+ * server serves `latest`.
  */
 export function packageFileUrl({
    server,
    environmentName,
    packageName,
    path,
+   versionId,
 }: {
    server: string;
    environmentName: string;
    packageName: string;
    path: string;
+   versionId?: string;
 }): string {
    const relative = path.startsWith("public/")
       ? path.slice("public/".length)
       : path;
-   return (
+   const url =
       `${serverBaseUrl(server)}/environments/${encodeURIComponent(
          environmentName,
-      )}/packages/${encodeURIComponent(packageName)}/` + relative
-   );
+      )}/packages/${encodeURIComponent(packageName)}/` + relative;
+   return versionId === undefined
+      ? url
+      : `${url}${url.includes("?") ? "&" : "?"}versionId=${encodeURIComponent(versionId)}`;
 }

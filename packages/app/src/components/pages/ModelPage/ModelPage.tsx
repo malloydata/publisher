@@ -15,6 +15,7 @@ import Typography from "@mui/material/Typography";
 import { useLocation, useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import { isEditSearch } from "../../common/documentRoutes";
+import { usePackageRoute } from "../../common/usePackageRoute";
 import ReportPage from "../ReportPage/ReportPage";
 import RoutedDocument from "./RoutedDocument";
 import { PAGE_FRAME_SX } from "../pageFrame";
@@ -22,7 +23,9 @@ import { PAGE_FRAME_SX } from "../pageFrame";
 function ModelPage() {
    const params = useParams();
    const { search } = useLocation();
-   const modelPath = params["*"];
+   // The path under the package, after the version segment a versioned
+   // package's route carries (`/<env>/<pkg>/<version>/<path>`).
+   const { path: modelPath, versionId, versioned } = usePackageRoute();
    const { server } = useServer();
    // Every branch below has the same parent, the package, so the way up is
    // built once here.
@@ -82,6 +85,7 @@ function ModelPage() {
                environmentName: params.environmentName,
                packageName: params.packageName,
                modelPath: routePath.slice("data-apps/".length),
+               versionId,
             })}
          />
       ) : (
@@ -94,6 +98,7 @@ function ModelPage() {
                environmentName: params.environmentName,
                packageName: params.packageName,
                path: modelPath,
+               ...(versionId !== undefined ? { versionId } : {}),
             })}
          />
       );
@@ -101,6 +106,8 @@ function ModelPage() {
          <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
+            {...(versionId !== undefined ? { versionId } : {})}
+            readOnly={versioned}
             routePath={routePath}
             edit={isEditSearch(search)}
             notFound={notFound}
@@ -115,6 +122,7 @@ function ModelPage() {
       environmentName: params.environmentName,
       packageName: params.packageName,
       modelPath,
+      versionId,
    });
 
    if (modelPath?.endsWith(".malloy")) {
@@ -136,6 +144,7 @@ function ModelPage() {
          <ReportPage
             environmentName={params.environmentName}
             packageName={params.packageName}
+            {...(versionId !== undefined ? { versionId } : {})}
             path={modelPath}
             editable={false}
          />
@@ -151,6 +160,7 @@ function ModelPage() {
             environmentName: params.environmentName,
             packageName: params.packageName,
             path: modelPath ?? "",
+            ...(versionId !== undefined ? { versionId } : {}),
          })}
       />
    );

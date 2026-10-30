@@ -26,7 +26,11 @@ The two npm publish workflows below do re-run their own package's suite, against
 published, because a PR run proves nothing about the ref a dispatch actually targets. What they do
 not repeat is the server suites and the Linux-only e2e suite.
 
-`app-playwright.yml` runs the browser suite on PRs. `python-sdk.yml` is `workflow_call`-only (plus a
+`app-playwright.yml` runs the browser suite on every PR, whatever its base (a PR stacked on another
+PR's branch included), against a server with package versioning off,
+then runs `package-versions.spec.ts` once more against a server it starts with
+`PUBLISHER_PACKAGE_VERSIONING=on` (the spec skips itself on the first pass, and fails rather than
+skips on the second if versioning is not on). `python-sdk.yml` is `workflow_call`-only (plus a
 manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
 `release.yml`, which publishes it to PyPI from a job of its own. Nothing has been uploaded yet, so read *Publishing to PyPI* below before cutting the
 release that would be its first.

@@ -14,12 +14,15 @@ import { Box } from "@mui/material";
 import { useEffect, useMemo, useRef } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
+import { usePackageRoute } from "../../common/usePackageRoute";
 import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 import { useDrawn } from "../useDrawn";
 
 interface ReportPageProps {
    environmentName: string;
    packageName: string;
+   /** The version to read, for a pinned version; absent means `latest`. */
+   versionId?: string;
    /** The report's package path, `sales/q3.malloy` (or a legacy `.malloynb`). */
    path: string;
    /** Whether the builder opens it, so its chunk is worth warming. Default true for a `.malloy`. */
@@ -40,6 +43,7 @@ interface ReportPageProps {
 export default function ReportPage({
    environmentName,
    packageName,
+   versionId,
    path,
    editable = path.endsWith(".malloy"),
    onReady,
@@ -51,7 +55,13 @@ export default function ReportPage({
    // Control values ride in the query string, so a link reproduces the view;
    // a drill pushes a route.
    const { params: givens, onGivensChange } = useGivenUrlParams();
-   const onNavigate = useDrillNavigate(environmentName, packageName);
+   // A drill stays on the version on screen, `latest` included.
+   const { versionSegment } = usePackageRoute();
+   const onNavigate = useDrillNavigate(
+      environmentName,
+      packageName,
+      versionSegment,
+   );
    const onLinkNavigate = useRouterClickHandler();
    // The event names the report by path; the sink adds where it is.
    const onEvent = useMemo(
@@ -85,6 +95,7 @@ export default function ReportPage({
                   environmentName,
                   packageName,
                   modelPath: path,
+                  versionId,
                })}
                givens={givens}
                onGivensChange={onGivensChange}
@@ -94,7 +105,11 @@ export default function ReportPage({
             />
          ) : (
             <Report
-               resourceUri={encodeResourceUri({ environmentName, packageName })}
+               resourceUri={encodeResourceUri({
+                  environmentName,
+                  packageName,
+                  versionId,
+               })}
                path={path}
                givens={givens}
                onGivensChange={onGivensChange}

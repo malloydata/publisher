@@ -31,6 +31,12 @@ const MATERIALIZATION_POLL_MS = 3000;
 
 interface MaterializationsProps {
    resourceUri: string;
+   /**
+    * The package has published versions. A version's scope and schedule come
+    * from its own publisher.json, which never changes, so the scope and
+    * schedule controls are not offered; a new build still is.
+    */
+   versioned?: boolean;
 }
 
 /**
@@ -41,10 +47,13 @@ interface MaterializationsProps {
  */
 export default function Materializations({
    resourceUri,
+   versioned = false,
 }: MaterializationsProps) {
    const { apiClients, mutable } = useServer();
    const queryClient = useQueryClient();
-   const { environmentName, packageName } = parseResourceUri(resourceUri);
+   // A pinned version lists, builds and stops its own runs; absent, `latest`.
+   const { environmentName, packageName, versionId } =
+      parseResourceUri(resourceUri);
    const [notificationMessage, setNotificationMessage] = useState("");
    const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -55,11 +64,14 @@ export default function Materializations({
    }
 
    const listQuery = useQueryWithApiError({
-      queryKey: ["materializations", environmentName, packageName],
+      queryKey: ["materializations", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.materializations.listMaterializations(
             environmentName,
             packageName,
+            undefined,
+            undefined,
+            versionId,
          ),
       refetchInterval: (query) => {
          const payload = query.state.data as
@@ -75,9 +87,13 @@ export default function Materializations({
    // The build plan is a property of the compiled package (Package.buildPlan),
    // not of a historical run, so fetch it from the package for the detail view.
    const packageQuery = useQueryWithApiError({
-      queryKey: ["package", environmentName, packageName],
+      queryKey: ["package", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.packages.getPackage(environmentName, packageName),
+         apiClients.packages.getPackage(
+            environmentName,
+            packageName,
+            versionId,
+         ),
    });
 
    const invalidateList = () =>
@@ -97,6 +113,7 @@ export default function Materializations({
                packageName,
                {
                   forceRefresh: opts.forceRefresh,
+                  ...(versionId !== undefined ? { versionId } : {}),
                },
             ),
       ),
@@ -120,6 +137,7 @@ export default function Materializations({
                packageName,
                materialization.id as string,
                MaterializationActionActionEnum.Stop,
+               versionId,
             ),
       ),
       onSuccess() {
@@ -147,6 +165,7 @@ export default function Materializations({
                packageName,
                materialization.id as string,
                dropTables,
+               versionId,
             ),
       ),
       onSuccess() {
@@ -257,7 +276,7 @@ export default function Materializations({
             action={
                mutable && (
                   <Stack direction="row" spacing={1} alignItems="center">
-                     {!orchestrated && (
+                     {!orchestrated && !versioned && (
                         <ScopeButton
                            scope={scope}
                            // A schedule requires version scope, so the server
@@ -275,7 +294,7 @@ export default function Materializations({
                            }
                         />
                      )}
-                     {!orchestrated && (
+                     {!orchestrated && !versioned && (
                         <SetScheduleDialog
                            currentSchedule={schedule}
                            isSubmitting={updateSchedule.isPending}
