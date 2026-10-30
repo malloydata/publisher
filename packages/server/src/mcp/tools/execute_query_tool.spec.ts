@@ -19,6 +19,7 @@ import {
    EnvironmentNotFoundError,
    NotQueryableError,
    OffSurfaceError,
+   PackageVersionError,
    QueryTimeoutError,
    ServiceUnavailableError,
 } from "../../errors";
@@ -661,5 +662,79 @@ export { customers }`,
       });
       expect(result.isError).toBe(true);
       expect(parse(result).error).toContain("published surface");
+   });
+});
+
+describe("execute_query version", () => {
+   /** A store that answers the query and records the version it was asked for. */
+   function storeCapturingVersion(refuse?: PackageVersionError): {
+      store: Partial<EnvironmentStore>;
+      asked: () => unknown[];
+   } {
+      const asked: unknown[] = [];
+      const store: Partial<EnvironmentStore> = {
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => undefined,
+               getApiConnection: () => ({}),
+               getPackage: async (
+                  _name: string,
+                  _reload: boolean,
+                  options: { versionId?: unknown } = {},
+               ) => {
+                  asked.push(options.versionId);
+                  if (refuse) throw refuse;
+                  return {
+                     getDeclaredQueryMetadata: () => null,
+                     getModel: () => ({
+                        getType: () => "model",
+                        carriesReportTag: () => false,
+                        getModel: async () => ({}),
+                        getQueryResults: async () => ({
+                           result: { schema: { fields: [] } },
+                           compactResult: [{ c: 1 }],
+                           rowLimit: 1000,
+                           rowLimitSource: "server_default",
+                           queryCorrelationId: "corr-1",
+                        }),
+                     }),
+                  };
+               },
+            }) as never,
+      };
+      return { store, asked: () => asked };
+   }
+
+   it("is offered whatever the config, as Credible's execute_query offers it", () => {
+      expect(captureTool({}).shape).toHaveProperty("version");
+      expect(captureTool({}, serverRootWith(AUTHORING)).shape).toHaveProperty(
+         "version",
+      );
+   });
+
+   it("queries the version it names, and latest when it names none", async () => {
+      const { store, asked } = storeCapturingVersion();
+      const handler = captureHandler(store);
+      expect((await handler({ ...args, version: "1.2.0" })).isError).not.toBe(
+         true,
+      );
+      expect((await handler(args)).isError).not.toBe(true);
+      expect(asked()).toEqual(["1.2.0", undefined]);
+   });
+
+   it("answers a version the package does not have with its own message, not an internal error", async () => {
+      const { store } = storeCapturingVersion(
+         new PackageVersionError(
+            "VERSION_NOT_FOUND",
+            "Package pkg has no version 9.9.9.",
+         ),
+      );
+      const result = await captureHandler(store)({ ...args, version: "9.9.9" });
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.error).toContain("no version 9.9.9");
+      expect(JSON.stringify(parsed.suggestions)).toContain(
+         "execute_query's version",
+      );
    });
 });
