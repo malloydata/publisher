@@ -16,11 +16,7 @@ export interface PackageRoute {
    path: string | undefined;
    /** Whether the package has published versions. */
    versioned: boolean;
-   /**
-    * True while the route waits on the version listing: to read a
-    * version-shaped first segment, or, with `always`, to learn whether the
-    * package has versions at all.
-    */
+   /** True while the route waits on the version listing to read its first segment. */
    deciding: boolean;
 }
 
@@ -40,11 +36,10 @@ export function usePackageRoute(
    const splat = params["*"];
    const candidate =
       splat === undefined ? undefined : splitVersionSegment(splat);
-   const listed = options.always === true || candidate !== undefined;
    const { versions, isPending } = usePackageVersions(
       environmentName ?? "",
       packageName ?? "",
-      { enabled: listed },
+      { enabled: options.always === true || candidate !== undefined },
    );
    const versioned = versions.length > 0;
    const version = candidate && versioned ? candidate : undefined;
@@ -55,6 +50,6 @@ export function usePackageRoute(
       versionId: versionIdOf(version?.segment),
       path: version ? version.rest : splat,
       versioned,
-      deciding: listed && isPending,
+      deciding: candidate !== undefined && isPending,
    };
 }

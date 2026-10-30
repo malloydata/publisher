@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import React from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import React, { useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { LATEST_SEGMENT, withVersionSegment } from "../common/packageRoute";
 import { usePackageRoute } from "../common/usePackageRoute";
 
@@ -25,11 +25,12 @@ export default function PackageSplatRoute() {
       deciding,
    } = usePackageRoute({ always: true });
    const { pathname, search, hash } = useLocation();
-   // Waits for the listing that says whether this package has versions.
-   if (deciding) return null;
+   const navigate = useNavigate();
    // A versioned package's path with no version (an old link, a typed URL) is
    // its latest version's: say so in the URL, as the bare package route does,
-   // so the page reads as a published version and offers no edit.
+   // so the page reads as a published version and offers no edit. The page
+   // opens at once and stays mounted while its address is replaced, so
+   // nothing it asked for is asked again.
    const latestPath =
       versioned && versionSegment === undefined
          ? withVersionSegment(
@@ -39,10 +40,15 @@ export default function PackageSplatRoute() {
               LATEST_SEGMENT,
            )
          : undefined;
-   // The same path back means the segment could not be placed; never loop.
-   if (latestPath !== undefined && latestPath !== pathname) {
-      return <Navigate to={`${latestPath}${search}${hash}`} replace />;
-   }
+   useEffect(() => {
+      // The same path back means the segment could not be placed; never loop.
+      if (latestPath !== undefined && latestPath !== pathname) {
+         navigate(`${latestPath}${search}${hash}`, { replace: true });
+      }
+   }, [latestPath, pathname, search, hash, navigate]);
+   // Waits only on a version-shaped first segment, and only for the listing
+   // that says whether this package has versions at all.
+   if (deciding) return null;
    if (
       versionSegment !== undefined &&
       (path === undefined || path === "" || path === "/")
