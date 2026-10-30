@@ -331,9 +331,15 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       // Hold the publish's compile, with the package lock held.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
+      // Resolved once the publish is inside its compile, so holding the lock.
+      // A fixed sleep was not enough: on a slow runner the publish was still
+      // staging its tree, the delete went first, and found nothing.
+      let entered!: () => void;
+      const compiling = new Promise<void>((resolve) => (entered = resolve));
       const create = Package.create.bind(Package);
       const spy = spyOn(Package, "create").mockImplementationOnce(
          async (...args: Parameters<typeof Package.create>) => {
+            entered();
             await gate;
             return create(...args);
          },
@@ -341,7 +347,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       let removedRecords = 0;
       try {
          const publishing = publish(env, source("1.0.0", 1));
-         await new Promise((resolve) => setTimeout(resolve, 20));
+         await compiling;
          // Nothing is published yet when the delete is asked for.
          expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
          const deleting = env.deletePackage(PKG, {
