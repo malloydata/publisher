@@ -135,6 +135,20 @@ describe("readPackageAgents", () => {
          expect(warning).toContain("turns");
       });
 
+      it.each([{}, { "x-why": "none yet" }])(
+         "serves no budget for an empty one (%j)",
+         (budget) => {
+            const result = read({ analyst: analyst({ budget }) });
+            expect(result.warnings).toEqual([]);
+            const agent = result.agents.get("analyst")!;
+            expect(agent.budget).toBeUndefined();
+            expect(agent.definitionSha).toBe(
+               read({ analyst: analyst() }).agents.get("analyst")!
+                  .definitionSha,
+            );
+         },
+      );
+
       it("ignores an x- note inside a budget", () => {
          const result = read({
             analyst: analyst({ budget: { turns: 5, "x-why": "cheap" } }),
