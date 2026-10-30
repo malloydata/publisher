@@ -74,8 +74,9 @@ export type RetrievalConfig = {
    llm?: RetrievalLlmConfig;
    embedding?: RetrievalEmbeddingConfig;
    /**
-    * What may be sent to the LLM. `default`: entity names, `#(doc)` text and
-    * schema context. `full`: also code and dimension values. Access
+    * What may be sent to the LLM. `default`: entity names, doc text (`#(doc)`,
+    * `#"`, and the database's descriptions on a connection with `dbmeta` on)
+    * and schema context. `full`: also code and dimension values. Access
     * predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever
     * this says; there is no switch for that.
     */
