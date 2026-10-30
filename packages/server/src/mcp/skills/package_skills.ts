@@ -240,7 +240,6 @@ export interface PackageAgentSchedule {
    taskContent: string;
 }
 
-/** Optional per-run limits an agent declares; each is a positive integer. */
 export type PackageAgentBudget = Partial<
    Record<(typeof BUDGET_KEYS)[number], number>
 >;
@@ -484,7 +483,7 @@ function readAgentBudget(raw: unknown): PackageAgentBudget | undefined {
       }
       budget[key] = value;
    }
-   return budget;
+   return Object.keys(budget).length > 0 ? budget : undefined;
 }
 
 /** The agent's skill roots read into served files, sorted by relative path. */

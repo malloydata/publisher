@@ -9,6 +9,8 @@ SPDX-License-Identifier: MIT
 
 # Define a package agent
 
+> **Tool names** are written bare here - `get_agent`, `reload_package`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 A package agent is a named brief an author ships inside a package: instructions, optional skills of its own, optional scheduled tasks and an optional run budget. Publisher parses and serves the definition; a caller adopts it with `get_agent` (see `malloy-run-agent`). The files are ordinary package files, so you write them like any other model change.
 
 ## When to create one
@@ -44,7 +46,7 @@ Agents live under the `agents` object of the package's `publisher.json`, keyed b
 | --- | --- |
 | name (the key) | `^[a-z0-9]+(-[a-z0-9]+)*$`, at most 64 characters. |
 | `description` | Required. One line saying what the agent is for. |
-| `instructions` | Required. Package-relative path of a Markdown file with no frontmatter. At most 16 KB. |
+| `instructions` | Required. Package-relative path of a a `.md` file with no frontmatter. At most 16 KB. |
 | `model` | Optional. A model name, or `inherit` (the default) for the caller's own. |
 | `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/`). Frontmatter `name` must match the directory name. All of the agent's skill files together are at most 256 KB; over that, the agent is dropped, not truncated. |
 | `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field cron expression in UTC, and the package-relative path of a Markdown task file of at most 16 KB. |
@@ -55,14 +57,13 @@ Put each agent's files under `agents/<name>/` so they stay together. Never point
 ## What is live today
 
 - Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs when someone asks for it. Say so to the user rather than promising a recurring job.
-- When a platform does enforce a budget, it clamps each field to its own maximum, so a larger number is not an error but is not honored either. Set the budget the work needs, not the biggest value.
-- A draft version's budget is ignored; the published version's applies.
+- **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored, and a draft version's budget is ignored in favor of the published version's. Set the budget the work needs, not the biggest value.
 
 ## Strict keys: a typo drops the whole agent
 
 The manifest is an allowlist. An agent with a key Publisher does not know, an unknown key inside `schedules` or `budget`, a bad name, a missing file, a bad cron, a non-positive-integer budget value or an over-cap file is **not served at all**. The package still loads, and the reason appears in its load warnings. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
 
-After editing, read the package's load warnings (or call `get_agent` with `scopes` alone to list what is served). An agent missing from the list was dropped; its warning says why.
+Agents are read only when the package loads, so after editing call `reload_package` first: its response carries the load warnings, including any agent that was dropped and why. Then call `get_agent` with `scopes` alone to list what is served; an agent missing from the list was dropped.
 
 ## Writing instructions that work unattended
 
@@ -82,4 +83,4 @@ The reader of `instructions` and task files has no one to ask. Write for a run n
 3. Write `agents/<name>/instructions.md`, and a task file per schedule.
 4. Add skills only for knowledge the agent needs and the package does not already carry.
 5. Add the `agents.<name>` entry to `publisher.json`, with a `budget` if the work has natural limits.
-6. Check the load warnings and `get_agent` so you know it is served, and tell the user plainly that schedules do not run yet.
+6. Call `reload_package`, read its load warnings, then `get_agent` to confirm the agent is served. Tell the user plainly that schedules do not run and budgets are not enforced yet.
