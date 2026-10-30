@@ -91,8 +91,11 @@ is a Console convenience.
   beside its title (`v1.2.0 ▾`). The switch lists every version, highest first, with `latest`
   marked; archived ones are listed but do not open. Picking one pins the page, and everything opened
   from it (models, reports, data apps, materialization runs) stays on that version. Each row's
-  **⋯** menu makes the version `latest` (after a confirmation), archives it or unarchives it; the
-  actions `latest` cannot take are disabled, with why. A published version is immutable, so its
+  **⋯** menu offers **Pin as latest** (after a confirmation), **Archive** (**Unarchive** on an
+  archived version) and **Delete version** (after a confirmation). An action the server would
+  refuse is disabled, with why: `latest` and the last version in service cannot be archived, and
+  while other versions remain they cannot be deleted either. Deleting a package's only version
+  deletes the package and returns to its environment. A published version is immutable, so its
   pages offer no **+ Report** or **Edit**, and its Materializations section has no **Scope** or
   **Schedule**.
 - **Build a report by dragging** — every report page has an **Edit** button in the header, beside the

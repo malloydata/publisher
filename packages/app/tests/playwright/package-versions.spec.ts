@@ -278,7 +278,7 @@ test.describe("package versions — the version switch", () => {
          name: "Actions for version 1.1.0",
       });
       await expect(
-         actions.getByRole("menuitem", { name: /Set as latest/ }),
+         actions.getByRole("menuitem", { name: /Pin as latest/ }),
       ).toHaveAttribute("aria-disabled", "true");
       await expect(actions).toContainText("Already the latest version");
       await expect(
@@ -287,10 +287,17 @@ test.describe("package versions — the version switch", () => {
       await expect(actions).toContainText(
          "The latest version can't be archived",
       );
+      // Other versions remain, so latest cannot be deleted either.
+      await expect(
+         actions.getByRole("menuitem", { name: /Delete version/ }),
+      ).toHaveAttribute("aria-disabled", "true");
+      await expect(actions).toContainText(
+         "Pin another version as latest first",
+      );
       await shot(page, "05-latest-actions-disabled");
    });
 
-   test("set as latest moves latest after a confirmation", async ({
+   test("pin as latest moves latest after a confirmation", async ({
       page,
    }, testInfo) => {
       await page.goto(`/${env}/${PKG}/latest`);
@@ -298,14 +305,14 @@ test.describe("package versions — the version switch", () => {
       await page
          .getByRole("button", { name: "More actions for version 1.0.0" })
          .click();
-      await page.getByRole("menuitem", { name: /Set as latest/ }).click();
-      const dialog = page.getByRole("dialog", { name: "Set v1.0.0 as latest" });
+      await page.getByRole("menuitem", { name: /Pin as latest/ }).click();
+      const dialog = page.getByRole("dialog", { name: "Pin v1.0.0 as latest" });
       await expect(dialog).toBeVisible();
       await expect(dialog).toContainText(
          "Requests that name no version will be served from v1.0.0.",
       );
-      await shot(page, "06-set-latest-dialog");
-      await dialog.getByRole("button", { name: "Set as latest" }).click();
+      await shot(page, "06-pin-latest-dialog");
+      await dialog.getByRole("button", { name: "Pin as latest" }).click();
       await expect(dialog).toBeHidden();
 
       // `latest` now answers with 1.0.0: one model, and the chip moved.
@@ -353,6 +360,56 @@ test.describe("package versions — the version switch", () => {
       await versionRow(page, "1.0.0").click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/1\\.0\\.0$`));
       await expect(versionSwitch(page)).toHaveText("v1.0.0");
+   });
+
+   test("deleting the version on screen removes it and opens latest", async ({
+      page,
+   }) => {
+      await page.goto(`/${env}/${PKG}/1.0.0`);
+      await expect(versionSwitch(page)).toHaveText("v1.0.0");
+      await openVersions(page);
+      await page
+         .getByRole("button", { name: "More actions for version 1.0.0" })
+         .click();
+      await page.getByRole("menuitem", { name: /Delete version/ }).click();
+      const dialog = page.getByRole("dialog", { name: "Delete v1.0.0" });
+      await expect(dialog).toContainText(
+         "v1.0.0 stops being served and its files are removed.",
+      );
+      await shot(page, "09-delete-version-dialog");
+      await dialog.getByRole("button", { name: "Delete version" }).click();
+      await expect(dialog).toBeHidden();
+      await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/1\\.1\\.0$`));
+      await expect(versionSwitch(page)).toHaveText("v1.1.0");
+      await openVersions(page);
+      await expect(versionRow(page, "1.0.0")).toHaveCount(0);
+      await expect(versionRow(page, "1.1.0")).toContainText("Latest");
+      await page.keyboard.press("Escape");
+   });
+
+   test("deleting the only version deletes the package", async ({ page }) => {
+      await page.goto(`/${env}/${PKG}/latest`);
+      await openVersions(page);
+      await page
+         .getByRole("button", { name: "More actions for version 1.1.0" })
+         .click();
+      const actions = page.getByRole("menu", {
+         name: "Actions for version 1.1.0",
+      });
+      // The only version, latest or not, can be deleted; it cannot be archived.
+      await expect(
+         actions.getByRole("menuitem", { name: /Archive/ }),
+      ).toHaveAttribute("aria-disabled", "true");
+      await actions.getByRole("menuitem", { name: /Delete version/ }).click();
+      const dialog = page.getByRole("dialog", { name: "Delete v1.1.0" });
+      await expect(dialog).toContainText(
+         `v1.1.0 is the only version of ${PKG}, so deleting it deletes the package.`,
+      );
+      await shot(page, "10-delete-only-version-dialog");
+      await dialog.getByRole("button", { name: "Delete package" }).click();
+      await expect(dialog).toBeHidden();
+      await expect(page).toHaveURL(new RegExp(`/${env}/?$`));
+      await expect(page.getByText(PKG, { exact: true })).toHaveCount(0);
    });
 
    test("a package with no versions keeps its route and shows no switch", async ({

@@ -358,6 +358,11 @@ export default function Package({
          versions={versions}
          {...(versionId !== undefined ? { selectedVersionId: versionId } : {})}
          onSelectVersion={selectVersion}
+         // Deleting the only version deletes the package: back to its
+         // environment.
+         onPackageDeleted={() =>
+            onClick(`/${encodeURIComponent(environmentName)}`)
+         }
          canManage={mutable}
       />
    ) : null;
