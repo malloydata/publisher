@@ -61,7 +61,7 @@ Put each agent's files under `agents/<name>/` so they stay together. Never point
 
 ## Strict keys: a typo drops the whole agent
 
-The manifest is an allowlist. An agent with a key Publisher does not know, an unknown key inside `schedules` or `budget`, a bad name, a missing file, a bad cron, a non-positive-integer budget value or an over-cap file is **not served at all**. The package still loads, and the reason appears in its load warnings. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
+The manifest is an allowlist. An agent with a key Publisher does not know, an unknown key inside `schedules` or `budget`, a bad name, a missing file, a bad cron, a non-positive-integer budget value or an over-cap file is **not served at all**. The package still loads, and the reason appears in its load warnings. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `budget` is new, so a server older than the release that added it drops an agent that sets one; a load warning saying the server does not know `budget` means it is too old. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
 
 Agents are read only when the package loads, so after editing call `reload_package` first: its response carries the load warnings, including any agent that was dropped and why. Then call `get_agent` with `scopes` alone to list what is served; an agent missing from the list was dropped.
 
