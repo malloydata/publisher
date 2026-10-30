@@ -48,6 +48,12 @@ const executeQueryShape = {
       .string()
       .describe("Package containing the model, as list_packages returns it."),
    modelPath: z.string().describe("Path to the .malloy model file"),
+   version: z
+      .string()
+      .optional()
+      .describe(
+         "The package version to query: a published version's id, such as 1.2.0. Omit to use the package's latest. get_context describes latest, so name a version only to query another one; a package with no published versions takes none.",
+      ),
    query: z
       .string()
       .optional()
@@ -133,6 +139,7 @@ export function registerExecuteQueryTool(
             environmentName,
             packageName,
             modelPath,
+            version,
             query,
             sourceName,
             queryName,
@@ -166,6 +173,8 @@ export function registerExecuteQueryTool(
             environmentName,
             packageName,
             modelPath,
+            // As the REST query route takes `versionId`: omitted means latest.
+            version,
          );
 
          if ("error" in modelResult) {
