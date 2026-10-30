@@ -458,23 +458,35 @@ describe("the versions contract a generated client sees", () => {
          expect(promoted.status).toBe(200);
 
          // Served from the table: the SQL that ran reads `summary`, not the
-         // source's own SQL.
-         const query = await fetch(
-            `${pkgApi("held")}/models/model.malloy/query`,
-            {
-               method: "POST",
-               headers: { "content-type": "application/json" },
-               body: JSON.stringify({
-                  query: "run: summary -> { select: answer }",
-               }),
-            },
-         );
-         expect(query.status).toBe(200);
-         const result = JSON.parse(String((await body(query)).result)) as {
-            sql: string;
+         // source's own SQL. A run is MANIFEST_FILE_READY before the auto-run
+         // loads its manifest into the models (autoLoadManifest, after the
+         // status), so the table serves shortly after that, not at once.
+         const servedSql = async () => {
+            const query = await fetch(
+               `${pkgApi("held")}/models/model.malloy/query`,
+               {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                     query: "run: summary -> { select: answer }",
+                  }),
+               },
+            );
+            expect(query.status).toBe(200);
+            return (
+               JSON.parse(String((await body(query)).result)) as {
+                  sql: string;
+               }
+            ).sql;
          };
-         expect(result.sql).toContain('"summary"');
-         expect(result.sql).not.toContain("SELECT 5 AS answer");
+         const deadline = Date.now() + 30_000;
+         let sql = await servedSql();
+         while (!sql.includes('"summary"') && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 200));
+            sql = await servedSql();
+         }
+         expect(sql).toContain('"summary"');
+         expect(sql).not.toContain("SELECT 5 AS answer");
       },
       { timeout: 300_000 },
    );
