@@ -60,11 +60,11 @@ Clicking a value in a dashboard, a report or a notebook cell now always opens a 
 
 For SDK hosts: `DashboardView` and `Report` take a new `rowsActions` prop that draws your own actions (an export, a download) in the rows dialog in place of Download CSV; it receives the unlimited query, the givens and a file name. `DownloadRowsCsv` is exported for hosts that want it beside their own. `useDrill`'s `selfLabel` option is removed: every `to=self` entry reads `Filter to <Field>: <value>`.
 
-## [Unreleased] — A same-catalog build of a source that uses built-in functions is no longer refused as author SQL
+## [0.10.6] — A same-catalog build of a source that uses built-in functions is no longer refused as author SQL
 
 A `storage=` build of a source that reads the destination catalog's own tables, a pre-aggregate rollup included, was refused with "carries SQL its author wrote" whenever the source used a built-in function (`round`, `nullif`, and others): a function call carries its overload's per-dialect SQL template in the compiled definition, and the author-SQL check walked into it. The check now skips a call's definition and keeps checking its arguments, so an `.sql()` source, a `sql_*` expression (including one passed to a built-in) and a table read from a file or URL are still refused. The refusal's advice no longer suggests dropping `storage=`, which does not help when the source's own connection is the catalog.
 
-## [Unreleased] — A file the admin table load's reader refuses answers 400, not 500
+## [0.10.6] — A file the admin table load's reader refuses answers 400, not 500
 
 `POST .../tables/{table}/load` on the admin API answered a file DuckDB's reader refused — bytes that are not the format they claim, a value a column's type cannot hold — with `500 Internal server error.`, and the reason reached only the server log. A client that retries 5xx retried the same bytes to the same end.
 
