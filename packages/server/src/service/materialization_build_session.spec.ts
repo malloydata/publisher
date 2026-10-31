@@ -624,6 +624,37 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
+      it("refuses a downstream Malloy cannot plan over its parents, naming it, so the caller falls back", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-unplannable-"));
+         try {
+            await seedLake(dir);
+            const error = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               // No table for the rebound parent, so its SQL cannot be written.
+               virtualMap: new Map(),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }).catch((err: unknown) => err);
+            expect(error).toBeInstanceOf(MaterializationEligibilityError);
+            expect((error as Error).message).toContain(
+               "could not plan 'monthly_orders' over the rebound parents",
+            );
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
       it("refuses a downstream carrying author SQL as a shape failure, so the caller recomputes", async () => {
          const dir = mkdtempSync(join(tmpdir(), "t3-sql-"));
          try {

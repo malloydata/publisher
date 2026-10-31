@@ -601,6 +601,194 @@ jobs:
           docker rm -f malloy-publisher-smoke || true
           docker volume rm malloy-publisher-smoke-data || true
 
+  # The Python SDK's build: python-sdk.yml, the same reusable workflow
+  # release.yml builds the PyPI upload with, so a green PR has generated, tested,
+  # packaged and verified the kind of artifact a release uploads.
+  python_sdk_build:
+    name: Python SDK
+    uses: ./.github/workflows/python-sdk.yml
+
+  # Smoke-tests the Python SDK the way docker_smoke_test smoke-tests the image:
+  # starts a server built from this checkout, installs the wheel python_sdk_build
+  # produced into a clean venv for every Python the package declares, and drives
+  # the server through it (packages/python-client/scripts/smoke-test-wheel.py).
+  #
+  # The SDK's unit tests mock httpx, so they show the generated client agrees
+  # with itself. This shows what they cannot: that api-doc.yaml, the generator
+  # and the server agree about the wire format, because every answer has to parse
+  # into the generated models. It runs on every PR, not only ones touching the
+  # SDK, because a server change can alter what goes over the wire without
+  # touching api-doc.yaml. And it keeps the package metadata honest:
+  # `requires-python` once said >=3.9 while the generated code cannot be
+  # imported on 3.9, and nothing noticed, because every job ran 3.11.
+  #
+  # Not in the release, the same split as the image: release.yml builds the SDK
+  # with python-sdk.yml and uploads it, and the smoke test is this PR's job.
+  python_sdk_smoke_test:
+    name: Python SDK smoke test
+    needs: python_sdk_build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PUBLISHER_PORT: "4010"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+
+      # The same build and start runtime_test above uses for its bun-direct
+      # leg, against the same packages/server/publisher.config.json.
+      - name: Build the server
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Start the server
+        working-directory: packages/server
+        run: |
+          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --server_root ./ \
+            > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/server.pid"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # uv provisions every other interpreter below itself, so this is the only
+      # Python the runner has to supply.
+      - name: Install uv via pip
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Download the verified dist/
+        uses: actions/download-artifact@v4
+        with:
+          name: python-client-dist
+          path: ${{ runner.temp }}/dist
+
+      - name: Wait for the server to reach 'serving'
+        run: |
+          SERVER_PID="$(cat "$RUNNER_TEMP/server.pid")"
+          for i in $(seq 1 90); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error title=SDK smoke::the Publisher server exited before serving (log below)"
+              sed 's/^/[server] /' "$RUNNER_TEMP/server.log"
+              exit 1
+            fi
+            state="$(curl -sf --max-time 5 "http://localhost:${PUBLISHER_PORT}/api/v0/status" \
+              | python -c 'import json, sys; print(json.load(sys.stdin).get("operationalState", ""))' 2>/dev/null || true)"
+            if [ "$state" = "serving" ]; then
+              echo "serving after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error title=SDK smoke::the Publisher server did not reach 'serving' within 90s (log below)"
+          sed 's/^/[server] /' "$RUNNER_TEMP/server.log"
+          exit 1
+
+      # Every version the package claims, read from pyproject.toml rather than
+      # listed here, so the claim and the test cannot drift: the floor of
+      # `requires-python` plus each `Programming Language :: Python :: 3.N`
+      # classifier. Adding a classifier adds a leg; lowering the floor puts the
+      # lower version under test before it can ship.
+      - name: Install the wheel into a clean venv per Python, and drive the server
+        run: |
+          set -euo pipefail
+          # Through `if !` and then a non-empty check, never a bare
+          # `read <<<"$(...)"`: a failed substitution there leaves VERSIONS
+          # empty, the loop below runs zero times, and the step reports a pass.
+          if ! OUT="$(python -c '
+          import re, sys, tomllib
+          with open("packages/python-client/pyproject.toml", "rb") as f:
+              p = tomllib.load(f)["project"]
+          floor = re.fullmatch(r">=\s*(3\.\d+)", p["requires-python"].strip())
+          if not floor:
+              sys.exit("requires-python is " + repr(p["requires-python"]) + "; this step reads only a bare >=3.N floor, so extend it before changing that shape")
+          found = {floor.group(1)}
+          for c in p.get("classifiers", []):
+              m = re.fullmatch(r"Programming Language :: Python :: (3\.\d+)", c)
+              if m:
+                  found.add(m.group(1))
+          print(" ".join(sorted(found, key=lambda v: int(v.split(".")[1]))))
+          ' 2>&1)"; then
+            printf '%s\n' "$OUT" | sed 's/^/[pyproject] /'
+            echo "::error title=SDK smoke::could not read the supported Python versions from packages/python-client/pyproject.toml (logged above)"
+            exit 1
+          fi
+          # The last line only: anything Python warned on a successful run is
+          # in OUT too, through the 2>&1 above.
+          read -r -a VERSIONS <<<"$(printf '%s\n' "$OUT" | tail -n 1)"
+          if [ "${#VERSIONS[@]}" -eq 0 ]; then
+            echo "::error title=SDK smoke::pyproject.toml yielded no Python versions to test, so nothing would be checked"
+            exit 1
+          fi
+          echo "Python versions under test: ${VERSIONS[*]}"
+
+          shopt -s nullglob
+          WHEELS=("$RUNNER_TEMP"/dist/*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "::error title=SDK smoke::expected exactly one wheel in the downloaded dist/, found ${#WHEELS[@]}"
+            exit 1
+          fi
+
+          FAILED=()
+          for v in "${VERSIONS[@]}"; do
+            echo "::group::Python $v"
+            venv="$RUNNER_TEMP/venv-$v"
+            # All three inside the `if`, so a version uv cannot provision or
+            # the wheel cannot install on fails its own leg, by name, rather
+            # than ending the step under set -e before the others have run.
+            # uv downloads a managed interpreter when the runner has none.
+            #
+            # The smoke script runs by path and with -I, from outside the
+            # checkout, so neither the working directory nor PYTHONPATH can put
+            # the source tree on sys.path; see the script's docstring.
+            if uv venv --python "$v" "$venv" \
+               && VIRTUAL_ENV="$venv" uv pip install "${WHEELS[0]}" \
+               && (cd "$RUNNER_TEMP" && "$venv/bin/python" -I \
+                  "$GITHUB_WORKSPACE/packages/python-client/scripts/smoke-test-wheel.py" \
+                  --base-url "http://localhost:${PUBLISHER_PORT}/api/v0" \
+                  --config "$GITHUB_WORKSPACE/packages/server/publisher.config.json" \
+                  --query-environment examples \
+                  --query-package storefront \
+                  --query-model storefront.malloy \
+                  --query 'run: regions -> { aggregate: region_count is count() }'); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error title=SDK smoke::the built wheel could not be installed, or failed against the server, on Python $v (its group above says which)"
+              FAILED+=("$v")
+            fi
+          done
+          # Every version runs before this fails, so one red run names every
+          # broken interpreter rather than the first.
+          if [ "${#FAILED[@]}" -ne 0 ]; then
+            echo "- SDK smoke failed on Python ${FAILED[*]}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- SDK smoke passed on Python ${VERSIONS[*]}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Server log
+        if: failure()
+        run: sed 's/^/[server] /' "$RUNNER_TEMP/server.log" || true
+
   cross_platform_test:
     name: Cross Platform Tests
     uses: ./.github/workflows/cross-platform-tests.yml

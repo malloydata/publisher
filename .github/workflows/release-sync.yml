@@ -21,6 +21,14 @@
 # PR shows it red and, once required, cannot merge. That is deliberate: the
 # release PR is the one thing to merge next. `release.yml` does not consult it,
 # so it gates merges, not a dispatch.
+#
+# It also fails while packages/python-client/pyproject.toml declares a version
+# other than packages/sdk/package.json's. The Python SDK releases in lockstep:
+# prepare stamps both on the release branch and the release PR merges both
+# back, so a difference is a hand edit to one of them, or a branch that
+# predates the lockstep (pyproject.toml sat at 0.10.2 while main moved to
+# 0.10.3). PyPI never sees it, since prepare overwrites both, but main would
+# no longer declare the last release.
 
 name: Release sync
 
@@ -32,7 +40,8 @@ on:
   # to merge, rather than at the next push. A workflow_run run checks out and
   # reports on the default branch's head.
   workflow_run:
-    workflows: ["Release (NPM + Docker)"]
+    # By the workflow's `name:`, so it must change with release.yml's.
+    workflows: ["Release (NPM + Docker + PyPI)"]
     types: [completed]
   workflow_dispatch:
 
@@ -71,3 +80,31 @@ jobs:
             exit 1
           fi
           echo "npm latest ${PUBLISHED}, packages/sdk/package.json ${DECLARED}: nothing waiting to merge back"
+
+      # The runner's python3 (3.12, so tomllib is stdlib); nothing installed.
+      - name: Compare packages/python-client/pyproject.toml with packages/sdk/package.json
+        run: |
+          set -euo pipefail
+          DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
+          PY_LOG="$(mktemp)"
+          if ! PYPROJECT="$(python3 -c '
+          import sys, tomllib
+          with open(sys.argv[1], "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          ' packages/python-client/pyproject.toml 2>"$PY_LOG")" || [ -z "$PYPROJECT" ]; then
+            sed 's/^/[pyproject] /' "$PY_LOG"
+            echo "::error title=Release sync::could not read [project] version from packages/python-client/pyproject.toml (logged above)."
+            exit 1
+          fi
+          # Validated before it reaches an annotation: tomllib decodes `\n`
+          # escapes, so the raw value could carry a line of its own.
+          if [[ ! "$PYPROJECT" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+            printf '%s\n' "$PYPROJECT" | sed 's/^/[pyproject] /'
+            echo "::error title=Release sync::packages/python-client/pyproject.toml's [project] version (logged above) is not a version string."
+            exit 1
+          fi
+          if [ "$PYPROJECT" != "$DECLARED" ]; then
+            echo "::error title=Release sync::packages/python-client/pyproject.toml declares ${PYPROJECT} but packages/sdk/package.json declares ${DECLARED}. The Python SDK releases in lockstep (release.yml's prepare stamps both), so set pyproject.toml's version to ${DECLARED}."
+            exit 1
+          fi
+          echo "packages/python-client/pyproject.toml and packages/sdk/package.json both declare ${DECLARED}"

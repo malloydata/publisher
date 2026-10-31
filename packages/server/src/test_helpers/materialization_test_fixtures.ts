@@ -264,14 +264,13 @@ export function compiledWith(
    sourceGateOutcomes?: CompiledBuildPlan["sourceGateOutcomes"],
 ): CompiledBuildPlan {
    return {
-      graphs: [
+      builds: [
          {
             connectionName: "duckdb",
-            nodes: levels.map((level) =>
-               level.map((sourceID) => ({ sourceID, dependsOn: [] })),
-            ),
+            order: levels.flat(),
+            dependsOn: {},
          },
-      ] as unknown as CompiledBuildPlan["graphs"],
+      ],
       sources,
       connectionDigests: { duckdb: "dig" },
       connections,

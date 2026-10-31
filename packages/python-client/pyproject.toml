@@ -7,14 +7,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "malloy-publisher-sdk"
-version = "0.1.1"
-requires-python = ">=3.9"
+# Set by release.yml's prepare on the release branch, in lockstep with
+# packages/{sdk,app,server}/package.json, and merged back with the release PR.
+# Do not bump it by hand; release-sync.yml fails a PR where it differs from
+# packages/sdk/package.json.
+version = "0.10.4"
+# 3.10, not 3.9: the generated client annotates with PEP 604 unions
+# (`Error | list[Package] | None`) and no `from __future__ import annotations`,
+# which 3.9 cannot evaluate. Measured: the 0.1.1 wheel installs on 3.9 under
+# ">=3.9" and its first import raises `TypeError: unsupported operand type(s)
+# for |`. build.yml's python_sdk_smoke_test imports and drives the built wheel
+# on this floor and on every version classifier below, so a claim here is a
+# tested one.
+requires-python = ">=3.10"
 description = "Auto-generated Python client for the Malloy Publisher REST API"
 authors = [
-    {name = "Malloy Publisher", email = "xxx@ms2.co"}
+    {name = "malloydata-publisher"}
 ]
 maintainers = [
-    {name = "Malloy Publisher", email = "xxx@ms2.co"}
+    {name = "malloydata-publisher"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
@@ -28,10 +39,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
     "Typing :: Typed",
@@ -64,11 +75,10 @@ dev = [
     # publishing to PyPI that surface ships under a filename which can never be
     # reused — so "whatever is latest on the day of the release" is not an
     # acceptable input. A generator bump is now a reviewable diff under
-    # packages/python-client/, which the bump check watches, so it correctly
-    # demands a version bump too.
+    # packages/python-client/.
     #
     # 0.29.0 is what CI already resolved before this pin, so it changes nothing
-    # today. Note it requires Python >=3.11 while this package declares >=3.9:
+    # today. Note it requires Python >=3.11 while this package declares >=3.10:
     # that only affects installing the `dev` extra, not the published client.
     "openapi-python-client==0.29.0",
     "openapi-spec-validator==0.9.0",

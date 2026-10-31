@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Releasing Publisher
 
-A release is one `workflow_dispatch` of `Release (NPM + Docker)`
+A release is one `workflow_dispatch` of `Release (NPM + Docker + PyPI)`
 (`.github/workflows/release.yml`), followed by one pull request: the
 `release/v<version>` branch the release published from, merged back into
 `main`. That branch already carries the version bump and the stamped release
@@ -88,8 +88,9 @@ from `main`, which still reads `[Unreleased]`.
 
 **`0.MINOR.PATCH` for every published package, while pre-1.0.** It is the policy,
 not yet the state: `skills` follows it, `sdk`/`app`/`server` are still on `0.0.x`
-until `0.2.0` is cut, `create-malloy-package` versions on its own `0.0.x` line, computed at release time, and the Python client
-declares `0.1.0` — sharing `0.1.x` with `skills`. Nothing enforces the *shape* of
+until `0.2.0` is cut (the Python client follows them, in lockstep), and
+`create-malloy-package` versions on its own `0.0.x` line, computed at release time.
+Nothing enforces the *shape* of
 the number for any of them — skills and create-malloy-package resolve their next
 version from npm `latest` at release time, and moving either onto a new minor
 line is a judgement call made with an explicit `-f version=`, not something CI
@@ -169,7 +170,7 @@ not a precaution.
 | `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/v<v>` branch | n/a — the release sets it |
 | `skills` | its own line, `package.json` carries a fixed `0.0.0-dev` placeholder | release time, from npm's own state (`scripts/independent-version.mjs`); you, for a minor | n/a — nothing is committed ahead of time to forget |
 | `create-malloy-package` | its own line, same placeholder | release time, the same way | n/a, same reason |
-| `malloy-publisher-sdk` (Python) | its own line | you, by hand, on `main` | `python-sdk.yml` PR check — but see below |
+| `malloy-publisher-sdk` (Python) | lockstep with sdk/app/server | `release.yml` itself, in `packages/python-client/pyproject.toml` on the release branch | n/a — the release sets it |
 
 **Skills and create-malloy-package no longer have a version to forget.** Nothing
 is bumped ahead of a release: both packages' `package.json` declare `0.0.0-dev`
@@ -205,26 +206,24 @@ hand dispatch with `-f version=`.** After a hand-dispatched skills minor,
 hand-dispatch the scaffolder too — it depends on skills' version — or wait for
 the next release, which republishes the scaffolder anyway.
 
-One caveat: the **Python** check has nothing to *catch* until the first publish
-lands, because `malloy-publisher-sdk` is not on PyPI at all and a project-level
-404 is its pass. (It can still go red on an unreadable `pyproject.toml`, a
-version that is not `major.minor.patch`, or a registry that answers neither 200
-nor 404.) It starts enforcing for real the moment a version is up there, so treat
-the Python version as unenforced only until then.
-
-**Its PyPI publish is paused, though.** The `publish_pkg python-client` line at
-the end of `scripts/publish-packages.sh` is commented out, so no release
-dispatches `python-sdk.yml` today. Before restoring that line, read *The first
-PyPI publish* in `.github/workflows/CONTEXT.md`: `PYPI_TOKEN` has to be
-account-scoped for a first upload (a project-scoped token cannot exist for a
-project that does not), the name has to still be free, and `0.1.0` is what
-ships — PyPI filenames can never be reused, so move the version before that
-run if it is going to move at all. A failure there is cheap: it is dispatched
-last, nothing depends on it, and re-running the job skips whatever already
-published.
+**It publishes from `release.yml` itself**, not from `publish-packages`:
+`prepare` stamps the release version into `pyproject.toml` with the three
+`package.json` files, `build-python-sdk` calls `python-sdk.yml` on the release
+branch (build and verify; the smoke test against a server is `build.yml`'s, on
+every PR, like the Docker image's), and `publish-python-sdk` uploads the
+verified wheel and sdist through PyPI trusted publishing once `publish-npm` and
+`publish-docker` have succeeded, so PyPI never holds a version whose server did
+not ship. It skips only a version already on PyPI, which in lockstep means a
+re-run, and both jobs skip a prerelease or `+build` version. Nothing has been
+uploaded yet; before the release that would be the first, read *Publishing to
+PyPI* in
+`.github/workflows/CONTEXT.md`. The PyPI pending publisher has to name project
+`malloy-publisher-sdk`, workflow `release.yml`, environment `pypi`; the name is
+not reserved until the first upload lands.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
-does: merging the release PR (step 6) brings those three files to the version
+does: merging the release PR (step 6) brings those three files (and
+`packages/python-client/pyproject.toml`) to the version
 that shipped, and CI's `Release sync` check fails while a shipped
 release's PR is unmerged. `prepare` still takes the max of npm and the file for
 its floor rather than trusting either. Ask npm when you want to know what is
@@ -268,21 +267,8 @@ npm view "@malloy-publisher/create-malloy-package@$(npm view @malloy-publisher/c
 its `publisherServer` already equals the version this release is about to ship —
 that only happens on a re-run.
 
-Also check the Python client. Its PyPI publish is paused (work in progress): the
-release does not dispatch python-sdk.yml until the `publish_pkg python-client`
-line at the end of scripts/publish-packages.sh is restored, so this reading does
-not change between releases for now. Its version is in `pyproject.toml`, not a
-`package.json`, and PyPI answers 404 for the whole project until the first upload
-lands — so "PyPI: 404" here is the expected reading today and NOT a reason to
-skip the comparison next time.
-
-```bash
-printf 'python-client: PyPI %s, main %s\n' \
-  "$(curl -sS --max-time 20 https://pypi.org/pypi/malloy-publisher-sdk/json \
-     | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])' \
-     2>/dev/null || echo 404)" \
-  "$(python3 -c 'import tomllib; print(tomllib.load(open("packages/python-client/pyproject.toml","rb"))["project"]["version"])')"
-```
+The Python client needs no check: it releases in lockstep with sdk/app/server,
+so this release publishes it at this release's version.
 
 #### The scaffolder's server pin is derived now — do not set it by hand
 
@@ -314,7 +300,7 @@ the server's `latest` to read the new version before dispatching the scaffolder.
 It then passes that version to the scaffolder as its `server_version` input,
 because another runner can still read the old `latest` for a few minutes; the
 scaffolder waits until its own `latest` matches and refuses to pin anything else.
-If the wait gives up, neither the scaffolder nor python-client was dispatched.
+If the wait gives up, the scaffolder was not dispatched.
 Once `latest` reads the new version, re-run the `publish-packages` job (Re-run
 failed jobs), not the whole release.
 
@@ -494,6 +480,12 @@ after the merge (the first command in step 3).
 
 ## If it fails
 
+- **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
+  unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
+  the publish job skips a version PyPI already holds, and reuses the verified
+  artifact. **Do not re-run the release.** If `publish-npm` or `publish-docker`
+  is red instead, `publish-python-sdk` shows as skipped, not failed: it waits
+  for both, and *Re-run failed jobs* runs it once they pass.
 - **Only `publish-packages` is red** → the sdk/app/server release completed and
   the tag exists; that job sits outside `gh-release`'s `needs`. Use *Re-run
   failed jobs*, which re-enters that job alone and skips whatever already landed.
