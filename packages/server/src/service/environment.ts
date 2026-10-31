@@ -1794,11 +1794,23 @@ export class Environment {
     * version carries its full metadata (manifest binding included); one that
     * is not carries its name, version, `latestVersion`, `archiveStatus` and
     * status. Empty when no package here has versions.
+    *
+    * With `includeLoading`, a version being published that has no row yet (a
+    * version new to its package, before its commit) is listed too, as
+    * loading: an orchestrator that dispatched the publish can tell it from an
+    * absence by its `versionId`.
     */
-   public async listVersionEntries(): Promise<Map<string, ApiPackage[]>> {
+   public async listVersionEntries(
+      options: { includeLoading?: boolean } = {},
+   ): Promise<Map<string, ApiPackage[]>> {
       const entries = new Map<string, ApiPackage[]>();
       if (!this.versionService) return entries;
       const versions = this.versionService;
+      // Before the rows: a publish that commits while they are read is then
+      // in both, and listed once, from its row.
+      const publishing = options.includeLoading
+         ? versions.publishingVersions()
+         : [];
       const rows = await versions.listAllVersions();
       for (const row of rows) {
          const loaded = versions.cache.peek(row.packageName, row.versionId);
@@ -1820,6 +1832,23 @@ export class Environment {
             status: this.describePackageStatus(row.packageName, row.versionId),
          });
          entries.set(row.packageName, list);
+      }
+      for (const { packageName, versionId, since } of publishing) {
+         const list = entries.get(packageName) ?? [];
+         if (list.some((entry) => entry.versionId === versionId)) continue;
+         list.push({
+            name: packageName,
+            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            versionId,
+            latestVersion: list[0]?.latestVersion ?? null,
+            loaded: false,
+            status: {
+               serving: false,
+               loading: true,
+               loadingSince: new Date(since).toISOString(),
+            },
+         });
+         entries.set(packageName, list);
       }
       return entries;
    }
@@ -1857,6 +1886,8 @@ export class Environment {
                this.trackPackageLoad(packageName, () =>
                   this.loadVersionPackage(packageName, versionPath, version),
                ),
+            trackPublish: (packageName, fn) =>
+               this.trackPackageLoad(packageName, fn),
             releaseVersion: (packageName, versionId, loaded) =>
                this.retireConnectionGeneration(
                   `package ${packageName} version ${versionId}`,
