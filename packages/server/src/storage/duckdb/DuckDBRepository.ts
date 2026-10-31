@@ -9,10 +9,11 @@ import { IncrementalLedgerRepository } from "./IncrementalLedgerRepository";
 import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
+import { VersionRepository } from "./VersionRepository";
 
 /**
  * The {@link ResourceRepository} over one DuckDB store: each method delegates
- * to the entity repository that owns its table, except the two deletes that
+ * to the entity repository that owns its table, except the deletes that
  * cascade across tables.
  */
 export function createDuckDBRepository(
@@ -20,6 +21,7 @@ export function createDuckDBRepository(
 ): ResourceRepository {
    const environments = new EnvironmentRepository(db);
    const packages = new PackageRepository(db);
+   const versions = new VersionRepository(db);
    const connections = new ConnectionRepository(db);
    const destinations = new StorageDestinationRepository(db);
    const materializations = new MaterializationRepository(db);
@@ -38,6 +40,7 @@ export function createDuckDBRepository(
          await materializations.deleteByEnvironmentId(id);
          await connections.deleteConnectionsByEnvironmentId(id);
          await destinations.deleteByEnvironmentId(id);
+         await versions.deleteByEnvironmentId(id);
          await packages.deletePackagesByEnvironmentId(id);
          await environments.deleteEnvironment(id);
       },
@@ -53,9 +56,52 @@ export function createDuckDBRepository(
          if (pkg) {
             await ledger.deleteByPackage(pkg.environmentId, pkg.name);
             await materializations.deleteByPackage(pkg.environmentId, pkg.name);
+            await versions.deleteByPackage(pkg.environmentId, pkg.name);
          }
          await packages.deletePackage(id);
       },
+      deletePackageRecord: (id) => packages.deletePackage(id),
+
+      listVersions: (environmentId, packageName) =>
+         versions.list(environmentId, packageName),
+      hasVersions: (environmentId, packageName) =>
+         versions.hasAny(environmentId, packageName),
+      listVersionsByEnvironment: (environmentId) =>
+         versions.listByEnvironment(environmentId),
+      getVersion: (environmentId, packageName, versionId) =>
+         versions.get(environmentId, packageName, versionId),
+      commitPublish: (version, promote) =>
+         versions.commitPublish(version, promote),
+      setLatestVersion: (environmentId, packageName, versionId, onlyIf) =>
+         versions.setLatest(environmentId, packageName, versionId, onlyIf),
+      setVersionArchiveStatus: (
+         environmentId,
+         packageName,
+         versionId,
+         status,
+      ) =>
+         versions.setArchiveStatus(
+            environmentId,
+            packageName,
+            versionId,
+            status,
+         ),
+      setVersionManifestPath: (
+         environmentId,
+         packageName,
+         versionId,
+         manifestPath,
+      ) =>
+         versions.setManifestPath(
+            environmentId,
+            packageName,
+            versionId,
+            manifestPath,
+         ),
+      deleteVersion: (environmentId, packageName, versionId) =>
+         versions.delete(environmentId, packageName, versionId),
+      deletePackageIfNoVersions: (environmentId, packageName) =>
+         versions.deletePackageIfNoVersions(environmentId, packageName),
 
       listConnections: (environmentId) =>
          connections.listConnections(environmentId),
@@ -80,13 +126,31 @@ export function createDuckDBRepository(
 
       listMaterializations: (environmentId, packageName, options) =>
          materializations.list(environmentId, packageName, options),
-      getLatestScheduledFireAt: (environmentId, packageName) =>
-         materializations.getLatestScheduledFireAt(environmentId, packageName),
+      listEnvironmentMaterializations: (environmentId) =>
+         materializations.listByEnvironment(environmentId),
+      getLatestScheduledFireAt: (environmentId, packageName, version) =>
+         materializations.getLatestScheduledFireAt(
+            environmentId,
+            packageName,
+            version,
+         ),
       getMaterializationById: (id) => materializations.getById(id),
-      getActiveMaterialization: (environmentId, packageName) =>
-         materializations.getActive(environmentId, packageName),
-      createMaterialization: (environmentId, packageName, status, metadata) =>
-         materializations.create(environmentId, packageName, status, metadata),
+      getActiveMaterialization: (environmentId, packageName, lockVersion) =>
+         materializations.getActive(environmentId, packageName, lockVersion),
+      createMaterialization: (
+         environmentId,
+         packageName,
+         status,
+         metadata,
+         options,
+      ) =>
+         materializations.create(
+            environmentId,
+            packageName,
+            status,
+            metadata,
+            options,
+         ),
       updateMaterialization: (id, updates) =>
          materializations.update(id, updates),
       deleteMaterialization: (id) => materializations.deleteById(id),

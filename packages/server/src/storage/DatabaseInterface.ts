@@ -28,7 +28,85 @@ export interface ResourceRepository {
       pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
    ): Promise<Package>;
    updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
+   /** Deletes the package's row and everything keyed by it, versions included. */
    deletePackage(id: string): Promise<void>;
+   /**
+    * Remove only the package's own row, keeping what is keyed by its name
+    * (its runs, its incremental ledger, its versions): for undoing a row this
+    * server just created, which owns none of them.
+    */
+   deletePackageRecord(id: string): Promise<void>;
+
+   // Versions
+   listVersions(environmentId: string, packageName: string): Promise<Version[]>;
+   hasVersions(environmentId: string, packageName: string): Promise<boolean>;
+   listVersionsByEnvironment(environmentId: string): Promise<Version[]>;
+   getVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<Version | null>;
+   /**
+    * Record a newly published version and, when `promote` says so, make it the
+    * package's `latest`, in one transaction. `promote` is handed the current
+    * `latest` read inside that transaction. Throws PackageVersionError
+    * VERSION_CONFLICT when the version already has a row.
+    */
+   commitPublish(
+      version: NewVersion,
+      promote: PromoteRule,
+   ): Promise<{ version: Version; promoted: boolean }>;
+   /**
+    * Make an existing, unarchived version the package's `latest`, stamping its
+    * `promoted_at` and the outgoing version's `demoted_at`. With `onlyIf`, it
+    * moves only when `onlyIf(current latest)` holds. Returns whether it moved;
+    * naming the version that is already `latest` moves nothing.
+    */
+   setLatestVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      onlyIf?: PromoteRule,
+   ): Promise<boolean>;
+   /**
+    * Archive or unarchive a version. Archiving refuses the package's `latest`
+    * (VERSION_IS_LATEST) and its last unarchived version
+    * (VERSION_IS_LAST_ACTIVE), checked in the same transaction as the write.
+    */
+   setVersionArchiveStatus(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      status: VersionArchiveStatus,
+   ): Promise<Version>;
+   setVersionManifestPath(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      manifestPath: string | null,
+   ): Promise<Version>;
+   /**
+    * Delete a version's row. While other versions remain it refuses the
+    * package's `latest` (VERSION_IS_LATEST) and its last version in service
+    * while archived ones remain (VERSION_IS_LAST_ACTIVE), checked in the same
+    * transaction as the delete. Returns the row as it was, and whether it was
+    * the package's only version (`wasLast`); the package's own rows go
+    * separately, with deletePackageIfNoVersions.
+    */
+   deleteVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<{ version: Version; wasLast: boolean }>;
+   /**
+    * Delete a package left with no versions: its row, its ledger and its runs,
+    * apart from its deleted versions' own `scope: version` auto-runs, which
+    * their reclaim deletes. False, deleting nothing, when it has a version.
+    */
+   deletePackageIfNoVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<boolean>;
 
    // Connections
    listConnections(environmentId: string): Promise<Connection[]>;
@@ -64,22 +142,34 @@ export interface ResourceRepository {
    listMaterializations(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
+   ): Promise<Materialization[]>;
+   /** Every run of an environment, across its packages, newest first. */
+   listEnvironmentMaterializations(
+      environmentId: string,
    ): Promise<Materialization[]>;
    getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      version?: string,
    ): Promise<Date | null>;
    getMaterializationById(id: string): Promise<Materialization | null>;
+   /**
+    * The active run holding the package's slot, or with `lockVersion` that
+    * version's slot: a run that writes only one version's own tables holds
+    * its version's slot, so versions build side by side.
+    */
    getActiveMaterialization(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null>;
    createMaterialization(
       environmentId: string,
       packageName: string,
       status?: MaterializationStatus,
       metadata?: Record<string, unknown> | null,
+      options?: { version?: string | null; lockVersion?: string },
    ): Promise<Materialization>;
    updateMaterialization(
       id: string,
@@ -115,12 +205,72 @@ export interface Package {
    id: string;
    environmentId: string;
    name: string;
-   description?: string;
+   /** Null when cleared; absent when never set. */
+   description?: string | null;
    manifestPath: string;
    createdAt: Date;
    updatedAt: Date;
    metadata?: Record<string, unknown>;
+   /**
+    * The package's `latest` version, or null when it has none. Moved only by
+    * the version calls (`commitPublish`, `setLatestVersion`); `createPackage`
+    * and `updatePackage` never write it.
+    */
+   latestVersion?: string | null;
 }
+
+export type VersionArchiveStatus = "archive" | "unarchive";
+
+/**
+ * One published, immutable version of a package. Its files never change after
+ * publish; its lifecycle state, `latest` stamps and manifest binding do.
+ */
+export interface Version {
+   /** The semantic version, exactly as the version's publisher.json declared it. */
+   versionId: string;
+   environmentId: string;
+   packageName: string;
+   /** The version's folder under the package: the version with `+` as `_`. */
+   dirName: string;
+   /** SHA-256 (hex) over the version's files at publish. */
+   contentHash: string;
+   /** The location it was published from, exactly as given; re-fetched from. */
+   sourceLocation: string | null;
+   /** The build manifest the version is bound to; null serves live. */
+   manifestPath: string | null;
+   archiveStatus: VersionArchiveStatus;
+   archivedAt: Date | null;
+   /** When it last became the package's `latest`. */
+   promotedAt: Date | null;
+   /** When it last stopped being the package's `latest`. */
+   demotedAt: Date | null;
+   /** The description from the version's own publisher.json. */
+   description: string | null;
+   gitCommitSha: string | null;
+   gitRef: string | null;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
+/** What a publish records; the rest of a Version is set by the registry. */
+export type NewVersion = Pick<
+   Version,
+   | "versionId"
+   | "environmentId"
+   | "packageName"
+   | "dirName"
+   | "contentHash"
+   | "sourceLocation"
+   | "manifestPath"
+   | "description"
+>;
+
+/**
+ * Decides, from the package's current `latest` (null when it has none),
+ * whether a version should become `latest`. Evaluated inside the registry
+ * transaction, so the `latest` it sees is the one the write replaces.
+ */
+export type PromoteRule = (currentLatest: string | null) => boolean;
 
 export interface Connection {
    id: string;
@@ -180,8 +330,20 @@ export interface Materialization {
    completedAt: Date | null;
    error: string | null;
    metadata: Record<string, unknown> | null;
+   /** The package version the run built; null for a package with none. */
+   version: string | null;
    createdAt: Date;
    updatedAt: Date;
+}
+
+/** Narrows a materialization listing to one version's runs. */
+export interface MaterializationListOptions {
+   limit?: number;
+   offset?: number;
+   /** Only the runs that built this version. */
+   version?: string;
+   /** With `version`: also the runs from before any version existed. */
+   includeUnversioned?: boolean;
 }
 
 /**

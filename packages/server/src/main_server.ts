@@ -24,6 +24,7 @@ import { ReportController } from "./controller/report.controller";
 import { SkillController } from "./controller/skill.controller";
 import { StorageDestinationController } from "./controller/storage_destination.controller";
 import { ThemeController } from "./controller/theme.controller";
+import { VersionController } from "./controller/version.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    drainingGuard,
@@ -268,6 +269,34 @@ const storageDestinationController = new StorageDestinationController(
 const materializationController = new MaterializationController(
    materializationService,
 );
+const versionController = new VersionController(environmentStore);
+// Archiving a version reclaims the tables it alone owns, in the background.
+environmentStore.setVersionArchivedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.reclaimVersionTables(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// Deleting a version stops its builds and reclaims those tables, in the
+// background, once its row is gone.
+environmentStore.setVersionDeletedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.cleanUpDeletedVersion(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// A reclaim that a crash cut short is finished once the environments have
+// loaded: nothing else would start it again.
+void environmentStore.finishedInitialization.then(
+   () => materializationService.reclaimArchivedVersions(),
+   () => undefined,
+);
 /**
  * Start the standalone materialization scheduler, or return null when
  * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is off (the default, so an
@@ -358,6 +387,7 @@ registerApiRoutes(app, API_PREFIX, {
    compileController,
    materializationController,
    storageDestinationController,
+   versionController,
 });
 
 // Legacy `/projects/...` aliases; must precede the SPA catch-all.

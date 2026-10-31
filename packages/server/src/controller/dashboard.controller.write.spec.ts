@@ -88,6 +88,8 @@ function harness(
       isWritableReport: () => options.loadedReport ?? true,
    };
    const environment = {
+      // No registry: no package here has published versions.
+      getVersionService: () => null,
       getPackage: options.noPackage
          ? sinon.stub().rejects(new PackageNotFoundError("no package"))
          : sinon.stub().resolves(pkg),

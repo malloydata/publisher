@@ -4,6 +4,7 @@
 import {
    BuildManifestResult,
    Materialization,
+   MaterializationListOptions,
    MaterializationStatus,
    MaterializationUpdate,
 } from "../DatabaseInterface";
@@ -22,8 +23,20 @@ const ACTIVE_STATUSES: readonly MaterializationStatus[] = [
    "MANIFEST_ROWS_READY",
 ];
 
-function activeKeyFor(environmentId: string, packageName: string): string {
-   return `${environmentId}|${packageName}`;
+/**
+ * The slot a run holds while it is active. One run at a time per package by
+ * default; a run that writes only one version's own tables holds that
+ * version's slot instead (`lockVersion`), so versions build side by side.
+ * Package names cannot contain `@`, so the two shapes never collide.
+ */
+function activeKeyFor(
+   environmentId: string,
+   packageName: string,
+   lockVersion?: string,
+): string {
+   return lockVersion === undefined
+      ? `${environmentId}|${packageName}`
+      : `${environmentId}|${packageName}@${lockVersion}`;
 }
 
 /**
@@ -54,11 +67,18 @@ export class MaterializationRepository {
    async list(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]> {
       let sql =
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
+         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ?";
       const params: unknown[] = [environmentId, packageName];
+      if (options?.version !== undefined) {
+         sql += options.includeUnversioned
+            ? " AND (version = ? OR version IS NULL)"
+            : " AND version = ?";
+         params.push(options.version);
+      }
+      sql += " ORDER BY created_at DESC";
       if (options?.limit !== undefined) {
          sql += " LIMIT ?";
          params.push(options.limit);
@@ -71,6 +91,15 @@ export class MaterializationRepository {
       return rows.map(mapRow);
    }
 
+   /** Every run of an environment, across its packages, newest first. */
+   async listByEnvironment(environmentId: string): Promise<Materialization[]> {
+      const rows = await this.db.all<Row>(
+         "SELECT * FROM materializations WHERE environment_id = ? ORDER BY created_at DESC",
+         [environmentId],
+      );
+      return rows.map(mapRow);
+   }
+
    /**
     * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
     * materialization for (env, package), or null if none. The standalone
@@ -80,14 +109,19 @@ export class MaterializationRepository {
    async getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      // One published version's fires; undefined, the package's.
+      version?: string,
    ): Promise<Date | null> {
       const row = await this.db.get<{ created_at: unknown }>(
          `SELECT created_at FROM materializations
            WHERE environment_id = ? AND package_name = ?
              AND json_extract_string(metadata, '$.trigger') = 'SCHEDULER'
+             ${version !== undefined ? "AND version = ?" : ""}
            ORDER BY created_at DESC
            LIMIT 1`,
-         [environmentId, packageName],
+         version !== undefined
+            ? [environmentId, packageName, version]
+            : [environmentId, packageName],
       );
       return row?.created_at ? new Date(row.created_at as string) : null;
    }
@@ -100,14 +134,22 @@ export class MaterializationRepository {
       return row ? mapRow(row) : null;
    }
 
+   /**
+    * The active run holding the package's slot, or with `lockVersion` that
+    * version's slot (see activeKeyFor).
+    */
    async getActive(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null> {
       const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
       const row = await this.db.get<Row>(
-         `SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN (${placeholders})`,
-         [environmentId, packageName, ...ACTIVE_STATUSES],
+         `SELECT * FROM materializations WHERE active_key = ? AND status IN (${placeholders})`,
+         [
+            activeKeyFor(environmentId, packageName, lockVersion),
+            ...ACTIVE_STATUSES,
+         ],
       );
       return row ? mapRow(row) : null;
    }
@@ -117,6 +159,12 @@ export class MaterializationRepository {
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
+      options: {
+         /** The package version the run builds; null when it has none. */
+         version?: string | null;
+         /** Hold this version's slot rather than the package's. */
+         lockVersion?: string;
+      } = {},
    ): Promise<Materialization> {
       const id = newId();
       const iso = new Date().toISOString();
@@ -125,13 +173,13 @@ export class MaterializationRepository {
       // rather than slip through a check-then-write window.
       const activeKey = TERMINAL_STATUSES.has(status)
          ? null
-         : activeKeyFor(environmentId, packageName);
+         : activeKeyFor(environmentId, packageName, options.lockVersion);
       const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
          const rows = await this.db.all<Row>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at, version)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
             RETURNING *`,
             [
                id,
@@ -142,6 +190,7 @@ export class MaterializationRepository {
                metadataJson,
                iso,
                iso,
+               options.version ?? null,
             ],
          );
          return mapRow(rows[0]);
@@ -160,14 +209,20 @@ export class MaterializationRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization> {
-      // Keep active_key in step with status so the unique index never allows
-      // two active rows for one (environment, package).
+      // Clear active_key on any transition to a terminal state; keep it on a
+      // transition between non-terminal states, so a run keeps the slot it
+      // was created holding (its package's or its version's). A terminal
+      // state has no way out, so a key is never set again; the fallback only
+      // covers a row written without one. The unique index guarantees no two
+      // active rows ever hold one slot.
       const activeKey =
          updates.status === undefined
             ? []
             : TERMINAL_STATUSES.has(updates.status)
               ? ["active_key = NULL"]
-              : ["active_key = environment_id || '|' || package_name"];
+              : [
+                   "active_key = COALESCE(active_key, environment_id || '|' || package_name)",
+                ];
 
       await updateRow(
          this.db,
@@ -234,6 +289,7 @@ function mapRow(row: Row): Materialization {
          ? new Date(row.completed_at as string)
          : null,
       error: row.error != null ? (row.error as string) : null,
+      version: row.version != null ? (row.version as string) : null,
       ...rowTimestamps(row),
    };
 }

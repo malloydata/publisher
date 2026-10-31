@@ -50,6 +50,7 @@ function controllers(stubs: Stubs): ApiControllers {
       "compileController",
       "materializationController",
       "storageDestinationController",
+      "versionController",
    ];
    return Object.fromEntries(
       names.map((name) => [name, stubs[name] ?? unstubbed(name)]),

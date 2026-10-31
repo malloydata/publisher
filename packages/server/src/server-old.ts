@@ -7,7 +7,9 @@
  * clients that predate the rename (e.g. `@malloydata/db-publisher`). Removable
  * once those clients have migrated.
  *
- * - Reuses the controllers `server.ts` wires up; only the URL surface differs.
+ * - Reuses the controllers `main_server.ts` wires up; only the URL surface
+ *   differs. The routes that declared `versionId` read it as the
+ *   `/environments` routes do: omitted means `latest`.
  * - Most payloads are wire-identical between the two specs; materialization
  *   responses are remapped `environmentId` -> `projectId`.
  * - Watch-mode is not exposed here. `/status` is shared, so legacy clients get
@@ -15,7 +17,7 @@
  */
 
 import bodyParser from "body-parser";
-import type { Express, Response } from "express";
+import type { Express } from "express";
 import { ParsedQs } from "qs";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -23,20 +25,21 @@ import { DatabaseController } from "./controller/database.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { LegacyReportController } from "./controller/legacy_report.controller";
 import { ModelController } from "./controller/model.controller";
-import { PackageController } from "./controller/package.controller";
-import { QueryController } from "./controller/query.controller";
 import {
-   BadRequestError,
-   internalErrorToHttpError,
-   NotImplementedError,
-} from "./errors";
+   PackageController,
+   setPackagePatchDeprecationHeaders,
+} from "./controller/package.controller";
+import { QueryController } from "./controller/query.controller";
+import { BadRequestError } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { apiRoute } from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
+   assertListingTakesNoVersionId,
    booleanParamOr400,
    optionalBooleanParamOr400,
+   queryVersionIdOf,
    setCollectionReloadError,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
@@ -70,13 +73,6 @@ function remapMaterializationResponse(mat: any): any {
    }
    return out;
 }
-
-const setVersionIdError = (res: Response) => {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-};
 
 // ─── route registration ────────────────────────────────────────────────────
 
@@ -414,10 +410,7 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages`,
       apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+         assertListingTakesNoVersionId(req.query.versionId);
          if (req.query.reload !== undefined) {
             setCollectionReloadError(
                res,
@@ -443,10 +436,6 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
       apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          const reload = booleanParamOr400(req, res, "reload");
          if (reload === undefined) {
             return;
@@ -455,13 +444,15 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.packageName,
             reload,
+            req.query.versionId,
          );
       }),
    );
 
    app.patch(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
-      apiRoute(async (req) => {
+      apiRoute(async (req, res) => {
+         setPackagePatchDeprecationHeaders(res);
          return packageController.updatePackage(
             req.params.projectName,
             req.params.packageName,
@@ -483,30 +474,24 @@ export function registerLegacyRoutes(
    // ── models ──────────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models`,
-      apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+      apiRoute(async (req) => {
          return modelController.listModels(
             req.params.projectName,
             req.params.packageName,
+            { versionId: req.query.versionId },
          );
       }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`,
-      apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+      apiRoute(async (req) => {
          const modelPath = (req.params as Record<string, string>)["0"];
          return modelController.getModel(
             req.params.projectName,
             req.params.packageName,
             modelPath,
+            { versionId: req.query.versionId },
          );
       }),
    );
@@ -517,11 +502,7 @@ export function registerLegacyRoutes(
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
       queryConcurrency(),
-      apiRoute(async (req, res) => {
-         if (req.body.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+      apiRoute(async (req) => {
          const modelPath = (req.params as Record<string, string>)["0"];
          return queryController.getQuery(
             req.params.projectName,
@@ -535,6 +516,8 @@ export function registerLegacyRoutes(
                | Record<string, string | string[]>
                | undefined,
             req.body.bypassFilters === true ? true : undefined,
+            undefined,
+            { versionId: queryVersionIdOf(req) },
          );
       }),
    );
@@ -557,14 +540,11 @@ export function registerLegacyRoutes(
    // ── notebooks ───────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks`,
-      apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+      apiRoute(async (req) => {
          return legacyReportController.listNotebooks(
             req.params.projectName,
             req.params.packageName,
+            req.query.versionId,
          );
       }),
    );
@@ -574,10 +554,6 @@ export function registerLegacyRoutes(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
       apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          const cellIndex = parseInt(req.params.cellIndex, 10);
          if (isNaN(cellIndex)) {
             res.status(400).json({ error: "Invalid cell index" });
@@ -609,22 +585,21 @@ export function registerLegacyRoutes(
             cellIndex,
             filterParams,
             bypassFilters,
+            undefined,
+            req.query.versionId,
          );
       }),
    );
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
-      apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+      apiRoute(async (req) => {
          const notebookPath = (req.params as Record<string, string>)["0"];
          return legacyReportController.getNotebook(
             req.params.projectName,
             req.params.packageName,
             notebookPath,
+            req.query.versionId,
          );
       }),
    );
@@ -632,14 +607,11 @@ export function registerLegacyRoutes(
    // ── databases ───────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/databases`,
-      apiRoute(async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
+      apiRoute(async (req) => {
          return databaseController.listDatabases(
             req.params.projectName,
             req.params.packageName,
+            req.query.versionId,
          );
       }),
    );

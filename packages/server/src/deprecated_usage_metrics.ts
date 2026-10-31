@@ -13,9 +13,12 @@
  *   environment and project paths count alike; a Console page load on a `dashboards/<name>` or
  *   `notebooks/<name>` alias of a report, counted by the server's app
  *   fallback (`service/legacy_report_views.ts`; not under a development
- *   server, where Vite serves the app); and a query carrying
+ *   server, where Vite serves the app); a query carrying
  *   `filterParams` / `filter_params` or `bypassFilters` / `bypass_filters`
- *   (`filter_deprecation.ts`), on REST and MCP alike.
+ *   (`filter_deprecation.ts`), on REST and MCP alike; and a
+ *   `PATCH …/packages/{pkg}`, counted in its controller
+ *   (`PackageController.updatePackage`) so the environment and project paths
+ *   count alike.
  * - A package load or reload: per package that sets `explores` or
  *   `queryableSources` in publisher.json, per `.malloynb` file, and per source
  *   that declares `#(filter)` annotations (`service/deprecated/*`).
@@ -37,7 +40,8 @@ export type DeprecatedFeature =
    | "queryable_sources"
    | "filter_annotation"
    | "filter_params"
-   | "bypass_filters";
+   | "bypass_filters"
+   | "package_patch";
 
 const counter = lazyCounter(
    "publisher_deprecated_usage_total",

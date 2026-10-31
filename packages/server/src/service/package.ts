@@ -433,9 +433,13 @@ export class Package {
    }
 
    private agentSource(definitionSha: string): ApiAgentSource {
+      const versionId = this.getVersionId();
       return {
          environment: this.environmentName,
          package: this.packageName,
+         // A published version's agent can be fetched again by it after
+         // `latest` moves; absent for a package with no versions.
+         ...(versionId ? { versionId } : {}),
          sourceContentSha: this.sourceContentSha,
          definitionSha,
          servedRevision: this.servedRevision,
@@ -1285,6 +1289,11 @@ export class Package {
       return undefined;
    }
 
+   /** The published version this package is, or undefined for a package with none. */
+   public getVersionId(): string | undefined {
+      return this.packageMetadata.versionId ?? undefined;
+   }
+
    public getPackageName(): string {
       return this.packageName;
    }
@@ -1633,12 +1642,19 @@ export class Package {
     * Eligibility must be POSITIVE: a failed plan compute or a source missing
     * from the plan must not read as consent. Refused bindings are dropped, and
     * that source serves live, which is always correct.
+    *
+    * A published version also binds only the tables its own definition built.
+    * Storage bindings are keyed by source NAME, and the versions of a
+    * `scope: package` package share its tables under unchanged names, so an
+    * entry whose `sourceEntityId` none of this version's same-named sources
+    * has was built by another version's definition, and that source serves
+    * live. (The colocated tier is keyed by content address already.)
     */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
       const derived = deriveServeBindings(
-         entries,
+         this.getVersionId() === undefined ? entries : this.ownEntries(entries),
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
          this.serveDestinationSchema,
       );
@@ -1671,6 +1687,36 @@ export class Package {
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
+   }
+
+   /**
+    * The entries this version's own sources built: same name, same content
+    * address. See {@link bindStorageServeBindings}.
+    */
+   private ownEntries(
+      entries: Record<string, ManifestEntry>,
+   ): Record<string, ManifestEntry> {
+      const own = new Set(
+         Object.values(this.buildPlan?.sources ?? {}).map(
+            (source) => `${source.name}\u0000${source.sourceEntityId}`,
+         ),
+      );
+      const kept: Record<string, ManifestEntry> = {};
+      for (const [key, entry] of Object.entries(entries)) {
+         if (own.has(`${entry.sourceName}\u0000${entry.sourceEntityId}`)) {
+            kept[key] = entry;
+            continue;
+         }
+         logger.info(
+            "Serving a source live: its stored table was built from another version's definition",
+            {
+               packageName: this.packageName,
+               versionId: this.getVersionId(),
+               sourceName: entry.sourceName,
+            },
+         );
+      }
+      return kept;
    }
 
    /**
