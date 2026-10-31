@@ -12,6 +12,7 @@ import {
    escapeSQL,
    installAndLoadExtension,
    recordedCatalogSettings,
+   stripTrailingSlashes,
 } from "./connection";
 import { createIsolatedBuildSession } from "./materialization_build_session";
 import { quoteIdentifier } from "./quoting";
@@ -88,7 +89,7 @@ export function readerSql(
  * prefix that merely shares the string (`…/ds_a` vs `…/ds_ab`) is outside.
  */
 export function assertUnderDataPath(uri: string, dataPath: string): void {
-   const root = dataPath.replace(/\/+$/, "");
+   const root = stripTrailingSlashes(dataPath);
    const outside = () =>
       new BadRequestError(
          `The object must sit under the catalog's data path (${root}/).`,

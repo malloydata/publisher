@@ -185,6 +185,8 @@ A `ducklake` connection pairs a **catalog** — a metadata database, typically P
 
 Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
 
+The storage credential reaches only the catalog's data path. Publisher scopes the DuckDB secret it creates to `bucketUrl` (or, when the config leaves it out, to the path the catalog recorded), and on S3 turns off DuckDB's fallback to the host's `AWS_*` keys, so a read of any other object through this connection is unsigned. See [What the storage credential reaches](ducklake.md#what-the-storage-credential-reaches).
+
 ## Storage destinations
 
 A `#@ persist storage=<name>` source is built into, and served from, a

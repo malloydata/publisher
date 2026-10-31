@@ -18,7 +18,10 @@ permissions:
 jobs:
   playwright:
     name: Playwright (packages/app)
-    runs-on: ubuntu-latest
+    # Pinned: `ubuntu-latest` began resolving to ubuntu-26.04 on 2026-10-30, and
+    # `playwright install --with-deps chromium` refuses that image ("does not
+    # support chromium on ubuntu26.04"), failing the job before any test runs.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

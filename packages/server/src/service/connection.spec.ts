@@ -21,6 +21,7 @@ import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
+   storageSecretScope,
    buildEnvironmentMalloyConfig,
    buildPgConnectionString,
    buildProxiedSslQuery,
@@ -4331,5 +4332,188 @@ describe("buildPgConnectionString", () => {
       } finally {
          warn.restore();
       }
+   });
+});
+
+describe("buildCloudStorageSecretSQL — scope", () => {
+   const base = { accessKeyId: "AK", secretAccessKey: "SK", region: "r" };
+
+   it("adds SCOPE to the S3 chain, S3 key and GCS arms", () => {
+      const chain = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         provider: "credential_chain",
+         scope: "s3://b/p/",
+      });
+      const key = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         scope: "s3://b/p/",
+      });
+      const gcs = buildCloudStorageSecretSQL("s", {
+         type: "gcs",
+         ...base,
+         scope: "gs://b/p/",
+      });
+      expect(chain).toContain("PROVIDER credential_chain");
+      expect(chain).toContain("SCOPE 's3://b/p/'");
+      expect(key).toContain("SCOPE 's3://b/p/'");
+      expect(gcs).toContain("SCOPE 'gs://b/p/'");
+   });
+
+   it("escapes the scope literal", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: "s3://b/o'brien/",
+         }),
+      ).toContain("SCOPE 's3://b/o''brien/'");
+   });
+
+   it("emits no SCOPE when none is set, as the generic attach does", () => {
+      for (const type of ["s3", "gcs"] as const) {
+         expect(
+            buildCloudStorageSecretSQL("s", { type, ...base }),
+         ).not.toContain("SCOPE");
+      }
+   });
+});
+
+// The prefix a DuckLake storage secret is held to. A configured data path wins;
+// a catalog whose config states none (an orchestrator's, which leaves the path to
+// the catalog so no attach can create one) is scoped to the path it recorded.
+describe("storageSecretScope", () => {
+   const main = { path: "main/", relative: true };
+
+   it("takes the configured data path with exactly one trailing slash", () => {
+      for (const [url, scope] of [
+         ["s3://bucket", "s3://bucket/"],
+         ["s3://bucket/prefix", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix/", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix//", "s3://bucket/prefix/"],
+      ]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: url,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBe(scope);
+      }
+   });
+
+   it("falls back to the data path the catalog recorded", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "gs://bucket/org_a/db_b/",
+            mainSchemaPath: main,
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("gs://bucket/org_a/db_b/");
+   });
+
+   it("prefers a configured path over the recorded one", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "s3://bucket/configured",
+            recordedDataPath: "s3://bucket/recorded/",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("s3://bucket/configured/");
+   });
+
+   it("narrows a managed read-only attach to the main schema's path", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: main,
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/main/");
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "/main", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/main/");
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "s3://elsewhere/main", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://elsewhere/main/");
+   });
+
+   it("does not narrow a managed read-write attach, which writes other schemas", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: main,
+            readOnly: false,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("fails closed: no path, or a managed view without its main path, scopes to nothing", () => {
+      expect(
+         storageSecretScope({ readOnly: true, managed: false }),
+      ).toBeUndefined();
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("reads an empty main path as the data path itself, as a catalog migrated from DuckLake 0.2 records it", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: { path: "", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("refuses a root that names no bucket, which DuckDB would match against every URL of the scheme", () => {
+      for (const root of ["s3://", "s3:///", "gs://"]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: root,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBeUndefined();
+      }
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "gs://", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("leaves a local data path alone", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "/srv/lake//",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("/srv/lake/");
    });
 });
