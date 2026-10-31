@@ -556,6 +556,10 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
                   secretStatements.push(String(sql));
                }
+               // The catalog is unreachable; the secret comes after the ATTACH.
+               if (/ATTACH OR REPLACE 'ducklake:/.test(String(sql))) {
+                  return [] as never;
+               }
                return runSQL.call(this, sql);
             });
          const environment = makeEnvironment([], [chainLake("managed")]);
@@ -598,19 +602,18 @@ describe("Environment: connections and storage destinations are disjoint", () =>
 
    // A managed catalog's config states no data path (so no attach can create a
    // catalog), and its storage secret is scoped to the path the catalog recorded,
-   // which the preflight reads before the secret exists. The read-only view of a
+   // read from the attached catalog before the secret exists. The read-only view of a
    // managed catalog reaches only its main schema's files.
    describe("storage secret scope from the catalog's recorded data path", () => {
       const noPathLake = (
          name: string,
          extra: Partial<ApiConnection> = {},
-         readOnly?: boolean,
+         storage: "gcs" | "s3" = "gcs",
       ): ApiConnection => ({
          name,
          type: "ducklake",
          ...extra,
          ducklakeConnection: {
-            ...(readOnly === undefined ? {} : { readOnly }),
             catalog: {
                postgresConnection: {
                   host: "127.0.0.1",
@@ -621,32 +624,54 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                },
                metadataSchema: name,
             },
-            storage: { gcsConnection: { keyId: "k", secret: "s" } },
+            storage:
+               storage === "gcs"
+                  ? { gcsConnection: { keyId: "k", secret: "s" } }
+                  : {
+                       s3Connection: {
+                          accessKeyId: "AK",
+                          secretAccessKey: "SK",
+                          region: "us-east-1",
+                       },
+                    },
          },
       });
 
-      // Answers the preflight's reads as a present catalog would, lets the secret
-      // statement through without a live bucket, and passes everything else to
-      // the real engine, where the DuckLake ATTACH fails on the unreachable catalog.
-      const stubCatalog = (statements: string[]) => {
+      type Recorded = {
+         dataPath?: string;
+         main?: { path: string; path_is_relative: boolean | null };
+      };
+      const RECORDED: Recorded = {
+         dataPath: "gs://bucket/org_a/db_x/",
+         main: { path: "main/", path_is_relative: true },
+      };
+
+      // The catalog is unreachable (port 1), so the preflight falls back to the
+      // ATTACH. The stub answers the DuckLake ATTACH as a success and the attached
+      // catalog's metadata reads with what a present catalog records, lets the
+      // secret statement through without a live bucket, and passes everything
+      // else to the real engine, where nothing is attached.
+      const stubCatalog = (
+         statements: string[],
+         recorded: Recorded = RECORDED,
+      ) => {
          const runSQL = DuckDBConnection.prototype.runSQL;
          sinon
             .stub(DuckDBConnection.prototype, "runSQL")
             .callsFake(async function (this: DuckDBConnection, sql: string) {
                const text = String(sql);
                statements.push(text);
-               if (/_fmt_preflight_\d+"\s*\(TYPE postgres/.test(text))
+               if (/ATTACH OR REPLACE 'ducklake:/.test(text))
                   return [] as never;
-               if (/^\s*DETACH "[^"]*_fmt_preflight_/.test(text))
-                  return [] as never;
-               if (/FROM duckdb_tables\(\)/.test(text))
-                  return [{ n: 1 }] as never;
-               if (/key = 'version'/.test(text)) return [] as never;
-               if (/key = 'data_path'/.test(text)) {
-                  return [{ value: "gs://bucket/org_a/db_x/" }] as never;
+               if (/ducklake_metadata WHERE scope IS NULL/.test(text)) {
+                  return (
+                     recorded.dataPath
+                        ? [{ key: "data_path", value: recorded.dataPath }]
+                        : []
+                  ) as never;
                }
-               if (/\.ducklake_schema /.test(text)) {
-                  return [{ path: "main/", path_is_relative: true }] as never;
+               if (/\.ducklake_schema WHERE schema_name = 'main'/.test(text)) {
+                  return (recorded.main ? [recorded.main] : []) as never;
                }
                if (/CREATE OR REPLACE SECRET/i.test(text)) return [] as never;
                return runSQL.call(this, sql);
@@ -654,16 +679,26 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       };
       const secrets = (statements: string[]) =>
          statements.filter((sql) => /CREATE OR REPLACE SECRET/i.test(sql));
+      const lookupView = (lake: ApiConnection) =>
+         buildEnvironmentMalloyConfig([lake], envPath)
+            .malloyConfig.connections.lookupConnection(lake.name!)
+            .then(
+               () => undefined,
+               (error: Error) => error,
+            );
+      const lookupDestination = (lake: ApiConnection) =>
+         makeEnvironment([], [lake])
+            .getStorageDestinationMalloyConfig()
+            .connections.lookupConnection(lake.name!)
+            .then(
+               () => undefined,
+               (error: Error) => error,
+            );
 
       it("scopes a managed connection's read-only view to the recorded main schema path", async () => {
          const statements: string[] = [];
          stubCatalog(statements);
-         await buildEnvironmentMalloyConfig(
-            [noPathLake("db_x", { managed: true })],
-            envPath,
-         )
-            .malloyConfig.connections.lookupConnection("db_x")
-            .catch(() => undefined);
+         await lookupView(noPathLake("db_x", { managed: true }));
          expect(secrets(statements)).toHaveLength(1);
          expect(secrets(statements)[0]).toContain("TYPE gcs");
          expect(secrets(statements)[0]).toContain(
@@ -674,66 +709,130 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       it("scopes a destination with no configured path to the whole recorded data path", async () => {
          const statements: string[] = [];
          stubCatalog(statements);
-         const environment = makeEnvironment([], [noPathLake("db_x")]);
-         await environment
-            .getStorageDestinationMalloyConfig()
-            .connections.lookupConnection("db_x")
-            .catch(() => undefined);
+         await lookupDestination(noPathLake("db_x"));
          expect(secrets(statements)).toHaveLength(1);
          expect(secrets(statements)[0]).toContain(
             "SCOPE 'gs://bucket/org_a/db_x/'",
          );
       });
 
-      it("creates the secret after the preflight and before the DuckLake ATTACH", async () => {
+      it("never narrows a destination, whatever flags its entry carries", async () => {
+         // The narrowing is for a connection view; an operator's destination
+         // serves every schema, and a `managed` flag on its entry means nothing.
          const statements: string[] = [];
          stubCatalog(statements);
-         await buildEnvironmentMalloyConfig(
-            [noPathLake("db_x", { managed: true })],
-            envPath,
-         )
-            .malloyConfig.connections.lookupConnection("db_x")
-            .catch(() => undefined);
-         const detach = statements.findIndex((sql) =>
-            /^\s*DETACH "[^"]*_fmt_preflight_/.test(sql),
+         await lookupDestination(noPathLake("db_x", { managed: true }));
+         expect(secrets(statements)).toHaveLength(1);
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE 'gs://bucket/org_a/db_x/'",
+         );
+      });
+
+      it("reads an empty or unflagged main path as the recorded default", async () => {
+         // '' is what a catalog migrated from DuckLake 0.2 records for `main`: its
+         // files sit directly under the data path. A NULL `path_is_relative` is
+         // relative.
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            dataPath: "gs://bucket/org_a/db_x",
+            main: { path: "", path_is_relative: null },
+         });
+         await lookupView(noPathLake("db_x", { managed: true }));
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE 'gs://bucket/org_a/db_x/'",
+         );
+         sinon.restore();
+         const relative: string[] = [];
+         stubCatalog(relative, {
+            dataPath: "gs://bucket/org_a/db_x",
+            main: { path: "main/", path_is_relative: null },
+         });
+         await lookupView(noPathLake("db_y", { managed: true }));
+         expect(secrets(relative)[0]).toContain(
+            "SCOPE 'gs://bucket/org_a/db_x/main/'",
+         );
+      });
+
+      it("creates the secret after the DuckLake ATTACH, from the attached catalog's own metadata", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupView(noPathLake("db_x", { managed: true }));
+         const attach = statements.findIndex((sql) =>
+            /ATTACH OR REPLACE 'ducklake:/.test(sql),
+         );
+         const dataPath = statements.findIndex((sql) =>
+            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_metadata WHERE scope IS NULL/.test(
+               sql,
+            ),
+         );
+         const mainPath = statements.findIndex((sql) =>
+            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_schema WHERE schema_name = 'main'/.test(
+               sql,
+            ),
          );
          const secret = statements.findIndex((sql) =>
             /CREATE OR REPLACE SECRET/i.test(sql),
          );
+         expect(attach).toBeGreaterThanOrEqual(0);
+         expect(dataPath).toBeGreaterThan(attach);
+         expect(mainPath).toBeGreaterThan(attach);
+         expect(secret).toBeGreaterThan(dataPath);
+         expect(secret).toBeGreaterThan(mainPath);
+         // Nothing about the paths is read in the preflight any more.
+         expect(
+            statements.filter((sql) => /_fmt_preflight_/.test(sql)),
+         ).not.toContainEqual(
+            expect.stringMatching(/data_path|ducklake_schema/),
+         );
+      });
+
+      it("refuses an S3 catalog with nothing to scope to, detaches it, and retries on the next lookup", async () => {
+         // The catalog records no data path. The secret would have to be unscoped,
+         // so none is created, and the catalog is not left attached: an attached
+         // catalog with no secret would be found attached by the next lookup and
+         // never retried, while its reads fall to whatever else can sign them.
+         const statements: string[] = [];
+         stubCatalog(statements, {});
+         const lake = noPathLake("db_x", { managed: true }, "s3");
+         const config = buildEnvironmentMalloyConfig([lake], envPath);
+         const lookup = () =>
+            config.malloyConfig.connections.lookupConnection("db_x").then(
+               () => undefined,
+               (error: Error) => error,
+            );
+         const first = await lookup();
+         expect(first?.message).toMatch(
+            /No storage secret could be scoped for DuckLake catalog 'db_x'/,
+         );
+         expect(secrets(statements)).toHaveLength(0);
+         const off = statements.findIndex((sql) =>
+            /SET GLOBAL enable_global_s3_configuration=false/.test(sql),
+         );
          const attach = statements.findIndex((sql) =>
             /ATTACH OR REPLACE 'ducklake:/.test(sql),
          );
-         expect(detach).toBeGreaterThanOrEqual(0);
-         expect(secret).toBeGreaterThan(detach);
-         expect(attach).toBeGreaterThan(secret);
+         const detach = statements.findIndex((sql) =>
+            /^DETACH "db_x";/.test(sql),
+         );
+         expect(off).toBeGreaterThanOrEqual(0);
+         expect(off).toBeLessThan(attach);
+         expect(detach).toBeGreaterThan(attach);
+
+         const second = await lookup();
+         expect(second?.message).toMatch(/No storage secret could be scoped/);
+         expect(
+            statements.filter((sql) =>
+               /ATTACH OR REPLACE 'ducklake:/.test(sql),
+            ),
+         ).toHaveLength(2);
       });
 
-      it("creates no storage secret when neither the config nor the catalog states a path", async () => {
-         // No stub: the preflight finds the catalog unreachable, so nothing states
-         // a path, and an unscoped secret would reach the whole bucket.
+      it("refuses a GCS catalog with nothing to scope to", async () => {
          const statements: string[] = [];
-         const runSQL = DuckDBConnection.prototype.runSQL;
-         sinon
-            .stub(DuckDBConnection.prototype, "runSQL")
-            .callsFake(async function (this: DuckDBConnection, sql: string) {
-               statements.push(String(sql));
-               return runSQL.call(this, sql);
-            });
-         const warns = sinon.stub(logger, "warn");
-         await buildEnvironmentMalloyConfig(
-            [noPathLake("db_x", { managed: true })],
-            envPath,
-         )
-            .malloyConfig.connections.lookupConnection("db_x")
-            .catch(() => undefined);
+         stubCatalog(statements, {});
+         const error = await lookupDestination(noPathLake("db_x"));
+         expect(error?.message).toMatch(/No storage secret could be scoped/);
          expect(secrets(statements)).toHaveLength(0);
-         expect(
-            warns
-               .getCalls()
-               .some((call) =>
-                  String(call.args[0]).includes("No storage secret created"),
-               ),
-         ).toBe(true);
       });
    });
 

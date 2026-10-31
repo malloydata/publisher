@@ -42,7 +42,7 @@ credential without holding it.
 | A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
 | A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
 | Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
-| The reference drifts from the code | `--config`, `PERSIST_COLLISION_ENFORCE` and `S3_CREDENTIAL_CHAIN_POLICY` are not in the configuration table |
+| The reference drifts from the code | `--config` and `PERSIST_COLLISION_ENFORCE` are not in the configuration table |
 
 ## Design
 

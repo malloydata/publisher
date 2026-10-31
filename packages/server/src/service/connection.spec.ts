@@ -4475,4 +4475,45 @@ describe("storageSecretScope", () => {
          }),
       ).toBeUndefined();
    });
+
+   it("reads an empty main path as the data path itself, as a catalog migrated from DuckLake 0.2 records it", () => {
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            mainSchemaPath: { path: "", relative: true },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBe("s3://bucket/org_a/db_b/");
+   });
+
+   it("refuses a root that names no bucket, which DuckDB would match against every URL of the scheme", () => {
+      for (const root of ["s3://", "s3:///", "gs://"]) {
+         expect(
+            storageSecretScope({
+               configuredDataPath: root,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBeUndefined();
+      }
+      expect(
+         storageSecretScope({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            mainSchemaPath: { path: "gs://", relative: false },
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("leaves a local data path alone", () => {
+      expect(
+         storageSecretScope({
+            configuredDataPath: "/srv/lake//",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toBe("/srv/lake/");
+   });
 });
