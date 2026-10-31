@@ -1108,6 +1108,52 @@ describe("assembleEnvironmentConnections — bigquery projectId", () => {
    });
 });
 
+describe("assembleEnvironmentConnections — bigquery dbmeta", () => {
+   const bigquery = (dbmeta?: unknown): ApiConnection => ({
+      name: "bq",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "data-project",
+         dbmeta: dbmeta as boolean | undefined,
+      },
+   });
+
+   it("forwards dbmeta to the core entry", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(true)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(true);
+   });
+
+   it("leaves dbmeta off when the connection does not set it", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery()]);
+      expect(pojo.connections["bq"].dbmeta).toBeUndefined();
+   });
+
+   it("forwards an explicit false", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(false)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(false);
+   });
+
+   it.each([
+      ["true", true],
+      ["On", true],
+      ["false", false],
+      ["0", false],
+      ["", undefined],
+   ])(
+      "reads the string %p, as ${VAR} substitution delivers it",
+      (raw, want) => {
+         const { pojo } = assembleEnvironmentConnections([bigquery(raw)]);
+         expect(pojo.connections["bq"].dbmeta).toBe(want);
+      },
+   );
+
+   it.each(["ture", 1])("refuses %p", (raw) => {
+      expect(() => assembleEnvironmentConnections([bigquery(raw)])).toThrow(
+         /Invalid value for dbmeta on BigQuery connection "bq"/,
+      );
+   });
+});
+
 describe("assembleEnvironmentConnections — bigquery impersonation", () => {
    const impersonated: ApiConnection = {
       name: "bigquery",

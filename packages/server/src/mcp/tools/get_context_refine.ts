@@ -11,7 +11,8 @@
  * keeps the model's optional reason as `matched_targets[].match_reason`.
  * A failed batch fails the stage; there is no unrefined fallback.
  *
- * What is sent: name, kind, data type, source and `#(doc)` text, scrubbed by
+ * What is sent: name, kind, data type, source and doc text (see docOnlyText),
+ * scrubbed by
  * scrubForEgress so no access predicate can ride along.
  */
 
@@ -181,7 +182,7 @@ function validateRatings(size: number) {
 }
 
 /**
- * What the model may see of a row's description: its `#(doc)` text only (never
+ * What the model may see of a row's description: its doc text only (never
  * `doc`, which can fall back to raw annotation lines), scrubbed again so an
  * access predicate cannot ride along.
  */

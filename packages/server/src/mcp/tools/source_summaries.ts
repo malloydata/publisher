@@ -8,9 +8,10 @@
  * request pins the source (or a source search matched only it), and the source
  * match stage shows the summary to the model that picks sources.
  *
- * What is sent for one source: its name, `#(doc)` text, and its fields grouped
- * by kind as `name (type): doc`, with joined sources nested. Never code, never
- * an access predicate: doc text is `#(doc)`-only and scrubbed again here.
+ * What is sent for one source: its name, doc text (see docOnlyText), and its
+ * fields grouped by kind as `name (type): doc`, with joined sources nested.
+ * Never code, never an access predicate: doc text is doc-only and scrubbed
+ * again here.
  *
  * Inputs are a pure function of the entity list, so the readiness fingerprint
  * includes them (see sourceSummaryInputsDigest). A source is identified by file
@@ -48,7 +49,7 @@ export const SOURCE_SUMMARY_MAX_FIELDS = 200;
 export const SOURCE_SUMMARY_MAX_JOINED_SOURCES = 20;
 /** Deepest join chain rendered under one source. */
 export const SOURCE_SUMMARY_JOIN_DEPTH = 3;
-/** One field's (or the source's own) `#(doc)` is cut to this many characters. */
+/** One field's (or the source's own) doc text is cut to this many characters. */
 export const SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS = 500;
 /** The longest message for one source (about 15,000 tokens; fits hosted models). */
 export const SOURCE_SUMMARY_MAX_PROMPT_CHARS = 60_000;
@@ -341,7 +342,7 @@ function renderSourceFields(
 export interface SourceSummaryInput {
    source: string;
    modelPath: string;
-   /** True when the source has `#(doc)` text. */
+   /** True when the source has doc text. */
    hasDoc: boolean;
    /** The exact user message the model is sent. */
    prompt: string;

@@ -71,6 +71,21 @@ describe("get_context docText", () => {
       expect(docText()).toBe("");
       expect(docText([])).toBe("");
    });
+
+   it("uses the #(dbmeta) description when there is no #(doc)", () => {
+      expect(
+         docText([{ value: '#(dbmeta) description="Customer identifier."\n' }]),
+      ).toBe("Customer identifier.");
+   });
+
+   it("prefers #(doc) over the #(dbmeta) description", () => {
+      expect(
+         docText([
+            '#(dbmeta) description="From the database."\n',
+            "#(doc) Written in the model.",
+         ]),
+      ).toBe("Written in the model.");
+   });
 });
 
 describe("get_context docOnlyText (embedding-input safety)", () => {
@@ -91,6 +106,63 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
             "#(malloy) drillable",
          ]),
       ).toBe("");
+   });
+
+   it("keeps only the #(dbmeta) description when mixed with predicate annotations", () => {
+      expect(
+         docOnlyText([
+            "#(access_filter) \"$TENANT = 'acme'\"",
+            '#(dbmeta) description="Orders."\n',
+         ]),
+      ).toBe("Orders.");
+   });
+
+   it("reads quotes and line breaks back from the description", () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="Uses \\"active\\" status.\\nSecond line."\n',
+         ]),
+      ).toBe('Uses "active" status. Second line.');
+   });
+
+   it("ignores a #(dbmeta) annotation that does not parse", () => {
+      expect(docOnlyText(['#(dbmeta) description="unterminated\n'])).toBe("");
+   });
+
+   it("ignores a #(dbmeta) annotation without a description", () => {
+      expect(docOnlyText(["#(dbmeta) other=1\n"])).toBe("");
+   });
+
+   it("reads a description that mentions #(doc) as a description", () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="Net revenue. Document fields with #(doc) per the style guide."\n',
+         ]),
+      ).toBe("Net revenue. Document fields with #(doc) per the style guide.");
+   });
+
+   it("never adds a description that mentions #(doc) to an authored #(doc)", () => {
+      expect(
+         docOnlyText([
+            "#(doc) Authored.\n",
+            '#(dbmeta) description="See #(doc) here."\n',
+         ]),
+      ).toBe("Authored.");
+   });
+
+   it('prefers a #" doc string over the #(dbmeta) description', () => {
+      expect(
+         docOnlyText([
+            '#(dbmeta) description="From the database."\n',
+            '#" Net of refunds.\n',
+         ]),
+      ).toBe("Net of refunds.");
+   });
+
+   it('prefers #(doc) over a #" doc string', () => {
+      expect(docOnlyText(['#" Doc string.\n', "#(doc) Authored.\n"])).toBe(
+         "Authored.",
+      );
    });
 
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {

@@ -28,7 +28,10 @@ import {
    Runtime,
    type Connection,
    type ModelDef,
+   type SQLSourceDef,
+   type SQLSourceRequest,
 } from "@malloydata/malloy";
+import { dbmetaAnnotations } from "@malloydata/malloy/connection";
 
 export const JOIN_FIXTURE_MODEL_PATH = "m.malloy";
 
@@ -71,6 +74,38 @@ source: inv is duckdb.sql("select 1 as id, 1 as cust_id, 'i' as rf") extend {
 }
 `;
 
+/** A table's and its columns' database descriptions, as `dbmeta` reads them. */
+export interface DbmetaStub {
+   table?: string;
+   columns?: Record<string, string>;
+}
+
+/**
+ * A DuckDB connection that annotates each `duckdb.sql` schema the way a
+ * BigQuery connection with `dbmeta` on does, keyed by the SQL text.
+ */
+class DescribedDuckDBConnection extends DuckDBConnection {
+   constructor(private readonly dbmeta: Record<string, DbmetaStub>) {
+      super("duckdb", ":memory:");
+   }
+
+   override async fetchSelectSchema(
+      request: SQLSourceRequest,
+   ): Promise<SQLSourceDef | string> {
+      const def = await super.fetchSelectSchema(request);
+      const stub = this.dbmeta[request.selectStr];
+      if (typeof def === "string" || !stub) return def;
+      return {
+         ...def,
+         ...dbmetaAnnotations({ description: stub.table }),
+         fields: def.fields.map((field) => ({
+            ...field,
+            ...dbmetaAnnotations({ description: stub.columns?.[field.name] }),
+         })),
+      };
+   }
+}
+
 /** Compile the fixture and return a Package-shaped stand-in over it. */
 export async function compileJoinFixture(
    modelPath: string = JOIN_FIXTURE_MODEL_PATH,
@@ -85,9 +120,13 @@ export async function compileJoinFixture(
        * index.
        */
       hiddenSources?: string[];
+      /** Database descriptions for `duckdb.sql` sources, by their SQL text. */
+      dbmeta?: Record<string, DbmetaStub>;
    } = {},
 ): Promise<{ pkg: unknown; modelDef: ModelDef }> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   const duckdb = options.dbmeta
+      ? new DescribedDuckDBConnection(options.dbmeta)
+      : new DuckDBConnection("duckdb", ":memory:");
    const runtime = new Runtime({
       urlReader: new InMemoryURLReader(
          new Map([[`${ROOT}${modelPath}`, options.modelText ?? MODEL_TEXT]]),

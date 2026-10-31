@@ -235,7 +235,7 @@ export function parseBoolEnv(name: string): boolean | undefined {
 }
 
 /** A boolean as a variable spells it: `1/true/yes/on`, `0/false/no/off`, any case; blank is unset. */
-function parseBoolString(
+export function parseBoolString(
    raw: string | undefined,
    name: string,
 ): boolean | undefined {

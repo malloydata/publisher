@@ -187,7 +187,8 @@ A package author controls the docs that reach the LLM and now also the settings.
 the operator has not allowed" needs a mechanism, not a promise. It is enforced in the LLM client, so no stage
 can bypass it.
 
-- **Egress.** `retrieval.egress.preset` is `default` (entity names, `#(doc)` text and schema context may be sent)
+- **Egress.** `retrieval.egress.preset` is `default` (entity names, doc text and schema context may be sent; doc text is `#(doc)`, else `#"`, else the
+  database's description on a connection with `dbmeta` on)
   or `full` (also code and dimension values). Access predicates (`#(access_filter)`, `#(authorize)`) have no
   class and are never sent. Operator only.
 - **Spend ceilings.** `retrieval.llm.maxCallsPerSync` and `retrieval.llm.maxCallsPerRequest`, set by the operator. A package can
@@ -378,7 +379,7 @@ tiebreak from the order the model listed them, drops cards below 2 unless the sc
 cards it cut from the top 8 in `total_available`. When refine ran, published scores are the raw score through the
 knots, and a joined copy is damped by `0.9 ** (hops + 1)` on the whole raw score. Both stages are `auto` (on when an
 LLM is configured), take their prompt text from a built-in default or a file in the package, and send only names,
-kinds, types and `#(doc)` text. A failure in either returns an error result that names the stage; there is no
+kinds, types and doc text. A failure in either returns an error result that names the stage; there is no
 unrefined fallback. `retrieval.llm.maxCallsPerRequest` (default 20) bounds the chat calls one request makes, and the
 runner records `{name, status, ms, in, out, llmCalls, tokens}` per stage, returned as `retrieval_trace` when the
 request carries `X-Publisher-Retrieval-Trace: summary`. With no LLM configured nothing runs and the response is
@@ -389,7 +390,7 @@ unchanged. Both stages run only on the semantic ranking. Settings: [configuratio
 This step answers a `source` search target that has search text with an LLM match instead of the embedding or
 keyword ranking, when an LLM is configured. The candidates are every source in scope, ten to a model call and up to
 `retrieval.llm.concurrency` calls at once. Each candidate line is `[i] package/model/source` followed by the
-source's `#(doc)` text on one line (cut to 500 characters with `...`), or, for a source with no doc, a line built
+source's doc text on one line (cut to 500 characters with `...`), or, for a source with no doc, a line built
 from its joins. The model rates the sources that fit HIGH (the phrase is about what one row of the source is) or
 MEDIUM (the source holds part of it), and leaves the rest out. If more than 8 sources rate HIGH for a target, its
 MEDIUM ones are dropped. A rated source becomes a source row with raw score 3 or 2, published through the knots as
@@ -407,7 +408,7 @@ LLM configured, source targets rank as before. Settings: [configuration.md](conf
 This step adds the second index-time stage (the first is keyphrases). For each source the embedding sync makes
 one LLM call, after the keyphrases and before any vector is written, and stores a summary (dense prose that names
 fields in backticks) and a one-line summary (one sentence, at most 120 characters) in a new `source_summaries` table,
-keyed by environment, package and source. The model sees the source name, its `#(doc)` text (or "No source docs."), and
+keyed by environment, package and source. The model sees the source name, its doc text (or "No source docs."), and
 a list of its fields grouped as Dimensions, Measures, Views and Joins, each as `name (type): doc`, with each joined
 source nested under it with its own fields. The list is bounded: at most 200 fields per source, 20 joined sources and
 3 joins deep, and the prompt says when it was cut. A source with no documentation gets the one-liner "The `<name>`
