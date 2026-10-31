@@ -1,0 +1,857 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Stage 3, judge: one chat call per cluster (one call in all when there is one
+ * cluster) picks, for each target, which of the cluster's candidates to
+ * return, and names the caveats it applied.
+ *
+ * The call sees the targets verbatim and in order, whether this cluster
+ * covers each, and for each target the cluster's candidates (and the
+ * structural extras) with their kind, type, source, route and full `#(doc)`,
+ * rules included. Docs are model text, sent under every egress preset. A stored value is data: under any preset below `full` the
+ * judge is told that a candidate matched the phrase's value and how, never
+ * the stored string; authored expressions are not sent at all.
+ *
+ * In a list with `listRoutes` above 0, each candidate field is followed by up
+ * to that many routes to it from the other listed sources, shortest first,
+ * each a numbered option of its own. A picked route is the joining source's
+ * rows, and respond puts it on that source's card under the route's id. Each
+ * route line, and each joined copy's, quotes the first sentence of the
+ * joining source's doc (and a joined copy's join doc), so the judge can see
+ * which rows the route drops.
+ *
+ * A target with no pick in any cluster is returned as unresolved by name,
+ * which is the agent's signal to ask or to search again.
+ */
+
+import {
+   DEFAULT_JUDGE_INSTRUCTIONS,
+   DEFAULT_JUDGE_LIST_INSTRUCTIONS,
+   DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS,
+   JUDGE_READINGS_RULES,
+   JUDGE_REPLY_FORMAT,
+   JUDGE_VALUE_RULES,
+   JUDGE_VALUE_RULES_FULL,
+   judgeSplitRules,
+} from "../../prompts/judge";
+import type { ChatModel } from "../../providers/types";
+import { getEgressPreset } from "../../retrieval_config";
+import { humanizeName } from "../tools/embedding_index";
+import { runPooled } from "../tools/get_context_llm";
+import type { CatalogNode } from "./catalog";
+import type { Cluster } from "./connect";
+import { firstSentence, joinNodeOf } from "./derived_text";
+import {
+   parseRouteKey,
+   routeKey,
+   routeOptions,
+   routesFrom,
+   type RouteOption,
+} from "./routes";
+import type { FindTarget } from "./find";
+import type { ValueMatch } from "./values_index";
+import type { FcjIndex } from "./index_build";
+
+/** One numbered line the judge may pick. */
+export interface JudgeOption {
+   number: number;
+   key: string;
+   /** Targets it is listed under; an extra is listed under none. */
+   targets: number[];
+   extra?: string;
+   /** A route to a listed field from another listed source; `key` is its routeKey. */
+   route?: RouteOption;
+}
+
+export interface JudgePick {
+   target: number;
+   keys: string[];
+   reason?: string;
+   /** Route keys the judge picked and `dropRoutesAt` took out, for the trace. */
+   droppedRoutes?: string[];
+   /** Keys of a split item's picks past `splitItemPicks`, taken out, for the trace. */
+   capped?: string[];
+   /** The judge's best candidate for the target; `keys` lists it first. */
+   best?: string;
+   /** The judge kept the same field on several sources: the question could mean either set of rows. */
+   readings?: boolean;
+   /** Near-identical twins `twinRule` took out, for the trace. */
+   droppedTwins?: string[];
+   /**
+    * For a value target under the `full` preset, the stored values the judge
+    * named, by candidate key. A key is here when the reply had a `values`
+    * list and the judge was shown that candidate's values; respond keeps only
+    * what {@link keptValues} allows. A key that is absent keeps every value.
+    */
+   values?: Record<string, string[]>;
+}
+
+export interface JudgeVerdict {
+   cluster: string;
+   picks: JudgePick[];
+   caveats: string[];
+   /** Route options the judge was shown (`listRoutes`), for the trace. */
+   routeOptions?: number;
+   /** The first reply was not usable JSON and the re-ask fixed it, for the trace. */
+   jsonRepaired?: boolean;
+}
+
+/** How many of a candidate's matched values the judge is shown under the `full` preset. */
+export const JUDGE_VALUES_SHOWN = 5;
+
+/** The judge's word for each way a value matched. */
+const HOW_SHOWN: Record<ValueMatch["how"], string> = {
+   exact: "exact",
+   words: "words",
+   ngram: "typo",
+   meaning: "meaning",
+};
+
+/** A value's label: its candidate's number and a letter, "3a". */
+function valueLabel(option: number, i: number): string {
+   return `${option}${String.fromCharCode(97 + i)}`;
+}
+
+/** The stored values that nominated `key` for target `t` in this cluster, best first. */
+function matchedValues(
+   cluster: Cluster,
+   t: number,
+   key: string,
+): readonly ValueMatch[] {
+   return (
+      cluster.candidates.get(t)?.find((c) => c.key === key)?.found.values ?? []
+   );
+}
+
+/**
+ * Every value label the judge is shown, by `<target index>:<label>`. Only a
+ * `dimensional_value` target under the `full` preset shows any.
+ */
+export function valueLabels(
+   cluster: Cluster,
+   targets: readonly FindTarget[],
+   options: readonly JudgeOption[],
+): Map<string, { key: string; value: string }> {
+   const out = new Map<string, { key: string; value: string }>();
+   if (getEgressPreset() !== "full") return out;
+   for (const t of targets) {
+      if (t.type !== "dimensional_value") continue;
+      for (const o of options) {
+         if (!o.targets.includes(t.index) || o.route) continue;
+         matchedValues(cluster, t.index, o.key)
+            .slice(0, JUDGE_VALUES_SHOWN)
+            .forEach((v, i) =>
+               out.set(`${t.index}:${valueLabel(o.number, i)}`, {
+                  key: o.key,
+                  value: v.value,
+               }),
+            );
+      }
+   }
+   return out;
+}
+
+/**
+ * The values a picked dimension keeps for a value target: all of them when
+ * the judge named none for it (`named` undefined: it was shown none, or its
+ * reply had no `values`). Otherwise a value is kept when the judge named it,
+ * when it holds a named value as whole words ("Denver Metro" for "Denver"),
+ * or when it was past the ones shown; a shown value the judge passed over is
+ * dropped.
+ */
+export function keptValues<T extends { value: string }>(
+   all: readonly T[],
+   named: readonly string[] | undefined,
+): T[] {
+   if (named === undefined) return [...all];
+   const words = named.map(
+      (n) =>
+         new RegExp(
+            `(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`,
+            "iu",
+         ),
+   );
+   return all.filter(
+      (v, i) =>
+         i >= JUDGE_VALUES_SHOWN ||
+         named.includes(v.value) ||
+         words.some((w) => w.test(v.value)),
+   );
+}
+
+/** Doc text the judge reads for one candidate; long docs are cut here, not dropped. */
+const JUDGE_DOC_MAX_CHARS = 1_500;
+
+/** Most join paths shown between two peers, and most routes shown per field. */
+export const PATHS_SHOWN = 5;
+export const ROUTES_SHOWN = 8;
+
+/**
+ * In routes mode (`joinedCopies: "routes"`), how the other listed sources
+ * reach a field: `reachable from orders through customer.region or from
+ * shipments through order.customer.region`, shortest first.
+ */
+export function routesLine(
+   index: FcjIndex,
+   node: CatalogNode,
+   listed: ReadonlySet<string>,
+): string | undefined {
+   const routes = routesFrom(index.catalog, node, listed);
+   if (routes.length === 0) return undefined;
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const shown = routes
+      .slice(0, ROUTES_SHOWN)
+      .map((r) => `from ${nameOf(r.from)} through ${r.path.join(".")}`);
+   const more = routes.length - shown.length;
+   return `reachable ${shown.join(" or ")}${more > 0 ? ` (and ${more} more routes)` : ""}`;
+}
+
+/**
+ * How a field is reached: from the home in a cluster. In a list, which has
+ * no home, nothing; in routes mode, the other listed sources' routes to it.
+ */
+function routeOf(
+   index: FcjIndex,
+   cluster: Cluster,
+   node: CatalogNode,
+   routeCap: number,
+): string | undefined {
+   if (cluster.peers) {
+      // With route options, a route is a numbered line of its own; a joined
+      // copy (a field of a join whose source is not served, or a raw table)
+      // is a route already, and says so.
+      if (routeCap > 0) {
+         if (!node.joinPath) return undefined;
+         const rel = node.relationship ? `, join_${node.relationship}` : "";
+         const notes = [
+            holdsNote(index, node.sourceKey),
+            joinNote(index, node),
+         ].filter((n): n is string => n !== undefined);
+         return `a route from ${node.source} through ${node.joinPath}${rel}: only the rows ${node.source} reaches${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`;
+      }
+      if (index.catalog.joinedCopies !== "routes") return undefined;
+      return routesLine(
+         index,
+         node,
+         new Set(cluster.peers.map((p) => p.source)),
+      );
+   }
+   const entry = cluster.reach.get(node.sourceKey);
+   if (!entry || entry.hops === 0) return "own field";
+   const home = index.catalog.sources.get(cluster.home)?.name ?? cluster.home;
+   const paths = entry.paths
+      .filter((p) => p.length > 0)
+      .map((p) => `${home}.${p.join(".")}`);
+   return `through ${paths.join(" or ")} (a left join from ${home})`;
+}
+
+/**
+ * One route option, under its field: `[5] order_items.products.product_count
+ * (route from order_items through products, join_one): only the products rows
+ * order_items reaches`.
+ */
+function routeOptionLine(index: FcjIndex, option: JudgeOption): string {
+   const r = option.route!;
+   const node = index.catalog.nodes.get(r.node)!;
+   const from = index.catalog.sources.get(r.from)?.name ?? r.from;
+   const holds = holdsNote(index, r.from);
+   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, join_${r.fanout}): only the ${node.source} rows ${from} reaches${holds ? ` (${holds})` : ""}`;
+}
+
+/** Longest quoted doc sentence a route line carries. */
+const ROUTE_NOTE_MAX_CHARS = 200;
+
+function quoted(text: string): string {
+   const s = firstSentence(text);
+   return JSON.stringify(
+      s.length > ROUTE_NOTE_MAX_CHARS
+         ? `${s.slice(0, ROUTE_NOTE_MAX_CHARS)}…`
+         : s,
+   );
+}
+
+/**
+ * What a route's joining source holds, in its author's words: the first
+ * sentence of its own doc (`orders: "One row per order."`). A summary is not
+ * used, because it is written for search and can drop which rows are in.
+ * Undefined when the source has no doc.
+ */
+function holdsNote(index: FcjIndex, sourceKey: string): string | undefined {
+   const source = index.catalog.sources.get(sourceKey);
+   const doc = source?.node.doc.trim();
+   return source && doc ? `${source.name}: ${quoted(doc)}` : undefined;
+}
+
+/**
+ * For a field of a join whose source is not listed (a joined copy): the
+ * first sentence of the join's own doc, the only text that says what the
+ * joined rows are. Undefined for a raw-table join or a join with no doc.
+ */
+function joinNote(index: FcjIndex, node: CatalogNode): string | undefined {
+   const join = joinNodeOf(index.catalog, node);
+   const doc = join?.doc.trim();
+   return join && doc ? `join ${node.joinPath}: ${quoted(doc)}` : undefined;
+}
+
+function optionLine(
+   index: FcjIndex,
+   cluster: Cluster,
+   option: JudgeOption,
+   valueNote: string | undefined,
+   routeCap = 0,
+): string {
+   const node = index.catalog.nodes.get(option.key)!;
+   const kind = node.dataType ? `${node.kind}, ${node.dataType}` : node.kind;
+   const doc = node.doc.replace(/\s+/g, " ").trim();
+   const cut =
+      doc.length > JUDGE_DOC_MAX_CHARS
+         ? `${doc.slice(0, JUDGE_DOC_MAX_CHARS)}…`
+         : doc;
+   const route = routeOf(index, cluster, node, routeCap);
+   const parts = [
+      `[${option.number}] ${node.name} (${kind}; source ${node.source}${route ? `; ${route}` : ""})`,
+      cut
+         ? `: ${cut}`
+         : `: (no doc; name in words: ${humanizeName(node.name)})`,
+   ];
+   if (valueNote) parts.push(` | ${valueNote}`);
+   if (option.extra) parts.push(` | added because: ${option.extra}`);
+   return parts.join("");
+}
+
+/** Number the cluster's candidates and extras once, so a node listed under two targets has one number. */
+export function judgeOptions(
+   cluster: Cluster,
+   targets: readonly FindTarget[],
+   /**
+    * With `connect: "list"`: number each field's `cap` shortest routes from
+    * the other listed sources right after the field (`listRoutes`).
+    */
+   routes?: { index: FcjIndex; cap: number },
+): JudgeOption[] {
+   const byKey = new Map<string, JudgeOption>();
+   let n = 0;
+   const cap = cluster.peers && routes ? routes.cap : 0;
+   const peers = new Set((cluster.peers ?? []).map((p) => p.source));
+   for (const t of targets) {
+      for (const c of cluster.candidates.get(t.index) ?? []) {
+         const prev = byKey.get(c.key);
+         if (prev) {
+            prev.targets.push(t.index);
+            for (const o of byKey.values())
+               if (o.route?.node === c.key) o.targets.push(t.index);
+            continue;
+         }
+         byKey.set(c.key, { number: ++n, key: c.key, targets: [t.index] });
+         if (cap === 0) continue;
+         const node = routes!.index.catalog.nodes.get(c.key);
+         if (!node) continue;
+         for (const r of routeOptions(
+            routes!.index.catalog,
+            node,
+            peers,
+            cap,
+         )) {
+            const key = routeKey(r);
+            if (byKey.has(key)) continue;
+            byKey.set(key, {
+               number: ++n,
+               key,
+               targets: [t.index],
+               route: r,
+            });
+         }
+      }
+   }
+   for (const e of cluster.extras) {
+      if (byKey.has(e.key)) continue;
+      byKey.set(e.key, {
+         number: ++n,
+         key: e.key,
+         targets: [],
+         extra: e.reason,
+      });
+   }
+   return [...byKey.values()];
+}
+
+/** A source's one-line description, as the judge reads it. */
+function sourceLine(index: FcjIndex, key: string): string {
+   const source = index.catalog.sources.get(key);
+   const summary = (index.summaries.get(key) ?? source?.node.doc ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+   return `${source?.name ?? key}${summary ? ` - ${summary}` : ""}`;
+}
+
+/** Longest start of a source's own doc the judge is shown beside it. */
+export const SOURCE_DOC_MAX_CHARS = 300;
+
+/**
+ * The start of a source's own doc, in its author's words: its first
+ * sentences up to SOURCE_DOC_MAX_CHARS. This is where an author says which
+ * rows a source holds ("all channels combined", "for per-store use ..."),
+ * which a generated summary can drop and an inherited field's doc never
+ * says. Undefined when the source has no doc, or (unless asked otherwise)
+ * when the source's line already shows it: the stored summary is that same
+ * text, or there is no summary and the line shows the whole doc.
+ */
+export function sourceDocStart(
+   index: FcjIndex,
+   key: string,
+   max = SOURCE_DOC_MAX_CHARS,
+   /** False beside a twin's fields: shown there even when the summary says the same. */
+   unlessSummary = true,
+): string | undefined {
+   const source = index.catalog.sources.get(key);
+   const doc = (source?.node.doc ?? "").replace(/\s+/g, " ").trim();
+   if (!doc) return undefined;
+   let out = "";
+   for (const sentence of doc.split(/(?<=[.!?])\s+/)) {
+      if (out && out.length + 1 + sentence.length > max) break;
+      out = out ? `${out} ${sentence}` : sentence;
+      if (out.length >= max) break;
+   }
+   if (out.length > max) out = `${out.slice(0, max)}…`;
+   if (!unlessSummary) return out;
+   // With no stored summary, the source's line already shows its whole doc.
+   const summary = index.summaries.get(key)?.replace(/\s+/g, " ").trim();
+   return summary === undefined || out === summary ? undefined : out;
+}
+
+/** The user message for one cluster. Targets are numbered from 1 in the caller's order. */
+export function renderJudgePrompt(
+   index: FcjIndex,
+   cluster: Cluster,
+   targets: readonly FindTarget[],
+   options: readonly JudgeOption[],
+   /** `listRoutes`: above 0, a list shows route options and marks joined copies as routes. */
+   routeCap = 0,
+): string {
+   const full = getEgressPreset() === "full";
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const lines: string[] = cluster.peers
+      ? peerLines(index, cluster)
+      : homeLines(index, cluster);
+   const noteOf = (t: FindTarget, o: JudgeOption) => {
+      const values = matchedValues(cluster, t.index, o.key);
+      if (values.length === 0)
+         return t.type === "dimensional_value" ? "no stored values" : undefined;
+      const how = (v: ValueMatch) =>
+         `${HOW_SHOWN[v.how]}, ${v.score.toFixed(2)}`;
+      if (!full)
+         return `stored values matched the target (${values
+            .slice(0, JUDGE_VALUES_SHOWN)
+            .map(how)
+            .join("; ")}); the values are not shown`;
+      const shown = values
+         .slice(0, JUDGE_VALUES_SHOWN)
+         .map((v, i) =>
+            t.type === "dimensional_value"
+               ? `${valueLabel(o.number, i)} ${JSON.stringify(v.value)} (${how(v)})`
+               : `${JSON.stringify(v.value)} (${how(v)})`,
+         );
+      const more = values.length - shown.length;
+      return `stored values matching the target: ${shown.join(", ")}${more > 0 ? `, and ${more} more not shown` : ""}`;
+   };
+   lines.push("", "<targets>");
+   targets.forEach((t, i) => {
+      const covered = cluster.covers.includes(t.index);
+      const parent =
+         t.partOf !== undefined
+            ? targets.findIndex((x) => x.index === t.partOf)
+            : -1;
+      lines.push(
+         `Target ${i + 1} (${t.type}${parent >= 0 ? `; one item of the list in target ${parent + 1}` : ""}${covered ? "" : "; this group matched it weakly"}): ${JSON.stringify(t.text)}`,
+      );
+      const listed = options.filter((o) => o.targets.includes(t.index));
+      if (listed.length === 0) lines.push("  (no candidates in this group)");
+      if (!cluster.peers) {
+         for (const o of listed)
+            lines.push(`  ${optionLine(index, cluster, o, noteOf(t, o))}`);
+         return;
+      }
+      // A list: the target's candidates in their own order, under the
+      // source that owns them. When one field name is listed under several
+      // sources, each of those sources' headers carries the first sentence
+      // of its doc, so the rows each holds are read beside the fields.
+      const byKey = new Map(listed.map((o) => [o.key, o]));
+      const sourcesByName = new Map<string, Set<string>>();
+      for (const o of listed) {
+         const n = index.catalog.nodes.get(o.key);
+         if (!n || o.route) continue;
+         const set = sourcesByName.get(n.name) ?? new Set<string>();
+         set.add(n.sourceKey);
+         sourcesByName.set(n.name, set);
+      }
+      const twinSources = new Set(
+         [...sourcesByName.values()]
+            .filter((set) => set.size > 1)
+            .flatMap((set) => [...set]),
+      );
+      let owner: string | undefined;
+      for (const c of cluster.candidates.get(t.index) ?? []) {
+         const o = byKey.get(c.key);
+         if (!o) continue;
+         const source = index.catalog.nodes.get(c.key)!.sourceKey;
+         if (source !== owner) {
+            owner = source;
+            const doc = twinSources.has(source)
+               ? sourceDocStart(index, source, ROUTE_NOTE_MAX_CHARS, false)
+               : undefined;
+            lines.push(
+               `  From ${nameOf(source)}${doc ? ` (its doc: ${JSON.stringify(doc)})` : ""}:`,
+            );
+         }
+         lines.push(
+            `    ${optionLine(index, cluster, o, noteOf(t, o), routeCap)}`,
+         );
+         for (const r of listed) {
+            if (r.route?.node === c.key)
+               lines.push(`        ${routeOptionLine(index, r)}`);
+         }
+      }
+   });
+   lines.push("</targets>");
+   const extras = options.filter((o) => o.targets.length === 0);
+   if (extras.length > 0) {
+      lines.push("", "Also in this group:");
+      for (const o of extras)
+         lines.push(`  ${optionLine(index, cluster, o, undefined, routeCap)}`);
+   }
+   lines.push("", JUDGE_REPLY_FORMAT);
+   return lines.join("\n");
+}
+
+/** A cluster's header: its home, the sources its joins reach, its twins and contenders. */
+function homeLines(index: FcjIndex, cluster: Cluster): string[] {
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const lines = [`Home source: ${sourceLine(index, cluster.home)}`];
+   const reached = [...cluster.reach.values()].filter((r) => r.hops > 0);
+   if (reached.length > 0) {
+      lines.push(
+         `Sources its joins reach: ${reached.map((r) => nameOf(r.source)).join(", ")}`,
+      );
+   }
+   if (cluster.twins.length > 0) {
+      lines.push(
+         `Sources that give the same answer under another name: ${cluster.twins
+            .map(nameOf)
+            .join(", ")}`,
+      );
+   }
+   if (cluster.contenders.length > 0) {
+      lines.push(
+         `Sources that match these targets almost as well, with other fields: ${cluster.contenders
+            .map(nameOf)
+            .join(
+               ", ",
+            )}. Pick from the one that fits the question; say which in "caveats" when it is a close call.`,
+      );
+   }
+   return lines;
+}
+
+/**
+ * A list's header: every source as a peer, in order of first appearance,
+ * with its description and the other listed sources a query from it can use
+ * through its joins, by join path.
+ */
+function peerLines(index: FcjIndex, cluster: Cluster): string[] {
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const lines = ["Sources with candidates:"];
+   for (const peer of cluster.peers ?? []) {
+      const name = nameOf(peer.source);
+      lines.push(`- ${sourceLine(index, peer.source)}`);
+      const doc = sourceDocStart(index, peer.source);
+      if (doc) lines.push(`  Its doc begins: ${JSON.stringify(doc)}`);
+      lines.push(
+         peer.reaches.length === 0
+            ? `  A query from ${name} can use none of the other listed sources.`
+            : `  A query from ${name} can also use: ${peer.reaches
+                 .map((r) => {
+                    const paths = r.paths.filter((p) => p.length > 0);
+                    const more = paths.length - PATHS_SHOWN;
+                    return `${nameOf(r.source)} (through ${paths
+                       .slice(0, PATHS_SHOWN)
+                       .map((p) => `${name}.${p.join(".")}`)
+                       .join(
+                          " or ",
+                       )}${more > 0 ? ` or ${more} more paths` : ""})`;
+                 })
+                 .join(", ")}.`,
+      );
+   }
+   return lines;
+}
+
+/** Check one reply against what was offered; the message says what to fix. */
+export function validateVerdict(
+   targets: readonly FindTarget[],
+   options: readonly JudgeOption[],
+   /** {@link valueLabels}: the value labels shown, empty when none were. */
+   labels: ReadonlyMap<string, { key: string; value: string }> = new Map(),
+) {
+   const byNumber = new Map(options.map((o) => [o.number, o]));
+   return (
+      value: unknown,
+   ): {
+      picks: JudgePick[];
+      caveats: string[];
+   } => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+         throw new Error('expected {"picks": [...], "caveats": [...]}');
+      }
+      const v = value as { picks?: unknown; caveats?: unknown };
+      if (!Array.isArray(v.picks)) throw new Error('"picks" must be a list');
+      const bad: string[] = [];
+      const picks: JudgePick[] = [];
+      for (const raw of v.picks) {
+         const p = raw as {
+            target?: unknown;
+            candidates?: unknown;
+            reason?: unknown;
+            best?: unknown;
+            readings?: unknown;
+            values?: unknown;
+         };
+         const tn = typeof p.target === "number" ? p.target : Number(p.target);
+         if (!Number.isInteger(tn) || tn < 1 || tn > targets.length) {
+            bad.push(
+               `target ${JSON.stringify(p.target)} is not a target number (1 to ${targets.length})`,
+            );
+            continue;
+         }
+         const nums = Array.isArray(p.candidates) ? p.candidates : [];
+         const keys: string[] = [];
+         for (const x of nums) {
+            const n = typeof x === "number" ? x : Number(x);
+            const o = byNumber.get(n);
+            if (!o) {
+               bad.push(`candidate ${JSON.stringify(x)} was not offered`);
+               continue;
+            }
+            if (!keys.includes(o.key)) keys.push(o.key);
+         }
+         // "best" is read leniently: a number not among this pick's
+         // candidates is ignored rather than re-asked.
+         const bn = typeof p.best === "number" ? p.best : Number(p.best);
+         const best = Number.isInteger(bn) ? byNumber.get(bn)?.key : undefined;
+         if (best !== undefined && keys.includes(best)) {
+            keys.splice(keys.indexOf(best), 1);
+            keys.unshift(best);
+         }
+         const target = targets[tn - 1].index;
+         // A reply that names values decides, for every picked candidate it
+         // was shown values of, which of them stay; one with no "values"
+         // list leaves them all.
+         let named: Record<string, string[]> | undefined;
+         if (Array.isArray(p.values)) {
+            named = {};
+            for (const k of keys) {
+               for (const [id, v] of labels)
+                  if (id.startsWith(`${target}:`) && v.key === k) named[k] = [];
+            }
+            for (const x of p.values) {
+               const shown = labels.get(
+                  `${target}:${String(x).trim().toLowerCase()}`,
+               );
+               if (!shown) {
+                  bad.push(
+                     `value ${JSON.stringify(x)} was not listed under target ${tn}`,
+                  );
+                  continue;
+               }
+               if (named[shown.key] && !named[shown.key].includes(shown.value))
+                  named[shown.key].push(shown.value);
+            }
+            if (Object.keys(named).length === 0) named = undefined;
+         }
+         picks.push({
+            target,
+            keys,
+            ...(best !== undefined && keys.includes(best) ? { best } : {}),
+            ...(p.readings === true ? { readings: true } : {}),
+            ...(named ? { values: named } : {}),
+            ...(typeof p.reason === "string" && p.reason.trim()
+               ? { reason: p.reason.trim().slice(0, 300) }
+               : {}),
+         });
+      }
+      if (bad.length > 0) throw new Error(bad.join("; "));
+      const caveats = Array.isArray(v.caveats)
+         ? v.caveats
+              .filter(
+                 (c): c is string => typeof c === "string" && c.trim() !== "",
+              )
+              .map((c) => c.trim().slice(0, 300))
+              .slice(0, 10)
+         : [];
+      return { picks, caveats };
+   };
+}
+
+/**
+ * The judge reply's output cap: a reason per target (120 tokens), the JSON around it (300), and room to list every
+ * offered number once (4 tokens each, with its comma and space). A cap by targets alone cut long replies off
+ * mid-list once a list carried route options: a reply ended without its closing bracket.
+ */
+export function judgeMaxTokens(targets: number, options: number): number {
+   return 120 * targets + 300 + 4 * options;
+}
+
+/**
+ * `dropRoutesAt`: when one target's picks hold `at` or more routes beside
+ * their own fields (the field and a route to it both picked for that
+ * target), drop those routes and keep the fields. A judge that lists a
+ * field and then every route to it, target after target, multiplies the
+ * response's size for the same fields. A route
+ * picked in place of its field, and a target with fewer such routes, are
+ * left alone. A route whose id is also a found candidate's own id (an
+ * indexed joined copy under that id) is that candidate, not a route, and is
+ * never dropped. `at` 0 keeps every pick. A dropped route another target
+ * kept is still returned, under that target.
+ */
+export function dropBesideRoutes(
+   verdicts: readonly JudgeVerdict[],
+   at: number,
+   /** The wire id of an option key (optionId). */
+   idOf: (key: string) => string | undefined,
+   /** Wire ids of every candidate the find stage returned. */
+   foundIds: ReadonlySet<string>,
+): JudgeVerdict[] {
+   if (at <= 0) return [...verdicts];
+   return verdicts.map((v) => ({
+      ...v,
+      picks: v.picks.map((p) => {
+         const picked = new Set(p.keys);
+         const beside = p.keys.filter((k) => {
+            const route = parseRouteKey(k);
+            if (!route || !picked.has(route.node)) return false;
+            const id = idOf(k);
+            return id === undefined || !foundIds.has(id);
+         });
+         if (beside.length < at) return p;
+         const drop = new Set(beside);
+         return {
+            ...p,
+            keys: p.keys.filter((k) => !drop.has(k)),
+            droppedRoutes: beside,
+         };
+      }),
+   }));
+}
+
+/**
+ * `twinRule`: within one target's picks, fields that are one inherited
+ * definition on near-identical sources (the same `twinKey`: rows that differ
+ * by a filter or a population) keep only the judge's best, or the first
+ * listed when the best is not among them. A pick the judge marked
+ * `readings` (the question could mean either set of rows) is left alone, as
+ * are routes, joined copies and fields with no twin. Off returns the
+ * verdicts unchanged.
+ */
+export function dropTwins(
+   verdicts: readonly JudgeVerdict[],
+   on: boolean,
+   nodeOf: (key: string) => CatalogNode | undefined,
+): JudgeVerdict[] {
+   if (!on) return [...verdicts];
+   return verdicts.map((v) => ({
+      ...v,
+      picks: v.picks.map((p) => {
+         if (p.readings || p.keys.length < 2) return p;
+         const byTwin = new Map<string, string[]>();
+         for (const k of p.keys) {
+            if (parseRouteKey(k)) continue;
+            const n = nodeOf(k);
+            if (!n?.twinKey || n.joinPath) continue;
+            byTwin.set(n.twinKey, [...(byTwin.get(n.twinKey) ?? []), k]);
+         }
+         const drop = new Set<string>();
+         for (const group of byTwin.values()) {
+            if (group.length < 2) continue;
+            const keep =
+               p.best !== undefined && group.includes(p.best)
+                  ? p.best
+                  : group[0];
+            for (const k of group) if (k !== keep) drop.add(k);
+         }
+         if (drop.size === 0) return p;
+         return {
+            ...p,
+            keys: p.keys.filter((k) => !drop.has(k)),
+            droppedTwins: [...drop],
+         };
+      }),
+   }));
+}
+
+/** Judge every cluster, `concurrency` calls at a time. Throws on a failed call. */
+export async function judge(args: {
+   index: FcjIndex;
+   clusters: readonly Cluster[];
+   targets: readonly FindTarget[];
+   chat: ChatModel;
+   instructions?: string;
+   concurrency: number;
+   /** `listRoutes`: routes shown per field in a list (0, the default, shows none). */
+   listRoutes?: number;
+   /** `splitBundles`: add the split rules to the instructions. */
+   splitRules?: boolean;
+   /** `splitItemPicks`: the most picks per item the split rules ask for (0: no line). */
+   itemPicks?: number;
+   /** `readingsRule`: add JUDGE_READINGS_RULES to the instructions. */
+   readingsRule?: boolean;
+}): Promise<JudgeVerdict[]> {
+   return runPooled(args.clusters, args.concurrency, async (cluster) => {
+      const cap = cluster.peers ? (args.listRoutes ?? 0) : 0;
+      const options = judgeOptions(cluster, args.targets, {
+         index: args.index,
+         cap,
+      });
+      const base =
+         args.instructions ??
+         (cluster.peers
+            ? cap > 0
+               ? DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS
+               : DEFAULT_JUDGE_LIST_INSTRUCTIONS
+            : DEFAULT_JUDGE_INSTRUCTIONS);
+      const labels = valueLabels(cluster, args.targets, options);
+      const valueRules = args.targets.some(
+         (t) => t.type === "dimensional_value",
+      )
+         ? [
+              getEgressPreset() === "full"
+                 ? JUDGE_VALUE_RULES_FULL
+                 : JUDGE_VALUE_RULES,
+           ]
+         : [];
+      const system = [
+         base,
+         ...valueRules,
+         ...(args.readingsRule ? [JUDGE_READINGS_RULES] : []),
+         ...(args.splitRules ? [judgeSplitRules(args.itemPicks ?? 0)] : []),
+      ].join("\n\n");
+      const reply = await args.chat.completeJson({
+         system,
+         prompt: renderJudgePrompt(
+            args.index,
+            cluster,
+            args.targets,
+            options,
+            cap,
+         ),
+         maxTokens: judgeMaxTokens(args.targets.length, options.length),
+         validate: validateVerdict(args.targets, options, labels),
+      });
+      const shown = options.filter((o) => o.route).length;
+      return {
+         cluster: cluster.home,
+         ...reply.value,
+         ...(cap > 0 ? { routeOptions: shown } : {}),
+         ...(reply.repaired ? { jsonRepaired: true } : {}),
+      };
+   });
+}

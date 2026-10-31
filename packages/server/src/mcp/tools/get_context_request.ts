@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod/v3";
-import { entityRowKey } from "./embedding_index";
+import { getDimensionValueSettings } from "../../retrieval_config";
 import type {
-   Entity,
    ResolvedRequest,
    ResolvedSearch,
+   ResolvedValueSearch,
 } from "./get_context_types";
 
 /**
@@ -29,7 +29,11 @@ const DEFAULT_RANKED_LIMIT = 20;
  * Divergences: `scopes` is required (exactly one environment + package),
  * because indexes are built per package and lazily, so an unscoped search
  * could not tell "not modelled" from "not indexed yet"; and `target_type` adds
- * `join`. `dimensional_value` is accepted and answered with a warning.
+ * `join`. `dimensional_value` is answered from the value index built at load
+ * (context/values_index.ts), and for a gated source by a lookup through the
+ * query path with the caller's givens (get_context_values.ts); with
+ * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
+ * a warning.
  */
 export const SEARCH_TARGET_TYPES = [
    "source",
@@ -44,7 +48,9 @@ export type SearchTargetType = (typeof SEARCH_TARGET_TYPES)[number];
 
 /**
  * Which indexed entity kinds a target selects. `view` covers named queries, as
- * the published shape defines it; `dimensional_value` selects nothing.
+ * the published shape defines it. `dimensional_value` selects nothing: with
+ * value search on, resolveRequest routes it to the values stage before this
+ * table is read; the empty list is what remains when it is turned off.
  */
 const KINDS_BY_TARGET: Record<SearchTargetType, string[]> = {
    source: ["source"],
@@ -62,14 +68,14 @@ export const convergedContextShape = {
             target_type: z
                .enum(SEARCH_TARGET_TYPES)
                .describe(
-                  "What to look for. `dimension`/`measure`/`view` match fields and the response groups them by source; `source` matches or lists sources; `join` matches a declared relationship.",
+                  "What to look for. `dimension`/`measure`/`view` match fields and the response groups them by source; `source` matches or lists sources; `join` matches a declared relationship; `dimensional_value` matches one literal value against the values stored in `#(index)` dimensions.",
                ),
             search_text: z
                .string()
                .max(500)
                .nullish()
                .describe(
-                  'Plain-English description of what you need, e.g. "the total revenue". Omit or null to enumerate this type instead of ranking it.',
+                  'Plain-English description of what you need, e.g. "the total revenue". For a `dimensional_value` target, one value exactly as the user typed it, e.g. "Denvr": it is matched by spelling, typos included, and with an embedding provider by meaning, and the stored string ("Denver") returns in `entities[].values` on the dimension that holds it. Send each value as its own target beside the `dimension` target for its field ("the city of the store"), and keep it out of that target\'s text. Once you know the field, scope the value search to it with `scopes[].source` and `entity_name`: an unscoped value search is allowed but slower, and can return look-alike values from other fields. Omit or null to enumerate this type instead of ranking it.',
                ),
          }),
       )
@@ -110,6 +116,12 @@ export const convergedContextShape = {
       .describe(
          "Values for filters a source declares via #(filter), keyed by filter name.",
       ),
+   givens: z
+      .record(z.unknown())
+      .nullish()
+      .describe(
+         "Given values, as execute_query takes them. Read only by `dimensional_value` lookups, which run through the same access gates as a query: send the givens a gate needs, or that source's values are withheld.",
+      ),
    user_prompt: z
       .string()
       .nullish()
@@ -129,7 +141,7 @@ export const convergedContextShape = {
       .max(MAX_LIMIT)
       .nullish()
       .describe(
-         `Sources per page (max ${MAX_LIMIT}). PREFER OMITTING: ranked search defaults to ${DEFAULT_RANKED_LIMIT}, a pure listing to ${MAX_LIMIT}.`,
+         `Sources per page (max ${MAX_LIMIT}). PREFER OMITTING: ranked search defaults to ${DEFAULT_RANKED_LIMIT}, a pure listing to ${MAX_LIMIT}. Where a ranked response carries next_offset, a page also ends before 35,000 characters, and the sources past it are on the next page, not dropped.`,
       ),
    offset: z
       .number()
@@ -137,7 +149,7 @@ export const convergedContextShape = {
       .min(0)
       .nullish()
       .describe(
-         "Sources to skip, from a previous response's next_offset. Pure listings only; ranked results cannot be resumed.",
+         "Sources to skip: a previous response's next_offset, sent with every other argument unchanged, returns the next page. Works on a pure listing, and on a ranked result whose response carried next_offset: that result is held for 10 minutes, so its pages are one result. Later, the search runs again and a warning says so. Other ranked results cannot be resumed.",
       ),
 };
 
@@ -151,7 +163,21 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
    const searches: ResolvedSearch[] = [];
    const unsupported: SearchTargetType[] = [];
 
+   const valueSearches: ResolvedValueSearch[] = [];
+   const valuesOn = getDimensionValueSettings().enabled;
+   let textlessValueTargets = 0;
+
    params.search_targets.forEach((target, targetIndex) => {
+      if (target.target_type === "dimensional_value" && valuesOn) {
+         // Answered by the values stage, which reads the data through the
+         // query path; it selects no indexed entity kind. A target with no
+         // text has nothing to look up: listing a dimension's values is a
+         // query's job, and the response says so.
+         const text = target.search_text?.trim();
+         if (text) valueSearches.push({ targetIndex, text });
+         else textlessValueTargets += 1;
+         return;
+      }
       const targetKinds = KINDS_BY_TARGET[target.target_type];
       if (targetKinds.length === 0) {
          unsupported.push(target.target_type);
@@ -171,7 +197,8 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       }
    });
 
-   const listingOnly = searches.length === 0;
+   // A value search is a ranked request even with no entity target beside it.
+   const listingOnly = searches.length === 0 && valueSearches.length === 0;
    const pureSourceListing =
       listingOnly &&
       params.search_targets.length > 0 &&
@@ -185,6 +212,10 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       ...(scope.entity_name ? { entityName: scope.entity_name } : {}),
       kinds,
       searches,
+      valueSearches,
+      ...(textlessValueTargets > 0 ? { textlessValueTargets } : {}),
+      ...(params.givens ? { givens: params.givens } : {}),
+      ...(params.filter_params ? { filterParams: params.filter_params } : {}),
       listingOnly,
       // Pinning an entity by name turns code on, even over an explicit
       // `include_code: false`, matching the hosted retrieval API.
@@ -212,26 +243,4 @@ export function matchesScope(
       return false;
    }
    return true;
-}
-
-/**
- * The distinct vector-cache row keys (kind, source, name) the request's scope
- * admits. A row is in scope when any entity sharing it is; the fan-out later
- * keeps only the in-scope model path.
- */
-export function scopeKeysFor(
-   entities: Iterable<Entity>,
-   request: ResolvedRequest,
-): Array<{ kind: string; source: string; name: string }> {
-   const seen = new Set<string>();
-   const keys: Array<{ kind: string; source: string; name: string }> = [];
-   for (const e of entities) {
-      if (!matchesScope(e, request)) continue;
-      const source = e.source ?? "";
-      const key = entityRowKey(e.kind, source, e.name);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      keys.push({ kind: e.kind, source, name: e.name });
-   }
-   return keys;
 }
