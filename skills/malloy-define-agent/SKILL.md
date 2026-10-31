@@ -50,7 +50,7 @@ Agents live under the `agents` object of the package's `publisher.json`, keyed b
 | `model` | Optional. A model name, or `inherit` (the default) for the caller's own. |
 | `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/`). Frontmatter `name` must match the directory name. All of the agent's skill files together are at most 256 KB; over that, the agent is dropped, not truncated. |
 | `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field cron expression in UTC, and the package-relative path of a Markdown task file of at most 16 KB. |
-| `budget` | Optional. An object whose optional fields are `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. |
+| `budget` | Optional. An object whose optional fields are `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set only the ones the work needs; an unset field keeps the platform's default. |
 
 Put each agent's files under `agents/<name>/` so they stay together. Never point an agent at a path outside the package.
 
@@ -82,5 +82,5 @@ The reader of `instructions` and task files has no one to ask. Write for a run n
 2. Pick a name that meets the regex, and a one-line description.
 3. Write `agents/<name>/instructions.md`, and a task file per schedule.
 4. Add skills only for knowledge the agent needs and the package does not already carry.
-5. Add the `agents.<name>` entry to `publisher.json`, with a `budget` if the work has natural limits.
+5. Add the `agents.<name>` entry to `publisher.json`, with a `budget` if the work has natural limits, setting only the fields that matter (`{ "wall_clock_minutes": 60 }` alone is fine).
 6. Call `reload_package`, read its load warnings, then `get_agent` to confirm the agent is served. Tell the user plainly that schedules do not run and budgets are not enforced yet.

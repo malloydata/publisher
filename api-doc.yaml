@@ -4713,8 +4713,10 @@ components:
       description: >-
         The run limits an agent declares. Validated and exposed only: the
         server never enforces them. A platform that runs the agent decides
-        how to apply them and may clamp each to its own maximum. Absent when
-        the manifest sets none.
+        how to apply them and may clamp each to its own maximum. Every field
+        is optional and only the fields the manifest sets are present; an
+        unset field keeps the platform's default. Absent when the manifest
+        sets none.
       properties:
         turns:
           type: integer

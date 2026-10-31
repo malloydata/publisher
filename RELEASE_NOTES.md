@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — A package agent can declare a run budget
 
-An agent in `publisher.json` can now set `budget`: optional `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Publisher validates it and serves it from `get_agent` and the agent endpoints, and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A bad value or an unknown sub-key drops the agent, like any other invalid key. **Earlier releases do not know the key and drop any agent that sets it**, so a package should not use `budget` until every server that serves it runs this release. The new `malloy-define-agent` skill covers writing an agent definition. See [docs/packages.md](docs/packages.md#agents).
+An agent in `publisher.json` can now set `budget`: optional `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set any one of them alone and the rest keep the platform's default. Publisher validates it and serves it from `get_agent` and the agent endpoints, and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A bad value or an unknown sub-key drops the agent, like any other invalid key. **Earlier releases do not know the key and drop any agent that sets it**, so a package should not use `budget` until every server that serves it runs this release. The new `malloy-define-agent` skill covers writing an agent definition. See [docs/packages.md](docs/packages.md#agents).
 
 ## [0.10.5] — A DuckLake storage credential reaches only its catalog's data path
 

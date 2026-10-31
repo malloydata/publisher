@@ -89,10 +89,14 @@ describe("readPackageAgents", () => {
          ).toBe(undefined);
       });
 
-      it("serves a partial budget as written", () => {
-         const result = read({ analyst: analyst({ budget: { turns: 5 } }) });
-         expect(result.agents.get("analyst")!.budget).toEqual({ turns: 5 });
-      });
+      it.each(["turns", "wall_clock_minutes", "llm_tokens", "job_minutes"])(
+         "serves a budget that sets only %s, as written",
+         (key) => {
+            const result = read({ analyst: analyst({ budget: { [key]: 5 } }) });
+            expect(result.warnings).toEqual([]);
+            expect(result.agents.get("analyst")!.budget).toEqual({ [key]: 5 });
+         },
+      );
 
       it("moves definitionSha when the budget changes", () => {
          const sha = (extra: Record<string, unknown>) =>
