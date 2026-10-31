@@ -59,6 +59,15 @@ Clicking a value in a dashboard, a report or a notebook cell now always opens a 
 - **Download CSV.** The rows dialog's title row has a button that runs the same query with no `limit:`, so only the server's row cap bounds the file. When the file reaches that cap, its name and tooltip say so.
 
 For SDK hosts: `DashboardView` and `Report` take a new `rowsActions` prop that draws your own actions (an export, a download) in the rows dialog in place of Download CSV; it receives the unlimited query, the givens and a file name. `DownloadRowsCsv` is exported for hosts that want it beside their own. `useDrill`'s `selfLabel` option is removed: every `to=self` entry reads `Filter to <Field>: <value>`.
+
+## [Unreleased] — A file the admin table load's reader refuses answers 400, not 500
+
+`POST .../tables/{table}/load` on the admin API answered a file DuckDB's reader refused — bytes that are not the format they claim, a value a column's type cannot hold — with `500 Internal server error.`, and the reason reached only the server log. A client that retries 5xx retried the same bytes to the same end.
+
+Now that failure is `400 INVALID_REQUEST` carrying the reader's own words, which name the fix (`Invalid Input Error: No magic bytes found at end of file 'broken.parquet'`; `Conversion Error: CSV Error on Line: 3 … Could not convert string "N/A" to 'DOUBLE'`). The object is named by its file name rather than its staging path, and the SQL DuckDB echoes is dropped. The original, path and SQL included, is logged at `warn`.
+
+Only the reader's statement is classified. A storage or catalog failure (`IO Error`, a flush after the table is written) is still a 500. **If a client retries a load on 5xx**, it now stops on a bad file; a 400 here means the file, not the server, has to change.
+
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:
