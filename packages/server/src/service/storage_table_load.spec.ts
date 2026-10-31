@@ -149,17 +149,30 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
    // itself, so a DuckDB upgrade that rewords one fails here rather than quietly
    // answering 500 again.
    describe("matches what DuckDB says", () => {
-      /** The error DuckDB throws for `CREATE TABLE t AS SELECT * FROM <reader>`. */
-      async function readerError(reader: string): Promise<unknown> {
+      /**
+       * The error DuckDB throws for the load's own statement shape, `CREATE TABLE ... AS SELECT *
+       * FROM <reader>`. Every default in-memory DuckDBConnection in this process shares one
+       * instance (the driver pools them by path and options, not by name), so the table is
+       * named for this spec: a plain `t` collides with one another spec leaves behind, in an
+       * order that differs by platform, and the collision's Catalog Error is not the reader's.
+       */
+      async function readerError(reader: string): Promise<Error> {
          const db = new DuckDBConnection("reader-refusal");
          try {
-            await db.runSQL(`CREATE TABLE t AS SELECT * FROM ${reader}`);
-            return undefined;
+            await db.runSQL(
+               `CREATE TABLE reader_refusal_probe AS SELECT * FROM ${reader}`,
+            );
          } catch (error) {
-            return error;
+            expect(error).toBeInstanceOf(Error);
+            return error as Error;
          } finally {
-            await db.close();
+            try {
+               await db.runSQL("DROP TABLE IF EXISTS reader_refusal_probe");
+            } finally {
+               await db.close();
+            }
          }
+         throw new Error(`DuckDB read ${reader} without complaint`);
       }
 
       // Forward slashes, as an object URI has: DuckDB reads them on Windows too.
@@ -171,13 +184,13 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
       it("for a file that is not Parquet", async () => {
          const file = `${dir}/broken.parquet`;
          fs.writeFileSync(file, "this is not a parquet file\n".repeat(64));
-         const refusal = readerRefusal(
-            await readerError(`read_parquet('${file}')`),
-            file,
-         );
-         expect(refusal?.message).toMatch(
+         const thrown = await readerError(`read_parquet('${file}')`);
+         // On the error itself first, so a reworded message is shown rather than a null refusal.
+         expect(thrown.message).toMatch(
             /^Invalid Input Error: No magic bytes found/,
          );
+         const refusal = readerRefusal(thrown, file);
+         expect(refusal).toBeInstanceOf(BadRequestError);
          expect(refusal?.message).toContain("'broken.parquet'");
          expect(refusal?.message).not.toContain(dir);
          // The SQL DuckDB echoes after `LINE 1:` names the staging path again.
@@ -189,15 +202,14 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          fs.writeFileSync(file, "id,amount\n1,10.5\n2,N/A\n3,7\n");
          // A type the reader is told, as a column already in the table is on a
          // replace; a sniffed three-line file would read the column as text.
-         const refusal = readerRefusal(
-            await readerError(
-               `read_csv('${file}', types = {'amount': 'DOUBLE'})`,
-            ),
-            file,
+         const thrown = await readerError(
+            `read_csv('${file}', types = {'amount': 'DOUBLE'})`,
          );
-         expect(refusal?.message).toMatch(
+         expect(thrown.message).toMatch(
             /^Conversion Error: CSV Error on Line: 3\n/,
          );
+         const refusal = readerRefusal(thrown, file);
+         expect(refusal).toBeInstanceOf(BadRequestError);
          expect(refusal?.message).toContain(
             `Could not convert string "N/A" to 'DOUBLE'`,
          );
