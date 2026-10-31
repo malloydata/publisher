@@ -20,9 +20,13 @@ export interface Entity {
    modelPath: string;
    // Human-facing doc for the response (may fall back to raw annotations).
    doc: string;
-   // #(doc)-only text used as embedding input; never carries predicate
-   // annotations (#(access_filter) etc.) that must not leave the machine.
+   // Doc text only (`#(doc)`, `#"` or the `#(dbmeta)` description), used as
+   // embedding and LLM input; never carries predicate annotations
+   // (#(access_filter) etc.) that must not leave the machine.
    embedDoc: string;
+   // "dbmeta" when the doc text is the database's description, not the
+   // model's.
+   docSource?: "dbmeta";
    // Join cardinality, on `kind: "join"` entities only: whether traversing
    // the join fans out.
    relationship?: Relationship;
@@ -65,11 +69,13 @@ export interface ResultEntity {
    modelPath: string;
    doc: string;
    /**
-    * The `#(doc)` text alone, with no annotation fallback (see Entity.embedDoc).
+    * The doc text alone, with no annotation fallback (see Entity.embedDoc).
     * The LLM stages read this, never `doc`, which can carry raw annotation
     * lines. Never serialized.
     */
    embedDoc?: string;
+   /** See Entity.docSource. */
+   docSource?: "dbmeta";
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
@@ -140,6 +146,8 @@ export interface SourceContextEntry {
    modelPath: string;
    /** Truncated to SOURCE_DOC_MAX_CHARS; the model file has the full text. */
    doc: string;
+   /** See Entity.docSource. */
+   docSource?: "dbmeta";
    /**
     * Every join the source declares, not just retrieved ones, so an empty
     * array authoritatively means "declares no joins".

@@ -11,6 +11,7 @@ import {
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
    parseBoolEnv,
+   parseBoolString,
 } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -1303,7 +1304,25 @@ function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
       maximumBytesBilled: connection.bigqueryConnection?.maximumBytesBilled,
       timeoutMs: connection.bigqueryConnection?.queryTimeoutMilliseconds,
       billingProjectId: connection.bigqueryConnection?.billingProjectId,
+      dbmeta: configBoolean(
+         connection.bigqueryConnection?.dbmeta,
+         `dbmeta on BigQuery connection "${connection.name}"`,
+      ),
    };
+}
+
+/**
+ * A boolean connection setting as a boolean. A string, as `${VAR}`
+ * substitution and API clients deliver it, is read the way a boolean
+ * environment variable is; anything else is refused rather than dropped.
+ */
+function configBoolean(value: unknown, name: string): boolean | undefined {
+   if (value === undefined || value === null) return undefined;
+   if (typeof value === "boolean") return value;
+   if (typeof value === "string") return parseBoolString(value, name);
+   throw new Error(
+      `Invalid value for ${name}: expected a boolean (true/false), got ${JSON.stringify(value)}`,
+   );
 }
 
 function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {

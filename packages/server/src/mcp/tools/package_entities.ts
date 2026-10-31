@@ -4,6 +4,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import lunr from "lunr";
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
@@ -39,36 +40,90 @@ function truncateDoc(doc: string, max: number): string {
    return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
-/**
- * Extract ONLY `#(doc)` annotation text, empty when there is none. The safe
- * input for embedding: unlike docText it never falls back to raw annotation
- * lines, so `#(access_filter)` rules, tenant lists and `#(malloy)` internals
- * never reach an external embedding provider.
- */
-export function docOnlyText(
-   annotations?: Array<string | { value: string }>,
-): string {
-   if (!annotations || annotations.length === 0) return "";
-   const docs = annotations
-      .map((a) => (typeof a === "string" ? a : a.value))
-      .map((a) => a.match(/#\(doc\)\s*(.*)/)?.[1]?.trim() ?? "")
-      .filter(Boolean);
-   return docs.join(" ").replace(/\s+/g, " ").trim();
+type AnnotationLines = Array<string | { value: string }>;
+
+const AUTHORED_DOC_LINES = [/^\s*#\(doc\)\s*(.*)/, /^\s*#"\s*(.*)/];
+
+function linesOf(annotations?: AnnotationLines): string[] {
+   return (annotations ?? []).map((a) => (typeof a === "string" ? a : a.value));
+}
+
+function oneLine(text: string): string {
+   return text.replace(/\s+/g, " ").trim();
+}
+
+/** `#(doc)` text, else `#"` doc string text, empty when there is neither. */
+function authoredDoc(lines: string[]): string {
+   for (const pattern of AUTHORED_DOC_LINES) {
+      const text = lines
+         .map((line) => line.match(pattern)?.[1]?.trim() ?? "")
+         .filter(Boolean)
+         .join(" ");
+      if (text) return text;
+   }
+   return "";
+}
+
+function dbmetaDescription(lines: string[]): string {
+   for (const line of lines) {
+      if (!/^#\(dbmeta\)\s/.test(line)) continue;
+      const { tag, log } = parseAnnotation(line);
+      if (log.length > 0) continue;
+      const description = tag.text("description")?.trim();
+      if (description) return description;
+   }
+   return "";
 }
 
 /**
- * Human-facing doc text for the response `doc` field: `#(doc)` text, falling
- * back to the raw annotation lines. Never embedding input (see docOnlyText).
+ * The doc text of one entity and where it came from: the authored doc in
+ * `annotations`, else the `#(dbmeta)` description in `dbmetaFrom`.
+ */
+function docParts(
+   annotations?: AnnotationLines,
+   dbmetaFrom: AnnotationLines | undefined = annotations,
+): { text: string; fromDbmeta: boolean } {
+   const authored = oneLine(authoredDoc(linesOf(annotations)));
+   if (authored) return { text: authored, fromDbmeta: false };
+   const description = oneLine(dbmetaDescription(linesOf(dbmetaFrom)));
+   return { text: description, fromDbmeta: description !== "" };
+}
+
+/**
+ * Extract ONLY doc text: `#(doc)`, else a `#"` doc string, else the
+ * `#(dbmeta)` description, empty when there is none. The safe input for
+ * embedding: unlike docText it never falls back to raw annotation lines, so
+ * `#(access_filter)` rules, tenant lists and `#(malloy)` internals never reach
+ * an external embedding provider.
+ */
+export function docOnlyText(annotations?: AnnotationLines): string {
+   return docParts(annotations).text;
+}
+
+/**
+ * Human-facing doc text for the response `doc` field: docOnlyText's text,
+ * falling back to the raw annotation lines. Never embedding input (see
+ * docOnlyText).
  * Accepts Annotation objects (sources, fields) and raw strings (queries).
  */
-export function docText(
-   annotations?: Array<string | { value: string }>,
-): string {
-   const doc = docOnlyText(annotations);
-   if (doc) return doc;
-   if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
-   return lines.join(" ").replace(/\s+/g, " ").trim();
+export function docText(annotations?: AnnotationLines): string {
+   return docOnlyText(annotations) || oneLine(linesOf(annotations).join(" "));
+}
+
+/**
+ * An entity's `doc`, `embedDoc` and `docSource`, read from `annotations`, with
+ * the `#(dbmeta)` fallback read from `dbmetaFrom`.
+ */
+function entityDocs(
+   annotations?: AnnotationLines,
+   dbmetaFrom: AnnotationLines | undefined = annotations,
+): Pick<Entity, "doc" | "embedDoc" | "docSource"> {
+   const { text, fromDbmeta } = docParts(annotations, dbmetaFrom);
+   return {
+      doc: text || oneLine(linesOf(annotations).join(" ")),
+      embedDoc: text,
+      ...(fromDbmeta ? { docSource: "dbmeta" as const } : {}),
+   };
 }
 
 /**
@@ -463,8 +518,7 @@ function collectJoinedFields(args: {
          // The source that DECLARES the traversal, the card a caller queries.
          source: sourceName,
          modelPath,
-         doc: docText(field.annotations),
-         embedDoc: docOnlyText(field.annotations),
+         ...entityDocs(field.annotations),
          joinPath,
          relationship: fanout,
          ...(field.kind === "measure" || field.kind === "dimension"
@@ -514,6 +568,10 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    const droppedSources = new Set<string>();
    // Which sources each source reaches by joins; see buildJoinReaches.
    const topology = new Map<string, JoinReach[]>();
+   // Each source's flattened annotation lines, and each join entity's, so a
+   // join to a locked source can be cut back to the notes it wrote itself.
+   const sourceLines = new Map<string, string[]>();
+   const joinLines = new Map<Entity, string[]>();
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
@@ -545,6 +603,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // untrusted here and evaluating a real rule would be forgeable (see
          // execute_query_tool.ts).
          const governanceKey = sourceContextKey(modelPath, sourceName);
+         sourceLines.set(governanceKey, linesOf(sourceInfo.annotations));
          if (droppedSources.has(governanceKey)) {
             continue;
          }
@@ -604,16 +663,18 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          }
          // The source's own doc, not an inherited one (see readSourceOwnDoc),
          // falling back to the flattened annotations with no compiled model.
+         // Undocumented, it takes its table's `#(dbmeta)` description.
          const ownDoc = readSourceOwnDoc(modelDef, sourceName);
-         const sourceAnnotations = ownDoc ?? sourceInfo.annotations;
          entities.push({
             id: String(n++),
             kind: "source",
             name: sourceName,
             source: sourceName,
             modelPath,
-            doc: docText(sourceAnnotations),
-            embedDoc: docOnlyText(sourceAnnotations),
+            ...entityDocs(
+               ownDoc ?? sourceInfo.annotations,
+               sourceInfo.annotations,
+            ),
          });
          if (!topology.has(governanceKey)) {
             const reaches: JoinReach[] = [];
@@ -632,7 +693,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             // `calculate` (window) fields are not referenceable outside their
             // view, so they stay unindexed.
             if (field.kind === "join") {
-               entities.push({
+               const join: Entity = {
                   id: String(n++),
                   kind: "join",
                   name: field.name,
@@ -640,11 +701,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   // sees the join.
                   source: sourceName,
                   modelPath,
-                  doc: docText(field.annotations),
-                  embedDoc: docOnlyText(field.annotations),
+                  ...entityDocs(field.annotations),
                   relationship: field.relationship,
                   ...joinTargetOf(topology.get(governanceKey), field.name),
-               });
+               };
+               entities.push(join);
+               joinLines.set(join, linesOf(field.annotations));
                // The join entity says a relationship exists; the fields below
                // say what it reaches and under what path.
                collectJoinedFields({
@@ -675,8 +737,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                name: field.name,
                source: sourceName,
                modelPath,
-               doc: docText(field.annotations),
-               embedDoc: docOnlyText(field.annotations),
+               ...entityDocs(field.annotations),
                ...(field.kind === "view"
                   ? {}
                   : { dataType: malloyType(field) }),
@@ -707,8 +768,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             name: query.name,
             source: query.sourceName,
             modelPath,
-            doc: docText(query.annotations),
-            embedDoc: docOnlyText(query.annotations),
+            ...entityDocs(query.annotations),
          });
       }
    }
@@ -722,6 +782,33 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
+   // Nothing a deny-all source documents reaches a prompt through a join to
+   // it. A join that documents nothing carries its target's notes, so the join
+   // keeps only lines its target does not have (none, when the target's are
+   // unknown), and every field reached through it loses its doc. After the
+   // full walk, since a join can name a source from a later file.
+   for (const e of deduped) {
+      const path =
+         e.kind === "join" ? [e.name] : (e.joinPath?.split(".") ?? []);
+      if (path.length === 0) continue;
+      const locked = lockedReach(
+         topology.get(sourceContextKey(e.modelPath, e.source ?? "")),
+         path,
+         droppedSources,
+      );
+      if (!locked) continue;
+      const targetLines = sourceLines.get(
+         sourceContextKey(locked.targetModelPath, locked.targetSource),
+      );
+      const ownLines =
+         e.kind === "join" && locked.path.length === path.length && targetLines
+            ? (joinLines.get(e) ?? []).filter(
+                 (line) => !targetLines.includes(line),
+              )
+            : [];
+      delete e.docSource;
+      Object.assign(e, entityDocs(ownLines, []));
+   }
    // A join whose target is not indexed (deny-all, or not exported) keeps
    // its alias but drops the target's real name, which would otherwise reach
    // the LLM prompts. After the full walk, since a join can name a source
@@ -770,6 +857,24 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ),
       ),
    };
+}
+
+/** The first deny-all source on a join path, as the reach that leads to it. */
+function lockedReach(
+   reaches: readonly JoinReach[] | undefined,
+   path: readonly string[],
+   droppedSources: ReadonlySet<string>,
+): JoinReach | undefined {
+   return reaches
+      ?.filter(
+         (reach) =>
+            reach.path.length <= path.length &&
+            reach.path.every((alias, i) => path[i] === alias) &&
+            droppedSources.has(
+               sourceContextKey(reach.targetModelPath, reach.targetSource),
+            ),
+      )
+      .sort((a, b) => a.path.length - b.path.length)[0];
 }
 
 /** `{ joinTarget }` for the join `alias` declared by a source, or nothing when its target is unknown. */
@@ -981,6 +1086,7 @@ function buildSourceContext(
          name: e.name,
          modelPath: e.modelPath,
          doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
+         ...(e.docSource ? { docSource: e.docSource } : {}),
          joins: [],
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),

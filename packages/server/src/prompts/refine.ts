@@ -16,7 +16,7 @@ export interface RefineCandidate {
    kind: string;
    dataType?: string;
    source: string;
-   /** `#(doc)` text only, flattened to one line and not shortened. */
+   /** Doc text only (see docOnlyText), flattened to one line and not shortened. */
    description: string;
 }
 

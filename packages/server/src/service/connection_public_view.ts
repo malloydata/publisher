@@ -60,6 +60,7 @@ const BIGQUERY: PublicShape = {
    impersonateServiceAccount: "scalar",
    maximumBytesBilled: "scalar",
    queryTimeoutMilliseconds: "scalar",
+   dbmeta: "scalar",
 };
 
 const SNOWFLAKE: PublicShape = {

@@ -11,7 +11,8 @@
  * the request pins a source. Entity relevances do not change. A failed call
  * fails the stage; there is no fallback.
  *
- * What is sent: source, model path and package names, `#(doc)` text, and up to
+ * What is sent: source, model path and package names, doc text (see
+ * docOnlyText), and up to
  * RERANK_ENTITIES_PER_SOURCE entities per source, all scrubbed by
  * scrubForEgress so no access predicate can ride along.
  */

@@ -119,6 +119,29 @@ Constraints:
   digest already incorporates the impersonation reference precisely so that two environments
   with different identities never share persisted-table ids.
 
+## BigQuery table and column descriptions (`dbmeta`)
+
+Set `dbmeta` to copy BigQuery table and column descriptions onto the schema Malloy reads:
+
+```json
+{
+  "name": "bigquery",
+  "type": "bigquery",
+  "bigqueryConnection": {
+    "defaultProjectId": "my-project",
+    "dbmeta": true
+  }
+}
+```
+
+Malloy annotates each described table and column with `#(dbmeta) description="..."`.
+In `get_context`, a source, join or field with no `#(doc)` or `#"` doc string of its own takes its
+table's or column's description, marked `docs_source` or `description_source` `"dbmeta"` in the
+response. That text is doc text like any other: it is embedded when an embedding provider is
+configured and sent to the LLM under `retrieval.egress.preset` (see [configuration.md](configuration.md)).
+A join to a source locked with `#(authorize) false` carries no doc from that source.
+Off unless set; it never changes query results.
+
 ## Per-package DuckDB sandboxes
 
 Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the data files in each package without needing any user-defined connection. DuckDB reads Parquet, CSV, and Excel files in place, so `duckdb.table('data/customers.parquet')`, `duckdb.table('data/regions.csv')`, and `duckdb.table('data/budget.xlsx')` all work with no conversion step (`storefront` uses the first two). To select a sheet or pass other `read_xlsx` options, use a SQL source instead: `duckdb.sql("SELECT * FROM read_xlsx('data/budget.xlsx', sheet = 'Q2')")`.
