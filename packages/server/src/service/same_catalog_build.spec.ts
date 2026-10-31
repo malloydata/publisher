@@ -60,6 +60,30 @@ source: daily is orders -> { group_by: id; aggregate: total is amount.sum() }`);
       expect(carriesAuthorSql(s._sourceDef)).toBe(false);
    });
 
+   it("is false for built-in functions, whose dialect templates are Malloy's own SQL", async () => {
+      // A function call carries its overload's per-dialect template, a genericSQLExpr, in the
+      // IR. That is the compiler's text, not the author's, so it must not count.
+      const s = await persisted(`##! experimental.persistence
+source: orders is lake.table('orders') extend {
+  dimension: rounded is round(amount / 3.0, 1)
+  measure: share is amount.sum() / nullif(count(), 0)
+}
+#@ persist name="daily"
+source: daily is orders -> { group_by: id, rounded; aggregate: share }`);
+      expect(carriesAuthorSql(s._sourceDef)).toBe(false);
+   });
+
+   it("is true for a sql_number() inside a built-in function's argument", async () => {
+      const s = await persisted(`##! experimental.persistence
+##! experimental.sql_functions
+source: orders is lake.table('orders') extend {
+  dimension: rounded is round(sql_number("\${amount}"), 1)
+}
+#@ persist name="daily"
+source: daily is orders -> { group_by: id, rounded }`);
+      expect(carriesAuthorSql(s._sourceDef)).toBe(true);
+   });
+
    it("is true for an .sql() source", async () => {
       const s = await persisted(`##! experimental.persistence
 source: raw is lake.sql("SELECT * FROM orders")
