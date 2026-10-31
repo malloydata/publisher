@@ -63,6 +63,13 @@ const MAX_DEPTH = 200;
  *
  * A same-catalog build runs on a READ-WRITE session on the catalog, so it may run
  * only SQL Malloy generated; this is what keeps author text off that session.
+ *
+ * A built-in function call (`round`, `nullif`, a `.day` truncation's helper) carries
+ * its overload's definition in the IR, and that definition's per-dialect template is a
+ * `genericSQLExpr`: the compiler's SQL, not the author's. The walk skips a call's
+ * `overload` and keeps walking its arguments, where an author's `sql_number()` would
+ * be. Without that, any source using a built-in, a pre-aggregate rollup over one
+ * included, read as author SQL.
  * Fails closed: an unreadable definition, or one deeper than the walk allows,
  * counts as carrying author SQL.
  */
@@ -79,6 +86,11 @@ export function carriesAuthorSql(def: unknown): boolean {
       const record = node as Record<string, unknown>;
       if (record.type === "sql_select" || record.node === "genericSQLExpr") {
          return true;
+      }
+      if (record.node === "function_call") {
+         return Object.entries(record).some(
+            ([key, child]) => key !== "overload" && walk(child, depth + 1),
+         );
       }
       // DuckDB reads a file or URL named as a table (`lake.table('/x.csv')`,
       // `lake.table('s3://other/y.parquet')`), which on this session would run
