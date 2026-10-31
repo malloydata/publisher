@@ -36,6 +36,7 @@ export * from "./Home";
 export * from "./Loading";
 export * from "./Materializations";
 export * from "./Model";
+export * from "./ModelViewer";
 export * from "./Package";
 export {
    Prose,

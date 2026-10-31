@@ -178,7 +178,7 @@ ServerProvider (required wrapper)
 ├── Home (list all environments)
 │   └── Environment (show packages in an environment)
 │       └── Package (show models, notebooks, connections)
-│           ├── Model (visual query builder + named queries)
+│           ├── Model (a model's sources, fields and named queries, read-only)
 │           └── Notebook (read-only notebook viewer)
 ```
 
@@ -345,87 +345,77 @@ const resourceUri = encodeResourceUri({
 
 ### Model
 
-The visual query builder and model explorer. This is the primary component for ad-hoc data analysis.
+A model's page: the model viewer (`ModelViewer`) with a Copy link action on its heading. `Model` takes every `ModelViewer` prop.
 
 ```tsx
 import { Model, encodeResourceUri } from "@malloy-publisher/sdk";
 
-interface ModelProps {
-   resourceUri: string;
-   onChange?: (query: QueryExplorerResult) => void;
-   runOnDemand?: boolean; // Default: false
-   maxResultSize?: number; // Default: 0 (no limit)
-}
-
-interface QueryExplorerResult {
-   query: string | undefined;
-   malloyQuery: Malloy.Query | string | undefined;
-   malloyResult: Malloy.Result | undefined;
-}
-
-// Usage
 const resourceUri = encodeResourceUri({
    environmentName: "my-environment",
    packageName: "analytics",
    modelPath: "models/orders.malloy",
 });
 
-<Model
-   resourceUri={resourceUri}
-   runOnDemand={true}
-   maxResultSize={512 * 1024}
-   onChange={(result) => {
-      console.log("Query:", result.query);
-      console.log("Result:", result.malloyResult);
-   }}
-/>;
+<Model resourceUri={resourceUri} maxResultSize={512 * 1024} />;
 ```
 
-**Features:**
+`runOnDemand` is still accepted and deprecated: every view and query runs when it is opened, never on render.
 
-- Source selector (dropdown for models with multiple sources)
-- Visual query builder (Malloy Explorer integration)
-- Named queries display
-- Full-screen dialog mode
-- Copy link to current view
+Copy link copies the page's address. Pass `givens` and `onGivensChange` (`useGivenUrlParams` does both for a react-router host) so the address carries the given values the page is running with, and a link opens with them applied.
 
----
+### ModelViewer
 
-### ModelExplorer
+A Malloy model, read-only, one source at a time:
 
-A lower-level component for embedding the query builder without the full Model chrome.
+- a header with the source's name, its docs and access rules, and an "N sources" pill to switch source;
+- the givens the source reads, set once for every run below them (a picker's options are read when it is opened);
+- its views and the model's named queries, each running when opened, with its Malloy one click over;
+- its measures, calculations, dimensions and joins, each opening to its Malloy; a dimension tagged `#(index)` lists its most common values.
 
 ```tsx
-import {
-   ModelExplorer,
-   useModelData,
-   encodeResourceUri,
-} from "@malloy-publisher/sdk";
+import { ModelViewer, useGivenUrlParams } from "@malloy-publisher/sdk";
 
-interface ModelExplorerProps {
-   data?: CompiledModel; // Pre-loaded model data
-   onChange?: (query: QueryExplorerResult) => void;
-   existingQuery?: QueryExplorerResult; // Initialize with existing query
-   initialSelectedSourceIndex?: number; // Default: 0
-   onSourceChange?: (index: number) => void;
-   resourceUri: string;
-}
+const { params: givens, onGivensChange } = useGivenUrlParams();
 
-// Usage with automatic data loading
-<ModelExplorer
+<ModelViewer
    resourceUri={resourceUri}
-   onChange={(result) => console.log(result)}
-/>;
-
-// Usage with pre-loaded data
-const { data } = useModelData(resourceUri);
-
-<ModelExplorer
-   data={data}
-   resourceUri={resourceUri}
-   onChange={(result) => console.log(result)}
+   // Optional: keep the source in the host's address. Without it the viewer keeps its own.
+   sourceName={params.get("source") ?? undefined}
+   onSourceChange={(source) => setParams({ source })}
+   // Optional: keep the given values in the host's address too.
+   givens={givens}
+   onGivensChange={onGivensChange}
 />;
 ```
+
+It reads only the Publisher API, and sends nothing until a reader opens a row or a picker. A host with more to say passes it in:
+
+| Prop                                                                      | What it adds                                                                                                    |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `givens`, `onGivensChange`                                                | The given values from the host's address, and each applied set back for it                                      |
+| `hostGivenNames`                                                          | Givens the host fills on every query (`$GROUPS`), never shown as inputs                                         |
+| `queryMetadata`, `onQueryRun`                                             | Labels on every run, and a callback as each one settles                                                         |
+| `headerActions`, `renderSourceStatus`                                     | Controls beside the heading, chips on the status row                                                            |
+| `includeHiddenFilesAndSources`                                            | Read and run what the package's `index.malloy` hides, for a reader the server lets edit it                      |
+| `entities`, `entitiesLoading`, `entitiesError`, `joinHref` (experimental) | A fuller record of the model's fields: code where the file's text isn't served, inherited columns, join targets |
+| `columnDescriptions` (experimental)                                       | Descriptions of a table's columns, for a dimension with no doc of its own, marked as generated                  |
+| `extensions` (experimental)                                               | What a hosting platform adds to rows, runs and the picker; see below                                            |
+
+`modelQueryKey` and `runQueryKey` are the viewer's cache keys for a model and a run, for a host that refreshes them or reads the same model.
+
+**`extensions` (experimental).** No host has been built on these yet, so they may change in a minor release until one has:
+
+- `renderRunActions`: actions beside an open view or query (a download), given its query, given values and cache key.
+- `fetchSamples`, `samplesGeneration`: a dimension's values from the host's own index, with a count and a reason when there are none; a new generation reads them afresh.
+- `renderFieldStatus`, `renderFieldAction`: chips and one action on a field's line.
+- `renderFieldDetail`: what an open field row shows; it is handed the viewer's own card to keep, add to or replace.
+- `showField`: which views and fields are listed, for a host's narrowed view of a source.
+- `renderSourceDetail`: a card under the source's header.
+- `describePickerSource`: a summary (marked as generated) and chips on a source's line in the picker.
+
+The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`.
+
+There is no query builder. The Explorer that `Model` used to embed is removed: it wrote structured queries back to Malloy text through `@malloydata/malloy-interfaces`, which does not escape string values yet. To query from a host page, write the Malloy yourself with each value spelled by `malloyLiteral`, and run it with `QueryResult`.
 
 ---
 
@@ -1202,10 +1192,9 @@ Import the SDK styles in your app entry point:
 ```tsx
 // Main SDK styles (required)
 import "@malloy-publisher/sdk/styles.css";
-
-// If using Model/ModelExplorer outside of Publisher
-import "@malloy-publisher/sdk/malloy-explorer.css";
 ```
+
+`@malloy-publisher/sdk/malloy-explorer.css` still resolves, to the same rules as `styles.css`, and is deprecated.
 
 ---
 
@@ -1405,53 +1394,6 @@ function DataTable() {
 
 ---
 
-### Example: Interactive Model Explorer
-
-```tsx
-import {
-   ServerProvider,
-   ModelExplorer,
-   encodeResourceUri,
-} from "@malloy-publisher/sdk";
-import "@malloy-publisher/sdk/styles.css";
-import "@malloy-publisher/sdk/malloy-explorer.css";
-import { useState } from "react";
-
-function Explorer() {
-   const [selectedQuery, setSelectedQuery] = useState(null);
-
-   const resourceUri = encodeResourceUri({
-      environmentName: "my-environment",
-      packageName: "analytics",
-      modelPath: "models/orders.malloy",
-   });
-
-   return (
-      <div style={{ display: "flex", gap: "20px" }}>
-         <div style={{ flex: 1 }}>
-            <h2>Build Your Query</h2>
-            <ModelExplorer
-               resourceUri={resourceUri}
-               onChange={(result) => {
-                  setSelectedQuery(result);
-                  console.log("Generated Query:", result.query);
-               }}
-            />
-         </div>
-
-         {selectedQuery && (
-            <div style={{ flex: 1 }}>
-               <h2>Query Preview</h2>
-               <pre>{selectedQuery.query}</pre>
-            </div>
-         )}
-      </div>
-   );
-}
-```
-
----
-
 ### Example: Lightweight Client-Only Setup
 
 For minimal bundle size when you only need API access:
@@ -1500,9 +1442,7 @@ function EnvironmentList() {
 | `Home`                    | Environment listing landing page                |
 | `Environment`             | Package listing for an environment              |
 | `Package`                 | Package detail (models, notebooks, connections) |
-| `Model`                   | Full model explorer with visual query builder   |
-| `ModelExplorer`           | Lower-level query builder component             |
-| `ModelExplorerDialog`     | Model explorer in a modal dialog                |
+| `Model`                   | A model's sources, fields and named queries     |
 | `Notebook`                | Read-only notebook viewer                       |
 | `DocumentStorageProvider` | Context for document storage                    |
 | `QueryResult`             | Execute and display query                       |
@@ -1510,7 +1450,6 @@ function EnvironmentList() {
 | `EmbeddedQueryResult`     | Render serialized query config                  |
 | `Loading`                 | Loading spinner with text                       |
 | `ApiErrorDisplay`         | Error display component                         |
-| `SourcesExplorer`         | Source schema browser                           |
 | `ConnectionExplorer`      | Connection management UI                        |
 
 ### Exported Hooks
@@ -1545,14 +1484,11 @@ function EnvironmentList() {
 | `ParsedResource`         | Parsed resource URI components   |
 | `ServerContextValue`     | Server context interface         |
 | `ServerProviderProps`    | ServerProvider props             |
-| `QueryExplorerResult`    | Query builder result             |
-| `SourceAndPath`          | Source info with model path      |
 | `DocumentStorage`        | Document storage interface       |
 | `DocumentLocator`        | Workspace + path, with layout    |
 | `DocumentType`           | `"grid"` or `"linear"`           |
 | `Workspace`              | Workspace metadata               |
 | `ApiError`               | Standardized API error           |
-| `ModelExplorerProps`     | ModelExplorer props              |
 | `DimensionFiltersConfig` | Dimensional filter configuration |
 
 ---

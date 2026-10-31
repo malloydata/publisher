@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT
 
 | Path | Use it when | Doc |
 | --- | --- | --- |
-| **Publisher Console** | You want zero-code exploration and sharing — the no-code Explorer, notebooks, and dashboards, out of the box. | [console.md](console.md) |
+| **Publisher Console** | You want browsing and sharing out of the box — models, reports, and dashboards, with no code. | [console.md](console.md) |
 | **HTML data apps** | You want a custom dashboard with no build step, shipped inside a package and served by Publisher. | [html-data-apps.md](html-data-apps.md) |
 | **REST / MCP APIs** | You're building your own application or agent against the data programmatically. | [api-overview.md](api-overview.md) · [ai-agents.md](ai-agents.md) |
 | _React SDK (this page)_ | _You specifically need React components and accept the internal/unstable-API tradeoff._ | — |

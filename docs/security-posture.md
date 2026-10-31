@@ -183,7 +183,7 @@ ordering is what the rest of the list is measured against; the others remain ope
 **1. ~~Everything Publisher serves is framable by any origin, and the knob that looks like it
 fixes that only covers part of it.~~ Fixed.** Both halves landed together, in the order this
 section prescribed. One middleware now sets `Content-Security-Policy: frame-ancestors` ahead of
-every route, so the Console catch-all, notebooks, dashboards, models and the Explorer carry the
+every route, so the Console catch-all, notebooks, dashboards and models carry the
 same policy as in-package `public/` files — `PUBLISHER_FRAME_ANCESTORS` finally means what it
 says ([#930](https://github.com/malloydata/publisher/issues/930)). The default is now `'self'`
 rather than `*`, so a deployment is closed to cross-origin framing unless it opts in. A

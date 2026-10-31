@@ -133,8 +133,12 @@ is a Console convenience.
   still gets it, and writes to the package. It is not offered when neither route exists, on a record
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
   and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
-- **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
-  every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
+- **Browse a model** — open a `.malloy` file to see one source at a time, picked from its "N
+  sources" pill: the givens it reads, its views and the model's named queries (each runs when you
+  open it), its measures, calculations, dimensions and joins, each opening to its Malloy. A
+  dimension tagged `#(index)` lists its most common values. Nothing runs until you open a row or a
+  given's picker. The source and the given values are in the address (`?source=`, `?REGION=…`),
+  so a link, and Copy link, opens on them.
 - **Read a legacy notebook** — a `.malloynb` in a package renders as a linear report: its markdown,
   and its query cells run inline, including `# dashboard` views (KPI tiles + nested charts). The
   format is deprecated and the bundled examples no longer ship one, but the viewer stays for packages

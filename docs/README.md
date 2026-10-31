@@ -40,7 +40,6 @@ every doc below points back to one of them, and each example's README points bac
 | Doc                                            | Read it when you want to…                                                                          |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.               |
-| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                               |
 | [choosing-a-surface.md](choosing-a-surface.md) | Pick between a report (and its layout, linear or grid) and an HTML data app.                       |
 | [reports.md](reports.md)                       | Build a report, linear or grid, by dragging tiles in the Console or by writing its `.malloy` file. |
 | [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.             |

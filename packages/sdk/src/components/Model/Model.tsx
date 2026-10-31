@@ -1,273 +1,40 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import "@malloydata/malloy-explorer/styles.css";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
-import SearchIcon from "@mui/icons-material/Search";
-import {
-   Box,
-   IconButton,
-   Snackbar,
-   Stack,
-   Tooltip,
-   Typography,
-} from "@mui/material";
+import { IconButton, Snackbar, Tooltip } from "@mui/material";
 import React, { useState } from "react";
-import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { FloatingIconButton } from "../FloatingIconButton";
-import { Loading } from "../Loading";
-import { ModelCell } from "./ModelCell";
-import { ModelExplorer } from "./ModelExplorer";
-import { ModelExplorerDialog } from "./ModelExplorerDialog";
-import { QueryExplorerResult } from "./SourcesExplorer";
-import { useModelData } from "./useModelData";
+import { ModelViewer, type ModelViewerProps } from "../ModelViewer";
 
-export interface ModelProps {
-   onChange?: (query: QueryExplorerResult) => void;
-   resourceUri: string;
-   runOnDemand?: boolean;
-   maxResultSize?: number;
+export interface ModelProps extends ModelViewerProps {
    /**
-    * Control values from the host, typically its URL query parameters. When
-    * omitted, `Model` holds them itself, so the embedded explorer and the
-    * maximized dialog still agree with each other.
+    * @deprecated Every view and named query runs when it is opened and never on
+    * render, so there is nothing left for this to turn on.
     */
-   givens?: Record<string, string>;
-   /** Applied control values, for a host that wants them in its URL. */
-   onGivensChange?: (
-      givens: Record<string, string>,
-      managed: readonly string[],
-   ) => void;
+   runOnDemand?: boolean;
 }
 
-// Note: For this to properly render outside of publisher,
-// you must explicitly import the styles from the package:
-// import "@malloy-publisher/sdk/malloy-explorer.css";
-
-export default function Model({
-   onChange,
-   resourceUri,
-   runOnDemand = false,
-   maxResultSize = 0,
-   givens,
-   onGivensChange,
-}: ModelProps) {
-   const { modelPath } = parseResourceUri(resourceUri);
-   const { data, isError, isLoading, error } = useModelData(resourceUri);
-   const [dialogOpen, setDialogOpen] = React.useState(false);
-   const [sharedQuery, setSharedQuery] = React.useState<
-      QueryExplorerResult | undefined
-   >();
-   const [sharedSourceIndex, setSharedSourceIndex] = React.useState(0);
+/** Copies the page's address: a model, at its source and given values, is shareable. */
+function CopyLinkButton() {
    const [copyMessage, setCopyMessage] = useState("");
-   // Held here only when the host passes neither prop, so the embedded
-   // explorer and the maximized dialog still agree on one set of values
-   // rather than each defaulting independently.
-   const [localGivens, setLocalGivens] = React.useState<Record<string, string>>(
-      {},
-   );
-   const effectiveGivens = givens ?? localGivens;
-   const effectiveOnGivensChange =
-      onGivensChange ??
-      ((applied: Record<string, string>) => setLocalGivens(applied));
-
-   // Whether the model imports other files — drives the empty-state hint for
-   // import-only models, whose discovery surface is legitimately empty (no
-   // local sources, no export{}) but whose page would otherwise render blank.
-   // `modelDef` is returned by the server but intentionally absent from the
-   // typed CompiledModel schema (internal compiler blob), hence the cast.
-   const modelDefJson = (data as { modelDef?: string } | undefined)?.modelDef;
-   const hasImports = React.useMemo(() => {
-      if (!modelDefJson) return false;
-      try {
-         const def = JSON.parse(modelDefJson) as { imports?: unknown[] };
-         return Array.isArray(def.imports) && def.imports.length > 0;
-      } catch {
-         return false;
-      }
-   }, [modelDefJson]);
-
-   if (isLoading) {
-      return <Loading text="Fetching Model..." />;
-   }
-
-   if (isError) {
-      console.log("error", error);
-      return <ApiErrorDisplay error={error} context={`Model > ${modelPath}`} />;
-   }
-
-   // Shared handlers for both embedded and dialog explorers
-   const handleQueryChange = (query: QueryExplorerResult) => {
-      setSharedQuery(query);
-      if (onChange) {
-         onChange(query);
-      }
-   };
-
-   const handleSourceChange = (index: number) => {
-      setSharedSourceIndex(index);
-   };
-
    const copyToClipboard = () => {
-      const url = window.location.href;
       navigator.clipboard
-         .writeText(url)
+         .writeText(window.location.href)
          .then(() => setCopyMessage("URL copied to clipboard!"))
          .catch(() => setCopyMessage("Failed to copy URL"));
    };
-
    return (
       <>
-         <Box
-            sx={{
-               position: "relative",
-               maxWidth: "1200px",
-               margin: "0 auto",
-               paddingTop: "24px",
-            }}
-         >
-            {/* Sources Section */}
-            {Array.isArray(data?.sourceInfos) &&
-               data.sourceInfos.length > 0 && (
-                  <Stack spacing={2} component="section">
-                     {/* Sources Header */}
-                     <Box
-                        sx={{
-                           padding: "0 0 16px 0",
-                           display: "flex",
-                           alignItems: "center",
-                           justifyContent: "space-between",
-                        }}
-                     >
-                        <Typography
-                           variant="h1"
-                           sx={{
-                              fontSize: "28px",
-                              fontWeight: "600",
-                              color: "#1a1a1a",
-                              marginBottom: "8px",
-                              marginTop: "0",
-                              paddingLeft: "0",
-                           }}
-                        >
-                           Sources
-                        </Typography>
-                        <Tooltip title="Copy link">
-                           <IconButton
-                              size="small"
-                              aria-label="Copy link"
-                              onClick={copyToClipboard}
-                              sx={{ color: "text.secondary" }}
-                           >
-                              <LinkOutlinedIcon fontSize="small" />
-                           </IconButton>
-                        </Tooltip>
-                     </Box>
-
-                     <ModelExplorer
-                        data={data}
-                        onChange={handleQueryChange}
-                        onSourceChange={handleSourceChange}
-                        existingQuery={sharedQuery}
-                        initialSelectedSourceIndex={sharedSourceIndex}
-                        resourceUri={resourceUri}
-                        givens={effectiveGivens}
-                        onGivensChange={effectiveOnGivensChange}
-                     />
-
-                     {/* Magnifying glass icon */}
-                     <FloatingIconButton
-                        aria-label="Expand results"
-                        sx={{
-                           position: "absolute",
-                           top: "90px",
-                           right: "4px",
-                           zIndex: 2,
-                        }}
-                        onClick={() => setDialogOpen(true)}
-                     >
-                        <SearchIcon />
-                     </FloatingIconButton>
-                  </Stack>
-               )}
-
-            {/* Named Queries Section */}
-            {data?.queries?.length > 0 && (
-               <Stack
-                  spacing={2}
-                  component="section"
-                  sx={{ marginTop: "24px" }}
-               >
-                  {/* Named Queries Header */}
-                  <Box sx={{ padding: "0 0 16px 0" }}>
-                     <Typography
-                        variant="h2"
-                        sx={{
-                           fontSize: "24px",
-                           fontWeight: "600",
-                           color: "#1a1a1a",
-                           marginBottom: "0",
-                           marginTop: "8px",
-                           paddingLeft: "0",
-                        }}
-                     >
-                        Named Queries
-                     </Typography>
-                  </Box>
-
-                  {/* Render the named queries */}
-                  {data.queries.map((query) => (
-                     <ModelCell
-                        key={query.name}
-                        queryName={query.name}
-                        annotations={query.annotations}
-                        resourceUri={resourceUri}
-                        runOnDemand={runOnDemand}
-                        maxResultSize={maxResultSize}
-                     />
-                  ))}
-               </Stack>
-            )}
-
-            {/* Empty discovery surface: nothing exported, nothing to render.
-                For import-only models, say why and how to fix it — otherwise
-                the page reads as broken. */}
-            {(!Array.isArray(data?.sourceInfos) ||
-               data.sourceInfos.length === 0) &&
-               !(data?.queries && data.queries.length > 0) && (
-                  <Box sx={{ textAlign: "center", py: 6 }}>
-                     <Typography
-                        variant="body1"
-                        sx={{ color: "text.secondary", marginBottom: "8px" }}
-                     >
-                        This model exposes no sources or queries.
-                     </Typography>
-                     {hasImports && (
-                        <Typography variant="body2" color="text.secondary">
-                           It imports other files but re-exports nothing. Add{" "}
-                           <code>export {"{ source_name }"}</code> to surface
-                           imported sources here.
-                        </Typography>
-                     )}
-                  </Box>
-               )}
-
-            {/* Model Explorer Dialog */}
-            <ModelExplorerDialog
-               open={dialogOpen}
-               onClose={() => setDialogOpen(false)}
-               resourceUri={resourceUri}
-               data={data}
-               title={`Model: ${modelPath.split("/").pop()}`}
-               existingQuery={sharedQuery}
-               initialSelectedSourceIndex={sharedSourceIndex}
-               onChange={handleQueryChange}
-               onSourceChange={handleSourceChange}
-               givens={effectiveGivens}
-               onGivensChange={effectiveOnGivensChange}
-            />
-         </Box>
+         <Tooltip title="Copy link">
+            <IconButton
+               size="small"
+               aria-label="Copy link"
+               onClick={copyToClipboard}
+               sx={{ color: "text.secondary" }}
+            >
+               <LinkOutlinedIcon fontSize="small" />
+            </IconButton>
+         </Tooltip>
          <Snackbar
             open={copyMessage !== ""}
             autoHideDuration={6000}
@@ -277,3 +44,28 @@ export default function Model({
       </>
    );
 }
+
+/**
+ * A model's page: the model viewer ({@link ModelViewer}) with a Copy link
+ * action on its heading. Each source's views, measures, calculations,
+ * dimensions and joins, the model's named queries, and the givens they read.
+ *
+ * It replaces the Malloy Explorer this page used to embed, which wrote
+ * structured queries back to Malloy text through `@malloydata/malloy-interfaces`,
+ * whose string escaping is a TODO: a value holding a double quote rewrote the
+ * query it was drilled into. The viewer writes no value into Malloy text.
+ */
+export default function Model({
+   runOnDemand: _runOnDemand,
+   headerActions,
+   ...props
+}: ModelProps) {
+   return (
+      <ModelViewer
+         {...props}
+         headerActions={headerActions ?? <CopyLinkButton />}
+      />
+   );
+}
+
+export type { ModelViewerProps };

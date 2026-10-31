@@ -1,8 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { StringFilterExpression } from "@malloydata/malloy-filter";
 import { describe, expect, it } from "bun:test";
-import { formatMalloyValue, malloyLiteral } from "./malloyLiteral";
+import {
+   formatMalloyValue,
+   malloyFilterLiteral,
+   malloyLiteral,
+} from "./malloyLiteral";
 
 describe("malloyLiteral", () => {
    it("spells a value the way its given's type reads it", () => {
@@ -40,6 +45,30 @@ describe("malloyLiteral", () => {
       expect(malloyLiteral({})).toBeUndefined();
       expect(malloyLiteral(new Date("nope"))).toBeUndefined();
    });
+
+   // Malloy passes the text inside `f'…'` to the filter parser as written, so
+   // the filter's own escapes have to arrive as the given carried them.
+   it("hands a filter given's escapes to the filter parser untouched", () => {
+      // The one value "a,b", as the multi-pick control encodes it.
+      const picked = StringFilterExpression.unparse({
+         operator: "=",
+         values: ["a,b"],
+      });
+      expect(malloyLiteral(picked, "filter<string>")).toBe("f'a\\,b'");
+      expect(malloyLiteral("C:\\\\temp", "filter<string>")).toBe(
+         "f'C:\\\\temp'",
+      );
+   });
+});
+
+describe("malloyFilterLiteral", () => {
+   it("escapes only a bare quote, and a trailing lone backslash", () => {
+      expect(malloyFilterLiteral("Nike")).toBe("f'Nike'");
+      expect(malloyFilterLiteral("it's")).toBe("f'it\\'s'");
+      expect(malloyFilterLiteral("it\\'s")).toBe("f'it\\'s'");
+      expect(malloyFilterLiteral("a\\,b")).toBe("f'a\\,b'");
+      expect(malloyFilterLiteral("a\\")).toBe("f'a\\\\'");
+   });
 });
 
 describe("formatMalloyValue", () => {
@@ -48,7 +77,13 @@ describe("formatMalloyValue", () => {
       expect(formatMalloyValue("O'Neil")).toBe("'O\\'Neil'");
       expect(formatMalloyValue(42)).toBe("42");
       expect(formatMalloyValue(false)).toBe("false");
-      expect(formatMalloyValue("2024-01-31", true)).toBe("@2024-01-31");
-      expect(formatMalloyValue(new Date(2024, 0, 5), true)).toBe("@2024-01-05");
+      expect(formatMalloyValue(new Date(2024, 0, 5))).toBe("@2024-01-05");
+   });
+
+   it("quotes a string, even one that reads as a date", () => {
+      expect(formatMalloyValue("2024-01-31")).toBe("'2024-01-31'");
+      expect(formatMalloyValue("2024-01-31 or true")).toBe(
+         "'2024-01-31 or true'",
+      );
    });
 });

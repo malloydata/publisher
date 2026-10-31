@@ -262,8 +262,6 @@ Change a control and every cell re-runs with the new value, no reload and no rew
 
 The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics`](../examples/governed-analytics/) to try it.
 
-The model Explorer shows the same Filters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: filters](explorer.md#filters).
-
 | Malloy type                                                | Widget                                                                                                                                                |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `number`                                                   | Numeric input with × clear                                                                                                                            |

@@ -14,9 +14,6 @@
       },
       "./app.css": {
          "default": "./dist/app.css"
-      },
-      "./malloy-explorer.css": {
-         "default": "./dist/malloy-explorer.css"
       }
    },
    "style": "./dist/app.css",

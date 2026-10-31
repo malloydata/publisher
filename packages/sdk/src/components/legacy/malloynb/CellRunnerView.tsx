@@ -10,9 +10,8 @@
  * drawn by `DashboardView`.
  */
 
-import "@malloydata/malloy-explorer/styles.css";
 import { Typography } from "@mui/material";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { NotebookCell as RawCell, RawNotebook } from "../../../client";
 import type { GivenValue } from "../../../hooks/givenValue";
 import { useDocumentControls } from "../../../hooks/useDocumentControls";
@@ -23,7 +22,7 @@ import { ApiErrorDisplay, type ApiError } from "../../ApiErrorDisplay";
 import type { NavigationClick } from "../../click_helper";
 import type { DrillNavigation } from "../../drill";
 import { GivensPanel } from "../../given";
-import { givensToParams, givensToRequest } from "../../given/paramCodec";
+import { givensToRequest } from "../../given/paramCodec";
 import { Loading, LOADING_COPY } from "../../Loading";
 import { cellRuns } from "./cellKind";
 import { NotebookCell } from "./NotebookCell";
@@ -216,14 +215,6 @@ export function CellRunnerView({
             : undefined;
       },
       [declaredTypes],
-   );
-
-   // For a cell's "Data Sources" dialog: the report's current values, so
-   // exploring from a cell starts from what the reader is looking at rather
-   // than the model's bare defaults.
-   const cellStartingGivens = useMemo(
-      () => givensToParams(applied, declaredTypes),
-      [applied, declaredTypes],
    );
 
    /**
@@ -528,8 +519,6 @@ export function CellRunnerView({
                   resourceUri={resourceUri}
                   maxResultSize={maxResultSize}
                   isExecuting={isExecuting}
-                  givens={cellStartingGivens}
-                  givenSpecs={declaredGivens}
                   // Distinct from `isExecuting`: the cell's spinner is
                   // gated on `!cell.result`, so feeding this through it
                   // showed nothing on a re-run, which is the only case

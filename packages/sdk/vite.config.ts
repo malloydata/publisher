@@ -75,9 +75,7 @@ export default ({ mode }) => {
                "@tanstack/react-query",
 
                // Malloy dependencies (should be provided by host)
-               "@malloydata/malloy-explorer",
                "@malloydata/malloy-interfaces",
-               "@malloydata/malloy-query-builder",
                "@malloydata/render",
 
                // Utility libraries
