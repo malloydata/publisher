@@ -1400,6 +1400,38 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
       expect(accepted.map((d) => d.name)).toEqual(["good"]);
       expect(rejected.map((r) => r.name)).toEqual(["bad"]);
    });
+
+   describe("under S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+      const original = process.env.S3_CREDENTIAL_CHAIN_POLICY;
+      beforeEach(() => {
+         process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      });
+      afterEach(() => {
+         if (original === undefined)
+            delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
+         else process.env.S3_CREDENTIAL_CHAIN_POLICY = original;
+      });
+
+      // The policy exists to refuse chain auth on author-supplied connections; a
+      // destination is the operator's own, and its shape check runs the same gate.
+      it("accepts a chain-auth destination", () => {
+         const { accepted, rejected } = validateStorageDestinations([
+            destination({ provider: "credential_chain" }),
+         ]);
+         expect(rejected).toEqual([]);
+         expect(accepted).toHaveLength(1);
+      });
+
+      it("assembles a chain-auth destination only when told its origin", () => {
+         const chain = destination({ provider: "credential_chain" });
+         expect(() => assembleEnvironmentConnections([chain])).toThrow(
+            /not permitted/,
+         );
+         expect(() =>
+            assembleEnvironmentConnections([chain], "", "storage-destination"),
+         ).not.toThrow();
+      });
+   });
 });
 
 describe("assembleEnvironmentConnections — duckdb setupSQL", () => {

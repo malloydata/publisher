@@ -20,6 +20,11 @@ import {
    CatalogAdmin,
    CatalogAdminError,
 } from "../../../src/service/catalog_admin";
+import {
+   attachDuckLakeReadOnly,
+   recordedCatalogSettings,
+   recordedSchemaPath,
+} from "../../../src/service/connection";
 import { listStorageTables } from "../../../src/service/materialization_build_session";
 import type { components } from "../../../src/api";
 
@@ -235,6 +240,57 @@ describe.skipIf(!SUPERUSER)(
       it("lists both catalogs with what they record", async () => {
          const names = keep(await admin.listCatalogs()).map((c) => c.name);
          expect(names).toEqual(["ds_owned", "ds_standalone"]);
+      });
+
+      it("records the data path and the main schema's path a storage secret is scoped to", async () => {
+         // What `attachDuckLakeWithMode` reads from the attached catalog to scope
+         // a storage secret when the config states no data path: the unit suite
+         // stubs these reads, so this is where their SQL meets a real catalog.
+         const host = SUPERUSER!
+            .split(/\s+/)
+            .filter((kv) => /^(host|port)=/.test(kv))
+            .join(" ");
+         const session = new DuckDBConnection(
+            "scope",
+            ":memory:",
+            mkdtempSync(join(tmpdir(), "scope-")),
+         );
+         try {
+            await attachDuckLakeReadOnly(session, "ds_owned", {
+               catalog: {
+                  postgresConnection: {
+                     connectionString: `${host} dbname=${DB} user=${DB}_admin password=${PASSWORD} options=-crole=${DB}_owner`,
+                  },
+                  metadataSchema: "ds_owned",
+               },
+            });
+            const settings = await recordedCatalogSettings(
+               session,
+               "ds_owned",
+               "ds_owned",
+            );
+            expect(settings.data_path.replace(/\/+$/, "")).toBe(
+               join(root, "ds_owned"),
+            );
+            expect(
+               await recordedSchemaPath(
+                  session,
+                  "ds_owned",
+                  "ds_owned",
+                  "main",
+               ),
+            ).toEqual({ path: "main/", relative: true });
+            expect(
+               await recordedSchemaPath(
+                  session,
+                  "ds_owned",
+                  "ds_owned",
+                  "nowhere",
+               ),
+            ).toBeUndefined();
+         } finally {
+            await session.close();
+         }
       });
 
       it("creates, refuses to recreate, and replaces a table from a file under the data path", async () => {

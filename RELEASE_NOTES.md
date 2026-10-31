@@ -53,6 +53,19 @@ A package registered from a directory with no `location`, or published while ver
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
+## [Unreleased] — A DuckLake storage credential reaches only its catalog's data path
+
+Every DuckLake storage secret (an S3 key, an S3 `credential_chain`, a GCS key) is now created with a `SCOPE` of the catalog's data path: the configured `storage.bucketUrl`, or, when the config leaves it out, the path the catalog recorded at its creation. A `managed: true` connection attached read-only is scoped to its `main` schema's recorded path. On S3, DuckDB's fallback to a key seeded from the host's `AWS_*` environment is turned off on the connection's DuckDB instance. Before, the secret reached the whole bucket, so raw SQL carried into a storage destination's session could read another prefix with the destination's credential. See [docs/ducklake.md](docs/ducklake.md#what-the-storage-credential-reaches).
+
+What can change for a running deployment:
+
+- **A model that read an object outside the data path through a DuckLake connection's credential** (`lake.table('s3://bucket/raw/x.parquet')`) now fails with an unsigned read (HTTP 403 from the bucket). Put the object under the data path, or read it through a `duckdb` connection's `attachedDatabases` entry, whose secret is not scoped.
+- **A model on a `managed` connection that read another schema of the catalog** fails the same way; the connection serves `main`.
+- **An S3 DuckLake session no longer falls back to the host's `AWS_*` keys** for a read no secret matches.
+- **A catalog with nothing to scope to is not attached.** A config with no `bucketUrl` whose catalog records no data path fails the attach, naming the catalog, and the next lookup retries; before, it attached with no storage secret.
+- **`S3_CREDENTIAL_CHAIN_POLICY=destinations-only` admits storage destinations on every path** (load, rebuild, serve, build, and the admin API's catalogs); before, a `credential_chain` destination was dropped or refused under the policy.
+- **A `publisher` proxy connection to a DuckLake catalog is scoped by the upstream Publisher**, so the upstream must run this release too.
+
 ## [0.10.4] — The build plan lists every persist source, with every table it reads
 
 The build plan is computed from Malloy's `Runtime.getBuildTargets` instead of the deprecated `Model.getBuildPlan`. Its wire shape is unchanged, but its `graphs` now carry the whole dependency graph: each graph is a single level holding every persist source in build order, and each node's `dependsOn` names the sources on every table it reads. The graphs used to list only root sources with their direct dependencies, so a host reading them for a rerun's upstream closure, freshness inheritance or lineage lost every edge below the first level. Sources that share a table, a source and its extensions, no longer list each other as dependencies. A persist source whose SQL does not compile on its own (one that reads a `given:` with no default) is refused per source, as before, and lists no dependencies, since Malloy does not report the tables it would read.

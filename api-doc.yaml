@@ -7382,8 +7382,11 @@ components:
             `sqlSource` answer 400 for anything else (another statement type, or
             more than one statement), and `sqlTemporaryTable` answers 400 always.
             This is a rule on statements, not on what a SELECT reads: that is
-            bounded by the session's storage secret and catalog role. Absent or
-            false is the pre-existing behavior.
+            bounded by the catalog role and by the session's storage secret,
+            which on a managed connection attached read-only is scoped to the
+            `main` schema's recorded path, so a SELECT reads only that schema's
+            files; another schema's files, and any other object in the bucket,
+            are unsigned (403). Absent or false is the pre-existing behavior.
         fingerprint:
           type: string
           description: >
@@ -7854,7 +7857,11 @@ components:
                 every attach uses the data path the catalog recorded at its
                 creation, and no attach ever creates a catalog: the shape for a
                 catalog created elsewhere, through the admin API
-                (admin-api-doc.yaml) or by another tool.
+                (admin-api-doc.yaml) or by another tool. Either way the storage
+                secret is scoped to the data path, the given one or the
+                recorded one: a read of any other object through this
+                connection is unsigned, and on S3 the host's AWS_* environment
+                never signs it either. A catalog with neither is not attached.
             s3Connection:
               $ref: "#/components/schemas/S3Connection"
               description: AWS S3 connection configuration for data storage
