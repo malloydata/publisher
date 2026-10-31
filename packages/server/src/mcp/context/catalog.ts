@@ -152,9 +152,9 @@ export interface CatalogReport {
     */
    copiesKeptApart: number;
    /**
-    * Sources left out because they are marked `#(agent-hidden)` (on the
-    * source itself, or `##(agent-hidden)` on the file that defines it). Their
-    * fields are reached only through a served source's joins.
+    * Sources left out because they are marked `#(agent-hidden)` on the
+    * source itself, or served only through files marked `##(agent-hidden)`.
+    * Their fields are reached only through a served source's joins.
     */
    hiddenSources: number;
    /** Join paths the walk recorded, over every source. */
@@ -585,43 +585,79 @@ function ownNoteTexts(
 
 /** `#(agent-hidden)` on a source; any bracket pair Malloy routes, as hosted reads it. */
 const AGENT_HIDDEN_SOURCE = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
-/** `##(agent-hidden)` on a model file: hides the sources that file defines. */
+/** `##(agent-hidden)` on a model file: hides the sources served through that file. */
 const AGENT_HIDDEN_FILE = /^##\|?\s*[([{<]?\s*agent-hidden\b/;
 /** An access gate a source writes itself: it changes which rows a caller sees. */
 const OWN_GATE = /^#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
 
 /**
- * Whether a source is marked `#(agent-hidden)`: on its own notes (a parent's
- * mark never carries through `extend`), or `##(agent-hidden)` on the file
- * that defines it (never on a file that only imports it). Deprecated, but
- * models still use it to keep internal bases out of retrieval, and
- * hosted get_context honours it the same way.
+ * Whether a source is marked `#(agent-hidden)` on its own notes. A parent's
+ * mark never carries through `extend`, and the mark goes with the source into
+ * every file that imports it. Deprecated, but models still use it to keep
+ * internal bases out of retrieval, and hosted get_context honours it the
+ * same way.
  */
 function isAgentHidden(
    models: readonly CatalogModel[],
    compiled: CompiledSource | undefined,
 ): boolean {
    if (!compiled) return false;
-   if (ownNoteTexts(models, compiled).some((t) => AGENT_HIDDEN_SOURCE.test(t)))
-      return true;
-   const url = splitSourceId(compiled.sourceID)?.url ?? compiled.location?.url;
-   if (!url) return false;
+   return ownNoteTexts(models, compiled).some((t) =>
+      AGENT_HIDDEN_SOURCE.test(t),
+   );
+}
+
+/**
+ * The model paths whose own file carries `##(agent-hidden)`, and the sources
+ * those files define that a file without the mark imports. The mark hides
+ * the sources served through that file, and only there: a source it defines
+ * stays served when a file without the mark imports it, as hosted
+ * get_context reads it. A `##` mark never carries through `import`.
+ */
+function agentHiddenFiles(
+   models: readonly CatalogModel[],
+   modelPaths: readonly string[],
+): { files: Set<string>; importedOpenly: Set<string> } {
+   const files = new Set<string>();
    for (const model of models) {
-      const file = (
-         model.modelDef as {
-            modelAnnotations?: Record<
-               string,
-               { ownNotes?: { notes?: Array<{ text?: string }> } }
-            >;
+      const entries =
+         (
+            model.modelDef as {
+               modelAnnotations?: Record<
+                  string,
+                  { ownNotes?: { notes?: Array<{ text?: string }> } }
+               >;
+            }
+         )?.modelAnnotations ?? {};
+      for (const [url, entry] of Object.entries(entries)) {
+         if (modelPathOfUrl(url, modelPaths) !== model.modelPath) continue;
+         if (
+            (entry.ownNotes?.notes ?? []).some((n) =>
+               AGENT_HIDDEN_FILE.test(n.text ?? ""),
+            )
+         ) {
+            files.add(model.modelPath);
          }
-      )?.modelAnnotations?.[url];
-      if (file) {
-         return (file.ownNotes?.notes ?? []).some((n) =>
-            AGENT_HIDDEN_FILE.test(n.text ?? ""),
-         );
       }
    }
-   return false;
+   // `name@modelPath` of each source a hidden file defines that a file
+   // without the mark has in its namespace.
+   const importedOpenly = new Set<string>();
+   for (const model of models) {
+      if (files.has(model.modelPath)) continue;
+      const contents =
+         (model.modelDef as { contents?: Record<string, unknown> })?.contents ??
+         {};
+      for (const c of Object.values(contents)) {
+         const id = splitSourceId((c as CompiledSource).sourceID);
+         if (!id) continue;
+         const at = modelPathOfUrl(id.url, modelPaths);
+         if (at && at !== model.modelPath && files.has(at)) {
+            importedOpenly.add(`${id.source}@${at}`);
+         }
+      }
+   }
+   return { files, importedOpenly };
 }
 
 /**
@@ -977,11 +1013,17 @@ export function buildCatalog(input: CatalogInput): Catalog {
    const extendsOf = new Map<string, string>();
    // An `#(agent-hidden)` source is left out like an unserved one: no node
    // of its own, so none of its fields is ever a home card; a served
-   // source's joins still reach it (joined copies, unservedCopies).
+   // source's joins still reach it (joined copies, unservedCopies). A
+   // `##(agent-hidden)` file leaves out only what is served through it, so a
+   // source it defines that another file imports stays.
+   const hiddenFiles = agentHiddenFiles(input.models, modelPaths);
    const hidden = new Set<string>();
+   const served = new Set<string>();
    for (const e of input.entities) {
       if (e.kind !== "source") continue;
       if (
+         (hiddenFiles.files.has(e.modelPath) &&
+            !hiddenFiles.importedOpenly.has(`${e.name}@${e.modelPath}`)) ||
          isAgentHidden(
             input.models,
             compiledSource(modelByPath.get(e.modelPath)?.modelDef, e.name),
@@ -990,6 +1032,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          hidden.add(e.name);
          continue;
       }
+      served.add(e.name);
       const { definedIn, extendsKey } = definitionOf(e.modelPath, e.name);
       const key = sourceKeyOf(e.name, definedIn);
       sourceKeyByContext.set(sourceContextKey(e.modelPath, e.name), key);
@@ -1464,7 +1507,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          unresolvedReferences: unresolved,
          copiesFolded,
          copiesKeptApart,
-         hiddenSources: hidden.size,
+         hiddenSources: [...hidden].filter((n) => !served.has(n)).length,
          joinPaths: allPaths.length,
          deepestJoinPath: allPaths.reduce(
             (n, h) => Math.max(n, h.path.length),

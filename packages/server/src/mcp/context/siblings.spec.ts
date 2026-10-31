@@ -65,11 +65,23 @@ source: impressions_plain is impressions extend { dimension: aud is audience }
 #(doc) Code to label lookups.
 source: lookups is duckdb.sql("select 'A' as code, 'Alpha' as label")
 `,
+   "codes.malloy": `
+##(agent-hidden)
+#(doc) Internal status codes, imported by no other file.
+source: status_codes is duckdb.sql("select 'A' as code")
+`,
+   "panel.malloy": `
+#(agent-hidden)
+#(doc) Internal panel weights.
+source: panel is duckdb.sql("select 'A' as code, 2 as weight")
+`,
    "hub.malloy": `
 import "lookups.malloy"
+import "panel.malloy"
 #(doc) One row per order.
 source: hub is duckdb.sql("select 'A' as code, 1 as id") extend {
   join_one: lookups on lookups.code = code
+  join_one: panel on panel.code = code
 }
 `,
 };
@@ -92,8 +104,10 @@ beforeAll(async () => {
 });
 
 describe("near-identical sources", () => {
-   it("leaves out #(agent-hidden) sources, on the source or on its file", () => {
+   it("leaves out #(agent-hidden) sources, and sources served only through ##(agent-hidden) files", () => {
       const names = [...catalog.sources.values()].map((s) => s.name).sort();
+      // impressions and panel are marked on the source; status_codes is
+      // served only through its hidden file.
       expect(names).toEqual([
          "deliveries",
          "deliveries_again",
@@ -102,9 +116,24 @@ describe("near-identical sources", () => {
          "impressions_total",
          "labelled_deliveries",
          "labelled_web",
+         "lookups",
          "web_deliveries",
       ]);
-      expect(catalog.report.hiddenSources).toBe(2);
+      expect(catalog.report.hiddenSources).toBe(3);
+   });
+
+   it("serves a source from a ##(agent-hidden) file that another file imports", () => {
+      // Hidden from search only: the defining file still answers queries.
+      const lookups = [...catalog.sources.values()].find(
+         (s) => s.name === "lookups",
+      )!;
+      expect(lookups.modelPaths).toEqual(["lookups.malloy"]);
+   });
+
+   it("keeps a #(agent-hidden) source hidden in a file that imports it", () => {
+      expect(
+         [...catalog.sources.values()].some((s) => s.name === "panel"),
+      ).toBe(false);
    });
 
    it("a hidden base's mark does not carry to the sources that extend it", () => {
@@ -117,7 +146,7 @@ describe("near-identical sources", () => {
    });
 
    it("a hidden source's fields are reached through a served source's join", () => {
-      expect(node("dimension", "hub", "lookups.label")).toBeDefined();
+      expect(node("dimension", "hub", "panel.weight")).toBeDefined();
    });
 
    it("keeps an extension's inherited fields on it when it adds a where:", () => {

@@ -260,8 +260,9 @@ text for each field, a keyword index, a value index of `#(index)` dimensions and
 It is built in the background, one package at a time across the whole server, because the embedding
 provider and its rate limit are shared. A reload does not repeat work: every model call and every
 embedding is stored by content, so a package that changed nothing costs none. A source marked
-`#(agent-hidden)` (or defined in a file marked `##(agent-hidden)`) gets no card of its own; its
-fields are reached through the joins of the sources that are served.
+`#(agent-hidden)` gets no card of its own, in any file that imports it; its fields are reached
+through the joins of the sources that are served. `##(agent-hidden)` on a model file hides the
+sources defined in that file, unless a file without the mark imports them.
 
 ### Embeddings
 
