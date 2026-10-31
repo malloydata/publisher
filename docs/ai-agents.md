@@ -67,7 +67,7 @@ Question-level retrieval is lexical (lunr/BM25) over the model's own text by def
 
 ### Query tool
 
-- `execute_query`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md), and a `version` to query a published version other than the package's `latest` ([package-versions.md](package-versions.md)); the other tools serve `latest`.
+- `execute_query`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md).
 
 ### Authoring tools
 

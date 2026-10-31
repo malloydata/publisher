@@ -35,6 +35,7 @@ export type VersionRegistry = Pick<
    | "setVersionArchiveStatus"
    | "setVersionManifestPath"
    | "deleteVersion"
+   | "deletePackageIfNoVersions"
 >;
 
 /**
@@ -108,11 +109,11 @@ export interface VersionHost<P> {
     */
    onVersionArchived?(packageName: string, versionId: string): void;
    /**
-    * A version is about to be deleted: drop what it alone owns (its
-    * `scope: version` tables), before its row goes. Called holding the
-    * version's lock, and awaited; must not throw.
+    * A version was deleted (its row is gone): stop any build of it, then
+    * reclaim what it alone owns (its `scope: version` tables), as an archive
+    * does. Runs in the background; must not throw.
     */
-   reclaimVersion?(packageName: string, versionId: string): Promise<void>;
+   onVersionDeleted?(packageName: string, versionId: string): void;
    /**
     * A delete took the package's last version, and the package with it:
     * forget what is held about the package itself (its load state). Called
@@ -364,6 +365,12 @@ export class VersionService<P = unknown> {
          }
       };
       reading.then((read) => {
+         // Only a read still kept says what `latest` is: one a write overtook
+         // (and forgot) read the rows from before that write, and must not
+         // put back the `latest` it moved.
+         if (this.records.get(packageName) === reading) {
+            this.latestSeen.set(packageName, read.latest);
+         }
          if (read.versions.size === 0) drop();
       }, drop);
       return reading;
@@ -379,7 +386,6 @@ export class VersionService<P = unknown> {
          packageName,
       );
       const latest = pkg?.latestVersion ?? null;
-      this.latestSeen.set(packageName, latest);
       return {
          latest,
          description: pkg?.description ?? null,
@@ -462,6 +468,13 @@ export class VersionService<P = unknown> {
       const host = this.requireHost();
       const store = this.requireStore();
       const { packageName } = staged;
+      // Counted before it decides which path it takes, so a delete of the
+      // package's last version leaves the package (its row and its folder)
+      // in place for it (see removePackageIfEmpty).
+      this.publishesInFlight.set(
+         packageName,
+         (this.publishesInFlight.get(packageName) ?? 0) + 1,
+      );
       try {
          await this.refuseWatchMounted(packageName);
          if (await this.isVersioned(packageName)) {
@@ -481,6 +494,22 @@ export class VersionService<P = unknown> {
                error,
             }),
          );
+         const left = (this.publishesInFlight.get(packageName) ?? 1) - 1;
+         if (left > 0) {
+            this.publishesInFlight.set(packageName, left);
+         } else {
+            this.publishesInFlight.delete(packageName);
+            // A delete of its last version waited for this publish: delete
+            // the package now if this publish left it with no versions.
+            if (this.packagesToRemove.has(packageName)) {
+               await this.removePackageIfEmpty(packageName).catch((error) =>
+                  logger.warn(
+                     "Could not delete a package left with no versions",
+                     { packageName, error },
+                  ),
+               );
+            }
+         }
       }
    }
 
@@ -793,13 +822,30 @@ export class VersionService<P = unknown> {
     * without loading the version. The folder never changes, so it is read
     * once. Null when the folder is missing (it is fetched again when the
     * version next loads) or the file does not parse.
+    *
+    * The read itself is what is kept, from before it starts, so a delete, an
+    * archive or the package's removal while it runs drops it, and nothing
+    * puts its result back afterwards: a version id deleted and published
+    * again with other content is read anew. A failed read is not kept.
     */
    async publishedManifestOf(
       version: Pick<Version, "packageName" | "dirName">,
    ): Promise<Record<string, unknown> | null> {
       const key = `${version.packageName}@${version.dirName}`;
-      const cached = this.publishedManifests.get(key);
-      if (cached) return cached;
+      const kept = this.publishedManifests.get(key);
+      if (kept) return kept;
+      const reading = this.readPublishedManifest(version);
+      this.publishedManifests.set(key, reading);
+      const read = await reading;
+      if (read === null && this.publishedManifests.get(key) === reading) {
+         this.publishedManifests.delete(key);
+      }
+      return read;
+   }
+
+   private async readPublishedManifest(
+      version: Pick<Version, "packageName" | "dirName">,
+   ): Promise<Record<string, unknown> | null> {
       try {
          const text = await fs.promises.readFile(
             path.join(
@@ -815,16 +861,16 @@ export class VersionService<P = unknown> {
          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
             return null;
          }
-         this.publishedManifests.set(key, parsed as Record<string, unknown>);
          return parsed as Record<string, unknown>;
       } catch {
          return null;
       }
    }
 
+   /** Each version's publisher.json read, by `package@folder` (see publishedManifestOf). */
    private readonly publishedManifests = new Map<
       string,
-      Record<string, unknown>
+      Promise<Record<string, unknown> | null>
    >();
 
    /** One version, archived or not: 400 for a malformed id, 404 for none. */
@@ -893,6 +939,9 @@ export class VersionService<P = unknown> {
          );
          if (status === "archive") {
             this.cache.evict(packageName, versionId);
+            // Out of the scheduler's sweep, so its publisher.json is no longer
+            // asked for; an unarchive reads it again.
+            this.publishedManifests.delete(`${packageName}@${current.dirName}`);
             // The archive is committed; reclaiming its tables must not turn
             // that into a failure.
             try {
@@ -912,12 +961,14 @@ export class VersionService<P = unknown> {
    /**
     * Delete a version for good: archiving takes it out of service, deleting
     * removes it. While other versions remain, the package's `latest` and its
-    * last version in service (when archived ones remain) are refused, and so
-    * is a version a materialization is building. It is unloaded, its own
-    * tables are dropped, then its row and its folder go, all under the
-    * version's lock, so a publish of the same version id (which the delete
-    * frees) waits for it. Deleting the package's only version deletes
-    * the package; `packageRemoved` says so.
+    * last version in service (when archived ones remain) are refused. Under
+    * the version's lock, so a publish of the same version id (which the
+    * delete frees) waits for it, the version is unloaded and its row and its
+    * folder go. Only then, in the background, are its running builds stopped
+    * and the tables it alone owns reclaimed, as an archive reclaims them: a
+    * refused delete has changed nothing. Deleting the package's only version
+    * deletes the package, once no publish of another version of it is in
+    * flight; `packageRemoved` says whether that happened now.
     */
    async deleteVersion(
       packageName: string,
@@ -934,9 +985,9 @@ export class VersionService<P = unknown> {
          versionId,
          async () => {
             const current = await this.getVersion(packageName, versionId);
-            // Checked before anything is dropped. The registry checks again
-            // in the transaction that deletes the row; a refusal there, after
-            // a move of `latest` in between, leaves the version serving live.
+            // Refused here, before it is even unloaded, when it plainly must
+            // be; the registry checks again in the transaction that deletes
+            // the row.
             const all = await this.registry.listVersions(
                this.environmentId,
                packageName,
@@ -955,18 +1006,7 @@ export class VersionService<P = unknown> {
                   all.filter((v) => v.archiveStatus === "unarchive").length,
                );
             }
-            // Its tables are dropped next: a run of it must not be writing
-            // them.
-            if (host.isVersionBuilding?.(packageName, versionId)) {
-               throw new PackageVersionError(
-                  "VERSION_BUILDING",
-                  `A materialization of version ${versionId} of package ${packageName} is running, and deleting it would drop the tables it is writing. Wait for it, or stop it.`,
-               );
-            }
-            // Unloaded before its tables go, as an archive unloads before it
-            // reclaims, so no query of it reads a table being dropped.
             this.cache.evict(packageName, versionId);
-            await host.reclaimVersion?.(packageName, versionId);
             const result = await this.registry.deleteVersion(
                this.environmentId,
                packageName,
@@ -982,6 +1022,8 @@ export class VersionService<P = unknown> {
             if (this.latestSeen.get(packageName) === versionId) {
                this.latestSeen.delete(packageName);
             }
+            // Its own folder only: a publish of another version may be placing
+            // its folder beside it.
             try {
                await this.withFilesLock(packageName, current.dirName, () =>
                   store.remove(packageName, current.dirName),
@@ -998,23 +1040,64 @@ export class VersionService<P = unknown> {
             return result;
          },
       );
-      if (deleted.packageRemoved) {
-         // After the version's lock, which a first versioned publish takes
-         // inside the package lock. That publish may have recorded the
-         // package again meanwhile; then its folder stays.
-         await host.withPackageLock(packageName, async () => {
-            if (
-               await this.registry.hasVersions(this.environmentId, packageName)
-            ) {
-               return;
-            }
-            this.forgetPackage(packageName);
-            await store.removePackage(packageName);
-            host.packageRemoved?.(packageName);
+      // The delete is committed; stopping its builds and reclaiming its
+      // tables must not turn it into a failure.
+      try {
+         host.onVersionDeleted?.(packageName, versionId);
+      } catch (error) {
+         logger.warn("Could not start reclaiming a deleted version", {
+            packageName,
+            versionId,
+            error,
          });
       }
-      return deleted;
+      const packageRemoved = deleted.wasLast
+         ? await this.removePackageIfEmpty(packageName)
+         : false;
+      return { version: deleted.version, packageRemoved };
    }
+
+   /**
+    * Delete a package whose last version was deleted: its rows, its folder
+    * and what is held about it. Only once no publish of it is in flight,
+    * since one already past its checks places its version's folder in the
+    * package's folder and commits into the package's row; the last such
+    * publish to finish calls this again. Under the package lock, which a
+    * first versioned publish takes, and only if the package still has no
+    * versions. Returns whether the package was deleted now.
+    */
+   private async removePackageIfEmpty(packageName: string): Promise<boolean> {
+      if ((this.publishesInFlight.get(packageName) ?? 0) > 0) {
+         this.packagesToRemove.add(packageName);
+         return false;
+      }
+      this.packagesToRemove.delete(packageName);
+      const host = this.requireHost();
+      const store = this.requireStore();
+      return host.withPackageLock(packageName, async () => {
+         if ((this.publishesInFlight.get(packageName) ?? 0) > 0) {
+            this.packagesToRemove.add(packageName);
+            return false;
+         }
+         if (
+            !(await this.registry.deletePackageIfNoVersions(
+               this.environmentId,
+               packageName,
+            ))
+         ) {
+            return false;
+         }
+         this.forgetPackage(packageName);
+         await store.removePackage(packageName);
+         host.packageRemoved?.(packageName);
+         return true;
+      });
+   }
+
+   /** Publishes of each package running now, past their first step. */
+   private readonly publishesInFlight = new Map<string, number>();
+   /** Packages whose last version was deleted while a publish of them ran. */
+   private readonly packagesToRemove = new Set<string>();
 
    /**
     * Bind a version to a build manifest, or to none (null: serves live). The

@@ -48,12 +48,6 @@ const executeQueryShape = {
       .string()
       .describe("Package containing the model, as list_packages returns it."),
    modelPath: z.string().describe("Path to the .malloy model file"),
-   version: z
-      .string()
-      .optional()
-      .describe(
-         "The package version to query: a published version's id, such as 1.2.0. Omit to use the package's latest. get_context describes latest, so name a version only to query another one; a package with no published versions takes none.",
-      ),
    query: z
       .string()
       .optional()
@@ -139,7 +133,6 @@ export function registerExecuteQueryTool(
             environmentName,
             packageName,
             modelPath,
-            version,
             query,
             sourceName,
             queryName,
@@ -173,8 +166,6 @@ export function registerExecuteQueryTool(
             environmentName,
             packageName,
             modelPath,
-            // As the REST query route takes `versionId`: omitted means latest.
-            version,
          );
 
          if ("error" in modelResult) {
@@ -294,11 +285,15 @@ export function registerExecuteQueryTool(
             );
 
             // An undefined name is also what an author gets after saving a new
-            // source or view without reloading, so point at the reload too.
+            // source or view without reloading, so point at the reload too. A
+            // published version never changes, so reloading it does nothing:
+            // there the way to a new name is a new version.
             const suggestions = [...errorDetails.suggestions];
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
-                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
+                  pkg.getVersionId() !== undefined
+                     ? "This package serves published versions, which never change, so reload_package does not pick up a source or view added or renamed on disk. Publish the change as a new version (bump `version` in publisher.json), then query it once it is the package's latest."
+                     : "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
                );
             }
 

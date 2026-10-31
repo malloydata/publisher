@@ -20,6 +20,7 @@ import type { ResourceRepository } from "../../../src/storage/DatabaseInterface"
 import { initializeSchema } from "../../../src/storage/duckdb/schema";
 import { Environment } from "../../../src/service/environment";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { logger } from "../../../src/logger";
 import { MaterializationService } from "../../../src/service/materialization_service";
 import {
    storageBindingResolverFor,
@@ -226,9 +227,11 @@ describe("reclaiming an archived version's tables", () => {
             created.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
-      environment.setVersionDeletingHook((packageName, versionId) =>
-         created.reclaimDeletingVersion(ENV, packageName, versionId),
-      );
+      environment.setVersionDeletedHook((packageName, versionId) => {
+         reclaims.push(
+            created.cleanUpDeletedVersion(ENV, packageName, versionId),
+         );
+      });
       return created;
    }
 
@@ -547,7 +550,7 @@ describe("reclaiming an archived version's tables", () => {
       expect(await answerOf("1.0.0")).toBe(101);
    });
 
-   it("deleting a version drops its own tables before it answers, and keeps an orchestrated run's and other versions'", async () => {
+   it("deleting a version drops its own tables once its row is gone, and keeps an orchestrated run's and other versions'", async () => {
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version");
       const v1 = await build({ versionId: "1.0.0" });
@@ -562,8 +565,8 @@ describe("reclaiming an archived version's tables", () => {
          .deleteVersion(PKG, "1.0.0");
       expect(deleted.packageRemoved).toBe(false);
 
-      // No background reclaim to wait for: the delete dropped them itself.
-      expect(reclaims).toEqual([]);
+      // The cleanup runs after the delete answers.
+      await Promise.all(reclaims);
       expect((await tablesIn(env)).sort()).toEqual(
          ["host_v1", TABLE_V2].sort(),
       );
@@ -585,35 +588,108 @@ describe("reclaiming an archived version's tables", () => {
          .getVersionService()!
          .deleteVersion(PKG, "1.0.0");
       expect(deleted.packageRemoved).toBe(true);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      // The package went first; its version's own run waited for the
+      // cleanup, which drops the table and then the run.
+      await Promise.all(reclaims);
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(v1.id)).toBeNull();
-      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
 
-   it("the startup sweep drops a table a delete could not, once the version's row is gone", async () => {
+   it("the startup pass finishes a deleted version's cleanup that a crash cut short, its package gone with it", async () => {
+      await publish("1.0.0", 1, "version");
+      const v1 = await build({ versionId: "1.0.0" });
+      // The server stops before the cleanup starts.
+      env.setVersionDeletedHook(null);
+      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await tablesIn(env)).toEqual([TABLE_V1]);
+      expect(await statusOf(v1.id)).toBe("MANIFEST_FILE_READY");
+
+      await restart();
+      await service.reclaimArchivedVersions();
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await statusOf(v1.id)).toBeNull();
+   });
+
+   it("a delete's cleanup stops the deleted version's runs that have not settled, and leaves other versions' runs", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      // A run of 1.0.0 that is running here (it is aborted), one that has not
+      // started (it is marked cancelled), and a run of 2.0.0.
+      const running = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "auto" },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      // Each in a slot of its own: one active run per slot.
+      const waiting = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "orchestrated" },
+         { version: "1.0.0" },
+      );
+      const other = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "auto" },
+         { version: "2.0.0", lockVersion: "2.0.0" },
+      );
+      const abort = new AbortController();
+      (
+         service as unknown as {
+            runningAbortControllers: Map<string, AbortController>;
+         }
+      ).runningAbortControllers.set(running.id, abort);
+
+      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+      await Promise.all(reclaims);
+
+      expect(abort.signal.aborted).toBe(true);
+      expect(await statusOf(waiting.id)).toBe("CANCELLED");
+      expect(await statusOf(other.id)).toBe("PENDING");
+   });
+
+   it("tries a table it could not drop once: it is named in a warning and left, and the startup pass tries nothing", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
       const v1 = await build({ versionId: "1.0.0" });
       const v2 = await build({ versionId: "2.0.0" });
 
-      // The delete's drop fails: every table is still owed.
+      // The delete's drop fails: every table is left.
       const drop = spyOn(
          service as unknown as {
             dropManifestEntries: (...args: unknown[]) => Promise<unknown>;
          },
          "dropManifestEntries",
       ).mockImplementationOnce(async (...args: unknown[]) => args[4]);
-      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
-      drop.mockRestore();
+      const warn = spyOn(logger, "warn");
+      try {
+         await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+         await Promise.all(reclaims);
+         const left = warn.mock.calls.filter(([message]) =>
+            String(message).includes("could not drop"),
+         );
+         expect(left).toHaveLength(1);
+         expect(JSON.stringify(left[0][1])).toContain(TABLE_V1);
+      } finally {
+         drop.mockRestore();
+         warn.mockRestore();
+      }
       expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
-      expect(await statusOf(v1.id)).toBe("FAILED");
+      // Its record goes all the same, so nothing comes back to it.
+      expect(await statusOf(v1.id)).toBeNull();
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
 
       await restart();
       await service.reclaimArchivedVersions();
 
-      expect(await tablesIn(env)).toEqual([TABLE_V2]);
-      expect(await statusOf(v1.id)).toBeNull();
+      expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
       expect(await statusOf(v2.id)).toBe("MANIFEST_FILE_READY");
    });
 });
@@ -683,17 +759,19 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
                );
             },
          );
-         // Deleting a version drops those tables first, before its row goes.
-         environmentStore.setVersionDeletingHook(
-            (environmentName, packageName, versionId) =>
-               materializationService.reclaimDeletingVersion(
+         // Deleting a version stops its builds and reclaims those tables, in the
+         // background, once its row is gone.
+         environmentStore.setVersionDeletedHook(
+            (environmentName, packageName, versionId) => {
+               void materializationService.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
-               ),
+               );
+            },
          );
-         // A reclaim that a crash or a failed drop cut short is retried once the
-         // environments have loaded: nothing else would start it again.
+         // A reclaim that a crash cut short is finished once the environments have
+         // loaded: nothing else would start it again.
          sweep = environmentStore.finishedInitialization.then(
             () => materializationService.reclaimArchivedVersions(),
             () => undefined,
@@ -840,6 +918,14 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          "1.0.0",
       );
       expect(answered.id).toBe("1.0.0");
+      // The cleanup runs after the delete answers: it stops the version's
+      // builds, then reclaims.
+      const deadline = Date.now() + 30_000;
+      while (server.calls.length === 0 && Date.now() < deadline) {
+         await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await Promise.all(server.reclaims);
+      expect(server.calls).toEqual([[ENV, PKG, "1.0.0"]]);
       expect(await tables(server)).toEqual([TABLE_V2]);
       expect(await statusOf(server, v1.id)).toBeNull();
       expect(await statusOf(server, v2.id)).toBe("MANIFEST_FILE_READY");
@@ -931,13 +1017,14 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          );`),
       );
       expect(server).toContain(
-         squash(`environmentStore.setVersionDeletingHook(
-            (environmentName, packageName, versionId) =>
-               materializationService.reclaimDeletingVersion(
+         squash(`environmentStore.setVersionDeletedHook(
+            (environmentName, packageName, versionId) => {
+               void materializationService.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
-               ),
+               );
+            },
          );`),
       );
       expect(server).toContain(

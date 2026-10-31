@@ -118,6 +118,8 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
          ({
             assertCanAdmitQuery: () => undefined,
             getPackage: async () => ({
+               // A package with no published versions.
+               getVersionId: () => undefined,
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
@@ -665,12 +667,17 @@ export { customers }`,
    });
 });
 
-describe("execute_query version", () => {
-   /** A store that answers the query and records the version it was asked for. */
-   function storeCapturingVersion(refuse?: PackageVersionError): {
-      store: Partial<EnvironmentStore>;
-      asked: () => unknown[];
-   } {
+describe("execute_query on a package with published versions", () => {
+   /**
+    * A store whose package is the published version `versionId` (undefined:
+    * a package with no versions), recording the options each load was asked
+    * for.
+    */
+   function versionedStore(options: {
+      versionId?: string;
+      refuse?: PackageVersionError;
+      queryError?: unknown;
+   }): { store: Partial<EnvironmentStore>; asked: () => unknown[] } {
       const asked: unknown[] = [];
       const store: Partial<EnvironmentStore> = {
          getEnvironment: async () =>
@@ -680,23 +687,27 @@ describe("execute_query version", () => {
                getPackage: async (
                   _name: string,
                   _reload: boolean,
-                  options: { versionId?: unknown } = {},
+                  loadOptions?: unknown,
                ) => {
-                  asked.push(options.versionId);
-                  if (refuse) throw refuse;
+                  asked.push(loadOptions);
+                  if (options.refuse) throw options.refuse;
                   return {
+                     getVersionId: () => options.versionId,
                      getDeclaredQueryMetadata: () => null,
                      getModel: () => ({
                         getType: () => "model",
                         carriesReportTag: () => false,
                         getModel: async () => ({}),
-                        getQueryResults: async () => ({
-                           result: { schema: { fields: [] } },
-                           compactResult: [{ c: 1 }],
-                           rowLimit: 1000,
-                           rowLimitSource: "server_default",
-                           queryCorrelationId: "corr-1",
-                        }),
+                        getQueryResults: async () => {
+                           if (options.queryError) throw options.queryError;
+                           return {
+                              result: { schema: { fields: [] } },
+                              compactResult: [{ c: 1 }],
+                              rowLimit: 1000,
+                              rowLimitSource: "server_default",
+                              queryCorrelationId: "corr-1",
+                           };
+                        },
                      }),
                   };
                },
@@ -705,36 +716,60 @@ describe("execute_query version", () => {
       return { store, asked: () => asked };
    }
 
-   it("is offered whatever the config, as Credible's execute_query offers it", () => {
-      expect(captureTool({}).shape).toHaveProperty("version");
-      expect(captureTool({}, serverRootWith(AUTHORING)).shape).toHaveProperty(
-         "version",
-      );
+   it("takes no version: the MCP tools serve latest", () => {
+      expect(captureTool({}).shape).not.toHaveProperty("version");
+      expect(
+         captureTool({}, serverRootWith(AUTHORING)).shape,
+      ).not.toHaveProperty("version");
    });
 
-   it("queries the version it names, and latest when it names none", async () => {
-      const { store, asked } = storeCapturingVersion();
-      const handler = captureHandler(store);
-      expect((await handler({ ...args, version: "1.2.0" })).isError).not.toBe(
-         true,
-      );
-      expect((await handler(args)).isError).not.toBe(true);
-      expect(asked()).toEqual(["1.2.0", undefined]);
+   it("queries the package's latest, naming no version", async () => {
+      const { store, asked } = versionedStore({ versionId: "1.2.0" });
+      expect((await captureHandler(store)(args)).isError).not.toBe(true);
+      expect(asked()).toEqual([undefined]);
    });
 
-   it("answers a version the package does not have with its own message, not an internal error", async () => {
-      const { store } = storeCapturingVersion(
-         new PackageVersionError(
+   it("answers a package with no latest yet with its own message, not an internal error", async () => {
+      const { store } = versionedStore({
+         refuse: new PackageVersionError(
             "VERSION_NOT_FOUND",
-            "Package pkg has no version 9.9.9.",
+            "Package pkg has no latest version yet; name a version, or make one latest.",
          ),
-      );
-      const result = await captureHandler(store)({ ...args, version: "9.9.9" });
+      });
+      const result = await captureHandler(store)(args);
       expect(result.isError).toBe(true);
       const parsed = parse(result);
-      expect(parsed.error).toContain("no version 9.9.9");
+      expect(parsed.error).toContain("no latest version yet");
       expect(JSON.stringify(parsed.suggestions)).toContain(
-         "execute_query's version",
+         "PUT .../packages/{package}/latest",
       );
    });
+
+   it.each([
+      [
+         "a published version",
+         "1.2.0",
+         "Publish the change as a new version",
+         "Call reload_package",
+      ],
+      [
+         "a package with no versions",
+         undefined,
+         "Call reload_package",
+         "Publish the change as a new version",
+      ],
+   ])(
+      "points an undefined name on %s at the step that picks a new name up",
+      async (_label, versionId, says, never) => {
+         const { store } = versionedStore({
+            versionId,
+            queryError: new MalloyError("'orders_v2' is not defined", []),
+         });
+         const result = await captureHandler(store)(args);
+         expect(result.isError).toBe(true);
+         const suggestions = JSON.stringify(parse(result).suggestions);
+         expect(suggestions).toContain(says);
+         expect(suggestions).not.toContain(never);
+      },
+   );
 });

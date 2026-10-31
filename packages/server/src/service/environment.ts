@@ -409,11 +409,11 @@ export class Environment {
    private versionArchivedHook:
       | ((packageName: string, versionId: string) => void)
       | null = null;
-   // Called, and awaited, before a version's row is deleted, to drop the
-   // tables it alone owns. Set by EnvironmentStore (see
-   // setVersionDeletingHook).
-   private versionDeletingHook:
-      | ((packageName: string, versionId: string) => Promise<void>)
+   // Called once a version's row is deleted, to stop its builds and reclaim
+   // the tables it alone owns. Set by EnvironmentStore (see
+   // setVersionDeletedHook).
+   private versionDeletedHook:
+      | ((packageName: string, versionId: string) => void)
       | null = null;
    public metadata: ApiEnvironment;
    // Owner of the RSS back-pressure flag; null makes the admission gates no-ops.
@@ -1481,15 +1481,35 @@ export class Environment {
    }
 
    /**
-    * Attach (or detach with `null`) the callback awaited before a version is
-    * deleted, which drops the tables that version alone owns. Called holding
-    * the version's lock; it must not throw.
+    * Attach (or detach with `null`) the callback run once a version is
+    * deleted, which stops its builds and reclaims the tables that version
+    * alone owns. It must only schedule work, and must not throw.
     */
-   public setVersionDeletingHook(
-      hook: ((packageName: string, versionId: string) => Promise<void>) | null,
+   public setVersionDeletedHook(
+      hook: ((packageName: string, versionId: string) => void) | null,
    ): void {
-      this.versionDeletingHook = hook;
+      this.versionDeletedHook = hook;
    }
+
+   /**
+    * Resolves once no materialization of the version is running: at once
+    * when none is, else when the last one settles.
+    */
+   public versionBuildsSettled(
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      const k = `${packageName}@${versionId}`;
+      if (!this.versionBuilds.has(k)) return Promise.resolve();
+      return new Promise((resolve) => {
+         const waiting = this.versionBuildWaiters.get(k) ?? [];
+         waiting.push(resolve);
+         this.versionBuildWaiters.set(k, waiting);
+      });
+   }
+
+   // Waiting on a version's builds to settle (see versionBuildsSettled).
+   private readonly versionBuildWaiters = new Map<string, Array<() => void>>();
 
    /**
     * Record that a materialization of a version is running, until the
@@ -1522,6 +1542,11 @@ export class Environment {
             );
          }
          this.pendingVersionReleases.delete(k);
+         // A reclaim of a deleted version waits for its builds to settle.
+         for (const resolve of this.versionBuildWaiters.get(k) ?? []) {
+            resolve();
+         }
+         this.versionBuildWaiters.delete(k);
       };
    }
 
@@ -1870,9 +1895,8 @@ export class Environment {
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
                this.versionArchivedHook?.(packageName, versionId),
-            reclaimVersion: async (packageName, versionId) => {
-               await this.versionDeletingHook?.(packageName, versionId);
-            },
+            onVersionDeleted: (packageName, versionId) =>
+               this.versionDeletedHook?.(packageName, versionId),
             packageRemoved: (packageName) => {
                this.clearPackageLoadFailure(packageName);
                this.deletePackageStatus(packageName);

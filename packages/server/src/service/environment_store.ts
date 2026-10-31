@@ -56,6 +56,7 @@ import {
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import { Environment, PackageStatus } from "./environment";
+import { formatPublishRejections } from "./publish_checks";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
 import { VersionStore } from "./versions/version_store";
@@ -427,13 +428,13 @@ export class EnvironmentStore {
            versionId: string,
         ) => void)
       | null = null;
-   // Awaited before a version is deleted; picked up like versionArchivedHook.
-   private versionDeletingHook:
+   // Called once a version is deleted; picked up like versionArchivedHook.
+   private versionDeletedHook:
       | ((
            environmentName: string,
            packageName: string,
            versionId: string,
-        ) => Promise<void>)
+        ) => void)
       | null = null;
 
    /**
@@ -536,28 +537,29 @@ export class EnvironmentStore {
    }
 
    /**
-    * Attach (or detach with `null`) the callback awaited before a version is
-    * deleted, which drops the tables that version alone owns. Remembered, so
-    * Environments bound after this call also use it.
+    * Attach (or detach with `null`) the callback run once a version is
+    * deleted, which stops its builds and reclaims the tables that version
+    * alone owns, in the background. Remembered, so Environments bound after
+    * this call also use it.
     */
-   public setVersionDeletingHook(
+   public setVersionDeletedHook(
       hook:
          | ((
               environmentName: string,
               packageName: string,
               versionId: string,
-           ) => Promise<void>)
+           ) => void)
          | null,
    ): void {
-      this.versionDeletingHook = hook;
+      this.versionDeletedHook = hook;
       for (const env of this.environments.values()) {
-         this.attachVersionDeletingHook(env);
+         this.attachVersionDeletedHook(env);
       }
    }
 
-   private attachVersionDeletingHook(env: Environment): void {
-      const hook = this.versionDeletingHook;
-      env.setVersionDeletingHook(
+   private attachVersionDeletedHook(env: Environment): void {
+      const hook = this.versionDeletedHook;
+      env.setVersionDeletedHook(
          hook
             ? (packageName, versionId) =>
                  hook(env.getEnvironmentName(), packageName, versionId)
@@ -578,8 +580,15 @@ export class EnvironmentStore {
    }
 
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
+      // With package versioning on, a configured package loads as a publish of
+      // its location, exactly as `POST .../packages` with that location
+      // publishes it: as the version its publisher.json declares, by the same
+      // checks. A watched environment mounts its packages' sources in place,
+      // which are no immutable versions, so it loads them as before.
+      const asVersions =
+         isVersioningEnabled() && !this.inPlaceEnvs.has(environment.name);
       try {
-         await this.addEnvironment(
+         const added = await this.addEnvironment(
             {
                name: environment.name,
                resource: `${API_PREFIX}/environments/${environment.name}`,
@@ -592,12 +601,68 @@ export class EnvironmentStore {
                        storageDestinations: environment.storageDestinations,
                     }
                   : {}),
-               packages: environment.packages,
+               packages: asVersions ? [] : environment.packages,
             },
             true,
+            { configuredPackagesPublished: asVersions },
          );
+         if (asVersions) {
+            await this.publishConfiguredPackages(added, environment.packages);
+         }
       } catch (error) {
          this.recordEnvironmentInitializationFailure(environment.name, error);
+      }
+   }
+
+   /**
+    * Publish each configured package as the version its publisher.json
+    * declares (see addConfiguredEnvironment). One that cannot be published
+    * (no version, a refused check, a conflict) is recorded as that package's
+    * load error, as a configured package that does not mount is, and the
+    * others still load.
+    */
+   private async publishConfiguredPackages(
+      environment: Environment,
+      packages: ProcessedEnvironment["packages"],
+   ): Promise<void> {
+      const environmentName = environment.getEnvironmentName();
+      const versions = environment.getVersionService();
+      for (const configured of packages) {
+         try {
+            if (!versions) {
+               throw new Error(
+                  "package versions are not available in this environment",
+               );
+            }
+            await versions.publish(
+               configured.name,
+               (stagingPath) =>
+                  this.downloadPackageInto(
+                     environmentName,
+                     configured.name,
+                     configured.location,
+                     stagingPath,
+                  ),
+               {
+                  sourceLocation: configured.location,
+                  promotion: getVersionPromotionMode(this.serverRootPath),
+                  validate: (loaded) => formatPublishRejections(loaded),
+               },
+            );
+         } catch (error) {
+            const message = redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            );
+            logger.error(
+               `Failed to publish configured package "${configured.name}" as a version; skipping it`,
+               {
+                  environmentName,
+                  packageName: configured.name,
+                  error: message,
+               },
+            );
+            environment.setPackageMountError(configured.name, message);
+         }
       }
    }
 
@@ -916,7 +981,7 @@ export class EnvironmentStore {
          storageBindingResolverFor(repository, environmentId),
       );
       this.attachVersionArchivedHook(environment);
-      this.attachVersionDeletingHook(environment);
+      this.attachVersionDeletedHook(environment);
       environment.bindVersions(repository, environmentId, {
          downloaderFor: (packageName, location) => (stagingPath) =>
             this.downloadPackageInto(
@@ -1394,10 +1459,20 @@ export class EnvironmentStore {
          logger.warn(`Package "${packageName}" not found in environment`);
          return;
       }
-      if (await this.isVersionedPackage(environment, packageName)) return;
-
-      await this.addPackage(pkg, dbEnvironment.id, repository);
-      logger.info(`Synced package "${packageName}" to database`);
+      // Under the package's lock, as addPackages does, so a first versioned
+      // publish (which takes it) cannot commit between the check and the
+      // write and have its row written over.
+      const synced = await environment.withPackageLock(
+         packageName,
+         async () => {
+            if (await this.isVersionedPackage(environment, packageName)) {
+               return false;
+            }
+            await this.addPackage(pkg, dbEnvironment.id, repository);
+            return true;
+         },
+      );
+      if (synced) logger.info(`Synced package "${packageName}" to database`);
    }
 
    public async deletePackageFromDatabase(
@@ -1757,7 +1832,12 @@ export class EnvironmentStore {
    public async addEnvironment(
       environment: ApiEnvironment,
       skipInitialization: boolean = false,
-      { storageDestinationsAreFallback = false } = {},
+      {
+         storageDestinationsAreFallback = false,
+         // The config's packages are published as versions once the
+         // environment exists (see addConfiguredEnvironment), not loaded here.
+         configuredPackagesPublished = false,
+      } = {},
    ) {
       if (!skipInitialization) {
          await this.finishedInitialization;
@@ -1788,7 +1868,9 @@ export class EnvironmentStore {
       );
       const hasPackages =
          (environment?.packages && environment.packages.length > 0) ||
-         (environmentConfig?.packages && environmentConfig.packages.length > 0);
+         (!configuredPackagesPublished &&
+            environmentConfig?.packages &&
+            environmentConfig.packages.length > 0);
       let absoluteEnvironmentPath: string;
       let mountErrors: ReadonlyMap<string, string> = new Map();
       if (hasPackages) {

@@ -1521,7 +1521,8 @@ paths:
           keeps the `description` from its own publisher.json.
 
         A request without a `location` registers a directory already in the environment as a
-        single unversioned package, as packages loaded from `publisher.config.json` are. A
+        single unversioned package, as packages loaded from `publisher.config.json` are with
+        versioning off. A
         package that already has versions refuses that with 409 (`reason`
         `PACKAGE_IS_VERSIONED`).
       parameters:
@@ -1753,9 +1754,9 @@ paths:
       description: |
         Lists every version published to the package, highest version first, including archived
         ones (marked by `archiveStatus`). The entry marked `latest` is the version served when a
-        request names no `versionId`. An unversioned package (one loaded from
-        `publisher.config.json` or registered from a directory) has no versions and returns an
-        empty list.
+        request names no `versionId`. An unversioned package (one registered from a directory,
+        or loaded from `publisher.config.json` or published with versioning off) has no versions
+        and returns an empty list.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -1822,7 +1823,9 @@ paths:
           with `reason` `VERSION_ARCHIVED`, and it is unloaded from memory. The tables its own
           auto-runs built under `scope: version` are reclaimed in the background, with their run
           records; tables another version's run still references are kept, and so are an
-          orchestrated run's, whose names and lifetime the caller that assigned them owns. Its
+          orchestrated run's, whose names and lifetime the caller that assigned them owns. Each
+          table is tried once: one that cannot be dropped is left, and its run record goes all
+          the same. Its
           files stay on disk, so it can be unarchived. To remove them, delete the version with
           `DELETE .../versions/{version}`.
         - `unarchive` puts it back in service. It loads again on its next read, and serves live
@@ -1878,19 +1881,20 @@ paths:
       summary: Delete a version
       description: |
         Removes one version for good, where an archive only takes it out of service. The version
-        is unloaded from memory, the tables its own auto-runs built under `scope: version` are
-        dropped with their run records (the tables an archive reclaims, dropped here before the
-        response), and its row and its files are deleted. Other versions are untouched. It cannot
-        be undone, and it frees the version id: a later publish of the same version is a new
-        version, with whatever content it carries.
+        is unloaded from memory, and its row and its files are deleted; other versions are
+        untouched. Then, in the background, its builds still running are stopped and the tables
+        its own auto-runs built under `scope: version` are reclaimed with their run records, as an
+        archive reclaims them. Nothing is dropped before the delete commits, so a refused delete
+        changes nothing. It cannot be undone, and it frees the version id: a later publish of the
+        same version is a new version, with whatever content it carries.
 
         An archived version can be deleted too; that is how its files are reclaimed. Deleting the
         package's only version deletes the package with it (its row, run records and ledger), so
-        no package is left with no version.
+        no package is left with no version; while a publish of another version of the package is
+        running, the package is left to that publish.
 
-        A table that could not be dropped keeps a failed run record naming it, and the server
-        tries the drop again when it next starts. Tables another version's run still references
-        are kept, as are an orchestrated run's.
+        Each table is tried once: one that could not be dropped is left. Tables another run of the
+        package still references are kept, as are an orchestrated run's.
 
         A delete is refused with 409 when:
 
@@ -1898,9 +1902,7 @@ paths:
           `VERSION_IS_LATEST`): move `latest` first;
         - it is the package's last version in service and archived versions remain (`reason`
           `VERSION_IS_LAST_ACTIVE`): a package that has versions always keeps one in service.
-          Delete the archived versions first, or delete the package;
-        - a materialization of that version is running (`reason` `VERSION_BUILDING`): wait for
-          it, or stop it.
+          Delete the archived versions first, or delete the package.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"

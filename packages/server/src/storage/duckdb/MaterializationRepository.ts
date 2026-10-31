@@ -91,6 +91,15 @@ export class MaterializationRepository {
       return rows.map(mapRow);
    }
 
+   /** Every run of an environment, across its packages, newest first. */
+   async listByEnvironment(environmentId: string): Promise<Materialization[]> {
+      const rows = await this.db.all<Row>(
+         "SELECT * FROM materializations WHERE environment_id = ? ORDER BY created_at DESC",
+         [environmentId],
+      );
+      return rows.map(mapRow);
+   }
+
    /**
     * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
     * materialization for (env, package), or null if none. The standalone

@@ -5,9 +5,11 @@ SPDX-License-Identifier: MIT
 
 # Package versions
 
-With package versioning on, a package published from a location is a series of immutable versions, each numbered by the `version` in its own `publisher.json`. Every published version keeps serving the content it was published with. A request names the version it wants with `versionId`, and a request that names none is served from the package's `latest`. Publishing a version, moving `latest` back to roll back, and archiving a version nobody uses any more are all API calls. None of them edits a version's files.
+With package versioning on, a package published from a location is a series of immutable versions, each numbered by the `version` in its own `publisher.json`. Every published version keeps serving the content it was published with until it is deleted; a deleted version's id can be published again, with other content (see [Delete a version](#delete-a-version)). A request names the version it wants with `versionId`, and a request that names none is served from the package's `latest`. Publishing a version, moving `latest` back to roll back, and archiving a version nobody uses any more are all API calls. None of them edits a version's files.
 
-A package registered from a directory without a location, loaded from `publisher.config.json`, or published while versioning is off, has no versions. It is the single mutable slot it has always been, and nothing on this page applies to it.
+A package registered from a directory without a location, or published while versioning is off, has no versions. It is the single mutable slot it has always been, and nothing on this page applies to it.
+
+With versioning on, a package in `publisher.config.json` is published from its location as the version its `publisher.json` declares, exactly as `POST …/packages` with that location publishes it. The config is read on the server's first start and on every `--init`, so that is when it is published; a later start restores what was published. A configured package whose `publisher.json` declares no version, or that a publish would refuse, fails to load (its error is in `/status`), and the others still load. A watched environment (`--watch-env`) loads its packages in place, with no versions, as does a server with versioning off.
 
 ## Turn versioning on
 
@@ -124,18 +126,17 @@ An archive is refused with 409 when:
 
 ## Delete a version
 
-`DELETE …/versions/{version}` removes one version for good, where an archive only takes it out of service. The version is unloaded, the tables its own auto-runs built under `scope: "version"` are dropped with their runs (the tables an archive reclaims, dropped here before the response), and its row and its folder are deleted. The other versions are untouched. The response is the version as it was.
+`DELETE …/versions/{version}` removes one version for good, where an archive only takes it out of service. The version is unloaded, and its row and its folder are deleted; the other versions are untouched, and the response is the version as it was. Then, in the background, its builds still running are stopped and the tables its own auto-runs built under `scope: "version"` are reclaimed with their runs, as an archive reclaims them. Nothing is dropped before the delete has committed, so a refused delete changes nothing.
 
-- **It frees the version id.** A later publish of the same version is a new version, with whatever content it carries, where before the delete different content under that id was 409 `VERSION_CONFLICT`. A publish of the id that arrives during the delete waits for it.
+- **It frees the version id.** A later publish of the same version is a new version, with whatever content it carries, where before the delete different content under that id was 409 `VERSION_CONFLICT`. A publish of the id that arrives during the delete waits for it. Anything that names a version by its id (a page opened with `?versionId=`, a link to `/<env>/<pkg>/<version>/…`, a cache keyed by version) follows the id to the new content, so do not publish other content under an id something still names.
 - **An archived version can be deleted**, which is how its files are reclaimed.
-- **Deleting the package's only version deletes the package** with it: its row, its run records and its ledger, so no package is left with no version. That version's own tables are dropped first, as with any delete.
-- **What is kept**, as an archive keeps it: a table another version's run still references, an orchestrated run's tables, and everything under `scope: "package"`. A table that could not be dropped keeps a `FAILED` run naming it, and the server tries the drop again each time it starts.
+- **Deleting the package's only version deletes the package** with it: its row, its run records and its ledger, so no package is left with no version. While a publish of another version of the package is running, the package is left to that publish: deleted when it ends without a version, kept when it commits.
+- **What is kept**, as an archive keeps it: a table another run of the package still references, an orchestrated run's tables, and everything under `scope: "package"`. Each table is tried once: one that could not be dropped is named in a warning and left.
 
 A delete is refused with 409 when:
 
 - the version is the package's `latest` and other versions remain (`VERSION_IS_LATEST`). Move `latest` first;
-- it is the package's last version in service and archived versions remain (`VERSION_IS_LAST_ACTIVE`). Delete the archived versions first, or delete the package;
-- a materialization of that version is running (`VERSION_BUILDING`).
+- it is the package's last version in service and archived versions remain (`VERSION_IS_LAST_ACTIVE`). Delete the archived versions first, or delete the package.
 
 An unknown version is 404 `VERSION_NOT_FOUND`, and a malformed one 400 `VERSION_ID_INVALID`.
 
@@ -152,7 +153,7 @@ Who owns the tables a run builds is the package's materialization scope (`"mater
 
 **`scope: "version"`.** Each version builds into tables of its own: a self-assigned name gains the version's numbers and 8 hex of a hash of the environment, the package and the version (`order_summary__v1_2_0_3f9c2a1b`), so two packages at the same version never share a table and archiving one never drops the other's, skip-if-unchanged reuses only that version's earlier runs, and each version serves from its own tables, including after a restart. A long name is cut and given a short hash so its table segment stays within 50 characters, so a dialect that truncates identifiers (Postgres, at 63) never folds two versions into one table.
 
-Archiving the version reclaims the tables its auto-runs built, in the background, keeping any table another run still references, and deletes those runs. Deleting the version drops the same tables before it answers. A run whose table could not be dropped (an unreachable warehouse, say) is kept, marked `FAILED` and holding only the tables still owed; the reclaim is tried again at the next archive and every time the server starts, for an archived version and for a deleted one. A version's package-local `duckdb` is in memory, so its tables went with the unload and there is nothing to drop there.
+Archiving the version reclaims the tables its auto-runs built, in the background, keeping any table another run still references, and deletes those runs; deleting the version does the same once its row is gone. Each table is tried once: one that could not be dropped (an unreachable warehouse, say) is named in a warning and left, and its run is deleted all the same, so nothing is retried. A reclaim that never ran, because the server stopped first, is finished at the next start. A version's package-local `duckdb` is in memory, so its tables went with the unload and there is nothing to drop there. The hash keeps these tables apart within a server; two servers whose environments and packages have the same names must not point those packages at the same schema, where they would build, and reclaim, the same tables.
 
 **`scope: "package"` (the default).** The versions share the package's tables under their usual names.
 
@@ -188,7 +189,7 @@ Size the volume under `publisher_data/` for the retention you need, and keep lar
 ## Limits worth knowing
 
 - **Loaded versions.** A version is loaded when it is published, on its first read after a restart, or by the standalone scheduler when its schedule comes due, and stays loaded until it is archived or deleted, its package is deleted, or a rebind it cannot take unloads it, whether or not it is `latest` and whether or not anyone reads it. Nothing evicts one that is rarely read ([#1396](https://github.com/malloydata/publisher/issues/1396)). The only limit is the memory governor (see [configuration.md](configuration.md)), and it is not a per-version one: when it trips, it answers 503 to queries against every version, `latest` included, until memory is reclaimed.
-- **Each version keeps its own governance.** A version serves its own files, so its own `#(authorize)` gates, row filters and `index.malloy` curation. A gate or a hidden source added in a new version does not reach the older ones: a request that names an older version with `versionId` is answered under that version's rules until it is archived, and moving `latest` back rolls the rules back too. The MCP tools serve `latest`, except `execute_query`, which takes a `version` as the REST query route takes `versionId`. Archive a version whose rules must no longer apply.
+- **Each version keeps its own governance.** A version serves its own files, so its own `#(authorize)` gates, row filters and `index.malloy` curation. A gate or a hidden source added in a new version does not reach the older ones: a request that names an older version with `versionId` is answered under that version's rules until it is archived, and moving `latest` back rolls the rules back too. The MCP tools serve `latest` only. Archive a version whose rules must no longer apply.
 - **Symlinks in a published tree.** The content hash records a symlink's target text, not what it points at. A tree copied from a local directory has its relative symlinks rewritten as absolute ones pointing back into that directory, so content behind a link can change after publish without changing the hash. Do not publish trees that rely on symlinks.
 - **Legacy `/projects` routes** take `versionId` where they always declared it (a package, its models, a model, a query, notebooks and databases) and read it as the `/environments` routes do. Their connection, compile and materialization routes never declared it. Use the `/environments` routes, which take it everywhere.
 - **One process per store.** The checks that keep two runs from writing one table, and a run from overlapping an archive, are held in the server's memory. Run one publisher per `publisher.db`.

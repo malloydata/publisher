@@ -19,6 +19,19 @@ type Row = Record<string, unknown>;
 const KEY = "environment_id = ? AND package_name = ? AND version_id = ?";
 
 /**
+ * A run one version owns under `scope: version` (see isVersionOwnedRun),
+ * as SQL over a `materializations` row.
+ */
+const VERSION_OWNED_RUN =
+   "version IS NOT NULL AND coalesce(json_extract_string(metadata, '$.scope'), '') = 'version'";
+
+/**
+ * A version-owned auto-run: the runs whose tables a version's reclaim drops
+ * when it is archived or deleted.
+ */
+const OWED_RECLAIM_RUN = `${VERSION_OWNED_RUN} AND coalesce(json_extract_string(metadata, '$.mode'), '') = 'auto'`;
+
+/**
  * The `versions` registry: one row per published version, plus the package's
  * `latest` pointer on `packages.latest_version`.
  *
@@ -106,6 +119,15 @@ export class VersionRepository {
             }
             throw err;
          }
+         // A version id deleted and published again starts with none of the
+         // old one's own runs: their records go (their tables are left, and a
+         // build of the new content writes the same names over them), so the
+         // new version never lists or binds them, and no reclaim of the
+         // deleted version runs against the new one.
+         await tx.run(
+            `DELETE FROM materializations WHERE environment_id = ? AND package_name = ? AND version = ? AND ${VERSION_OWNED_RUN}`,
+            [environmentId, packageName, versionId],
+         );
          if (promoted) {
             await movePointer(
                tx,
@@ -210,15 +232,15 @@ export class VersionRepository {
     * Delete one version's row, in one transaction with the checks that guard
     * it: while other versions remain, neither the package's `latest`
     * (VERSION_IS_LATEST) nor its last version in service while archived ones
-    * remain (VERSION_IS_LAST_ACTIVE). Deleting the package's only version
-    * deletes the package with it, as deleting the package does: its row, its
-    * runs and its ledger, so no package is left with no version.
+    * remain (VERSION_IS_LAST_ACTIVE). `wasLast` says it was the package's
+    * only version; the package itself goes separately
+    * (deletePackageIfNoVersions), once no publish of it is in flight.
     */
    async delete(
       environmentId: string,
       packageName: string,
       versionId: string,
-   ): Promise<{ version: Version; packageRemoved: boolean }> {
+   ): Promise<{ version: Version; wasLast: boolean }> {
       return this.db.transaction(async (tx) => {
          const target = await tx.get<Row>(
             `SELECT * FROM versions WHERE ${KEY}`,
@@ -232,8 +254,8 @@ export class VersionRepository {
             "SELECT count(*) AS total, count(*) FILTER (WHERE archive_status = 'unarchive') AS active FROM versions WHERE environment_id = ? AND package_name = ?",
             [environmentId, packageName],
          );
-         const packageRemoved = Number(counts?.total ?? 0) <= 1;
-         if (!packageRemoved) {
+         const wasLast = Number(counts?.total ?? 0) <= 1;
+         if (!wasLast) {
             refuseVersionDelete(
                packageName,
                versionId,
@@ -247,22 +269,41 @@ export class VersionRepository {
             packageName,
             versionId,
          ]);
-         if (packageRemoved) {
-            const byPackage = "WHERE environment_id = ? AND package_name = ?";
-            await tx.run(`DELETE FROM incremental_ledger ${byPackage}`, [
-               environmentId,
-               packageName,
-            ]);
-            await tx.run(`DELETE FROM materializations ${byPackage}`, [
-               environmentId,
-               packageName,
-            ]);
-            await tx.run(
-               "DELETE FROM packages WHERE environment_id = ? AND name = ?",
-               [environmentId, packageName],
-            );
-         }
-         return { version: mapRow(target), packageRemoved };
+         return { version: mapRow(target), wasLast };
+      });
+   }
+
+   /**
+    * Delete a package left with no versions, as deleting the package does:
+    * its row, its ledger and its runs, so no package is left with no version.
+    * Kept: the runs of its deleted versions that own tables under
+    * `scope: version` (auto-runs), which those versions' reclaim drops and
+    * then deletes. False, and nothing deleted, when it has a version again.
+    */
+   async deletePackageIfNoVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<boolean> {
+      return this.db.transaction(async (tx) => {
+         const byPackage = "WHERE environment_id = ? AND package_name = ?";
+         const left = await tx.get<{ n: number | bigint }>(
+            `SELECT count(*) AS n FROM versions ${byPackage}`,
+            [environmentId, packageName],
+         );
+         if (Number(left?.n ?? 0) > 0) return false;
+         await tx.run(`DELETE FROM incremental_ledger ${byPackage}`, [
+            environmentId,
+            packageName,
+         ]);
+         await tx.run(
+            `DELETE FROM materializations ${byPackage} AND NOT (${OWED_RECLAIM_RUN})`,
+            [environmentId, packageName],
+         );
+         await tx.run(
+            "DELETE FROM packages WHERE environment_id = ? AND name = ?",
+            [environmentId, packageName],
+         );
+         return true;
       });
    }
 
