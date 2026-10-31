@@ -1662,7 +1662,7 @@ export class EnvironmentStore {
                const versionEntries =
                   (await this.environments
                      .get(environment.name ?? "")
-                     ?.listVersionEntries()) ?? new Map();
+                     ?.listVersionEntries(options)) ?? new Map();
                const packages =
                   versionEntries.size === 0
                      ? environment.packages

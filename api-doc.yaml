@@ -5203,6 +5203,10 @@ components:
             `loadingSince` is when the in-progress load began, so a caller can
             bound one that never completes. Which tables a serving copy answers
             from is a separate question, answered by `manifestBindingStatus`.
+            A publish of a package version is a load from its download until
+            it commits or fails; once its tree has named the version, a version
+            the package does not hold yet is listed as its own entry, with its
+            `versionId`, `loaded: false` and `loading`.
 
             A package that is loading for the first time, so is not yet
             serving, is listed only where a caller asks for it:

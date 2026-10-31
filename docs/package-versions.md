@@ -74,7 +74,7 @@ A query takes `versionId` in its body; one in the URL's query string is read too
 
 The package resource says which version answered: `versionId` is the version described, and `latestVersion` is the package's `latest`. A package listing names every package once, as its `latest`, and refuses a `versionId` other than empty or `latest` with 400.
 
-`GET /api/v0/status` lists every version each package holds, loaded or not, each with its `versionId`, `archiveStatus` and whether it is loaded, so a reconcile never mistakes a version that is not in memory for one that is missing. It also reports `packageVersioning` (`on` or `off`) and `versionPromotion`.
+`GET /api/v0/status` lists every version each package holds, loaded or not, each with its `versionId`, `archiveStatus` and whether it is loaded, so a reconcile never mistakes a version that is not in memory for one that is missing. A publish counts as a load from its download until it commits or fails, so `GET /api/v0/status?includeLoading=true` lists a version being published as `loading`, by its `versionId` once its tree has named it, before it has a row. It also reports `packageVersioning` (`on` or `off`) and `versionPromotion`.
 
 `GET …/packages/{pkg}/versions` lists the versions, highest first, each with its `latest` flag, `archiveStatus`, content hash, location, description, manifest binding and the times it was promoted to and demoted from `latest`. `GET …/versions/{version}` reads one.
 

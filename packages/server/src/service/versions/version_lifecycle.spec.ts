@@ -1036,3 +1036,72 @@ describe("the registry records requests read", () => {
       await expectReason(svc.getVersion(PKG, "latest"), "VERSION_ID_INVALID");
    });
 });
+
+describe("versions being published", () => {
+   it("are listed from staging until the publish settles, committed or refused", async () => {
+      const svc = service();
+      let release!: () => void;
+      heldLoads.set(
+         "1.0.0",
+         new Promise<void>((resolve) => {
+            release = resolve;
+         }),
+      );
+      const published = publish(svc, "1.0.0");
+      while (svc.publishingVersions().length === 0) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(svc.publishingVersions()).toEqual([
+         { packageName: PKG, versionId: "1.0.0", since: expect.any(Number) },
+      ]);
+      release();
+      await published;
+      expect(svc.publishingVersions()).toEqual([]);
+
+      failLoad.add("2.0.0");
+      await publish(svc, "2.0.0").catch(() => undefined);
+      expect(svc.publishingVersions()).toEqual([]);
+   });
+
+   it("run inside the host's trackPublish, download included", async () => {
+      const tracked: string[] = [];
+      const svc = new VersionService<Loaded>(
+         repo,
+         ENV_ID,
+         new VersionStore(envPath),
+         {
+            ...host(),
+            trackPublish: async (packageName, fn) => {
+               tracked.push(`start ${packageName}`);
+               try {
+                  return await fn();
+               } finally {
+                  tracked.push(`end ${packageName}`);
+               }
+            },
+            onVersionLoaded: (_pkg, loaded) =>
+               tracked.push(`served ${loaded.versionId}`),
+         },
+      );
+      const dir = path.join(root, "src", "1.0.0");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: PKG, version: "1.0.0" }),
+      );
+      await svc.publish(
+         PKG,
+         async (staging) => {
+            tracked.push("download");
+            await fs.promises.cp(dir, staging, { recursive: true });
+         },
+         { sourceLocation: dir, promotion: "on-publish" },
+      );
+      expect(tracked).toEqual([
+         `start ${PKG}`,
+         "download",
+         "served 1.0.0",
+         `end ${PKG}`,
+      ]);
+   });
+});

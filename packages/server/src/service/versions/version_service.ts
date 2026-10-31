@@ -64,6 +64,13 @@ export interface VersionHost<P> {
    ): (stagingPath: string) => Promise<void>;
    /** Refuse new work under memory pressure (503). */
    admit(packageName: string, reason: string): void;
+   /**
+    * Run `fn`, one whole publish, with the package reported as loading: from
+    * the download until it settles or rolls back, as an install is. A read
+    * that finds the publish between its compile and its commit then sees a
+    * load in flight, rather than a package nothing says is still coming.
+    */
+   trackPublish?<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
    /** Run `fn` holding the package's lock (the one unversioned reads take). */
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
    /**
@@ -454,9 +461,33 @@ export class VersionService<P = unknown> {
       assertSafePackageName(packageName);
       await this.refuseWatchMounted(packageName);
       host.admit(packageName, "publish a package version");
-      return this.publishStagedVersion(
-         await store.stage(packageName, downloader),
-         options,
+      const publish = async () =>
+         this.publishStagedVersion(
+            await store.stage(packageName, downloader),
+            options,
+         );
+      return host.trackPublish
+         ? host.trackPublish(packageName, publish)
+         : publish();
+   }
+
+   /**
+    * The versions being published now, each with when its publish began:
+    * from the moment the staged tree names its version until the publish
+    * settles. A version new to the package has no row until its commit, so
+    * this is the only place a status read can see it loading.
+    */
+   publishingVersions(): {
+      packageName: string;
+      versionId: string;
+      since: number;
+   }[] {
+      return [...this.versionsPublishing.values()].map(
+         ({ packageName, versionId, since }) => ({
+            packageName,
+            versionId,
+            since,
+         }),
       );
    }
 
@@ -475,6 +506,14 @@ export class VersionService<P = unknown> {
          packageName,
          (this.publishesInFlight.get(packageName) ?? 0) + 1,
       );
+      const publishingKey = `${packageName}@${staged.versionId}`;
+      const publishing = this.versionsPublishing.get(publishingKey);
+      this.versionsPublishing.set(publishingKey, {
+         packageName,
+         versionId: staged.versionId,
+         since: publishing?.since ?? Date.now(),
+         count: (publishing?.count ?? 0) + 1,
+      });
       try {
          await this.refuseWatchMounted(packageName);
          if (await this.isVersioned(packageName)) {
@@ -486,6 +525,14 @@ export class VersionService<P = unknown> {
             ),
          );
       } finally {
+         // Committed or rolled back: a committed version is listed from its
+         // row from here on.
+         const entry = this.versionsPublishing.get(publishingKey);
+         if (entry !== undefined && entry.count > 1) {
+            entry.count -= 1;
+         } else {
+            this.versionsPublishing.delete(publishingKey);
+         }
          // Placed trees were renamed away; this only removes one that was not.
          // Never allowed to replace the publish's own error.
          await store.discard(staged).catch((error) =>
@@ -1096,6 +1143,11 @@ export class VersionService<P = unknown> {
 
    /** Publishes of each package running now, past their first step. */
    private readonly publishesInFlight = new Map<string, number>();
+   /** The same publishes by `package@version` (see publishingVersions). */
+   private readonly versionsPublishing = new Map<
+      string,
+      { packageName: string; versionId: string; since: number; count: number }
+   >();
    /** Packages whose last version was deleted while a publish of them ran. */
    private readonly packagesToRemove = new Set<string>();
 
