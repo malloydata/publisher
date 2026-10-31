@@ -151,7 +151,9 @@ describe("the search engine", () => {
       expect(connect.clusters[0].peers.length).toBeGreaterThan(1);
       expect(DEFAULT_FCJ_SETTINGS).toMatchObject({
          connect: "list",
-         listUnion: 10,
+         listTopK: 30,
+         listUnion: 30,
+         dropRoutesAt: 4,
          readingsRule: true,
       });
    });

@@ -64,19 +64,19 @@ describe("publisher.json retrieval block", () => {
          contenderShare: 0,
          collapseCopies: false,
          connect: "list",
-         listTopK: 15,
+         listTopK: 30,
          questionsPrompt: "questions",
          questionsPerNode: 3,
          alsoLikely: "auto",
          alsoLikelyTwins: 2,
          joinedCopies: "indexed",
          listRoutes: 3,
-         dropRoutesAt: 3,
+         dropRoutesAt: 4,
          unservedCopies: 3,
          splitBundles: false,
          splitItemPicks: 0,
          dateRange: false,
-         listUnion: 10,
+         listUnion: 30,
          readingsRule: true,
          twinRule: false,
          judgeLlm: null,
@@ -153,8 +153,8 @@ describe("publisher.json retrieval block", () => {
       );
    });
 
-   it("reads dropRoutesAt from 0 to 20, 3 by default, and rejects anything else with a fix", () => {
-      expect(DEFAULT_FCJ_SETTINGS.dropRoutesAt).toBe(3);
+   it("reads dropRoutesAt from 0 to 20, 4 by default, and rejects anything else with a fix", () => {
+      expect(DEFAULT_FCJ_SETTINGS.dropRoutesAt).toBe(4);
       expect(parsePackageRetrieval({ fcj: { dropRoutesAt: 0 } }).fcj).toEqual({
          ...DEFAULT_FCJ_SETTINGS,
          dropRoutesAt: 0,
@@ -165,12 +165,12 @@ describe("publisher.json retrieval block", () => {
       expect(() =>
          parsePackageRetrieval({ fcj: { dropRoutesAt: 21 } }),
       ).toThrow(
-         'Invalid publisher.json retrieval.fcj.dropRoutesAt: expected an integer from 0 to 20, got 21. Fix: "dropRoutesAt": 3',
+         'Invalid publisher.json retrieval.fcj.dropRoutesAt: expected an integer from 0 to 20, got 21. Fix: "dropRoutesAt": 4',
       );
       expect(() =>
          parsePackageRetrieval({ fcj: { dropRoutesAt: 2.5 } }),
       ).toThrow(
-         'Invalid publisher.json retrieval.fcj.dropRoutesAt: expected an integer from 0 to 20, got 2.5. Fix: "dropRoutesAt": 3',
+         'Invalid publisher.json retrieval.fcj.dropRoutesAt: expected an integer from 0 to 20, got 2.5. Fix: "dropRoutesAt": 4',
       );
    });
 
@@ -219,7 +219,7 @@ describe("publisher.json retrieval block", () => {
          'Invalid publisher.json retrieval.fcj.connect: expected one of clusters, list, got "tree". Fix: "connect": "clusters" (source groups) or "list" (the find stage\'s top listTopK per target).',
       );
       expect(() => parsePackageRetrieval({ fcj: { listTopK: 0 } })).toThrow(
-         'Invalid publisher.json retrieval.fcj.listTopK: expected an integer from 1 to 500, got 0. Fix: "listTopK": 15',
+         'Invalid publisher.json retrieval.fcj.listTopK: expected an integer from 1 to 500, got 0. Fix: "listTopK": 30',
       );
    });
 

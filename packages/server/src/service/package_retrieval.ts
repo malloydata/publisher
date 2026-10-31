@@ -147,7 +147,7 @@ export interface FcjSettings {
     * the judge picks inside each.
     */
    connect: FcjConnect;
-   /** With `connect: "list"`: find-stage candidates per target the judge sees. */
+   /** 30 by default. With `connect: "list"`: find-stage candidates per target the judge sees. */
    listTopK: number;
    /**
     * PROVISIONAL, `questions` by default. Which wording of prompts/questions.ts
@@ -191,7 +191,7 @@ export interface FcjSettings {
     */
    listRoutes: number;
    /**
-    * PROVISIONAL, 3 by default; read with `listRoutes` above 0. After the
+    * PROVISIONAL, 4 by default; read with `listRoutes` above 0. After the
     * judge, when one target's picks hold this many routes or more beside
     * their own fields (the field and a route to it both picked), those routes
     * are dropped and the fields kept. A route picked in place of its field is
@@ -238,7 +238,7 @@ export interface FcjSettings {
     */
    dateRange: boolean;
    /**
-    * 10 by default; read with `connect: "list"`. Above 0, the judge's list per
+    * 30 by default; read with `connect: "list"`. Above 0, the judge's list per
     * target is the fused top `listTopK` plus any find candidate ranked this
     * high or better in the meaning list or the keyword list alone. Such a
     * candidate is marked `union` in the connect trace. 0 uses the fused top
@@ -315,19 +315,19 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    contenderShare: 0,
    collapseCopies: false,
    connect: "list",
-   listTopK: 15,
+   listTopK: 30,
    questionsPrompt: "questions",
    questionsPerNode: DEFAULT_QUESTIONS_PER_NODE,
    alsoLikely: "auto",
    alsoLikelyTwins: 2,
    joinedCopies: "indexed",
    listRoutes: 3,
-   dropRoutesAt: 3,
+   dropRoutesAt: 4,
    unservedCopies: 3,
    splitBundles: false,
    splitItemPicks: 0,
    dateRange: false,
-   listUnion: 10,
+   listUnion: 30,
    readingsRule: true,
    twinRule: false,
    judgeLlm: null,
