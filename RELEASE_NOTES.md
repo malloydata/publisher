@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — A DuckLake storage credential reaches only its catalog's data path
+## [0.10.5] — A DuckLake storage credential reaches only its catalog's data path
 
 Every DuckLake storage secret (an S3 key, an S3 `credential_chain`, a GCS key) is now created with a `SCOPE` of the catalog's data path: the configured `storage.bucketUrl`, or, when the config leaves it out, the path the catalog recorded at its creation. A `managed: true` connection attached read-only is scoped to its `main` schema's recorded path. On S3, DuckDB's fallback to a key seeded from the host's `AWS_*` environment is turned off on the connection's DuckDB instance. Before, the secret reached the whole bucket, so raw SQL carried into a storage destination's session could read another prefix with the destination's credential. See [docs/ducklake.md](docs/ducklake.md#what-the-storage-credential-reaches).
 
