@@ -672,8 +672,8 @@ describe("reclaiming an archived version's tables", () => {
       try {
          await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
          await Promise.all(reclaims);
-         const left = warn.mock.calls.filter(([message]) =>
-            String(message).includes("could not drop"),
+         const left = (warn.mock.calls as unknown as unknown[][]).filter(
+            ([message]) => String(message).includes("could not drop"),
          );
          expect(left).toHaveLength(1);
          expect(JSON.stringify(left[0][1])).toContain(TABLE_V1);
