@@ -429,6 +429,7 @@ export class Package {
          description: a.description,
          model: a.model,
          schedules: a.schedules.map(({ cron, task }) => ({ cron, task })),
+         ...(a.budget && { budget: a.budget }),
       }));
    }
 
