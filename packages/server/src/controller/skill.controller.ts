@@ -102,7 +102,7 @@ export class SkillController {
       };
    }
 
-   /** Name, description, model and schedules of every agent the package serves. */
+   /** Name, description, model, schedules and budget of every agent the package serves. */
    public async listAgents(
       environmentName: string,
       packageName: string,
