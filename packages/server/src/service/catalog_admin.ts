@@ -889,8 +889,10 @@ export class CatalogAdmin {
       if (/must sit under the catalog's data path/.test(safe)) {
          return new CatalogAdminError(400, "OBJECT_OUTSIDE_DATA_PATH", safe);
       }
-      // A request the load path refused (a reader option it cannot use):
-      // a 400 with a reason, like every other admin refusal.
+      // A request the load path refused -- a reader option it cannot use, or a
+      // file the reader refused (not the format it claims, a value it cannot
+      // convert; storage_table_load.ts's readerRefusal): a 400 with a reason,
+      // like every other admin refusal.
       if (error instanceof BadRequestError) {
          return new CatalogAdminError(400, "INVALID_REQUEST", safe);
       }

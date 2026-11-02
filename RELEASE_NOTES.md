@@ -53,7 +53,7 @@ A package registered from a directory with no `location`, or published while ver
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
-## [Unreleased] — A DuckLake storage credential reaches only its catalog's data path
+## [0.10.5] — A DuckLake storage credential reaches only its catalog's data path
 
 Every DuckLake storage secret (an S3 key, an S3 `credential_chain`, a GCS key) is now created with a `SCOPE` of the catalog's data path: the configured `storage.bucketUrl`, or, when the config leaves it out, the path the catalog recorded at its creation. A `managed: true` connection attached read-only is scoped to its `main` schema's recorded path. On S3, DuckDB's fallback to a key seeded from the host's `AWS_*` environment is turned off on the connection's DuckDB instance. Before, the secret reached the whole bucket, so raw SQL carried into a storage destination's session could read another prefix with the destination's credential. See [docs/ducklake.md](docs/ducklake.md#what-the-storage-credential-reaches).
 
@@ -91,6 +91,19 @@ Clicking a value in a dashboard, a report or a notebook cell now always opens a 
 - **Download CSV.** The rows dialog's title row has a button that runs the same query with no `limit:`, so only the server's row cap bounds the file. When the file reaches that cap, its name and tooltip say so.
 
 For SDK hosts: `DashboardView` and `Report` take a new `rowsActions` prop that draws your own actions (an export, a download) in the rows dialog in place of Download CSV; it receives the unlimited query, the givens and a file name. `DownloadRowsCsv` is exported for hosts that want it beside their own. `useDrill`'s `selfLabel` option is removed: every `to=self` entry reads `Filter to <Field>: <value>`.
+
+## [0.10.7] — A same-catalog build of a source that uses built-in functions is no longer refused as author SQL
+
+A `storage=` build of a source that reads the destination catalog's own tables, a pre-aggregate rollup included, was refused with "carries SQL its author wrote" whenever the source used a built-in function (`round`, `nullif`, and others): a function call carries its overload's per-dialect SQL template in the compiled definition, and the author-SQL check walked into it. The check now skips a call's definition and keeps checking its arguments, so an `.sql()` source, a `sql_*` expression (including one passed to a built-in) and a table read from a file or URL are still refused. The refusal's advice no longer suggests dropping `storage=`, which does not help when the source's own connection is the catalog.
+
+## [0.10.7] — A file the admin table load's reader refuses answers 400, not 500
+
+`POST .../tables/{table}/load` on the admin API answered a file DuckDB's reader refused — bytes that are not the format they claim, a value a column's type cannot hold — with `500 Internal server error.`, and the reason reached only the server log. A client that retries 5xx retried the same bytes to the same end.
+
+Now that failure is `400 INVALID_REQUEST` carrying the reader's own words, which name the fix (`Invalid Input Error: No magic bytes found at end of file 'broken.parquet'`; `Conversion Error: CSV Error on Line: 3 … Could not convert string "N/A" to 'DOUBLE'`). The object is named by its file name rather than its staging path, and the SQL DuckDB echoes is dropped. The original, path and SQL included, is logged at `warn`.
+
+Only the reader's statement is classified. A storage or catalog failure (`IO Error`, a flush after the table is written) is still a 500. **If a client retries a load on 5xx**, it now stops on a bad file; a 400 here means the file, not the server, has to change.
+
 ## [0.10.0] — Malloy 0.0.436: time-zone reads, refinements that keep their ordering, and booleans on SQL Server
 
 Publisher now builds on `@malloydata/*` 0.0.436, up from 0.0.435. The changes that reach a running server:

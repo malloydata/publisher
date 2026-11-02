@@ -234,7 +234,10 @@ paths:
         the bytes are rewritten as the catalog's own Parquet, never registered
         in place and never left as rows in the catalog database, so an
         encrypted catalog stays encrypted. One DuckLake transaction:
-        a reader sees the old table or the new one. `201` when the table is new,
+        a reader sees the old table or the new one. A file the reader refuses
+        (not the format it claims, a value it cannot convert) is `400
+        INVALID_REQUEST` carrying the reader's own message, with the object
+        named by its file name. `201` when the table is new,
         `200` when it replaced one; with `If-None-Match: *` an existing table is
         refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
         is written.
