@@ -59,6 +59,8 @@ export class PackageRepository {
       return {
          id,
          ...pkg,
+         // Not written above: only the version calls move the pointer.
+         latestVersion: null,
          createdAt: now,
          updatedAt: now,
       };
@@ -104,5 +106,6 @@ function mapToPackage(row: Row): Package {
       manifestPath: row.manifest_path as string,
       metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
       ...rowTimestamps(row),
+      latestVersion: (row.latest_version as string | null) ?? null,
    };
 }

@@ -19,6 +19,7 @@ import {
    NotQueryableError,
    OffSurfaceError,
    PackageManifestError,
+   PackageVersionError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ResponseUnserializableError,
@@ -72,6 +73,18 @@ export function classifyToolError(
          suggestions: [
             "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
             "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof PackageVersionError) {
+      // A package-version refusal (an unknown, archived or malformed version,
+      // or no `latest` yet). Not transient and not the model's fault; the
+      // message says which, and what to name instead.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient: retrying fails the same way until the package's versions change.",
+            "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it.",
          ],
       } satisfies ErrorDetails;
    }
@@ -229,6 +242,7 @@ export async function getModelForQuery(
       );
       // Shed load before any disk / DB work, as the HTTP query controllers do.
       environment.assertCanAdmitQuery();
+      // The MCP tools serve the package's `latest`.
       const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
       if (!model || model.getType() === "notebook") {
@@ -251,6 +265,14 @@ export async function getModelForQuery(
       } else if (error instanceof PackageNotFoundError) {
          errorDetails = getNotFoundError(
             `package '${packageName}' in environment '${environmentName}'`,
+         );
+      } else if (error instanceof PackageVersionError) {
+         // A package with versions and no `latest` yet: its own message, not
+         // an internal error.
+         errorDetails = classifyToolError(
+            "executeQuery (load model)",
+            `package '${packageName}' in environment '${environmentName}'`,
+            error,
          );
       } else if (error instanceof ModelNotFoundError) {
          errorDetails = getNotFoundError(

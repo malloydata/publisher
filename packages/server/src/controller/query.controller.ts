@@ -43,7 +43,7 @@ export class QueryController {
       metadata?: {
          queryMetadata?: unknown;
          queryClass?: unknown;
-         versionId?: string;
+         versionId?: unknown;
       },
       /**
        * Skip `#(authorize)` gates for this request. Set from the
@@ -73,7 +73,9 @@ export class QueryController {
       // through a query. Loaded packages bypass the package-load admission
       // gate, so this is the only guard for query traffic on a hot pod.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: metadata?.versionId,
+      });
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -106,8 +108,10 @@ export class QueryController {
                      pkg: p,
                      request: requestMetadata,
                      queryClass,
-                     // Always undefined: the route 501s any versionId first.
-                     version: metadata?.versionId,
+                     // The version that answered (latest when none was
+                     // named), not the raw request value; undefined for a
+                     // package with no versions.
+                     version: p.getVersionId(),
                      noLayersLogMessage:
                         "No query-metadata layers for connection",
                   }),
