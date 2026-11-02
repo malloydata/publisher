@@ -9,12 +9,23 @@
  * The page opens at once and is never mounted twice for the move, so nothing
  * it asked for is asked again.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, mock } from "bun:test";
 import { Suspense, useEffect } from "react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import {
+   MemoryRouter,
+   Route,
+   Routes,
+   useLocation,
+   useNavigate,
+} from "react-router-dom";
 
-let listing: { versions: { id: string }[]; isPending: boolean };
+let listing: {
+   versions: { id: string }[];
+   isPending: boolean;
+   isError?: boolean;
+   refetch?: () => void;
+};
 let modelMounts = 0;
 
 const sdk = await import("@malloy-publisher/sdk");
@@ -37,11 +48,17 @@ const { default: PackageSplatRoute } = await import("./PackageSplatRoute");
 
 function Where() {
    const { pathname, search } = useLocation();
-   return <div data-testid="where">{`${pathname}${search}`}</div>;
+   const navigate = useNavigate();
+   return (
+      <>
+         <div data-testid="where">{`${pathname}${search}`}</div>
+         <button onClick={() => navigate(-1)}>back</button>
+      </>
+   );
 }
 
-const tree = (url: string) => (
-   <MemoryRouter initialEntries={[url]}>
+const tree = (url: string, before: string[] = []) => (
+   <MemoryRouter initialEntries={[...before, url]}>
       <Routes>
          <Route
             path="/:environmentName/:packageName/*"
@@ -52,6 +69,8 @@ const tree = (url: string) => (
                </Suspense>
             }
          />
+         {/* Anywhere outside a package, to say where Back went. */}
+         <Route path="*" element={<Where />} />
       </Routes>
    </MemoryRouter>
 );
@@ -59,10 +78,13 @@ const tree = (url: string) => (
 const VERSIONED = { versions: [{ id: "1.0.0" }], isPending: false };
 const UNVERSIONED = { versions: [], isPending: false };
 const PENDING = { versions: [], isPending: true };
+const refetch = mock(() => {});
+const FAILED = { versions: [], isPending: false, isError: true, refetch };
 
 beforeEach(() => {
    listing = VERSIONED;
    modelMounts = 0;
+   refetch.mockClear();
 });
 
 it("moves a versioned package's path with no version to latest's", async () => {
@@ -121,4 +143,41 @@ it("waits on a version-shaped first segment until the listing says what it is", 
    listing = PENDING;
    render(tree("/demo/auto_recalls/1.0.0/index.malloy"));
    expect(screen.queryByTestId("page")).toBeNull();
+});
+
+it("replaces the versionless address on the move to latest, so Back leaves the package", async () => {
+   render(tree("/demo/auto_recalls/index.malloy", ["/elsewhere"]));
+   expect(
+      (await screen.findByText("/demo/auto_recalls/latest/index.malloy"))
+         .textContent,
+   ).toBe("/demo/auto_recalls/latest/index.malloy");
+   fireEvent.click(screen.getByRole("button", { name: "back" }));
+   expect((await screen.findByText("/elsewhere")).textContent).toBe(
+      "/elsewhere",
+   );
+});
+
+it.each([
+   ["latest", "/demo/plain/latest/q.malloy"],
+   ["a version", "/demo/plain/1.0.0/r.malloy"],
+])(
+   "opens a folder named like %s in a package with no versions by its path",
+   async (_, url) => {
+      listing = UNVERSIONED;
+      render(tree(url));
+      expect((await screen.findByTestId("page")).textContent).toBe("model");
+      expect(screen.getByTestId("where").textContent).toBe(url);
+   },
+);
+
+it("opens nothing at a version-shaped address when the listing failed, and offers a retry", async () => {
+   listing = FAILED;
+   render(tree("/demo/auto_recalls/1.0.0/top.malloy"));
+   expect(
+      await screen.findByText(/Could not read this package's versions/),
+   ).toBeDefined();
+   // Neither the model at `1.0.0/top.malloy` nor the package page.
+   expect(screen.queryByTestId("page")).toBeNull();
+   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+   expect(refetch).toHaveBeenCalledTimes(1);
 });

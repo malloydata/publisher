@@ -20,6 +20,7 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   noVersions,
 } from "../../../test/serverProvider";
 import {
    DocumentNotFoundError,
@@ -66,8 +67,11 @@ const updateModelSource = mock((_env: string, _pkg: string, path: string) =>
 
 // Mutated per test: the stub hands the same object to every render.
 const context: Record<string, unknown> = { mutable: true };
+/** How the versions listing answers: a package with none (404) unless a test says otherwise. */
+let listVersions: () => Promise<unknown> = noVersions.listPackageVersions;
 mockServerProvider(
    {
+      versions: { listPackageVersions: () => listVersions() },
       packages: { getPackage: pending },
       reports: { listReports, getReport: pending },
       models: { listModels, getModel, updateModelSource },
@@ -146,6 +150,7 @@ const NEW = { name: "Add report" } as const;
 beforeEach(() => {
    clearCache();
    context.mutable = true;
+   listVersions = noVersions.listPackageVersions;
    for (const fn of [
       listModels,
       listReports,
@@ -239,6 +244,33 @@ describe("who is offered New", () => {
       await settled();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(screen.queryByRole("button", NEW)).toBeNull();
+   });
+
+   it("nothing while the versions listing is unanswered: a package with versions takes no writes", async () => {
+      listVersions = pending;
+      mount();
+      await settled();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(screen.queryByRole("button", NEW)).toBeNull();
+   });
+
+   it("nothing when the versions listing failed, which the page says, with a retry", async () => {
+      listVersions = () =>
+         Promise.reject(
+            Object.assign(new Error("Request failed with status code 500"), {
+               response: { status: 500, data: { message: "boom" } },
+            }),
+         );
+      mount();
+      expect(
+         await screen.findByText(/Could not read this package's versions/),
+      ).toBeDefined();
+      await settled();
+      expect(screen.queryByRole("button", NEW)).toBeNull();
+      // Once the listing answers, the package's writes are offered again.
+      listVersions = noVersions.listPackageVersions;
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findAllByRole("button", NEW)).toHaveLength(1);
    });
 
    it("nothing while the host's workspaces are still being listed, and nothing when they cannot be", async () => {

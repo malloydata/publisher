@@ -17,6 +17,7 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   noVersions,
 } from "../../../test/serverProvider";
 
 const listReports = mock(
@@ -29,6 +30,7 @@ const listDataApps = mock(
 );
 
 mockServerProvider({
+   versions: noVersions,
    packages: { getPackage: pending },
    models: { listModels: pending },
    databases: { listDatabases: pending },

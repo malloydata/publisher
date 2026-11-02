@@ -95,6 +95,7 @@ jobs:
       # its webServer, polls /api/v0/status in global-setup until the publisher
       # reaches operationalState=serving, then runs the suite.
       - name: Run Playwright suite
+        id: suite
         working-directory: packages/app
         run: bunx playwright test --config=playwright.config.ts
         env:
@@ -122,9 +123,12 @@ jobs:
       # against a server of its own with versioning on: the playwright.config.ts
       # webServer inherits this step's environment, and the server the step
       # above started has stopped with it. EXPECT_PACKAGE_VERSIONING makes the
-      # spec fail rather than skip if the server reports versioning off.
+      # spec fail rather than skip if the server reports versioning off. It
+      # runs whenever the suite above ran, passed or failed, so a failure
+      # there never hides one here; not when setup failed before either.
       - name: Run the package-versions spec with versioning on
         id: package-versions
+        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
         working-directory: packages/app
         run: bunx playwright test --config=playwright.config.ts --output=test-results-versions tests/playwright/package-versions.spec.ts
         env:

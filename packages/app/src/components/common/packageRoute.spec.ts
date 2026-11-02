@@ -75,10 +75,18 @@ describe("package routes with a version segment", () => {
       expect(withVersionSegment("/e/p", "e", "p", "1.0.0")).toBe("/e/p/1.0.0");
    });
 
-   it("leaves links that already carry a version, or point elsewhere, alone", () => {
-      expect(withVersionSegment("/e/p/2.0.0/q3", "e", "p", "1.0.0")).toBe(
-         "/e/p/2.0.0/q3",
-      );
+   it("gives a folder named like a version the version on screen too", () => {
+      // No link a caller builds carries a version, so a version-shaped first
+      // segment is a folder of the package.
+      expect(
+         withVersionSegment("/e/p/latest/q.malloy", "e", "p", "1.0.0"),
+      ).toBe("/e/p/1.0.0/latest/q.malloy");
+      expect(
+         withVersionSegment("/e/p/2024.01.01/r.malloy", "e", "p", "1.0.0"),
+      ).toBe("/e/p/1.0.0/2024.01.01/r.malloy");
+   });
+
+   it("leaves links that point elsewhere, or with no version on screen, alone", () => {
       expect(withVersionSegment("/e/other/q3", "e", "p", "1.0.0")).toBe(
          "/e/other/q3",
       );

@@ -32,9 +32,10 @@ const MATERIALIZATION_POLL_MS = 3000;
 interface MaterializationsProps {
    resourceUri: string;
    /**
-    * The package has published versions. A version's scope and schedule come
-    * from its own publisher.json, which never changes, so the scope and
-    * schedule controls are not offered; a new build still is.
+    * The package has published versions, or whether it has is not known yet.
+    * A version's scope and schedule come from its own publisher.json, which
+    * never changes, so the scope and schedule controls are not offered; a new
+    * build still is.
     */
    versioned?: boolean;
 }

@@ -76,8 +76,10 @@ async function shot(page: Page, name: string) {
    }
 }
 
+// Named by the version it shows ("Version v1.1.0, change version"), or
+// "Select a version" when none is on screen.
 const versionSwitch = (page: Page) =>
-   page.getByRole("button", { name: "Select package version" });
+   page.getByRole("button", { name: /change version$|^Select a version$/ });
 const versionRow = (page: Page, id: string) =>
    page
       .getByRole("menu", { name: `Versions of ${PKG}` })
@@ -345,17 +347,23 @@ test.describe("package versions — the version switch", () => {
          .getByRole("button", { name: "More actions for version 1.0.0" })
          .click();
       await page.getByRole("menuitem", { name: "Archive" }).click();
+      // Archive confirms first, saying what it drops.
+      const dialog = page.getByRole("dialog", { name: "Archive v1.0.0" });
+      await expect(dialog).toContainText("Tables built for this version alone");
+      await dialog.getByRole("button", { name: "Archive" }).click();
+      await expect(dialog).toBeHidden();
+      await openVersions(page);
       await expect(versionRow(page, "1.0.0")).toContainText("Archived");
       await shot(page, "08-archived-1.0.0");
 
-      // An archived version is listed but cannot be opened.
+      // An archived version is listed but cannot be opened: choosing it
+      // offers its actions instead.
       await versionRow(page, "1.0.0").click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/latest$`));
-
       await page
-         .getByRole("button", { name: "More actions for version 1.0.0" })
+         .getByRole("menu", { name: "Actions for version 1.0.0" })
+         .getByRole("menuitem", { name: "Unarchive" })
          .click();
-      await page.getByRole("menuitem", { name: "Unarchive" }).click();
       await expect(versionRow(page, "1.0.0")).not.toContainText("Archived");
       await versionRow(page, "1.0.0").click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/1\\.0\\.0$`));
@@ -379,7 +387,8 @@ test.describe("package versions — the version switch", () => {
       await shot(page, "09-delete-version-dialog");
       await dialog.getByRole("button", { name: "Delete version" }).click();
       await expect(dialog).toBeHidden();
-      await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/1\\.1\\.0$`));
+      // The deleted version's address is replaced by latest's.
+      await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/latest$`));
       await expect(versionSwitch(page)).toHaveText("v1.1.0");
       await openVersions(page);
       await expect(versionRow(page, "1.0.0")).toHaveCount(0);

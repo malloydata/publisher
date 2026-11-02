@@ -5,12 +5,16 @@
 /**
  * Seed a running Publisher with two versioned packages and materialize them.
  *
- *   node scripts/seed-package-versions.mjs [--base http://localhost:4000] [--env demo]
+ *   node scripts/seed-package-versions.mjs [--base http://localhost:4000] [--env demo] [--reset]
  *
  * The server must publish versions: start it with
  * `PUBLISHER_PACKAGE_VERSIONING=on` (promotion `on-publish`, the default).
+ * It must be on this machine (`--base` a loopback address): the script
+ * deletes and recreates an environment.
  *
- * It (re)creates the environment, so it can be run again, then publishes:
+ * It (re)creates the environment, so it can be run again. An environment
+ * that already holds packages is refused unless `--reset` says to delete it.
+ * Then it publishes:
  *
  *   sales      scope: package  1.0.0  order_summary
  *                              1.1.0  order_summary, region_summary
@@ -33,8 +37,26 @@ const option = (name, fallback) => {
    const at = args.indexOf(`--${name}`);
    return at === -1 ? fallback : args[at + 1];
 };
-const BASE = `${option("base", "http://localhost:4000").replace(/\/$/, "")}/api/v0`;
+const BASE_URL = option("base", "http://localhost:4000").replace(/\/$/, "");
+const BASE = `${BASE_URL}/api/v0`;
 const ENV = option("env", "demo");
+const RESET = args.includes("--reset");
+
+/** Whether `--base` names this machine: the script deletes an environment there. */
+function isLoopback(base) {
+   let host;
+   try {
+      host = new URL(base).hostname;
+   } catch {
+      return false;
+   }
+   return (
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host === "[::1]" ||
+      /^127(\.\d{1,3}){3}$/.test(host)
+   );
+}
 
 const ORDERS_CSV = `id,category,region,amount
 1,books,west,12.5
@@ -198,6 +220,12 @@ async function materialize(pkg, version) {
 }
 
 async function main() {
+   if (!isLoopback(BASE_URL)) {
+      console.error(
+         `${BASE_URL} is not on this machine; the script deletes and recreates an environment, so --base must be a loopback address.`,
+      );
+      process.exit(1);
+   }
    const status = await waitForServing();
    if (status.packageVersioning !== "on") {
       console.error(
@@ -206,7 +234,15 @@ async function main() {
       process.exit(1);
    }
 
-   // Start clean, so the script can run again.
+   // Start clean, so the script can run again, but never over packages it
+   // was not told it may delete.
+   const existing = await call("GET", `/environments/${ENV}/packages`);
+   if (existing.ok && Array.isArray(existing.json) && existing.json.length > 0 && !RESET) {
+      console.error(
+         `environment ${ENV} already has packages (${existing.json.map((p) => p.name).join(", ")}); pass --reset to delete it, or --env to use another.`,
+      );
+      process.exit(1);
+   }
    await call("DELETE", `/environments/${ENV}`);
    const env = await call("POST", "/environments", { name: ENV, packages: [], connections: [] });
    if (!env.ok) throw new Error(`create environment ${ENV}: ${env.status} ${JSON.stringify(env.json)}`);
@@ -214,10 +250,17 @@ async function main() {
 
    for (const pkg of PACKAGES) {
       for (const entry of pkg.versions) {
-         const published = await call("POST", `/environments/${ENV}/packages`, {
-            name: pkg.name,
-            location: writeVersion(pkg, entry),
-         });
+         const location = writeVersion(pkg, entry);
+         let published;
+         try {
+            published = await call("POST", `/environments/${ENV}/packages`, {
+               name: pkg.name,
+               location,
+            });
+         } finally {
+            // The server stages its own copy; this one is no longer needed.
+            fs.rmSync(location, { recursive: true, force: true });
+         }
          if (!published.ok) {
             throw new Error(
                `publish ${pkg.name} ${entry.version}: ${published.status} ${JSON.stringify(published.json)}`,

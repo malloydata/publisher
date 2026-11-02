@@ -18,14 +18,24 @@ export interface PackageRoute {
    versioned: boolean;
    /** True while the route waits on the version listing to read its first segment. */
    deciding: boolean;
+   /**
+    * The listing that reads the first segment failed, so whether it names a
+    * version is unknown. The route is neither opened as a version nor as a
+    * path, which would read the wrong file; `retry` asks again.
+    */
+   undecided: boolean;
+   /** Ask for the version listing again. */
+   retry: () => void;
 }
 
 /**
  * The package route under the cursor, read the way the Console routes
  * versions (`packageRoute.ts`). The first segment after the package is a
- * version only when it is version-shaped AND the package has versions; the
- * listing that decides is fetched only for such a segment, so an ordinary
- * report route costs no extra request.
+ * version only when it is version-shaped AND the package has versions. The
+ * listing that decides is fetched for such a segment, and, with `always`,
+ * for every route: the splat route needs it to move a versioned package's
+ * path with no version onto `latest`, so every page under a package costs
+ * one listing request, shared by every reader and cached for 30 s.
  */
 export function usePackageRoute(
    options: { always?: boolean } = {},
@@ -36,7 +46,7 @@ export function usePackageRoute(
    const splat = params["*"];
    const candidate =
       splat === undefined ? undefined : splitVersionSegment(splat);
-   const { versions, isPending } = usePackageVersions(
+   const { versions, isPending, isError, refetch } = usePackageVersions(
       environmentName ?? "",
       packageName ?? "",
       { enabled: options.always === true || candidate !== undefined },
@@ -51,5 +61,7 @@ export function usePackageRoute(
       path: version ? version.rest : splat,
       versioned,
       deciding: candidate !== undefined && isPending,
+      undecided: candidate !== undefined && isError,
+      retry: refetch,
    };
 }
