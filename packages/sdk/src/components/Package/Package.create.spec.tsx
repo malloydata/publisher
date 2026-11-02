@@ -182,7 +182,11 @@ describe("who is offered New", () => {
       context.mutable = false;
       mount(fakeStorage([BROWSER]).storage);
       await settled();
-      await waitFor(() => expect(screen.queryByRole("button", NEW)).toBeNull());
+      // A boolean, not the element: a failed toBeNull() on a happy-dom element
+      // formats its whole object graph, synchronously, on every poll.
+      await waitFor(() =>
+         expect(screen.queryByRole("button", NEW) === null).toBe(true),
+      );
    });
 
    it("the Console's browser workspace beside a writable server, written to the package", async () => {

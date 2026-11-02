@@ -170,13 +170,20 @@ async function openActions(id: string) {
 const item = (menu: ReturnType<typeof within>, name: RegExp) =>
    menu.getByRole("menuitem", { name });
 
+/**
+ * Whether `scope` still says it is checking the versions. A boolean, so a
+ * `waitFor` polling it while the read is under way fails cheaply: a failed
+ * `toBeNull()` on a happy-dom element makes Bun format the element's whole
+ * object graph, synchronously, for seconds per poll.
+ */
+const stillChecking = (scope: Pick<ReturnType<typeof within>, "queryByText">) =>
+   scope.queryByText(/^Checking /) !== null;
+
 /** Delete `id` from its ⋯ menu and return its dialog, once it has read the versions. */
 async function startDelete(id: string) {
    fireEvent.click(item(await openActions(id), /Delete version/));
    const dialog = await screen.findByRole("dialog", { name: `Delete v${id}` });
-   await waitFor(() =>
-      expect(within(dialog).queryByText(/^Checking /)).toBeNull(),
-   );
+   await waitFor(() => expect(stillChecking(within(dialog))).toBe(false));
    return dialog;
 }
 
@@ -533,8 +540,6 @@ describe("Delete version", () => {
       renderSwitch([version("1.1.0", { latest: true }), version("1.0.0")]);
       const deleteItem = item(await openActions("1.0.0"), /Delete version/);
       fireEvent.click(deleteItem);
-      // Text queries only: a role query on a dialog still opening is slow
-      // enough to time out on CI's runners, and hangs Bun 1.3.13 outright.
       // The click opens the dialog in the same render; the read of the
       // versions answers only after it, so here it is still under way.
       const checking = screen.getByText(
@@ -547,9 +552,7 @@ describe("Delete version", () => {
       const deleteButton = () =>
          within(dialog).getByText("Delete version").closest("button");
       expect(deleteButton()?.hasAttribute("disabled")).toBe(true);
-      await waitFor(() =>
-         expect(within(dialog).queryByText(/^Checking /)).toBeNull(),
-      );
+      await waitFor(() => expect(stillChecking(within(dialog))).toBe(false));
       expect(deleteButton()?.hasAttribute("disabled")).toBe(false);
       expect(deletePackageVersion).not.toHaveBeenCalled();
    });
@@ -563,7 +566,7 @@ describe("Delete version", () => {
       ).toBeTruthy();
       // Closed: it no longer checks, nor offers a delete (its exit
       // transition may keep the element in the DOM a moment longer).
-      await waitFor(() => expect(screen.queryByText(/^Checking /)).toBeNull());
+      await waitFor(() => expect(stillChecking(screen)).toBe(false));
       expect(screen.queryByText(/stops being served/)).toBeNull();
       expect(deletePackageVersion).not.toHaveBeenCalled();
    });
