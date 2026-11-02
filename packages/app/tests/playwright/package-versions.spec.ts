@@ -80,11 +80,13 @@ async function shot(page: Page, name: string) {
 // "Select a version" when none is on screen.
 const versionSwitch = (page: Page) =>
    page.getByRole("button", { name: /change version$|^Select a version$/ });
+/** `text` as a literal inside a regular expression: every metacharacter escaped. */
+const literal = (text: string) => text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 const versionRow = (page: Page, id: string) =>
    page
       .getByRole("menu", { name: `Versions of ${PKG}` })
       .getByTestId("version-row")
-      .filter({ hasText: new RegExp(`^${id.replace(/\./g, "\\.")}`) });
+      .filter({ hasText: new RegExp(`^${literal(id)}`) });
 
 async function openVersions(page: Page) {
    await versionSwitch(page).click();

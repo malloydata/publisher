@@ -35,11 +35,8 @@ import { globalQueryClient } from "../../utils/queryClient";
 /** What the server holds now; the mocks below read and change it. */
 let serverVersions: PackageVersion[] = [];
 let listFails = false;
-// When set, a listing waits for it before it answers.
-let listGate: Promise<void> | undefined;
 
 const listPackageVersions = mock(async (_env: string, _pkg: string) => {
-   if (listGate) await listGate;
    if (listFails) {
       throw Object.assign(new Error("Request failed with status code 500"), {
          response: { status: 500, data: { message: "boom" } },
@@ -109,7 +106,6 @@ beforeEach(() => {
    clearCache();
    serverVersions = [];
    listFails = false;
-   listGate = undefined;
    listPackageVersions.mockClear();
    setPackageLatestVersion.mockClear();
    updatePackageVersion.mockClear();
@@ -535,23 +531,24 @@ describe("Delete version", () => {
 
    it("opens at once, saying it is checking, and Delete waits for the read", async () => {
       renderSwitch([version("1.1.0", { latest: true }), version("1.0.0")]);
-      let release!: () => void;
-      listGate = new Promise<void>((resolve) => (release = resolve));
-      fireEvent.click(item(await openActions("1.0.0"), /Delete version/));
-      const dialog = await screen.findByRole("dialog", {
-         name: "Delete v1.0.0",
-      });
+      const deleteItem = item(await openActions("1.0.0"), /Delete version/);
+      fireEvent.click(deleteItem);
+      // The click opens the dialog in the same render; the read of the
+      // versions answers only after it, so here it is still under way.
+      const dialog = screen.getByRole("dialog", { name: "Delete v1.0.0" });
       expect(
          within(dialog).getByText(
-            "Checking pkg's versions before deleting v1.0.0…",
+            /^Checking pkg's versions before deleting v1\.0\.0/,
          ),
       ).toBeTruthy();
+      // By its text, not its role: a role query on a dialog still opening
+      // hangs the Bun CI pins (1.3.13) when the whole suite runs.
       expect(
          within(dialog)
-            .getByRole("button", { name: /Delete version/ })
-            .hasAttribute("disabled"),
+            .getByText("Delete version")
+            .closest("button")
+            ?.hasAttribute("disabled"),
       ).toBe(true);
-      release();
       await waitFor(() =>
          expect(within(dialog).queryByText(/^Checking /)).toBeNull(),
       );
