@@ -480,6 +480,19 @@ describe("openProxy - tunnel death", () => {
          await closeQuietly(() => ep.close());
       }
    });
+
+   it("does not fire a late onClose listener once close() has run", async () => {
+      sshServer = await startSshServer({});
+      const ep = await openTestProxy(sshServer, echoServer.port);
+      const first = nextClose(ep);
+      sshServer.endClients();
+      await first;
+      let fired = 0;
+      ep.onClose(() => (fired += 1));
+      await closeQuietly(() => ep.close());
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fired).toBe(0);
+   });
 });
 
 // The opt-in accepts the spellings every other boolean flag in this server

@@ -2989,6 +2989,8 @@ export function buildEnvironmentMalloyConfig(
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
    const closePromises = new WeakMap<Connection, Promise<void>>();
+   // An evicted tunnel has left the caches, so release finds its cleanup here.
+   const evictions = new Set<Promise<void>>();
 
    // pg-pool rejects a second end(), so every close path shares one run.
    function closeOnce(connection: Connection): Promise<void> {
@@ -3124,13 +3126,18 @@ export function buildEnvironmentMalloyConfig(
                            );
                            // Ending the pool first stops it dialing the dead
                            // port; the tunnel's port is freed after.
-                           closeOnce(connection).catch((error) =>
-                              logger.warn(
-                                 "Failed to close evicted proxied connection",
-                                 { connection: name, error },
+                           const eviction = Promise.allSettled([
+                              closeOnce(connection).catch((error) =>
+                                 logger.warn(
+                                    "Failed to close evicted proxied connection",
+                                    { connection: name, error },
+                                 ),
                               ),
-                           );
-                           endpoint.close().catch(() => {});
+                              endpoint.close(),
+                           ]).then(() => {
+                              evictions.delete(eviction);
+                           });
+                           evictions.add(eviction);
                         });
                         return connection;
                      } catch (err) {
@@ -3257,6 +3264,7 @@ export function buildEnvironmentMalloyConfig(
                const connection = await promise;
                await closeOnce(connection);
             }),
+            ...evictions,
          ]);
          // Tunnels close only after the builds above settle: an in-flight
          // openProxy registers its endpoint inside that promise, and the tunnel

@@ -298,7 +298,11 @@ function openSshProxy(
             }
             localPort = addr.port;
 
-            if (settled) return;
+            // fail() during listen() ran server.close() before it was bound.
+            if (settled) {
+               server!.close();
+               return;
+            }
             settled = true;
             opened = true;
 
@@ -320,7 +324,9 @@ function openSshProxy(
                onClose(listener): void {
                   if (closing) return;
                   if (dead) {
-                     process.nextTick(notifyClose, listener);
+                     process.nextTick(() => {
+                        if (!closing) notifyClose(listener);
+                     });
                      return;
                   }
                   closeListeners.push(listener);

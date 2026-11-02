@@ -4095,6 +4095,26 @@ describe("environment connection lookup for a proxied Postgres connection", () =
       expect(opened[1].close).toHaveBeenCalledTimes(1);
    });
 
+   it("waits for an evicted connection's close before release resolves", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      let finishClose!: () => void;
+      spyOn(first, "close").mockImplementation(
+         () => new Promise<void>((res) => (finishClose = res)),
+      );
+      opened[0].die();
+      let released = false;
+      const release = config.releaseConnections().then(() => {
+         released = true;
+      });
+      await new Promise((res) => setTimeout(res, 20));
+      expect(released).toBe(false);
+      finishClose();
+      await release;
+      expect(released).toBe(true);
+   });
+
    it(
       "recovers on the next query after the SSH tunnel to a real Postgres drops",
       async () => {
