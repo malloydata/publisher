@@ -35,16 +35,18 @@ import { globalQueryClient } from "../../utils/queryClient";
 /** What the server holds now; the mocks below read and change it. */
 let serverVersions: PackageVersion[] = [];
 let listFails = false;
+// When set, a listing waits for it before it answers.
+let listGate: Promise<void> | undefined;
 
-const listPackageVersions = mock((_env: string, _pkg: string) =>
-   listFails
-      ? Promise.reject(
-           Object.assign(new Error("Request failed with status code 500"), {
-              response: { status: 500, data: { message: "boom" } },
-           }),
-        )
-      : Promise.resolve({ data: serverVersions }),
-);
+const listPackageVersions = mock(async (_env: string, _pkg: string) => {
+   if (listGate) await listGate;
+   if (listFails) {
+      throw Object.assign(new Error("Request failed with status code 500"), {
+         response: { status: 500, data: { message: "boom" } },
+      });
+   }
+   return { data: serverVersions };
+});
 const setPackageLatestVersion = mock(
    (_env: string, _pkg: string, _body: { version: string }) =>
       Promise.resolve({ data: {} }),
@@ -107,6 +109,7 @@ beforeEach(() => {
    clearCache();
    serverVersions = [];
    listFails = false;
+   listGate = undefined;
    listPackageVersions.mockClear();
    setPackageLatestVersion.mockClear();
    updatePackageVersion.mockClear();
@@ -171,10 +174,14 @@ async function openActions(id: string) {
 const item = (menu: ReturnType<typeof within>, name: RegExp) =>
    menu.getByRole("menuitem", { name });
 
-/** Delete `id` from its ⋯ menu and return the dialog it opens. */
+/** Delete `id` from its ⋯ menu and return its dialog, once it has read the versions. */
 async function startDelete(id: string) {
    fireEvent.click(item(await openActions(id), /Delete version/));
-   return screen.findByRole("dialog", { name: `Delete v${id}` });
+   const dialog = await screen.findByRole("dialog", { name: `Delete v${id}` });
+   await waitFor(() =>
+      expect(within(dialog).queryByText(/^Checking /)).toBeNull(),
+   );
+   return dialog;
 }
 
 /** Whether a refresh asked for the environment's package list again. */
@@ -526,15 +533,59 @@ describe("Delete version", () => {
       ).toBe(true);
    });
 
-   it("opens no dialog when the versions cannot be read", async () => {
+   it("opens at once, saying it is checking, and Delete waits for the read", async () => {
+      renderSwitch([version("1.1.0", { latest: true }), version("1.0.0")]);
+      let release!: () => void;
+      listGate = new Promise<void>((resolve) => (release = resolve));
+      fireEvent.click(item(await openActions("1.0.0"), /Delete version/));
+      const dialog = await screen.findByRole("dialog", {
+         name: "Delete v1.0.0",
+      });
+      expect(
+         within(dialog).getByText(
+            "Checking pkg's versions before deleting v1.0.0…",
+         ),
+      ).toBeTruthy();
+      expect(
+         within(dialog)
+            .getByRole("button", { name: /Delete version/ })
+            .hasAttribute("disabled"),
+      ).toBe(true);
+      release();
+      await waitFor(() =>
+         expect(within(dialog).queryByText(/^Checking /)).toBeNull(),
+      );
+      expect(
+         within(dialog)
+            .getByRole("button", { name: "Delete version" })
+            .hasAttribute("disabled"),
+      ).toBe(false);
+      expect(deletePackageVersion).not.toHaveBeenCalled();
+   });
+
+   it("closes its dialog and says so when the versions cannot be read", async () => {
       renderSwitch([version("1.1.0", { latest: true }), version("1.0.0")]);
       listFails = true;
       fireEvent.click(item(await openActions("1.0.0"), /Delete version/));
       expect(
          await screen.findByText(/Couldn't check v1.0.0 before deleting it/),
       ).toBeTruthy();
-      expect(screen.queryByRole("dialog")).toBeNull();
+      // Closed: it no longer checks, nor offers a delete (its exit
+      // transition may keep the element in the DOM a moment longer).
+      await waitFor(() => expect(screen.queryByText(/^Checking /)).toBeNull());
+      expect(screen.queryByText(/stops being served/)).toBeNull();
       expect(deletePackageVersion).not.toHaveBeenCalled();
+   });
+
+   it("leaves a package it deleted even when the versions cannot be read back, by the dialog's read", async () => {
+      const onPackageDeleted = mock(() => {});
+      renderSwitch([version("1.0.0", { latest: true })], { onPackageDeleted });
+      const dialog = await startDelete("1.0.0");
+      listFails = true;
+      fireEvent.click(
+         within(dialog).getByRole("button", { name: "Delete package" }),
+      );
+      await waitFor(() => expect(onPackageDeleted).toHaveBeenCalledTimes(1));
    });
 
    it("shows the server's refusal in the dialog, and reads the versions again", async () => {

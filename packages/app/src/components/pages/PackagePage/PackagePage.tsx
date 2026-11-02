@@ -1,15 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useCallback, useMemo, type MouseEvent } from "react";
+import { useMemo } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { documentPath } from "../../common/documentRoutes";
-import {
-   LATEST_SEGMENT,
-   packagePath,
-   withVersionSegment,
-} from "../../common/packageRoute";
+import { LATEST_SEGMENT, packagePath } from "../../common/packageRoute";
+import { usePackageLinkNavigate } from "../../common/usePackageLinkNavigate";
 import { usePackageRoute } from "../../common/usePackageRoute";
 import {
    encodeResourceUri,
@@ -31,18 +28,10 @@ function PackagePage() {
    // Every link the package page builds points inside the package without a
    // version; here it learns the one on screen, so a pinned version stays
    // pinned from the page to its reports, models and apps.
-   const navigate = useCallback(
-      (to: string, event?: MouseEvent) =>
-         routerNavigate(
-            withVersionSegment(
-               to,
-               environmentName ?? "",
-               packageName ?? "",
-               versionSegment,
-            ),
-            event,
-         ),
-      [routerNavigate, environmentName, packageName, versionSegment],
+   const navigate = usePackageLinkNavigate(
+      environmentName ?? "",
+      packageName ?? "",
+      versionSegment,
    );
    // What the New report dialog created, or why it could not.
    const onEvent = useMemo(

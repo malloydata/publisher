@@ -26,6 +26,13 @@ export interface PackageRoute {
    undecided: boolean;
    /** Ask for the version listing again. */
    retry: () => void;
+   /**
+    * The listing has said the package has no versions, so its files may be
+    * written. False for a versioned package, while the listing loads, and
+    * when it failed. Read with `always`: without it, a path that is not
+    * version-shaped never asks, and this is just `!versioned`.
+    */
+   writable: boolean;
 }
 
 /**
@@ -63,5 +70,6 @@ export function usePackageRoute(
       deciding: candidate !== undefined && isPending,
       undecided: candidate !== undefined && isError,
       retry: refetch,
+      writable: !versioned && !isPending && !isError,
    };
 }
