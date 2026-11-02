@@ -68,9 +68,14 @@ beforeEach(() => {
 it("moves a versioned package's path with no version to latest's", async () => {
    render(tree("/demo/auto_recalls/index.malloy/sources/recalls?tab=data"));
    expect((await screen.findByTestId("page")).textContent).toBe("model");
-   expect(screen.getByTestId("where").textContent).toBe(
-      "/demo/auto_recalls/latest/index.malloy/sources/recalls?tab=data",
-   );
+   // The page opens first and moves in an effect, so wait for the move.
+   expect(
+      (
+         await screen.findByText(
+            "/demo/auto_recalls/latest/index.malloy/sources/recalls?tab=data",
+         )
+      ).textContent,
+   ).toBe("/demo/auto_recalls/latest/index.malloy/sources/recalls?tab=data");
    expect(modelMounts).toBe(1);
 });
 
