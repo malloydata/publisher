@@ -533,30 +533,24 @@ describe("Delete version", () => {
       renderSwitch([version("1.1.0", { latest: true }), version("1.0.0")]);
       const deleteItem = item(await openActions("1.0.0"), /Delete version/);
       fireEvent.click(deleteItem);
+      // Text queries only: a role query on a dialog still opening is slow
+      // enough to time out on CI's runners, and hangs Bun 1.3.13 outright.
       // The click opens the dialog in the same render; the read of the
       // versions answers only after it, so here it is still under way.
-      const dialog = screen.getByRole("dialog", { name: "Delete v1.0.0" });
-      expect(
-         within(dialog).getByText(
-            /^Checking pkg's versions before deleting v1\.0\.0/,
-         ),
-      ).toBeTruthy();
-      // By its text, not its role: a role query on a dialog still opening
-      // hangs the Bun CI pins (1.3.13) when the whole suite runs.
-      expect(
-         within(dialog)
-            .getByText("Delete version")
-            .closest("button")
-            ?.hasAttribute("disabled"),
-      ).toBe(true);
+      const checking = screen.getByText(
+         /^Checking pkg's versions before deleting v1\.0\.0/,
+      );
+      // The dialog by a DOM selector, not a role query; the closing menu
+      // still holds its own "Delete version" item.
+      const dialog = checking.closest<HTMLElement>('[role="dialog"]')!;
+      expect(dialog).not.toBeNull();
+      const deleteButton = () =>
+         within(dialog).getByText("Delete version").closest("button");
+      expect(deleteButton()?.hasAttribute("disabled")).toBe(true);
       await waitFor(() =>
          expect(within(dialog).queryByText(/^Checking /)).toBeNull(),
       );
-      expect(
-         within(dialog)
-            .getByRole("button", { name: "Delete version" })
-            .hasAttribute("disabled"),
-      ).toBe(false);
+      expect(deleteButton()?.hasAttribute("disabled")).toBe(false);
       expect(deletePackageVersion).not.toHaveBeenCalled();
    });
 
