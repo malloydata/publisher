@@ -715,8 +715,10 @@ export function VersionSwitch({
                   <Button
                      variant="contained"
                      color="error"
-                     loading={deleteVersion.isPending || checkingDelete}
-                     disabled={deleteRefusal !== undefined}
+                     loading={deleteVersion.isPending}
+                     // While the dialog reads the versions it says so in
+                     // its text; Delete waits for that read.
+                     disabled={checkingDelete || deleteRefusal !== undefined}
                      onClick={() =>
                         deleting?.versions &&
                         deleteVersion.mutate({
