@@ -4158,7 +4158,11 @@ describe("environment connection lookup for a proxied Postgres connection", () =
             expect((await first.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
 
             bastion.destroySockets();
-            // Eviction is event-driven: the next lookup is a new connection.
+            // A dropped session is noticed on the client's next write (here a
+            // query; idle, the keepalive), so the query on it fails first.
+            const started = Date.now();
+            await expect(first.runSQL(sql)).rejects.toThrow();
+            expect(Date.now() - started).toBeLessThan(10_000);
             let second = first;
             expect(
                await pollUntil(async () => {
