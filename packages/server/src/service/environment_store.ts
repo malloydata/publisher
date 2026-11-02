@@ -436,6 +436,17 @@ export class EnvironmentStore {
            versionId: string,
         ) => void)
       | null = null;
+   // Called before a publish creates a version's row; picked up like
+   // versionArchivedHook. It takes the Environment itself: a configured
+   // package publishes while the store is still initializing, when a lookup
+   // by name would wait for that very initialization.
+   private owedReclaimHook:
+      | ((
+           environment: Environment,
+           packageName: string,
+           versionId: string,
+        ) => Promise<void>)
+      | null = null;
 
    /**
     * Environments (from `PUBLISHER_WATCH`) whose package directories under
@@ -563,6 +574,36 @@ export class EnvironmentStore {
          hook
             ? (packageName, versionId) =>
                  hook(env.getEnvironmentName(), packageName, versionId)
+            : null,
+      );
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback a publish runs before it
+    * creates a version's row, which reclaims what a deleted version of the
+    * same id still owes. Remembered, so Environments bound after this call
+    * also use it.
+    */
+   public setOwedReclaimHook(
+      hook:
+         | ((
+              environment: Environment,
+              packageName: string,
+              versionId: string,
+           ) => Promise<void>)
+         | null,
+   ): void {
+      this.owedReclaimHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachOwedReclaimHook(env);
+      }
+   }
+
+   private attachOwedReclaimHook(env: Environment): void {
+      const hook = this.owedReclaimHook;
+      env.setOwedReclaimHook(
+         hook
+            ? (packageName, versionId) => hook(env, packageName, versionId)
             : null,
       );
    }
@@ -982,6 +1023,7 @@ export class EnvironmentStore {
       );
       this.attachVersionArchivedHook(environment);
       this.attachVersionDeletedHook(environment);
+      this.attachOwedReclaimHook(environment);
       environment.bindVersions(repository, environmentId, {
          downloaderFor: (packageName, location) => (stagingPath) =>
             this.downloadPackageInto(
@@ -1022,6 +1064,8 @@ export class EnvironmentStore {
             // unversioned package's runs and ledger) predates this publish.
             if (existing) await repository.deletePackageRecord(existing.id);
          },
+         packageRemoved: (packageName) =>
+            this.cleanupPackageEmbeddings(environmentName, packageName),
       });
       if (alreadyBound) return;
       try {

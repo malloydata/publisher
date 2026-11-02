@@ -25,7 +25,12 @@ function ModelPage() {
    const { search } = useLocation();
    // The path under the package, after the version segment a versioned
    // package's route carries (`/<env>/<pkg>/<version>/<path>`).
-   const { path: modelPath, versionId, versioned } = usePackageRoute();
+   const {
+      path: modelPath,
+      versionId,
+      versionSegment,
+      versioned,
+   } = usePackageRoute();
    const { server } = useServer();
    // Every branch below has the same parent, the package, so the way up is
    // built once here.
@@ -107,6 +112,7 @@ function ModelPage() {
             environmentName={params.environmentName}
             packageName={params.packageName}
             {...(versionId !== undefined ? { versionId } : {})}
+            {...(versionSegment !== undefined ? { versionSegment } : {})}
             readOnly={versioned}
             routePath={routePath}
             edit={isEditSearch(search)}

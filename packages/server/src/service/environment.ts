@@ -415,6 +415,12 @@ export class Environment {
    private versionDeletedHook:
       | ((packageName: string, versionId: string) => void)
       | null = null;
+   // Called before a publish creates a version's row, to reclaim what a
+   // deleted version of that id still owes. Set by EnvironmentStore (see
+   // setOwedReclaimHook).
+   private owedReclaimHook:
+      | ((packageName: string, versionId: string) => Promise<void>)
+      | null = null;
    public metadata: ApiEnvironment;
    // Owner of the RSS back-pressure flag; null makes the admission gates no-ops.
    private memoryGovernor: PackageMemoryGovernor | null = null;
@@ -1501,6 +1507,17 @@ export class Environment {
    }
 
    /**
+    * Set the callback a publish runs before it creates a version's row,
+    * which reclaims what a deleted version of the same id still owes when
+    * the delete's background cleanup has not run yet. It must not throw.
+    */
+   public setOwedReclaimHook(
+      hook: ((packageName: string, versionId: string) => Promise<void>) | null,
+   ): void {
+      this.owedReclaimHook = hook;
+   }
+
+   /**
     * Resolves once no materialization of the version is running: at once
     * when none is, else when the last one settles.
     */
@@ -1875,6 +1892,8 @@ export class Environment {
             description: string | null | undefined,
          ): Promise<boolean>;
          removePackageRecord(packageName: string): Promise<void>;
+         /** A package went with its last version: drop what is kept on it. */
+         packageRemoved?(packageName: string): void;
       },
    ): VersionService<Package> {
       if (this.versionService && this.boundEnvironmentId === environmentId) {
@@ -1936,9 +1955,13 @@ export class Environment {
                this.versionArchivedHook?.(packageName, versionId),
             onVersionDeleted: (packageName, versionId) =>
                this.versionDeletedHook?.(packageName, versionId),
+            reclaimOwedBy: async (packageName, versionId) => {
+               await this.owedReclaimHook?.(packageName, versionId);
+            },
             packageRemoved: (packageName) => {
                this.clearPackageLoadFailure(packageName);
                this.deletePackageStatus(packageName);
+               hooks.packageRemoved?.(packageName);
             },
             onVersionLoaded: (packageName, loaded, isLatest) => {
                this.setPackageStatus(packageName, PackageStatus.SERVING);

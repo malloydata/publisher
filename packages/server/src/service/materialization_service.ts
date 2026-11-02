@@ -3847,6 +3847,45 @@ export class MaterializationService {
    }
 
    /**
+    * Before a publish creates a version's row: reclaim now what a deleted
+    * version of the same id still owes, when that delete's cleanup has not
+    * run yet (it waits for the version's builds to settle, an orchestrated
+    * one included). Otherwise the new version could bind those tables, and
+    * its row clears the records naming them, leaving the tables to nothing.
+    * Called holding the version's lock, so it neither takes the lock nor
+    * waits: a run still settling is left, as reclaimOwnedRuns leaves it.
+    * With no such runs, it reclaims nothing. Takes the Environment, never
+    * looks it up: a configured package publishes while the store is still
+    * initializing, and a lookup would wait for that. Best-effort: never
+    * throws.
+    */
+   async reclaimOwedNow(
+      environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      const environmentName = environment.getEnvironmentName();
+      try {
+         const environmentId = await this.resolveEnvironmentId(environmentName);
+         await this.reclaimOwnedRuns(
+            environment,
+            environmentName,
+            environmentId,
+            packageName,
+            versionId,
+            "deleted",
+         );
+      } catch (err) {
+         logger.warn("Failed to reclaim what a deleted version owed", {
+            environmentName,
+            packageName,
+            version: versionId,
+            error: errMessage(err),
+         });
+      }
+   }
+
+   /**
     * After a version is deleted: stop its own running auto-runs, then reclaim
     * what it alone owns, as an archive does (see reclaimVersionTables, which
     * waits for its builds to settle first). An orchestrated run is left to the

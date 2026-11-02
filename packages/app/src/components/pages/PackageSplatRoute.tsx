@@ -1,10 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import React, { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { LATEST_SEGMENT, withVersionSegment } from "../common/packageRoute";
 import { usePackageRoute } from "../common/usePackageRoute";
+import { PAGE_FRAME_SX } from "./pageFrame";
 
 const ModelPage = React.lazy(() => import("./ModelPage/ModelPage"));
 const PackagePage = React.lazy(() => import("./PackagePage/PackagePage"));
@@ -23,6 +27,8 @@ export default function PackageSplatRoute() {
       path,
       versioned,
       deciding,
+      undecided,
+      retry,
    } = usePackageRoute({ always: true });
    const { pathname, search, hash } = useLocation();
    const navigate = useNavigate();
@@ -49,6 +55,25 @@ export default function PackageSplatRoute() {
    // Waits only on a version-shaped first segment, and only for the listing
    // that says whether this package has versions at all.
    if (deciding) return null;
+   // The listing failed, so the segment is neither a known version nor a
+   // known folder: opening it either way could read the wrong file.
+   if (undecided) {
+      return (
+         <Box sx={PAGE_FRAME_SX}>
+            <Alert
+               severity="error"
+               action={
+                  <Button color="inherit" size="small" onClick={retry}>
+                     Retry
+                  </Button>
+               }
+            >
+               Could not read this package&apos;s versions, so this address
+               can&apos;t be opened yet.
+            </Alert>
+         </Box>
+      );
+   }
    if (
       versionSegment !== undefined &&
       (path === undefined || path === "" || path === "/")

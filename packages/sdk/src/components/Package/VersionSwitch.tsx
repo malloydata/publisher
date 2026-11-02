@@ -29,7 +29,10 @@ import React, { useRef, useState } from "react";
 import type { PackageVersion } from "../../client";
 import { AppDialog } from "../AppDialog";
 import { useServer } from "../ServerProvider";
-import { useInvalidatePackage } from "./usePackageVersions";
+import {
+   useFetchPackageVersions,
+   useInvalidatePackage,
+} from "./usePackageVersions";
 
 /** The server's own words for a refusal, when it sent any. */
 const errorDetail = (error: unknown): string => {
@@ -52,6 +55,10 @@ const publishedOn = (iso: string): string => {
 
 const isArchived = (version: PackageVersion) =>
    version.archiveStatus === "archive";
+
+/** What archiving or deleting a version drops, said in both dialogs. */
+const TABLES_DROPPED =
+   "Tables built for this version alone (under scope: version) are dropped.";
 
 /**
  * Why the server would refuse to archive or delete `version`, given all of
@@ -96,6 +103,14 @@ export interface VersionSwitchProps {
    /** Open another version. */
    onSelectVersion: (versionId: string, event?: React.MouseEvent) => void;
    /**
+    * Show another version in place of the one on screen, which was archived
+    * or deleted: a version's id, or undefined for the package's `latest`.
+    * Replaces the address rather than adding to history, so Back does not
+    * return to a version that is gone. Absent, the switch opens the version
+    * by id with `onSelectVersion`.
+    */
+   onReplaceVersion?: (versionId: string | undefined) => void;
+   /**
     * Called after the package's only version was deleted, which deletes the
     * package. Absent, the switch stays where it is.
     */
@@ -120,22 +135,34 @@ export function VersionSwitch({
    versions,
    selectedVersionId,
    onSelectVersion,
+   onReplaceVersion,
    onPackageDeleted,
    canManage,
 }: VersionSwitchProps) {
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
    const invalidatePackage = useInvalidatePackage(environmentName, packageName);
+   const fetchVersions = useFetchPackageVersions(environmentName, packageName);
    const [listAnchor, setListAnchor] = useState<HTMLElement | null>(null);
    const [actionsFor, setActionsFor] = useState<{
       version: PackageVersion;
       anchor: HTMLElement;
    } | null>(null);
    const [pinning, setPinning] = useState<PackageVersion | null>(null);
-   const [deleting, setDeleting] = useState<PackageVersion | null>(null);
+   const [archiving, setArchiving] = useState<PackageVersion | null>(null);
+   // The version to delete, with the package's versions read just before the
+   // dialog opened: whether the delete takes the package with it is decided
+   // from that read, never from a list another tab may have changed.
+   const [deleting, setDeleting] = useState<{
+      version: PackageVersion;
+      versions: PackageVersion[];
+   } | null>(null);
    const [failure, setFailure] = useState<string | null>(null);
    const pinCancelRef = useRef<HTMLButtonElement>(null);
+   const archiveCancelRef = useRef<HTMLButtonElement>(null);
    const deleteCancelRef = useRef<HTMLButtonElement>(null);
+   // Each row's ⋯, so the keyboard opens a row's actions where the mouse does.
+   const moreButtons = useRef(new Map<string, HTMLElement>());
 
    const latest = versions.find((version) => version.latest)?.id;
    const shown = selectedVersionId ?? latest;
@@ -150,6 +177,27 @@ export function VersionSwitch({
          }),
       ]);
 
+   // The version on screen was archived or deleted: show the package's
+   // latest, or with no latest the highest version still in service, by the
+   // versions as they are now (`after`, else read afresh). A listing that
+   // fails leaves the page where it is.
+   const leaveVersion = async (gone: string, after?: PackageVersion[]) => {
+      const now = after ?? (await fetchVersions().catch(() => undefined));
+      if (now === undefined) return;
+      const latestAfter = now.find((version) => version.latest)?.id;
+      const next =
+         latestAfter ??
+         now.find((version) => version.id !== gone && !isArchived(version))?.id;
+      if (next === undefined) return;
+      if (onReplaceVersion) {
+         onReplaceVersion(next === latestAfter ? undefined : next);
+      } else {
+         onSelectVersion(next);
+      }
+   };
+
+   // A refusal means the list on screen was out of date, so it is read again
+   // as it is after a success.
    const setLatest = useMutation({
       mutationFn: (version: string) =>
          apiClients.versions.setPackageLatestVersion(
@@ -161,6 +209,7 @@ export function VersionSwitch({
          setPinning(null);
          await refresh();
       },
+      onError: () => void refresh(),
    });
 
    const changeArchive = useMutation({
@@ -177,9 +226,20 @@ export function VersionSwitch({
             id,
             { archiveStatus },
          ),
-      onSuccess: () => refresh(),
-      onError: (error, { id, archiveStatus }) =>
-         setFailure(`Couldn't ${archiveStatus} v${id}: ${errorDetail(error)}`),
+      onSuccess: async (_response, { id, archiveStatus }) => {
+         setArchiving(null);
+         if (archiveStatus === "archive" && id === shown) {
+            await leaveVersion(id);
+         }
+         await refresh();
+      },
+      onError: (error, { id, archiveStatus }) => {
+         // An archive is confirmed in a dialog, which shows its refusal.
+         if (archiveStatus === "unarchive") {
+            setFailure(`Couldn't unarchive v${id}: ${errorDetail(error)}`);
+         }
+         void refresh();
+      },
    });
    const updating = changeArchive.isPending
       ? changeArchive.variables?.id
@@ -194,45 +254,91 @@ export function VersionSwitch({
          ),
       onSuccess: async (_response, id) => {
          setDeleting(null);
-         if (versions.length <= 1) {
-            // The package went with its only version.
+         // What is left decides what happened, not the list the dialog read:
+         // a package with no versions left (its listing answers 404, read as
+         // none) went with the version.
+         const after = await fetchVersions().catch(() => undefined);
+         if (after !== undefined && after.length === 0) {
             await queryClient.invalidateQueries({
                queryKey: ["packages", environmentName],
             });
             onPackageDeleted?.();
             return;
          }
-         // The version on screen is gone: show latest, or with no latest the
-         // highest version still in service.
-         if (id === shown) {
-            const next =
-               latest !== undefined && latest !== id
-                  ? latest
-                  : versions.find(
-                       (version) => version.id !== id && !isArchived(version),
-                    )?.id;
-            if (next !== undefined) onSelectVersion(next);
-         }
+         if (id === shown) await leaveVersion(id, after);
          await refresh();
       },
+      onError: () => void refresh(),
    });
 
    const closeActions = () => setActionsFor(null);
    const refusals = actionsFor
       ? versionRefusals(actionsFor.version, versions)
       : {};
-   const deletesPackage = deleting !== null && versions.length <= 1;
+   const allRefused =
+      actionsFor !== null &&
+      !isArchived(actionsFor.version) &&
+      actionsFor.version.latest &&
+      refusals.archive !== undefined &&
+      refusals.delete !== undefined;
+   const deletesPackage = deleting !== null && deleting.versions.length <= 1;
+   // What the server would refuse, by the list read as the dialog opened.
+   const deleteRefusal = deleting
+      ? versionRefusals(deleting.version, deleting.versions).delete
+      : undefined;
+
+   // Read the versions afresh, then confirm against that read.
+   const chooseDelete = async (chosen: PackageVersion) => {
+      closeActions();
+      setListAnchor(null);
+      deleteVersion.reset();
+      let fresh: PackageVersion[];
+      try {
+         fresh = await fetchVersions();
+      } catch (error) {
+         setFailure(
+            `Couldn't check v${chosen.id} before deleting it: ${errorDetail(error)}`,
+         );
+         return;
+      }
+      const current = fresh.find((version) => version.id === chosen.id);
+      if (current === undefined) {
+         setFailure(`v${chosen.id} is no longer a version of ${packageName}.`);
+         void refresh();
+         return;
+      }
+      setDeleting({ version: current, versions: fresh });
+   };
+
+   // A row's ⋯ menu, anchored at its ⋯ as a click there anchors it.
+   const openActions = (version: PackageVersion, fallback: HTMLElement) => {
+      if (!canManage || updating === version.id) return;
+      setActionsFor({
+         version,
+         anchor: moreButtons.current.get(version.id) ?? fallback,
+      });
+   };
+
+   // From the keyboard: ArrowRight, Shift+F10 or the menu key.
+   const openActionsByKey = (
+      event: React.KeyboardEvent<HTMLElement>,
+      version: PackageVersion,
+   ) => {
+      const opens =
+         event.key === "ArrowRight" ||
+         event.key === "ContextMenu" ||
+         (event.key === "F10" && event.shiftKey);
+      if (!canManage || !opens) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openActions(version, event.currentTarget);
+   };
 
    const deleteItem = actionsFor && (
       <MenuItem
          key="delete"
          disabled={refusals.delete !== undefined}
-         onClick={() => {
-            setDeleting(actionsFor.version);
-            deleteVersion.reset();
-            closeActions();
-            setListAnchor(null);
-         }}
+         onClick={() => void chooseDelete(actionsFor.version)}
       >
          <ListItemIcon>
             <DeleteOutlineIcon fontSize="small" />
@@ -247,7 +353,10 @@ export function VersionSwitch({
             size="small"
             variant="outlined"
             endIcon={<KeyboardArrowDownIcon />}
-            aria-label="Select package version"
+            // Holds the visible text, so a speech user can say what they see.
+            aria-label={
+               shown ? `Version v${shown}, change version` : "Select a version"
+            }
             aria-haspopup="menu"
             onClick={(event) => setListAnchor(event.currentTarget)}
             sx={{
@@ -270,7 +379,12 @@ export function VersionSwitch({
                paper: {
                   sx: { minWidth: 320, maxWidth: 400, mt: 1, borderRadius: 3 },
                },
-               list: { "aria-label": `Versions of ${packageName}` },
+               // A row marked disabled stays reachable by keyboard, so what
+               // it says is read too.
+               list: {
+                  "aria-label": `Versions of ${packageName}`,
+                  disabledItemsFocusable: true,
+               },
             }}
          >
             {versions.map((version) => {
@@ -289,9 +403,20 @@ export function VersionSwitch({
                   <MenuItem
                      key={version.id}
                      aria-current={active ? "true" : undefined}
+                     // An archived version is listed but does not open (the
+                     // server answers 410): choosing it offers its actions
+                     // instead. With none to offer, it is marked disabled; it
+                     // is not otherwise, since that would disable its ⋯ too.
+                     aria-disabled={archived && !canManage ? "true" : undefined}
+                     aria-haspopup={canManage ? "menu" : undefined}
                      data-testid="version-row"
+                     onKeyDown={(event) => openActionsByKey(event, version)}
                      onClick={(event) => {
-                        if (active || archived) return;
+                        if (archived) {
+                           openActions(version, event.currentTarget);
+                           return;
+                        }
+                        if (active) return;
                         setListAnchor(null);
                         onSelectVersion(version.id, event);
                      }}
@@ -304,7 +429,10 @@ export function VersionSwitch({
                         backgroundColor: active
                            ? alpha(theme.palette.primary.main, 0.04)
                            : undefined,
-                        cursor: active || archived ? "default" : "pointer",
+                        cursor:
+                           active || (archived && !canManage)
+                              ? "default"
+                              : "pointer",
                      })}
                   >
                      <ListItemText
@@ -334,6 +462,16 @@ export function VersionSwitch({
                         >
                            <span>
                               <IconButton
+                                 ref={(element: HTMLButtonElement | null) => {
+                                    if (element) {
+                                       moreButtons.current.set(
+                                          version.id,
+                                          element,
+                                       );
+                                    } else {
+                                       moreButtons.current.delete(version.id);
+                                    }
+                                 }}
                                  size="small"
                                  aria-label={`More actions for version ${version.id}`}
                                  aria-haspopup="menu"
@@ -365,6 +503,11 @@ export function VersionSwitch({
                   "aria-label": actionsFor
                      ? `Actions for version ${actionsFor.version.id}`
                      : undefined,
+                  // A refused action is focusable, so its reason is read.
+                  disabledItemsFocusable: true,
+                  // Latest refuses every action, and the menu then focuses
+                  // no item: focus the list, so the arrow keys reach them.
+                  autoFocus: allRefused,
                },
             }}
          >
@@ -416,12 +559,10 @@ export function VersionSwitch({
                        key="archive"
                        disabled={refusals.archive !== undefined}
                        onClick={() => {
-                          const { id } = actionsFor.version;
+                          setArchiving(actionsFor.version);
+                          changeArchive.reset();
                           closeActions();
-                          changeArchive.mutate({
-                             id,
-                             archiveStatus: "archive",
-                          });
+                          setListAnchor(null);
                        }}
                     >
                        <ListItemIcon>
@@ -483,11 +624,60 @@ export function VersionSwitch({
          </AppDialog>
 
          <AppDialog
+            open={archiving !== null}
+            onClose={() => {
+               if (!changeArchive.isPending) setArchiving(null);
+            }}
+            title={archiving ? `Archive v${archiving.id}` : ""}
+            description={
+               archiving
+                  ? `v${archiving.id} stops being served and is unloaded. Its files stay, so it can be unarchived.`
+                  : undefined
+            }
+            initialFocus={archiveCancelRef}
+            actions={
+               <>
+                  <Button
+                     ref={archiveCancelRef}
+                     disabled={changeArchive.isPending}
+                     onClick={() => setArchiving(null)}
+                  >
+                     Cancel
+                  </Button>
+                  <Button
+                     variant="contained"
+                     loading={changeArchive.isPending}
+                     onClick={() =>
+                        archiving &&
+                        changeArchive.mutate({
+                           id: archiving.id,
+                           archiveStatus: "archive",
+                        })
+                     }
+                  >
+                     Archive
+                  </Button>
+               </>
+            }
+         >
+            <Stack spacing={1.5}>
+               <Typography variant="body2" color="text.secondary">
+                  {`${TABLES_DROPPED} Its scheduled builds stop, and once unarchived it serves live until it is built again.`}
+               </Typography>
+               {changeArchive.isError && archiving && (
+                  <Alert severity="error" role="alert">
+                     {`Couldn't archive v${archiving.id}: ${errorDetail(changeArchive.error)}`}
+                  </Alert>
+               )}
+            </Stack>
+         </AppDialog>
+
+         <AppDialog
             open={deleting !== null}
             onClose={() => {
                if (!deleteVersion.isPending) setDeleting(null);
             }}
-            title={deleting ? `Delete v${deleting.id}` : ""}
+            title={deleting ? `Delete v${deleting.version.id}` : ""}
             initialFocus={deleteCancelRef}
             actions={
                <>
@@ -502,8 +692,9 @@ export function VersionSwitch({
                      variant="contained"
                      color="error"
                      loading={deleteVersion.isPending}
+                     disabled={deleteRefusal !== undefined}
                      onClick={() =>
-                        deleting && deleteVersion.mutate(deleting.id)
+                        deleting && deleteVersion.mutate(deleting.version.id)
                      }
                   >
                      {deletesPackage ? "Delete package" : "Delete version"}
@@ -515,13 +706,18 @@ export function VersionSwitch({
                {deleting && (
                   <Typography variant="body2">
                      {deletesPackage
-                        ? `v${deleting.id} is the only version of ${packageName}, so deleting it deletes the package. This cannot be undone.`
-                        : `v${deleting.id} stops being served and its files are removed. Links that name it stop working, and this cannot be undone.`}
+                        ? `v${deleting.version.id} is the only version of ${packageName}, so deleting it deletes the package. ${TABLES_DROPPED} This cannot be undone.`
+                        : `v${deleting.version.id} stops being served and its files are removed. ${TABLES_DROPPED} Links that name it stop working, and this cannot be undone.`}
                   </Typography>
+               )}
+               {deleteRefusal !== undefined && deleting && (
+                  <Alert severity="warning" role="alert">
+                     {`v${deleting.version.id} can't be deleted now: ${deleteRefusal}.`}
+                  </Alert>
                )}
                {deleteVersion.isError && deleting && (
                   <Alert severity="error" role="alert">
-                     {`Couldn't delete v${deleting.id}: ${errorDetail(deleteVersion.error)}`}
+                     {`Couldn't delete v${deleting.version.id}: ${errorDetail(deleteVersion.error)}`}
                   </Alert>
                )}
             </Stack>

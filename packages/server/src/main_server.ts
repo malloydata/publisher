@@ -291,6 +291,11 @@ environmentStore.setVersionDeletedHook(
       );
    },
 );
+// A publish of a version id a delete freed first reclaims what the deleted
+// version still owes, if that delete's cleanup has not run yet.
+environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
+   materializationService.reclaimOwedNow(environment, packageName, versionId),
+);
 // A reclaim that a crash cut short is finished once the environments have
 // loaded: nothing else would start it again.
 void environmentStore.finishedInitialization.then(

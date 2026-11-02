@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { useCallback, useMemo, type MouseEvent } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { documentPath } from "../../common/documentRoutes";
 import {
@@ -27,6 +27,7 @@ function PackagePage() {
    } = usePackageRoute({ always: true });
    const { search } = useLocation();
    const routerNavigate = useRouterClickHandler();
+   const replaceNavigate = useNavigate();
    // Every link the package page builds points inside the package without a
    // version; here it learns the one on screen, so a pinned version stays
    // pinned from the page to its reports, models and apps.
@@ -94,6 +95,14 @@ function PackagePage() {
          }
          onSelectVersion={(id, event) =>
             routerNavigate(packagePath(environmentName, packageName, id), event)
+         }
+         // The version on screen was archived or deleted: its address is
+         // replaced, so Back does not return to a version that is gone.
+         onReplaceVersion={(id) =>
+            replaceNavigate(
+               packagePath(environmentName, packageName, id ?? LATEST_SEGMENT),
+               { replace: true },
+            )
          }
          resourceUri={resourceUri}
          onEvent={onEvent}

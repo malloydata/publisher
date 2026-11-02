@@ -102,6 +102,13 @@ interface PackageProps {
     * the switch.
     */
    onSelectVersion?: (versionId: string, event?: React.MouseEvent) => void;
+   /**
+    * Show another version in place of the one on screen after it was
+    * archived or deleted: a version's id, or undefined for `latest`. Meant to
+    * replace the address rather than add to history. Absent, the version is
+    * opened with `onSelectVersion`.
+    */
+   onReplaceVersion?: (versionId: string | undefined) => void;
 }
 
 export default function Package({
@@ -110,6 +117,7 @@ export default function Package({
    resourceUri,
    onEvent,
    onSelectVersion,
+   onReplaceVersion,
 }: PackageProps) {
    const { apiClients, server, mutable } = useServer();
    const queryClient = useQueryClient();
@@ -121,9 +129,14 @@ export default function Package({
    const { environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
    // A package with published versions is immutable: it shows which version
-   // is on screen, and offers nothing that writes into the package.
-   const { versions } = usePackageVersions(environmentName, packageName);
+   // is on screen, and offers nothing that writes into the package. Until
+   // its listing has said it has none, nothing that writes is offered either:
+   // while the listing loads, or when it failed.
+   const versionListing = usePackageVersions(environmentName, packageName);
+   const { versions } = versionListing;
    const versioned = versions.length > 0;
+   const editable =
+      !versioned && !versionListing.isPending && !versionListing.isError;
    const selectVersion =
       onSelectVersion ??
       ((id: string, event?: React.MouseEvent) =>
@@ -282,7 +295,7 @@ export default function Package({
       workspace.state === "ready"
          ? createRoute({
               authoritative: workspace.chosen?.authoritative === true,
-              mutable: mutable && !versioned,
+              mutable: mutable && editable,
               canStore: workspace.chosen?.writeable === true,
               ...(versionId === undefined ? {} : { versionId }),
            })
@@ -358,6 +371,7 @@ export default function Package({
          versions={versions}
          {...(versionId !== undefined ? { selectedVersionId: versionId } : {})}
          onSelectVersion={selectVersion}
+         {...(onReplaceVersion ? { onReplaceVersion } : {})}
          // Deleting the only version deletes the package: back to its
          // environment.
          onPackageDeleted={() =>
@@ -417,6 +431,26 @@ export default function Package({
          </Box>
 
          <PackageProblems warnings={pkgQuery.data?.data?.warnings} />
+
+         {versionListing.isError && (
+            <Box sx={{ mb: 4 }}>
+               <Alert
+                  severity="warning"
+                  action={
+                     <Button
+                        color="inherit"
+                        size="small"
+                        onClick={versionListing.refetch}
+                     >
+                        Retry
+                     </Button>
+                  }
+               >
+                  Could not read this package&apos;s versions, so nothing that
+                  changes it is offered until they load.
+               </Alert>
+            </Box>
+         )}
 
          {isLoading && <Loading text="Loading package..." />}
 
@@ -551,7 +585,9 @@ export default function Package({
                      ))}
                   </PackageSection>
                )}
-               {drafts.length > 0 && (
+               {/* A draft opens in the builder, which saves into the
+                   package: not offered where nothing may be written. */}
+               {editable && drafts.length > 0 && (
                   <PackageSection title="Drafts" count={drafts.length}>
                      {drafts.map(({ locator, where }) => (
                         <PackageItemRow
@@ -710,7 +746,7 @@ export default function Package({
 
                <Materializations
                   resourceUri={resourceUri}
-                  versioned={versioned}
+                  versioned={!editable}
                />
 
                {readmePath && (

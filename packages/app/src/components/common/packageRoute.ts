@@ -57,9 +57,12 @@ export const packagePath = (
 
 /**
  * A link inside a package, given the version on screen: `to` gains the
- * version segment after the package when it points into this package and
- * has none. The package page builds its links without one, so this is where
- * they learn which version they belong to.
+ * version segment after the package when it points into this package. Every
+ * caller builds its links without one (the package page, drills, the move of
+ * a versionless path to `latest`), so this is where they learn which version
+ * they belong to. A first segment that looks like a version is a folder of
+ * the package (`latest/q.malloy`, `2024.01.01/r.malloy`), so it gets the
+ * segment like any other path.
  */
 export const withVersionSegment = (
    to: string,
@@ -75,7 +78,6 @@ export const withVersionSegment = (
    for (const prefix of prefixes) {
       if (to !== prefix && !to.startsWith(`${prefix}/`)) continue;
       const rest = to.slice(prefix.length).replace(/^\//, "");
-      if (splitVersionSegment(rest)) return to;
       return `${packagePath(environmentName, packageName, segment)}${
          rest === "" ? "" : `/${rest}`
       }`;
