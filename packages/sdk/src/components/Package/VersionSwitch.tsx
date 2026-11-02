@@ -150,12 +150,13 @@ export function VersionSwitch({
    } | null>(null);
    const [pinning, setPinning] = useState<PackageVersion | null>(null);
    const [archiving, setArchiving] = useState<PackageVersion | null>(null);
-   // The version to delete, with the package's versions read just before the
-   // dialog opened: whether the delete takes the package with it is decided
-   // from that read, never from a list another tab may have changed.
+   // The version to delete, with the package's versions read as its dialog
+   // opened (absent while that read is under way): whether the delete takes
+   // the package with it is decided from that read, never from a list
+   // another tab may have changed.
    const [deleting, setDeleting] = useState<{
       version: PackageVersion;
-      versions: PackageVersion[];
+      versions?: PackageVersion[];
    } | null>(null);
    const [failure, setFailure] = useState<string | null>(null);
    const pinCancelRef = useRef<HTMLButtonElement>(null);
@@ -246,26 +247,30 @@ export function VersionSwitch({
       : undefined;
 
    const deleteVersion = useMutation({
-      mutationFn: (version: string) =>
+      // `read`: the package's versions the dialog was confirmed against.
+      mutationFn: ({ id }: { id: string; read: PackageVersion[] }) =>
          apiClients.versions.deletePackageVersion(
             environmentName,
             packageName,
-            version,
+            id,
          ),
-      onSuccess: async (_response, id) => {
+      onSuccess: async (_response, { id, read }) => {
          setDeleting(null);
          // What is left decides what happened, not the list the dialog read:
          // a package with no versions left (its listing answers 404, read as
-         // none) went with the version.
+         // none) went with the version. Only when that cannot be read does the
+         // dialog's read stand in, so a deleted package never leaves the page
+         // on its dead route.
          const after = await fetchVersions().catch(() => undefined);
-         if (after !== undefined && after.length === 0) {
+         const left = after ?? read.filter((version) => version.id !== id);
+         if (left.length === 0) {
             await queryClient.invalidateQueries({
                queryKey: ["packages", environmentName],
             });
             onPackageDeleted?.();
             return;
          }
-         if (id === shown) await leaveVersion(id, after);
+         if (id === shown) await leaveVersion(id, left);
          await refresh();
       },
       onError: () => void refresh(),
@@ -281,21 +286,39 @@ export function VersionSwitch({
       actionsFor.version.latest &&
       refusals.archive !== undefined &&
       refusals.delete !== undefined;
-   const deletesPackage = deleting !== null && deleting.versions.length <= 1;
+   // The dialog is open and its read of the versions is under way.
+   const checkingDelete = deleting !== null && deleting.versions === undefined;
+   const deletesPackage =
+      deleting?.versions !== undefined && deleting.versions.length <= 1;
    // What the server would refuse, by the list read as the dialog opened.
-   const deleteRefusal = deleting
-      ? versionRefusals(deleting.version, deleting.versions).delete
-      : undefined;
+   const deleteRefusal =
+      deleting?.versions !== undefined
+         ? versionRefusals(deleting.version, deleting.versions).delete
+         : undefined;
 
    // Read the versions afresh, then confirm against that read.
    const chooseDelete = async (chosen: PackageVersion) => {
       closeActions();
       setListAnchor(null);
       deleteVersion.reset();
+      // Open at once, saying it is checking, so the click visibly did something.
+      setDeleting({ version: chosen });
+      // Only into the dialog this call opened: one cancelled meanwhile stays shut.
+      const settle = (
+         next: { version: PackageVersion; versions: PackageVersion[] } | null,
+      ) =>
+         setDeleting((open) =>
+            open !== null &&
+            open.version.id === chosen.id &&
+            open.versions === undefined
+               ? next
+               : open,
+         );
       let fresh: PackageVersion[];
       try {
          fresh = await fetchVersions();
       } catch (error) {
+         settle(null);
          setFailure(
             `Couldn't check v${chosen.id} before deleting it: ${errorDetail(error)}`,
          );
@@ -303,11 +326,12 @@ export function VersionSwitch({
       }
       const current = fresh.find((version) => version.id === chosen.id);
       if (current === undefined) {
+         settle(null);
          setFailure(`v${chosen.id} is no longer a version of ${packageName}.`);
          void refresh();
          return;
       }
-      setDeleting({ version: current, versions: fresh });
+      settle({ version: current, versions: fresh });
    };
 
    // A row's ⋯ menu, anchored at its ⋯ as a click there anchors it.
@@ -691,10 +715,14 @@ export function VersionSwitch({
                   <Button
                      variant="contained"
                      color="error"
-                     loading={deleteVersion.isPending}
+                     loading={deleteVersion.isPending || checkingDelete}
                      disabled={deleteRefusal !== undefined}
                      onClick={() =>
-                        deleting && deleteVersion.mutate(deleting.version.id)
+                        deleting?.versions &&
+                        deleteVersion.mutate({
+                           id: deleting.version.id,
+                           read: deleting.versions,
+                        })
                      }
                   >
                      {deletesPackage ? "Delete package" : "Delete version"}
@@ -703,7 +731,12 @@ export function VersionSwitch({
             }
          >
             <Stack spacing={1.5}>
-               {deleting && (
+               {checkingDelete && deleting && (
+                  <Typography variant="body2">
+                     {`Checking ${packageName}'s versions before deleting v${deleting.version.id}…`}
+                  </Typography>
+               )}
+               {deleting && !checkingDelete && (
                   <Typography variant="body2">
                      {deletesPackage
                         ? `v${deleting.version.id} is the only version of ${packageName}, so deleting it deletes the package. ${TABLES_DROPPED} This cannot be undone.`

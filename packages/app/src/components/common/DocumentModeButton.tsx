@@ -40,14 +40,15 @@ export function DocumentModeButton() {
    const editPageMounted = useEditPageMounted();
    const environmentName = params.environmentName ?? "";
    const packageName = params.packageName ?? "";
-   // A published version is immutable: its reports are read, never edited.
-   const route = usePackageRoute();
+   // A published version is immutable: its reports are read, never edited,
+   // and nothing is until the version listing has said there are none.
+   const route = usePackageRoute({ always: true });
    const splat = route.path ?? "";
    const routeShaped =
       environmentName !== "" &&
       packageName !== "" &&
       splat !== "" &&
-      !route.versioned &&
+      route.writable &&
       !FILE_ROUTE.test(splat);
    const { reports, settled } = useReportListing(
       environmentName,

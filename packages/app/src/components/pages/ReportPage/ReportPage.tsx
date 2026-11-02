@@ -8,12 +8,12 @@ import {
    Report,
    useGivenUrlParams,
    useNarrowScreen,
-   useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import { useEffect, useMemo, useRef } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
+import { usePackageLinkNavigate } from "../../common/usePackageLinkNavigate";
 import { usePackageRoute } from "../../common/usePackageRoute";
 import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 import { useDrawn } from "../useDrawn";
@@ -62,7 +62,13 @@ export default function ReportPage({
       packageName,
       versionSegment,
    );
-   const onLinkNavigate = useRouterClickHandler();
+   // A link in the report's prose to a file of the package stays on the
+   // version on screen too.
+   const onLinkNavigate = usePackageLinkNavigate(
+      environmentName,
+      packageName,
+      versionSegment,
+   );
    // The event names the report by path; the sink adds where it is.
    const onEvent = useMemo(
       () => logReportEvent({ environmentName, packageName }),

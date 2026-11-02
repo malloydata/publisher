@@ -12,8 +12,9 @@
  * It must be on this machine (`--base` a loopback address): the script
  * deletes and recreates an environment.
  *
- * It (re)creates the environment, so it can be run again. An environment
- * that already holds packages is refused unless `--reset` says to delete it.
+ * It creates the environment. One that already exists, whatever it holds,
+ * is deleted and created again only when `--reset` says so, so the script
+ * can be run again with it.
  * Then it publishes:
  *
  *   sales      scope: package  1.0.0  order_summary
@@ -234,16 +235,24 @@ async function main() {
       process.exit(1);
    }
 
-   // Start clean, so the script can run again, but never over packages it
-   // was not told it may delete.
-   const existing = await call("GET", `/environments/${ENV}/packages`);
-   if (existing.ok && Array.isArray(existing.json) && existing.json.length > 0 && !RESET) {
-      console.error(
-         `environment ${ENV} already has packages (${existing.json.map((p) => p.name).join(", ")}); pass --reset to delete it, or --env to use another.`,
-      );
-      process.exit(1);
+   // Start clean, but never over an environment it was not told it may
+   // delete: one that exists, or one it cannot tell is absent, is deleted
+   // only with --reset.
+   const existing = await call("GET", `/environments/${ENV}`);
+   if (existing.status !== 404) {
+      if (!RESET) {
+         console.error(
+            existing.ok
+               ? `environment ${ENV} already exists; pass --reset to delete it, or --env to use another.`
+               : `could not tell whether environment ${ENV} exists (${existing.status}); pass --reset to delete it anyway, or --env to use another.`,
+         );
+         process.exit(1);
+      }
+      const deleted = await call("DELETE", `/environments/${ENV}`);
+      if (!deleted.ok && deleted.status !== 404) {
+         throw new Error(`delete environment ${ENV}: ${deleted.status} ${JSON.stringify(deleted.json)}`);
+      }
    }
-   await call("DELETE", `/environments/${ENV}`);
    const env = await call("POST", "/environments", { name: ENV, packages: [], connections: [] });
    if (!env.ok) throw new Error(`create environment ${ENV}: ${env.status} ${JSON.stringify(env.json)}`);
    console.log(`environment ${ENV} created`);

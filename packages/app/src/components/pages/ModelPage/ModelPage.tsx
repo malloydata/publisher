@@ -24,13 +24,14 @@ function ModelPage() {
    const params = useParams();
    const { search } = useLocation();
    // The path under the package, after the version segment a versioned
-   // package's route carries (`/<env>/<pkg>/<version>/<path>`).
+   // package's route carries (`/<env>/<pkg>/<version>/<path>`). The listing
+   // is asked for on every route (the splat route does too, so it is shared).
    const {
       path: modelPath,
       versionId,
       versionSegment,
-      versioned,
-   } = usePackageRoute();
+      writable,
+   } = usePackageRoute({ always: true });
    const { server } = useServer();
    // Every branch below has the same parent, the package, so the way up is
    // built once here.
@@ -113,7 +114,9 @@ function ModelPage() {
             packageName={params.packageName}
             {...(versionId !== undefined ? { versionId } : {})}
             {...(versionSegment !== undefined ? { versionSegment } : {})}
-            readOnly={versioned}
+            // Nothing is edited until the listing has said there are no
+            // versions: not while it loads, and not when it failed.
+            readOnly={!writable}
             routePath={routePath}
             edit={isEditSearch(search)}
             notFound={notFound}
