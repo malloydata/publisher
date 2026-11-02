@@ -40,6 +40,8 @@ let building: Set<string>;
 let failLoad: Set<string>;
 /** Loads of these versions wait until the test releases them. */
 let heldLoads: Map<string, Promise<void>>;
+/** Called when a load of that version starts, before any hold (see loadStarts). */
+let loadStarted: Map<string, () => void>;
 let failBind: boolean;
 let throwOnArchive: boolean;
 /** Each deleted version's row, read when its cleanup started. */
@@ -49,6 +51,7 @@ function host(): VersionHost<Loaded> {
    const lock = new Mutex();
    return {
       loadVersion: async (_pkg, _path, version) => {
+         loadStarted.get(version.versionId)?.();
          await heldLoads.get(version.versionId);
          if (failLoad.has(version.versionId)) {
             throw new Error(`cannot load ${version.versionId}`);
@@ -167,6 +170,7 @@ beforeEach(async () => {
    building = new Set();
    failLoad = new Set();
    heldLoads = new Map();
+   loadStarted = new Map();
    failBind = false;
    throwOnArchive = false;
    rowsAtCleanup = [];
@@ -555,6 +559,11 @@ describe("delete", () => {
    });
 });
 
+/** Resolves once a load of `versionId` starts: its publish has placed its folder. */
+function loadStarts(versionId: string): Promise<void> {
+   return new Promise((resolve) => loadStarted.set(versionId, resolve));
+}
+
 describe("deleting the last version while another version publishes", () => {
    it("leaves the package to a publish of another version in flight, which keeps it", async () => {
       const svc = service();
@@ -564,9 +573,10 @@ describe("deleting the last version while another version publishes", () => {
          "2.0.0",
          new Promise<void>((resolve) => (release = resolve)),
       );
+      const started = loadStarts("2.0.0");
       const publishing = publish(svc, "2.0.0");
-      // Let the publish place 2.0.0's folder and reach its compile.
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The publish has placed 2.0.0's folder and reached its compile.
+      await started;
       expect(fs.existsSync(path.join(envPath, PKG, "2.0.0"))).toBe(true);
 
       const deleted = await svc.deleteVersion(PKG, "1.0.0");
@@ -595,8 +605,9 @@ describe("deleting the last version while another version publishes", () => {
          new Promise<void>((resolve) => (release = resolve)),
       );
       failLoad.add("2.0.0");
+      const started = loadStarts("2.0.0");
       const publishing = publish(svc, "2.0.0");
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await started;
 
       expect((await svc.deleteVersion(PKG, "1.0.0")).packageRemoved).toBe(
          false,
