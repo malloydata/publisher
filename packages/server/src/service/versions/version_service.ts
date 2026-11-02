@@ -122,9 +122,18 @@ export interface VersionHost<P> {
     */
    onVersionDeleted?(packageName: string, versionId: string): void;
    /**
+    * A publish is about to create a version's row: reclaim now what a
+    * deleted version of the same id still owes (its own `scope: version`
+    * auto-run tables, when the delete's background cleanup has not run yet),
+    * so the new version neither binds those tables nor clears the records
+    * naming them. Called holding the version's lock; must not throw.
+    */
+   reclaimOwedBy?(packageName: string, versionId: string): Promise<void>;
+   /**
     * A delete took the package's last version, and the package with it:
-    * forget what is held about the package itself (its load state). Called
-    * holding the package lock.
+    * forget what is held about the package itself (its load state, its
+    * cached embeddings), however the removal came about: the delete, or the
+    * publish it waited for. Called holding the package lock.
     */
    packageRemoved?(packageName: string): void;
 }
@@ -592,6 +601,9 @@ export class VersionService<P = unknown> {
                   : `Version ${versionId} is the published version ${twin.versionId} written with leading zeros, and the two would compare equal. Publish under another version.`,
             );
          }
+         // An id a delete freed: what that version still owes is reclaimed
+         // before this one loads and its row clears the old records.
+         await host.reclaimOwedBy?.(packageName, versionId);
 
          // Only the package's first version moves an unversioned tree aside,
          // and only while holding the package lock, with reads of the

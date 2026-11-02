@@ -32,6 +32,16 @@ const VERSION_OWNED_RUN =
 export const OWED_RECLAIM_RUN = `${VERSION_OWNED_RUN} AND coalesce(json_extract_string(metadata, '$.mode'), '') = 'auto'`;
 
 /**
+ * A version's run still going. No delete of a version or a package removes
+ * its record: the run writes its outcome there, and it holds its build slot
+ * until it settles. A caller's orchestrated run outlives a delete of its
+ * version (the caller owns it), and a version's own auto-run is stopped by
+ * that delete and settles shortly after.
+ */
+export const RUNNING_VERSION_RUN =
+   "version IS NOT NULL AND status IN ('PENDING', 'MANIFEST_ROWS_READY')";
+
+/**
  * The `versions` registry: one row per published version, plus the package's
  * `latest` pointer on `packages.latest_version`.
  *
@@ -120,12 +130,14 @@ export class VersionRepository {
             throw err;
          }
          // A version id deleted and published again starts with none of the
-         // old one's own runs: their records go (their tables are left, and a
-         // build of the new content writes the same names over them), so the
-         // new version never lists or binds them, and no reclaim of the
-         // deleted version runs against the new one.
+         // old one's own settled runs: their records go (what they owed was
+         // reclaimed before this publish loaded, see reclaimOwedBy; a table
+         // left is written over by a build of the new content), so the new
+         // version never lists or binds them, and no reclaim of the deleted
+         // version runs against the new one. A run still going keeps its
+         // record (RUNNING_VERSION_RUN).
          await tx.run(
-            `DELETE FROM materializations WHERE environment_id = ? AND package_name = ? AND version = ? AND ${VERSION_OWNED_RUN}`,
+            `DELETE FROM materializations WHERE environment_id = ? AND package_name = ? AND version = ? AND ${VERSION_OWNED_RUN} AND NOT (${RUNNING_VERSION_RUN})`,
             [environmentId, packageName, versionId],
          );
          if (promoted) {
@@ -278,7 +290,9 @@ export class VersionRepository {
     * its row, its ledger and its runs, so no package is left with no version.
     * Kept: the runs of its deleted versions that own tables under
     * `scope: version` (auto-runs), which those versions' reclaim drops and
-    * then deletes. False, and nothing deleted, when it has a version again.
+    * then deletes, and any run of a version still going
+    * (RUNNING_VERSION_RUN). False, and nothing deleted, when it has a
+    * version again.
     */
    async deletePackageIfNoVersions(
       environmentId: string,
@@ -296,7 +310,7 @@ export class VersionRepository {
             packageName,
          ]);
          await tx.run(
-            `DELETE FROM materializations ${byPackage} AND NOT (${OWED_RECLAIM_RUN})`,
+            `DELETE FROM materializations ${byPackage} AND NOT (${OWED_RECLAIM_RUN}) AND NOT (${RUNNING_VERSION_RUN})`,
             [environmentId, packageName],
          );
          await tx.run(

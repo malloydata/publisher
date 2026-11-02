@@ -92,7 +92,8 @@ export class VersionController {
    /**
     * Delete a version for good. Answers the version as it was. When it was
     * the package's only version the package went with it, and so do the
-    * package's cached embeddings.
+    * package's cached embeddings (dropped where the package is removed, so
+    * also when a publish the delete waited for removes it).
     */
    async deleteVersion(
       environmentName: string,
@@ -102,12 +103,6 @@ export class VersionController {
       this.assertWritable();
       const { versions } = await this.service(environmentName);
       const deleted = await versions.deleteVersion(packageName, version);
-      if (deleted.packageRemoved) {
-         this.environmentStore.cleanupPackageEmbeddings(
-            environmentName,
-            packageName,
-         );
-      }
       return toApiVersion(environmentName, deleted.version, null);
    }
 
