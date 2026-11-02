@@ -472,22 +472,14 @@ export class VersionService<P = unknown> {
    }
 
    /**
-    * The versions being published now, each with when its publish began:
-    * from the moment the staged tree names its version until the publish
-    * settles. A version new to the package has no row until its commit, so
-    * this is the only place a status read can see it loading.
+    * The versions being published now: from the moment the staged tree names
+    * its version until the publish settles. A version new to the package has
+    * no row until its commit, so this is the only place a status read can see
+    * it loading.
     */
-   publishingVersions(): {
-      packageName: string;
-      versionId: string;
-      since: number;
-   }[] {
+   publishingVersions(): { packageName: string; versionId: string }[] {
       return [...this.versionsPublishing.values()].map(
-         ({ packageName, versionId, since }) => ({
-            packageName,
-            versionId,
-            since,
-         }),
+         ({ packageName, versionId }) => ({ packageName, versionId }),
       );
    }
 
@@ -511,7 +503,6 @@ export class VersionService<P = unknown> {
       this.versionsPublishing.set(publishingKey, {
          packageName,
          versionId: staged.versionId,
-         since: publishing?.since ?? Date.now(),
          count: (publishing?.count ?? 0) + 1,
       });
       try {
@@ -1146,7 +1137,7 @@ export class VersionService<P = unknown> {
    /** The same publishes by `package@version` (see publishingVersions). */
    private readonly versionsPublishing = new Map<
       string,
-      { packageName: string; versionId: string; since: number; count: number }
+      { packageName: string; versionId: string; count: number }
    >();
    /** Packages whose last version was deleted while a publish of them ran. */
    private readonly packagesToRemove = new Set<string>();

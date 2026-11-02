@@ -122,16 +122,16 @@ function gate(): { wait: Promise<void>; open: () => void } {
    return { wait, open };
 }
 
-/** Publish `sales` 1.0.0, with `beforeDownload` awaited inside the download. */
+/** Publish `sales` 1.0.0, with `beforeDownload` run inside the download. */
 function publishSales(
    versions: VersionService<unknown>,
-   beforeDownload: Promise<void> = Promise.resolve(),
+   beforeDownload: () => Promise<void> = async () => {},
 ) {
    const dir = source("sales", "1.0.0");
    return versions.publish(
       "sales",
       async (staging) => {
-         await beforeDownload;
+         await beforeDownload();
          await fs.promises.cp(dir, staging, { recursive: true });
       },
       { sourceLocation: dir, promotion: "explicit" },
@@ -226,11 +226,52 @@ describe("/status while a version is published", () => {
       expect(after.loadErrors).toBeUndefined();
    });
 
+   it("never records a failed load for a package whose download fails while a read lists it", async () => {
+      const { environment, versions } = await open();
+      const downloading = gate();
+      const fail = gate();
+      const published = publishSales(versions, async () => {
+         downloading.open();
+         await fail.wait;
+         throw new Error("download failed");
+      });
+      await downloading.wait;
+
+      // The read takes the package for a load in flight, and gets its answer
+      // to whether it has versions only after the download has failed.
+      const answer = gate();
+      const asked = gate();
+      const isVersioned = versions.isVersioned.bind(versions);
+      versions.isVersioned = async (packageName: string) => {
+         const result = await isVersioned(packageName);
+         if (packageName === "sales") {
+            asked.open();
+            await answer.wait;
+         }
+         return result;
+      };
+      const read = store!.getStatus({ includeLoading: true });
+      await asked.wait;
+      fail.open();
+      await expect(published).rejects.toThrow("download failed");
+      answer.open();
+      await read;
+
+      expect(environment.getFailedPackages().has("sales")).toBe(false);
+      const after = await salesEntries(true);
+      expect(after.entries).toHaveLength(0);
+      expect(after.loadErrors).toBeUndefined();
+   });
+
    it("lists the package as loading while its download runs", async () => {
       const { versions } = await open();
+      const downloading = gate();
       const download = gate();
-      const published = publishSales(versions, download.wait);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      const published = publishSales(versions, async () => {
+         downloading.open();
+         await download.wait;
+      });
+      await downloading.wait;
 
       const loading = await salesEntries(true);
       expect(loading.entries).toHaveLength(1);

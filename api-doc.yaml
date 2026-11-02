@@ -4693,14 +4693,16 @@ components:
             (an archived one, or one not loaded since the server started) is still
             held, so it is still listed, with `loaded: false` and only its
             `resource`, name, version, `latestVersion`, `archiveStatus` and
-            `status`. It loads when a request next names it.
+            `status`. It loads when a request next names it. A version still
+            being published is listed only under `includeLoading`, with
+            `loaded: false`, no `archiveStatus`, and `status.loading`.
         archiveStatus:
           type: string
           enum: [archive, unarchive]
           readOnly: true
           description: >-
-            Set only on a version's entry in `GET /status`: whether the version
-            is archived.
+            Set only on a version's entry in `GET /status`, except one still
+            being published: whether the version is archived.
         description:
           type: string
           description: Package description
@@ -5204,9 +5206,11 @@ components:
             bound one that never completes. Which tables a serving copy answers
             from is a separate question, answered by `manifestBindingStatus`.
             A publish of a package version is a load from its download until
-            it commits or fails; once its tree has named the version, a version
-            the package does not hold yet is listed as its own entry, with its
-            `versionId`, `loaded: false` and `loading`.
+            it settles, and while it runs every entry of that package reports
+            `loading`. With `includeLoading=true`, once its tree has named the
+            version, a version the package does not hold yet is listed as its
+            own entry, with its `versionId`, `loaded: false` and `loading`,
+            unless an unversioned copy of the package still serves.
 
             A package that is loading for the first time, so is not yet
             serving, is listed only where a caller asks for it:

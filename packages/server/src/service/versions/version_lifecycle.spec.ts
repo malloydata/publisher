@@ -1052,7 +1052,7 @@ describe("versions being published", () => {
          await new Promise((resolve) => setTimeout(resolve, 5));
       }
       expect(svc.publishingVersions()).toEqual([
-         { packageName: PKG, versionId: "1.0.0", since: expect.any(Number) },
+         { packageName: PKG, versionId: "1.0.0" },
       ]);
       release();
       await published;

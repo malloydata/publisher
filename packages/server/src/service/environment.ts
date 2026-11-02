@@ -976,6 +976,11 @@ export class Environment {
                      // An interrupted load: reloading it from this read path
                      // would repeat the work on every listing.
                      return undefined;
+                  } else if (registered === undefined) {
+                     // Listed only as a load in flight, which has since failed
+                     // (one that succeeded is resident or versioned): its
+                     // caller has the error, and a read never loads it.
+                     return undefined;
                   } else {
                      metadata = (
                         await this.getPackage(packageName, false)
@@ -1833,7 +1838,10 @@ export class Environment {
          });
          entries.set(row.packageName, list);
       }
-      for (const { packageName, versionId, since } of publishing) {
+      for (const { packageName, versionId } of publishing) {
+         // An unversioned copy still serving keeps its package entry until
+         // the first version commits.
+         if (this.packages.has(packageName)) continue;
          const list = entries.get(packageName) ?? [];
          if (list.some((entry) => entry.versionId === versionId)) continue;
          list.push({
@@ -1842,11 +1850,7 @@ export class Environment {
             versionId,
             latestVersion: list[0]?.latestVersion ?? null,
             loaded: false,
-            status: {
-               serving: false,
-               loading: true,
-               loadingSince: new Date(since).toISOString(),
-            },
+            status: this.describePackageStatus(packageName, versionId),
          });
          entries.set(packageName, list);
       }
