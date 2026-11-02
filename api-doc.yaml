@@ -1712,7 +1712,9 @@ paths:
         notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
         The package must exist and be accessible for deletion.
 
-        On a versioned package this deletes every published version and its files. To take one
+        On a versioned package this deletes every published version and its files, then, in the
+        background, cleans up each version as deleting it alone does: its own auto-runs still
+        running are stopped and its own `scope: version` tables reclaimed. To take one
         version out of service while keeping the rest, archive it with
         `PATCH .../packages/{packageName}/versions/{version}`; to remove one version for good,
         delete it with `DELETE .../packages/{packageName}/versions/{version}`.
@@ -1882,7 +1884,7 @@ paths:
       description: |
         Removes one version for good, where an archive only takes it out of service. The version
         is unloaded from memory, and its row and its files are deleted; other versions are
-        untouched. Then, in the background, its builds still running are stopped and the tables
+        untouched. Then, in the background, its own auto-runs still running are stopped and the tables
         its own auto-runs built under `scope: version` are reclaimed with their run records, as an
         archive reclaims them. Nothing is dropped before the delete commits, so a refused delete
         changes nothing. It cannot be undone, and it frees the version id: a later publish of the
@@ -1894,7 +1896,8 @@ paths:
         running, the package is left to that publish.
 
         Each table is tried once: one that could not be dropped is left. Tables another run of the
-        package still references are kept, as are an orchestrated run's.
+        package still references are kept, as is an orchestrated run (its tables, and a build of it
+        still running), which the caller that instructed it owns.
 
         A delete is refused with 409 when:
 

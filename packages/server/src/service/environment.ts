@@ -3266,7 +3266,11 @@ export class Environment {
       } = {},
    ): Promise<void> {
       assertSafePackageName(packageName);
-      return this.withPackageLock(packageName, async () => {
+      // The versions a delete of a versioned package removed. Each is then
+      // cleaned up as deleting that version alone is: its own running
+      // auto-runs stopped and its own tables reclaimed, in the background.
+      let deletedVersions: string[] = [];
+      await this.withPackageLock(packageName, async () => {
          // Before the early return: a failed package is never in `packages`,
          // and a stale entry would report a loadError for an unconfigured one.
          this.clearPackageLoadFailure(packageName);
@@ -3283,6 +3287,9 @@ export class Environment {
                   versions.cache.loadedVersionsOf(packageName).length > 0 ||
                   (await versions.isVersioned(packageName)));
             if (versioned && !options.versioned) {
+               deletedVersions = (
+                  await versions!.listVersions(packageName)
+               ).versions.map((version) => version.versionId);
                await options.removeRecords?.();
             }
             if (versioned && this.versionService) {
@@ -3367,6 +3374,19 @@ export class Environment {
             });
          }
       });
+      // The delete is committed; cleaning up must not turn it into a failure.
+      for (const versionId of deletedVersions) {
+         try {
+            this.versionDeletedHook?.(packageName, versionId);
+         } catch (error) {
+            logger.warn("Could not start reclaiming a deleted version", {
+               environmentName: this.environmentName,
+               packageName,
+               versionId,
+               error,
+            });
+         }
+      }
    }
 
    /**

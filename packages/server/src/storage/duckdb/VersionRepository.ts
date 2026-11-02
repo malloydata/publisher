@@ -29,7 +29,7 @@ const VERSION_OWNED_RUN =
  * A version-owned auto-run: the runs whose tables a version's reclaim drops
  * when it is archived or deleted.
  */
-const OWED_RECLAIM_RUN = `${VERSION_OWNED_RUN} AND coalesce(json_extract_string(metadata, '$.mode'), '') = 'auto'`;
+export const OWED_RECLAIM_RUN = `${VERSION_OWNED_RUN} AND coalesce(json_extract_string(metadata, '$.mode'), '') = 'auto'`;
 
 /**
  * The `versions` registry: one row per published version, plus the package's

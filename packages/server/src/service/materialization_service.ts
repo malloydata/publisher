@@ -3800,7 +3800,7 @@ export class MaterializationService {
     * tables that are gone; a table that could not be dropped is named in one
     * warning and left.
     *
-    * Waits for the version's builds to settle (a delete stops them), then runs
+    * Waits for the version's builds to settle (a delete stops its auto-runs), then runs
     * under the version's lock, and only while the version is still archived,
     * or deleted and not published again: an unarchive, a publish of the
     * version, and a run of it (which is refused while it is archived) take
@@ -3847,10 +3847,10 @@ export class MaterializationService {
    }
 
    /**
-    * After a version is deleted: stop its running builds, auto-runs and
-    * orchestrated runs alike, then reclaim what it alone owns, as an archive
-    * does (see reclaimVersionTables, which waits for the stopped builds to
-    * settle first). Best-effort: never throws.
+    * After a version is deleted: stop its own running auto-runs, then reclaim
+    * what it alone owns, as an archive does (see reclaimVersionTables, which
+    * waits for its builds to settle first). An orchestrated run is left to the
+    * caller that instructed it, as its tables are. Best-effort: never throws.
     */
    async cleanUpDeletedVersion(
       environmentName: string,
@@ -3871,9 +3871,9 @@ export class MaterializationService {
    }
 
    /**
-    * Stop every run of a version that has not settled, as stopping each one
-    * does (see stopMaterialization), without looking the version up: it is
-    * already deleted.
+    * Stop every auto-run of a version that has not settled, as stopping each
+    * one does (see stopMaterialization), without looking the version up: it
+    * is already deleted.
     */
    private async stopVersionRuns(
       environmentName: string,
@@ -3887,7 +3887,10 @@ export class MaterializationService {
          { version: versionId },
       );
       for (const m of runs) {
-         if (m.status !== "PENDING" && m.status !== "MANIFEST_ROWS_READY") {
+         if (
+            m.metadata?.mode !== "auto" ||
+            (m.status !== "PENDING" && m.status !== "MANIFEST_ROWS_READY")
+         ) {
             continue;
          }
          const abortController = this.runningAbortControllers.get(m.id);

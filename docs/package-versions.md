@@ -22,7 +22,7 @@ Versioning is off unless `PUBLISHER_PACKAGE_VERSIONING=on` is set in the server'
 
 Any other value fails startup. The flag decides only what a publish does: versions published while it was on keep serving, by `versionId` and as `latest`, after it is turned off, and every route on this page answers in both settings. `GET /api/v0/status` reports it as `packageVersioning`.
 
-**Going back to unversioned.** Turning the flag off does not make a package that has versions unversioned again. Its publishes from a location with the flag off, and a `PATCH …/packages/{pkg}` naming a new location, answer 409 `PACKAGE_IS_VERSIONED`, because an install in place would replace what its versions serve. The way back is to delete the package, which removes every version, and publish it again with the flag off. Between the two the package answers 404, and deleting it does not drop the tables its versions built (see [Disk growth](#disk-growth)).
+**Going back to unversioned.** Turning the flag off does not make a package that has versions unversioned again. Its publishes from a location with the flag off, and a `PATCH …/packages/{pkg}` naming a new location, answer 409 `PACKAGE_IS_VERSIONED`, because an install in place would replace what its versions serve. The way back is to delete the package, which removes every version, and publish it again with the flag off. Between the two the package answers 404. Deleting it reclaims each version's own `scope: "version"` tables, as deleting that version does, and leaves `scope: "package"` tables (see [Disk growth](#disk-growth)).
 
 A future release removes the flag and requires a `version` on every publish from a location ([#1381](https://github.com/malloydata/publisher/issues/1381)). Give your packages' `publisher.json` a semantic `version` now, and bump it for every release, to be ready.
 
@@ -119,19 +119,20 @@ Clients send whole objects, so a body that echoes the package back is accepted: 
 An archive is refused with 409 when:
 
 - the version is the package's `latest` (`VERSION_IS_LATEST`). Move `latest` first;
-- it is the package's last version in service (`VERSION_IS_LAST_ACTIVE`). To take the whole package out of service, delete it, or delete the version (see [Delete a version](#delete-a-version)). Deleting the package does not drop the tables its versions built, so first drop the last version's tables with `DELETE …/materializations/{id}?dropTables=true` (see [Disk growth](#disk-growth));
+- it is the package's last version in service (`VERSION_IS_LAST_ACTIVE`). To take the whole package out of service, delete it, or delete the version (see [Delete a version](#delete-a-version)). Either reclaims the version's own `scope: "version"` tables (see [Disk growth](#disk-growth));
 - a materialization of that version is running (`VERSION_BUILDING`), since the archive would reclaim the tables it is writing. A run starts under the version's lock, so either the run is refused (410) or the archive is.
 
 **The version's files stay on disk**, so it can be unarchived without being published again. To remove them, delete the version. See [Disk growth](#disk-growth).
 
 ## Delete a version
 
-`DELETE …/versions/{version}` removes one version for good, where an archive only takes it out of service. The version is unloaded, and its row and its folder are deleted; the other versions are untouched, and the response is the version as it was. Then, in the background, its builds still running are stopped and the tables its own auto-runs built under `scope: "version"` are reclaimed with their runs, as an archive reclaims them. Nothing is dropped before the delete has committed, so a refused delete changes nothing.
+`DELETE …/versions/{version}` removes one version for good, where an archive only takes it out of service. The version is unloaded, and its row and its folder are deleted; the other versions are untouched, and the response is the version as it was. Then, in the background, its own auto-runs still running are stopped and the tables its own auto-runs built under `scope: "version"` are reclaimed with their runs, as an archive reclaims them. Nothing is dropped before the delete has committed, so a refused delete changes nothing.
 
 - **It frees the version id.** A later publish of the same version is a new version, with whatever content it carries, where before the delete different content under that id was 409 `VERSION_CONFLICT`. A publish of the id that arrives during the delete waits for it. Anything that names a version by its id (a page opened with `?versionId=`, a link to `/<env>/<pkg>/<version>/…`, a cache keyed by version) follows the id to the new content, so do not publish other content under an id something still names.
 - **An archived version can be deleted**, which is how its files are reclaimed.
 - **Deleting the package's only version deletes the package** with it: its row, its run records and its ledger, so no package is left with no version. While a publish of another version of the package is running, the package is left to that publish: deleted when it ends without a version, kept when it commits.
-- **What is kept**, as an archive keeps it: a table another run of the package still references, an orchestrated run's tables, and everything under `scope: "package"`. Each table is tried once: one that could not be dropped is named in a warning and left.
+- **Deleting the package** cleans up each of its versions the same way, once the package is gone.
+- **What is kept**, as an archive keeps it: a table another run of the package still references, an orchestrated run (its tables, and a build of it still running, which the caller that instructed it owns), and everything under `scope: "package"`. Each table is tried once: one that could not be dropped is named in a warning and left.
 
 A delete is refused with 409 when:
 
@@ -168,7 +169,7 @@ Archiving the version reclaims the tables its auto-runs built, in the background
 
 ## Disk growth
 
-Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. Two things remove version trees. Deleting a version removes its tree, with its row and its own tables (see [Delete a version](#delete-a-version)). Deleting the package removes all of them, with its version rows and materialization records. That one does not drop the tables those versions built, as deleting an unversioned package never has: once the records are gone nothing names them, so reclaim a package's tables by archiving or deleting its versions, or with `DELETE …/materializations/{id}?dropTables=true`, before deleting it.
+Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. Two things remove version trees. Deleting a version removes its tree, with its row and its own tables (see [Delete a version](#delete-a-version)). Deleting the package removes all of them, with its version rows and materialization records, and reclaims each version's own `scope: "version"` tables as deleting that version does. It does not drop `scope: "package"` tables, as deleting an unversioned package never has: once the records are gone nothing names them, so drop those with `DELETE …/materializations/{id}?dropTables=true` before deleting the package.
 
 So unless versions are deleted, a package's disk use grows by one tree per version published:
 
