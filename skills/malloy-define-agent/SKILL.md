@@ -57,7 +57,7 @@ Put each agent's files under `agents/<name>/` so they stay together. Never point
 ## What is live today
 
 - Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs when someone asks for it. Say so to the user rather than promising a recurring job.
-- **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored, and a draft version's budget is ignored in favor of the published version's. Set the budget the work needs, not the biggest value.
+- **Nothing enforces a budget yet either.** A platform that runs the agent may clamp each field to its own maximum, so a larger number is not an error but may not be honored. Set the budget the work needs, not the biggest value.
 
 ## Strict keys: a typo drops the whole agent
 
