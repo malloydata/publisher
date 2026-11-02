@@ -15,7 +15,11 @@ import express from "express";
 import request from "supertest";
 import { PackageController } from "./controller/package.controller";
 import { resetDeprecatedUsageMetricsForTest } from "./deprecated_usage_metrics";
-import { EnvironmentNotFoundError, ServiceUnavailableError } from "./errors";
+import {
+   EnvironmentNotFoundError,
+   PackageNotFoundError,
+   ServiceUnavailableError,
+} from "./errors";
 import {
    recordDeprecatedFilterUsage,
    setFilterDeprecationHeaders,
@@ -258,30 +262,62 @@ describe("publisher_deprecated_usage_total", () => {
          expect(await used("package_patch")).toBe(2);
       });
 
-      it("warns once per package, naming the route that replaces it", async () => {
+      it("warns once per package with published versions, naming the route that replaces it, and never for a name that is not one", async () => {
          const probe = "package-patch-probe";
+         // `versioned` has published versions (and no latest, so the PATCH is
+         // refused after the warning); `plain` has none.
+         const environment = {
+            getVersionService: () => ({
+               isVersioned: async (name: string) => name === "versioned",
+               latestOf: async () => null,
+            }),
+            awaitPackageLoads: async () => undefined,
+            peekPackage: () => undefined,
+            updatePackage: async (name: string) => {
+               throw new PackageNotFoundError(`Package ${name} not found`);
+            },
+         };
+         const store = {
+            publisherConfigIsFrozen: false,
+            getEnvironment: async (name: string) => {
+               if (name === probe) return environment;
+               throw new EnvironmentNotFoundError(
+                  `Environment ${name} does not exist`,
+               );
+            },
+         } as unknown as EnvironmentStore;
+         const server = buildRouteApp({
+            environmentStore: store,
+            packageController: new PackageController(store),
+         });
          const warn = spyOn(logger, "warn");
          try {
-            const server = app();
-            for (const name of ["pkg", "pkg", "other"]) {
+            for (const [env, name] of [
+               [probe, "versioned"],
+               [probe, "versioned"],
+               [probe, "plain"],
+               // Names that resolve to no package must not be remembered.
+               [probe, "missing-1"],
+               [`${probe}-gone`, "versioned"],
+            ]) {
                await request(server)
-                  .patch(`/api/v0/environments/${probe}/packages/${name}`)
+                  .patch(`/api/v0/environments/${env}/packages/${name}`)
                   .send({});
             }
             const deprecations = linesMentioning(warn, probe).filter(
                ([message]) => String(message).includes("is deprecated"),
             );
             expect(deprecations.map(([, fields]) => fields)).toEqual([
-               { environmentName: probe, packageName: "pkg" },
-               { environmentName: probe, packageName: "other" },
+               { environmentName: probe, packageName: "versioned" },
             ]);
             expect(String(deprecations[0][0])).toContain(
-               "PUT .../packages/pkg/versions/{version}/manifest",
+               "PUT .../packages/versioned/versions/{version}/manifest",
             );
          } finally {
             warn.mockRestore();
          }
-         expect(await used("package_patch")).toBe(3);
+         // Every request is counted, whatever it answered.
+         expect(await used("package_patch")).toBe(5);
       });
    });
 

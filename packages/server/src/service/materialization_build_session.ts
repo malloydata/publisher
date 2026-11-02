@@ -984,8 +984,9 @@ async function buildSameCatalogIntoStorage(params: {
       throw new BadRequestError(
          `Cannot materialize a source that reads storage destination ` +
             `'${destinationName}' and carries SQL its author wrote (an .sql() source ` +
-            `or a sql_* expression): a build on the catalog runs only Malloy's own SQL. ` +
-            `Express it in Malloy, or persist it without storage=.`,
+            `or a sql_* expression) or reads a file or URL as a table: a build on the catalog ` +
+            `runs only Malloy's own SQL over the catalog's tables. Express it that way. ` +
+            `Dropping storage= does not help when the source's own connection is the catalog.`,
       );
    }
    const { session, dispose, workDir } = createIsolatedBuildSession(

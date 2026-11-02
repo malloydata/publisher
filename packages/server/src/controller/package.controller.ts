@@ -22,6 +22,7 @@ import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
+import { formatPublishRejections } from "../service/publish_checks";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
@@ -37,36 +38,6 @@ type ApiPackage = components["schemas"]["Package"];
 export type PackageReloadMode = "in-place" | "reinstalled" | "unchanged";
 
 /**
- * Every strict-at-publish check joined into one 400 message, or undefined when
- * the package is publishable: explores, persistence policy, incremental
- * refresh, pre-aggregation, and persist-target collisions (only under
- * `PERSIST_COLLISION_ENFORCE`, so a latent collision does not block a routine
- * re-publish). At startup/reload these only warn (fail-safe), except the
- * incremental-refresh and pre-aggregation gates, which fail the load too.
- */
-function formatPublishRejections(
-   pkg: {
-      formatInvalidExplores(exploresOverride?: string[]): string;
-      formatInvalidPersistencePolicy(): string;
-      formatInvalidIncrementalPolicy(): string;
-      formatInvalidPreaggregatePolicy(): string;
-      formatPersistenceCollisionRejections(): string;
-   },
-   exploresOverride?: string[],
-): string | undefined {
-   const message = [
-      pkg.formatInvalidExplores(exploresOverride),
-      pkg.formatInvalidPersistencePolicy(),
-      pkg.formatInvalidIncrementalPolicy(),
-      pkg.formatInvalidPreaggregatePolicy(),
-      pkg.formatPersistenceCollisionRejections(),
-   ]
-      .filter(Boolean)
-      .join("\n");
-   return message || undefined;
-}
-
-/**
  * Say, on a publish from a location with package versioning off, that the
  * package is installed in place as before versions, and that versions will be
  * required. PackageController says it once per package (see
@@ -80,11 +51,13 @@ export function warnVersioningOff(packageName: string): void {
 }
 
 /**
- * Say, on a `PATCH …/packages/{pkg}`, that the route is deprecated and what
- * replaces it. It keeps working so that callers which predate versions do not
- * break. PackageController says it once per package (see warnedPackagePatch),
- * so a caller that rebinds routinely does not repeat it; every request is
- * still counted in `publisher_deprecated_usage_total`.
+ * Say, on a `PATCH …/packages/{pkg}` to a package with published versions,
+ * that the route is deprecated and what replaces it. It keeps working so that
+ * callers which predate versions do not break. PackageController says it once
+ * per such package (see warnedPackagePatch), so a caller that rebinds
+ * routinely does not repeat it; a package with no versions has no replacement
+ * route, so it is not warned. Every request is still counted in
+ * `publisher_deprecated_usage_total`.
  */
 export function warnPackagePatchDeprecated(
    environmentName: string,
@@ -112,7 +85,7 @@ export class PackageController {
    private environmentStore: EnvironmentStore;
    /** Packages (`env/pkg`) already warned that versioning is off, this run. */
    private warnedVersioningOff = new Set<string>();
-   /** Packages (`env/pkg`) already warned that their PATCH is deprecated, this run. */
+   /** Packages with versions (`env/pkg`) already warned that their PATCH is deprecated, this run. */
    private warnedPackagePatch = new Set<string>();
 
    constructor(environmentStore: EnvironmentStore) {
@@ -505,13 +478,8 @@ export class PackageController {
       body: ApiPackage,
    ) {
       // Deprecated, and kept working for callers that predate versions: count
-      // every request, whatever it answers, and warn once per package.
+      // every request, whatever it answers.
       recordDeprecatedUsage("package_patch");
-      const warnKey = `${environmentName}/${packageName}`;
-      if (!this.warnedPackagePatch.has(warnKey)) {
-         this.warnedPackagePatch.add(warnKey);
-         warnPackagePatchDeprecated(environmentName, packageName);
-      }
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
@@ -521,6 +489,14 @@ export class PackageController {
       );
       const versions = environment.getVersionService();
       if (versions && (await versions.isVersioned(packageName))) {
+         // Warned once per package, and only for a package with published
+         // versions: those have a replacement to name, and recording only a
+         // package that exists keeps a caller from growing the set with names.
+         const warnKey = `${environmentName}/${packageName}`;
+         if (!this.warnedPackagePatch.has(warnKey)) {
+            this.warnedPackagePatch.add(warnKey);
+            warnPackagePatchDeprecated(environmentName, packageName);
+         }
          return this.updateVersionedPackage(
             environment,
             versions,

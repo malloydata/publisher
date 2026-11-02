@@ -89,14 +89,24 @@ export interface ResourceRepository {
     * Delete a version's row. While other versions remain it refuses the
     * package's `latest` (VERSION_IS_LATEST) and its last version in service
     * while archived ones remain (VERSION_IS_LAST_ACTIVE), checked in the same
-    * transaction as the delete. The package's only version takes the package's
-    * rows with it (`packageRemoved`). Returns the row as it was.
+    * transaction as the delete. Returns the row as it was, and whether it was
+    * the package's only version (`wasLast`); the package's own rows go
+    * separately, with deletePackageIfNoVersions.
     */
    deleteVersion(
       environmentId: string,
       packageName: string,
       versionId: string,
-   ): Promise<{ version: Version; packageRemoved: boolean }>;
+   ): Promise<{ version: Version; wasLast: boolean }>;
+   /**
+    * Delete a package left with no versions: its row, its ledger and its runs,
+    * apart from its deleted versions' own `scope: version` auto-runs, which
+    * their reclaim deletes. False, deleting nothing, when it has a version.
+    */
+   deletePackageIfNoVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<boolean>;
 
    // Connections
    listConnections(environmentId: string): Promise<Connection[]>;
@@ -133,6 +143,10 @@ export interface ResourceRepository {
       environmentId: string,
       packageName: string,
       options?: MaterializationListOptions,
+   ): Promise<Materialization[]>;
+   /** Every run of an environment, across its packages, newest first. */
+   listEnvironmentMaterializations(
+      environmentId: string,
    ): Promise<Materialization[]>;
    getLatestScheduledFireAt(
       environmentId: string,

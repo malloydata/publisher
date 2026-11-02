@@ -5,7 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { DEFAULT_ENV, PACKAGES, tmpName } from "./helpers/fixtures";
+import { tmpName } from "./helpers/fixtures";
 
 /**
  * The package page's version switch, against a server that publishes
@@ -415,13 +415,30 @@ test.describe("package versions — the version switch", () => {
    test("a package with no versions keeps its route and shows no switch", async ({
       page,
    }) => {
-      await page.goto(`/${DEFAULT_ENV}/${PACKAGES.storefront}`);
-      await expect(
-         page.getByRole("heading", { name: PACKAGES.storefront, level: 1 }),
-      ).toBeVisible();
-      await expect(page).toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}$`),
+      // With versioning on, a configured package (storefront included) is
+      // published as its version, so register a directory instead: a package
+      // added with no location has no versions.
+      const baseURL = test.info().project.use.baseURL ?? "http://localhost:4000";
+      const plain = "notes";
+      const { location } = await (
+         await api(baseURL, "GET", `/environments/${env}`)
+      ).json();
+      fs.mkdirSync(path.join(location, plain), { recursive: true });
+      fs.writeFileSync(
+         path.join(location, plain, "publisher.json"),
+         JSON.stringify({ name: plain, description: "No versions" }),
       );
+      fs.writeFileSync(path.join(location, plain, "orders.malloy"), ORDERS);
+      const added = await api(baseURL, "POST", `/environments/${env}/packages`, {
+         name: plain,
+      });
+      expect(added.ok, await added.text()).toBe(true);
+
+      await page.goto(`/${env}/${plain}`);
+      await expect(
+         page.getByRole("heading", { name: plain, level: 1 }),
+      ).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`/${env}/${plain}$`));
       await expect(versionSwitch(page)).toHaveCount(0);
    });
 });

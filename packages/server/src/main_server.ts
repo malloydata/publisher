@@ -280,17 +280,19 @@ environmentStore.setVersionArchivedHook(
       );
    },
 );
-// Deleting a version drops those tables first, before its row goes.
-environmentStore.setVersionDeletingHook(
-   (environmentName, packageName, versionId) =>
-      materializationService.reclaimDeletingVersion(
+// Deleting a version stops its builds and reclaims those tables, in the
+// background, once its row is gone.
+environmentStore.setVersionDeletedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.cleanUpDeletedVersion(
          environmentName,
          packageName,
          versionId,
-      ),
+      );
+   },
 );
-// A reclaim that a crash or a failed drop cut short is retried once the
-// environments have loaded: nothing else would start it again.
+// A reclaim that a crash cut short is finished once the environments have
+// loaded: nothing else would start it again.
 void environmentStore.finishedInitialization.then(
    () => materializationService.reclaimArchivedVersions(),
    () => undefined,

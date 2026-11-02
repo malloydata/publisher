@@ -10,6 +10,7 @@ import {
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { newId, Row, rowTimestamps, updateRow } from "./rows";
+import { OWED_RECLAIM_RUN } from "./VersionRepository";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "MANIFEST_FILE_READY",
@@ -88,6 +89,15 @@ export class MaterializationRepository {
          params.push(options.offset);
       }
       const rows = await this.db.all<Row>(sql, params);
+      return rows.map(mapRow);
+   }
+
+   /** Every run of an environment, across its packages, newest first. */
+   async listByEnvironment(environmentId: string): Promise<Materialization[]> {
+      const rows = await this.db.all<Row>(
+         "SELECT * FROM materializations WHERE environment_id = ? ORDER BY created_at DESC",
+         [environmentId],
+      );
       return rows.map(mapRow);
    }
 
@@ -255,12 +265,17 @@ export class MaterializationRepository {
       );
    }
 
+   /**
+    * Delete a package's runs, keeping those its deleted versions' reclaim
+    * still owes (their own `scope: version` auto-runs), which that reclaim
+    * drops and then deletes. An unversioned package has none.
+    */
    async deleteByPackage(
       environmentId: string,
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM materializations WHERE environment_id = ? AND package_name = ?",
+         `DELETE FROM materializations WHERE environment_id = ? AND package_name = ? AND NOT (${OWED_RECLAIM_RUN})`,
          [environmentId, packageName],
       );
    }

@@ -42,6 +42,7 @@ import type { PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
+   ConnectionOrigin,
    getDuckDBMemoryLimit,
    getDuckLakeRowGroupSizeBytes,
    getDuckLakeTargetFileSizeBytes,
@@ -1074,6 +1075,17 @@ async function attachDuckLakeWithMode(
       readOnly: boolean;
       skipIfAbsent?: boolean;
       /**
+       * Who authored the config, which the S3 credential-chain policy turns on:
+       * the operator's own storage destinations and catalogs pass
+       * `"storage-destination"`; an environment connection is author-supplied.
+       */
+      origin?: ConnectionOrigin;
+      /**
+       * A catalog served as its own tables (the connection's `managed`). Attached
+       * read-only, its storage secret reaches only the `main` schema's files.
+       */
+      managed?: boolean;
+      /**
        * First-attach settings, which DuckLake fixes in the catalog when it creates
        * it and ignores on a catalog that already exists. Only a catalog create
        * (the admin API's POST /catalogs) sets them.
@@ -1099,19 +1111,36 @@ async function attachDuckLakeWithMode(
 
    const hasS3 = !!ducklakeConfig.storage?.s3Connection;
    const hasGCS = !!ducklakeConfig.storage?.gcsConnection;
-
    if (hasS3) {
-      await attachCloudStorage(connection, {
-         name: `${dbName}_storage`,
-         type: "s3",
-         s3Connection: ducklakeConfig.storage!.s3Connection,
-      });
-   } else if (hasGCS) {
-      await attachCloudStorage(connection, {
-         name: `${dbName}_storage`,
-         type: "gcs",
-         gcsConnection: ducklakeConfig.storage!.gcsConnection,
-      });
+      // DuckDB signs an S3 read that no secret matches with a legacy key seeded
+      // from the AWS_* environment, which would bypass the scope on the secret
+      // created below. Off first, before anything here can reach S3, and GLOBAL:
+      // a plain SET is session-local, while the attach and the secret live on
+      // the instance, so a later connection object on an already-attached
+      // catalog would keep the fallback. The instance is this catalog's own
+      // (keyed on its database file), so nothing else is reached.
+      await connection.runSQL(
+         "SET GLOBAL enable_global_s3_configuration=false",
+      );
+   }
+   // The storage credential, and the policy gate on it, before the ATTACH: a
+   // refused credential attaches nothing. The secret itself is created after
+   // the ATTACH, once its scope can be read from the catalog (below).
+   const storage: AttachedDatabase | undefined = hasS3
+      ? {
+           name: `${dbName}_storage`,
+           type: "s3",
+           s3Connection: ducklakeConfig.storage!.s3Connection,
+        }
+      : hasGCS
+        ? {
+             name: `${dbName}_storage`,
+             type: "gcs",
+             gcsConnection: ducklakeConfig.storage!.gcsConnection,
+          }
+        : undefined;
+   if (storage) {
+      resolveCloudStorageCredentials(storage, options.origin ?? "connection");
    }
 
    const pg = ducklakeConfig.catalog.postgresConnection;
@@ -1137,13 +1166,13 @@ async function attachDuckLakeWithMode(
    // Validated to a plain identifier at config load, because it reaches a quoted
    // literal here and an identifier position in the preflight.
    const metadataSchema = ducklakeConfig.catalog.metadataSchema;
-   const presence = await preflightDuckLakeCatalogFormat(
+   const preflight = await preflightDuckLakeCatalogFormat(
       connection,
       dbName,
       pgConnString,
       metadataSchema,
    );
-   if (presence === "absent") {
+   if (preflight === "absent") {
       if (options.skipIfAbsent) {
          return false;
       }
@@ -1199,7 +1228,104 @@ async function attachDuckLakeWithMode(
          throw error;
       }
    }
+   if (storage) {
+      // The storage secret, scoped to the catalog's prefix. After the ATTACH,
+      // which reaches the catalog database and no data file, so a catalog whose
+      // config states no data path is scoped to the one it recorded, read from
+      // the attached catalog's own metadata rather than a second reader in the
+      // preflight. No scope, no attach: an unscoped secret would reach the whole
+      // bucket, and a catalog left attached without a secret would look attached
+      // to the next lookup and never be retried.
+      try {
+         const scope = await attachedDuckLakeScope(connection, dbName, {
+            configuredDataPath: dataPath,
+            metadataSchema,
+            readOnly: options.readOnly,
+            // Only a connection view is narrowed: an operator's destination
+            // serves every schema, whatever flags its entry carries.
+            managed:
+               options.managed === true &&
+               options.origin !== "storage-destination",
+         });
+         if (!scope) {
+            throw new Error(
+               `No storage secret could be scoped for DuckLake catalog '${dbName}': ` +
+                  `the config states no data path, and the catalog records no data ` +
+                  `path (or, for a managed view, no path for its main schema) to ` +
+                  `scope it to. The catalog was not attached.`,
+            );
+         }
+         await attachCloudStorage(connection, storage, options.origin, scope);
+      } catch (error) {
+         await connection
+            .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
+            .catch(() => {});
+         throw error;
+      }
+   }
    return true;
+}
+
+/**
+ * The scope of an attached catalog's storage secret ({@link storageSecretScope}),
+ * reading from the catalog's metadata whatever the config does not state: the
+ * recorded data path when the config has none, and the `main` schema's path for
+ * a managed read-only view. Runs on the attached catalog, so nothing here is a
+ * guess the preflight could fail softly on.
+ */
+async function attachedDuckLakeScope(
+   connection: DuckDBConnection,
+   dbName: string,
+   input: {
+      configuredDataPath?: string;
+      metadataSchema?: string;
+      readOnly: boolean;
+      managed: boolean;
+   },
+): Promise<string | undefined> {
+   const recordedDataPath = input.configuredDataPath
+      ? undefined
+      : (
+           await recordedCatalogSettings(
+              connection,
+              dbName,
+              input.metadataSchema,
+           )
+        ).data_path;
+   const mainSchemaPath =
+      input.managed && input.readOnly
+         ? await recordedSchemaPath(
+              connection,
+              dbName,
+              input.metadataSchema,
+              "main",
+           )
+         : undefined;
+   return storageSecretScope({
+      configuredDataPath: input.configuredDataPath,
+      recordedDataPath,
+      mainSchemaPath,
+      readOnly: input.readOnly,
+      managed: input.managed,
+   });
+}
+
+/**
+ * The metadata catalog of a DuckLake catalog attached as `alias`: DuckLake
+ * exposes it as `__ducklake_metadata_<alias>`, with the `ducklake_*` tables in
+ * the catalog's metadata schema when one is configured, and in its default
+ * schema otherwise.
+ */
+function metadataCatalogRef(
+   alias: string,
+   metadataSchema: string | undefined,
+): string {
+   return [
+      `__ducklake_metadata_${alias}`,
+      ...(metadataSchema ? [metadataSchema] : []),
+   ]
+      .map((part) => quoteIdentifier(part, "duckdb"))
+      .join(".");
 }
 
 /**
@@ -1214,15 +1340,9 @@ export async function recordedCatalogSettings(
    alias: string,
    metadataSchema: string | undefined,
 ): Promise<Record<string, string>> {
-   const metadataCatalog = [
-      `__ducklake_metadata_${alias}`,
-      ...(metadataSchema ? [metadataSchema] : []),
-   ]
-      .map((part) => quoteIdentifier(part, "duckdb"))
-      .join(".");
    const rows = runSQLRows(
       await connection.runSQL(
-         `SELECT key, value FROM ${metadataCatalog}.ducklake_metadata WHERE scope IS NULL`,
+         `SELECT key, value FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_metadata WHERE scope IS NULL`,
       ),
    );
    const settings: Record<string, string> = {};
@@ -1232,6 +1352,90 @@ export async function recordedCatalogSettings(
       }
    }
    return settings;
+}
+
+/**
+ * The path a catalog attached as `alias` records for one of its schemas in
+ * `ducklake_schema`, and whether it is relative to the data path, or undefined
+ * when the schema is not recorded. A path of `''` is what a catalog migrated
+ * from DuckLake 0.2 records for `main`: its files sit directly under the data
+ * path. A NULL `path_is_relative` reads as relative, the recorded default.
+ */
+export async function recordedSchemaPath(
+   connection: DuckDBConnection,
+   alias: string,
+   metadataSchema: string | undefined,
+   schemaName: string,
+): Promise<{ path: string; relative: boolean } | undefined> {
+   const row = runSQLRows(
+      await connection.runSQL(
+         `SELECT path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
+            `WHERE schema_name = '${escapeSQL(schemaName)}' AND end_snapshot IS NULL LIMIT 1`,
+      ),
+   )[0];
+   if (!row || typeof row.path !== "string") return undefined;
+   return { path: row.path, relative: row.path_is_relative !== false };
+}
+
+/** `url` without its trailing slashes. A loop, not `/\/+$/`, which backtracks on a long run of them. */
+export function stripTrailingSlashes(url: string): string {
+   let end = url.length;
+   while (end > 0 && url[end - 1] === "/") end--;
+   return url.slice(0, end);
+}
+
+/** `url` with its trailing slashes replaced by exactly one. */
+export function oneTrailingSlash(url: string): string {
+   return `${stripTrailingSlashes(url)}/`;
+}
+
+/**
+ * Whether a URL names a scheme but no bucket (`s3://`, `gs:///`). As a scope it
+ * would become `s3:/`, which DuckDB matches against every S3 URL, so such a
+ * root is refused. A path with no scheme is not a URL and is left alone.
+ */
+function isBucketlessUrl(url: string): boolean {
+   const at = url.indexOf("://");
+   return at >= 0 && stripTrailingSlashes(url.slice(at + 3)) === "";
+}
+
+/**
+ * The URL prefix a DuckLake catalog's storage secret is scoped to, with exactly
+ * one trailing slash so `…/org_a/` never matches `…/org_ab`. The configured data
+ * path when the config states one, else the data path the catalog recorded,
+ * which the preflight read. A managed catalog attached read-only is the
+ * user-facing view of its own tables, so its secret reaches only the `main`
+ * schema's files: the schema path the catalog recorded, under the data path when
+ * relative. Undefined when nothing states a path, when a managed view's main
+ * path is unknown, or when the root names no bucket: the caller then refuses
+ * the attach rather than creating an unscoped secret.
+ */
+export function storageSecretScope(input: {
+   configuredDataPath?: string;
+   recordedDataPath?: string;
+   mainSchemaPath?: { path: string; relative: boolean };
+   readOnly: boolean;
+   managed: boolean;
+}): string | undefined {
+   const root = input.configuredDataPath || input.recordedDataPath;
+   if (!root || isBucketlessUrl(root)) return undefined;
+   if (input.managed && input.readOnly) {
+      const main = input.mainSchemaPath;
+      if (!main) return undefined;
+      if (!main.relative) {
+         return isBucketlessUrl(main.path)
+            ? undefined
+            : oneTrailingSlash(main.path);
+      }
+      // An empty relative path is the data path itself (a catalog migrated from
+      // DuckLake 0.2 records it for `main`).
+      let start = 0;
+      while (start < main.path.length && main.path[start] === "/") start++;
+      return oneTrailingSlash(
+         `${oneTrailingSlash(root)}${main.path.slice(start)}`,
+      );
+   }
+   return oneTrailingSlash(root);
 }
 
 /**
@@ -1289,6 +1493,7 @@ export async function attachDuckLakeForCreate(
 ): Promise<void> {
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: false,
+      origin: "storage-destination",
       encrypted: settings.encrypted,
       dataInliningRowLimit: settings.dataInliningRowLimit,
    });
@@ -1298,11 +1503,14 @@ async function attachDuckLake(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
+   options: { origin?: ConnectionOrigin; managed?: boolean } = {},
 ): Promise<void> {
    // Read-only unless the connection says otherwise in so many words: absent,
    // null and anything but `false` keep the pre-existing read-only attach.
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: ducklakeConfig.readOnly !== false,
+      origin: options.origin,
+      managed: options.managed,
    });
 }
 
@@ -1333,7 +1541,9 @@ export async function attachDuckLakeReadOnly(
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
 ): Promise<void> {
-   await attachDuckLake(connection, dbName, ducklakeConfig);
+   await attachDuckLake(connection, dbName, ducklakeConfig, {
+      origin: "storage-destination",
+   });
 }
 
 /**
@@ -1349,6 +1559,7 @@ export async function attachDuckLakeReadOnlyIfPresent(
    return attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: true,
       skipIfAbsent: true,
+      origin: "storage-destination",
    });
 }
 
@@ -1363,6 +1574,7 @@ export async function attachDuckLakeReadWrite(
 ): Promise<void> {
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: false,
+      origin: "storage-destination",
    });
 }
 
@@ -1856,6 +2068,9 @@ export function buildCloudStorageSecretSQL(
    const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
+   const scopeClause = credentials.scope
+      ? `SCOPE '${escapeSQL(credentials.scope)}'`
+      : "";
 
    let createSecretCommand: string;
 
@@ -1864,7 +2079,7 @@ export function buildCloudStorageSecretSQL(
          CREATE OR REPLACE SECRET ${secretName} (
             TYPE gcs,
             KEY_ID '${escapedKeyId}',
-            SECRET '${escapedSecret}'
+            SECRET '${escapedSecret}'${scopeClause ? `,\n            ${scopeClause}` : ""}
          );
       `;
    } else {
@@ -1931,6 +2146,9 @@ export function buildCloudStorageSecretSQL(
       ) {
          clauses.push(`SESSION_TOKEN '${escapeSQL(credentials.sessionToken)}'`);
       }
+      if (scopeClause) {
+         clauses.push(scopeClause);
+      }
       createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
                ${clauses.join(",\n               ")}
@@ -1944,9 +2162,15 @@ export function buildCloudStorageSecretSQL(
 async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
+   origin: ConnectionOrigin = "connection",
+   scope?: string,
 ): Promise<void> {
    const storageType = attachedDb.type?.toUpperCase() || "";
-   const credentials = resolveCloudStorageCredentials(attachedDb);
+   // The scope rides on the credentials so the renewer re-emits it.
+   const credentials = {
+      ...resolveCloudStorageCredentials(attachedDb, origin),
+      scope,
+   };
 
    await installAndLoadExtension(connection, "httpfs");
    // `credential_chain` is implemented by the `aws` extension and resolves when
@@ -2735,15 +2959,19 @@ function isDuckDBConnection(
  *   catalog is already attached, so a generation replacing one after a config
  *   change rebinds to the new catalog DSN and storage secrets rather than the
  *   prior attach state. Only the DuckLake branch reads it.
+ * @param options.origin "storage-destination" for the operator's own storage
+ *   destinations, which the S3 credential-chain policy treats differently.
  */
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
    environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
+   { origin = "connection" }: { origin?: ConnectionOrigin } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
       environmentPath,
+      origin,
    );
    // Promises are cached so concurrent lookups share one build and never leak a
    // losing instance's pool. One cache per branch keeps the concrete subtype.
@@ -2823,6 +3051,10 @@ export function buildEnvironmentMalloyConfig(
                      connection,
                      name!,
                      metadata.apiConnection.ducklakeConnection!,
+                     {
+                        origin,
+                        managed: metadata.apiConnection.managed === true,
+                     },
                   );
                   if (metadata.apiConnection.managed === true) {
                      await setManagedSearchPath(connection, name!);
