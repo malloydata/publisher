@@ -418,7 +418,8 @@ test.describe("package versions — the version switch", () => {
       // With versioning on, a configured package (storefront included) is
       // published as its version, so register a directory instead: a package
       // added with no location has no versions.
-      const baseURL = test.info().project.use.baseURL ?? "http://localhost:4000";
+      const baseURL =
+         test.info().project.use.baseURL ?? "http://localhost:4000";
       const plain = "notes";
       const { location } = await (
          await api(baseURL, "GET", `/environments/${env}`)
@@ -429,9 +430,14 @@ test.describe("package versions — the version switch", () => {
          JSON.stringify({ name: plain, description: "No versions" }),
       );
       fs.writeFileSync(path.join(location, plain, "orders.malloy"), ORDERS);
-      const added = await api(baseURL, "POST", `/environments/${env}/packages`, {
-         name: plain,
-      });
+      const added = await api(
+         baseURL,
+         "POST",
+         `/environments/${env}/packages`,
+         {
+            name: plain,
+         },
+      );
       expect(added.ok, await added.text()).toBe(true);
 
       await page.goto(`/${env}/${plain}`);
