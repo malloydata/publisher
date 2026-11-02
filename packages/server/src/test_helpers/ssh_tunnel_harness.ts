@@ -22,6 +22,24 @@ const clientKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 export const clientPrivatePem = clientKeys.privateKey
    .export({ type: "pkcs1", format: "pem" })
    .toString();
+// Best-effort, time-bounded teardown. Destroying every ssh2/socket handle is
+// reliable locally but a lingering graceful close can still stall on some CI
+// platforms (Bun + ssh2 on Linux/Windows), which would hang the afterEach hook
+// until the 100s test timeout. The assertions have already run by teardown, so
+// cap each close and move on rather than block.
+export function closeQuietly(
+   close: () => Promise<void>,
+   ms = 3000,
+): Promise<void> {
+   return Promise.race([
+      close().catch(() => {}),
+      new Promise<void>((resolve) => {
+         const timer = setTimeout(resolve, ms);
+         (timer as unknown as { unref?: () => void }).unref?.();
+      }),
+   ]);
+}
+
 export function startEchoServer(): Promise<{
    port: number;
    close: () => Promise<void>;

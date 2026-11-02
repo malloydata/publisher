@@ -52,6 +52,7 @@ import { logger } from "../logger";
 import { pollUntil } from "../test_helpers/poll";
 import {
    clientPrivatePem,
+   closeQuietly,
    startSshServer,
 } from "../test_helpers/ssh_tunnel_harness";
 import type { ProxyEndpoint } from "./proxy";
@@ -4173,7 +4174,7 @@ describe("environment connection lookup for a proxied Postgres connection", () =
             expect((await second.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
          } finally {
             await config.releaseConnections();
-            await bastion.close();
+            await closeQuietly(() => bastion.close());
          }
       },
       { timeout: 30000 },

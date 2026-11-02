@@ -23,6 +23,7 @@ import {
 import { logger } from "../logger";
 import {
    clientPrivatePem,
+   closeQuietly,
    startEchoServer,
    startSshServer,
 } from "../test_helpers/ssh_tunnel_harness";
@@ -41,21 +42,6 @@ function connectAndSend(port: number, message: string): Promise<string> {
       });
       socket.on("error", reject);
    });
-}
-
-// Best-effort, time-bounded teardown. Destroying every ssh2/socket handle is
-// reliable locally but a lingering graceful close can still stall on some CI
-// platforms (Bun + ssh2 on Linux/Windows), which would hang the afterEach hook
-// until the 100s test timeout. The assertions have already run by teardown, so
-// cap each close and move on rather than block.
-function closeQuietly(close: () => Promise<void>, ms = 3000): Promise<void> {
-   return Promise.race([
-      close().catch(() => {}),
-      new Promise<void>((resolve) => {
-         const timer = setTimeout(resolve, ms);
-         (timer as unknown as { unref?: () => void }).unref?.();
-      }),
-   ]);
 }
 
 function openTestProxy(

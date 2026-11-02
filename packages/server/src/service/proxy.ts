@@ -209,7 +209,10 @@ function openSshProxy(
          fail(err);
       });
 
-      client.on("close", () => {
+      // Bun can leave a dropped session unwritable with no "close", so "end"
+      // and a synchronous forwardOut throw count as the same death.
+      function onSessionGone(err?: Error): void {
+         if (err) lastError ??= err;
          if (!opened) {
             fail(
                lastError ??
@@ -227,7 +230,9 @@ function openSshProxy(
                (lastError ? `: ${lastError.message}` : "."),
          );
          for (const listener of closeListeners.splice(0)) notifyClose(listener);
-      });
+      }
+      client.on("close", () => onSessionGone());
+      client.on("end", () => onSessionGone());
 
       client.on("ready", () => {
          server = net.createServer((socket) => {
@@ -283,6 +288,7 @@ function openSshProxy(
                );
             } catch (err) {
                socket.destroy(err as Error);
+               onSessionGone(err as Error);
             }
          });
 
