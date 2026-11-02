@@ -53,6 +53,12 @@ A package registered from a directory with no `location`, or published while ver
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
+## [Unreleased] — A dead SSH tunnel no longer crashes the server, and is rebuilt
+
+A refused `direct-tcpip` channel or a dropped SSH session to a bastion could throw an uncaught exception inside the tunnel's connection handler and crash the server process, taking every tenant on it down. Both are now contained: the local connection closes and the server keeps running. A tunnel that dies is also detected and logged, and the connection is rebuilt on its next query, where before it stayed dead until the environment reloaded or the server restarted. A bastion that closes before the tunnel is ready now fails the connect instead of hanging it. Queries in flight when the tunnel drops fail with a connection error.
+
+The pool behind a proxied Postgres connection now matches a direct one. It honours `PUBLISHER_POSTGRES_POOL_MAX` (default 5; it was pg-pool's 10), a query waits at most 30 s for a free session, and each query uses its own session (`maxUses: 1`), which costs one extra SSH channel open per query through the bastion.
+
 ## [Unreleased] — A package agent can declare a run budget
 
 An agent in `publisher.json` can now set `budget`: optional `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set any one of them alone and the rest keep the platform's default. Publisher validates it and serves it from `get_agent` and the agent endpoints, and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A bad value or an unknown sub-key drops the agent, like any other invalid key. **Earlier releases do not know the key and drop any agent that sets it**, so a package should not use `budget` until every server that serves it runs this release. The new `malloy-define-agent` skill covers writing an agent definition. See [docs/packages.md](docs/packages.md#agents).

@@ -928,7 +928,7 @@ export const getMaxConcurrentQueries = (): number => {
 };
 
 /**
- * Cap on open sessions for one plain (non-proxied) Postgres connection
+ * Cap on open sessions for one Postgres connection
  * (`PUBLISHER_POSTGRES_POOL_MAX`, default {@link DEFAULT_POSTGRES_POOL_MAX}).
  * `0` is rejected: the pool could open nothing.
  */

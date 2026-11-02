@@ -13,156 +13,19 @@
  */
 
 import net from "net";
-import { generateKeyPairSync } from "crypto";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-   Server as SshServer,
-   utils as sshUtils,
-   type Connection as SshServerConnection,
-} from "ssh2";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
    ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
    allowUnverifiedHostKey,
    openProxy,
    type ProxyEndpoint,
 } from "./proxy";
-
-// ── Key material generated once for the test suite ────────────────────────────
-
-// ssh2's server requires PEM private keys it can parse. These are ephemeral,
-// test-only keys; RSA-2048 (not 1024) so static analysis doesn't flag them.
-const hostKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
-const hostPrivatePem = hostKeys.privateKey
-   .export({ type: "pkcs1", format: "pem" })
-   .toString();
-
-const clientKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
-const clientPrivatePem = clientKeys.privateKey
-   .export({ type: "pkcs1", format: "pem" })
-   .toString();
-// Helpers ─────────────────────────────────────────────────────────────────────
-
-function startEchoServer(): Promise<{
-   port: number;
-   close: () => Promise<void>;
-}> {
-   return new Promise((resolve, reject) => {
-      // Track accepted sockets so close() can force them down. server.close()
-      // alone only stops accepting and then waits for open connections to end;
-      // a lingering forwarded socket would otherwise hang teardown (and the
-      // afterEach hook) until the test timeout, especially under --serial CI.
-      const sockets = new Set<net.Socket>();
-      const server = net.createServer((socket) => {
-         sockets.add(socket);
-         socket.on("close", () => sockets.delete(socket));
-         socket.pipe(socket);
-      });
-      server.on("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-         const addr = server.address() as net.AddressInfo;
-         resolve({
-            port: addr.port,
-            close: () =>
-               new Promise((res, rej) => {
-                  for (const s of sockets) s.destroy();
-                  server.close((err) => (err ? rej(err) : res()));
-               }),
-         });
-      });
-   });
-}
-
-/**
- * Start a minimal in-process SSH server that accepts the test client key
- * and fulfils tcpip-forward (forwardOut) requests.
- */
-function startSshServer(opts: {
-   rejectAuth?: boolean;
-   rejectForward?: boolean;
-}): Promise<{
-   port: number;
-   hostKeyBase64: string;
-   close: () => Promise<void>;
-}> {
-   return new Promise((resolve, reject) => {
-      // Track live client connections and forwarded destination sockets so
-      // close() can force them down; otherwise a lingering forwarded socket
-      // keeps sshd.close() (and the afterEach hook) hanging until the test
-      // timeout, which is what made the tunnel tests flake under --serial CI.
-      const clients = new Set<SshServerConnection>();
-      const destSockets = new Set<net.Socket>();
-      const sshd = new SshServer(
-         { hostKeys: [hostPrivatePem] },
-         (client: SshServerConnection) => {
-            clients.add(client);
-            client.on("close", () => clients.delete(client));
-            client.on("authentication", (ctx) => {
-               if (opts.rejectAuth) {
-                  ctx.reject();
-                  return;
-               }
-               // Accept publickey auth for our test client key.
-               if (ctx.method === "publickey" && !opts.rejectAuth) {
-                  ctx.accept();
-               } else {
-                  ctx.reject();
-               }
-            });
-
-            client.on("ready", () => {
-               client.on("tcpip", (accept, _reject, info) => {
-                  if (opts.rejectForward) {
-                     _reject();
-                     return;
-                  }
-                  const channel = accept();
-                  // Connect to the real destination and pipe.
-                  const dest = net.createConnection(
-                     { host: info.destIP, port: info.destPort },
-                     () => {
-                        channel.pipe(dest).pipe(channel);
-                        channel.on("error", () => dest.destroy());
-                        dest.on("error", () => channel.destroy());
-                     },
-                  );
-                  destSockets.add(dest);
-                  dest.on("close", () => destSockets.delete(dest));
-                  dest.on("error", () => channel.destroy());
-               });
-            });
-
-            client.on("error", () => {
-               /* swallow per-client errors in tests */
-            });
-         },
-      );
-
-      sshd.on("error", reject);
-      sshd.listen(0, "127.0.0.1", () => {
-         const addr = sshd.address() as net.AddressInfo;
-
-         // Capture the server's host key fingerprint (base64 of the raw DER) by
-         // parsing the pem via the ssh2 util so the format matches what
-         // hostVerifier receives.
-         const parsed = sshUtils.parseKey(hostPrivatePem);
-         const hostKeyBase64 = (parsed as { getPublicSSH(): Buffer })
-            .getPublicSSH()
-            .toString("base64");
-
-         resolve({
-            port: addr.port,
-            hostKeyBase64,
-            close: () =>
-               new Promise((res) => {
-                  for (const s of destSockets) s.destroy();
-                  for (const c of clients) c.end();
-                  sshd.close(() => res());
-               }),
-         });
-      });
-   });
-}
-
+import { logger } from "../logger";
+import {
+   clientPrivatePem,
+   startEchoServer,
+   startSshServer,
+} from "../test_helpers/ssh_tunnel_harness";
 function connectAndSend(port: number, message: string): Promise<string> {
    return new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
@@ -195,15 +58,51 @@ function closeQuietly(close: () => Promise<void>, ms = 3000): Promise<void> {
    ]);
 }
 
+function openTestProxy(
+   server: { port: number; hostKeyBase64: string },
+   targetPort: number,
+): Promise<ProxyEndpoint> {
+   return openProxy(
+      {
+         type: "ssh",
+         ssh: {
+            host: "127.0.0.1",
+            port: server.port,
+            username: "testuser",
+            privateKey: clientPrivatePem,
+            hostKey: server.hostKeyBase64,
+         },
+      },
+      { host: "127.0.0.1", port: targetPort },
+   );
+}
+
+// Resolves when the local socket closes; an error with no listener would fail
+// the test as an uncaught exception, so one is always attached.
+function dialAndAwaitClose(port: number, timeoutMs = 3000): Promise<void> {
+   return new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port });
+      const timer = setTimeout(() => {
+         socket.destroy();
+         reject(new Error("local socket was not closed"));
+      }, timeoutMs);
+      socket.on("error", () => {});
+      socket.on("close", () => {
+         clearTimeout(timer);
+         resolve();
+      });
+   });
+}
+
+function nextClose(ep: ProxyEndpoint): Promise<Error | undefined> {
+   return new Promise((resolve) => ep.onClose(resolve));
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("openProxy — SSH tunnel", () => {
    let echoServer: { port: number; close: () => Promise<void> };
-   let sshServer: {
-      port: number;
-      hostKeyBase64: string;
-      close: () => Promise<void>;
-   };
+   let sshServer: Awaited<ReturnType<typeof startSshServer>>;
 
    beforeEach(async () => {
       echoServer = await startEchoServer();
@@ -493,6 +392,93 @@ describe("openProxy — SSH tunnel", () => {
             { host: "127.0.0.1", port: echoServer.port },
          ),
       ).rejects.toThrow(/not supported/i);
+   });
+});
+
+describe("openProxy - tunnel death", () => {
+   let echoServer: { port: number; close: () => Promise<void> };
+   let sshServer: Awaited<ReturnType<typeof startSshServer>>;
+   let warn: ReturnType<typeof spyOn<typeof logger, "warn">>;
+
+   beforeEach(async () => {
+      echoServer = await startEchoServer();
+      warn = spyOn(logger, "warn").mockImplementation(() => logger);
+   });
+
+   afterEach(async () => {
+      warn.mockRestore();
+      await closeQuietly(() => echoServer.close());
+      await closeQuietly(() => sshServer.close());
+   });
+
+   for (const [label, kill] of [
+      ["the server ends the client", (s: typeof sshServer) => s.endClients()],
+      ["the socket is destroyed", (s: typeof sshServer) => s.destroySockets()],
+   ] as const) {
+      it(`fires onClose once, warns once and refuses new dials when ${label}`, async () => {
+         sshServer = await startSshServer({});
+         const ep = await openTestProxy(sshServer, echoServer.port);
+         try {
+            const calls: (Error | undefined)[] = [];
+            ep.onClose((cause) => calls.push(cause));
+            const closed = nextClose(ep);
+            kill(sshServer);
+            await closed;
+            expect(calls).toHaveLength(1);
+            expect(warn).toHaveBeenCalledTimes(1);
+            const message = String(warn.mock.calls[0]?.[0]);
+            expect(message).toContain("127.0.0.1");
+            expect(message).toContain(String(echoServer.port));
+            // The listener stays bound so the port cannot be reused by another tunnel.
+            await dialAndAwaitClose(ep.port);
+            expect(calls).toHaveLength(1);
+         } finally {
+            await closeQuietly(() => ep.close());
+         }
+      });
+   }
+
+   it("closes the local socket and stays alive when the server rejects direct-tcpip", async () => {
+      sshServer = await startSshServer({ rejectForward: true });
+      const ep = await openTestProxy(sshServer, echoServer.port);
+      try {
+         await dialAndAwaitClose(ep.port);
+         // The tunnel itself is still usable for the next dial.
+         await dialAndAwaitClose(ep.port);
+      } finally {
+         await closeQuietly(() => ep.close());
+      }
+   });
+
+   it("rejects when the bastion closes the session before the tunnel is ready", async () => {
+      sshServer = await startSshServer({ endOnAuth: true });
+      await expect(openTestProxy(sshServer, echoServer.port)).rejects.toThrow();
+   });
+
+   it("neither fires onClose nor warns on its own close(), and close() is idempotent", async () => {
+      sshServer = await startSshServer({});
+      const ep = await openTestProxy(sshServer, echoServer.port);
+      let fired = 0;
+      ep.onClose(() => (fired += 1));
+      await ep.close();
+      await ep.close();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(fired).toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+   });
+
+   it("fires an onClose listener registered after the tunnel died", async () => {
+      sshServer = await startSshServer({});
+      const ep = await openTestProxy(sshServer, echoServer.port);
+      try {
+         const first = nextClose(ep);
+         sshServer.endClients();
+         await first;
+         const late = await nextClose(ep);
+         expect(late === undefined || late instanceof Error).toBe(true);
+      } finally {
+         await closeQuietly(() => ep.close());
+      }
    });
 });
 

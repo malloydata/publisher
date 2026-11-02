@@ -380,6 +380,9 @@ A proxy makes the server open an outbound SSH tunnel to a tenant-configured host
 connection configuration is the authorization boundary; host-key pinning is the trust
 control on the tunnel itself, and is required unless the deployment opts out.
 
+A tunnel that drops is detected, logged and rebuilt on the next query. Queries in flight at the
+drop fail with a connection error, and queries queued for a session fail within 30 s.
+
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
