@@ -197,8 +197,10 @@ the active one, so you can query `p1` and `p2` side by side.
 explicit promotion, put `- PUBLISHER_VERSION_PROMOTION: explicit` under
 `## Publisher`. A restart keeps the publisher's flags. `(version=<v>)` on `## Query`, `## Publish` and `## Build refused`
 sends that `versionId`, so a step runs against one version rather than latest. A
-versioned package needs a second, unversioned package (a `## Model anchor/…`) only
-because a configured environment with no package is skipped at boot. See
+versioned package needs a second package (a `## Model anchor/…`) only because a
+configured environment with no package is skipped at boot; with versioning on,
+that configured package is itself published at boot as the version its
+publisher.json declares (the harness writes `1.0.0`). See
 `scenarios/package-versions/`. In `## Versions`, `loaded` is evidence only on a
 row that is not `latest`: `/status`, which the column is read from, loads
 `latest` when it is not resident, so `latest` always reads `true`.

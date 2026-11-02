@@ -54,6 +54,29 @@ root-owned, and the build fails with `No such file or directory` rather than a p
 [`packages/server/README.docker.md`](../packages/server/README.docker.md#the-server-runs-as-a-non-root-user)
 gives three ways to prepare such a path.
 
+## What the storage credential reaches
+
+The storage credential is installed as a DuckDB secret scoped to the catalog's data path: the configured
+`storage.bucketUrl`, or, when the config leaves it out, the path the catalog recorded at its creation, read
+from the catalog once it is attached (the attach itself reaches the catalog database and no data file). A
+read of any other object, through the catalog or through raw SQL on the connection, is unsigned and fails
+(HTTP 403 from the bucket). On S3, DuckDB's fallback to a key seeded from the host's `AWS_*` environment is
+turned off on the connection's DuckDB instance, so such a read is never signed by the host's key either.
+Two consequences for models:
+
+- A model that read an object outside the data path with the DuckLake connection's credential, such as
+  `lake.table('s3://bucket/raw/x.parquet')`, now fails. Put the object under the data path, or read it
+  through a `duckdb` connection whose `attachedDatabases` entry holds a credential for it; those secrets
+  are not scoped.
+- A `managed: true` connection attached read-only is scoped narrower, to its `main` schema's recorded
+  path, so a model reads only the catalog's own tables. Tables a build wrote to a `destinationSchema` are
+  served through the storage destination's own session, as before.
+
+A catalog with nothing to scope to, a config with no `bucketUrl` whose catalog records no data path, is
+not attached: the attach fails naming the catalog, and the next lookup retries it. A `publisher` proxy
+connection to a DuckLake catalog is scoped by the upstream Publisher, which must run a release with this
+behavior.
+
 ## Several catalogs in one database
 
 By default a DuckLake catalog keeps its `ducklake_*` metadata tables in the catalog connection's
@@ -234,7 +257,8 @@ destination whose `destinationSchema` the catalog lacks is refused with a messag
 then sets the session's search path to the catalog's `main` after the attach, so `sales.table('orders')`,
 which compiles to the bare table name, resolves: DuckDB never searches an attached catalog for an
 unqualified name otherwise. `ducklakeConnection.readOnly` stays `true` (the default) unless you have
-decided who may write through the connection.
+decided who may write through the connection. Its storage secret reaches only the `main`
+schema's files; see [What the storage credential reaches](#what-the-storage-credential-reaches).
 
 **Persist from the catalog into itself.** A `#@ persist storage=<dest>` source on that connection reads
 the catalog it is built into. When the connection and the destination are the same catalog — the same

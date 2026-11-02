@@ -20,6 +20,7 @@ import type { ResourceRepository } from "../../../src/storage/DatabaseInterface"
 import { initializeSchema } from "../../../src/storage/duckdb/schema";
 import { Environment } from "../../../src/service/environment";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { logger } from "../../../src/logger";
 import { MaterializationService } from "../../../src/service/materialization_service";
 import {
    storageBindingResolverFor,
@@ -226,9 +227,11 @@ describe("reclaiming an archived version's tables", () => {
             created.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
-      environment.setVersionDeletingHook((packageName, versionId) =>
-         created.reclaimDeletingVersion(ENV, packageName, versionId),
-      );
+      environment.setVersionDeletedHook((packageName, versionId) => {
+         reclaims.push(
+            created.cleanUpDeletedVersion(ENV, packageName, versionId),
+         );
+      });
       return created;
    }
 
@@ -547,7 +550,7 @@ describe("reclaiming an archived version's tables", () => {
       expect(await answerOf("1.0.0")).toBe(101);
    });
 
-   it("deleting a version drops its own tables before it answers, and keeps an orchestrated run's and other versions'", async () => {
+   it("deleting a version drops its own tables once its row is gone, and keeps an orchestrated run's and other versions'", async () => {
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version");
       const v1 = await build({ versionId: "1.0.0" });
@@ -562,8 +565,8 @@ describe("reclaiming an archived version's tables", () => {
          .deleteVersion(PKG, "1.0.0");
       expect(deleted.packageRemoved).toBe(false);
 
-      // No background reclaim to wait for: the delete dropped them itself.
-      expect(reclaims).toEqual([]);
+      // The cleanup runs after the delete answers.
+      await Promise.all(reclaims);
       expect((await tablesIn(env)).sort()).toEqual(
          ["host_v1", TABLE_V2].sort(),
       );
@@ -585,35 +588,230 @@ describe("reclaiming an archived version's tables", () => {
          .getVersionService()!
          .deleteVersion(PKG, "1.0.0");
       expect(deleted.packageRemoved).toBe(true);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      // The package went first; its version's own run waited for the
+      // cleanup, which drops the table and then the run.
+      await Promise.all(reclaims);
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(v1.id)).toBeNull();
-      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
 
-   it("the startup sweep drops a table a delete could not, once the version's row is gone", async () => {
+   it("the startup pass finishes a deleted version's cleanup that a crash cut short, its package gone with it", async () => {
+      await publish("1.0.0", 1, "version");
+      const v1 = await build({ versionId: "1.0.0" });
+      // The server stops before the cleanup starts.
+      env.setVersionDeletedHook(null);
+      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await tablesIn(env)).toEqual([TABLE_V1]);
+      expect(await statusOf(v1.id)).toBe("MANIFEST_FILE_READY");
+
+      await restart();
+      await service.reclaimArchivedVersions();
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await statusOf(v1.id)).toBeNull();
+   });
+
+   it("a delete's cleanup stops the deleted version's own auto-runs that have not settled, and leaves other versions' runs", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      // An auto-run of 1.0.0 that is running here (it is aborted), one that
+      // has not started (it is marked cancelled), and a run of 2.0.0.
+      const running = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "auto" },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      // Each in a slot of its own: one active run per slot.
+      const waiting = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "package", mode: "auto" },
+         { version: "1.0.0" },
+      );
+      const other = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "auto" },
+         { version: "2.0.0", lockVersion: "2.0.0" },
+      );
+      const abort = new AbortController();
+      (
+         service as unknown as {
+            runningAbortControllers: Map<string, AbortController>;
+         }
+      ).runningAbortControllers.set(running.id, abort);
+
+      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+      await Promise.all(reclaims);
+
+      expect(abort.signal.aborted).toBe(true);
+      expect(await statusOf(waiting.id)).toBe("CANCELLED");
+      expect(await statusOf(other.id)).toBe("PENDING");
+   });
+
+   it("a delete's cleanup leaves the deleted version's orchestrated runs to their caller, running or waiting", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      const running = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "orchestrated" },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      const waiting = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "orchestrated" },
+         { version: "1.0.0" },
+      );
+      const abort = new AbortController();
+      (
+         service as unknown as {
+            runningAbortControllers: Map<string, AbortController>;
+         }
+      ).runningAbortControllers.set(running.id, abort);
+
+      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+      await Promise.all(reclaims);
+
+      expect(abort.signal.aborted).toBe(false);
+      expect(await statusOf(running.id)).toBe("PENDING");
+      expect(await statusOf(waiting.id)).toBe("PENDING");
+   });
+
+   it("deleting a versioned package stops each version's own running auto-run and leaves an orchestrated run running", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      const auto = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "auto" },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      const orchestrated = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "version", mode: "orchestrated" },
+         { version: "2.0.0", lockVersion: "2.0.0" },
+      );
+      const running = (
+         service as unknown as {
+            runningAbortControllers: Map<string, AbortController>;
+         }
+      ).runningAbortControllers;
+      const autoAbort = new AbortController();
+      const orchestratedAbort = new AbortController();
+      running.set(auto.id, autoAbort);
+      running.set(orchestrated.id, orchestratedAbort);
+
+      await env.deletePackage(PKG, {
+         removeRecords: async () => {
+            const row = await repo.getPackageByName(ENV_ID, PKG);
+            if (row) await repo.deletePackage(row.id);
+         },
+      });
+      await Promise.all(reclaims);
+
+      expect(autoAbort.signal.aborted).toBe(true);
+      expect(orchestratedAbort.signal.aborted).toBe(false);
+   });
+
+   it("deleting a versioned package cleans up each version as deleting it alone does: its own tables go, an orchestrated run's table stays", async () => {
+      await publish("1.0.0", 1, "version", { detail: true });
+      await publish("2.0.0", 2, "version");
+      const v1 = await build({ versionId: "1.0.0" });
+      await buildInstructed("1.0.0", "summary", "host_v1");
+      const v2 = await build({ versionId: "2.0.0" });
+      expect((await tablesIn(env)).sort()).toEqual(
+         [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
+      );
+
+      // As PackageController.deletePackage deletes it.
+      await env.deletePackage(PKG, {
+         removeRecords: async () => {
+            const row = await repo.getPackageByName(ENV_ID, PKG);
+            if (row) await repo.deletePackage(row.id);
+         },
+      });
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+
+      // The cleanup runs after the delete answers, once per version.
+      await Promise.all(reclaims);
+      expect(reclaims).toHaveLength(2);
+      expect(await tablesIn(env)).toEqual(["host_v1"]);
+      expect(await statusOf(v1.id)).toBeNull();
+      expect(await statusOf(v2.id)).toBeNull();
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+   });
+
+   it("the startup pass finishes a deleted package's cleanup that a crash cut short", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      await build({ versionId: "1.0.0" });
+      await build({ versionId: "2.0.0" });
+      // The server stops before the cleanup starts.
+      env.setVersionDeletedHook(null);
+      await env.deletePackage(PKG, {
+         removeRecords: async () => {
+            const row = await repo.getPackageByName(ENV_ID, PKG);
+            if (row) await repo.deletePackage(row.id);
+         },
+      });
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
+
+      await restart();
+      await service.reclaimArchivedVersions();
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+   });
+
+   it("tries a table it could not drop once: it is named in a warning and left, and the startup pass tries nothing", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
       const v1 = await build({ versionId: "1.0.0" });
       const v2 = await build({ versionId: "2.0.0" });
 
-      // The delete's drop fails: every table is still owed.
+      // The delete's drop fails: every table is left.
       const drop = spyOn(
          service as unknown as {
             dropManifestEntries: (...args: unknown[]) => Promise<unknown>;
          },
          "dropManifestEntries",
       ).mockImplementationOnce(async (...args: unknown[]) => args[4]);
-      await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
-      drop.mockRestore();
+      const warn = spyOn(logger, "warn");
+      try {
+         await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
+         await Promise.all(reclaims);
+         const left = (warn.mock.calls as unknown as unknown[][]).filter(
+            ([message]) => String(message).includes("could not drop"),
+         );
+         expect(left).toHaveLength(1);
+         expect(JSON.stringify(left[0][1])).toContain(TABLE_V1);
+      } finally {
+         drop.mockRestore();
+         warn.mockRestore();
+      }
       expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
-      expect(await statusOf(v1.id)).toBe("FAILED");
+      // Its record goes all the same, so nothing comes back to it.
+      expect(await statusOf(v1.id)).toBeNull();
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
 
       await restart();
       await service.reclaimArchivedVersions();
 
-      expect(await tablesIn(env)).toEqual([TABLE_V2]);
-      expect(await statusOf(v1.id)).toBeNull();
+      expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
       expect(await statusOf(v2.id)).toBe("MANIFEST_FILE_READY");
    });
 });
@@ -683,17 +881,19 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
                );
             },
          );
-         // Deleting a version drops those tables first, before its row goes.
-         environmentStore.setVersionDeletingHook(
-            (environmentName, packageName, versionId) =>
-               materializationService.reclaimDeletingVersion(
+         // Deleting a version stops its builds and reclaims those tables, in the
+         // background, once its row is gone.
+         environmentStore.setVersionDeletedHook(
+            (environmentName, packageName, versionId) => {
+               void materializationService.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
-               ),
+               );
+            },
          );
-         // A reclaim that a crash or a failed drop cut short is retried once the
-         // environments have loaded: nothing else would start it again.
+         // A reclaim that a crash cut short is finished once the environments have
+         // loaded: nothing else would start it again.
          sweep = environmentStore.finishedInitialization.then(
             () => materializationService.reclaimArchivedVersions(),
             () => undefined,
@@ -717,14 +917,13 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       opened.splice(opened.indexOf(server.store), 1);
    }
 
-   async function publish(server: Server, version: string, answer: number) {
-      const location = writePackage(
-         sourcesPath,
-         PKG,
-         version,
-         answer,
-         "version",
-      );
+   async function publish(
+      server: Server,
+      version: string,
+      answer: number,
+      scope: Scope = "version",
+   ) {
+      const location = writePackage(sourcesPath, PKG, version, answer, scope);
       await new PackageController(server.store).addPackage(ENV, {
          name: PKG,
          location,
@@ -840,6 +1039,14 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          "1.0.0",
       );
       expect(answered.id).toBe("1.0.0");
+      // The cleanup runs after the delete answers: it stops the version's
+      // builds, then reclaims.
+      const deadline = Date.now() + 30_000;
+      while (server.calls.length === 0 && Date.now() < deadline) {
+         await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await Promise.all(server.reclaims);
+      expect(server.calls).toEqual([[ENV, PKG, "1.0.0"]]);
       expect(await tables(server)).toEqual([TABLE_V2]);
       expect(await statusOf(server, v1.id)).toBeNull();
       expect(await statusOf(server, v2.id)).toBe("MANIFEST_FILE_READY");
@@ -851,6 +1058,279 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          "1.0.0",
       );
       expect(again.archiveStatus).toBe("unarchive");
+   });
+
+   /** Wait for the cleanups a delete or archive started to be called and settle. */
+   async function cleanupsSettled(
+      server: Server,
+      calls: number,
+   ): Promise<void> {
+      const deadline = Date.now() + 30_000;
+      while (server.calls.length < calls && Date.now() < deadline) {
+         await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await Promise.all(server.reclaims);
+   }
+
+   /** What a version's `summary` answers, and so which table it reads. */
+   async function answerOf(server: Server, versionId: string): Promise<number> {
+      const environment = await server.store.getEnvironment(ENV, false);
+      const pkg = await environment.getPackage(PKG, false, { versionId });
+      const result = await pkg
+         .getModel("model.malloy")!
+         .getQueryResults(
+            undefined,
+            undefined,
+            "run: summary -> { select: answer }",
+         );
+      const rows = (
+         result as unknown as { compactResult?: { answer: number }[] }
+      ).compactResult;
+      return Number(rows![0].answer);
+   }
+
+   /** A table name in the shape a control plane assigns. */
+   const hostTable = (version: string) =>
+      `a1b2c3d4e5f6__v${version.replace(/\./g, "_")}__g001__0badc0de`;
+
+   /**
+    * Build a version as a control plane does: from buildInstructions into the
+    * table it names, then bind the version to that build's manifest and make
+    * it `latest`.
+    */
+   async function buildAsHost(
+      server: Server,
+      version: string,
+   ): Promise<Materialization> {
+      const environment = await server.store.getEnvironment(ENV, false);
+      const versions = new VersionController(server.store);
+      const plan = (
+         await environment.getPackage(PKG, false, { versionId: version })
+      ).getBuildPlan()!;
+      const source = Object.values(plan.sources).find(
+         (s) => s.name === "summary",
+      )!;
+      const created = await server.service.createMaterialization(ENV, PKG, {
+         versionId: version,
+         buildInstructions: [
+            {
+               sourceID: source.sourceID,
+               sourceEntityId: source.sourceEntityId,
+               physicalTableName: hostTable(version),
+               realization: "COPY",
+            },
+         ] as never,
+      });
+      const run = await settledRun(
+         server.store.storageManager.getRepository(),
+         server.service,
+         created.id,
+      );
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      const manifestFile = path.join(root, `manifest-${version}.json`);
+      fs.writeFileSync(manifestFile, JSON.stringify(run.manifest));
+      await versions.setManifest(ENV, PKG, version, {
+         manifestLocation: manifestFile,
+      });
+      await versions.setLatest(ENV, PKG, { version });
+      return run;
+   }
+
+   // Every way a version leaves service, for a package built standalone
+   // (auto-runs) and one built as a control plane builds it
+   // (buildInstructions, a bound manifest, `latest` moved explicitly), under
+   // each scope. Only a standalone `scope: version` version's own tables are
+   // ever dropped: an orchestrated run's tables are its caller's, and
+   // `scope: package` tables are shared.
+   type Mode = "standalone" | "orchestrated";
+   type Action =
+      | "archive a version"
+      | "delete a version"
+      | "delete the only version"
+      | "delete the package";
+   const ACTIONS: Action[] = [
+      "archive a version",
+      "delete a version",
+      "delete the only version",
+      "delete the package",
+   ];
+   for (const mode of ["standalone", "orchestrated"] as Mode[]) {
+      for (const scope of ["version", "package"] as Scope[]) {
+         for (const action of ACTIONS) {
+            const drops = mode === "standalone" && scope === "version";
+            it(`${mode}, scope: ${scope}: ${action} ${drops ? "drops that version's own tables" : "drops no table"}`, async () => {
+               // A control plane's mode: a publish never moves `latest`.
+               if (mode === "orchestrated") {
+                  process.env.PUBLISHER_VERSION_PROMOTION = "explicit";
+               }
+               const server = await openServer();
+               await server.sweep;
+               await server.store.addEnvironment({
+                  name: ENV,
+                  connections: [WAREHOUSE],
+               } as never);
+               const versions = new VersionController(server.store);
+               const published =
+                  action === "delete the only version"
+                     ? ["1.0.0"]
+                     : ["1.0.0", "2.0.0"];
+               const affected =
+                  action === "delete the package" ? published : ["1.0.0"];
+               const packageGone =
+                  action === "delete the package" ||
+                  action === "delete the only version";
+
+               // Each version published, then built: its table and its run.
+               const built = new Map<
+                  string,
+                  { table: string; run: Materialization }
+               >();
+               for (const [i, version] of published.entries()) {
+                  await publish(server, version, i + 1, scope);
+                  if (mode === "orchestrated") {
+                     built.set(version, {
+                        table: hostTable(version),
+                        run: await buildAsHost(server, version),
+                     });
+                  } else {
+                     built.set(version, {
+                        table:
+                           scope === "version"
+                              ? versionTable(ENV, version)
+                              : "summary",
+                        run: await build(server, version),
+                     });
+                  }
+               }
+               const before = [
+                  ...new Set([...built.values()].map((b) => b.table)),
+               ].sort();
+               expect(await tables(server)).toEqual(before);
+
+               switch (action) {
+                  case "archive a version":
+                     await versions.updateVersion(ENV, PKG, "1.0.0", {
+                        archiveStatus: "archive",
+                     });
+                     break;
+                  case "delete a version":
+                  case "delete the only version":
+                     await versions.deleteVersion(ENV, PKG, "1.0.0");
+                     break;
+                  case "delete the package":
+                     await new PackageController(server.store).deletePackage(
+                        ENV,
+                        PKG,
+                     );
+                     break;
+               }
+
+               // The cleanup ran for every version the action took out, so
+               // a table that stays was kept, not missed.
+               await cleanupsSettled(server, affected.length);
+               expect(server.calls.map((call) => call[2]).sort()).toEqual(
+                  affected,
+               );
+               const dropped = drops
+                  ? affected.map((version) => built.get(version)!.table)
+                  : [];
+               expect(await tables(server)).toEqual(
+                  before.filter((table) => !dropped.includes(table)),
+               );
+               for (const version of published) {
+                  const reclaimed = drops && affected.includes(version);
+                  expect(
+                     await statusOf(server, built.get(version)!.run.id),
+                  ).toBe(
+                     packageGone || reclaimed ? null : "MANIFEST_FILE_READY",
+                  );
+               }
+               if (!packageGone) {
+                  // The version left in service still answers from its table.
+                  expect(await answerOf(server, "2.0.0")).toBe(2);
+               }
+            });
+         }
+      }
+   }
+
+   it("orchestrated, end to end: archive, delete and package delete in turn leave the tables a control plane built holding what it wrote", async () => {
+      process.env.PUBLISHER_VERSION_PROMOTION = "explicit";
+      const server = await openServer();
+      await server.sweep;
+      await server.store.addEnvironment({
+         name: ENV,
+         connections: [WAREHOUSE],
+      } as never);
+      const versions = new VersionController(server.store);
+      await publish(server, "1.0.0", 1);
+      const run1 = await buildAsHost(server, "1.0.0");
+      await publish(server, "2.0.0", 2);
+      const run2 = await buildAsHost(server, "2.0.0");
+      const [HOST_V1, HOST_V2] = [hostTable("1.0.0"), hostTable("2.0.0")];
+      expect(await tables(server)).toEqual([HOST_V1, HOST_V2]);
+      // Each version serves from the table its manifest binds.
+      const connection = await (
+         await server.store.getEnvironment(ENV, false)
+      ).getMalloyConnection("warehouse");
+      await connection.runSQL(`UPDATE ${HOST_V1} SET answer = 101`);
+      await connection.runSQL(`UPDATE ${HOST_V2} SET answer = 202`);
+      expect(await answerOf(server, "1.0.0")).toBe(101);
+      expect(await answerOf(server, "2.0.0")).toBe(202);
+
+      await versions.updateVersion(ENV, PKG, "1.0.0", {
+         archiveStatus: "archive",
+      });
+      await cleanupsSettled(server, 1);
+      expect(await tables(server)).toEqual([HOST_V1, HOST_V2]);
+      expect(await statusOf(server, run1.id)).toBe("MANIFEST_FILE_READY");
+
+      await versions.deleteVersion(ENV, PKG, "1.0.0");
+      await cleanupsSettled(server, 2);
+      expect(await tables(server)).toEqual([HOST_V1, HOST_V2]);
+      expect(await statusOf(server, run1.id)).toBe("MANIFEST_FILE_READY");
+      expect(await answerOf(server, "2.0.0")).toBe(202);
+
+      await new PackageController(server.store).deletePackage(ENV, PKG);
+      await cleanupsSettled(server, 3);
+      expect(server.calls).toEqual([
+         [ENV, PKG, "1.0.0"],
+         [ENV, PKG, "1.0.0"],
+         [ENV, PKG, "2.0.0"],
+      ]);
+      expect(await tables(server)).toEqual([HOST_V1, HOST_V2]);
+      // Nothing rebuilt or truncated them.
+      const kept = await connection.runSQL(
+         `SELECT (SELECT answer FROM ${HOST_V1}) AS v1, (SELECT answer FROM ${HOST_V2}) AS v2`,
+      );
+      expect(kept.rows).toEqual([{ v1: 101, v2: 202 }]);
+      // The package's run records went with it, as deleting a package does.
+      expect(await statusOf(server, run2.id)).toBeNull();
+   });
+
+   it("an unversioned package's delete still drops nothing and starts no cleanup, as before versions", async () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      const server = await openServer();
+      await server.sweep;
+      await server.store.addEnvironment({
+         name: ENV,
+         connections: [WAREHOUSE],
+      } as never);
+      await publish(server, "1.0.0", 1, "package");
+      const created = await server.service.createMaterialization(ENV, PKG, {});
+      const run = await settledRun(
+         server.store.storageManager.getRepository(),
+         server.service,
+         created.id,
+      );
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      expect(await tables(server)).toEqual(["summary"]);
+
+      await new PackageController(server.store).deletePackage(ENV, PKG);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(server.calls).toEqual([]);
+      expect(await tables(server)).toEqual(["summary"]);
+      expect(await statusOf(server, run.id)).toBeNull();
    });
 
    // Skipped on Windows, where DuckDB keeps the OS handle on a file database
@@ -931,13 +1411,14 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          );`),
       );
       expect(server).toContain(
-         squash(`environmentStore.setVersionDeletingHook(
-            (environmentName, packageName, versionId) =>
-               materializationService.reclaimDeletingVersion(
+         squash(`environmentStore.setVersionDeletedHook(
+            (environmentName, packageName, versionId) => {
+               void materializationService.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
-               ),
+               );
+            },
          );`),
       );
       expect(server).toContain(

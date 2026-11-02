@@ -495,6 +495,35 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       expect(fs.existsSync(path.join(envPath, PKG, "data.csv"))).toBe(true);
    });
 
+   it("lists an unversioned package that serves during its first publish by its package entry, not a version", async () => {
+      unversionedOverAFile(0);
+      const env = await newEnvironment();
+      await env.addPackage(PKG);
+      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+
+      const held = holdCompile();
+      try {
+         const publishing = publish(env, source("1.0.0", 1));
+         await held.reached;
+         // A version entry would replace the package entry in /status, and
+         // the copy still serving would vanish from it.
+         expect(
+            (await env.listVersionEntries({ includeLoading: true })).size,
+         ).toBe(0);
+         const [listed] = await env.listPackages({ includeLoading: true });
+         expect(listed.status).toMatchObject({ serving: true, loading: true });
+         held.release();
+         await publishing;
+      } finally {
+         held.release();
+         held.restore();
+      }
+      const entries = await env.listVersionEntries({ includeLoading: true });
+      expect(entries.get(PKG)?.map((entry) => entry.versionId)).toEqual([
+         "1.0.0",
+      ]);
+   });
+
    it("lists a package with no latest yet without reporting a failure", async () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1), "explicit");

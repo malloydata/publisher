@@ -83,8 +83,8 @@ export function classifyToolError(
       return {
          message: error.message,
          suggestions: [
-            "This is not transient: retrying with the same version fails the same way.",
-            "Name a version the package has and that is in service in execute_query's version, or omit it to use the package's latest. The other tools serve latest only.",
+            "This is not transient: retrying fails the same way until the package's versions change.",
+            "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it.",
          ],
       } satisfies ErrorDetails;
    }
@@ -231,8 +231,6 @@ export async function getModelForQuery(
    environmentName: string,
    packageName: string,
    modelPath: string,
-   // The published version to query; undefined (or empty) means latest.
-   versionId?: string,
 ): Promise<
    | { model: Model; environment: Environment; pkg: Package }
    | { error: ErrorDetails }
@@ -244,9 +242,8 @@ export async function getModelForQuery(
       );
       // Shed load before any disk / DB work, as the HTTP query controllers do.
       environment.assertCanAdmitQuery();
-      const pkg = await environment.getPackage(packageName, false, {
-         versionId,
-      });
+      // The MCP tools serve the package's `latest`.
+      const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
       if (!model || model.getType() === "notebook") {
          const details = getNotFoundError(
@@ -270,8 +267,8 @@ export async function getModelForQuery(
             `package '${packageName}' in environment '${environmentName}'`,
          );
       } else if (error instanceof PackageVersionError) {
-         // An unknown, archived or malformed version, or no `latest` yet: its
-         // own message, not an internal error.
+         // A package with versions and no `latest` yet: its own message, not
+         // an internal error.
          errorDetails = classifyToolError(
             "executeQuery (load model)",
             `package '${packageName}' in environment '${environmentName}'`,

@@ -360,7 +360,7 @@ describe("VersionRepository", () => {
       await repo.commitPublish(newVersion("1.0.0"), always);
       await repo.commitPublish(newVersion("2.0.0"), always);
       const deleted = await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
-      expect(deleted.packageRemoved).toBe(false);
+      expect(deleted.wasLast).toBe(false);
       expect(deleted.version.versionId).toBe("1.0.0");
       expect(deleted.version.contentHash).toBe("hash-1.0.0");
       expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
@@ -393,7 +393,7 @@ describe("VersionRepository", () => {
       // 2.0.0 is latest, 3.0.0 is in service, 1.0.0 is archived.
       const archived = await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
       expect(archived.version.archiveStatus).toBe("archive");
-      expect(archived.packageRemoved).toBe(false);
+      expect(archived.wasLast).toBe(false);
 
       // Explicit promotion: no latest. With an archived version left, the
       // last version in service is kept.
@@ -410,7 +410,7 @@ describe("VersionRepository", () => {
       ).toBe("unarchive");
    });
 
-   it("deletes the package with its only version: its row, runs and ledger", async () => {
+   it("deletes a package left with no versions: its row, runs and ledger, keeping its versions' own auto-runs for their reclaim", async () => {
       const { repo } = await freshRepo();
       await repo.commitPublish(newVersion("1.0.0"), always);
       await repo.createMaterialization(
@@ -421,6 +421,22 @@ describe("VersionRepository", () => {
          {
             version: "1.0.0",
          },
+      );
+      // 1.0.0's own auto-run: what its reclaim drops, then deletes.
+      const owed = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "MANIFEST_FILE_READY",
+         { scope: "version", mode: "auto" },
+         { version: "1.0.0" },
+      );
+      // Its own orchestrated run is the caller's: it goes with the package.
+      await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "MANIFEST_FILE_READY",
+         { scope: "version", mode: "orchestrated" },
+         { version: "1.0.0" },
       );
       await repo.upsertIncrementalLedgerEntry({
          environmentId: ENV_ID,
@@ -443,11 +459,23 @@ describe("VersionRepository", () => {
       });
       await repo.createMaterialization(ENV_ID, "other", "MANIFEST_FILE_READY");
 
+      // The version's delete leaves the package; deleting the package is
+      // its own step, refused while it has a version.
+      await repo.commitPublish(newVersion("2.0.0"), never);
+      expect(await repo.deletePackageIfNoVersions(ENV_ID, PKG)).toBe(false);
+      expect((await repo.deleteVersion(ENV_ID, PKG, "2.0.0")).wasLast).toBe(
+         false,
+      );
       const deleted = await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
-      expect(deleted.packageRemoved).toBe(true);
+      expect(deleted.wasLast).toBe(true);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).not.toBeNull();
+
+      expect(await repo.deletePackageIfNoVersions(ENV_ID, PKG)).toBe(true);
       expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
       expect(await repo.hasVersions(ENV_ID, PKG)).toBe(false);
-      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+      expect(
+         (await repo.listMaterializations(ENV_ID, PKG)).map((m) => m.id),
+      ).toEqual([owed.id]);
       expect(
          await repo.getIncrementalLedgerEntry(ENV_ID, {
             connectionName: "duckdb",
@@ -468,11 +496,43 @@ describe("VersionRepository", () => {
          repo.deleteVersion(ENV_ID, PKG, "1.0.0"),
          repo.deleteVersion(ENV_ID, PKG, "2.0.0"),
       ]);
-      expect(outcomes.map((o) => o.packageRemoved).sort()).toEqual([
-         false,
-         true,
-      ]);
+      expect(outcomes.map((o) => o.wasLast).sort()).toEqual([false, true]);
+      expect(await repo.deletePackageIfNoVersions(ENV_ID, PKG)).toBe(true);
       expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+   });
+
+   it("publishing a deleted version's id again clears that id's own runs, and nothing else", async () => {
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      await repo.commitPublish(newVersion("2.0.0"), always);
+      const own = { scope: "version", mode: "auto" };
+      // 1.0.0's own run, a run 1.0.0 built under `scope: package` that the
+      // other versions share, and 2.0.0's own run.
+      await repo.createMaterialization(ENV_ID, PKG, "FAILED", own, {
+         version: "1.0.0",
+      });
+      const shared = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "MANIFEST_FILE_READY",
+         { scope: "package", mode: "auto" },
+         { version: "1.0.0" },
+      );
+      const sibling = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "MANIFEST_FILE_READY",
+         own,
+         { version: "2.0.0" },
+      );
+      await repo.deleteVersion(ENV_ID, PKG, "1.0.0");
+      await repo.commitPublish(
+         newVersion("1.0.0", { contentHash: "other" }),
+         never,
+      );
+      expect(
+         (await repo.listMaterializations(ENV_ID, PKG)).map((m) => m.id).sort(),
+      ).toEqual([shared.id, sibling.id].sort());
    });
 
    it("binds and clears a version's manifest", async () => {

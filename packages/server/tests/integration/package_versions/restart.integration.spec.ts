@@ -284,12 +284,13 @@ describe("published versions across a restart", () => {
    beforeAll(async () => {
       serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "versions-restart-"));
       srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), "versions-restart-src-"));
-      // A configured environment needs a package to load at all, so it gets an
-      // unversioned one; everything under test is published at runtime.
+      // A configured environment needs a package to load at all, so it gets
+      // one, published as a version at boot as any configured package is with
+      // versioning on; everything under test is published at runtime.
       const anchor = fs.mkdtempSync(path.join(srcRoot, "anchor-"));
       fs.writeFileSync(
          path.join(anchor, "publisher.json"),
-         JSON.stringify({ name: "anchor" }),
+         JSON.stringify({ name: "anchor", version: "1.0.0" }),
       );
       fs.writeFileSync(
          path.join(anchor, "anchor.malloy"),

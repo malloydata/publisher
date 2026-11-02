@@ -240,6 +240,10 @@ export interface PackageAgentSchedule {
    taskContent: string;
 }
 
+export type PackageAgentBudget = Partial<
+   Record<(typeof BUDGET_KEYS)[number], number>
+>;
+
 /** One agent as the manifest declares it, resolved to what a caller adopts. */
 export interface PackageAgent {
    name: string;
@@ -250,6 +254,8 @@ export interface PackageAgent {
    /** Parsed name and description of each served SKILL.md, by `relative_filepath`; the emitted text quotes them. */
    skillMeta: Map<string, { name: string; description: string }>;
    schedules: PackageAgentSchedule[];
+   /** Declared run limits; the platform clamps them to its own maximum. Absent when the manifest sets none. */
+   budget?: PackageAgentBudget;
    warnings: string[];
    definitionSha: string;
 }
@@ -269,8 +275,15 @@ const AGENT_KEYS = [
    "model",
    "skills",
    "schedules",
+   "budget",
 ];
 const SCHEDULE_KEYS = ["cron", "task"];
+const BUDGET_KEYS = [
+   "turns",
+   "wall_clock_minutes",
+   "llm_tokens",
+   "job_minutes",
+] as const;
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
    typeof v === "object" && v !== null && !Array.isArray(v);
@@ -446,6 +459,33 @@ function readAgentSchedules(
    });
 }
 
+function readAgentBudget(raw: unknown): PackageAgentBudget | undefined {
+   if (raw === undefined) return undefined;
+   if (!isObject(raw)) throw new AgentProblem("'budget' must be an object");
+   const bad = unknownKeys(raw, [...BUDGET_KEYS]);
+   if (bad.length > 0) {
+      throw new AgentProblem(
+         `'budget' sets '${bad.join("', '")}'; allowed keys: ${BUDGET_KEYS.join(", ")}`,
+      );
+   }
+   const budget: PackageAgentBudget = {};
+   for (const key of BUDGET_KEYS) {
+      const value = raw[key];
+      if (value === undefined) continue;
+      if (
+         typeof value !== "number" ||
+         !Number.isSafeInteger(value) ||
+         value < 1
+      ) {
+         throw new AgentProblem(
+            `budget '${key}' must be a positive integer, got ${JSON.stringify(value)}`,
+         );
+      }
+      budget[key] = value;
+   }
+   return Object.keys(budget).length > 0 ? budget : undefined;
+}
+
 /** The agent's skill roots read into served files, sorted by relative path. */
 function readAgentSkills(
    packagePath: string,
@@ -584,6 +624,7 @@ function readAgent(
       raw.schedules,
       paths,
    );
+   const budget = readAgentBudget(raw.budget);
    const skills = readAgentSkills(
       packagePath,
       realRoot,
@@ -599,6 +640,7 @@ function readAgent(
       instructionsPath: instructions.rel,
       skillRoots: skills.roots,
       schedules,
+      ...(budget && { budget }),
       instructions: instructions.text,
       skills: skills.files,
    });
@@ -611,6 +653,7 @@ function readAgent(
          skills: skills.files,
          skillMeta: skills.meta,
          schedules,
+         ...(budget && { budget }),
          warnings,
          definitionSha,
       },

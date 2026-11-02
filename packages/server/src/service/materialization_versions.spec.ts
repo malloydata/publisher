@@ -603,7 +603,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
 
-   it("keeps the record of a table it could not drop, and retries it at the next sweep", async () => {
+   it("tries a table it could not drop once: the record goes, the table stays, and the next sweep tries nothing", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
       const v1 = await build({ versionId: "1.0.0" });
@@ -619,13 +619,12 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await Promise.all(reclaims);
       failing.mockRestore();
 
-      const kept = await repo.getMaterializationById(v1.id);
-      expect(kept?.status).toBe("FAILED");
+      // Best-effort, once: no record is kept for a retry at every start.
+      expect(await repo.getMaterializationById(v1.id)).toBeNull();
       expect(await warehouseTables()).toContain(TABLE_V1);
 
       await service.reclaimArchivedVersions();
-      expect(await repo.getMaterializationById(v1.id)).toBeNull();
-      expect(await warehouseTables()).not.toContain(TABLE_V1);
+      expect(await warehouseTables()).toContain(TABLE_V1);
    });
 });
 

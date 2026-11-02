@@ -100,6 +100,8 @@ export function createDuckDBRepository(
          ),
       deleteVersion: (environmentId, packageName, versionId) =>
          versions.delete(environmentId, packageName, versionId),
+      deletePackageIfNoVersions: (environmentId, packageName) =>
+         versions.deletePackageIfNoVersions(environmentId, packageName),
 
       listConnections: (environmentId) =>
          connections.listConnections(environmentId),
@@ -124,6 +126,8 @@ export function createDuckDBRepository(
 
       listMaterializations: (environmentId, packageName, options) =>
          materializations.list(environmentId, packageName, options),
+      listEnvironmentMaterializations: (environmentId) =>
+         materializations.listByEnvironment(environmentId),
       getLatestScheduledFireAt: (environmentId, packageName, version) =>
          materializations.getLatestScheduledFireAt(
             environmentId,

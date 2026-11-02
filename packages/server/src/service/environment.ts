@@ -409,11 +409,11 @@ export class Environment {
    private versionArchivedHook:
       | ((packageName: string, versionId: string) => void)
       | null = null;
-   // Called, and awaited, before a version's row is deleted, to drop the
-   // tables it alone owns. Set by EnvironmentStore (see
-   // setVersionDeletingHook).
-   private versionDeletingHook:
-      | ((packageName: string, versionId: string) => Promise<void>)
+   // Called once a version's row is deleted, to stop its builds and reclaim
+   // the tables it alone owns. Set by EnvironmentStore (see
+   // setVersionDeletedHook).
+   private versionDeletedHook:
+      | ((packageName: string, versionId: string) => void)
       | null = null;
    public metadata: ApiEnvironment;
    // Owner of the RSS back-pressure flag; null makes the admission gates no-ops.
@@ -755,6 +755,8 @@ export class Environment {
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             this.destinations,
             destinationRoot,
+            false,
+            { origin: "storage-destination" },
          );
       } catch (error) {
          logger.error(
@@ -764,6 +766,8 @@ export class Environment {
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             [],
             storageDestinationRoot(this.environmentPath),
+            false,
+            { origin: "storage-destination" },
          );
       }
       if (previous && previous !== this.destinationMalloyConfig) {
@@ -971,6 +975,11 @@ export class Environment {
                   } else if (registered === PackageStatus.LOADING) {
                      // An interrupted load: reloading it from this read path
                      // would repeat the work on every listing.
+                     return undefined;
+                  } else if (registered === undefined) {
+                     // Listed only as a load in flight, which has since failed
+                     // (one that succeeded is resident or versioned): its
+                     // caller has the error, and a read never loads it.
                      return undefined;
                   } else {
                      metadata = (
@@ -1481,15 +1490,35 @@ export class Environment {
    }
 
    /**
-    * Attach (or detach with `null`) the callback awaited before a version is
-    * deleted, which drops the tables that version alone owns. Called holding
-    * the version's lock; it must not throw.
+    * Attach (or detach with `null`) the callback run once a version is
+    * deleted, which stops its builds and reclaims the tables that version
+    * alone owns. It must only schedule work, and must not throw.
     */
-   public setVersionDeletingHook(
-      hook: ((packageName: string, versionId: string) => Promise<void>) | null,
+   public setVersionDeletedHook(
+      hook: ((packageName: string, versionId: string) => void) | null,
    ): void {
-      this.versionDeletingHook = hook;
+      this.versionDeletedHook = hook;
    }
+
+   /**
+    * Resolves once no materialization of the version is running: at once
+    * when none is, else when the last one settles.
+    */
+   public versionBuildsSettled(
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      const k = `${packageName}@${versionId}`;
+      if (!this.versionBuilds.has(k)) return Promise.resolve();
+      return new Promise((resolve) => {
+         const waiting = this.versionBuildWaiters.get(k) ?? [];
+         waiting.push(resolve);
+         this.versionBuildWaiters.set(k, waiting);
+      });
+   }
+
+   // Waiting on a version's builds to settle (see versionBuildsSettled).
+   private readonly versionBuildWaiters = new Map<string, Array<() => void>>();
 
    /**
     * Record that a materialization of a version is running, until the
@@ -1522,6 +1551,11 @@ export class Environment {
             );
          }
          this.pendingVersionReleases.delete(k);
+         // A reclaim of a deleted version waits for its builds to settle.
+         for (const resolve of this.versionBuildWaiters.get(k) ?? []) {
+            resolve();
+         }
+         this.versionBuildWaiters.delete(k);
       };
    }
 
@@ -1765,11 +1799,23 @@ export class Environment {
     * version carries its full metadata (manifest binding included); one that
     * is not carries its name, version, `latestVersion`, `archiveStatus` and
     * status. Empty when no package here has versions.
+    *
+    * With `includeLoading`, a version being published that has no row yet (a
+    * version new to its package, before its commit) is listed too, as
+    * loading: an orchestrator that dispatched the publish can tell it from an
+    * absence by its `versionId`.
     */
-   public async listVersionEntries(): Promise<Map<string, ApiPackage[]>> {
+   public async listVersionEntries(
+      options: { includeLoading?: boolean } = {},
+   ): Promise<Map<string, ApiPackage[]>> {
       const entries = new Map<string, ApiPackage[]>();
       if (!this.versionService) return entries;
       const versions = this.versionService;
+      // Before the rows: a publish that commits while they are read is then
+      // in both, and listed once, from its row.
+      const publishing = options.includeLoading
+         ? versions.publishingVersions()
+         : [];
       const rows = await versions.listAllVersions();
       for (const row of rows) {
          const loaded = versions.cache.peek(row.packageName, row.versionId);
@@ -1791,6 +1837,22 @@ export class Environment {
             status: this.describePackageStatus(row.packageName, row.versionId),
          });
          entries.set(row.packageName, list);
+      }
+      for (const { packageName, versionId } of publishing) {
+         // An unversioned copy still serving keeps its package entry until
+         // the first version commits.
+         if (this.packages.has(packageName)) continue;
+         const list = entries.get(packageName) ?? [];
+         if (list.some((entry) => entry.versionId === versionId)) continue;
+         list.push({
+            name: packageName,
+            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            versionId,
+            latestVersion: list[0]?.latestVersion ?? null,
+            loaded: false,
+            status: this.describePackageStatus(packageName, versionId),
+         });
+         entries.set(packageName, list);
       }
       return entries;
    }
@@ -1828,6 +1890,8 @@ export class Environment {
                this.trackPackageLoad(packageName, () =>
                   this.loadVersionPackage(packageName, versionPath, version),
                ),
+            trackPublish: (packageName, fn) =>
+               this.trackPackageLoad(packageName, fn),
             releaseVersion: (packageName, versionId, loaded) =>
                this.retireConnectionGeneration(
                   `package ${packageName} version ${versionId}`,
@@ -1870,9 +1934,8 @@ export class Environment {
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
                this.versionArchivedHook?.(packageName, versionId),
-            reclaimVersion: async (packageName, versionId) => {
-               await this.versionDeletingHook?.(packageName, versionId);
-            },
+            onVersionDeleted: (packageName, versionId) =>
+               this.versionDeletedHook?.(packageName, versionId),
             packageRemoved: (packageName) => {
                this.clearPackageLoadFailure(packageName);
                this.deletePackageStatus(packageName);
@@ -3203,7 +3266,11 @@ export class Environment {
       } = {},
    ): Promise<void> {
       assertSafePackageName(packageName);
-      return this.withPackageLock(packageName, async () => {
+      // The versions a delete of a versioned package removed. Each is then
+      // cleaned up as deleting that version alone is: its own running
+      // auto-runs stopped and its own tables reclaimed, in the background.
+      let deletedVersions: string[] = [];
+      await this.withPackageLock(packageName, async () => {
          // Before the early return: a failed package is never in `packages`,
          // and a stale entry would report a loadError for an unconfigured one.
          this.clearPackageLoadFailure(packageName);
@@ -3220,6 +3287,9 @@ export class Environment {
                   versions.cache.loadedVersionsOf(packageName).length > 0 ||
                   (await versions.isVersioned(packageName)));
             if (versioned && !options.versioned) {
+               deletedVersions = (
+                  await versions!.listVersions(packageName)
+               ).versions.map((version) => version.versionId);
                await options.removeRecords?.();
             }
             if (versioned && this.versionService) {
@@ -3304,6 +3374,19 @@ export class Environment {
             });
          }
       });
+      // The delete is committed; cleaning up must not turn it into a failure.
+      for (const versionId of deletedVersions) {
+         try {
+            this.versionDeletedHook?.(packageName, versionId);
+         } catch (error) {
+            logger.warn("Could not start reclaiming a deleted version", {
+               environmentName: this.environmentName,
+               packageName,
+               versionId,
+               error,
+            });
+         }
+      }
    }
 
    /**
