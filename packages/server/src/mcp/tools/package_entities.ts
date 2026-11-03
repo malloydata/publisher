@@ -12,7 +12,7 @@ import { referencedGivenNames } from "../../service/authorize";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
 import type { PipelineSettings } from "./get_context_pipeline";
-import { compareText } from "./retrieval_shared";
+import { compareText } from "../../compare_text";
 import type {
    Entity,
    JoinReach,
