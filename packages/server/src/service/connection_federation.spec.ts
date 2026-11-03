@@ -292,6 +292,7 @@ describe("federateSourceForPassthrough", () => {
             close: async () => {
                closed += 1;
             },
+            onClose: () => {},
          };
       };
       const result = await federateSourceForPassthrough(
@@ -348,6 +349,7 @@ describe("federateSourceForPassthrough", () => {
          close: async () => {
             closed += 1;
          },
+         onClose: () => {},
       });
       await expect(
          federateSourceForPassthrough(
@@ -379,6 +381,7 @@ describe("federateSourceForPassthrough", () => {
          close: async () => {
             closed += 1;
          },
+         onClose: () => {},
       });
       // verify-ca with no trusted bundle is refused AFTER the tunnel is open and
       // BEFORE any ATTACH: the tunnel must not be stranded by that refusal.
@@ -509,7 +512,12 @@ describe("attachDuckLakeReadWrite", () => {
 });
 
 describe("buildProxiedPgAttachString", () => {
-   const endpoint = { host: "127.0.0.1", port: 6000, close: async () => {} };
+   const endpoint = {
+      host: "127.0.0.1",
+      port: 6000,
+      close: async () => {},
+      onClose: () => {},
+   };
    const pg = (sslmode?: string) =>
       ({
          host: "real.example",
