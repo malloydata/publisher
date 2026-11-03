@@ -99,10 +99,17 @@ export function legacyPackageNameMiddleware(): express.RequestHandler {
       } catch {
          return next();
       }
-      const recovered = recoverVersionFromName(segment, req.query.versionId);
+      const apiPrefix = match[1] ?? "";
+      // A data-app static route (no API prefix) takes no version of its own
+      // from a forwarded query string: a proxy may pass a page's query on
+      // unchanged, with a `versionId` that is no version of this package. The
+      // combined name says which version the page is.
+      const recovered = recoverVersionFromName(
+         segment,
+         apiPrefix === "" ? undefined : req.query.versionId,
+      );
       if (!recovered.recovered) return next();
 
-      const apiPrefix = match[1] ?? "";
       const environment = match[2];
       const rest = match[4] ?? "";
       const pkg = encodeURIComponent(recovered.packageName);

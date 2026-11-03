@@ -74,7 +74,7 @@ A query takes `versionId` in its body; one in the URL's query string is read too
 
 ### A version named in the package name (transition)
 
-An orchestrator that predates versions names a version by a combined package name, `<package>___<version>`, and sends no `versionId`. With versioning on, such a request is read as `<package>` at `<version>`, so an orchestrator still running while it and its servers roll one after the other keeps working. The split is at the last `___`, and only when what follows is a semantic version; a request that also names a version must name the same one, or `latest`, or nothing.
+An orchestrator that predates versions names a version by a combined package name, `<package>___<version>`, and sends no `versionId`. With versioning on, such a request is read as `<package>` at `<version>`, so an orchestrator still running while it and its servers roll one after the other keeps working. The split is at the last `___`, and only when what follows is a semantic version; a request that also names a version must name the same one, or `latest`, or nothing. A data-app static file takes its version from the name whatever `versionId` a forwarded query string carries, since a proxy may pass a page's query string on unchanged.
 
 | Combined-name request                                | Read as                                                                    |
 | ---------------------------------------------------- | -------------------------------------------------------------------------- |

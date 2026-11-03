@@ -370,4 +370,29 @@ describe("the data-app static routes", () => {
          },
       ]);
    });
+
+   it("serve a page of a combined name whatever version a forwarded query names", async () => {
+      const seen: unknown[] = [];
+      const app = express();
+      app.use(legacyPackageNameMiddleware());
+      app.get(
+         "/environments/:environmentName/packages/:packageName/*",
+         (req, res) => {
+            seen.push([req.params.packageName, req.query.versionId]);
+            res.sendStatus(204);
+         },
+      );
+      for (const forwarded of ["1.0.3", "2.0.0", "not-a-version"]) {
+         await request(app)
+            .get(
+               `/environments/acme/packages/sales___1.0.3/index.html?versionId=${forwarded}`,
+            )
+            .expect(204);
+      }
+      expect(seen).toEqual([
+         ["sales", "1.0.3"],
+         ["sales", "1.0.3"],
+         ["sales", "1.0.3"],
+      ]);
+   });
 });
