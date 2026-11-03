@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../logger";
 import {
    type SecureGivenModelInput,
    summarizeSecureGivens,
@@ -62,28 +63,74 @@ describe("summarizeSecureGivens", () => {
       ]);
    });
 
-   it("leaves out notebooks and keeps hidden and nested model files", () => {
+   it("counts notebooks like models, and keeps hidden and nested files", () => {
       expect(
          summarizeSecureGivens([
             model("nb.malloynb", [secure("ROLES", "string[]")]),
+            model("only_nb.malloynb", [secure("NB_ONLY", "number")]),
             model(".hidden.malloy", [secure("ROLES", "string[]")]),
             model("sub/dir/m.malloy", [secure("ROLES", "string[]")]),
          ]),
       ).toEqual([
+         { name: "NB_ONLY", type: "number", modelPaths: ["only_nb.malloynb"] },
          {
             name: "ROLES",
             type: "string[]",
-            modelPaths: [".hidden.malloy", "sub/dir/m.malloy"],
+            modelPaths: [".hidden.malloy", "nb.malloynb", "sub/dir/m.malloy"],
          },
       ]);
    });
 
-   it("leaves out a model that did not compile", () => {
+   it("is undefined, not partial, when any model or notebook did not compile", () => {
       expect(
          summarizeSecureGivens([
-            model("broken.malloy", [secure("ROLES", "string[]")], false),
+            model("ok.malloy", [secure("ROLES", "string[]")]),
+            model("broken.malloy", [], false),
          ]),
-      ).toEqual([]);
+      ).toBeUndefined();
+      expect(
+         summarizeSecureGivens([
+            model("ok.malloy", []),
+            model("broken.malloynb", [], false),
+         ]),
+      ).toBeUndefined();
+   });
+
+   it("is undefined, with a warning, when a secure given has no name or type", () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         for (const bad of [secure("", "string"), secure("ROLES", "")]) {
+            warn.mockClear();
+            expect(
+               summarizeSecureGivens(
+                  [
+                     model("ok.malloy", [secure("A", "string")]),
+                     model("m.malloy", [bad]),
+                  ],
+                  { packageName: "pkg" },
+               ),
+            ).toBeUndefined();
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith(
+               expect.any(String),
+               expect.objectContaining({
+                  packageName: "pkg",
+                  modelPath: "m.malloy",
+               }),
+            );
+         }
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("is frozen through and through, so it can be shared by reference", () => {
+      const summary = summarizeSecureGivens([
+         model("a.malloy", [secure("ROLES", "string[]")]),
+      ]);
+      expect(Object.isFrozen(summary)).toBe(true);
+      expect(Object.isFrozen(summary?.[0])).toBe(true);
+      expect(Object.isFrozen(summary?.[0].modelPaths)).toBe(true);
    });
 
    it("keeps one entry per (name, type): one name with two types is two entries", () => {
@@ -129,7 +176,7 @@ describe("summarizeSecureGivens", () => {
             secure("F", "filter<timestamp>"),
          ]),
       ]);
-      expect(summary.map((s) => s.type)).toEqual([
+      expect(summary?.map((s) => s.type)).toEqual([
          "filter<timestamp>",
          "number[]",
       ]);

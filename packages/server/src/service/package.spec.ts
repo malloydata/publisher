@@ -835,6 +835,97 @@ describe("service/package", () => {
       });
    });
 
+   describe("secureGivens", () => {
+      const stubModel = (
+         modelPath: string,
+         givens: { name: string; type: string; secure?: boolean }[],
+         compilationError?: Error,
+      ) =>
+         ({
+            getPath: () => modelPath,
+            setDiscoveryCuration: () => {},
+            setQueryBoundary: () => {},
+            setSiblingModelDefResolver: () => {},
+            getGivens: () => givens,
+            getCompilationError: () => compilationError,
+            isNotebook: () => modelPath.endsWith(".malloynb"),
+            getNotebookListing: () => ({}),
+            hasEmptyDiscoverySurface: () => false,
+            getDeclaredQueryMetadata: () => [],
+            getDeclaredSourceQueryMetadata: () => [],
+            preaggregateViolations: () => [],
+            declaredFilterSourceNames: () => [],
+         }) as unknown as Model;
+      const roles = { name: "ROLES", type: "string[]", secure: true };
+      const pkgWith = (models: Map<string, Model>) =>
+         new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            models,
+         );
+      /** Stands in for any path that installs a new models map (reload, rebuild). */
+      const replaceModels = (pkg: Package, models: Map<string, Model>) => {
+         (pkg as unknown as { models: Map<string, Model> }).models = models;
+      };
+
+      it("is returned by reference, frozen, until the models are replaced", () => {
+         const pkg = pkgWith(
+            new Map([["a.malloy", stubModel("a.malloy", [roles])]]),
+         );
+         const first = pkg.getPackageMetadata().secureGivens;
+         expect(first).toEqual([
+            { name: "ROLES", type: "string[]", modelPaths: ["a.malloy"] },
+         ]);
+         expect(Object.isFrozen(first)).toBe(true);
+         expect(pkg.getPackageMetadata().secureGivens).toBe(first!);
+
+         replaceModels(pkg, new Map([["a.malloy", stubModel("a.malloy", [])]]));
+         expect(pkg.getPackageMetadata().secureGivens).toEqual([]);
+      });
+
+      it("is absent when any model or notebook failed to compile", () => {
+         const pkg = pkgWith(
+            new Map([
+               ["a.malloy", stubModel("a.malloy", [roles])],
+               [
+                  "nb.malloynb",
+                  stubModel("nb.malloynb", [], new Error("does not compile")),
+               ],
+            ]),
+         );
+         const metadata = pkg.getPackageMetadata();
+         expect("secureGivens" in metadata).toBe(false);
+      });
+
+      it("is never stored from a setPackageMetadata round trip", () => {
+         const pkg = pkgWith(
+            new Map([["a.malloy", stubModel("a.malloy", [roles])]]),
+         );
+         pkg.setPackageMetadata({
+            ...pkg.getPackageMetadata(),
+            description: "edited",
+         });
+         replaceModels(pkg, new Map([["b.malloy", stubModel("b.malloy", [])]]));
+         expect(pkg.getPackageMetadata().secureGivens).toEqual([]);
+
+         // A stale or forged value is dropped even when the models are unknown.
+         replaceModels(
+            pkg,
+            new Map([
+               ["b.malloy", stubModel("b.malloy", [], new Error("broken"))],
+            ]),
+         );
+         pkg.setPackageMetadata({
+            name: "testPackage",
+            secureGivens: [{ name: "X", type: "string", modelPaths: [] }],
+         });
+         expect("secureGivens" in pkg.getPackageMetadata()).toBe(false);
+      });
+   });
+
    describe("getDeclaredQueryMetadata", () => {
       const pkgWith = (metadata: Record<string, unknown>) =>
          new Package(

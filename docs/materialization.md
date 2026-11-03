@@ -264,9 +264,11 @@ given `#(secure)` changes nothing about who can send what.
 
 A host learns which givens it must set from the package's load response: `secureGivens` on
 the `Package` that `POST …/packages` (and `GET …/packages/{pkg}`) returns lists each
-`#(secure)` given the package's compiled `.malloy` models surface, by name and rendered type,
-with the model files that surface it. It is read off the load's own compile, so the host does
-not compile the package again, and it is `[]` on a loaded package that declares none.
+`#(secure)` given the package's compiled `.malloy` models and `.malloynb` notebooks surface,
+by name and rendered type, with the files that surface it. It is read off the compile the
+package is serving, so the host does not compile the package again, and it is `[]` on a loaded
+package that declares none. It is absent while any model or notebook fails to compile: read
+absent as unknown, never as none.
 
 **A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
 `in`, not `=`:

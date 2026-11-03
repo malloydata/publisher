@@ -289,8 +289,18 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
-   /** {@link summarizeSecureGivens} over `models`, recomputed whenever they are replaced. */
-   private secureGivens: ApiSecureGivenSummary[] = [];
+   /**
+    * {@link summarizeSecureGivens} over the `models` map it was computed for.
+    * Keyed on that map's identity, so whatever replaces `models` gets a fresh
+    * summary on the next read; a `Model`'s givens and compile error are fixed
+    * at construction, so the same map always yields the same answer.
+    */
+   private secureGivensMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: readonly ApiSecureGivenSummary[] | undefined;
+        }
+      | undefined;
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
@@ -406,10 +416,9 @@ export class Package {
       this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
-      this.packageMetadata = packageMetadata;
+      this.packageMetadata = Package.storableMetadata(packageMetadata);
       this.databases = databases;
       this.models = models;
-      this.secureGivens = Package.summarizeSecureGivensOf(models);
       this.malloyConfig = malloyConfig;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
@@ -1404,23 +1413,32 @@ export class Package {
    }
 
    /**
-    * ON THE `/status` POLL PATH: runs for every package every few seconds.
-    * Anything added below must be trivially cheap or memoized on the Model; an
-    * unmemoized walk over model fields blocks the event loop for seconds.
+    * The `#(secure)` givens of the models and notebooks now installed, or
+    * `undefined` when that is unknown (see {@link summarizeSecureGivens}).
+    * Computed on first read after `models` is replaced and then returned by
+    * reference: the array is frozen, so callers share it.
     */
-   /** The `#(secure)` givens of the models a load produced; see {@link summarizeSecureGivens}. */
-   private static summarizeSecureGivensOf(
-      models: Map<string, Model>,
-   ): ApiSecureGivenSummary[] {
-      return summarizeSecureGivens(
-         [...models.entries()].map(([modelPath, model]) => ({
+   private currentSecureGivens(): readonly ApiSecureGivenSummary[] | undefined {
+      const memo = this.secureGivensMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = summarizeSecureGivens(
+         [...forModels.entries()].map(([modelPath, model]) => ({
             modelPath,
             givens: model.getGivens(),
             compiled: model.getCompilationError() === undefined,
          })),
+         { packageName: this.packageName },
       );
+      this.secureGivensMemo = { forModels, value };
+      return value;
    }
 
+   /**
+    * ON THE `/status` POLL PATH: runs for every package every few seconds.
+    * Anything added below must be trivially cheap or memoized on the Model; an
+    * unmemoized walk over model fields blocks the event loop for seconds.
+    */
    public getPackageMetadata(): ApiPackage {
       // A copy with the server-computed fields overlaid. `name` is the
       // registered name, which can differ from the one in publisher.json.
@@ -1435,12 +1453,14 @@ export class Package {
          sourceContentSha: this.sourceContentSha,
          // Overlaid so a metadata PATCH body can neither set nor wipe it.
          agents: this.rawAgents === undefined ? undefined : this.listAgents(),
-         // Computed once per load; a copy so a caller cannot edit the stored one.
-         secureGivens: this.secureGivens.map((given) => ({
-            ...given,
-            modelPaths: [...given.modelPaths],
-         })),
       };
+      // Never stored in `packageMetadata` (see storableMetadata): memoized per
+      // models map and frozen, so it is returned by reference. Left off, not
+      // `[]`, when it is unknown.
+      const secureGivens = this.currentSecureGivens();
+      if (secureGivens !== undefined) {
+         metadata.secureGivens = secureGivens;
+      }
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
@@ -2408,7 +2428,6 @@ export class Package {
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
-      this.secureGivens = Package.summarizeSecureGivensOf(nextModels);
       // Before refreshServingIdentity, which reads the agents it declares.
       this.rawAgents = outcome.packageMetadata.agents;
       // Move the identity as soon as the new models are installed.
@@ -3457,8 +3476,19 @@ export class Package {
       this.environmentName = environmentName;
    }
 
+   /**
+    * `packageMetadata` without the fields computed from the installed models,
+    * so a caller that round-trips `getPackageMetadata()` (or a PATCH body)
+    * cannot store a snapshot that outlives the models it describes.
+    */
+   private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
+      if (!("secureGivens" in packageMetadata)) return packageMetadata;
+      const { secureGivens: _computed, ...stored } = packageMetadata;
+      return stored;
+   }
+
    public setPackageMetadata(packageMetadata: ApiPackage) {
-      this.packageMetadata = packageMetadata;
+      this.packageMetadata = Package.storableMetadata(packageMetadata);
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
       this.applySiblingModelResolverToModels();
