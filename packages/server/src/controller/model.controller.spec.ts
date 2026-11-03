@@ -48,6 +48,53 @@ const COMPILED = { modelPath: "flights.malloy", sourceInfos: ["{}"] };
 describe("ModelController.getModel", () => {
    afterEach(() => sinon.restore());
 
+   it("omits the sources a caller cannot enter when givens are supplied", async () => {
+      const compiled = {
+         modelPath: "clinic.malloy",
+         sources: [
+            { name: "open_src", givens: [] },
+            {
+               name: "chart",
+               givens: [{ name: "ROLES", type: "string[]", secure: true }],
+               authorize: ["'clinician' in $ROLES"],
+            },
+         ],
+         queries: [
+            { name: "q_open", sourceName: "open_src" },
+            { name: "q_chart", sourceName: "chart" },
+         ],
+         sourceInfos: ['{"name":"open_src"}', '{"name":"chart"}'],
+      };
+      const { controller } = buildController({
+         getType: () => "model",
+         getModel: sinon.stub().resolves(compiled),
+      });
+      const asBilling = await controller.getModel(
+         "env",
+         "faa",
+         "clinic.malloy",
+         { givens: { ROLES: ["billing"] } },
+      );
+      expect(asBilling.sources?.map((s) => s.name)).toEqual(["open_src"]);
+      expect(asBilling.queries?.map((q) => q.name)).toEqual(["q_open"]);
+      expect(asBilling.sourceInfos).toEqual(['{"name":"open_src"}']);
+      const asClinician = await controller.getModel(
+         "env",
+         "faa",
+         "clinic.malloy",
+         { givens: { ROLES: ["clinician"] } },
+      );
+      expect(asClinician.sources?.map((s) => s.name)).toEqual([
+         "open_src",
+         "chart",
+      ]);
+      const noGivens = await controller.getModel("env", "faa", "clinic.malloy");
+      expect(noGivens.sources?.map((s) => s.name)).toEqual([
+         "open_src",
+         "chart",
+      ]);
+   });
+
    it("returns the compiled model with the file's text alongside, read on the lock-free fast path", async () => {
       const { controller, getModelFileText } = buildController({
          getType: () => "model",

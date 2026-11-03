@@ -115,6 +115,26 @@ says nothing about the model. That holds only when the model carries no `#(autho
 `#(access_filter)`, and every source the text joins is on the surface or derived from one; otherwise
 it is the plain 404.
 
+## Discovery under a lock
+
+Curation decides what exists for everyone. A `#(authorize)` lock decides who may enter a source,
+and discovery can read it too, when it knows who is asking. `get_context` takes a `givens`
+parameter and `GET …/models/{path}` a `givens` query parameter, each the caller's givens as the
+trusted tier set them. A source whose lock cannot admit the caller on the `#(secure)` givens
+supplied, or whose lock reads a secure given the trusted tier did not supply, is omitted from the
+listing and the ranked results, with its fields, queries and source info, the way a source locked
+with `#(authorize) false` always is. The counts count only what is shown.
+
+Only a secure given takes part. A plain given is whatever the request supplies, so hiding on it
+would hide nothing from a caller who can send any value; a lock term on a plain given is not
+evaluated and the source stays listed. `#(access_filter)` row filters never hide anything: they
+scope rows, not schema. With no givens supplied, every published source is listed, as before.
+
+This is discovery, not enforcement. The query route's gates decide what is served, and they decide
+the same way whether or not the source was listed; what this buys is an agent that sees only what
+its caller can enter, and nothing for an adversarial agent to learn from a listing that a query
+would not already answer. See [authorize.md](authorize.md) for the lock and `#(secure)`.
+
 ## Curating, and what curation is not
 
 `export { … }` is a discovery filter and a query boundary over _what exists_; `#(authorize)` is the

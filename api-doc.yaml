@@ -2133,6 +2133,21 @@ paths:
             $ref: "#/components/schemas/PathPattern"
         - $ref: "#/components/parameters/versionId"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
+        - name: givens
+          in: query
+          required: false
+          description: >-
+            The caller's givens as the trusted tier set them, one JSON object
+            (`{"ROLES":["clinician"]}`). A source whose `#(authorize)` lock
+            cannot admit the caller on the `#(secure)` givens supplied, or
+            reads a secure given not supplied, is omitted from `sources`,
+            `queries` and `sourceInfos`, as a source locked with `false` is.
+            Plain givens and `#(access_filter)` row filters hide nothing.
+            Discovery only: the query route's gates decide what is served
+            either way. Absent: every published source. Not a JSON object:
+            400.
+          schema:
+            type: string
       responses:
         "200":
           description: Compiled Malloy model

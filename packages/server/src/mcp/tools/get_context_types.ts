@@ -3,6 +3,7 @@
 
 import type lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
+import type { GivenValue } from "@malloydata/malloy";
 import type { Package } from "../../service/package";
 import type { SearchTargetType } from "./get_context_request";
 import type { ClassifiedInput } from "../../service/classification";
@@ -241,6 +242,11 @@ export interface ResolvedSearch {
  * paths cannot disagree about what was asked.
  */
 export interface ResolvedRequest {
+   /**
+    * The caller's givens as the trusted tier set them; sources whose lock
+    * cannot admit the caller on the secure ones are omitted. Absent: none.
+    */
+   givens?: Record<string, GivenValue>;
    /**
     * Only `source` targets, none with text: the catalog browse. The one
     * request with a resumable order, so the only one `offset` applies to, and
