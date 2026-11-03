@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Packages published from a location can be immutable versions (opt in with `PUBLISHER_PACKAGE_VERSIONING=on`)
+## [0.11.0] — Packages published from a location can be immutable versions (opt in with `PUBLISHER_PACKAGE_VERSIONING=on`)
 
 With `PUBLISHER_PACKAGE_VERSIONING=on`, `POST /api/v0/environments/{env}/packages` with a `location` publishes an immutable **version** of the package, numbered by the `version` in its `publisher.json`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
 
@@ -61,7 +61,7 @@ A bastion refusing to forward to the database, or an SSH session to a bastion dr
 
 **Upgrading: a tunneled connection now runs at most 5 queries at once, and opens a fresh database session for each.** The pool behind an SSH-proxied Postgres connection now matches a direct one. Before, it allowed 10 concurrent sessions and reused them. Now it honours `PUBLISHER_POSTGRES_POOL_MAX` (default 5), so a sixth concurrent query queues, and fails if no session comes free within 30 s; set `PUBLISHER_POSTGRES_POOL_MAX=10` to keep the old capacity. Each query also gets a new session, never a reused one: it opens a new channel through the bastion, connects and logs in to Postgres, and runs the session setup, which adds that connect time to every tunneled query. See [docs/connections.md](docs/connections.md#reaching-a-database-through-an-ssh-bastion-proxy).
 
-## [Unreleased] — A package agent can declare a run budget
+## [0.11.0] — A package agent can declare a run budget
 
 An agent in `publisher.json` can now set `budget`: optional `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set any one of them alone and the rest keep the platform's default. Publisher validates it and serves it from `get_agent` and the agent endpoints, and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A bad value or an unknown sub-key drops the agent, like any other invalid key. **Earlier releases do not know the key and drop any agent that sets it**, so a package should not use `budget` until every server that serves it runs this release. The new `malloy-define-agent` skill covers writing an agent definition. See [docs/packages.md](docs/packages.md#agents).
 
