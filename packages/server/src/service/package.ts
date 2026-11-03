@@ -165,6 +165,10 @@ import { filterFreshManifest } from "./freshness";
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
+import {
+   type ApiSecureGivenSummary,
+   summarizeSecureGivens,
+} from "./secure_givens";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 import {
    applyLoadGates,
@@ -285,6 +289,8 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
+   /** {@link summarizeSecureGivens} over `models`, recomputed whenever they are replaced. */
+   private secureGivens: ApiSecureGivenSummary[] = [];
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
@@ -403,6 +409,7 @@ export class Package {
       this.packageMetadata = packageMetadata;
       this.databases = databases;
       this.models = models;
+      this.secureGivens = Package.summarizeSecureGivensOf(models);
       this.malloyConfig = malloyConfig;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
@@ -1401,6 +1408,19 @@ export class Package {
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
     */
+   /** The `#(secure)` givens of the models a load produced; see {@link summarizeSecureGivens}. */
+   private static summarizeSecureGivensOf(
+      models: Map<string, Model>,
+   ): ApiSecureGivenSummary[] {
+      return summarizeSecureGivens(
+         [...models.entries()].map(([modelPath, model]) => ({
+            modelPath,
+            givens: model.getGivens(),
+            compiled: model.getCompilationError() === undefined,
+         })),
+      );
+   }
+
    public getPackageMetadata(): ApiPackage {
       // A copy with the server-computed fields overlaid. `name` is the
       // registered name, which can differ from the one in publisher.json.
@@ -1415,6 +1435,11 @@ export class Package {
          sourceContentSha: this.sourceContentSha,
          // Overlaid so a metadata PATCH body can neither set nor wipe it.
          agents: this.rawAgents === undefined ? undefined : this.listAgents(),
+         // Computed once per load; a copy so a caller cannot edit the stored one.
+         secureGivens: this.secureGivens.map((given) => ({
+            ...given,
+            modelPaths: [...given.modelPaths],
+         })),
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -2383,6 +2408,7 @@ export class Package {
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
+      this.secureGivens = Package.summarizeSecureGivensOf(nextModels);
       // Before refreshServingIdentity, which reads the agents it declares.
       this.rawAgents = outcome.packageMetadata.agents;
       // Move the identity as soon as the new models are installed.

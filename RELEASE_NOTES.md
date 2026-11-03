@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A package's load response lists its `#(secure)` givens
+
+`Package` gains `secureGivens`: one entry per distinct `#(secure)` given (`name`, `type` rendered as `Given.type` renders it, such as `string[]`) with the sorted `modelPaths` of the `.malloy` models whose compiled givens surface it, an importing model included. It rides every response that returns a loaded package, the publish (`POST …/packages`, versioned or not), `GET …/packages/{pkg}` and a reload among them, and is computed once per load from that load's own compile, so a host that sets secure givens no longer compiles the package a second time to learn which ones they are. `.malloynb` notebooks are not counted, and a model that failed to compile contributes nothing. It is `[]` on a loaded package that declares none and absent where this server does not report it, so read absent as unknown rather than none.
+
 ## [Unreleased] — Packages published from a location can be immutable versions (opt in with `PUBLISHER_PACKAGE_VERSIONING=on`)
 
 With `PUBLISHER_PACKAGE_VERSIONING=on`, `POST /api/v0/environments/{env}/packages` with a `location` publishes an immutable **version** of the package, numbered by the `version` in its `publisher.json`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
