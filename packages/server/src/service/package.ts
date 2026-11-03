@@ -130,7 +130,7 @@ import {
 } from "./deprecated/lints";
 import { classificationLeaks, classificationWarnings } from "./classification";
 import { joinBypasses } from "./join_bypass";
-import { gateGivenWarnings } from "./gate_given_warnings";
+import { insecureGateGivens } from "./gate_given_warnings";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -1491,9 +1491,6 @@ export class Package {
          ...classificationWarnings(this.models, (modelPath) =>
             this.isListedModelPath(modelPath),
          ),
-         ...gateGivenWarnings(this.models, (modelPath) =>
-            this.isListedModelPath(modelPath),
-         ),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2088,6 +2085,18 @@ export class Package {
     */
    public formatJoinBypasses(): string {
       return joinBypasses(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every published source gated on a given that is
+    * not `#(secure)` (`gate_given_warnings.ts`), one per line, empty when
+    * there are none. Strict at load: a gate a caller can satisfy by sending a
+    * value is a filter, not a control.
+    */
+   public formatInsecureGateGivens(): string {
+      return insecureGateGivens(this.models, (modelPath) =>
          this.isListedModelPath(modelPath),
       ).join("\n");
    }

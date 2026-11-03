@@ -38,7 +38,7 @@ A **403 also covers the case where a lock or a filter cannot be applied at all**
 point renamed or dropped the field the gate reads, or a given it names was not supplied. That is
 the fail-closed path rather than a verdict, and it is the one denial shape both routes share.
 
-> ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** A plain given is **caller-asserted**: anyone who can reach the query API can claim a favorable value. A given declared `#(secure)` is the host's to set: the trusted tier in front of Publisher resolves it from the caller's verified identity and replaces whatever the request carried, so a gate keyed on secure givens is a real boundary in that deployment, and the load warns `gate-insecure-given` about a gate keyed on a plain one. Neither is, on its own, end-user authentication.
+> ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** A plain given is **caller-asserted**: anyone who can reach the query API can claim a favorable value. A given declared `#(secure)` is the host's to set: the trusted tier in front of Publisher resolves it from the caller's verified identity and replaces whatever the request carried, so a gate keyed on secure givens is a real boundary in that deployment, and **the load refuses a package with a gate on a published source that reads a plain given**, naming the source and the givens to mark. Neither is, on its own, end-user authentication.
 
 For the gate's own grammar, see [Expression Language](#expression-language) below — it is not the full Malloy expression language. For givens, see [givens.md](givens.md).
 
@@ -62,6 +62,7 @@ Neither sentinel is legal on `#(access_filter)`. `false` there would be the sile
 ```malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -311,6 +312,7 @@ writes is different: it is the caller entering the joined source, so its lock is
   a non-member outright; a member then sees only their own orgs' rows.
 
 ```malloy
+#(secure)
 given:
   ORG_ID :: string
   GROUPS :: string[]
@@ -346,6 +348,7 @@ answer to evaluate, and `/compile` returns a schema rather than rows.
 The replacement pattern is two sources instead of one disjunction: give each admitted population its own extension source, each with its own conjunctive gate, over the same base. Every ordinary term must reference a given — see [Declaring Gates](#declaring-gates) — but `#(authorize) false` is a deliberate exception, so a base can still be locked outright:
 
 ```malloy
+#(secure)
 given:
   TENANTS :: string[]
 
@@ -365,6 +368,7 @@ A caller who would have satisfied one arm of an old `or` now queries the extensi
 The same shape is also the admin escape hatch: add a further extension over the same locked base whose rule is a lock on the caller rather than another arm of the row-level rule.
 
 ```malloy
+#(secure)
 given:
   ORG_ID :: string[]
   GROUPS :: string[]
@@ -431,6 +435,7 @@ One model, six entry points. The rules above are subtle enough that it is worth 
 ```malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -503,6 +508,7 @@ Lock sensitive base sources with `#(authorize) false` and re-expose curated subs
 ##! experimental.givens
 ##! experimental.access_modifiers
 
+#(secure)
 given:
   REGION :: string
   ROLE :: string

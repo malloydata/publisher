@@ -32,7 +32,9 @@ const PEOPLE = `duckdb.sql("select * from (values (1,'org-a','999'),(2,'org-b','
 const VISITS = `duckdb.sql("select * from (values (1,1,'org-a'),(2,2,'org-b')) as t(id, person_id, org)")`;
 
 const GIVENS = `##! experimental.givens
+#(secure)
 given: ROLES :: string[]
+#(secure)
 given: ORGS :: string[]
 `;
 

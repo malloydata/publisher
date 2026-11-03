@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `gate-insecure-given`: a published source gated on a plain given warns, one
- * gated on `#(secure)` givens does not, and a hidden source is not read.
+ * A published source gated on a plain given refuses the package load, naming
+ * the givens to mark; one gated on `#(secure)` givens loads, and a hidden
+ * source is not read.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
@@ -23,7 +24,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
-import { GATE_INSECURE_GIVEN } from "./gate_given_warnings";
+import { BadRequestError } from "../errors";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -64,18 +65,27 @@ describe("gate-insecure-given on package load", () => {
       fs.writeFileSync(path.join(tempDir, file), text);
    }
 
-   async function warnings() {
+   async function load() {
       const config = new MalloyConfig({ connections: {} });
       config.wrapConnections(
          () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
       );
-      const pkg = await Package.create("env", "pkg", tempDir, config);
-      return (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === GATE_INSECURE_GIVEN,
+      return Package.create("env", "pkg", tempDir, config);
+   }
+
+   async function refusal(): Promise<string> {
+      try {
+         await load();
+      } catch (error) {
+         expect(error).toBeInstanceOf(BadRequestError);
+         return (error as Error).message;
+      }
+      throw new Error(
+         "expected the load to be refused, but the package loaded",
       );
    }
 
-   it("warns once per published source gated on a plain given, naming it", async () => {
+   it("refuses a published source gated on a plain given, naming the givens", async () => {
       write(
          "m.malloy",
          `##! experimental.givens
@@ -95,12 +105,31 @@ source: b is ${ROWS}
 source: c is ${ROWS}
 `,
       );
-      const found = await warnings();
-      expect(found.map((w) => [w.model, w.subject, w.severity])).toEqual([
-         ["m.malloy", "a", "warn"],
-      ]);
-      expect(found[0].message).toContain("gated on $ORGS, $ROLES");
-      expect(found[0].message).toContain("#(secure)");
+      const message = await refusal();
+      expect(message).toContain(
+         "source a (m.malloy) is gated on $ORGS, $ROLES",
+      );
+      expect(message).toContain("#(secure)");
+      expect(message).not.toContain("source b ");
+      expect(message).not.toContain("source c ");
+   });
+
+   it("reads one #(secure) above a given: block as marking every item in it", async () => {
+      write(
+         "m.malloy",
+         `##! experimental.givens
+#(secure)
+given:
+  ORGS :: string[]
+  ROLES :: string[]
+
+#(authorize) 'admin' in $ROLES
+#(access_filter) org in $ORGS
+source: a is ${ROWS}
+`,
+      );
+      const pkg = await load();
+      expect(pkg.getPackageMetadata().name).toBe("pkg");
    });
 
    it("reads only the surface", async () => {
@@ -120,6 +149,7 @@ source: open is ${ROWS}
 export { open }
 `,
       );
-      expect(await warnings()).toEqual([]);
+      const pkg = await load();
+      expect(pkg.getPackageMetadata().name).toBe("pkg");
    });
 });

@@ -88,6 +88,7 @@ one: instead of an all-or-nothing admit decision, the gate itself becomes the ro
 ```malloy
 ##! experimental.givens
 
+#(secure)
 given: GROUPS :: string[]
 
 #(access_filter) org_id in $GROUPS

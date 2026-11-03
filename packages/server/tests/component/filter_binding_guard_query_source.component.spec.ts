@@ -1062,6 +1062,7 @@ describe("I5: the caller's own where: is not a row-security control", () => {
          "I5-caller-where-before-dim-gated",
          {
             "index.malloy": `##! experimental { givens }
+#(secure)
 given:
   LIM :: number
 #(access_filter) deal_id = $LIM
@@ -1506,6 +1507,7 @@ source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: d
       });
       const gated = (derive: string) => ({
          [name]: `##! experimental { givens }
+#(secure)
 given:
   LIM :: number
 source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
@@ -1953,6 +1955,7 @@ describe("C-givens: a given read by a query source's pipeline where", () => {
       header,
       decls: {
          "close.malloy": `${header}
+#(secure)
 given:
   LIM :: number
 source: dfc is ${CLOSE} -> { where: deal_id = $LIM; group_by: deal_id, close_type } extend { primary_key: deal_id }`,
@@ -2167,6 +2170,7 @@ source: deals is deals_incl extend { where: is_open }
 describe("G: a row-gated source with a misbound where:, on both routes", () => {
    const HEADER = "##! experimental { givens }";
    const body = (derive: string) => `${HEADER}
+#(secure)
 given:
   LIM :: number
 source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
@@ -2202,6 +2206,7 @@ describe("G2: a row-level gate reading through a composite is refused", () => {
    const M = (extra: string, k: string) =>
       `duckdb.sql("select 1 as deal_id, ${k} as k${extra ? `, '${extra}' as ${extra === "x" ? "extra" : "extra3"}` : ""} union all select 2, ${k === "1" ? "1" : "2"}${extra ? `, '${extra}'` : ""} union all select 3, ${k === "1" ? "1" : "3"}${extra ? `, '${extra}'` : ""}")`;
    const HDR = `##! experimental { composite_sources, givens }
+#(secure)
 given: CTS :: number[]
 source: m1 is ${M("", "1")} extend { primary_key: deal_id }
 source: m2 is ${M("x", "1")} extend { primary_key: deal_id }

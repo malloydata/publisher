@@ -95,6 +95,7 @@ describe("examples/governed-analytics ships a working gate", () => {
  */
 const PLAYWRIGHT_FIXTURE = `##! experimental.givens
 
+#(secure)
 given: role :: string
 
 #(authorize) 'analyst' = $role

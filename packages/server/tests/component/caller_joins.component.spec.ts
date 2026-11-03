@@ -23,6 +23,7 @@ let removePkgDir: () => void;
 let duck: DuckDBConnection;
 
 const MODEL = `##! experimental { givens composite_sources }
+#(secure)
 given:
   GROUPS :: string[]
 
@@ -927,6 +928,7 @@ describe("author joins", () => {
       await fs.writeFile(
          path.join(PKG_DIR, "base.malloy"),
          `##! experimental { givens }
+#(secure)
 given:
   GROUPS :: string[]
 

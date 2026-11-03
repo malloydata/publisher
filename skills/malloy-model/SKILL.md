@@ -289,6 +289,7 @@ The lock is DECIDED, before the caller's query compiles: a caller it does not ad
 ```malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
   ORG_IDS :: string[]
@@ -308,6 +309,7 @@ source: orders is duckdb.table('orders.parquet') extend {
 - **Generate the admin escape hatch as another extension over the locked base, never as a bypass.** When a model needs an ordinary population plus a wider one, add a second extension whose rule is a lock on the caller:
 
 ```malloy
+#(secure)
 given:
   ORG_IDS :: string[]
   GROUPS  :: string[]

@@ -5061,10 +5061,7 @@ components:
                   `warn`; see docs/classification.md).
                   `classification-malformed`: a `#(classification)` annotation
                   that names no single class (one per field, `subject` the
-                  source; `warn`). `gate-insecure-given`: a published source
-                  whose `#(authorize)` or `#(access_filter)` reads a given not
-                  declared `#(secure)`, so a caller can set it (one per source,
-                  `subject` the source; `warn`; see docs/authorize.md). The per-file
+                  source; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
@@ -5809,8 +5806,8 @@ components:
             The givens the expression reads, each with whether it is declared
             `#(secure)`. A gate keyed on a secure given is a control: the
             trusted tier sets the value from verified identity. One keyed on a
-            plain given is a filter the caller can set, and the load warns
-            `gate-insecure-given`.
+            plain given is a filter the caller can set, and the load refuses
+            the package.
           items:
             type: object
             required: [name, secure]
