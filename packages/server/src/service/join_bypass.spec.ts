@@ -111,6 +111,30 @@ source: visits is ${VISITS} extend {
       );
    });
 
+   it("refuses a source re-opened with true over a join to a source that inherits its lock through extend", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}
+#(authorize) false
+source: people_base is ${PEOPLE}
+
+source: people is people_base extend { dimension: secret is ssn }
+
+#(authorize) false
+source: visits_base is ${VISITS}
+
+#(authorize) true
+source: visits is visits_base extend {
+   join_one: person is people on person.id = person_id
+}
+`,
+      );
+      const message = await refusal();
+      expect(message).toContain(
+         "source visits (m.malloy) is open to every caller and joins person, which is locked",
+      );
+   });
+
    it("refuses an entry gated on other givens than the joined filter reads", async () => {
       write(
          "m.malloy",

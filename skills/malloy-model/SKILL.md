@@ -381,3 +381,13 @@ Step complete. Output: base source files (`.malloy`, one per table) and joined s
 - Open the model to see it live. On a local Publisher server that is `http://localhost:4000/<environmentName>/<packageName>` for the package, or `http://localhost:4000/<environmentName>/<packageName>/<modelPath>` for a single model file. First confirm the running server actually serves this package (it is in the loaded `publisher.config.json`, or mounted live with `--server_root . --watch-env <env>`); a package the server has not loaded returns a 404, so do not hand over a link to a package that was just authored but never loaded.
 - Run analysis questions against the model (see `skill:malloy-analysis`).
 - When you're ready to serve the model, publishing is out of scope for open-source Publisher v1: self-hosters commit the package to git and use their host's publish path.
+
+## De-identified surfaces (Safe Harbor)
+
+A surface a policy calls de-identified (HIPAA Safe Harbor, 45 CFR 164.514(b)) reads its patient and its dates through sources that declare the reductions once, never through hand-made copies on each surface:
+
+- every date directly related to a person reduced to its year (`year(BIRTHDATE)`);
+- age capped: `pick 90 when <age> > 89 else <age>`;
+- geography reduced to the state and a three-digit ZIP, reporting the small-population three-digit areas as `'000'` by joining a list of them kept as data, not prose.
+
+Classify each derivation (`#(classification) phi.quasi_identifier` for a year or a three-digit ZIP), tag it with the policy's control (`#(control) DI-01`), keep identifiers internal on the de-identified source, and give the surface a `#(carries)` that omits the identifier class, so a join that brings one back refuses the load. `examples/clinical-records/deidentify.malloy` is the worked version.

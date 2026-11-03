@@ -26,7 +26,11 @@
  */
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
-import { referencedGivenNames } from "./authorize";
+import {
+   collectAuthorizeExprsForRoute,
+   referencedGivenNames,
+} from "./authorize";
+import { ownLevelNoteTexts, type AnnotationsDef } from "./annotations";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import { findIrSource, isDeniedToAll, MAX_JOIN_DEPTH } from "./classification";
 import { effectiveAncestorGateExprs } from "./gate_registry_walk";
@@ -38,16 +42,45 @@ interface IrJoin {
    as?: string;
    join?: string;
    fields?: IrJoin[];
+   annotations?: AnnotationsDef;
 }
 
 const isDenyAll = (expr: string) => expr.trim().toLowerCase() === "false";
 const isAdmitAll = (expr: string) => expr.trim().toLowerCase() === "true";
 
-/** Every gate expression in force on a struct, both routes, flattened. */
+/**
+ * The gate expressions a joined struct's own annotation chain declares on one
+ * route: the nearest level that declares any, the way an `extend` inherits a
+ * gate until it declares its own. A join carries an inlined copy of its
+ * source, not a registered one, so this is read off the copy's annotations.
+ */
+function chainGateExprs(
+   annotations: AnnotationsDef | undefined,
+   route: string,
+): string[] {
+   let node: AnnotationsDef | undefined = annotations;
+   for (let hops = 0; node && hops < 64; hops++) {
+      const exprs = collectAuthorizeExprsForRoute(
+         ownLevelNoteTexts(node),
+         route,
+      );
+      if (exprs.length > 0) return exprs;
+      node = node.inherits;
+   }
+   return [];
+}
+
+/**
+ * Every gate expression in force on a joined struct, both routes, flattened:
+ * its annotation chain, plus whatever the registry walk resolves for a
+ * derivation the chain does not show. A gate that cannot be read is treated
+ * as a lock, since the query route would deny on it.
+ */
 function gatesOn(struct: IrJoin, modelDef: ModelDef | undefined): string[] {
    const exprs: string[] = [];
    for (const route of [AUTHORIZE_ROUTE, ACCESS_FILTER_ROUTE]) {
       try {
+         exprs.push(...chainGateExprs(struct.annotations, route));
          for (const group of effectiveAncestorGateExprs(
             struct as unknown as SourceDef,
             modelDef,
@@ -56,12 +89,10 @@ function gatesOn(struct: IrJoin, modelDef: ModelDef | undefined): string[] {
             exprs.push(...group);
          }
       } catch {
-         // A gate the walk cannot read is a gate the query route would deny
-         // on; the join still passes it through. Fail closed: treat as locked.
          exprs.push("false");
       }
    }
-   return exprs;
+   return Array.from(new Set(exprs));
 }
 
 function givensOf(exprs: readonly string[]): Set<string> {

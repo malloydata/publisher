@@ -1,0 +1,64 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
+# clinical-records: a model governed by an access policy
+
+Synthetic patient records (Synthea, 1,171 patients) served under a HIPAA-shaped access policy. The
+package is the worked example for three things: writing the policy's classes and controls into the
+model, letting Publisher refuse a model that breaks them, and handing a review everything it needs
+to check what Publisher cannot.
+
+Start with the policy, [`policies/phi-access-and-minimum-necessary.md`](policies/phi-access-and-minimum-necessary.md).
+It names seven workforce classes, a five-class data classification, and controls with identifiers.
+Everything below implements one of them.
+
+## Layers
+
+| File                | Layer    | What it does                                                                                                                                                                          |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base.malloy`       | Base     | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                      |
+| `core.malloy`       | Core     | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some surfaces may serve are left out. |
+| `deidentify.malloy` | Core     | The Safe Harbor derivations, declared once: years for dates, ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02).                    |
+| `surfaces.malloy`   | Surfaces | One entry point per access decision, each gated on `#(secure)` givens, declaring what it `#(carries)` and which `#(control)`s it implements.                                          |
+| `index.malloy`      | Surface  | Exports the five surfaces and nothing else.                                                                                                                                           |
+
+## Surfaces
+
+| Surface             | Workforce class               | Gate                                                          | Carries                       |
+| ------------------- | ----------------------------- | ------------------------------------------------------------- | ----------------------------- |
+| `patient_chart`     | treating clinician, care team | `'clinical' in $ROLES`, rows `ORGANIZATION in $ORGANIZATIONS` | full PHI                      |
+| `billing`           | billing and claims            | `'billing' in $ROLES`, rows `ORGANIZATION in $ORGANIZATIONS`  | identifiers, codes, financial |
+| `population_health` | quality analyst               | `'quality' in $ROLES`                                         | limited data set              |
+| `partner_lds`       | external partner              | `'partner' in $ROLES and 'dua-signed' in $ATTRIBUTES`         | limited data set              |
+| `research`          | IRB researcher                | `'researcher' in $ROLES`                                      | de-identified                 |
+
+`ROLES`, `ORGANIZATIONS` and `ATTRIBUTES` are `#(secure)`: Riverbend's identity provider sets them
+for the caller, and the request cannot (AC-03). A surface that dropped its gate would not open,
+because each surface extends a core that inherits its base's lock.
+
+## What Publisher enforces, and what it leaves to a review
+
+`violations/` holds five broken versions of `surfaces.malloy`. Three are refused at load: a
+de-identified surface that joins back to identifiers, a gate on a given the requester sets, and a
+surface re-opened over locked joins. Two load: an identifier declared `none`, and a billing surface
+that lost its organization scope. Those are false or missing statements, not inconsistent ones, and
+catching them takes reading the policy and the data. [`violations/README.md`](violations/README.md)
+has the table.
+
+## Try it
+
+```bash
+# Every source, its gates, carries, controls and classified fields:
+curl -s http://localhost:4000/api/v0/environments/examples/packages/clinical-records/governance | jq '.sources[] | select(.published) | {name, carries, controls}'
+
+# A clinician at one organization (the trusted tier sets these givens in a real deployment):
+curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/clinical-records/models/index.malloy/query \
+  -H 'content-type: application/json' \
+  -d '{"query":"run: patient_chart -> { group_by: organization.organization_name; aggregate: encounter_count }","givens":{"ROLES":["clinical"],"ORGANIZATIONS":["e002090d-4e92-300e-b41e-7d1f21dee4c6"]}}'
+
+# The same query as a researcher: 403.
+```
+
+The data is synthetic; see [`data/README.md`](data/README.md).

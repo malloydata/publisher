@@ -32,13 +32,13 @@ A control in this policy is satisfied only by a mechanism the platform enforces.
 
 Every field the platform publishes carries exactly one of the following classes, or more than one where a field falls under several regimes. The class is a statement about the field, not about who may read it; the workforce classes below say who.
 
-| Class | Meaning | Examples |
-| --- | --- | --- |
+| Class                   | Meaning                               | Examples                                                                     |
+| ----------------------- | ------------------------------------- | ---------------------------------------------------------------------------- |
 | `phi.direct_identifier` | A Safe Harbor identifier (Appendix A) | SSN, name, street address, birth date, medical record number, license number |
-| `phi.quasi_identifier` | Identifying in combination | city, county, ZIP, age, dates to the day, provider and organization identity |
-| `phi.clinical` | Clinical content about an individual | condition, procedure, medication, observation value, reason for visit |
-| `phi.financial` | Financial content about an individual | claim cost, coverage, payer, healthcare expenses |
-| `none` | Nothing this policy governs | a code system name, a count of rows, a year |
+| `phi.quasi_identifier`  | Identifying in combination            | city, county, ZIP, age, dates to the day, provider and organization identity |
+| `phi.clinical`          | Clinical content about an individual  | condition, procedure, medication, observation value, reason for visit        |
+| `phi.financial`         | Financial content about an individual | claim cost, coverage, payer, healthcare expenses                             |
+| `none`                  | Nothing this policy governs           | a code system name, a count of rows, a year                                  |
 
 A field derived from a classified field carries the class of what it is derived from unless a de-identification control (DI-) says otherwise. A count of patients carries `none`; a sum of a patient's expenses carries `phi.financial`; a birth year derived from a birth date carries `phi.quasi_identifier`, not `phi.direct_identifier`, because DI-01 says a year alone is not an identifier.
 
@@ -50,15 +50,15 @@ A field derived from a classified field carries the class of what it is derived 
 
 Riverbend identifies the following classes of persons who need access to PHI through the platform, and the category of PHI each needs. Access is granted to a class, never to an individual, and an agent acting for a person holds that person's class and no more.
 
-| Class | Needs access to | Does not need |
-| --- | --- | --- |
-| Treating clinician | Full PHI, all classes, for patients with an encounter at an organization the clinician belongs to | Patients of other organizations |
-| Care team (nursing, scheduling) | The same scope as a treating clinician | Financial detail beyond coverage status |
-| Billing and claims | Direct identifiers needed to bill, encounter and procedure codes, and all financial data, for the organizations they bill for | Observation values, care plans, allergies, imaging |
-| Quality and population health analyst | A limited data set: clinical and financial data with dates, city, state, ZIP and age, no direct identifiers | Any direct identifier |
-| IRB-approved researcher | De-identified data only | Any identifier, any date below the year, any geography below the state |
-| External data partner | A limited data set, under an executed data use agreement | Anything outside the agreement's scope; anything without an agreement |
-| Privacy officer and auditor | The platform's access records and governance exports | Patient data through this platform |
+| Class                                 | Needs access to                                                                                                               | Does not need                                                          |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Treating clinician                    | Full PHI, all classes, for patients with an encounter at an organization the clinician belongs to                             | Patients of other organizations                                        |
+| Care team (nursing, scheduling)       | The same scope as a treating clinician                                                                                        | Financial detail beyond coverage status                                |
+| Billing and claims                    | Direct identifiers needed to bill, encounter and procedure codes, and all financial data, for the organizations they bill for | Observation values, care plans, allergies, imaging                     |
+| Quality and population health analyst | A limited data set: clinical and financial data with dates, city, state, ZIP and age, no direct identifiers                   | Any direct identifier                                                  |
+| IRB-approved researcher               | De-identified data only                                                                                                       | Any identifier, any date below the year, any geography below the state |
+| External data partner                 | A limited data set, under an executed data use agreement                                                                      | Anything outside the agreement's scope; anything without an agreement  |
+| Privacy officer and auditor           | The platform's access records and governance exports                                                                          | Patient data through this platform                                     |
 
 ## Access controls
 
