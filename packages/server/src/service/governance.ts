@@ -40,10 +40,14 @@ const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 function gates(
    expressions: readonly string[] | undefined,
+   secure: ReadonlySet<string>,
 ): ApiGovernanceGate[] {
    return (expressions ?? []).map((expression) => ({
       expression,
-      givenNames: referencedGivenNames(expression),
+      givens: referencedGivenNames(expression).map((name) => ({
+         name,
+         secure: secure.has(name),
+      })),
    }));
 }
 
@@ -62,6 +66,7 @@ export async function packageGovernance(
    ].sort((a, b) => byCodepoint(a.path ?? "", b.path ?? ""));
    const sources: ApiGovernanceSource[] = [];
    const unreadModels: string[] = [];
+   const secureGivens = new Set<string>();
    let classifiesFields = false;
    for (const apiModel of models) {
       const modelPath = apiModel.path;
@@ -92,6 +97,12 @@ export async function packageGovernance(
          const ir = findIrSource(modelDef, name);
          if (!ir) continue;
          const apiSource = apiSources?.find((s) => s.name === name);
+         const secure = new Set(
+            (apiSource?.givens ?? [])
+               .filter((g) => g.secure === true && g.name)
+               .map((g) => g.name as string),
+         );
+         for (const name of secure) secureGivens.add(name);
          const carries = readCarries(ir.annotations);
          const controls = readSourceControls(ir.annotations);
          const lineage = readSourceClassifications(ir.fields);
@@ -115,8 +126,8 @@ export async function packageGovernance(
             name,
             published,
             deniedToAll: apiSource ? isDeniedToAll(apiSource) : false,
-            authorize: gates(apiSource?.authorize),
-            accessFilter: gates(apiSource?.accessFilter),
+            authorize: gates(apiSource?.authorize, secure),
+            accessFilter: gates(apiSource?.accessFilter, secure),
             ...(carries.declared
                ? { carries: Array.from(carries.classes).sort(byCodepoint) }
                : {}),
@@ -129,6 +140,7 @@ export async function packageGovernance(
       environmentName,
       packageName,
       classifiesFields,
+      secureGivens: Array.from(secureGivens).sort(byCodepoint),
       sources,
       ...(unreadModels.length > 0 ? { unreadModels } : {}),
    };

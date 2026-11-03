@@ -10,8 +10,10 @@
  *
  * What it carries: when, trace id, environment, package and version, model
  * path; the source entered; the gates in force and the decision the route
- * made; the given NAMES supplied and the ones the gates read (never their
- * values, which already sit in the warehouse's own query log); the fields the
+ * made; the VALUES of the `#(secure)` givens the trusted tier set, which are
+ * the caller's verified attributes (roles, organizations) and so the line an
+ * auditor reads, and only the NAMES of plain givens, which the caller chose
+ * and which already sit in the warehouse's own query log; the fields the
  * compiled query reads with their classes, so the record says "read two
  * `phi.direct_identifier` fields" in the policy's words; status, row count,
  * duration, served-from; and a caller identity taken from the request header
@@ -38,6 +40,7 @@ import {
 } from "./classification";
 
 type ApiSource = components["schemas"]["Source"];
+type ApiGiven = components["schemas"]["Given"];
 
 /** The default request header a caller identity is read from. */
 export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
@@ -70,8 +73,14 @@ export interface QueryAccessSummary {
     * gates.
     */
    decision: "open" | "admitted" | "filtered" | "bypassed";
-   /** The given names the caller supplied; never their values. */
+   /** The names of every given supplied, secure or not; a plain given's value is never recorded. */
    givenNames: string[];
+   /**
+    * The values of the supplied givens declared `#(secure)`: the caller's
+    * attributes as the trusted tier resolved them. Present only when there
+    * are any.
+    */
+   secureGivens?: Record<string, GivenValue>;
    /** The given names the grafted row filters read. */
    gateGivenNames: string[];
    /** The fields the compiled query reads, by path from the source, with classes. */
@@ -92,6 +101,8 @@ export async function summarizeQueryAccess(args: {
    runnable: { getPreparedQuery(): Promise<unknown> };
    modelDef: ModelDef | undefined;
    apiSources: readonly ApiSource[] | undefined;
+   /** The model's givens, for which are `#(secure)`. */
+   modelGivens: readonly ApiGiven[] | undefined;
    source: string | undefined;
    givens: Record<string, GivenValue> | undefined;
    bypassAuthorize: boolean;
@@ -141,11 +152,22 @@ export async function summarizeQueryAccess(args: {
       // The record is emitted with no fields rather than not at all.
    }
 
+   const secureNames = new Set(
+      (args.modelGivens ?? [])
+         .filter((g) => g.secure === true && g.name)
+         .map((g) => g.name as string),
+   );
+   const secureGivens = Object.fromEntries(
+      Object.entries(args.givens ?? {})
+         .filter(([name]) => secureNames.has(name))
+         .sort(([a], [b]) => byCodepoint(a, b)),
+   );
    return {
       ...(args.source ? { source: args.source } : {}),
       gates: { authorize: [...authorize], accessFilter: [...accessFilter] },
       decision,
       givenNames: Object.keys(args.givens ?? {}).sort(byCodepoint),
+      ...(Object.keys(secureGivens).length > 0 ? { secureGivens } : {}),
       gateGivenNames,
       fieldsRead,
       rowCount: args.rowCount,

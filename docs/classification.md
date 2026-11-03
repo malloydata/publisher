@@ -125,7 +125,9 @@ extension that replaces the base's gate does not implement the base's control by
 `GET …/packages/{pkg}/governance`, or `malloy-pub get governance --environment <env> --package
 <pkg>`, returns one JSON document describing what the loaded package serves, in policy terms. For
 every source of every compiled model, hidden ones included and marked `published: false`: the
-gates in force with the givens each reads, its `#(carries)` list, its control identifiers, and
+gates in force with the givens each reads, each marked `#(secure)` or not (a gate keyed on a
+plain given is a filter the caller can set, and the load warns `gate-insecure-given`), its
+`#(carries)` list, its control identifiers, and
 every dimension and measure a caller can reach from it with its classes, whether they were
 declared or inferred, what they were inferred from, and the field's own controls. Everything
 comes from the compiled model, so inherited gates, renamed fields, folded aliases and lineage are

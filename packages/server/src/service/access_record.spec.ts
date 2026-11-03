@@ -24,7 +24,9 @@ import {
 } from "./access_record";
 
 const MODEL = `##! experimental.givens
+#(secure)
 given: ORGS :: string[]
+given: NOTE :: string is 'x'
 
 source: kids is duckdb.table('child') extend {
    #(classification) none
@@ -57,7 +59,10 @@ describe("summarizeQueryAccess on an answered query", () => {
             "run: accounts_src -> { group_by: area, kid.label; aggregate: total, n }",
             {},
             true,
-            { ORGS: ["org1"] } as unknown as Record<string, GivenValue>,
+            { ORGS: ["org1"], NOTE: "mine" } as unknown as Record<
+               string,
+               GivenValue
+            >,
          );
          const access = answered.access;
          expect(access).toBeDefined();
@@ -67,8 +72,11 @@ describe("summarizeQueryAccess on an answered query", () => {
             authorize: [],
             accessFilter: ["org_id in $ORGS"],
          });
-         expect(access?.givenNames).toEqual(["ORGS"]);
+         expect(access?.givenNames).toEqual(["NOTE", "ORGS"]);
          expect(access?.gateGivenNames).toEqual(["ORGS"]);
+         // A secure given's value is the caller's resolved attribute; a plain
+         // given's value is the caller's own and is not recorded.
+         expect(access?.secureGivens).toEqual({ ORGS: ["org1"] });
          // org1 has three rows, all with child_id 1: two groups by area.
          expect(access?.rowCount).toBe(2);
          const read = Object.fromEntries(

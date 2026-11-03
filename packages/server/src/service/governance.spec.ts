@@ -50,7 +50,9 @@ const INDEX = `##! experimental.givens
 ##! experimental.access_modifiers
 import "base.malloy"
 
+#(secure)
 given: ROLES :: string[]
+#(secure)
 given: ORGS :: string[]
 
 #(authorize) 'clinician' in $ROLES
@@ -118,6 +120,7 @@ describe("packageGovernance", () => {
       expect(doc.packageName).toBe("pkg");
       expect(doc.classifiesFields).toBe(true);
       expect(doc.unreadModels).toBeUndefined();
+      expect(doc.secureGivens).toEqual(["ORGS", "ROLES"]);
       expect(
          doc.sources.map((s) => [s.modelPath, s.name, s.published]),
       ).toEqual([
@@ -127,9 +130,7 @@ describe("packageGovernance", () => {
 
       const people = doc.sources[0];
       expect(people.deniedToAll).toBe(true);
-      expect(people.authorize).toEqual([
-         { expression: "false", givenNames: [] },
-      ]);
+      expect(people.authorize).toEqual([{ expression: "false", givens: [] }]);
       expect(people.carries).toBeUndefined();
       expect(people.controls).toEqual(["AC-02"]);
       expect(
@@ -144,10 +145,16 @@ describe("packageGovernance", () => {
       const chart = doc.sources[1];
       expect(chart.deniedToAll).toBe(false);
       expect(chart.authorize).toEqual([
-         { expression: "'clinician' in $ROLES", givenNames: ["ROLES"] },
+         {
+            expression: "'clinician' in $ROLES",
+            givens: [{ name: "ROLES", secure: true }],
+         },
       ]);
       expect(chart.accessFilter).toEqual([
-         { expression: "org_id in $ORGS", givenNames: ["ORGS"] },
+         {
+            expression: "org_id in $ORGS",
+            givens: [{ name: "ORGS", secure: true }],
+         },
       ]);
       expect(chart.carries).toEqual([
          "gdpr.personal",

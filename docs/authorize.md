@@ -38,7 +38,7 @@ A **403 also covers the case where a lock or a filter cannot be applied at all**
 point renamed or dropped the field the gate reads, or a given it names was not supplied. That is
 the fail-closed path rather than a verdict, and it is the one denial shape both routes share.
 
-> ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** Givens are **caller-asserted**: anyone who can reach the query API can claim a favorable given. These gates are only a real boundary when the API sits behind a trusted tier that sets givens from its own verified context. They are not, on their own, end-user authentication.
+> ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** A plain given is **caller-asserted**: anyone who can reach the query API can claim a favorable value. A given declared `#(secure)` is the host's to set: the trusted tier in front of Publisher resolves it from the caller's verified identity and replaces whatever the request carried, so a gate keyed on secure givens is a real boundary in that deployment, and the load warns `gate-insecure-given` about a gate keyed on a plain one. Neither is, on its own, end-user authentication.
 
 For the gate's own grammar, see [Expression Language](#expression-language) below — it is not the full Malloy expression language. For givens, see [givens.md](givens.md).
 
@@ -692,6 +692,7 @@ row-level allow-list term in
 [`secured.malloy`](../examples/governed-analytics/secured.malloy):
 
 ```malloy
+#(secure)
 given:
   TENANTS :: string[]
 

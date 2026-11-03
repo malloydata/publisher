@@ -130,6 +130,7 @@ import {
 } from "./deprecated/lints";
 import { classificationLeaks, classificationWarnings } from "./classification";
 import { joinBypasses } from "./join_bypass";
+import { gateGivenWarnings } from "./gate_given_warnings";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -1488,6 +1489,9 @@ export class Package {
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
          ...classificationWarnings(this.models, (modelPath) =>
+            this.isListedModelPath(modelPath),
+         ),
+         ...gateGivenWarnings(this.models, (modelPath) =>
             this.isListedModelPath(modelPath),
          ),
          ...ambiguousDashboardNameWarnings(this),

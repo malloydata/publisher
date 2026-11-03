@@ -5046,7 +5046,10 @@ components:
                   `warn`; see docs/classification.md).
                   `classification-malformed`: a `#(classification)` annotation
                   that names no single class (one per field, `subject` the
-                  source; `warn`). The per-file
+                  source; `warn`). `gate-insecure-given`: a published source
+                  whose `#(authorize)` or `#(access_filter)` reads a given not
+                  declared `#(secure)`, so a caller can set it (one per source,
+                  `subject` the source; `warn`; see docs/authorize.md). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
@@ -5633,7 +5636,8 @@ components:
       description: >-
         The governance export of a loaded package: what it serves, source by
         source, in the words of its access policy. See `get-governance`.
-      required: [environmentName, packageName, classifiesFields, sources]
+      required:
+        [environmentName, packageName, classifiesFields, secureGivens, sources]
       properties:
         environmentName:
           type: string
@@ -5644,6 +5648,14 @@ components:
           description: >-
             True when some reachable field of some source carries a class, so
             the package's `classification-coverage` rule is in force.
+        secureGivens:
+          type: array
+          description: >-
+            The names of every given declared `#(secure)` that some source's
+            gates can read, sorted: the identity attributes the trusted tier
+            must set. Same source as `Package.secureGivens`, by name only.
+          items:
+            type: string
         sources:
           type: array
           description: Every source of every compiled model, sorted by model path then name.
@@ -5771,16 +5783,27 @@ components:
     GovernanceGate:
       type: object
       readOnly: true
-      required: [expression, givenNames]
+      required: [expression, givens]
       properties:
         expression:
           type: string
           description: The gate's expression as the server holds it; `false` is the unconditional deny.
-        givenNames:
+        givens:
           type: array
-          description: The givens the expression reads.
+          description: >-
+            The givens the expression reads, each with whether it is declared
+            `#(secure)`. A gate keyed on a secure given is a control: the
+            trusted tier sets the value from verified identity. One keyed on a
+            plain given is a filter the caller can set, and the load warns
+            `gate-insecure-given`.
           items:
-            type: string
+            type: object
+            required: [name, secure]
+            properties:
+              name:
+                type: string
+              secure:
+                type: boolean
 
     SkillSummary:
       type: object

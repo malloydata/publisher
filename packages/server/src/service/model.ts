@@ -6265,6 +6265,7 @@ export class Model {
             runnable,
             modelDef: this.modelDef,
             apiSources: this.sources,
+            modelGivens: this.givens,
             source: compiledSource ?? sourceName,
             givens,
             bypassAuthorize,
