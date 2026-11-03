@@ -40,10 +40,14 @@ after `cleanup`, and empties the body either way. `cleanup` removes only what
 `render` mounted, and every spec file shares one `<body>`, so a node attached
 by hand answers `getByRole` in whichever spec runs next. Bun's file order is not
 fixed (two ubuntu runs of one commit ran the files in different orders), so
-that failure lands in another file on some runs and nowhere on others. A spec that needs an
-element for `closest()` or `contains()` can leave it detached. One that has to
-attach it (focus, a document-level listener) removes it in its own `afterEach`,
-which runs before this one: see `useBuilderShortcuts.overlay.spec.tsx`.
+that failure lands in another file on some runs and nowhere on others. A spec
+that needs an element for `closest()` or `contains()` can leave it detached.
+One that has to attach it (focus, a document-level listener) removes it in its
+own `afterEach`, which runs before this one: see
+`useBuilderShortcuts.overlay.spec.tsx`. The check runs after every test, not
+after every file, so a fixture that a `beforeAll` attaches fails the first test
+and is gone for the rest. Keep a shared fixture detached, or attach it in
+`beforeEach` and remove it in `afterEach`.
 
 It also sets the time limits every spec gets: `waitFor` and `findBy*` wait up
 to 5s rather than Testing Library's 1s, and a test may run 20s rather than
