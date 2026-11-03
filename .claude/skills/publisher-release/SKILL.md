@@ -86,10 +86,10 @@ from `main`, which still reads `[Unreleased]`.
 
 ## The versioning policy
 
-**`0.MINOR.PATCH` for every published package, while pre-1.0.** It is the policy,
-not yet the state: `skills` follows it, `sdk`/`app`/`server` are still on `0.0.x`
-until `0.2.0` is cut (the Python client follows them, in lockstep), and
-`create-malloy-package` versions on its own `0.0.x` line, computed at release time.
+**`0.MINOR.PATCH` for every published package, while pre-1.0.** `sdk`/`app`/`server`
+have followed it since `0.2.0` (the Python client follows them, in lockstep), and
+`skills` has always been on `0.1.x`. `create-malloy-package` is the exception: it
+is still on its own `0.0.x` line, computed at release time.
 Nothing enforces the *shape* of
 the number for any of them — skills and create-malloy-package resolve their next
 version from npm `latest` at release time, and moving either onto a new minor
@@ -113,13 +113,11 @@ demands.
   off-line publish `latest` moved off long ago) while `1.0.0` is free, and `app`
   and `server` have no `1.x` at all — so a 1.x line has to start at `1.0.0` and
   skip `1.0.1`, or start at `1.0.2`.
-- **The `sdk`/`app`/`server` train has NOT moved yet.** Its `latest` is still
-  `0.0.250` and the policy takes effect at its first minor release, intended to
-  be **`0.2.0`** — not `0.1.0`, because `skills` already occupies `0.1.x` and two
-  trains sharing a minor invites reading one for the other. Until that release is
-  cut, a default dispatch derives `0.0.251`, `0.0.252`, … and that is correct.
-  **Do not "correct" it with an explicit version.** `skills` is already on
-  `0.1.x` and already follows the policy.
+- **The `sdk`/`app`/`server` train moved on 2026-08-28**, from `0.0.250`
+  straight to **`0.2.0`**: not `0.1.0`, because `skills` already occupies
+  `0.1.x` and two trains sharing a minor invites reading one for the other. From
+  there, a default dispatch is a patch and `bump=minor` is the next minor, with
+  no explicit version needed (`0.11.0` was a `bump=minor` off `0.10.7`).
 
 Read a release note's own claims rather than its heading when deciding. A section
 can be titled `(BREAKING)` while its bullets say *"this cannot affect an existing
@@ -150,10 +148,10 @@ Two things worth knowing about the derived path:
 - The chosen level is applied **once**. If that number's release branch or tag
   already exists, the walk past it is by *patch* — so `bump=minor` colliding with
   an existing `0.3.0` gives `0.3.1`, not `0.4.0`.
-- `bump=minor` is computed off npm's current `latest`, which is not always the
-  number the policy wants. Off a `0.0.x` floor a minor bump lands on `0.1.0` —
-  the line `skills` occupies. That is why the pending move to `0.2.0` needs an
-  explicit version rather than `bump=minor`.
+- `bump=minor` is computed off npm's current `latest`. On the `0.x` line that
+  is the number the policy wants. It was not while the line sat on `0.0.x`: a
+  minor off `0.0.250` would have landed on `0.1.0`, the line `skills` occupies,
+  which is why the move to `0.2.0` was made with an explicit version.
 
 An earlier version of this section said *"`prepare`'s default version is not
 trustworthy — always pass `-f version=`"*. That was true and is no longer:
@@ -214,12 +212,11 @@ every PR, like the Docker image's), and `publish-python-sdk` uploads the
 verified wheel and sdist through PyPI trusted publishing once `publish-npm` and
 `publish-docker` have succeeded, so PyPI never holds a version whose server did
 not ship. It skips only a version already on PyPI, which in lockstep means a
-re-run, and both jobs skip a prerelease or `+build` version. Nothing has been
-uploaded yet; before the release that would be the first, read *Publishing to
-PyPI* in
-`.github/workflows/CONTEXT.md`. The PyPI pending publisher has to name project
-`malloy-publisher-sdk`, workflow `release.yml`, environment `pypi`; the name is
-not reserved until the first upload lands.
+re-run, and both jobs skip a prerelease or `+build` version. The first upload
+was `0.10.5`, on 2026-10-31, and every release since has published there. The
+trusted publisher names project `malloy-publisher-sdk`, workflow `release.yml`,
+environment `pypi`; *Publishing to PyPI* in `.github/workflows/CONTEXT.md`
+explains why each of those is pinned, and what breaks if one moves.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
 does: merging the release PR (step 6) brings those three files (and
@@ -350,7 +347,7 @@ gh workflow run release.yml --repo malloydata/publisher --ref main
 # a breaking release
 gh workflow run release.yml --repo malloydata/publisher --ref main -f bump=minor
 
-# an exact number: a major, a prerelease, or a line change like 0.0.x -> 0.2.0
+# an exact number: a major, a prerelease, or a line change like 0.0.250 -> 0.2.0 was
 gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<next>
 ```
 
@@ -377,8 +374,9 @@ gh release view "v<version>" --repo malloydata/publisher
 This is the one step the release cannot finish itself, and as the agent running
 this skill **you open the PR**. The branch already exists and already holds
 everything: `prepare` committed the three `packages/{sdk,app,server}/package.json`
-versions and the stamped `RELEASE_NOTES.md` headings to `release/v<version>`
-as one commit. Do not create another branch and do not stamp anything by hand.
+versions, the Python client's `packages/python-client/pyproject.toml` version,
+and the stamped `RELEASE_NOTES.md` headings to `release/v<version>` as one
+commit. Do not create another branch and do not stamp anything by hand.
 
 Open it once the run has finished, for any release whose sdk reached npm
 (`npm view @malloy-publisher/sdk version` reads it). That includes one whose
@@ -397,7 +395,7 @@ git fetch origin
 git ls-remote --exit-code --heads origin "release/v$V"
 # 2. one commit ahead of main, titled chore(release): $V
 git log --oneline "origin/main..origin/release/v$V"
-# 3. only the three manifests and RELEASE_NOTES.md
+# 3. only the three manifests, python-client/pyproject.toml and RELEASE_NOTES.md
 git diff --stat "origin/main...origin/release/v$V"
 # 4. the [$V] sections it stamped, which should match the release page
 NOTES="$(mktemp)" && git show "origin/release/v$V:RELEASE_NOTES.md" > "$NOTES"
@@ -424,7 +422,7 @@ Then open it against `main`:
 ```bash
 gh pr create --repo malloydata/publisher --base main --head "release/v$V" \
   --title "chore(release): $V" \
-  --body "Merges the v$V release branch back into main: sets sdk, app and server to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
+  --body "Merges the v$V release branch back into main: sets sdk, app, server and the Python client to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
 
 Release: https://github.com/malloydata/publisher/releases/tag/v$V"
 ```
