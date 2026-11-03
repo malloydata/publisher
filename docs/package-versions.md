@@ -86,6 +86,25 @@ Only the URL pins a version. The page's own relative requests (`./app.js`, a sty
 
 A `versionId` on a static file pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410.
 
+### A version named in the package name (transition)
+
+An orchestrator that predates versions names a version by a combined package name, `<package>___<version>`, and sends no `versionId`. With versioning on, such a request is read as `<package>` at `<version>`, so an orchestrator still running while it and its servers roll one after the other keeps working. The split is at the last `___`, and only when what follows is a semantic version; a request that also names a version must name the same one, or `latest`, or nothing. A data-app static file takes its version from the name whatever `versionId` a forwarded query string carries, since a proxy may pass a page's query string on unchanged.
+
+| Combined-name request                                | Read as                                                                                                                                              |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Any read, query, build or static file                | The same route for `<package>` at `<version>`.                                                                                                       |
+| `POST …/packages` with `name: <package>___<version>` | A publish of `<package>`; the version still comes from its publisher.json.                                                                           |
+| `DELETE …/packages/<package>___<version>`            | `DELETE …/packages/<package>/versions/<version>`: that version only.                                                                                 |
+| `PATCH …/packages/<package>___<version>`             | `PUT …/packages/<package>/versions/<version>/manifest`, with that route's rules: an absent `manifestLocation` is 400, and `null` clears the binding. |
+
+The legacy `/projects/{project}/packages/...` aliases read it the same way; their `DELETE` and `PATCH` reach the version routes under `/environments/{project}`. Each one logs a warning, once per name. With versioning off, a combined name is an ordinary package name, as before. This reading will be removed once callers name `versionId`.
+
+It is meant for `explicit` promotion, where no version is `latest`. A combined-name request inherits the version routes' refusals, so under `on-publish` promotion, where combined-name publishes of one package share it and its highest version is `latest`, a combined-name `DELETE` of that version is refused with 409 `VERSION_IS_LATEST` while an older one remains.
+
+A combined-name publish is listed in `/status` and the package listing in its plain shape, `{name: <package>, versionId: <version>}`. Turn versioning on only once the caller reads that shape too: a caller that matches packages on the combined name alone reads such a package as unknown.
+
+A server that already published combined names with versioning on holds them as packages literally named `<package>___<version>`, which these requests no longer reach. Publish them again.
+
 ## Latest
 
 `latest` is a single pointer per package, moved by compare-and-swap. A version that stops being `latest` stays loaded. Archiving it or deleting the package unloads it, and so does a rebind after a build that it cannot take (see [Materializations](#materializations)): it then loads again from the store on its next read.
