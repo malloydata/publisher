@@ -233,11 +233,21 @@ published.
 ```bash
 git fetch --tags origin
 npm view @malloy-publisher/server version              # the real current version
-git log --oneline "v$(npm view @malloy-publisher/server version)..origin/main"
+V="$(npm view @malloy-publisher/server version)"
+# what would ship, minus the version lines a release PR merges back
+git diff --stat -I'^ *"version": ' -I'^version = ' "v$V" origin/main
+git log --oneline "v$V..origin/main" --invert-grep --grep='^chore(release): '
 ```
 
-That commit list is what this release ships. If it is empty, there is nothing to
-release.
+**If the diff is empty, stop: there is nothing to release.** Do not go by the
+commit count. A bare `git log v$V..origin/main` is never empty, because the tag
+is on the release branch and `main` holds that release's squash-merged
+`chore(release): $V` commit instead, so the log always lists at least that one.
+
+If what is left is only docs, CI, tests or `RELEASE_NOTES.md`, nobody upgrading
+gets anything from it either. Show the user the list and ask before
+dispatching. A release cannot be undone: every package burns a version on npm,
+Docker and PyPI.
 
 ### 2. Skills and create-malloy-package need no pre-flight bump check
 
