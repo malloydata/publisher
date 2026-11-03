@@ -125,6 +125,16 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(leaks);
    }
+   // An author join that bypasses a gate is strict at load for the same
+   // reason: the joined rows would reach every admitted caller unscoped.
+   const bypasses = pkg.formatJoinBypasses();
+   if (bypasses) {
+      logger.error(
+         `Package ${packageName} has a join that bypasses a gate on what it joins`,
+         { packageName, detail: bypasses },
+      );
+      throw new BadRequestError(bypasses);
+   }
    // `#@ preaggregate` is strict at load too (see
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
    // only warns.

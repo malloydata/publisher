@@ -129,6 +129,7 @@ import {
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
 import { classificationLeaks, classificationWarnings } from "./classification";
+import { joinBypasses } from "./join_bypass";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -2072,6 +2073,17 @@ export class Package {
     */
    public formatClassificationLeaks(): string {
       return classificationLeaks(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every author join from a published source that
+    * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
+    * when there are none. Strict at load, like a `#(carries)` leak.
+    */
+   public formatJoinBypasses(): string {
+      return joinBypasses(this.models, (modelPath) =>
          this.isListedModelPath(modelPath),
       ).join("\n");
    }

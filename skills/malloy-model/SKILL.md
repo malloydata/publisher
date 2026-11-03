@@ -2,6 +2,7 @@
 name: malloy-model
 description: Build Malloy semantic models with base source and joined source files. Use when creating or modifying .malloy files, user asks to "create a malloy model", "add dimensions", "add measures", "create a source", or any Malloy model authoring task.
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -16,6 +17,7 @@ SPDX-License-Identifier: MIT
 If no `.malloy` files exist yet, do discovery and propose a structure first, then return here to build base source and joined source files. Keep proposals and the analysis behind them in the conversation.
 
 **File structure convention** (a flat layout at the package root is the simplest default):
+
 ```
 <package-name>/
   publisher.json              # Required for publishing (name, version, description)
@@ -37,12 +39,12 @@ In Publisher an environment is a project, and Publisher is single-tenant, so the
 
 If your discovery turned up existing modeling patterns to mirror (a derived table, UNNEST joins, a review or curation pass), read the relevant reference before building.
 
-| Pattern found in prior art | Reference to read |
-|---------------------|-------------------|
-| Derived table (PDT/NDT) | `skill:malloy-lookml-review` build-derived-tables guidance |
-| UNNEST joins or struct access | `skill:malloy-lookml-review` build-unnest guidance |
-| Review pass for coverage | `skill:malloy-lookml-review` review-coverage guidance |
-| Curate pass with visibility seeds | `skill:malloy-lookml-review` curate-visibility guidance |
+| Pattern found in prior art        | Reference to read                                          |
+| --------------------------------- | ---------------------------------------------------------- |
+| Derived table (PDT/NDT)           | `skill:malloy-lookml-review` build-derived-tables guidance |
+| UNNEST joins or struct access     | `skill:malloy-lookml-review` build-unnest guidance         |
+| Review pass for coverage          | `skill:malloy-lookml-review` review-coverage guidance      |
+| Curate pass with visibility seeds | `skill:malloy-lookml-review` curate-visibility guidance    |
 
 ## Base Source Templates
 
@@ -164,14 +166,14 @@ source: customer_health is customers extend {
 
 ## Base vs Joined Sources
 
-| | Base Joined Source File | Joined Source File |
-|---|---|---|
-| **Contains** | One table's fields | Joins between base sources |
-| **Dimensions** | Intrinsic to this table only | Cross-source (require joins) |
-| **Measures** | Single-table aggregations | Cross-source aggregations |
-| **Joins** | None (or only lookup joins intrinsic to the source) | Defines relationships between base sources |
-| **Views** | None, in schema-first (see below) | None, in schema-first (see below) |
-| **One per** | Physical table or computed source | Analytical domain |
+|                | Base Joined Source File                             | Joined Source File                         |
+| -------------- | --------------------------------------------------- | ------------------------------------------ |
+| **Contains**   | One table's fields                                  | Joins between base sources                 |
+| **Dimensions** | Intrinsic to this table only                        | Cross-source (require joins)               |
+| **Measures**   | Single-table aggregations                           | Cross-source aggregations                  |
+| **Joins**      | None (or only lookup joins intrinsic to the source) | Defines relationships between base sources |
+| **Views**      | None, in schema-first (see below)                   | None, in schema-first (see below)          |
+| **One per**    | Physical table or computed source                   | Analytical domain                          |
 
 **The "no views" rule is schema-first only.** A schema-first model is built before anyone
 has asked a question, so any view in it is a guess. It does **not** apply to the
@@ -230,16 +232,16 @@ source: events is duckdb.table('data/events.parquet') extend {
 
 A given is **declared bare** but **referenced with a `$` sigil** in expressions (`$EVENT_DATE`), as above.
 
-- **An optional given in the model gets a neutral, match-all default** (a `filter<>` given defaulting to `f''`), so an unsupplied value returns unfiltered rows. Because it bakes an always-on `where:` into the source, a non-neutral default (a date floor, say) applies to *every* read of the source. Defaults must be Malloy literals.
+- **An optional given in the model gets a neutral, match-all default** (a `filter<>` given defaulting to `f''`), so an unsupplied value returns unfiltered rows. Because it bakes an always-on `where:` into the source, a non-neutral default (a date floor, say) applies to _every_ read of the source. Defaults must be Malloy literals.
 - **Givens don't auto-inject a `where:`.** Unlike `#(filter)`, you write the filter expression that references the given yourself (e.g. `where: dimension ~ $given_name`).
 - **Every `#(filter)` use has a `given:` form.** Never add a `#(filter)` annotation to a model, not even for `required`, `implicit`, or a date/number range:
 
-| You want | Write this | Not this |
-|---|---|---|
-| An optional value or list filter a reader picks | In the **report**, not the model: `given: REGION :: filter<string> is f''` there, bound on its tiles with `+ { where: region ~ $REGION }` (`skill:malloy-reports`). In the model only for one of the cases above. | `#(filter) dimension=region type=in` |
-| A date or number range a reader picks | In the **report** the same way: `given: MIN_SALE :: filter<number> is f''` (or `filter<date>`), bound with `+ { where: sale_price ~ $MIN_SALE }`. The caller sends a filter expression such as `>= 50`. | two `#(filter)` lines, `greater_than` and `less_than` |
-| A value every query must supply (the primary key is only unique within it, or the table is too big to scan whole) | a given with **no default**, e.g. `given: EVENT_DATE :: date` and `where: event_date = $EVENT_DATE`. A query that omits it fails with "Given 'EVENT_DATE' has no value and no default". | `#(filter) ... required` |
-| A row filter the system applies, not the caller | `#(access_filter) org_id in $ORG_IDS`, with `ORG_IDS` set by a trusted tier (see the trust caveat below) | `#(filter) ... implicit` |
+| You want                                                                                                          | Write this                                                                                                                                                                                                        | Not this                                              |
+| ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| An optional value or list filter a reader picks                                                                   | In the **report**, not the model: `given: REGION :: filter<string> is f''` there, bound on its tiles with `+ { where: region ~ $REGION }` (`skill:malloy-reports`). In the model only for one of the cases above. | `#(filter) dimension=region type=in`                  |
+| A date or number range a reader picks                                                                             | In the **report** the same way: `given: MIN_SALE :: filter<number> is f''` (or `filter<date>`), bound with `+ { where: sale_price ~ $MIN_SALE }`. The caller sends a filter expression such as `>= 50`.           | two `#(filter)` lines, `greater_than` and `less_than` |
+| A value every query must supply (the primary key is only unique within it, or the table is too big to scan whole) | a given with **no default**, e.g. `given: EVENT_DATE :: date` and `where: event_date = $EVENT_DATE`. A query that omits it fails with "Given 'EVENT_DATE' has no value and no default".                           | `#(filter) ... required`                              |
+| A row filter the system applies, not the caller                                                                   | `#(access_filter) org_id in $ORG_IDS`, with `ORG_IDS` set by a trusted tier (see the trust caveat below)                                                                                                          | `#(filter) ... implicit`                              |
 
 - **Across files, a given travels by name.** A file that imports another reaches a given only by importing it: a whole-file `import "x.malloy"` brings every given `x.malloy` declares, and a selective `import { src } from "x.malloy"` brings only what it names. The source still compiles either way, because Malloy carries the declaration underneath, but a caller can set only a given the entry model has in scope. In a package curated with `index.malloy`, that means `index.malloy` imports the declaring file whole or names the given in its selective import. Imports don't chain: a given the declaring file itself imports from elsewhere has to reach `index.malloy` too.
 
@@ -255,13 +257,13 @@ Publisher parses the annotation, lists the filters in the API, and **injects a `
 #(filter) [name=NAME] dimension=DIMENSION type=TYPE [implicit] [required]
 ```
 
-| Part | Meaning |
-|------|---------|
-| `name` | The API parameter key. Defaults to the dimension name. |
-| `dimension` | The dimension the filter targets. |
-| `type` | `equal` (`=`), `in` (any of several values), `like` (`~ '%value%'`), `greater_than` (`>`, exclusive), `less_than` (`<`, exclusive). |
-| `required` | The server returns 400 when a query supplies no value. |
-| `implicit` | Hidden from the UI and the API filter list. |
+| Part        | Meaning                                                                                                                             |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `name`      | The API parameter key. Defaults to the dimension name.                                                                              |
+| `dimension` | The dimension the filter targets.                                                                                                   |
+| `type`      | `equal` (`=`), `in` (any of several values), `like` (`~ '%value%'`), `greater_than` (`>`, exclusive), `less_than` (`<`, exclusive). |
+| `required`  | The server returns 400 when a query supplies no value.                                                                              |
+| `implicit`  | Hidden from the UI and the API filter list.                                                                                         |
 
 Publisher formats the value from the dimension's type (`'value'`, bare `true`/`false`, `@YYYY-MM-DD`), so a caller passes it unquoted.
 
@@ -273,10 +275,10 @@ Publisher formats the value from the dimension's type (`'value'`, bare `true`/`f
 
 Gate query access to a source over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). **Two annotations, one question each, and the name tells you which:**
 
-| Annotation | The question | Body it takes | A denial is |
-| --- | --- | --- | --- |
-| `#(authorize)` | may this caller reach this source at all? | `'literal' <op> $GIVEN`, plus the `true`/`false` sentinels | **403** |
-| `#(access_filter)` | which rows may they see, once they may? | `field_path <op> $GIVEN` | **200**, with their rows |
+| Annotation         | The question                              | Body it takes                                              | A denial is              |
+| ------------------ | ----------------------------------------- | ---------------------------------------------------------- | ------------------------ |
+| `#(authorize)`     | may this caller reach this source at all? | `'literal' <op> $GIVEN`, plus the `true`/`false` sentinels | **403**                  |
+| `#(access_filter)` | which rows may they see, once they may?   | `field_path <op> $GIVEN`                                   | **200**, with their rows |
 
 Either is an annotation on its own line directly above the `source:` line, carrying a **narrow grammar publisher parses itself, not an arbitrary Malloy expression**: one or more terms joined only by `and`, with `<op>` fixed by the given's declared arity (`in` for a list, `=` for a scalar).
 
@@ -321,13 +323,14 @@ source: orders is orders_base extend {}
 source: orders_admin is orders_base extend {}
 ```
 
-  Each extension replaces the base's `false` on the lock route with its own rule. `orders` is open to everyone and scoped per row; `orders_admin` is locked to the admin group and, carrying no filter, serves every row to whoever passes. This is the shape to generate whenever an author wants a role to see everything: another extension source, not a flag that skips the gate.
+Each extension replaces the base's `false` on the lock route with its own rule. `orders` is open to everyone and scoped per row; `orders_admin` is locked to the admin group and, carrying no filter, serves every row to whoever passes. This is the shape to generate whenever an author wants a role to see everything: another extension source, not a flag that skips the gate.
+
 - **Both only gate from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line, or on a top-level `query:`, is refused at load naming the position rather than silently protecting nothing.
-- **Every given the gate references must be declared on the entry model's own surface, and must carry no default.** In a package curated with `index.malloy`, "on the surface" means `index.malloy` imports it: import the declaring file whole, or name the given in a selective import (`import { orders, GROUPS } from "orders.malloy"`). A given the model cannot resolve is refused at load. So is a referenced given declared *with* a default: a caller who supplies nothing would get that default and be admitted or excluded by a value the gate's own line never shows, so it is refused rather than reasoned about case by case.
+- **Every given the gate references must be declared on the entry model's own surface, and must carry no default.** In a package curated with `index.malloy`, "on the surface" means `index.malloy` imports it: import the declaring file whole, or name the given in a selective import (`import { orders, GROUPS } from "orders.malloy"`). A given the model cannot resolve is refused at load. So is a referenced given declared _with_ a default: a caller who supplies nothing would get that default and be admitted or excluded by a value the gate's own line never shows, so it is refused rather than reasoned about case by case.
 - **A scalar/array mismatch between the operator and the given's declared type is a load-time refusal**, not a request-time warehouse error: `org_id in $GROUPS` requires `GROUPS` to be array-typed, `region = $REGION` requires `REGION` scalar. Negation is likewise refused outright, so there is no empty-given inversion surprise to warn about.
-- **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate of its own **does** carry the base's gate; declaring its own annotation replaces it. A source derived from a locked base via a query (`source: z is locked -> { … }`) instead **always carries the base's gate in addition to its own**: the derivation recurses into the base unconditionally, so an own gate does not replace it, and the two combine as separate AND'd entries. Pair a locked base with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins. A join the *caller* writes in query text is the caller entering the joined source, so that source's gate does apply to it: a lock is decided, a row filter is grafted into the join. That holds for a query source the model declares over an inline `table(...) extend { … }` base as much as for a table source: the join anchors on the declared source, and the derivation carries the base's gate. The author-join side has a contract of its own: when a gated entry source author-joins a tenant-scoped source, carry the tenant key in the `on` (`on list_id = values.list_id and org_id = values.org_id`), because the joined source's gate does not fire through that join and the ON is what keeps the rows to the caller's tenant. Where a join cannot be keyed that way, the entry source's own gate may reference the joined column (`#(access_filter) values.org_id = $ORG_ID`): that is enforced, at the cost of turning that `join_one` into an inner join, so a row with no match drops rather than surviving with nulls.
-- **A derivation that drops a column the gate reads fails CLOSED.** `extend { except: org_id }`, or an `accept:` that omits it, leaves the grafted filter unable to compile, so the request is denied rather than served ungated. The one hole to know: dropping the gated column and then `rename:`-ing a *different* column onto that exact name grafts successfully and binds the gate to the wrong column. Narrow, but real, so don't recycle a gated column's name. If a derivation's own projection needs to drop the column a row-level term would read, use a source-level term (`'literal' in/= $GIVEN`) instead, since it never depends on any projected column.
-- **The quoted-string and file-level forms are refused at load and no longer exist.** A quoted expression on the `source:` line, in either quote, a file-level `##(…) "<expr>"` applying to every source in the file, and the earlier `internal dimension: authorized is <expr>` form are all retired; the load names the rewrite. Every `.malloy` file in a package compiles at load and any failure aborts the package, so a retired-form gate anywhere in the package is refused. Only a declaring file *outside* the package escapes that: it loads and denies every request instead, with no compile-time hint. See your deployment's reference documentation.
+- **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate of its own **does** carry the base's gate; declaring its own annotation replaces it. A source derived from a locked base via a query (`source: z is locked -> { … }`) instead **always carries the base's gate in addition to its own**: the derivation recurses into the base unconditionally, so an own gate does not replace it, and the two combine as separate AND'd entries. Pair a locked base with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins. Publisher checks this at load and **refuses the package** when a published source author-joins a locked source while carrying no gate of its own, or joins a row-filtered source whose gate reads a given none of the entry source's gates read (the fix is in the message: scope the entry on the same given, carry the key in the `on`, or drop the join). A join the _caller_ writes in query text is the caller entering the joined source, so that source's gate does apply to it: a lock is decided, a row filter is grafted into the join. That holds for a query source the model declares over an inline `table(...) extend { … }` base as much as for a table source: the join anchors on the declared source, and the derivation carries the base's gate. The author-join side has a contract of its own: when a gated entry source author-joins a tenant-scoped source, carry the tenant key in the `on` (`on list_id = values.list_id and org_id = values.org_id`), because the joined source's gate does not fire through that join and the ON is what keeps the rows to the caller's tenant. Where a join cannot be keyed that way, the entry source's own gate may reference the joined column (`#(access_filter) values.org_id = $ORG_ID`): that is enforced, at the cost of turning that `join_one` into an inner join, so a row with no match drops rather than surviving with nulls.
+- **A derivation that drops a column the gate reads fails CLOSED.** `extend { except: org_id }`, or an `accept:` that omits it, leaves the grafted filter unable to compile, so the request is denied rather than served ungated. The one hole to know: dropping the gated column and then `rename:`-ing a _different_ column onto that exact name grafts successfully and binds the gate to the wrong column. Narrow, but real, so don't recycle a gated column's name. If a derivation's own projection needs to drop the column a row-level term would read, use a source-level term (`'literal' in/= $GIVEN`) instead, since it never depends on any projected column.
+- **The quoted-string and file-level forms are refused at load and no longer exist.** A quoted expression on the `source:` line, in either quote, a file-level `##(…) "<expr>"` applying to every source in the file, and the earlier `internal dimension: authorized is <expr>` form are all retired; the load names the rewrite. Every `.malloy` file in a package compiles at load and any failure aborts the package, so a retired-form gate anywhere in the package is refused. Only a declaring file _outside_ the package escapes that: it loads and denies every request instead, with no compile-time hint. See your deployment's reference documentation.
 - **A gated source can be persisted, but the gating column freezes.** `storage=` and `#@ preaggregate` refuse a gated source outright; a colocated `#@ persist` is admitted when the gate is provably the entry point's own row filter. The gate still runs live on every query, so rows come back filtered - but the column it filters ON is frozen at build time, so a row whose access decision changes keeps being served under the old decision until the next rebuild. Pair `#@ persist` on a gated source with a freshness window (`fallback="live"`), which is the only control that bounds that - and read `skill:malloy-materialization` for where that window binds, because on a standalone Publisher it does not.
 
 > **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. Neither annotation is a real boundary unless it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. Neither is, on its own, end-user authentication.
@@ -359,13 +362,13 @@ To inspect the sources and fields a model already defines, ground yourself with 
 
 Load the relevant reference file when you encounter these scenarios:
 
-| Scenario | Read |
-|----------|------|
-| Need pre-aggregated or windowed source | `reference/query-sources.md` |
-| Curating access modifiers | `reference/access-modifiers.md` |
+| Scenario                                                    | Read                              |
+| ----------------------------------------------------------- | --------------------------------- |
+| Need pre-aggregated or windowed source                      | `reference/query-sources.md`      |
+| Curating access modifiers                                   | `reference/access-modifiers.md`   |
 | Normalized/ER-style schema (4+ tables, no clear fact table) | `reference/normalized-schemas.md` |
-| Formalizing analysis into a model | `reference/analysis-to-model.md` |
-| Many-to-many / bridge tables / composite keys | `reference/bridge-tables.md` |
+| Formalizing analysis into a model                           | `reference/analysis-to-model.md`  |
+| Many-to-many / bridge tables / composite keys               | `reference/bridge-tables.md`      |
 
 ## Done
 
