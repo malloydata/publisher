@@ -128,6 +128,7 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import { classificationWarnings } from "./classification";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -1485,6 +1486,9 @@ export class Package {
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
+         ...classificationWarnings(this.models, (modelPath) =>
+            this.isListedModelPath(modelPath),
+         ),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2478,6 +2482,26 @@ export class Package {
       return await model.getFileText(this.packagePath);
    }
 
+   /**
+    * Whether `listModels()` lists a model: a `.malloy` file that is not a
+    * report, on the surface when the package has one (or hidden too, with
+    * `includeHidden`). The one answer to "is this model published", shared
+    * with the lints that read only published models.
+    */
+   private isListedModelPath(
+      modelPath: string,
+      includeHidden: boolean = false,
+   ): boolean {
+      const exploreSet = this.exploreSet();
+      if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+      // A linear report is listed as a report, surface or not.
+      if (this.getReportLayout(modelPath) === "linear") return false;
+      // A grid report is listed as a report, even when `explores` lists it.
+      if (!exploreSet) return true;
+      if (this.isServedReport(modelPath)) return false;
+      return includeHidden || exploreSet.has(modelPath);
+   }
+
    public async listModels(
       options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
@@ -2489,18 +2513,12 @@ export class Package {
          !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
-            .filter((modelPath) => {
-               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-               // A linear report is listed as a report, surface or not.
-               if (this.getReportLayout(modelPath) === "linear") return false;
-               // A grid report is listed as a report, even when `explores` lists it.
-               if (!exploreSet) return true;
-               if (this.isServedReport(modelPath)) return false;
-               return (
-                  options.includeHiddenFilesAndSources ||
-                  exploreSet.has(modelPath)
-               );
-            })
+            .filter((modelPath) =>
+               this.isListedModelPath(
+                  modelPath,
+                  options.includeHiddenFilesAndSources,
+               ),
+            )
             .map(async (modelPath) => {
                let error: string | undefined;
                try {

@@ -4985,7 +4985,14 @@ components:
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the
-                  message every path; `warn`). The per-file
+                  message every path; `warn`). `classification-coverage`: a
+                  published source with a dimension or measure that carries no
+                  `#(classification)` while some field in the package does (one
+                  per source, `model` naming its file and `subject` the source;
+                  `warn`; see docs/classification.md).
+                  `classification-malformed`: a `#(classification)` annotation
+                  that names no single class (one per field, `subject` the
+                  source; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the

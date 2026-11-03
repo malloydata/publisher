@@ -45,6 +45,9 @@ export interface Entity {
    aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    dataType?: string;
+   // The data class a dimension or measure declares with `#(classification)`,
+   // as the package's policy names it. Absent when it declares none.
+   classification?: string;
    // For a field reached THROUGH a join, the traversal that reaches it
    // ("orders", or "order_items.inventory_items"), which is also the dotted
    // prefix of `name`. Absent on a source's own fields. See collectJoinedFields.
@@ -88,6 +91,8 @@ export interface ResultEntity {
    rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
+   /** The field's `#(classification)` class; absent when it declares none. */
+   classification?: string;
    /** The join traversal reaching this field; absent on a source's own. */
    joinPath?: string;
    /**

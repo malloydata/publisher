@@ -2,6 +2,7 @@
 name: malloy-document
 description: 'Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For runtime filters, declare given: parameters (see the malloy-model skill); #(filter) is deprecated. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.'
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -11,10 +12,10 @@ SPDX-License-Identifier: MIT
 
 Add `#(doc)` tags to describe sources and fields in plain language so they are easy to find and understand:
 
-| Tag | Purpose | Goes on |
-|-----|---------|---------|
-| `#(doc)` | Plain-language description for natural-language search | source, dimension, measure, view, join |
-| `#(filter)` | Deprecated. Never add one; declare a `given:` instead (see `malloy-model`) | source |
+| Tag         | Purpose                                                                    | Goes on                                |
+| ----------- | -------------------------------------------------------------------------- | -------------------------------------- |
+| `#(doc)`    | Plain-language description for natural-language search                     | source, dimension, measure, view, join |
+| `#(filter)` | Deprecated. Never add one; declare a `given:` instead (see `malloy-model`) | source                                 |
 
 `#(doc)` is a standard Malloy annotation. It documents a field or source with a human-readable description that downstream tools can surface and search against.
 
@@ -48,11 +49,13 @@ Doc strings power natural-language search: users type plain-English questions an
 - **Avoid Malloy jargon**: never use "filterable", "groupable", "dimension", "measure", "aggregation"
 
 **Good examples:**
+
 - `#(doc) Total revenue from completed orders in USD` matches "what was our revenue?"
 - `#(doc) Customer signup date (UTC)` matches "when did the customer join?"
 - `#(doc) Order status: pending, processing, shipped, delivered, cancelled` matches "what are the order statuses?"
 
 **Bad examples:**
+
 - `#(doc) Filterable dimension for order status`: no analyst searches for "filterable"
 - `#(doc) Groupable by region`: "groupable" is a system concept
 - `#(doc) Aggregation of total sales`: "aggregation" doesn't match natural queries
@@ -87,12 +90,31 @@ One rule worth knowing here: a filter the model reads lives on the source, never
 
 `#(doc)` describes what's exposed. Two access modifiers control what's exposed in the first place, and both live **inside** a source's `include {}` block. They are about the source's public API and data sensitivity, not about documentation, so reach for them when curating which columns callers can pick.
 
-| Mechanism | Layer | Why you reach for it |
-|---|---|---|
+| Mechanism   | Layer                                        | Why you reach for it                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `internal:` | Inside a source (one column in `include {}`) | The column **isn't part of your model's public API**. Common reasons: data is messy (empty/garbage, raw JSON, duplicates), or a documented derived dimension already supersedes it, or the raw column exists only to be joined on / referenced internally and shouldn't appear as a dimension callers can pick. The data may be perfectly fine, it's just not what you want exposed. |
-| `private:` | Inside a source (one column in `include {}`) | The **data is sensitive**: SSN, raw credit card, password. Governance / security concern; a harder block than `internal:`. |
+| `private:`  | Inside a source (one column in `include {}`) | The **data is sensitive**: SSN, raw credit card, password. Governance / security concern; a harder block than `internal:`.                                                                                                                                                                                                                                                           |
 
 In one sentence: **`internal:` and `private:` shape what's inside a source's public API; `#(doc)` describes the fields you do expose.**
+
+## `#(classification)`: what a field _is_, in the policy's words
+
+When a package has an access or data-handling policy, every published dimension and measure should say which class of data it carries, so an agent sees the class before reading the field and a review can check each surface against the policy. One annotation, one token, on the field, after the closing parenthesis:
+
+```malloy
+#(doc) Social security number.
+#(classification) phi.direct_identifier
+dimension: ssn is SSN
+
+#(classification) none
+measure: order_count is count()
+```
+
+- The vocabulary is the policy's, not Malloy's: use the class names the policy document uses (`phi.direct_identifier`, `confidential`, `pci.pan`), and `none` for a field the policy has nothing to say about. Publisher checks only that it is one token.
+- Write the class after the route. `#(classification phi.direct_identifier)` compiles with a `malformed-route` warning and declares nothing.
+- Classify a field where it is declared; the class rides every join to it and survives `extend`. A `rename:` or `dimension: x is y` is a new field and needs its own.
+- Once any field in a package is classified, Publisher warns (`classification-coverage`) about every published field that is not, so classify a package all at once rather than one source at a time. A field under `private:` or `internal:` is not demanded one.
+- It changes nothing about what a query returns. Pair it with `private:` to hide a column and with `#(authorize)` / `#(access_filter)` (see `skill:malloy-model`) to control who reads a source.
 
 ### Example
 
@@ -149,6 +171,7 @@ extend {
 ```
 
 **When to use:**
+
 - Documenting raw columns without creating explicit dimensions
 - Curating which columns are public vs internal
 
@@ -157,18 +180,21 @@ extend {
 Document **when to use** a source, not what it contains. Dimensions and measures can already be searched directly, so the source-level `#(doc)` should describe what questions/analyses this source answers.
 
 **Base source files:** Document what the table represents.
+
 ```malloy
 #(doc) Customer records with demographics and segmentation. One row per customer.
 source: customers is conn.table('sales.customers') extend { ... }
 ```
 
 **Source files:** Document what analytical questions the source answers.
+
 ```malloy
 #(doc) Customer health analysis. Use for retention, segmentation, churn risk, and lifetime value. For order-level analysis, use order_analysis instead.
 source: customer_health is customers extend { ... }
 ```
 
 **Best practices:**
+
 - Add `#(doc)` to all base source and joined source definitions
 - Base source docs: describe what the table is (one row per what)
 - Source docs: describe what questions/analyses the source answers
@@ -178,10 +204,10 @@ source: customer_health is customers extend { ... }
 
 After writing `#(doc)` tags, present any that required judgment to the user for confirmation:
 
-| Field | Proposed doc | Confidence | Uncertainty |
-|-------|-------------|------------|-------------|
-| `total` | "Total order amount in USD" | Medium | Could be gross or net, verified with sample query |
-| `status` | "Order status: pending, shipped, delivered" | High | Values confirmed via a query of distinct values |
+| Field    | Proposed doc                                | Confidence | Uncertainty                                       |
+| -------- | ------------------------------------------- | ---------- | ------------------------------------------------- |
+| `total`  | "Total order amount in USD"                 | Medium     | Could be gross or net, verified with sample query |
+| `status` | "Order status: pending, shipped, delivered" | High       | Values confirmed via a query of distinct values   |
 
 Only flag fields where the description required assumptions about business meaning, units, or valid values. When in doubt about valid values, run a quick query against the data to confirm them before writing the description. Use `get_context` to ground yourself in the package's sources and fields and `execute_query` to check distinct values, for example `run: source -> { group_by: status }`.
 

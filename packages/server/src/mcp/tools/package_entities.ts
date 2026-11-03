@@ -9,6 +9,10 @@ import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
+import {
+   isClassificationLine,
+   readClassification,
+} from "../../service/classification";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
 import type { PipelineSettings } from "./get_context_pipeline";
@@ -67,8 +71,19 @@ export function docText(
    const doc = docOnlyText(annotations);
    if (doc) return doc;
    if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
+   // A `#(classification)` note has its own card field, so it is not doc text.
+   const lines = annotations
+      .map((a) => (typeof a === "string" ? a : a.value))
+      .filter((line) => !isClassificationLine(line));
    return lines.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/** The class a field's `#(classification)` note declares, if a well-formed one. */
+function classificationOf(
+   annotations?: Array<string | { value: string }>,
+): { classification: string } | Record<string, never> {
+   const { value } = readClassification(annotations);
+   return value ? { classification: value } : {};
 }
 
 /**
@@ -465,6 +480,7 @@ function collectJoinedFields(args: {
          modelPath,
          doc: docText(field.annotations),
          embedDoc: docOnlyText(field.annotations),
+         ...classificationOf(field.annotations),
          joinPath,
          relationship: fanout,
          ...(field.kind === "measure" || field.kind === "dimension"
@@ -679,7 +695,10 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                embedDoc: docOnlyText(field.annotations),
                ...(field.kind === "view"
                   ? {}
-                  : { dataType: malloyType(field) }),
+                  : {
+                       dataType: malloyType(field),
+                       ...classificationOf(field.annotations),
+                    }),
                ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
                ...(!isView && fieldProvenance?.aliasOf
                   ? { aliasOf: fieldProvenance.aliasOf }
@@ -911,6 +930,13 @@ function collapseAliases(entities: Entity[]): Entity[] {
             keep.doc = donor.doc;
             keep.embedDoc = donor.embedDoc;
          }
+      }
+      // A class belongs to the column, so a spelling's class is the group's:
+      // `state is st` classified and `raw_state is st` not are one column
+      // with one class, whichever spelling survives.
+      if (!keep.classification) {
+         const donor = members.find((e) => e !== keep && e.classification);
+         if (donor) keep.classification = donor.classification;
       }
       const folded = members.filter((e) => e !== keep);
       keep.aliases = folded.map((e) => e.name);

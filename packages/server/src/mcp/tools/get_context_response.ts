@@ -125,6 +125,13 @@ interface SourceCardEntity {
    relevance?: number;
    description?: string;
    data_type?: string;
+   /**
+    * Publisher extension. The data class the field declares with
+    * `#(classification)`, as the package's policy names it (for example
+    * `phi.direct_identifier`); Publisher reads the shape, the policy owns the
+    * vocabulary. Absent when the field declares none. See docs/classification.md.
+    */
+   classification?: string;
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
    /**
@@ -233,6 +240,7 @@ export function toSourceResults(
          ...(r.score !== undefined ? { relevance: r.score } : {}),
          ...(r.doc ? { description: r.doc } : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
+         ...(r.classification ? { classification: r.classification } : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
          ...(r.joinPath ? { join_path: r.joinPath } : {}),
          ...(includeCode && r.code ? { code: r.code } : {}),
@@ -371,6 +379,7 @@ export function projectEntity(
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
       ...(e.dataType ? { dataType: e.dataType } : {}),
+      ...(e.classification ? { classification: e.classification } : {}),
       ...(e.code ? { code: e.code } : {}),
    };
 }
