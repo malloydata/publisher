@@ -26,6 +26,8 @@ export interface UseDimensionFiltersQueryParams {
    fields?: string[];
    /** Maximum number of results to return (default: 1000) */
    limit?: number;
+   /** The published version to query; absent, the package's `latest`. */
+   versionId?: string;
 }
 
 /**
@@ -212,6 +214,7 @@ export function useDimensionFiltersQuery(
       filterSelections,
       fields,
       limit = 1000,
+      versionId,
    } = params;
 
    // State to store the executed query result
@@ -232,8 +235,9 @@ export function useDimensionFiltersQuery(
             environmentName: environment,
             packageName,
             modelPath: model,
+            versionId,
          }),
-      [environment, packageName, model],
+      [environment, packageName, model, versionId],
    );
 
    // Check if query can be executed

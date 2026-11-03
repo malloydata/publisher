@@ -24,3 +24,10 @@ export {
 } from "./NewDocumentDialog";
 // Exported so a host decides Retry on its own failed requests as the dialog does.
 export { canRetryRequest } from "../DocumentCreate/canRetry";
+export {
+   packageVersionsQueryKey,
+   useInvalidatePackage,
+   usePackageVersions,
+   type PackageVersions,
+} from "./usePackageVersions";
+export { VersionSwitch, type VersionSwitchProps } from "./VersionSwitch";

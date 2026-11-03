@@ -81,11 +81,18 @@ function mount(
    return render(tree(at, routePath, edit, notFoundUntilListed));
 }
 
+/** A published version's route: its segment in the URL, and nothing to edit. */
+function mountPinned(routePath: string, edit: boolean, search = "") {
+   const at = `/env/pkg/1.0.0/${routePath}${search || (edit ? "?edit" : "")}`;
+   return render(tree(at, routePath, edit, false, "1.0.0"));
+}
+
 function tree(
    at: string,
    routePath: string,
    edit: boolean,
    notFoundUntilListed = false,
+   versionSegment?: string,
 ) {
    return (
       <MemoryRouter initialEntries={[at]}>
@@ -98,6 +105,10 @@ function tree(
                      <RoutedDocument
                         environmentName="env"
                         packageName="pkg"
+                        {...(versionSegment !== undefined
+                           ? { versionSegment, versionId: versionSegment }
+                           : {})}
+                        readOnly={versionSegment !== undefined}
                         routePath={routePath}
                         edit={edit}
                         notFound={<Frame />}
@@ -358,6 +369,29 @@ describe("RoutedDocument", () => {
       ]);
       expect(screen.getByTestId("editor").textContent).toBe(
          "edit drafts/new.malloy as linear",
+      );
+   });
+
+   it("opens no builder for an unlisted ?edit on a published version, and asks for no draft", () => {
+      mountPinned("drafts/new", true);
+      expect(screen.queryByTestId("editor")).toBeNull();
+      expect(screen.getByTestId("not-found")).toBeDefined();
+      expect(draftCalls.every((call) => call[3] === false)).toBe(true);
+   });
+
+   it("keeps the version on the legacy <path>/edit redirect", () => {
+      listing.reports = [{ path: "sales/q3.malloy", layout: "grid" }];
+      mountPinned("sales/q3/edit", false, "?region=west");
+      expect(screen.getByTestId("where").textContent).toBe(
+         "/env/pkg/1.0.0/sales/q3?edit&region=west",
+      );
+   });
+
+   it("keeps the version on a deprecated dashboards/<name> redirect", () => {
+      listing.reports = [{ path: "team/overview.malloy", layout: "grid" }];
+      mountPinned("dashboards/overview", false, "?region=west");
+      expect(screen.getByTestId("where").textContent).toBe(
+         "/env/pkg/1.0.0/team/overview?region=west",
       );
    });
 
