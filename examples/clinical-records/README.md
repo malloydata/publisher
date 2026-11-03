@@ -38,6 +38,21 @@ Everything below implements one of them.
 for the caller, and the request cannot (AC-03). A surface that dropped its gate would not open,
 because each surface extends a core that inherits its base's lock.
 
+## The data app
+
+`public/index.html` is a compliance scorecard for the person who signs off on a release: it reads
+the governance export and asks every surface the same question as every workforce class, live, and
+checks each answer against the policy's workforce table. It leads with four verdicts (classified
+fields, gates on identity-provider attributes, surfaces within their declared ceiling, access
+decisions that match the policy), then shows what each surface may serve against what it serves,
+the access grid with the query and identity behind every cell, the de-identification measured on
+the same patients, the controls register, and the seeded violations. Served at
+`/environments/examples/packages/clinical-records/index.html`.
+
+On a local server the page sends each persona's identity attributes itself, and says so in a
+banner: in a deployment they are `#(secure)`, set by the identity provider, and a page could not
+choose a persona.
+
 ## What Publisher enforces, and what it leaves to a review
 
 `violations/` holds five broken versions of `surfaces.malloy`. Three are refused at load: a
