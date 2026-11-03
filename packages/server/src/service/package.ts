@@ -128,7 +128,7 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
-import { classificationWarnings } from "./classification";
+import { classificationLeaks, classificationWarnings } from "./classification";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -2062,6 +2062,18 @@ export class Package {
    /** The {@link incrementalPolicyWarnings}, one per line, or "" if valid. */
    public formatInvalidIncrementalPolicy(): string {
       return this.incrementalPolicyWarnings().join("\n");
+   }
+
+   /**
+    * REJECTION messages for every field a `#(carries)` surface exposes outside
+    * its list (docs/classification.md), one per line, empty when there are
+    * none. Strict at load, like an invalid incremental policy: a surface that
+    * says what it carries must not serve what it does not.
+    */
+   public formatClassificationLeaks(): string {
+      return classificationLeaks(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
    }
 
    /**

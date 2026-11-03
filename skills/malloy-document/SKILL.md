@@ -112,7 +112,8 @@ measure: order_count is count()
 
 - The vocabulary is the policy's, not Malloy's: use the class names the policy document uses (`phi.direct_identifier`, `confidential`, `pci.pan`), and `none` for a field the policy has nothing to say about. Publisher checks only that it is one token.
 - Write the class after the route. `#(classification phi.direct_identifier)` compiles with a `malformed-route` warning and declares nothing.
-- Classify a field where it is declared; the class rides every join to it and survives `extend`. A `rename:` or `dimension: x is y` is a new field and needs its own.
+- Classify a field where it is declared; the class rides every join to it, survives `extend` and `rename:`, and a field derived from it (`dimension: x is y`, `concat(y, …)`, `count(y)`) inherits it. Declare a class on a derived field only to override the inherited one (a year derived from a birth date is a quasi-identifier, not a direct one) or when its inputs carry different classes, which Publisher will not rank.
+- `#(carries) <class> …` on a source line lists every class a caller may reach from that source. A field with a class off the list, or no class, is a leak, and a leak refuses the package load, so write it on each entry point next to its `#(authorize)` and classify everything the surface exposes.
 - Once any field in a package is classified, Publisher warns (`classification-coverage`) about every published field that is not, so classify a package all at once rather than one source at a time. A field under `private:` or `internal:` is not demanded one.
 - It changes nothing about what a query returns. Pair it with `private:` to hide a column and with `#(authorize)` / `#(access_filter)` (see `skill:malloy-model`) to control who reads a source.
 

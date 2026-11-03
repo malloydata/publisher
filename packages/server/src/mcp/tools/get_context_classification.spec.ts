@@ -27,6 +27,9 @@ source: patients is duckdb.sql("select 1 as id, '999-11-2222' as ssn, 'MA' as st
   dimension: raw_state is st
   #(classification) phi.financial
   measure: patient_count is count()
+  dimension: masked is concat('***', social)
+  #(classification) none
+  dimension: state_initial is substr(st, 1, 1)
 }
 
 source: encounters is duckdb.sql("select 1 as id, 1 as patient_id") extend {
@@ -71,6 +74,44 @@ describe("classification on get_context entities", () => {
             (c) => c.source === "patients" && c.name === "state",
          ),
       ).toBeUndefined();
+   });
+
+   it("infers a derived field's class and reports the inputs, on the card too", () => {
+      const masked = entity("patients", "masked");
+      expect(masked.classification).toBe("phi.direct_identifier");
+      expect(masked.classificationInferred).toBe(true);
+      expect(masked.classificationInputs).toEqual([
+         { field: "social", classification: "phi.direct_identifier" },
+      ]);
+      const ranked: ResultEntity = {
+         ...projectEntity(masked, "env", "pkg"),
+         score: 1,
+         targetScores: new Map([[0, 1]]),
+         bestTarget: 0,
+      };
+      const cards = toSourceResults(
+         [ranked],
+         index.sourceContext,
+         "env",
+         "pkg",
+      );
+      const card = cards.find(
+         (c) => c.source_info.resource_id.source === "patients",
+      );
+      const entityCard = card?.entities?.find((e) => e.name === "masked");
+      expect(entityCard?.classification).toBe("phi.direct_identifier");
+      expect(entityCard?.classification_inferred).toBe(true);
+      expect(entityCard?.classification_inputs).toEqual([
+         { field: "social", classification: "phi.direct_identifier" },
+      ]);
+   });
+
+   it("keeps a declared class over the inputs' and still shows them", () => {
+      const initial = entity("patients", "state_initial");
+      expect(initial.classification).toBe("none");
+      expect(initial.classificationInferred).toBeUndefined();
+      // `st` itself carries no class; `state` (quasi) and `raw_state` fold into it.
+      expect(initial.classificationInputs ?? []).toEqual([]);
    });
 
    it("keeps a classified field's description to its doc, empty when it has none", () => {

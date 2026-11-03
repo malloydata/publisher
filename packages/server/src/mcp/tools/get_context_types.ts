@@ -5,6 +5,7 @@ import type lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { Package } from "../../service/package";
 import type { SearchTargetType } from "./get_context_request";
+import type { ClassifiedInput } from "../../service/classification";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -45,9 +46,16 @@ export interface Entity {
    aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    dataType?: string;
-   // The data class a dimension or measure declares with `#(classification)`,
-   // as the package's policy names it. Absent when it declares none.
+   // The data class of a dimension or measure, as the package's policy names
+   // it: its own `#(classification)`, or the class of the fields it reads
+   // when it declares none. Absent when neither gives one.
    classification?: string;
+   // True when `classification` was inferred from the fields the expression
+   // reads rather than declared on the field.
+   classificationInferred?: true;
+   // The classified fields the expression reads, by path from the source,
+   // nearest first. Present on a derived field; absent on a raw column.
+   classificationInputs?: ClassifiedInput[];
    // For a field reached THROUGH a join, the traversal that reaches it
    // ("orders", or "order_items.inventory_items"), which is also the dotted
    // prefix of `name`. Absent on a source's own fields. See collectJoinedFields.
@@ -91,8 +99,12 @@ export interface ResultEntity {
    rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
-   /** The field's `#(classification)` class; absent when it declares none. */
+   /** The field's class, declared or inferred; absent when neither gives one. */
    classification?: string;
+   /** True when the class came from the fields the expression reads. */
+   classificationInferred?: true;
+   /** The classified fields the expression reads, nearest first. */
+   classificationInputs?: ClassifiedInput[];
    /** The join traversal reaching this field; absent on a source's own. */
    joinPath?: string;
    /**

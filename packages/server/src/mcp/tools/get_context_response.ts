@@ -129,9 +129,19 @@ interface SourceCardEntity {
     * Publisher extension. The data class the field declares with
     * `#(classification)`, as the package's policy names it (for example
     * `phi.direct_identifier`); Publisher reads the shape, the policy owns the
-    * vocabulary. Absent when the field declares none. See docs/classification.md.
+    * vocabulary. Declared on the field, or inferred from the fields its
+    * expression reads when it declares none. Absent when neither gives one.
+    * See docs/classification.md.
     */
    classification?: string;
+   /** True when `classification` was inferred from the fields the expression reads. */
+   classification_inferred?: true;
+   /**
+    * The classified fields the expression reads, by path from the source,
+    * nearest first, each with its class. Present on a derived field, so a
+    * declared class can be read against what it was derived from.
+    */
+   classification_inputs?: Array<{ field: string; classification: string }>;
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
    /**
@@ -241,6 +251,10 @@ export function toSourceResults(
          ...(r.doc ? { description: r.doc } : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.classification ? { classification: r.classification } : {}),
+         ...(r.classificationInferred ? { classification_inferred: true } : {}),
+         ...(r.classificationInputs
+            ? { classification_inputs: r.classificationInputs }
+            : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
          ...(r.joinPath ? { join_path: r.joinPath } : {}),
          ...(includeCode && r.code ? { code: r.code } : {}),
@@ -380,6 +394,10 @@ export function projectEntity(
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
       ...(e.dataType ? { dataType: e.dataType } : {}),
       ...(e.classification ? { classification: e.classification } : {}),
+      ...(e.classificationInferred ? { classificationInferred: true } : {}),
+      ...(e.classificationInputs
+         ? { classificationInputs: e.classificationInputs }
+         : {}),
       ...(e.code ? { code: e.code } : {}),
    };
 }
