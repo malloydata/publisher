@@ -2,25 +2,29 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(classification) <class>` on a field and `#(carries) <class>…` on a
- * source: what a field is, and what a surface may expose, in the words of
- * the package's access policy. Publisher reads the shape and never the
- * vocabulary: `phi.direct_identifier`, `confidential`, `pci.pan` are all one
- * token to it, and which tokens a package may use is the policy's to say and
- * a review's to check. What Publisher does with them:
+ * `#(classification) <class>` on a field, `#(carries) <class>…` on a source,
+ * and `#(control) <id>…` on either: what a field is, what a surface may
+ * expose, and which of the policy's controls a thing implements, all in the
+ * words of the package's access policy. Publisher reads the shape and never
+ * the vocabulary: `phi.direct_identifier`, `confidential`, `pci.pan`,
+ * `soc2:CC6.1` and `nist:AC-3` are all one token to it, and which tokens a
+ * package may use is the policy's to say and a review's to check. What
+ * Publisher does with them:
  *
- * - **Lineage.** A field with no class of its own takes the class of the
- *   fields its expression reads ({@link readSourceClassifications}): a
- *   `dimension: copied is ssn`, a `concat('***', ssn)`, a `count(ssn)` all
- *   carry `ssn`'s class, through a `rename:` and through a join. When the
- *   inputs disagree the field is reported as unclassified with the input
- *   classes named, because ranking classes is the policy's job, not the
- *   server's. A declared class always wins, with the inputs still reported,
- *   so `birth_year is BIRTHDATE.year` can say it is a quasi-identifier
- *   derived from a direct one and a review can still see the derivation.
- * - **Discovery.** `get_context` reports the effective class on every
- *   dimension and measure card, with the inputs it came from when it was
- *   inferred (`package_entities.ts`).
+ * - **Sets.** A field carries a SET of classes, one `#(classification)` line
+ *   per class, because one column commonly sits under several regimes at
+ *   once (an SSN is a HIPAA identifier, GDPR personal data and NIST PII).
+ * - **Lineage.** A field with no class of its own takes the union of the
+ *   classes of the fields its expression reads
+ *   ({@link readSourceClassifications}): a `dimension: copied is ssn`, a
+ *   `concat(first, spend)`, a `count(ssn)` all carry what they read, through
+ *   a `rename:` and through a join. A declared set always wins, with the
+ *   inputs still reported, so `birth_year is BIRTHDATE.year` can say it is a
+ *   quasi-identifier derived from a direct one and a review can still see
+ *   the derivation.
+ * - **Discovery.** `get_context` reports the effective set on every
+ *   dimension and measure card, with the inputs it came from when inferred
+ *   (`package_entities.ts`).
  * - **Coverage.** The package load warns `classification-coverage` on every
  *   published source that still has an unclassified dimension or measure,
  *   once ANY field in the package carries a class
@@ -29,14 +33,17 @@
  *   `classification-malformed` naming the field and the fix.
  * - **Ceiling.** `#(carries)` on a source lists the classes a caller may
  *   reach from it. A field reachable from that source (own, inherited,
- *   inferred, or through a join) whose class is not on the list, or that has
- *   no class at all, is a leak, and a leak refuses the package load
+ *   inferred, or through a join) with any class off the list, or no class at
+ *   all, is a leak, and a leak refuses the package load
  *   ({@link classificationLeaks}), the way a gate that does not parse does.
+ * - **Controls.** `#(control)` tokens are collected per source and per field
+ *   for the governance export (`governance.ts`), which is the control-to-
+ *   implementation map a pipeline keeps and an auditor reads.
  *
  * Why the bracketed route and not a `# classification=` tag: it sits beside
  * `#(doc)` and the gates, the other annotations an agent reads for meaning
  * and policy, and Malloy claims no interpretation of it. The one rule a route
- * imposes is that the class follows the closing parenthesis, since Malloy
+ * imposes is that the tokens follow the closing parenthesis, since Malloy
  * ends a route at the first whitespace: `#(classification phi)` warns
  * `malformed-route` at compile; `#(classification) phi` is the form.
  */
@@ -52,11 +59,12 @@ type ApiPackageWarning = NonNullable<
 
 /** `PackageWarning.code` of a published source with unclassified fields. */
 export const CLASSIFICATION_COVERAGE = "classification-coverage";
-/** `PackageWarning.code` of a `#(classification)` annotation that names no single class. */
+/** `PackageWarning.code` of a `#(classification)` or `#(control)` annotation that names nothing usable. */
 export const CLASSIFICATION_MALFORMED = "classification-malformed";
 
 const CLASSIFICATION_LINE = /^#\(classification\)(.*)$/s;
 const CARRIES_LINE = /^#\(carries\)(.*)$/s;
+const CONTROL_LINE = /^#\(control\)(.*)$/s;
 
 /** One annotation note, as `to_stable` (`{value}`) or a raw string carries it. */
 type AnnotationText = string | { value: string };
@@ -65,46 +73,91 @@ function annotationText(a: AnnotationText): string {
    return typeof a === "string" ? a : a.value;
 }
 
-/** Whether an annotation line is a `#(classification)` note. */
+/** Whether an annotation line is a `#(classification)`, `#(carries)` or `#(control)` note. */
 export function isClassificationLine(text: string): boolean {
-   return CLASSIFICATION_LINE.test(text.trim());
+   const t = text.trim();
+   return (
+      CLASSIFICATION_LINE.test(t) ||
+      CARRIES_LINE.test(t) ||
+      CONTROL_LINE.test(t)
+   );
+}
+
+/** Codepoint order, so two servers on identical bytes agree. */
+const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A sorted set of tokens. */
+function tokenSet(tokens: Iterable<string>): string[] {
+   return Array.from(new Set(tokens)).sort(byCodepoint);
 }
 
 /**
- * The class a field's annotations declare. `value` is the one token after the
- * route; `malformed` says why there is none when a `#(classification)` note is
- * present but unusable, in the words the load warning uses. Both absent means
- * the field declares no classification.
+ * The classes a field's annotations declare: one token per
+ * `#(classification)` line, as a sorted set. `malformed` says why a line is
+ * unusable (no token, or more than one), in the words the load warning uses;
+ * the usable lines still count. An empty `values` with no `malformed` means
+ * the field declares nothing.
  */
 export function readClassification(
    annotations: ReadonlyArray<AnnotationText> | undefined,
-): { value?: string; malformed?: string } {
-   if (!annotations || annotations.length === 0) return {};
-   const notes = annotations
+): { values: string[]; malformed?: string } {
+   if (!annotations || annotations.length === 0) return { values: [] };
+   const lines = annotations
       .map(annotationText)
       .map((text) => CLASSIFICATION_LINE.exec(text.trim()))
       .filter((m): m is RegExpExecArray => m !== null)
       .map((m) => m[1].trim());
-   if (notes.length === 0) return {};
-   if (notes.length > 1) {
-      return {
-         malformed: `carries ${notes.length} #(classification) annotations; a field has one class`,
-      };
+   const values: string[] = [];
+   const faults: string[] = [];
+   for (const line of lines) {
+      const tokens = line.split(/\s+/).filter(Boolean);
+      if (tokens.length === 1) values.push(tokens[0]);
+      else if (tokens.length === 0) {
+         faults.push("a #(classification) line that names no class");
+      } else {
+         faults.push(
+            `a #(classification) line with ${tokens.length} words ("${line}"); ` +
+               `one class per line, such as phi.direct_identifier, and another ` +
+               `line for a second class`,
+         );
+      }
    }
-   const tokens = notes[0].split(/\s+/).filter(Boolean);
-   if (tokens.length === 0) {
-      return {
-         malformed: "has a #(classification) annotation that names no class",
-      };
-   }
-   if (tokens.length > 1) {
-      return {
-         malformed:
-            `has a #(classification) annotation with ${tokens.length} words ` +
-            `("${notes[0]}"); a class is one token, such as phi.direct_identifier`,
-      };
-   }
-   return { value: tokens[0] };
+   return {
+      values: tokenSet(values),
+      ...(faults.length > 0
+         ? { malformed: `has ${faults.join("; and ")}` }
+         : {}),
+   };
+}
+
+/**
+ * The control identifiers an annotation set names across its `#(control)`
+ * lines, as a sorted set. Any token is an identifier: `CC6.1`, `AC-3`,
+ * `7.2.1`, `164.312(a)(1)`, and `soc2:CC6.1` under a framework prefix. A
+ * `#(control)` line with no token is `malformed`; the other lines still count.
+ */
+export function readControls(annotations: ReadonlyArray<string> | undefined): {
+   values: string[];
+   malformed?: string;
+} {
+   if (!annotations || annotations.length === 0) return { values: [] };
+   const lines = annotations
+      .map((text) => CONTROL_LINE.exec(text.trim()))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => m[1].trim());
+   const values = lines.flatMap((line) => line.split(/\s+/).filter(Boolean));
+   const empty = lines.some((line) => line.length === 0);
+   return {
+      values: tokenSet(values),
+      ...(empty
+         ? {
+              malformed:
+                 "has a #(control) line that names no control; list the " +
+                 "policy's control identifiers it implements, such as AC-3 or " +
+                 "soc2:CC6.1, or delete the line",
+           }
+         : {}),
+   };
 }
 
 /**
@@ -122,9 +175,7 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
    let node: AnnotationsDef | undefined = annotations;
    // Bounded: an `inherits` chain is finite, but a malformed IR must not hang.
    for (let hops = 0; node && hops < 64; hops++) {
-      const texts = [...(node.blockNotes ?? []), ...(node.notes ?? [])].map(
-         (note) => note.text,
-      );
+      const texts = ownTexts(node);
       const lines = texts
          .map((text) => CARRIES_LINE.exec(text.trim()))
          .filter((m): m is RegExpExecArray => m !== null)
@@ -149,6 +200,26 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
    return { declared: false, classes: new Set() };
 }
 
+/** The note texts declared on ONE level of an annotation chain. */
+function ownTexts(node: AnnotationsDef): string[] {
+   return [...(node.blockNotes ?? []), ...(node.notes ?? [])].map(
+      (note) => note.text,
+   );
+}
+
+/**
+ * The control identifiers a source declares on its OWN line, not those of a
+ * base it extends: a control is a claim about what this source implements,
+ * and an extension that replaces the base's gate does not implement the
+ * base's control by inheritance.
+ */
+export function readSourceControls(annotations: AnnotationsDef | undefined): {
+   values: string[];
+   malformed?: string;
+} {
+   return readControls(annotations ? ownTexts(annotations) : undefined);
+}
+
 /** The slice of a compiled field the lineage reads. */
 interface IrField {
    name?: string;
@@ -157,6 +228,7 @@ interface IrField {
    join?: string;
    fields?: IrField[];
    e?: unknown;
+   expressionType?: string;
    annotations?: AnnotationsDef;
    accessModifier?: string;
 }
@@ -164,28 +236,32 @@ interface IrField {
 /** A classified field an expression reads, by its path from the source. */
 export interface ClassifiedInput {
    field: string;
-   classification: string;
+   classifications: string[];
 }
 
 /** What the lineage knows about one field of a source. */
 export interface FieldClassification {
-   /** The class the field's own `#(classification)` declares. */
-   declared?: string;
-   /** The class its inputs agree on, when it declares none. */
-   inferred?: string;
-   /** `declared ?? inferred`: the class in force. */
-   classification?: string;
+   /** The classes the field's own `#(classification)` lines declare. */
+   declared: string[];
+   /** The union of its inputs' classes, read when it declares none. */
+   inferred: string[];
+   /** The set in force: `declared` when non-empty, else `inferred`. */
+   classifications: string[];
    /**
     * The classified fields the expression reads, nearest first: a direct
     * reference, or the inputs of an unclassified intermediate it reads.
     */
    inputs: ClassifiedInput[];
-   /** Why the field has no usable class although something was written or read. */
+   /** The control identifiers the field's own `#(control)` lines name. */
+   controls: string[];
+   /** Why an annotation on the field is unusable, when one is. */
    malformed?: string;
    /** True for a field under `private:` / `internal:`, which callers never reach. */
    hidden: boolean;
    /** True for a dimension or measure; false for a view or a join. */
    isField: boolean;
+   /** `measure` for an aggregate or analytic expression, else `dimension`. */
+   kind: "dimension" | "measure";
 }
 
 /** How many joins deep a source's reachable fields are followed. */
@@ -204,6 +280,13 @@ function isJoinField(f: IrField): boolean {
 
 function isAtomicField(f: IrField): boolean {
    return !isJoinField(f) && f.type !== "turtle" && !Array.isArray(f.fields);
+}
+
+function fieldKind(f: IrField): "dimension" | "measure" {
+   const t = f.expressionType ?? "";
+   return t.includes("aggregate") || t.includes("analytic")
+      ? "measure"
+      : "dimension";
 }
 
 /** Every `{node: "field", path}` an expression tree reads, in walk order. */
@@ -268,7 +351,9 @@ export function readSourceClassifications(
       if (visiting.has(path)) return undefined;
       visiting.add(path);
       const { field, owner } = entry;
-      const own = readClassification(annotationTexts(field.annotations));
+      const texts = annotationTexts(field.annotations);
+      const own = readClassification(texts);
+      const controls = readControls(texts);
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
       for (const ref of fieldReferences(field.e)) {
@@ -278,9 +363,10 @@ export function readSourceClassifications(
          if (!input) continue;
          // A classified input is an input; an unclassified one contributes
          // the inputs IT was read from, so lineage crosses an intermediate.
-         const carried = input.classification
-            ? [{ field: refPath, classification: input.classification }]
-            : input.inputs;
+         const carried =
+            input.classifications.length > 0
+               ? [{ field: refPath, classifications: input.classifications }]
+               : input.inputs;
          for (const c of carried) {
             if (seenInput.has(c.field)) continue;
             seenInput.add(c.field);
@@ -288,29 +374,24 @@ export function readSourceClassifications(
          }
       }
       visiting.delete(path);
+      const inferred =
+         own.values.length > 0
+            ? []
+            : tokenSet(inputs.flatMap((i) => i.classifications));
+      const faults = [own.malformed, controls.malformed].filter(
+         (f): f is string => f !== undefined,
+      );
       const result: FieldClassification = {
+         declared: own.values,
+         inferred,
+         classifications: own.values.length > 0 ? own.values : inferred,
          inputs,
+         controls: controls.values,
+         ...(faults.length > 0 ? { malformed: faults.join("; and ") } : {}),
          hidden: field.accessModifier !== undefined,
          isField: isAtomicField(field),
+         kind: fieldKind(field),
       };
-      if (own.malformed) {
-         result.malformed = own.malformed;
-      } else if (own.value) {
-         result.declared = own.value;
-         result.classification = own.value;
-      } else {
-         const classes = Array.from(
-            new Set(inputs.map((i) => i.classification)),
-         );
-         if (classes.length === 1) {
-            result.inferred = classes[0];
-            result.classification = classes[0];
-         } else if (classes.length > 1) {
-            result.malformed = `is derived from fields of differing classes (${inputs
-               .map((i) => `${i.field}: ${i.classification}`)
-               .join(", ")}); declare which class it carries`;
-         }
-      }
       resolved.set(path, result);
       return result;
    };
@@ -331,7 +412,7 @@ export function findIrSource(
 }
 
 /** Whether a compiled source is denied to every caller, so nothing it publishes is reachable. */
-function isDeniedToAll(apiSource: {
+export function isDeniedToAll(apiSource: {
    accessFilter?: string[];
    authorize?: string[];
 }): boolean {
@@ -343,7 +424,7 @@ function isDeniedToAll(apiSource: {
 }
 
 /** One published source and what the lineage found on it. */
-interface PublishedSource {
+export interface PublishedSource {
    modelPath: string;
    source: string;
    ir: IrField;
@@ -358,7 +439,7 @@ interface PublishedSource {
  * `listModels()` gives; `getSourceInfos()` says which sources a listed model
  * exports. A model with no compiled definition contributes nothing.
  */
-function publishedSources(
+export function publishedSources(
    models: ReadonlyMap<string, Model>,
    isListed: (modelPath: string) => boolean,
 ): PublishedSource[] {
@@ -403,8 +484,8 @@ function publishedSources(
  *
  * Coverage is self-declaring: `classification-coverage` fires only once some
  * field of some listed model carries a class, declared or inferred. Malformed
- * annotations, and fields whose inputs disagree, are reported whether or not
- * coverage is in force, since each was written on purpose.
+ * annotations are reported whether or not coverage is in force, since each
+ * was written on purpose.
  */
 export function classificationWarnings(
    models: ReadonlyMap<string, Model>,
@@ -415,6 +496,16 @@ export function classificationWarnings(
    );
    const warnings: ApiPackageWarning[] = [];
    for (const s of sources) {
+      const sourceControls = readSourceControls(s.ir.annotations);
+      if (sourceControls.malformed) {
+         warnings.push({
+            model: s.modelPath,
+            subject: s.source,
+            code: CLASSIFICATION_MALFORMED,
+            severity: "warn",
+            message: `Source ${s.source} ${sourceControls.malformed}.`,
+         });
+      }
       for (const [path, c] of s.fields) {
          if (!c.malformed) continue;
          warnings.push({
@@ -425,17 +516,17 @@ export function classificationWarnings(
             message:
                `Field ${path} of source ${s.source} ${c.malformed}. Write ` +
                `"#(classification) <class>" on its own line above the field, ` +
-               `with the class your policy names.`,
+               `one line per class your policy names.`,
          });
       }
    }
    const inForce = sources.some((s) =>
-      s.fields.some(([, c]) => c.classification !== undefined),
+      s.fields.some(([, c]) => c.classifications.length > 0),
    );
    if (!inForce) return warnings;
    for (const s of sources) {
       const unclassified = s.fields
-         .filter(([, c]) => !c.classification && !c.malformed)
+         .filter(([, c]) => c.classifications.length === 0)
          .map(([path]) => path);
       if (unclassified.length === 0) continue;
       const named = unclassified.slice(0, MAX_NAMED_FIELDS).join(", ");
@@ -461,7 +552,7 @@ export function classificationWarnings(
 
 /**
  * Every leak in the package: a field reachable from a source with a
- * `#(carries)` ceiling whose class is not on the list, or that has no class at
+ * `#(carries)` ceiling with a class not on the list, or with no class at
  * all, plus a `#(carries)` that names nothing. One message per finding, in
  * the words the author fixes it by. The load refuses the package when there
  * are any ({@link Package.formatClassificationLeaks}), so a surface never
@@ -480,24 +571,25 @@ export function classificationLeaks(
          messages.push(`${where} ${carries.malformed}.`);
          continue;
       }
-      const allowed = Array.from(carries.classes).join(", ");
+      const allowed = Array.from(carries.classes).sort(byCodepoint).join(", ");
       for (const [path, c] of s.fields) {
-         if (c.classification && carries.classes.has(c.classification)) {
-            continue;
-         }
-         if (c.classification) {
+         const off = c.classifications.filter((k) => !carries.classes.has(k));
+         if (c.classifications.length > 0 && off.length === 0) continue;
+         if (c.classifications.length > 0) {
             const via =
-               c.inferred && c.inputs.length > 0
+               c.inferred.length > 0 && c.inputs.length > 0
                   ? `, inferred from ${c.inputs
-                       .map((i) => `${i.field} (${i.classification})`)
+                       .map(
+                          (i) => `${i.field} (${i.classifications.join(" ")})`,
+                       )
                        .join(", ")}`
                   : "";
             messages.push(
                `${where} carries [${allowed}] but exposes ${path}, classified ` +
-                  `${c.classification}${via}. Remove the field from the ` +
-                  `surface, derive one of a class the surface carries and ` +
-                  `declare it, or add the class to #(carries) if the policy ` +
-                  `allows it.`,
+                  `${c.classifications.join(" ")}${via}. Remove the field ` +
+                  `from the surface, derive one of a class the surface carries ` +
+                  `and declare it, or add the class to #(carries) if the ` +
+                  `policy allows it.`,
             );
          } else {
             const why = c.malformed

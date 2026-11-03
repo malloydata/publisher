@@ -55,12 +55,12 @@ function entity(source: string, name: string): Entity {
 
 describe("classification on get_context entities", () => {
    it("carries the class on the source's own dimensions and measures", () => {
-      expect(entity("patients", "social").classification).toBe(
+      expect(entity("patients", "social").classifications).toEqual([
          "phi.direct_identifier",
-      );
-      expect(entity("patients", "patient_count").classification).toBe(
+      ]);
+      expect(entity("patients", "patient_count").classifications).toEqual([
          "phi.financial",
-      );
+      ]);
    });
 
    it("keeps the class when two spellings of one column fold into one entity", () => {
@@ -68,7 +68,7 @@ describe("classification on get_context entities", () => {
       // the column's class comes with it whichever that is.
       const kept = entity("patients", "raw_state");
       expect(kept.aliases).toContain("state");
-      expect(kept.classification).toBe("phi.quasi_identifier");
+      expect(kept.classifications).toEqual(["phi.quasi_identifier"]);
       expect(
          index.retrievalEntities.find(
             (c) => c.source === "patients" && c.name === "state",
@@ -78,10 +78,10 @@ describe("classification on get_context entities", () => {
 
    it("infers a derived field's class and reports the inputs, on the card too", () => {
       const masked = entity("patients", "masked");
-      expect(masked.classification).toBe("phi.direct_identifier");
+      expect(masked.classifications).toEqual(["phi.direct_identifier"]);
       expect(masked.classificationInferred).toBe(true);
       expect(masked.classificationInputs).toEqual([
-         { field: "social", classification: "phi.direct_identifier" },
+         { field: "social", classifications: ["phi.direct_identifier"] },
       ]);
       const ranked: ResultEntity = {
          ...projectEntity(masked, "env", "pkg"),
@@ -99,16 +99,16 @@ describe("classification on get_context entities", () => {
          (c) => c.source_info.resource_id.source === "patients",
       );
       const entityCard = card?.entities?.find((e) => e.name === "masked");
-      expect(entityCard?.classification).toBe("phi.direct_identifier");
+      expect(entityCard?.classifications).toEqual(["phi.direct_identifier"]);
       expect(entityCard?.classification_inferred).toBe(true);
       expect(entityCard?.classification_inputs).toEqual([
-         { field: "social", classification: "phi.direct_identifier" },
+         { field: "social", classifications: ["phi.direct_identifier"] },
       ]);
    });
 
    it("keeps a declared class over the inputs' and still shows them", () => {
       const initial = entity("patients", "state_initial");
-      expect(initial.classification).toBe("none");
+      expect(initial.classifications).toEqual(["none"]);
       expect(initial.classificationInferred).toBeUndefined();
       // `st` itself carries no class; `state` (quasi) and `raw_state` fold into it.
       expect(initial.classificationInputs ?? []).toEqual([]);
@@ -121,15 +121,15 @@ describe("classification on get_context entities", () => {
    });
 
    it("carries the class on the copy reached through a join", () => {
-      expect(entity("encounters", "patient.social").classification).toBe(
+      expect(entity("encounters", "patient.social").classifications).toEqual([
          "phi.direct_identifier",
-      );
-      expect(entity("encounters", "patient.state").classification).toBe(
+      ]);
+      expect(entity("encounters", "patient.state").classifications).toEqual([
          "phi.quasi_identifier",
-      );
+      ]);
       // Joined copies are not folded, so the unclassified spelling stays bare.
       expect(
-         entity("encounters", "patient.raw_state").classification,
+         entity("encounters", "patient.raw_state").classifications,
       ).toBeUndefined();
    });
 
@@ -140,7 +140,7 @@ describe("classification on get_context entities", () => {
          targetScores: new Map([[0, 1]]),
          bestTarget: 0,
       };
-      expect(ranked.classification).toBe("phi.direct_identifier");
+      expect(ranked.classifications).toEqual(["phi.direct_identifier"]);
       const cards = toSourceResults(
          [ranked],
          index.sourceContext,
@@ -151,7 +151,7 @@ describe("classification on get_context entities", () => {
          (c) => c.source_info.resource_id.source === "patients",
       );
       const social = card?.entities?.find((e) => e.name === "social");
-      expect(social?.classification).toBe("phi.direct_identifier");
+      expect(social?.classifications).toEqual(["phi.direct_identifier"]);
       expect(social?.description).toBe("Social security number.");
    });
 });

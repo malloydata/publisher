@@ -46,11 +46,12 @@ export interface Entity {
    aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    dataType?: string;
-   // The data class of a dimension or measure, as the package's policy names
-   // it: its own `#(classification)`, or the class of the fields it reads
-   // when it declares none. Absent when neither gives one.
-   classification?: string;
-   // True when `classification` was inferred from the fields the expression
+   // The data classes of a dimension or measure, sorted, as the package's
+   // policy names them: its own `#(classification)` lines, or the union of
+   // the classes of the fields it reads when it declares none. Absent when
+   // neither gives one.
+   classifications?: string[];
+   // True when `classifications` was inferred from the fields the expression
    // reads rather than declared on the field.
    classificationInferred?: true;
    // The classified fields the expression reads, by path from the source,
@@ -99,8 +100,8 @@ export interface ResultEntity {
    rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
-   /** The field's class, declared or inferred; absent when neither gives one. */
-   classification?: string;
+   /** The field's classes, declared or inferred; absent when neither gives one. */
+   classifications?: string[];
    /** True when the class came from the fields the expression reads. */
    classificationInferred?: true;
    /** The classified fields the expression reads, nearest first. */

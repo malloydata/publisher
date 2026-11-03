@@ -92,22 +92,24 @@ function classificationOf(
    annotations?: Array<string | { value: string }>,
 ): Pick<
    Entity,
-   "classification" | "classificationInferred" | "classificationInputs"
+   "classifications" | "classificationInferred" | "classificationInputs"
 > {
    const known = lineage?.get(path);
    if (known) {
       return {
-         ...(known.classification
-            ? { classification: known.classification }
+         ...(known.classifications.length > 0
+            ? { classifications: known.classifications }
             : {}),
-         ...(known.inferred ? { classificationInferred: true as const } : {}),
+         ...(known.inferred.length > 0
+            ? { classificationInferred: true as const }
+            : {}),
          ...(known.inputs.length > 0
             ? { classificationInputs: known.inputs }
             : {}),
       };
    }
-   const { value } = readClassification(annotations);
-   return value ? { classification: value } : {};
+   const { values } = readClassification(annotations);
+   return values.length > 0 ? { classifications: values } : {};
 }
 
 /**
@@ -977,10 +979,10 @@ function collapseAliases(entities: Entity[]): Entity[] {
       // A class belongs to the column, so a spelling's class is the group's:
       // `state is st` classified and `raw_state is st` not are one column
       // with one class, whichever spelling survives.
-      if (!keep.classification) {
-         const donor = members.find((e) => e !== keep && e.classification);
+      if (!keep.classifications) {
+         const donor = members.find((e) => e !== keep && e.classifications);
          if (donor) {
-            keep.classification = donor.classification;
+            keep.classifications = donor.classifications;
             if (donor.classificationInferred)
                keep.classificationInferred = true;
             if (donor.classificationInputs) {

@@ -126,22 +126,22 @@ interface SourceCardEntity {
    description?: string;
    data_type?: string;
    /**
-    * Publisher extension. The data class the field declares with
-    * `#(classification)`, as the package's policy names it (for example
-    * `phi.direct_identifier`); Publisher reads the shape, the policy owns the
-    * vocabulary. Declared on the field, or inferred from the fields its
-    * expression reads when it declares none. Absent when neither gives one.
-    * See docs/classification.md.
+    * Publisher extension. The data classes the field carries, sorted, as the
+    * package's policy names them (for example `phi.direct_identifier`);
+    * Publisher reads the shape, the policy owns the vocabulary. Declared on
+    * the field with `#(classification)` lines, or inferred as the union of the
+    * classes of the fields its expression reads when it declares none. Absent
+    * when neither gives one. See docs/classification.md.
     */
-   classification?: string;
-   /** True when `classification` was inferred from the fields the expression reads. */
+   classifications?: string[];
+   /** True when `classifications` was inferred from the fields the expression reads. */
    classification_inferred?: true;
    /**
     * The classified fields the expression reads, by path from the source,
-    * nearest first, each with its class. Present on a derived field, so a
-    * declared class can be read against what it was derived from.
+    * nearest first, each with its classes. Present on a derived field, so a
+    * declared set can be read against what it was derived from.
     */
-   classification_inputs?: Array<{ field: string; classification: string }>;
+   classification_inputs?: Array<{ field: string; classifications: string[] }>;
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
    /**
@@ -250,7 +250,7 @@ export function toSourceResults(
          ...(r.score !== undefined ? { relevance: r.score } : {}),
          ...(r.doc ? { description: r.doc } : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
-         ...(r.classification ? { classification: r.classification } : {}),
+         ...(r.classifications ? { classifications: r.classifications } : {}),
          ...(r.classificationInferred ? { classification_inferred: true } : {}),
          ...(r.classificationInputs
             ? { classification_inputs: r.classificationInputs }
@@ -393,7 +393,7 @@ export function projectEntity(
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
       ...(e.dataType ? { dataType: e.dataType } : {}),
-      ...(e.classification ? { classification: e.classification } : {}),
+      ...(e.classifications ? { classifications: e.classifications } : {}),
       ...(e.classificationInferred ? { classificationInferred: true } : {}),
       ...(e.classificationInputs
          ? { classificationInputs: e.classificationInputs }

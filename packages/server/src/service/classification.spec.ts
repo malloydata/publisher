@@ -32,6 +32,7 @@ import {
    CLASSIFICATION_MALFORMED,
    isClassificationLine,
    readClassification,
+   readControls,
    readSourceClassifications,
 } from "./classification";
 import { compileModelFiles } from "../test_helpers/get_context_join_fixture";
@@ -39,44 +40,66 @@ import type { ModelDef } from "@malloydata/malloy";
 import { Package } from "./package";
 
 describe("readClassification", () => {
-   it("reads the one token after the route, from a string or a {value} note", () => {
+   it("reads one token per line, from a string or a {value} note, as a sorted set", () => {
       expect(
          readClassification(["#(classification) phi.direct_identifier"]),
-      ).toEqual({ value: "phi.direct_identifier" });
+      ).toEqual({ values: ["phi.direct_identifier"] });
       expect(
          readClassification([
             { value: "#(doc) The patient's SSN.\n" },
-            { value: "#(classification)   confidential \n" },
+            { value: "#(classification)   gdpr.personal \n" },
+            { value: "#(classification) phi.direct_identifier" },
+            { value: "#(classification) gdpr.personal" },
          ]),
-      ).toEqual({ value: "confidential" });
+      ).toEqual({ values: ["gdpr.personal", "phi.direct_identifier"] });
    });
 
-   it("is absent on a field with no classification note", () => {
-      expect(readClassification(undefined)).toEqual({});
-      expect(readClassification(["#(doc) Nothing here."])).toEqual({});
+   it("is empty on a field with no classification note", () => {
+      expect(readClassification(undefined)).toEqual({ values: [] });
+      expect(readClassification(["#(doc) Nothing here."])).toEqual({
+         values: [],
+      });
    });
 
-   it("names the fault of a note with no class, several words, or a twin", () => {
+   it("names the fault of a line with no class or several words, keeping the good lines", () => {
       expect(readClassification(["#(classification)"]).malformed).toContain(
          "names no class",
       );
-      expect(
-         readClassification(["#(classification) phi direct identifier"])
-            .malformed,
-      ).toContain("3 words");
-      expect(
-         readClassification(["#(classification) a", "#(classification) b"])
-            .malformed,
-      ).toContain("2 #(classification) annotations");
+      const mixed = readClassification([
+         "#(classification) phi direct identifier",
+         "#(classification) ok",
+      ]);
+      expect(mixed.malformed).toContain("3 words");
+      expect(mixed.values).toEqual(["ok"]);
    });
 
-   it("tells a classification line from any other annotation", () => {
+   it("tells a classification, carries or control line from any other annotation", () => {
       expect(isClassificationLine("#(classification) x")).toBe(true);
       expect(isClassificationLine("  #(classification)\n")).toBe(true);
+      expect(isClassificationLine("#(carries) a b")).toBe(true);
+      expect(isClassificationLine("#(control) AC-3")).toBe(true);
       expect(isClassificationLine("#(doc) classification of things")).toBe(
          false,
       );
       expect(isClassificationLine("#(classification x)")).toBe(false);
+   });
+});
+
+describe("readControls", () => {
+   it("collects tokens across lines, any format, as a sorted set", () => {
+      expect(
+         readControls([
+            "#(control) soc2:CC6.1 AC-3",
+            "#(doc) x",
+            "#(control) 164.312(a)(1) AC-3",
+         ]),
+      ).toEqual({ values: ["164.312(a)(1)", "AC-3", "soc2:CC6.1"] });
+   });
+
+   it("names an empty line and keeps the rest", () => {
+      const read = readControls(["#(control)", "#(control) 7.2.1"]);
+      expect(read.values).toEqual(["7.2.1"]);
+      expect(read.malformed).toContain("names no control");
    });
 });
 
@@ -129,48 +152,60 @@ source: visits is duckdb.sql("select 1 as id, 1 as person_id") extend {
    });
 
    it("keeps a declared class through a rename", () => {
-      expect(chart.get("ssn_renamed")?.declared).toBe("phi.direct_identifier");
+      expect(chart.get("ssn_renamed")?.declared).toEqual([
+         "phi.direct_identifier",
+      ]);
    });
 
    it("infers through a copy, a function, an intermediate, and an aggregate", () => {
       expect(chart.get("copied")).toMatchObject({
-         inferred: "phi.direct_identifier",
-         classification: "phi.direct_identifier",
+         inferred: ["phi.direct_identifier"],
+         classifications: ["phi.direct_identifier"],
          inputs: [
-            { field: "ssn_renamed", classification: "phi.direct_identifier" },
+            {
+               field: "ssn_renamed",
+               classifications: ["phi.direct_identifier"],
+            },
          ],
       });
       // `masked` reads `copied`, which carries the class, so copied is the input.
       expect(chart.get("masked")).toMatchObject({
-         inferred: "phi.direct_identifier",
-         inputs: [{ field: "copied", classification: "phi.direct_identifier" }],
+         inferred: ["phi.direct_identifier"],
+         inputs: [
+            { field: "copied", classifications: ["phi.direct_identifier"] },
+         ],
       });
-      expect(chart.get("socials")?.inferred).toBe("phi.direct_identifier");
+      expect(chart.get("socials")?.inferred).toEqual(["phi.direct_identifier"]);
    });
 
    it("lets a declared class win and still reports the inputs", () => {
       expect(chart.get("initials")).toMatchObject({
-         declared: "none",
-         classification: "none",
+         declared: ["none"],
+         classifications: ["none"],
          inputs: [
-            { field: "first_name", classification: "phi.direct_identifier" },
+            { field: "first_name", classifications: ["phi.direct_identifier"] },
          ],
       });
-      expect(chart.get("initials")?.inferred).toBeUndefined();
+      expect(chart.get("initials")?.inferred).toEqual([]);
    });
 
-   it("does not rank disagreeing inputs; it names them", () => {
+   it("unions inputs of differing classes, the fail-closed reading", () => {
       const mixed = chart.get("mixed");
-      expect(mixed?.classification).toBeUndefined();
-      expect(mixed?.malformed).toContain("differing classes");
-      expect(mixed?.malformed).toContain("first_name: phi.direct_identifier");
-      expect(mixed?.malformed).toContain("spent: phi.financial");
+      expect(mixed?.classifications).toEqual([
+         "phi.direct_identifier",
+         "phi.financial",
+      ]);
+      expect(mixed?.inferred).toEqual([
+         "phi.direct_identifier",
+         "phi.financial",
+      ]);
+      expect(mixed?.malformed).toBeUndefined();
    });
 
    it("leaves a field that reads nothing classified unclassified", () => {
-      expect(chart.get("plain")?.classification).toBeUndefined();
+      expect(chart.get("plain")?.classifications).toEqual([]);
       expect(chart.get("plain")?.inputs).toEqual([]);
-      expect(chart.get("n")?.classification).toBeUndefined();
+      expect(chart.get("n")?.classifications).toEqual([]);
    });
 
    it("marks a hidden field and keeps it as a possible input", () => {
@@ -180,16 +215,21 @@ source: visits is duckdb.sql("select 1 as id, 1 as person_id") extend {
    });
 
    it("follows a join: joined fields by path, and references through the join", () => {
-      expect(visits.get("person.masked")?.classification).toBe(
+      expect(visits.get("person.masked")?.classifications).toEqual([
          "phi.direct_identifier",
-      );
+      ]);
       expect(visits.get("who")).toMatchObject({
-         inferred: "phi.direct_identifier",
+         inferred: ["phi.direct_identifier"],
          inputs: [
-            { field: "person.masked", classification: "phi.direct_identifier" },
+            {
+               field: "person.masked",
+               classifications: ["phi.direct_identifier"],
+            },
          ],
       });
-      expect(visits.get("where_from")?.inferred).toBe("phi.quasi_identifier");
+      expect(visits.get("where_from")?.inferred).toEqual([
+         "phi.quasi_identifier",
+      ]);
    });
 });
 

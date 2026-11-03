@@ -3,24 +3,27 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Classification (`#(classification)` and `#(carries)`)
+# Classification (`#(classification)`, `#(carries)` and `#(control)`)
 
-> What this is: how a field declares the data class it carries, how a derived field inherits
-> one, and how a source declares the classes a caller may reach from it, all in the words of
-> the package's access policy, so an agent sees the class of a field before it reads it, a
-> review can check every surface against the policy, and a surface cannot serve what it says
-> it does not carry. To hide a column, use `private:`; to decide who may query a source, see
+> What this is: how a field declares the data classes it carries, how a derived field inherits
+> them, how a source declares the classes a caller may reach from it, and how either names the
+> policy controls it implements, all in the words of the package's access policy, so an agent
+> sees the classes of a field before it reads it, a review can check every surface against the
+> policy, a surface cannot serve what it says it does not carry, and a pipeline can export the
+> control-to-implementation map. To hide a column, use `private:`; to decide who may query a source, see
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
-**One annotation on the field, one on the source.**
+**One line per class on the field; the ceiling and the controls on the source.**
 
 ```malloy
 #(authorize) 'researcher' in $ROLES
-#(carries) phi.clinical phi.financial phi.quasi_identifier none
+#(carries) phi.clinical phi.financial phi.quasi_identifier gdpr.personal none
+#(control) AC-01 DI-01 soc2:CC6.1
 source: research is core extend {
   #(doc) Year of birth.
   #(classification) phi.quasi_identifier
+  #(classification) gdpr.personal
   dimension: birth_year is BIRTHDATE.year
 
   #(classification) phi.financial
@@ -31,10 +34,13 @@ source: research is core extend {
 }
 ```
 
-The class is the one token after the closing parenthesis. **Publisher reads the shape and never the
-vocabulary.** `phi.direct_identifier`, `confidential`, `pci.pan` and `none` are all one token to
-it; which tokens a package may use, and what each permits, is the policy's to say and a review's to
-check. A dotted path is the convention (`<regime>.<class>`), not a rule.
+A class is the one token after the closing parenthesis, and a field carries a **set** of them, one
+line per class, because one column commonly sits under several regimes at once: an SSN is a HIPAA
+direct identifier, GDPR personal data and NIST PII in the same column. **Publisher reads the shape
+and never the vocabulary.** `phi.direct_identifier`, `confidential`, `pci.pan` and `none` are all
+one token to it; which tokens a package may use, and what each permits, is the policy's to say and
+a review's to check. A dotted path is the convention (`<regime>.<class>`) that keeps regimes apart
+in one package, not a rule.
 
 Write the class after the route, not inside it. Malloy ends an annotation's route at the first
 whitespace, so `#(classification phi.direct_identifier)` compiles with a `malformed-route` warning
@@ -43,7 +49,7 @@ its classes the same way, separated by spaces.
 
 ## Lineage: a derived field takes the class of what it reads
 
-A field that declares no class takes the class of the fields its expression reads.
+A field that declares no class takes the union of the classes of the fields its expression reads.
 `dimension: copied is ssn`, `concat('***', ssn)` and `count(ssn)` all carry `ssn`'s class;
 a `rename:` keeps the original definition and so its class; a field reached through a join
 carries the class declared where it lives; and a reference through a join
@@ -54,10 +60,10 @@ class and reports `copied` as its input.
 - **A declared class wins, and the inputs stay visible.** `birth_year is BIRTHDATE.year` with
   `#(classification) phi.quasi_identifier` is a quasi-identifier derived from a direct one. The
   card reports both, so a review can read a declared `none` against what it was derived from.
-- **Disagreeing inputs are not ranked.** `concat(first_name, total_expenses)` reads a direct
-  identifier and a financial field. Publisher does not know which class is "higher", because that
-  is the policy's ordering, so the field is reported unclassified with both inputs named
-  (`classification-malformed`), and the fix is to declare it.
+- **Inputs of different classes union.** `concat(first_name, total_expenses)` reads a direct
+  identifier and a financial field and carries both. That is the fail-closed reading: Publisher
+  does not know which class is "higher", because that is the policy's ordering, so it keeps every
+  class the field could reveal, and an author who knows better declares the set, which wins.
 - **A field that reads nothing classified stays unclassified.** `upper(state)` over an
   unclassified `state` is unclassified; `count()` reads nothing and is unclassified. Classify
   the column, or the measure, and the lineage does the rest.
@@ -73,7 +79,7 @@ that extends another and declares none inherits the base's list, the way it inhe
 own declaration replaces it.
 
 **A leak refuses the package load.** When a dimension or measure reachable from a `#(carries)`
-source, its own, inherited, inferred, or reached through a join three deep, carries a class not
+source, its own, inherited, inferred, or reached through a join three deep, carries any class not
 on the list, or carries no class at all, the package does not load, the way a gate that does not
 parse refuses it. The error names every leak, with the lineage it came through:
 
@@ -90,23 +96,66 @@ refused rather than enforced, because it would make every field a leak. A refuse
 on publish and reload, and the package is absent from `list_packages` and reported in
 `get_status`'s `loadErrors` with the message, like any other load failure.
 
+## `#(control)`: which controls a source or field implements
+
+Every compliance framework decomposes its policy into identified controls, SOC 2's `CC6.1`,
+NIST 800-53's `AC-3`, PCI DSS's `7.2.1`, ISO 27001's `A.5.15`, HIPAA's `164.312(a)(1)`, and an
+organization under several keeps a crosswalk between them. `#(control)` names the ones a source
+or a field implements, as tokens in any format, with an optional framework prefix when a package
+answers to more than one:
+
+```malloy
+#(authorize) 'clinician' in $ROLES
+#(access_filter) encounters.organization_id in $ORGANIZATIONS
+#(control) AC-01 MN-01 hipaa:164.312(a)(1) soc2:CC6.1
+source: patient_chart is core extend {
+  #(control) DI-01
+  #(classification) phi.quasi_identifier
+  dimension: birth_year is BIRTHDATE.year
+}
+```
+
+Publisher reads the tokens and never the vocabulary. A source's controls are its own line's, not
+inherited from a base it extends: a control is a claim about what this source implements, and an
+extension that replaces the base's gate does not implement the base's control by inheritance. A
+`#(control)` line with no token warns `classification-malformed`.
+
+## The governance export
+
+`GET …/packages/{pkg}/governance`, or `malloy-pub get governance --environment <env> --package
+<pkg>`, returns one JSON document describing what the loaded package serves, in policy terms. For
+every source of every compiled model, hidden ones included and marked `published: false`: the
+gates in force with the givens each reads, its `#(carries)` list, its control identifiers, and
+every dimension and measure a caller can reach from it with its classes, whether they were
+declared or inferred, what they were inferred from, and the field's own controls. Everything
+comes from the compiled model, so inherited gates, renamed fields, folded aliases and lineage are
+what the server actually serves. It is sorted by codepoint throughout and reads no clock, so two
+servers on identical bytes answer identical documents.
+
+Its reader is a pipeline. Check it in next to the policy and a pull request's diff shows "research
+now exposes `phi.direct_identifier`" before anything deploys; feed it to a review as the model
+inventory, so the review's checks are over the served truth rather than the files; hand it to an
+auditor as the control-to-implementation map, which is the document they ask for. Nothing in it
+depends on who is asking, and it is not an access decision for any caller: enforcement stays with
+the gates and the load, and validation stays with the pipeline.
+
 ## What Publisher does with a class
 
 - **Discovery reports it.** Every dimension and measure card `get_context` returns carries
-  `classification` when the field has one, declared or inferred, on the source's own fields and
-  on the copies reached through a join (`patient.ssn` carries the class `ssn` declares). An
-  inferred class comes with `classification_inferred: true` and `classification_inputs`, the
-  classified fields the expression reads, nearest first, each with its class; a declared class on
+  `classifications` when the field has any, declared or inferred, on the source's own fields and
+  on the copies reached through a join (`patient.ssn` carries the classes `ssn` declares). An
+  inferred set comes with `classification_inferred: true` and `classification_inputs`, the
+  classified fields the expression reads, nearest first, each with its classes; a declared set on
   a derived field reports its inputs too. It is never doc text: a field with a class and no
   `#(doc)` has no description rather than the annotation line, and the class is not embedded or
   sent to a ranking model.
 - **REST carries it verbatim.** The model endpoint's `sourceInfos` hold each field's annotations
   as written, so a REST reader parses the `#(classification)` line itself; lineage is a
   discovery-side computation.
-- **Two spellings of one column share one class.** When discovery folds `dimension: state is ST`
+- **Two spellings of one column share one set.** When discovery folds `dimension: state is ST`
   and `dimension: raw_state is ST` into one entity (see `aliases` in
-  [ai-agents.md](ai-agents.md)), the class declared on either spelling is the entity's, because
-  the class belongs to the column.
+  [ai-agents.md](ai-agents.md)), the classes declared on either spelling are the entity's,
+  because the classes belong to the column.
 - **The load warns about coverage, once the package classifies at all.** The rule is
   self-declaring: a package with no `#(classification)` anywhere is not warned about, and a
   package that classifies one field has said it classifies its fields. From then on every
@@ -114,9 +163,9 @@ on publish and reload, and the package is absent from `list_packages` and report
   `classification-coverage` warning naming the fields (`model` is its file, `subject` the source),
   in `GET …/packages/{pkg}` `warnings` and so in `get_status`. The point is the one an access
   policy makes: anything unclassified is data the policy has nothing to say about.
-- **A malformed note warns.** `#(classification)` with no class, with more than one word, or
-  twice on one field warns `classification-malformed` naming the field and the fix, whether or
-  not coverage is in force. A field whose inputs disagree is reported the same way.
+- **A malformed note warns.** A `#(classification)` line with no class or with more than one
+  word, and a `#(control)` line with no token, warn `classification-malformed` naming the field or
+  source and the fix, whether or not coverage is in force; the usable lines beside it still count.
 
 ## What coverage and the ceiling read
 

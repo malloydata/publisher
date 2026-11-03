@@ -2691,6 +2691,60 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/governance:
+    get:
+      tags:
+        - governance
+      operationId: get-governance
+      summary: The governance export of a loaded package
+      description: |
+        One deterministic document describing what the package serves, source
+        by source, in the words of its access policy: the gates in force on
+        each source with the givens each reads, its `#(carries)` ceiling, the
+        control identifiers it declares with `#(control)`, and every dimension
+        and measure a caller can reach from it with its classes
+        (`#(classification)`, declared or inferred from the fields it reads),
+        what an inferred set was inferred from, and the field's own controls.
+        Every model the package compiled is read, hidden ones included, each
+        source marked `published`. Everything comes from the compiled model,
+        not the files, so inherited gates, renamed fields and lineage are what
+        the server actually serves. Sorted by codepoint throughout and
+        independent of the clock, so two servers on identical bytes answer
+        identical documents and a pipeline can check it in and diff it.
+        [docs/classification.md](https://github.com/malloydata/publisher/blob/main/docs/classification.md)
+        is the reference. `malloy-pub get governance` is the CLI form.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The package's governance document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageGovernance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /environments/{environmentName}/packages/{packageName}/agents:
     get:
       tags:
@@ -5572,6 +5626,161 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
+
+    PackageGovernance:
+      type: object
+      readOnly: true
+      description: >-
+        The governance export of a loaded package: what it serves, source by
+        source, in the words of its access policy. See `get-governance`.
+      required: [environmentName, packageName, classifiesFields, sources]
+      properties:
+        environmentName:
+          type: string
+        packageName:
+          type: string
+        classifiesFields:
+          type: boolean
+          description: >-
+            True when some reachable field of some source carries a class, so
+            the package's `classification-coverage` rule is in force.
+        sources:
+          type: array
+          description: Every source of every compiled model, sorted by model path then name.
+          items:
+            $ref: "#/components/schemas/GovernanceSource"
+        unreadModels:
+          type: array
+          description: >-
+            Models that did not compile or could not be read, which therefore
+            contribute no sources. Absent when every model was read; read its
+            presence as an incomplete document rather than a clean one.
+          items:
+            type: string
+
+    GovernanceSource:
+      type: object
+      readOnly: true
+      required:
+        [
+          modelPath,
+          name,
+          published,
+          deniedToAll,
+          authorize,
+          accessFilter,
+          controls,
+          fields,
+        ]
+      properties:
+        modelPath:
+          type: string
+          description: The model file declaring the source, relative to the package root.
+        name:
+          type: string
+        published:
+          type: boolean
+          description: >-
+            True when the model is on the package's surface, so the source is
+            listed and queryable by name; false for a hidden model, whose
+            sources are reachable only through a published source's joins.
+        deniedToAll:
+          type: boolean
+          description: True when a gate on the source is the unconditional `false`, so no caller reaches it.
+        authorize:
+          type: array
+          description: The `#(authorize)` locks in force, inherited ones included; AND-ed.
+          items:
+            $ref: "#/components/schemas/GovernanceGate"
+        accessFilter:
+          type: array
+          description: The `#(access_filter)` row gates in force, inherited ones included; AND-ed.
+          items:
+            $ref: "#/components/schemas/GovernanceGate"
+        carries:
+          type: array
+          description: >-
+            The classes the source's `#(carries)` lists, from the nearest
+            declaration up its extend chain. Absent when none declares one.
+          items:
+            type: string
+        controls:
+          type: array
+          description: >-
+            The control identifiers the source's own `#(control)` lines name,
+            sorted; not inherited from a base.
+          items:
+            type: string
+        fields:
+          type: array
+          description: >-
+            Every dimension and measure a caller can reach from the source,
+            its own and those reached through joins three deep under their
+            dotted path, sorted by path. Fields under `private:` or
+            `internal:` are not reachable and are not listed.
+          items:
+            $ref: "#/components/schemas/GovernanceField"
+
+    GovernanceField:
+      type: object
+      readOnly: true
+      required: [path, kind, classifications]
+      properties:
+        path:
+          type: string
+          description: The field's path from the source, dotted through joins (`patient.ssn`).
+        kind:
+          type: string
+          enum: [dimension, measure]
+        classifications:
+          type: array
+          description: >-
+            The classes in force, sorted: the field's own `#(classification)`
+            lines, or, when it declares none, the union of its inputs' classes.
+            Empty when neither gives one.
+          items:
+            type: string
+        inferred:
+          type: boolean
+          description: True when `classifications` came from the fields the expression reads.
+        inputs:
+          type: array
+          description: >-
+            The classified fields the expression reads, by path from the
+            source, nearest first, each with its classes. Present on a derived
+            field whether its own set was declared or inferred.
+          items:
+            type: object
+            required: [field, classifications]
+            properties:
+              field:
+                type: string
+              classifications:
+                type: array
+                items:
+                  type: string
+        controls:
+          type: array
+          description: The control identifiers the field's own `#(control)` lines name, sorted.
+          items:
+            type: string
+        malformed:
+          type: string
+          description: Why an annotation on the field is unusable, when one is; the load also warns `classification-malformed`.
+
+    GovernanceGate:
+      type: object
+      readOnly: true
+      required: [expression, givenNames]
+      properties:
+        expression:
+          type: string
+          description: The gate's expression as the server holds it; `false` is the unconditional deny.
+        givenNames:
+          type: array
+          description: The givens the expression reads.
+          items:
+            type: string
 
     SkillSummary:
       type: object

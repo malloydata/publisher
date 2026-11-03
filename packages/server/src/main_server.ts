@@ -22,6 +22,7 @@ import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { ReportController } from "./controller/report.controller";
 import { SkillController } from "./controller/skill.controller";
+import { GovernanceController } from "./controller/governance.controller";
 import { StorageDestinationController } from "./controller/storage_destination.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { VersionController } from "./controller/version.controller";
@@ -263,6 +264,7 @@ environmentStore.setPackageLoadedHook((environmentName, pkg) =>
 const packageController = new PackageController(environmentStore);
 const reportController = new ReportController(environmentStore);
 const skillController = new SkillController(environmentStore);
+const governanceController = new GovernanceController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -395,6 +397,7 @@ registerApiRoutes(app, API_PREFIX, {
    packageController,
    modelController,
    skillController,
+   governanceController,
    reportController,
    databaseController,
    queryController,
