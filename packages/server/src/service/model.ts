@@ -3946,6 +3946,11 @@ export class Model {
       return this.modelType;
    }
 
+   /** The givens this model surfaces, as `CompiledModel.givens` reports them. */
+   public getGivens(): readonly ApiGiven[] {
+      return this.givens ?? [];
+   }
+
    /**
     * This file's own model-level `queryMetadata` declaration
     * (`## materialization.queryMetadata.*` or `## queryMetadata.*`), or null.

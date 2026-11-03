@@ -21,7 +21,11 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Packages published from a location can be immutable versions (opt in with `PUBLISHER_PACKAGE_VERSIONING=on`)
+## [0.11.1] — A package's load response lists its `#(secure)` givens
+
+`Package` gains `secureGivens`: one entry per distinct `#(secure)` given (`name`, `type` rendered as `Given.type` renders it, such as `string[]`) with the sorted `modelPaths` of the `.malloy` models and `.malloynb` notebooks whose compiled givens surface it, an importing model included. It rides every response that returns a loaded package, the publish (`POST …/packages`, versioned or not), `GET …/packages/{pkg}` and a reload among them, and is read off the compile the package is serving, so a host that sets secure givens no longer compiles the package a second time to learn which ones they are; a reload that changes the models changes it. It is `[]` on a loaded package that declares none. It is absent while any model or notebook in the package fails to compile, and where this server does not report it, so read absent as unknown rather than none. A PATCH body cannot set it.
+
+## [0.11.0] — Packages published from a location can be immutable versions (opt in with `PUBLISHER_PACKAGE_VERSIONING=on`)
 
 With `PUBLISHER_PACKAGE_VERSIONING=on`, `POST /api/v0/environments/{env}/packages` with a `location` publishes an immutable **version** of the package, numbered by the `version` in its `publisher.json`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
 
@@ -55,7 +59,13 @@ A package registered from a directory with no `location`, or published while ver
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
-## [Unreleased] — A package agent can declare a run budget
+## [0.11.1] — A dead SSH tunnel no longer crashes the server, and is rebuilt
+
+A bastion refusing to forward to the database, or an SSH session to a bastion dropping, could throw an uncaught exception inside the tunnel's connection handler and crash the server process, taking every tenant on it down. Both are now contained: the local connection closes and the server keeps running. A tunnel that dies is also detected and logged, and the connection is rebuilt on its next query, where before it stayed dead until the environment reloaded or the server restarted. A bastion that closes before the tunnel is ready now fails the connect instead of hanging it. Queries in flight when the tunnel drops fail with a connection error.
+
+**Upgrading: a tunneled connection now runs at most 5 queries at once, and opens a fresh database session for each.** The pool behind an SSH-proxied Postgres connection now matches a direct one. Before, it allowed 10 concurrent sessions and reused them. Now it honours `PUBLISHER_POSTGRES_POOL_MAX` (default 5), so a sixth concurrent query queues, and fails if no session comes free within 30 s; set `PUBLISHER_POSTGRES_POOL_MAX=10` to keep the old capacity. Each query also gets a new session, never a reused one: it opens a new channel through the bastion, connects and logs in to Postgres, and runs the session setup, which adds that connect time to every tunneled query. See [docs/connections.md](docs/connections.md#reaching-a-database-through-an-ssh-bastion-proxy).
+
+## [0.11.0] — A package agent can declare a run budget
 
 An agent in `publisher.json` can now set `budget`: optional `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set any one of them alone and the rest keep the platform's default. Publisher validates it and serves it from `get_agent` and the agent endpoints, and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A bad value or an unknown sub-key drops the agent, like any other invalid key. **Earlier releases do not know the key and drop any agent that sets it**, so a package should not use `budget` until every server that serves it runs this release. The new `malloy-define-agent` skill covers writing an agent definition. See [docs/packages.md](docs/packages.md#agents).
 

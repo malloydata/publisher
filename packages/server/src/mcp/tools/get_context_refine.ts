@@ -31,7 +31,7 @@ import {
 } from "./get_context_response";
 import type { ResolvedRequest, ResultEntity } from "./get_context_types";
 import { scrubForEgress } from "./keyphrases";
-import { compareText } from "./retrieval_shared";
+import { compareText } from "../../compare_text";
 
 /**
  * Most candidates one source sends to the model, per target: the scan's window

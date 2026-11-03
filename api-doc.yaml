@@ -5365,6 +5365,37 @@ components:
             Fetch one with `GET .../agents/{agentName}`.
           items:
             $ref: "#/components/schemas/AgentSummary"
+        secureGivens:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: every `#(secure)` given the package's
+            compiled models surface, so a host that sets those values learns
+            which ones to set from the load response without compiling the
+            package itself.
+
+
+            Collected from every `.malloy` model and `.malloynb` notebook in
+            the package, files outside `explores` included. A model's givens
+            are the ones its `CompiledModel.givens` reports, so a given
+            declared in one file and imported by another is listed under both;
+            a notebook's are those of the model its cells build up to. One
+            entry per distinct `name` and `type`, sorted by `name` then `type`;
+            a name declared with two types is two entries. It always describes
+            the models the package is serving now, so a reload that changes
+            them changes it.
+
+
+            Present, possibly empty, on a loaded package whose every model and
+            notebook compiled, so `[]` means the package declares no secure
+            given. Absent when the list cannot be known to be complete: when
+            any model or notebook in the package failed to compile (a reload
+            keeps serving the files that did), or when the server does not
+            report it, as on a listing entry for a package that is not loaded.
+            Treat absent as unknown, never as none. It cannot be set: a PATCH
+            body carrying it is ignored.
+          items:
+            $ref: "#/components/schemas/SecureGivenSummary"
 
     AgentSchedule:
       type: object
@@ -6571,6 +6602,33 @@ components:
             Malloy data type of the dimension (e.g. string, number, boolean,
             date, timestamp)
 
+    SecureGivenSummary:
+      type: object
+      readOnly: true
+      description: >-
+        One `#(secure)` given in a package's `secureGivens`: a given whose
+        value the host sets, and the model files that surface it.
+      required:
+        - name
+        - type
+        - modelPaths
+      properties:
+        name:
+          type: string
+          description: Name as declared in the model.
+        type:
+          type: string
+          description: >-
+            The given's type, rendered exactly as `Given.type` renders it
+            (e.g. `string`, `number`, `string[]`, `filter<string>`).
+        modelPaths:
+          type: array
+          description: >-
+            Package-relative paths of the `.malloy` models and `.malloynb`
+            notebooks whose compiled givens include this given, the declaring
+            file and every file that imports it alike. Sorted, no duplicates.
+          items:
+            type: string
     Given:
       type: object
       description: |
