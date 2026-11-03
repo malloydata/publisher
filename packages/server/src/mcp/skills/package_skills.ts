@@ -11,6 +11,7 @@ import {
    type SkillEntry,
 } from "./build_skills_bundle";
 import skillsBundle from "./skills_bundle.json";
+import { compareText } from "../../compare_text";
 import { CronEvaluator } from "../../service/cron_evaluator";
 import { canonicalSha } from "../../service/package_revision";
 import { stepsOutside } from "../../service/package_retrieval";
@@ -292,8 +293,6 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
 const unknownKeys = (obj: Record<string, unknown>, known: string[]) =>
    Object.keys(obj).filter((k) => !known.includes(k) && !k.startsWith("x-"));
 
-const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-
 /** Thrown inside one agent's read to drop that agent with a message. */
 class AgentProblem extends Error {}
 
@@ -571,7 +570,7 @@ function readAgentSkills(
    return {
       roots,
       files: [...served]
-         .sort(([a], [b]) => byCodepoint(a, b))
+         .sort(([a], [b]) => compareText(a, b))
          .map(([relative_filepath, file_contents]) => ({
             relative_filepath,
             file_contents,
