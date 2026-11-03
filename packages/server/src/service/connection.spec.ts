@@ -11,6 +11,8 @@ import {
    describe,
    expect,
    it,
+   mock,
+   spyOn,
 } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -47,6 +49,13 @@ import {
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logger } from "../logger";
+import { pollUntil } from "../test_helpers/poll";
+import {
+   clientPrivatePem,
+   closeQuietly,
+   startSshServer,
+} from "../test_helpers/ssh_tunnel_harness";
+import type { ProxyEndpoint } from "./proxy";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import {
    startClosingListener,
@@ -3945,6 +3954,241 @@ describe("environment connection lookup for a connection the environment does no
       } finally {
          await config.releaseConnections();
       }
+   });
+});
+
+describe("environment connection lookup for a proxied Postgres connection", () => {
+   const proxied = (): ApiConnection => ({
+      name: "pg_tunneled",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.internal",
+         port: 5432,
+         userName: "u",
+         password: "p",
+         databaseName: "d",
+      },
+      proxy: {
+         type: "ssh",
+         ssh: {
+            host: "bastion",
+            username: "u",
+            privateKey: "key",
+            hostKey: "AAAA",
+         },
+      },
+   });
+
+   // A scripted tunnel: `die()` is the tunnel dying on its own.
+   const tunnels = () => {
+      const opened: {
+         endpoint: ProxyEndpoint;
+         die: () => void;
+         close: ReturnType<typeof mock>;
+      }[] = [];
+      const open = async (): Promise<ProxyEndpoint> => {
+         const listeners: ((cause?: Error) => void)[] = [];
+         const close = mock(async () => {});
+         const endpoint: ProxyEndpoint = {
+            host: "127.0.0.1",
+            port: 40000 + opened.length,
+            close,
+            onClose: (listener) => listeners.push(listener),
+         };
+         opened.push({
+            endpoint,
+            close,
+            die: () => listeners.forEach((l) => l(new Error("ssh gone"))),
+         });
+         return endpoint;
+      };
+      return { opened, open };
+   };
+
+   let infoSpy: ReturnType<typeof spyOn<typeof logger, "info">>;
+   beforeEach(() => {
+      infoSpy = spyOn(logger, "info").mockImplementation(() => logger);
+   });
+   afterEach(() => infoSpy.mockRestore());
+
+   const build = (open: () => Promise<ProxyEndpoint>) =>
+      buildEnvironmentMalloyConfig([proxied()], "/tmp", false, {
+         openProxy: open,
+      });
+   const lookup = (config: ReturnType<typeof build>) =>
+      config.malloyConfig.connections.lookupConnection("pg_tunneled");
+
+   it("sizes the pool like a direct connection, without running a query", async () => {
+      const { open } = tunnels();
+      const config = build(open);
+      try {
+         const connection = (await lookup(
+            config,
+         )) as unknown as PooledPostgresConnection;
+         const { options } = await connection.getPool();
+         expect(options.max).toBe(5);
+         expect(options.maxUses).toBe(1);
+         expect(options.connectionTimeoutMillis).toBe(30_000);
+         expect(options.application_name).toBe("malloy-publisher");
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("rebuilds the tunnel on the next lookup after it dies", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         const first = await lookup(config);
+         expect(await lookup(config)).toBe(first);
+         const closeFirst = spyOn(first, "close");
+         opened[0].die();
+         const second = await lookup(config);
+         expect(opened).toHaveLength(2);
+         expect(second).not.toBe(first);
+         expect(closeFirst).toHaveBeenCalledTimes(1);
+         expect(opened[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("shares one rebuild between concurrent lookups after an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const [a, b] = await Promise.all([lookup(config), lookup(config)]);
+         expect(a).toBe(b);
+         expect(opened).toHaveLength(2);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("ignores a close from a superseded tunnel", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const second = await lookup(config);
+         opened[0].die();
+         expect(await lookup(config)).toBe(second);
+         expect(opened).toHaveLength(2);
+         expect(opened[1].close).not.toHaveBeenCalled();
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("releases an evicted connection's replacement without closing anything twice", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      opened[0].die();
+      await lookup(config);
+      await config.releaseConnections();
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+      expect(opened[0].close).toHaveBeenCalledTimes(1);
+      expect(opened[1].close).toHaveBeenCalledTimes(1);
+   });
+
+   it("waits for an evicted connection's close before release resolves", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      let finishClose!: () => void;
+      spyOn(first, "close").mockImplementation(
+         () => new Promise<void>((res) => (finishClose = res)),
+      );
+      opened[0].die();
+      let released = false;
+      const release = config.releaseConnections().then(() => {
+         released = true;
+      });
+      await new Promise((res) => setTimeout(res, 20));
+      expect(released).toBe(false);
+      finishClose();
+      await release;
+      expect(released).toBe(true);
+   });
+
+   it(
+      "recovers on the next query after the SSH tunnel to a real Postgres drops",
+      async () => {
+         if (!hasPostgresCredentials()) {
+            console.log("Skipping: PostgreSQL credentials not configured");
+            return;
+         }
+         const bastion = await startSshServer({});
+         const fields = {
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+            // The test server has no TLS, and a proxied default demands it.
+            sslmode: "disable" as const,
+         };
+         const config = buildEnvironmentMalloyConfig(
+            [
+               {
+                  name: "pg_tunneled",
+                  type: "postgres",
+                  postgresConnection: fields,
+                  proxy: {
+                     type: "ssh",
+                     ssh: {
+                        host: "127.0.0.1",
+                        port: bastion.port,
+                        username: "testuser",
+                        privateKey: clientPrivatePem,
+                        hostKey: bastion.hostKeyBase64,
+                     },
+                  },
+               },
+            ],
+            "/tmp",
+         );
+         const sql = "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t";
+         try {
+            const first = await lookup(config);
+            expect((await first.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+
+            bastion.destroySockets();
+            // A dropped session is noticed on the client's next write (here a
+            // query; idle, the keepalive), so the query on it fails first.
+            const started = Date.now();
+            await expect(first.runSQL(sql)).rejects.toThrow();
+            expect(Date.now() - started).toBeLessThan(10_000);
+            let second = first;
+            expect(
+               await pollUntil(async () => {
+                  second = await lookup(config);
+                  return second !== first;
+               }, 5_000),
+            ).toBe(true);
+            expect((await second.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+         } finally {
+            await config.releaseConnections();
+            await closeQuietly(() => bastion.close());
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it("does not double-end a pool when release races an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      const release = config.releaseConnections();
+      opened[0].die();
+      await release;
+      expect(closeFirst).toHaveBeenCalledTimes(1);
    });
 });
 
