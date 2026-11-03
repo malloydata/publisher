@@ -72,19 +72,6 @@ Every route that reaches into a package takes `versionId`: the package itself, m
 
 A query takes `versionId` in its body; one in the URL's query string is read too, and when both name a version they must agree (400 otherwise). Build metadata must be percent-encoded in a URL: `1.2.0+build.5` is sent as `1.2.0%2Bbuild.5`, since a bare `+` decodes to a space. The SDK does this for you.
 
-### A version named in the package name (transition)
-
-An orchestrator that predates versions names a version by a combined package name, `<package>___<version>`, and sends no `versionId`. With versioning on, such a request is read as `<package>` at `<version>`, so an orchestrator still running while it and its servers roll one after the other keeps working. The split is at the last `___`, and only when what follows is a semantic version; a request that also names a version must name the same one, or `latest`, or nothing. A data-app static file takes its version from the name whatever `versionId` a forwarded query string carries, since a proxy may pass a page's query string on unchanged.
-
-| Combined-name request                                | Read as                                                                    |
-| ---------------------------------------------------- | -------------------------------------------------------------------------- |
-| Any read, query, build or static file                | The same route for `<package>` at `<version>`.                             |
-| `POST …/packages` with `name: <package>___<version>` | A publish of `<package>`; the version still comes from its publisher.json. |
-| `DELETE …/packages/<package>___<version>`            | `DELETE …/packages/<package>/versions/<version>`: that version only.       |
-| `PATCH …/packages/<package>___<version>`             | `PUT …/packages/<package>/versions/<version>/manifest`.                    |
-
-The legacy `/projects/{project}/packages/...` aliases read it the same way; their `DELETE` and `PATCH` reach the version routes under `/environments/{project}`. Each one logs a warning, once per name. With versioning off, a combined name is an ordinary package name, as before. This reading will be removed once callers name `versionId`.
-
 The package resource says which version answered: `versionId` is the version described, and `latestVersion` is the package's `latest`. A package listing names every package once, as its `latest`, and refuses a `versionId` other than empty or `latest` with 400.
 
 `GET /api/v0/status` lists every version each package holds, loaded or not, each with its `versionId`, `archiveStatus` and whether it is loaded, so a reconcile never mistakes a version that is not in memory for one that is missing. A publish counts as a load from its download until it settles, so each of the package's entries reports `loading` meanwhile, and `GET /api/v0/status?includeLoading=true` lists a version new to the package as its own `loading` entry once its tree has named it. It also reports `packageVersioning` (`on` or `off`) and `versionPromotion`.
@@ -98,6 +85,25 @@ A data app's page is opened at `…/packages/{pkg}/index.html?versionId=1.2.0`, 
 Only the URL pins a version. The page's own relative requests (`./app.js`, a stylesheet's `url()`) carry no query string, so they are served from `latest`. A page that must stay on one version end to end puts `?versionId=` on those URLs itself.
 
 A `versionId` on a static file pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410.
+
+### A version named in the package name (transition)
+
+An orchestrator that predates versions names a version by a combined package name, `<package>___<version>`, and sends no `versionId`. With versioning on, such a request is read as `<package>` at `<version>`, so an orchestrator still running while it and its servers roll one after the other keeps working. The split is at the last `___`, and only when what follows is a semantic version; a request that also names a version must name the same one, or `latest`, or nothing. A data-app static file takes its version from the name whatever `versionId` a forwarded query string carries, since a proxy may pass a page's query string on unchanged.
+
+| Combined-name request                                | Read as                                                                                                                                              |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Any read, query, build or static file                | The same route for `<package>` at `<version>`.                                                                                                       |
+| `POST …/packages` with `name: <package>___<version>` | A publish of `<package>`; the version still comes from its publisher.json.                                                                           |
+| `DELETE …/packages/<package>___<version>`            | `DELETE …/packages/<package>/versions/<version>`: that version only.                                                                                 |
+| `PATCH …/packages/<package>___<version>`             | `PUT …/packages/<package>/versions/<version>/manifest`, with that route's rules: an absent `manifestLocation` is 400, and `null` clears the binding. |
+
+The legacy `/projects/{project}/packages/...` aliases read it the same way; their `DELETE` and `PATCH` reach the version routes under `/environments/{project}`. Each one logs a warning, once per name. With versioning off, a combined name is an ordinary package name, as before. This reading will be removed once callers name `versionId`.
+
+It is meant for `explicit` promotion, where no version is `latest`. A combined-name request inherits the version routes' refusals, so under `on-publish` promotion, where combined-name publishes of one package share it and its highest version is `latest`, a combined-name `DELETE` of that version is refused with 409 `VERSION_IS_LATEST` while an older one remains.
+
+A combined-name publish is listed in `/status` and the package listing in its plain shape, `{name: <package>, versionId: <version>}`. Turn versioning on only once the caller reads that shape too: a caller that matches packages on the combined name alone reads such a package as unknown.
+
+A server that already published combined names with versioning on holds them as packages literally named `<package>___<version>`, which these requests no longer reach. Publish them again.
 
 ## Latest
 

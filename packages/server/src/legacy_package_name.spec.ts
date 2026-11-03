@@ -378,7 +378,13 @@ describe("the data-app static routes", () => {
       app.get(
          "/environments/:environmentName/packages/:packageName/*",
          (req, res) => {
-            seen.push([req.params.packageName, req.query.versionId]);
+            // In the URL too, not only in Express 4's parsed `req.query`.
+            const inUrl = new URLSearchParams(req.url.split("?")[1] ?? "");
+            seen.push([
+               req.params.packageName,
+               req.query.versionId,
+               inUrl.get("versionId"),
+            ]);
             res.sendStatus(204);
          },
       );
@@ -390,9 +396,9 @@ describe("the data-app static routes", () => {
             .expect(204);
       }
       expect(seen).toEqual([
-         ["sales", "1.0.3"],
-         ["sales", "1.0.3"],
-         ["sales", "1.0.3"],
+         ["sales", "1.0.3", "1.0.3"],
+         ["sales", "1.0.3", "1.0.3"],
+         ["sales", "1.0.3", "1.0.3"],
       ]);
    });
 });

@@ -128,7 +128,13 @@ export function legacyPackageNameMiddleware(): express.RequestHandler {
          req.method = "PUT";
          path = `${versionsOf}/manifest`;
       }
-      req.url = path + search;
+      // The version goes into the URL itself, so a router that parses the
+      // query string from `req.url` on each read (Express 5) sees it. Express
+      // 4 parsed `req.query` before this ran and keeps that object, so it is
+      // set there too.
+      const params = new URLSearchParams(search.slice(1));
+      params.set("versionId", recovered.versionId as string);
+      req.url = `${path}?${params.toString()}`;
       req.query.versionId = recovered.versionId as string;
       (req as WithRecovered)[RECOVERED_VERSION] = recovered.versionId as string;
       next();
