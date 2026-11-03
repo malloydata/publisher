@@ -3124,8 +3124,6 @@ export function buildEnvironmentMalloyConfig(
                               "SSH tunnel died; rebuilding on the next query",
                               { connection: name, error: cause?.message },
                            );
-                           // Ending the pool first stops it dialing the dead
-                           // port; the tunnel's port is freed after.
                            const eviction = Promise.allSettled([
                               closeOnce(connection).catch((error) =>
                                  logger.warn(

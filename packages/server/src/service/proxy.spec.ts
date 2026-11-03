@@ -438,7 +438,9 @@ describe("openProxy - tunnel death", () => {
 
    it("rejects when the bastion closes the session before the tunnel is ready", async () => {
       sshServer = await startSshServer({ endOnAuth: true });
-      await expect(openTestProxy(sshServer, echoServer.port)).rejects.toThrow();
+      await expect(openTestProxy(sshServer, echoServer.port)).rejects.toThrow(
+         /closed before the tunnel was ready/,
+      );
    });
 
    it("neither fires onClose nor warns on its own close(), and close() is idempotent", async () => {
