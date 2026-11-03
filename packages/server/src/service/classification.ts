@@ -289,7 +289,16 @@ function fieldKind(f: IrField): "dimension" | "measure" {
       : "dimension";
 }
 
-/** Every `{node: "field", path}` an expression tree reads, in walk order. */
+/**
+ * Every field reference in an IR tree, in walk order: an expression's
+ * `{node: "field", path}` and a query's `{type: "fieldref", path}`. Positions
+ * are skipped; nothing a reference hides in.
+ */
+export function fieldPathsIn(tree: unknown): string[][] {
+   return fieldReferences(tree);
+}
+
+/** Every `{node: "field", path}` or `{type: "fieldref", path}` a tree reads. */
 function fieldReferences(e: unknown): string[][] {
    const out: string[][] = [];
    const seen = new Set<object>();
@@ -301,7 +310,10 @@ function fieldReferences(e: unknown): string[][] {
          return;
       }
       const obj = node as Record<string, unknown>;
-      if (obj.node === "field" && Array.isArray(obj.path)) {
+      if (
+         (obj.node === "field" || obj.type === "fieldref") &&
+         Array.isArray(obj.path)
+      ) {
          out.push(obj.path.map(String));
       }
       for (const [key, value] of Object.entries(obj)) {

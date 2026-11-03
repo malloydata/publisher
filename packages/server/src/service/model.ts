@@ -58,6 +58,7 @@ import {
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
+import { summarizeQueryAccess, type QueryAccessSummary } from "./access_record";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
@@ -5453,6 +5454,12 @@ export class Model {
    ): Promise<{
       result: Malloy.Result;
       /**
+       * What this query accessed, for the access record (`access_record.ts`):
+       * the source entered, the gates and decision, the fields read with their
+       * classes, the row count. Absent only when building it failed.
+       */
+      access?: QueryAccessSummary;
+      /**
        * The JSON of the `responseShape` asked for, built once. Callers should
        * send this string: it is the bytes the byte cap measured, and a payload
        * too large to serialize surfaces here as a 413 rather than a bare 500.
@@ -6250,8 +6257,29 @@ export class Model {
       if (queryCostBytes !== undefined) {
          queryScannedBytesCounter().add(queryCostBytes, metricAttributes);
       }
+      // Never fails the query: an unreadable prepared query yields a record
+      // with no fields, and a thrown summary yields none.
+      let access: QueryAccessSummary | undefined;
+      try {
+         access = await summarizeQueryAccess({
+            runnable,
+            modelDef: this.modelDef,
+            apiSources: this.sources,
+            source: compiledSource ?? sourceName,
+            givens,
+            bypassAuthorize,
+            grafts: this.rowLevelFilteredRunnables.get(runnable) ?? [],
+            rowCount: queryResults.totalRows,
+         });
+      } catch (err) {
+         logger.debug("Access summary unavailable", {
+            modelPath: this.modelPath,
+            error: (err as Error).message,
+         });
+      }
       return {
          result: wrappedResult,
+         ...(access ? { access } : {}),
          serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
