@@ -87,13 +87,15 @@ When reviewing tables and columns, capture:
 - Data distributions for key numeric and categorical columns
 
 ### Data Quality
-- **Check for duplicate rows** on primary keys. Run `group_by: pk, aggregate: count(), having: count() > 1` on each key table. Duplicates cause `sum()` to return nonsensical values.
+- **Check for duplicate rows** on primary keys (on a large table, sample first). Run `group_by: pk, aggregate: count(), having: count() > 1` on each key table. Duplicates cause `sum()` to return nonsensical values.
 - **Denormalized count columns**: beware pre-aggregated fields (e.g., `order_count` in a customer table) that may conflict with joined counts.
 - **Delimited list columns**: flag string columns containing comma-separated values.
 
 ### Data-Driven Validation
 
 **Every recommendation must be grounded in queried data, not schema inference.** During discovery, run `execute_query` to validate assumptions before proposing anything in later steps.
+
+**Sample before you scan.** A full-table `group_by` or `count()` over a large or warehouse-backed table is slow and can be costly. Start with a `limit` or a recent date range, and run the full scan only when the sample leaves a question it cannot answer, and the user has accepted the cost.
 
 | What to validate | Query to run |
 |-----------------|-------------|
@@ -103,7 +105,7 @@ When reviewing tables and columns, capture:
 | **Categorical column cardinality** | Query distinct values. A `status` column with 5 values behaves differently from one with 500. |
 | **Column usefulness** | Query NULL rates. Columns that are >95% NULL are candidates for `internal`. |
 | **Join cardinality** | Query FK uniqueness: `group_by: fk_col, aggregate: row_count is count(), having: row_count > 1`. Determines `join_one` vs `join_many`. |
-| **Revenue/amount columns** | When multiple money columns exist (`total`, `subtotal`, `amount`, `price`), query a sample to understand how they relate (does `total = subtotal + tax`?). |
+| **Revenue/amount columns** | When multiple money columns exist (`total`, `subtotal`, `amount`, `price`), query a sample (not the whole table) to understand how they relate (does `total = subtotal + tax`?). |
 | **Join key value compatibility** | For every proposed join, sample 5-10 actual values from each side. Check for format mismatches: abbreviations ("4th Av" vs "4 Avenue"), ordinals ("23 St" vs "23rd St"), casing, prefixes. Mismatched values mean the join won't work even if column names match. |
 | **Mixed-grain rows** | For each key table, run top-N and bottom-N by primary metric. Look for summary/aggregate rows mixed with detail data (e.g., "System Total" rows in a station-level table). These corrupt measures if not filtered out. |
 
