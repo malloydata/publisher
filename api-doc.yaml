@@ -2840,8 +2840,10 @@ paths:
         (for example `analyst-conventions/SKILL.md`), with the same `source`
         pin as the full definition. The path is looked up in the resolved set,
         never joined onto the filesystem. A `relative_filepath` from the
-        agent's `assets` listing (`<skill>/assets/...`) is served the same way,
-        as UTF-8 text.
+        agent's `assets` listing (`<skill>/assets/...`, full view only) is
+        matched exactly against the listing, then read from disk as UTF-8 text
+        and served only if it still hashes to its listed `sha256`; one that
+        changed, or became a link, since the load is a 404.
 
         404 when the agent or the file is not served.
       parameters:

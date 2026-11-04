@@ -491,11 +491,12 @@ export class Package {
       if (!agent) return undefined;
       const { definitionSha, skillMeta, asset_roots, assets, ...definition } =
          agent;
-      const assetCounts: Record<string, number> = {};
+      const counts = new Map<string, number>();
       for (const a of assets ?? []) {
          const skill = a.relative_filepath.split("/")[0]!;
-         assetCounts[skill] = (assetCounts[skill] ?? 0) + 1;
+         counts.set(skill, (counts.get(skill) ?? 0) + 1);
       }
+      const assetCounts = Object.fromEntries(counts);
       return {
          ...definition,
          skills:
@@ -512,7 +513,7 @@ export class Package {
       };
    }
 
-   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem. */
+   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem; a listed asset is matched exactly, then read from disk and re-checked against its listed sha. */
    public getAgentSkillFile(
       name: string,
       relativeFilepath: string,

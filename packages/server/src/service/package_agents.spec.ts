@@ -636,16 +636,67 @@ describe("package agents", () => {
       });
 
       it("keeps an agent served when assets/ holds more than 1,000 entries", async () => {
-         for (let i = 0; i < 1001; i++) write(`${A}/n${i}.txt`, "x");
+         write(`${A}/a.txt`, "x");
+         for (let i = 0; i < 1000; i++) {
+            fs.mkdirSync(path.join(dir, A, `d${String(i).padStart(4, "0")}`), {
+               recursive: true,
+            });
+         }
+         write(`${A}/z.txt`, "x");
          const pkg = await load();
-         expect(pkg.getAgent("analyst")).toBeDefined();
+         expect(
+            pkg.getAgent("analyst")!.assets!.map((a) => a.relative_filepath),
+         ).toEqual([`${LISTED}/a.txt`]);
          expect(
             pkg
                .getPackageMetadata()
                .warnings?.some((w) => w.message?.includes("1000 entries")),
          ).toBe(true);
-         expect(pkg.getAgent("analyst")!.assets!.length).toBeLessThanOrEqual(
-            1000,
+      });
+
+      it("refuses a listed asset once its directory is swapped for a link", async () => {
+         write(`${A}/index.html`, "<h1>hi</h1>");
+         fs.mkdirSync(path.join(dir, "elsewhere"));
+         fs.writeFileSync(path.join(dir, "elsewhere/index.html"), "SECRET");
+         const pkg = await load();
+         fs.rmSync(path.join(dir, A), { recursive: true });
+         fs.symlinkSync(path.join(dir, "elsewhere"), path.join(dir, A));
+         expect(
+            pkg.getAgentSkillFile("analyst", `${LISTED}/index.html`),
+         ).toBeUndefined();
+      });
+
+      it("refuses a listed asset edited after the load, since it no longer matches its sha", async () => {
+         write(`${A}/index.html`, "<h1>hi</h1>");
+         const pkg = await load();
+         write(`${A}/index.html`, "<h1>changed</h1>");
+         expect(
+            pkg.getAgentSkillFile("analyst", `${LISTED}/index.html`),
+         ).toBeUndefined();
+      });
+
+      it("keeps a skill named __proto__ in the roots and the summary counts", async () => {
+         write(
+            "agents/analyst/skills/__proto__/SKILL.md",
+            "---\nname: __proto__\ndescription: d\n---\n\nbody\n",
+         );
+         write("agents/analyst/skills/__proto__/assets/a.txt", "x");
+         const pkg = await load();
+         const full = pkg.getAgent("analyst")!;
+         expect(Object.keys(full.asset_roots!)).toEqual(["__proto__"]);
+         expect(
+            Object.keys(pkg.getAgent("analyst", "summary")!.asset_counts!),
+         ).toEqual(["__proto__"]);
+         expect(
+            pkg.getAgentSkillFile("analyst", "__proto__/assets/a.txt")
+               ?.file_contents,
+         ).toBe("x");
+      });
+
+      it("pins sourceContentSha for a package whose agents ship no assets", async () => {
+         const pkg = await load();
+         expect(pkg.getSourceContentSha()).toBe(
+            "00e29ff908aab56d8b8810270241bf96d0e3d11506ba341d6fba153377728954",
          );
       });
    });

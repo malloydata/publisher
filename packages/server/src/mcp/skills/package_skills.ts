@@ -49,6 +49,8 @@ export interface PackageSkills {
    blocking: string[];
 }
 
+const ASSET_SNIFF_BYTES = 8 * 1024;
+
 /** Largest single skill file served. A markdown guide never needs more. */
 export const PACKAGE_SKILL_FILE_MAX_BYTES = 256 * 1024;
 
@@ -66,14 +68,17 @@ export function readFileInside(
    file: string,
    maxBytes: number,
    asset = false,
-): { text: string } | { problem: string } {
+): { text: string } | { problem: string; link?: true } {
    try {
       if (asset && fs.lstatSync(file).isSymbolicLink()) {
-         return { problem: "is a link" };
+         return { problem: "is a link", link: true };
       }
       const real = fs.realpathSync(file);
       if (stepsOutside(path.relative(realRoot, real))) {
-         return { problem: "resolves outside the package through a link" };
+         return {
+            problem: "resolves outside the package through a link",
+            link: true,
+         };
       }
       // A link inside the package can still point at publisher.json or data.
       if (!asset && !real.toLowerCase().endsWith(".md")) {
@@ -90,19 +95,32 @@ export function readFileInside(
          };
       }
       if (!asset) return { text: fs.readFileSync(real, "utf8") };
+      // A binary shows a NUL early; reading the head first spares a full read of a rejected file.
+      const head = Buffer.alloc(ASSET_SNIFF_BYTES);
+      const fd = fs.openSync(real, "r");
+      let headBytes: number;
+      try {
+         headBytes = fs.readSync(fd, head, 0, ASSET_SNIFF_BYTES, 0);
+      } finally {
+         fs.closeSync(fd);
+      }
+      if (head.subarray(0, headBytes).includes(0)) {
+         return { problem: "contains a NUL byte" };
+      }
       const bytes = fs.readFileSync(real);
       if (bytes.includes(0)) return { problem: "contains a NUL byte" };
-      // ignoreBOM keeps a leading BOM, so the text hashes and serves as the bytes do.
-      return {
-         text: new TextDecoder("utf-8", {
-            fatal: true,
-            ignoreBOM: true,
-         }).decode(bytes),
-      };
-   } catch (error) {
-      if (error instanceof TypeError) {
+      try {
+         // ignoreBOM keeps a leading BOM, so the text hashes and serves as the bytes do.
+         return {
+            text: new TextDecoder("utf-8", {
+               fatal: true,
+               ignoreBOM: true,
+            }).decode(bytes),
+         };
+      } catch {
          return { problem: "is not valid UTF-8 text" };
       }
+   } catch (error) {
       return { problem: `cannot be read (${(error as Error).message})` };
    }
 }
@@ -284,7 +302,13 @@ type AssetCharges = Map<string, { bytes: number; sha256: string }>;
 interface PackageAssetBudget {
    bytes: number;
    paths: Set<string>;
+   /** Each asset's read result by package path, so a skill shared by several agents is read and hashed once. */
+   reads: Map<string, AssetRead>;
 }
+
+type AssetRead =
+   | { text: string; sha256: string }
+   | { problem: string; link?: true };
 
 export interface PackageAgentSchedule {
    cron: string;
@@ -558,6 +582,23 @@ interface AssetWalk {
    limitNote?: string;
 }
 
+/** The skill's real `assets/`, which must be a plain directory inside the skill's own real directory. */
+function realAssetsDir(skillDir: string, skillRel: string): string {
+   const assetsDir = path.join(skillDir, "assets");
+   if (fs.lstatSync(assetsDir).isSymbolicLink()) {
+      throw new AgentProblem(
+         `'${skillRel}/assets' is a link; replace it with a real directory`,
+      );
+   }
+   const real = fs.realpathSync(assetsDir);
+   if (real !== path.join(fs.realpathSync(skillDir), "assets")) {
+      throw new AgentProblem(
+         `'${skillRel}/assets' resolves outside the skill's own directory`,
+      );
+   }
+   return real;
+}
+
 /**
  * The text files under one served skill's `assets/`, listed and hashed but not
  * returned. A link, an escape or a manifest-shaped name drops the whole agent;
@@ -592,12 +633,7 @@ function assetFilesInside(
       walk.skipped.push(`'${skillRel}/assets' is not a directory`);
       return [];
    }
-   const realAssets = fs.realpathSync(assetsDir);
-   if (realAssets !== path.join(fs.realpathSync(skillDir), "assets")) {
-      throw new AgentProblem(
-         `'${skillRel}/assets' resolves outside the skill's own directory`,
-      );
-   }
+   const realAssets = realAssetsDir(skillDir, skillRel);
 
    const out: PackageAgentAsset[] = [];
    const skip = (shown: string, why: string) =>
@@ -713,15 +749,28 @@ function assetFilesInside(
                `it would take the package's assets over the ${PACKAGE_ASSETS_MAX_BYTES} byte per-package cap`,
             );
          } else {
-            const read = readFileInside(
-               realAssets,
-               absolute,
-               PACKAGE_ASSET_FILE_MAX_BYTES - 1,
-               true,
-            );
+            let read = budget.reads.get(packagePath);
+            if (!read) {
+               const fresh = readFileInside(
+                  realAssets,
+                  absolute,
+                  PACKAGE_ASSET_FILE_MAX_BYTES - 1,
+                  true,
+               );
+               read =
+                  "problem" in fresh
+                     ? fresh
+                     : {
+                          text: fresh.text,
+                          sha256: createHash("sha256")
+                             .update(fresh.text)
+                             .digest("hex"),
+                       };
+               budget.reads.set(packagePath, read);
+            }
             if ("problem" in read) {
                // A link or an escape that appeared after the listing is the same threat as one found in it.
-               if (/\blink\b/.test(read.problem)) {
+               if (read.link) {
                   throw new AgentProblem(
                      `asset '${shown}' ${read.problem}; replace it with a regular file`,
                   );
@@ -730,7 +779,7 @@ function assetFilesInside(
                continue;
             }
             const bytes = Buffer.byteLength(read.text);
-            const sha256 = createHash("sha256").update(read.text).digest("hex");
+            const { sha256 } = read;
             walk.files++;
             walk.bytes += bytes;
             if (!charged) walk.newBytes += bytes;
@@ -743,31 +792,39 @@ function assetFilesInside(
    return out;
 }
 
-/** A listed asset's text, read through the same checks that listed it; undefined when it is no longer servable. */
+/**
+ * A listed asset's text, re-checked on every request with the checks that
+ * listed it, and only when its bytes still hash to the listed sha256: files can
+ * change after load, and a watch-mode edit does not reload. Undefined (a 404)
+ * when it is no longer servable.
+ */
 export function readAgentAsset(
    packagePath: string,
    agent: PackageAgent,
    relativeFilepath: string,
 ): string | undefined {
    const skill = relativeFilepath.split("/")[0]!;
-   const skillRel = agent.asset_roots?.[skill];
-   if (
-      skillRel === undefined ||
-      !agent.assets?.some((a) => a.relative_filepath === relativeFilepath)
-   ) {
-      return undefined;
-   }
+   const listing = agent.assets?.find(
+      (a) => a.relative_filepath === relativeFilepath,
+   );
+   const skillRel =
+      agent.asset_roots && Object.hasOwn(agent.asset_roots, skill)
+         ? agent.asset_roots[skill]
+         : undefined;
+   if (skillRel === undefined || !listing) return undefined;
    try {
-      const realAssets = fs.realpathSync(
-         path.join(packagePath, skillRel, "assets"),
-      );
+      const skillDir = path.join(packagePath, skillRel);
       const read = readFileInside(
-         realAssets,
-         path.join(packagePath, skillRel, relativeFilepath.slice(skill.length)),
+         realAssetsDir(skillDir, skillRel),
+         path.join(skillDir, relativeFilepath.slice(skill.length)),
          PACKAGE_ASSET_FILE_MAX_BYTES - 1,
          true,
       );
-      return "text" in read ? read.text : undefined;
+      if (!("text" in read)) return undefined;
+      return createHash("sha256").update(read.text).digest("hex") ===
+         listing.sha256
+         ? read.text
+         : undefined;
    } catch {
       return undefined;
    }
@@ -798,7 +855,7 @@ function readAgentSkills(
    const served = new Map<string, string>();
    const meta: PackageAgent["skillMeta"] = new Map();
    const assets = new Map<string, PackageAgentAsset>();
-   const assetRoots: Record<string, string> = {};
+   const assetRoots = new Map<string, string>();
    const walk: AssetWalk = {
       visited: 0,
       files: 0,
@@ -885,7 +942,7 @@ function readAgentSkills(
          for (const asset of listed) {
             // Two roots holding one skill name already collided on its SKILL.md.
             assets.set(asset.relative_filepath, asset);
-            assetRoots[skill] = skillRel;
+            assetRoots.set(skill, skillRel);
             paths.push(
                `${skillRel}${asset.relative_filepath.slice(skill.length)}`,
             );
@@ -910,7 +967,7 @@ function readAgentSkills(
       assets: [...assets.values()].sort((a, b) =>
          compareText(a.relative_filepath, b.relative_filepath),
       ),
-      assetRoots,
+      assetRoots: Object.fromEntries(assetRoots),
       charges: walk.charges,
       roots,
       files: [...served]
@@ -1035,7 +1092,11 @@ export function readPackageAgents(
       warnings: [],
    };
    // Charged in manifest order, and only for an agent that is served.
-   const assetBudget: PackageAssetBudget = { bytes: 0, paths: new Set() };
+   const assetBudget: PackageAssetBudget = {
+      bytes: 0,
+      paths: new Set(),
+      reads: new Map(),
+   };
    if (raw === undefined) return result;
    if (!isObject(raw)) {
       result.warnings.push(

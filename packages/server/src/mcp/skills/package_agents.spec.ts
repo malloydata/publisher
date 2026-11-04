@@ -771,7 +771,7 @@ describe("readPackageAgents", () => {
          });
 
          it("keeps a leading BOM so the listed sha is the file's", () => {
-            const bytes = Buffer.from("﻿hello");
+            const bytes = Buffer.from("\uFEFFhello");
             writeBytes(`${ASSETS}/bom.txt`, bytes);
             const result = read({ analyst: analyst() });
             expect(agentOf(result).assets![0]!.sha256).toBe(
@@ -826,12 +826,69 @@ describe("readPackageAgents", () => {
             expect(warned(result, "deeper than 8")).toBe(true);
          });
 
-         it("keeps an agent served when its assets hold more than 1,000 entries", () => {
-            for (let i = 0; i < 1001; i++) write(`${ASSETS}/n${i}.txt`, "x");
+         // Empty directories fill the entry cap without reaching the file caps.
+         const fillEntries = (dirs: number) => {
+            write(`${ASSETS}/a.txt`, "x");
+            for (let i = 0; i < dirs; i++) {
+               fs.mkdirSync(
+                  path.join(pkg, ASSETS, `d${String(i).padStart(4, "0")}`),
+                  { recursive: true },
+               );
+            }
+            write(`${ASSETS}/z.txt`, "x");
+         };
+
+         it("walks exactly 1,000 entries per agent and stays served past that", () => {
+            fillEntries(998);
+            const atCap = read({ analyst: analyst() });
+            expect(listed(atCap)).toEqual([
+               `${LISTED}/a.txt`,
+               `${LISTED}/z.txt`,
+            ]);
+            expect(warned(atCap, "1000 entries")).toBe(false);
+
+            write(`${ASSETS}/zz.txt`, "x");
+            const over = read({ analyst: analyst() });
+            expect(over.agents.has("analyst")).toBe(true);
+            expect(listed(over)).toEqual([
+               `${LISTED}/a.txt`,
+               `${LISTED}/z.txt`,
+            ]);
+            expect(warned(over, "zz.txt", "1000 entries")).toBe(true);
+         });
+
+         it("rejects a large file with a NUL in its head and keeps the agent", () => {
+            const big = Buffer.alloc(900_000, "a");
+            big[10] = 0;
+            writeBytes(`${ASSETS}/blob.txt`, big);
+            const result = read({ analyst: analyst() });
+            expect(listed(result)).toEqual([]);
+            expect(warned(result, "blob.txt", "NUL")).toBe(true);
+            expect(result.contentShas.size).toBe(0);
+         });
+
+         it("skips, rather than drops, an unreadable file under a path containing 'link'", () => {
+            if (process.getuid?.() === 0) return;
+            write(`${ASSETS}/link/x.txt`, "x");
+            fs.chmodSync(path.join(pkg, ASSETS, "link/x.txt"), 0);
+            write(`${ASSETS}/ok.txt`, "fine");
             const result = read({ analyst: analyst() });
             expect(result.agents.has("analyst")).toBe(true);
-            expect(listed(result).length).toBeLessThanOrEqual(1000);
-            expect(warned(result, "1000 entries")).toBe(true);
+            expect(listed(result)).toEqual([`${LISTED}/ok.txt`]);
+            expect(warned(result, "link/x.txt", "cannot be read")).toBe(true);
+         });
+
+         it("serves a skill named like an Object.prototype key, with its own root", () => {
+            write(
+               "agents/analyst/skills/__proto__/SKILL.md",
+               "---\nname: __proto__\ndescription: d\n---\n\nbody\n",
+            );
+            write("agents/analyst/skills/__proto__/assets/a.txt", "x");
+            const result = read({ analyst: analyst() });
+            expect(Object.keys(agentOf(result).asset_roots!).sort()).toEqual([
+               "__proto__",
+            ]);
+            expect(listed(result)).toEqual(["__proto__/assets/a.txt"]);
          });
 
          it("names the first twenty skips and counts the rest", () => {
