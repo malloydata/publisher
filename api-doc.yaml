@@ -2133,6 +2133,21 @@ paths:
             $ref: "#/components/schemas/PathPattern"
         - $ref: "#/components/parameters/versionId"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
+        - name: givens
+          in: query
+          required: false
+          description: >-
+            The caller's givens as the trusted tier set them, one JSON object
+            (`{"ROLES":["clinician"]}`). A source whose `#(authorize)` lock
+            cannot admit the caller on the `#(secure)` givens supplied, or
+            reads a secure given not supplied, is omitted from `sources`,
+            `queries` and `sourceInfos`, as a source locked with `false` is.
+            Plain givens and `#(access_filter)` row filters hide nothing.
+            Discovery only: the query route's gates decide what is served
+            either way. Absent: every published source. Not a JSON object:
+            400.
+          schema:
+            type: string
       responses:
         "200":
           description: Compiled Malloy model
@@ -4985,7 +5000,14 @@ components:
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the
-                  message every path; `warn`). The per-file
+                  message every path; `warn`). `classification-coverage`: a
+                  published source with a dimension or measure that carries no
+                  `#(classification)` while some field in the package does (one
+                  per source, `model` naming its file and `subject` the source;
+                  `warn`; see docs/classification.md).
+                  `classification-malformed`: a `#(classification)` annotation
+                  that names no single class (one per field, `subject` the
+                  source; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
@@ -5365,6 +5387,39 @@ components:
             Fetch one with `GET .../agents/{agentName}`.
           items:
             $ref: "#/components/schemas/AgentSummary"
+        secureGivens:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: every `#(secure)` given the package's
+            compiled models surface, so a host that sets those values learns
+            which ones to set from the load response without compiling the
+            package itself.
+
+
+            Collected from every `.malloy` model and `.malloynb` notebook in
+            the package, files outside `explores` included. A model's givens
+            are the ones its `CompiledModel.givens` reports, so a given
+            declared in one file and imported by another is listed under both;
+            a notebook's are those of the model its cells build up to. One
+            entry per distinct `name` and `type`, sorted by `name` then `type`;
+            a name declared with two types is two entries. It always describes
+            the models the package is serving now, so a reload that changes
+            them changes it.
+
+
+            Present, possibly empty, on a loaded package whose every model and
+            notebook compiled, so `[]` means the package declares no secure
+            given. Absent when the list cannot be known to be complete: when
+            any model or notebook in the package failed to compile (a reload
+            keeps serving the files that did), or when the server does not
+            report it, as on a listing entry for a package that is not loaded.
+            Treat absent as unknown, never as none. It cannot be set: a PATCH
+            body carrying it is ignored.
+          items:
+            $ref: "#/components/schemas/SecureGivenSummary"
+        classification:
+          $ref: "#/components/schemas/ClassificationSummary"
 
     AgentSchedule:
       type: object
@@ -5534,6 +5589,57 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
+
+    ClassificationSummary:
+      type: object
+      readOnly: true
+      required: [sources]
+      description: >-
+        Server-computed, read-only, on a single package read
+        (`GET …/packages/{packageName}`) only, never on a listing: for each
+        published entry point, the classes its `#(carries)` declares and how
+        many of its fields carry each class (`#(classification)`, declared or
+        inherited). Covers only the sources discovery shows, so it reveals
+        nothing curation hides; a source locked to every caller is left out.
+        A field's own classes, and what they were inherited from, are on its
+        `get_context` card. Absent when no published field carries a class.
+        It cannot be set: a PATCH body carrying it is ignored.
+      properties:
+        sources:
+          type: array
+          description: Sorted by model path, then name.
+          items:
+            $ref: "#/components/schemas/ClassificationSummarySource"
+
+    ClassificationSummarySource:
+      type: object
+      readOnly: true
+      required: [modelPath, name, fields, unclassified, classCounts]
+      properties:
+        modelPath:
+          type: string
+        name:
+          type: string
+        carries:
+          type: array
+          description: >-
+            The classes the source's `#(carries)` lists, sorted, inherited
+            through `extend` like a gate. Absent when it declares none.
+          items:
+            type: string
+        fields:
+          type: integer
+          description: The dimensions and measures a caller can reach from the source, through joins included.
+        unclassified:
+          type: integer
+          description: How many of those carry no class.
+        classCounts:
+          type: object
+          description: >-
+            How many of those fields carry each class, keyed by class. A field
+            under several classes counts under each.
+          additionalProperties:
+            type: integer
 
     SkillSummary:
       type: object
@@ -6571,6 +6677,33 @@ components:
             Malloy data type of the dimension (e.g. string, number, boolean,
             date, timestamp)
 
+    SecureGivenSummary:
+      type: object
+      readOnly: true
+      description: >-
+        One `#(secure)` given in a package's `secureGivens`: a given whose
+        value the host sets, and the model files that surface it.
+      required:
+        - name
+        - type
+        - modelPaths
+      properties:
+        name:
+          type: string
+          description: Name as declared in the model.
+        type:
+          type: string
+          description: >-
+            The given's type, rendered exactly as `Given.type` renders it
+            (e.g. `string`, `number`, `string[]`, `filter<string>`).
+        modelPaths:
+          type: array
+          description: >-
+            Package-relative paths of the `.malloy` models and `.malloynb`
+            notebooks whose compiled givens include this given, the declaring
+            file and every file that imports it alike. Sorted, no duplicates.
+          items:
+            type: string
     Given:
       type: object
       description: |

@@ -128,6 +128,13 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import { classificationLeaks, classificationWarnings } from "./classification";
+import {
+   classificationSummary,
+   type ApiClassificationSummary,
+} from "./classification_summary";
+import { joinBypasses } from "./join_bypass";
+import { insecureGateGivens } from "./gate_given_warnings";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -165,6 +172,10 @@ import { filterFreshManifest } from "./freshness";
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
+import {
+   type ApiSecureGivenSummary,
+   summarizeSecureGivens,
+} from "./secure_givens";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 import {
    applyLoadGates,
@@ -285,6 +296,25 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
+   /**
+    * {@link summarizeSecureGivens} over the `models` map it was computed for.
+    * Keyed on that map's identity, so whatever replaces `models` gets a fresh
+    * summary on the next read; a `Model`'s givens and compile error are fixed
+    * at construction, so the same map always yields the same answer.
+    */
+   private secureGivensMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: readonly ApiSecureGivenSummary[] | undefined;
+        }
+      | undefined;
+   /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
+   private classificationSummaryMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: ApiClassificationSummary | undefined;
+        }
+      | undefined;
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
@@ -400,7 +430,7 @@ export class Package {
       this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
-      this.packageMetadata = packageMetadata;
+      this.packageMetadata = Package.storableMetadata(packageMetadata);
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
@@ -1397,6 +1427,46 @@ export class Package {
    }
 
    /**
+    * The `#(secure)` givens of the models and notebooks now installed, or
+    * `undefined` when that is unknown (see {@link summarizeSecureGivens}).
+    * Computed on first read after `models` is replaced and then returned by
+    * reference: the array is frozen, so callers share it.
+    */
+   private currentSecureGivens(): readonly ApiSecureGivenSummary[] | undefined {
+      const memo = this.secureGivensMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = summarizeSecureGivens(
+         [...forModels.entries()].map(([modelPath, model]) => ({
+            modelPath,
+            givens: model.getGivens(),
+            compiled: model.getCompilationError() === undefined,
+         })),
+         { packageName: this.packageName },
+      );
+      this.secureGivensMemo = { forModels, value };
+      return value;
+   }
+
+   /**
+    * For each published entry point, its `#(carries)` and its field count by
+    * class, or `undefined` when nothing published is classified. Walks every
+    * published field, so it is memoized per models map and kept OFF
+    * {@link getPackageMetadata} (the `/status` poll path): only the
+    * single-package read attaches it.
+    */
+   public getClassificationSummary(): ApiClassificationSummary | undefined {
+      const memo = this.classificationSummaryMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = classificationSummary(forModels, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      this.classificationSummaryMemo = { forModels, value };
+      return value;
+   }
+
+   /**
     * ON THE `/status` POLL PATH: runs for every package every few seconds.
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
@@ -1416,6 +1486,13 @@ export class Package {
          // Overlaid so a metadata PATCH body can neither set nor wipe it.
          agents: this.rawAgents === undefined ? undefined : this.listAgents(),
       };
+      // Never stored in `packageMetadata` (see storableMetadata): memoized per
+      // models map and frozen, so it is returned by reference. Left off, not
+      // `[]`, when it is unknown.
+      const secureGivens = this.currentSecureGivens();
+      if (secureGivens !== undefined) {
+         metadata.secureGivens = secureGivens;
+      }
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
@@ -1440,6 +1517,9 @@ export class Package {
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
+         ...classificationWarnings(this.models, (modelPath) =>
+            this.isListedModelPath(modelPath),
+         ),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2016,6 +2096,41 @@ export class Package {
    }
 
    /**
+    * REJECTION messages for every field a `#(carries)` surface exposes outside
+    * its list (docs/classification.md), one per line, empty when there are
+    * none. Strict at load, like an invalid incremental policy: a surface that
+    * says what it carries must not serve what it does not.
+    */
+   public formatClassificationLeaks(): string {
+      return classificationLeaks(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every author join from a published source that
+    * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
+    * when there are none. Strict at load, like a `#(carries)` leak.
+    */
+   public formatJoinBypasses(): string {
+      return joinBypasses(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every published source gated on a given that is
+    * not `#(secure)` (`gate_given_warnings.ts`), one per line, empty when
+    * there are none. Strict at load: a gate a caller can satisfy by sending a
+    * value is a filter, not a control.
+    */
+   public formatInsecureGateGivens(): string {
+      return insecureGateGivens(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
     * REJECTION messages for `#@ preaggregate` declarations that cannot take
     * effect (rules in preaggregation_validation), strict at publish AND load:
     * pre-aggregation is invisible when it works, so an ignored declaration
@@ -2433,6 +2548,26 @@ export class Package {
       return await model.getFileText(this.packagePath);
    }
 
+   /**
+    * Whether `listModels()` lists a model: a `.malloy` file that is not a
+    * report, on the surface when the package has one (or hidden too, with
+    * `includeHidden`). The one answer to "is this model published", shared
+    * with the lints that read only published models.
+    */
+   private isListedModelPath(
+      modelPath: string,
+      includeHidden: boolean = false,
+   ): boolean {
+      const exploreSet = this.exploreSet();
+      if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+      // A linear report is listed as a report, surface or not.
+      if (this.getReportLayout(modelPath) === "linear") return false;
+      // A grid report is listed as a report, even when `explores` lists it.
+      if (!exploreSet) return true;
+      if (this.isServedReport(modelPath)) return false;
+      return includeHidden || exploreSet.has(modelPath);
+   }
+
    public async listModels(
       options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
@@ -2444,18 +2579,12 @@ export class Package {
          !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
-            .filter((modelPath) => {
-               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-               // A linear report is listed as a report, surface or not.
-               if (this.getReportLayout(modelPath) === "linear") return false;
-               // A grid report is listed as a report, even when `explores` lists it.
-               if (!exploreSet) return true;
-               if (this.isServedReport(modelPath)) return false;
-               return (
-                  options.includeHiddenFilesAndSources ||
-                  exploreSet.has(modelPath)
-               );
-            })
+            .filter((modelPath) =>
+               this.isListedModelPath(
+                  modelPath,
+                  options.includeHiddenFilesAndSources,
+               ),
+            )
             .map(async (modelPath) => {
                let error: string | undefined;
                try {
@@ -3431,8 +3560,28 @@ export class Package {
       this.environmentName = environmentName;
    }
 
+   /**
+    * `packageMetadata` without the fields computed from the installed models,
+    * so a caller that round-trips `getPackageMetadata()` (or a PATCH body)
+    * cannot store a snapshot that outlives the models it describes.
+    */
+   private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
+      if (
+         !("secureGivens" in packageMetadata) &&
+         !("classification" in packageMetadata)
+      ) {
+         return packageMetadata;
+      }
+      const {
+         secureGivens: _computed,
+         classification: _summary,
+         ...stored
+      } = packageMetadata;
+      return stored;
+   }
+
    public setPackageMetadata(packageMetadata: ApiPackage) {
-      this.packageMetadata = packageMetadata;
+      this.packageMetadata = Package.storableMetadata(packageMetadata);
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
       this.applySiblingModelResolverToModels();

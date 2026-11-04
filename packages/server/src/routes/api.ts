@@ -11,6 +11,8 @@
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
+import { callerHeaderName } from "../service/access_record";
+import { traceIdOf } from "../logger";
 import type { CompileController } from "../controller/compile.controller";
 import type { ConnectionController } from "../controller/connection.controller";
 import type { DatabaseController } from "../controller/database.controller";
@@ -480,6 +482,35 @@ function registerConnectionRoutes(
    );
 }
 
+/**
+ * The `givens` query parameter, a JSON object the trusted tier sets for the
+ * caller, so a model read can omit sources the caller cannot enter (see
+ * service/discovery_lock.ts). `null` when absent; `undefined` after a 400
+ * has been sent for one that is not a JSON object.
+ */
+function givensParamOr400(
+   req: express.Request,
+   res: express.Response,
+): Record<string, GivenValue> | null | undefined {
+   const raw = req.query.givens;
+   if (raw === undefined) return null;
+   if (typeof raw === "string") {
+      try {
+         const parsed = JSON.parse(raw) as unknown;
+         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed as Record<string, GivenValue>;
+         }
+      } catch {
+         // fall through to the 400
+      }
+   }
+   res.status(400).json({
+      code: 400,
+      message: "givens must be one JSON object",
+   });
+   return undefined;
+}
+
 function registerPackageRoutes(
    app: express.Express,
    apiPrefix: string,
@@ -589,11 +620,17 @@ function registerPackageRoutes(
             "includeHiddenFilesAndSources",
          );
          if (includeHiddenFilesAndSources === undefined) return;
+         const givens = givensParamOr400(req, res);
+         if (givens === undefined) return;
          return modelController.getModel(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            { includeHiddenFilesAndSources, versionId: req.query.versionId },
+            {
+               includeHiddenFilesAndSources,
+               versionId: req.query.versionId,
+               ...(givens ? { givens } : {}),
+            },
          );
       }),
    );
@@ -751,6 +788,12 @@ function registerQueryRoutes(
             readBypassAuthorize(req),
             includeHiddenFilesAndSources,
             disconnected.signal,
+            // For the access record: who the gateway says is asking, and the
+            // trace this request belongs to. See docs/access-record.md.
+            {
+               caller: req.get(callerHeaderName()),
+               traceId: traceIdOf(req),
+            },
          );
          setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
          res.status(200).json(result);

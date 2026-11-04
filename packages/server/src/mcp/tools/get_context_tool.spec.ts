@@ -3332,6 +3332,81 @@ describe("get_context source governance and field types", () => {
    });
 });
 
+describe("get_context discovery under a lock (secure givens)", () => {
+   const model = {
+      getSourceInfos: () => [
+         { name: "open_src", annotations: [], schema: { fields: [] } },
+         { name: "chart", annotations: [], schema: { fields: [] } },
+         { name: "billing", annotations: [], schema: { fields: [] } },
+         { name: "plain", annotations: [], schema: { fields: [] } },
+      ],
+      getQueries: () => [],
+      getSources: () => [
+         { name: "open_src", givens: [] },
+         {
+            name: "chart",
+            givens: [{ name: "ROLES", type: "string[]", secure: true }],
+            authorize: ["'clinician' in $ROLES"],
+         },
+         {
+            name: "billing",
+            givens: [{ name: "ROLES", type: "string[]", secure: true }],
+            authorize: ["'billing' in $ROLES"],
+         },
+         {
+            name: "plain",
+            givens: [{ name: "MODE", type: "string[]" }],
+            authorize: ["'debug' in $MODE"],
+         },
+      ],
+   };
+   const handlerFor = () =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "clinic.malloy" }],
+               getModel: () => model,
+            })),
+      });
+   const names = (payload: { sources: SourceCardShape[] }) =>
+      payload.sources.map((c) => c.source_info.resource_id.source).sort();
+
+   it("lists every published source when no givens are supplied", async () => {
+      const payload = parse(
+         await handlerFor()({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "clinic" }],
+         }),
+      );
+      expect(names(payload)).toEqual(["billing", "chart", "open_src", "plain"]);
+      expect(payload.total_available).toBe(4);
+   });
+
+   it("omits a source whose lock the caller's secure givens cannot satisfy, and counts only what is shown", async () => {
+      const payload = parse(
+         await handlerFor()({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "clinic" }],
+            givens: { ROLES: ["clinician"] },
+         }),
+      );
+      // `plain` is locked on a plain given, which hides nothing.
+      expect(names(payload)).toEqual(["chart", "open_src", "plain"]);
+      expect(payload.total_available).toBe(3);
+   });
+
+   it("omits a source whose lock reads a secure given the trusted tier did not supply", async () => {
+      const payload = parse(
+         await handlerFor()({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "clinic" }],
+            givens: { MODE: ["debug"] },
+         }),
+      );
+      expect(names(payload)).toEqual(["open_src", "plain"]);
+   });
+});
+
 /**
  * A source carrying an unconditional `false` on either route needs no
  * caller-supplied given to know nobody is admitted — that is

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod/v3";
+import type { GivenValue } from "@malloydata/malloy";
 import { entityRowKey } from "./embedding_index";
 import type {
    Entity,
@@ -110,6 +111,12 @@ export const convergedContextShape = {
       .describe(
          "Values for filters a source declares via #(filter), keyed by filter name.",
       ),
+   givens: z
+      .record(z.unknown())
+      .nullish()
+      .describe(
+         "The givens in force for this caller, as the trusted tier set them. A source whose #(authorize) lock cannot admit the caller on the #(secure) givens supplied, or reads a secure given not supplied, is omitted, as a source locked with `false` is. Plain givens and row filters hide nothing. Omit to see every published source.",
+      ),
    user_prompt: z
       .string()
       .nullish()
@@ -192,6 +199,9 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
       offset: params.offset ?? 0,
+      ...(params.givens && Object.keys(params.givens).length > 0
+         ? { givens: params.givens as Record<string, GivenValue> }
+         : {}),
    };
 }
 

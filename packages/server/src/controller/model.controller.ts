@@ -9,6 +9,8 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
+import { lockedForCaller } from "../service/discovery_lock";
+import type { GivenValue } from "@malloydata/malloy";
 
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -22,6 +24,57 @@ export interface ModelReadOptions {
    includeHiddenFilesAndSources?: boolean;
    /** The published version to read; absent, empty or null means `latest`. */
    versionId?: unknown;
+   /**
+    * The caller's givens as the trusted tier set them. A source whose
+    * `#(authorize)` lock cannot admit the caller on the `#(secure)` givens is
+    * omitted from the compiled model, with its queries and source info
+    * (service/discovery_lock.ts). Absent: every published source.
+    */
+   givens?: Record<string, GivenValue>;
+}
+
+/**
+ * The compiled model without the sources the caller cannot enter: their
+ * `sources` entries, the named `queries` over them, and their `sourceInfos`
+ * (JSON strings, matched on their `name`).
+ */
+function withoutLockedSources(
+   compiled: ApiCompiledModel,
+   givens: Record<string, GivenValue>,
+): ApiCompiledModel {
+   const locked = lockedForCaller(compiled.sources, givens);
+   if (locked.size === 0) return compiled;
+   const nameOfInfo = (info: string): string | undefined => {
+      try {
+         return (JSON.parse(info) as { name?: string }).name;
+      } catch {
+         return undefined;
+      }
+   };
+   return {
+      ...compiled,
+      ...(compiled.sources
+         ? {
+              sources: compiled.sources.filter(
+                 (s) => !locked.has(s.name ?? ""),
+              ),
+           }
+         : {}),
+      ...(compiled.queries
+         ? {
+              queries: compiled.queries.filter(
+                 (q) => !q.sourceName || !locked.has(q.sourceName),
+              ),
+           }
+         : {}),
+      ...(compiled.sourceInfos
+         ? {
+              sourceInfos: compiled.sourceInfos.filter(
+                 (info) => !locked.has(nameOfInfo(info) ?? ""),
+              ),
+           }
+         : {}),
+   };
 }
 
 export class ModelController {
@@ -97,9 +150,10 @@ export class ModelController {
                   return undefined;
                }),
          ]);
-         return sourceText === undefined
-            ? compiled
-            : { ...compiled, sourceText };
+         const shown = options.givens
+            ? withoutLockedSources(compiled, options.givens)
+            : compiled;
+         return sourceText === undefined ? shown : { ...shown, sourceText };
       } catch (error) {
          // Re-throw these as-is, so they keep their 404.
          if (

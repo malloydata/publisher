@@ -136,6 +136,16 @@ export function redactSensitive(
    return result;
 }
 
+/** The W3C trace id of a request, from its `traceparent` header, when it carries one. */
+export function traceIdOf(req: {
+   headers: Record<string, string | string[] | undefined>;
+}): string | undefined {
+   const traceparent = req.headers["traceparent"];
+   return extractTraceIdFromTraceparent(
+      typeof traceparent === "string" ? traceparent : undefined,
+   );
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
    const resJson = res.json;

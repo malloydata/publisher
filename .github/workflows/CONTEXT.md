@@ -32,8 +32,8 @@ then runs `package-versions.spec.ts` once more against a server it starts with
 `PUBLISHER_PACKAGE_VERSIONING=on` (the spec skips itself on the first pass, and fails rather than
 skips on the second if versioning is not on). `python-sdk.yml` is `workflow_call`-only (plus a
 manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
-`release.yml`, which publishes it to PyPI from a job of its own. Nothing has been uploaded yet, so read *Publishing to PyPI* below before cutting the
-release that would be its first.
+`release.yml`, which publishes it to PyPI from a job of its own. It has published there since
+0.10.5 (2026-10-31); *Publishing to PyPI* below covers how.
 
 **Not every publish workflow is purely a publish workflow, so a red check on a PR that touches one
 package can come from its own file rather than from `build.yml`.** Know which job:
@@ -68,24 +68,25 @@ the other two npm trains each have their own.
 **`0.MINOR.PATCH` for every published package, while pre-1.0. MINOR is a breaking
 change; PATCH is everything else.**
 
-**Not yet in force on the `sdk`/`app`/`server` line.** As of this writing that
-train's `latest` is `0.0.250`; the policy takes effect at its first minor release,
-which is **intended to be `0.2.0`** — skipping `0.1.x` because `skills` occupies
-it and two trains sharing a minor invites reading one for the other. Until that
-release is cut, `prepare` will keep deriving `0.0.251`, `0.0.252`, … and that is
-correct; do not "fix" it with an explicit version. The move itself needs
+**In force on the `sdk`/`app`/`server` line since `0.2.0`** (2026-08-28), which
+followed `0.0.250` directly, skipping `0.1.x` because `skills` occupies it and two
+trains sharing a minor invites reading one for the other. The move needed
 `-f version=0.2.0`, because a minor bump computed from a `0.0.x` floor lands on
-`0.1.0`. `skills` has always been on `0.1.x` and so already follows the policy.
+`0.1.0`; on the `0.x` line an ordinary `bump=minor` gives the policy's number
+(`0.11.0` was a `bump=minor` off `0.10.7`). `skills` has always been on `0.1.x` and
+so already follows the policy, and `malloy-publisher-sdk` (Python) follows
+sdk/app/server's number.
 
-Two of the other three do not, and the checks in Part 1 do not make them: they
-enforce *ahead of the registry*, not the shape of the number. `create-malloy-package`
-is on `0.0.8`, so `^` pins it exactly, the same trap the policy exists to close.
-It is cheap to move, on its next release, and not urgent: the scaffolder has no
-dependents. `malloy-publisher-sdk` (Python) follows sdk/app/server's number, so it
-follows whatever that line does.
+`create-malloy-package` does not: it is still on `0.0.x`, so `^` pins it exactly,
+the same trap the policy exists to close. Nothing moves it on its own, because the
+release-time version decision is one patch above the highest published version,
+never the shape of the number; moving it is a hand dispatch with `-f version=` (see
+*Skills and create-malloy-package version at release time*). Not urgent: the
+scaffolder has no dependents.
 
 `bun.lock` is a fourth reader of these numbers and is deliberately left alone. It
-records `0.0.209` for the three workspace packages, so once a release PR merges
+records an older version for the three workspace packages (`0.9.16` when 0.11.0
+shipped), so once a release PR merges
 `main` disagrees with the manifests it locked. That is benign — the entries
 are workspace links, not registry resolutions, and `bun install --frozen-lockfile`
 does not compare them — so `prepare` does not touch the lockfile, which keeps the
@@ -124,7 +125,7 @@ floor; `-f version=` still wins outright. The level is applied once and the walk
 past an already-taken number is by patch, so `bump=minor` colliding with an
 existing `0.3.0` gives `0.3.1` rather than abandoning the `0.3.x` line. Note a
 minor bump is computed from npm's current `latest`, so off a `0.0.x` floor it
-lands on `0.1.0` — which is why the pending move to `0.2.0` needs an explicit
+lands on `0.1.0` — which is why the move to `0.2.0` was made with an explicit
 version.
 
 Prereleases keep the hyphen convention: `npm-sdk.yml` routes a hyphenated version
@@ -487,7 +488,10 @@ listed token scope as the likely cause. The log says otherwise: the step's envir
 `PYPI_TOKEN` secret at all. twine sent an empty password. Trusted publishing removes the secret
 entirely.
 
-Preconditions CI cannot check, for the release that carries the first upload, in this order:
+The first upload landed with 0.10.5 on 2026-10-31, so every precondition below is met and the list
+is kept as history. It matters again only if the project or its trusted publisher is ever recreated.
+
+Preconditions CI could not check, for the release that carried the first upload, in this order:
 
 - **The `pypi` environment, restricted to `main`**, created as above before anything on PyPI
   names it.
@@ -499,8 +503,8 @@ Preconditions CI cannot check, for the release that carries the first upload, in
   identities cannot create new projects". `publish-python-sdk` checks the wheel's name before
   uploading for that reason.
 - **The name is not reserved by the pending publisher.** PyPI: a pending publisher "does not create
-  a project or reserve a project's name until it is actually used to publish". `malloy-publisher-sdk`
-  404s today; anyone can take it before the first upload.
+  a project or reserve a project's name until it is actually used to publish". Until 0.10.5 landed,
+  `malloy-publisher-sdk` 404'd and anyone could have taken it.
 - **The first upload is the release's version**, because `prepare` stamps it into
   `pyproject.toml` (lockstep with sdk/app/server). `main` declares the last released version, as
   the three `package.json` files do, and the release PR merges each new one back. `Release sync`

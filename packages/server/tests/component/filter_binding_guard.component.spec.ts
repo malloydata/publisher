@@ -299,6 +299,7 @@ async function buildGatedModel(
 describe("filter binding guard — #(access_filter) row-level gate stays bound to its original field", () => {
    it("a row filter stays bound when the entry point is re-extended (except+rename, model-declared)", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -327,6 +328,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
 
    it("a row filter stays bound when the entry point is re-extended (accept+rename, model-declared)", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -355,6 +357,7 @@ source: w_misbind is gated_parent extend { accept: id, val, n, owner } extend { 
 
    it("a row filter stays bound through a transitive dimension reference (except+rename)", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -385,6 +388,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
    it("a row filter stays bound when the caller declares a named derivation (except+rename, caller-text)", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -416,6 +420,7 @@ run: mine -> { group_by: id; aggregate: n is count() }
    it("a row filter stays bound across an import boundary (except+rename, package-derived)", async () => {
       const base = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -453,6 +458,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
    it("renaming a field that no filter reads still serves (negative)", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -484,6 +490,7 @@ source: renamed_unrelated is gated_parent extend { rename: label is val }
    it("a query_source entry point still serves (negative)", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -515,6 +522,7 @@ source: qchild is gated_parent -> { group_by: id, org_id, val; aggregate: n is c
    it("`#(authorize)` lock, which reads no field, is unaffected by a rename on the entry point", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -868,6 +876,7 @@ run: filtered_parent extend { except: val } extend { rename: val is note } -> { 
 describe("filter binding guard — caller-text inline extend, no separate source: declaration (headline vector)", () => {
    const MODEL_TEXT = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
   TENANT :: string
@@ -1052,6 +1061,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
             "m.malloy": `##! experimental.givens
 ##! experimental.access_modifiers
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1156,6 +1166,7 @@ source: base_filtered is duckdb.table('orgtable') extend {
    it("serves for a #(access_filter)-gated source", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1215,6 +1226,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1426,6 +1438,7 @@ import { derived } from "b.malloy"
          {
             "a.malloy": `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1519,6 +1532,7 @@ describe("filter binding guard — an unresolvable executed struct denies rather
       const { model, cleanup } = await createModel(
          `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1591,6 +1605,7 @@ import { derived } from "b.malloy"
    const SEL_GATED = {
       "a.malloy": `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1743,6 +1758,7 @@ query: q1 is base_filtered extend { except: org_id } extend { rename: org_id is 
       const { model, cleanup } = await createModel(
          `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1805,6 +1821,7 @@ describe("filter binding guard — a derived source's own unrelated annotation n
    // should deny.
    const GATE_FILE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1979,6 +1996,7 @@ describe("filter binding guard — a caller-written join into a row-gated source
    // distinct from every other test in this file.
    const MODEL = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 

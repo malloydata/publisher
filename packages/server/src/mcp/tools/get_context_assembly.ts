@@ -24,7 +24,8 @@ import type {
    ResultEntity,
 } from "./get_context_types";
 import { enterJoin, sourceContextKey } from "./package_entities";
-import { compareText, round4 } from "./retrieval_shared";
+import { compareText } from "../../compare_text";
+import { round4 } from "./retrieval_shared";
 
 /**
  * Whether a source row carries a real verdict: a model rated it (source match

@@ -50,6 +50,7 @@ INSERT INTO grandtable VALUES (1, 1), (2, 1), (3, 2), (4, 2);
 
 const MODEL_TEXT = `##! experimental { givens parameters }
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -593,6 +594,7 @@ source: gated_min is duckdb.table('orgtable') extend {
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 

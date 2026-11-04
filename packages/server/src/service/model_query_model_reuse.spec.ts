@@ -269,6 +269,7 @@ describe("one QueryModel per materializer a query compiles against", () => {
       async () => {
          const { model, duckdb } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -304,6 +305,7 @@ source: secrets is duckdb.sql("SELECT 1 AS one") extend {}
       async () => {
          const { model, duckdb } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: string[]
 

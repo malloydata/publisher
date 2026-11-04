@@ -380,6 +380,12 @@ A proxy makes the server open an outbound SSH tunnel to a tenant-configured host
 connection configuration is the authorization boundary; host-key pinning is the trust
 control on the tunnel itself, and is required unless the deployment opts out.
 
+A tunnel that drops is detected, logged and rebuilt on the next query. Queries in flight at the
+drop fail with a connection error. A query that was waiting for a free session when the tunnel
+dropped waits out its 30 s and then fails with the "no free database session" error, which
+blames load; the tunnel-closed warning in the log is the real cause, and a retry gets the
+rebuilt tunnel.
+
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
