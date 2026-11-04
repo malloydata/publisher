@@ -174,6 +174,7 @@ source: tracks is base_source extend {
          path.join(rootDir, "env", "pkg", "broken.malloynb"),
          `>>>malloy
 ##! experimental.givens
+#(secure)
 given:
   ROLE :: string is 'x'
 

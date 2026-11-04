@@ -32,6 +32,7 @@ const PUBLISHER_JSON = JSON.stringify({
 // is locked by a ROW-FIELD condition (`org_id`), not just a given.
 const MODEL = `##! experimental { givens composite_sources }
 
+#(secure)
 given:
   ROLE :: string
   GROUPS :: number[]
@@ -1109,6 +1110,7 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
             path.join(stagingPath, "secret.malloy"),
             `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 

@@ -9,6 +9,13 @@ import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
+import {
+   findIrSource,
+   isClassificationLine,
+   readClassification,
+   readSourceClassifications,
+   type FieldClassification,
+} from "../../service/classification";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
 import type { PipelineSettings } from "./get_context_pipeline";
@@ -67,8 +74,42 @@ export function docText(
    const doc = docOnlyText(annotations);
    if (doc) return doc;
    if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
+   // A `#(classification)` note has its own card field, so it is not doc text.
+   const lines = annotations
+      .map((a) => (typeof a === "string" ? a : a.value))
+      .filter((line) => !isClassificationLine(line));
    return lines.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The classification an entity reports: the lineage's answer for the field's
+ * path when the compiled model is at hand (declared, or inferred from the
+ * fields it reads, with those inputs), else the field's own annotation.
+ */
+function classificationOf(
+   lineage: Map<string, FieldClassification> | undefined,
+   path: string,
+   annotations?: Array<string | { value: string }>,
+): Pick<
+   Entity,
+   "classifications" | "classificationInferred" | "classificationInputs"
+> {
+   const known = lineage?.get(path);
+   if (known) {
+      return {
+         ...(known.classifications.length > 0
+            ? { classifications: known.classifications }
+            : {}),
+         ...(known.inferred.length > 0
+            ? { classificationInferred: true as const }
+            : {}),
+         ...(known.inputs.length > 0
+            ? { classificationInputs: known.inputs }
+            : {}),
+      };
+   }
+   const { values } = readClassification(annotations);
+   return values.length > 0 ? { classifications: values } : {};
 }
 
 /**
@@ -433,6 +474,8 @@ function collectJoinedFields(args: {
    depth: number;
    nextId: () => string;
    out: Entity[];
+   /** The entry source's lineage, keyed by dotted path; absent for a stand-in. */
+   lineage?: Map<string, FieldClassification>;
 }): void {
    const {
       fields,
@@ -443,6 +486,7 @@ function collectJoinedFields(args: {
       depth,
       nextId,
       out,
+      lineage,
    } = args;
    for (const field of fields) {
       if (field.kind === "join") {
@@ -465,6 +509,11 @@ function collectJoinedFields(args: {
          modelPath,
          doc: docText(field.annotations),
          embedDoc: docOnlyText(field.annotations),
+         ...classificationOf(
+            lineage,
+            `${joinPath}.${field.name}`,
+            field.annotations,
+         ),
          joinPath,
          relationship: fanout,
          ...(field.kind === "measure" || field.kind === "dimension"
@@ -553,6 +602,13 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             sourceName,
             sourceTextFor,
          );
+         // What each reachable field is, declared or by lineage. Absent for a
+         // stand-in with no compiled model; fields then report their own note.
+         const lineage = modelDef
+            ? readSourceClassifications(
+                 findIrSource(modelDef, sourceName)?.fields,
+              )
+            : undefined;
          // Keyed per (model path, source) like the card, so a card never shows
          // another file's givens or gates.
          if (!governance.has(governanceKey)) {
@@ -656,6 +712,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   depth: 1,
                   nextId: () => String(n++),
                   out: entities,
+                  lineage,
                });
                continue;
             }
@@ -679,7 +736,14 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                embedDoc: docOnlyText(field.annotations),
                ...(field.kind === "view"
                   ? {}
-                  : { dataType: malloyType(field) }),
+                  : {
+                       dataType: malloyType(field),
+                       ...classificationOf(
+                          lineage,
+                          field.name,
+                          field.annotations,
+                       ),
+                    }),
                ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
                ...(!isView && fieldProvenance?.aliasOf
                   ? { aliasOf: fieldProvenance.aliasOf }
@@ -910,6 +974,20 @@ function collapseAliases(entities: Entity[]): Entity[] {
          if (donor) {
             keep.doc = donor.doc;
             keep.embedDoc = donor.embedDoc;
+         }
+      }
+      // A class belongs to the column, so a spelling's class is the group's:
+      // `state is st` classified and `raw_state is st` not are one column
+      // with one class, whichever spelling survives.
+      if (!keep.classifications) {
+         const donor = members.find((e) => e !== keep && e.classifications);
+         if (donor) {
+            keep.classifications = donor.classifications;
+            if (donor.classificationInferred)
+               keep.classificationInferred = true;
+            if (donor.classificationInputs) {
+               keep.classificationInputs = donor.classificationInputs;
+            }
          }
       }
       const folded = members.filter((e) => e !== keep);

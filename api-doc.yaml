@@ -2133,6 +2133,21 @@ paths:
             $ref: "#/components/schemas/PathPattern"
         - $ref: "#/components/parameters/versionId"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
+        - name: givens
+          in: query
+          required: false
+          description: >-
+            The caller's givens as the trusted tier set them, one JSON object
+            (`{"ROLES":["clinician"]}`). A source whose `#(authorize)` lock
+            cannot admit the caller on the `#(secure)` givens supplied, or
+            reads a secure given not supplied, is omitted from `sources`,
+            `queries` and `sourceInfos`, as a source locked with `false` is.
+            Plain givens and `#(access_filter)` row filters hide nothing.
+            Discovery only: the query route's gates decide what is served
+            either way. Absent: every published source. Not a JSON object:
+            400.
+          schema:
+            type: string
       responses:
         "200":
           description: Compiled Malloy model
@@ -4985,7 +5000,14 @@ components:
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the
-                  message every path; `warn`). The per-file
+                  message every path; `warn`). `classification-coverage`: a
+                  published source with a dimension or measure that carries no
+                  `#(classification)` while some field in the package does (one
+                  per source, `model` naming its file and `subject` the source;
+                  `warn`; see docs/classification.md).
+                  `classification-malformed`: a `#(classification)` annotation
+                  that names no single class (one per field, `subject` the
+                  source; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
@@ -5396,6 +5418,8 @@ components:
             body carrying it is ignored.
           items:
             $ref: "#/components/schemas/SecureGivenSummary"
+        classification:
+          $ref: "#/components/schemas/ClassificationSummary"
 
     AgentSchedule:
       type: object
@@ -5565,6 +5589,57 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
+
+    ClassificationSummary:
+      type: object
+      readOnly: true
+      required: [sources]
+      description: >-
+        Server-computed, read-only, on a single package read
+        (`GET …/packages/{packageName}`) only, never on a listing: for each
+        published entry point, the classes its `#(carries)` declares and how
+        many of its fields carry each class (`#(classification)`, declared or
+        inherited). Covers only the sources discovery shows, so it reveals
+        nothing curation hides; a source locked to every caller is left out.
+        A field's own classes, and what they were inherited from, are on its
+        `get_context` card. Absent when no published field carries a class.
+        It cannot be set: a PATCH body carrying it is ignored.
+      properties:
+        sources:
+          type: array
+          description: Sorted by model path, then name.
+          items:
+            $ref: "#/components/schemas/ClassificationSummarySource"
+
+    ClassificationSummarySource:
+      type: object
+      readOnly: true
+      required: [modelPath, name, fields, unclassified, classCounts]
+      properties:
+        modelPath:
+          type: string
+        name:
+          type: string
+        carries:
+          type: array
+          description: >-
+            The classes the source's `#(carries)` lists, sorted, inherited
+            through `extend` like a gate. Absent when it declares none.
+          items:
+            type: string
+        fields:
+          type: integer
+          description: The dimensions and measures a caller can reach from the source, through joins included.
+        unclassified:
+          type: integer
+          description: How many of those carry no class.
+        classCounts:
+          type: object
+          description: >-
+            How many of those fields carry each class, keyed by class. A field
+            under several classes counts under each.
+          additionalProperties:
+            type: integer
 
     SkillSummary:
       type: object

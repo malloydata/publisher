@@ -44,9 +44,9 @@ const MODEL = `##! experimental.givens
 ## base note, which a document must never inherit
 ## artifact { layout=grid title="Base" }
 
-given:
-  ROLE :: string
-  REGION :: filter<string> is f''
+#(secure)
+given: ROLE :: string
+given: REGION :: filter<string> is f''
 
 #(secure)
 given: TENANT :: string is 'w'
@@ -279,6 +279,7 @@ source: derived is gated extend { measure: n is count() }
       beforeEach(async () => {
          await install({
             "model.malloy": `##! experimental.givens
+#(secure)
 given:
   TENANTS :: string[]
 #(access_filter) tenant in $TENANTS
@@ -608,6 +609,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       beforeEach(async () => {
          await install({
             "index.malloy": `##! experimental.givens
+#(secure)
 given:
   ROLE :: string
 source: customers is duckdb.sql("select 1 as id") extend {

@@ -128,6 +128,13 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import { classificationLeaks, classificationWarnings } from "./classification";
+import {
+   classificationSummary,
+   type ApiClassificationSummary,
+} from "./classification_summary";
+import { joinBypasses } from "./join_bypass";
+import { insecureGateGivens } from "./gate_given_warnings";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -299,6 +306,13 @@ export class Package {
       | {
            forModels: Map<string, Model>;
            value: readonly ApiSecureGivenSummary[] | undefined;
+        }
+      | undefined;
+   /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
+   private classificationSummaryMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: ApiClassificationSummary | undefined;
         }
       | undefined;
    private packagePath: string;
@@ -1435,6 +1449,24 @@ export class Package {
    }
 
    /**
+    * For each published entry point, its `#(carries)` and its field count by
+    * class, or `undefined` when nothing published is classified. Walks every
+    * published field, so it is memoized per models map and kept OFF
+    * {@link getPackageMetadata} (the `/status` poll path): only the
+    * single-package read attaches it.
+    */
+   public getClassificationSummary(): ApiClassificationSummary | undefined {
+      const memo = this.classificationSummaryMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = classificationSummary(forModels, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      this.classificationSummaryMemo = { forModels, value };
+      return value;
+   }
+
+   /**
     * ON THE `/status` POLL PATH: runs for every package every few seconds.
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
@@ -1485,6 +1517,9 @@ export class Package {
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
+         ...classificationWarnings(this.models, (modelPath) =>
+            this.isListedModelPath(modelPath),
+         ),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2061,6 +2096,41 @@ export class Package {
    }
 
    /**
+    * REJECTION messages for every field a `#(carries)` surface exposes outside
+    * its list (docs/classification.md), one per line, empty when there are
+    * none. Strict at load, like an invalid incremental policy: a surface that
+    * says what it carries must not serve what it does not.
+    */
+   public formatClassificationLeaks(): string {
+      return classificationLeaks(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every author join from a published source that
+    * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
+    * when there are none. Strict at load, like a `#(carries)` leak.
+    */
+   public formatJoinBypasses(): string {
+      return joinBypasses(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every published source gated on a given that is
+    * not `#(secure)` (`gate_given_warnings.ts`), one per line, empty when
+    * there are none. Strict at load: a gate a caller can satisfy by sending a
+    * value is a filter, not a control.
+    */
+   public formatInsecureGateGivens(): string {
+      return insecureGateGivens(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
     * REJECTION messages for `#@ preaggregate` declarations that cannot take
     * effect (rules in preaggregation_validation), strict at publish AND load:
     * pre-aggregation is invisible when it works, so an ignored declaration
@@ -2478,6 +2548,26 @@ export class Package {
       return await model.getFileText(this.packagePath);
    }
 
+   /**
+    * Whether `listModels()` lists a model: a `.malloy` file that is not a
+    * report, on the surface when the package has one (or hidden too, with
+    * `includeHidden`). The one answer to "is this model published", shared
+    * with the lints that read only published models.
+    */
+   private isListedModelPath(
+      modelPath: string,
+      includeHidden: boolean = false,
+   ): boolean {
+      const exploreSet = this.exploreSet();
+      if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+      // A linear report is listed as a report, surface or not.
+      if (this.getReportLayout(modelPath) === "linear") return false;
+      // A grid report is listed as a report, even when `explores` lists it.
+      if (!exploreSet) return true;
+      if (this.isServedReport(modelPath)) return false;
+      return includeHidden || exploreSet.has(modelPath);
+   }
+
    public async listModels(
       options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
@@ -2489,18 +2579,12 @@ export class Package {
          !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
-            .filter((modelPath) => {
-               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-               // A linear report is listed as a report, surface or not.
-               if (this.getReportLayout(modelPath) === "linear") return false;
-               // A grid report is listed as a report, even when `explores` lists it.
-               if (!exploreSet) return true;
-               if (this.isServedReport(modelPath)) return false;
-               return (
-                  options.includeHiddenFilesAndSources ||
-                  exploreSet.has(modelPath)
-               );
-            })
+            .filter((modelPath) =>
+               this.isListedModelPath(
+                  modelPath,
+                  options.includeHiddenFilesAndSources,
+               ),
+            )
             .map(async (modelPath) => {
                let error: string | undefined;
                try {
@@ -3482,8 +3566,17 @@ export class Package {
     * cannot store a snapshot that outlives the models it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (!("secureGivens" in packageMetadata)) return packageMetadata;
-      const { secureGivens: _computed, ...stored } = packageMetadata;
+      if (
+         !("secureGivens" in packageMetadata) &&
+         !("classification" in packageMetadata)
+      ) {
+         return packageMetadata;
+      }
+      const {
+         secureGivens: _computed,
+         classification: _summary,
+         ...stored
+      } = packageMetadata;
       return stored;
    }
 

@@ -14,6 +14,7 @@ import {
 } from "../../src/test_helpers/temp_package";
 
 const DASHBOARD = `##! experimental.givens
+#(secure)
 given:
   BRAND :: string is 'a'
   REGION :: string is 'x'

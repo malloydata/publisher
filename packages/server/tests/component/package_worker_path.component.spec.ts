@@ -173,6 +173,7 @@ run: s -> { where: d ~ @2025 aggregate: n }
          path.join(tempDir, "gated.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -239,6 +240,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -271,6 +273,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
             `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -304,6 +307,7 @@ run: plain -> { aggregate: c }
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -431,6 +435,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          path.join(tempDir, "split.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
   ROLE :: string[]
@@ -471,6 +476,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          path.join(tempDir, "badgate.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -501,6 +507,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          path.join(tempDir, "og_base.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -514,6 +521,7 @@ source: ungated_deep is ${table} extend {
          path.join(tempDir, "og_gate.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 
@@ -1121,6 +1129,7 @@ run: mid_ungated -> { aggregate: c }`,
             `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given:
   ORG :: number
 

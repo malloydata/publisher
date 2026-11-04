@@ -57,6 +57,8 @@ import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 import type { PackageIndex, ResolvedRequest } from "./get_context_types";
 import { indexSettingsOf } from "./index_settings";
 import { getPackageIndex, sourceContextKey } from "./package_entities";
+import { lockedForCaller } from "../../service/discovery_lock";
+import type { GivenValue } from "@malloydata/malloy";
 import {
    currentSummaryHashes,
    loadSourceSummaries,
@@ -89,7 +91,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why the model kept it).
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, classifications, relationship, join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why kept).
 ranking, returned of total_available sources, next_offset on a listing, warnings[]. Over 35,000 characters, whole sources are dropped and warnings say so.
 below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon. Errors carry retrieval_reason; "llm-stage-failed" names the failed step in retrieval_stage.`;
 
@@ -124,6 +126,33 @@ async function staleNoteFor(
    return staleNote;
 }
 
+/**
+ * The (model path, source) keys of every published source whose lock cannot
+ * admit a caller holding `givens`, over every listed model of the package.
+ */
+async function lockedSourceKeys(
+   pkg: PackageIndex["pkg"],
+   givens: Record<string, GivenValue>,
+): Promise<Set<string>> {
+   const keys = new Set<string>();
+   const models = await pkg.listModels();
+   for (const apiModel of models) {
+      const modelPath = apiModel.path;
+      if (!modelPath) continue;
+      const model = pkg.getModel(modelPath);
+      let sources;
+      try {
+         sources = model?.getSources?.();
+      } catch {
+         continue;
+      }
+      for (const name of lockedForCaller(sources, givens)) {
+         keys.add(sourceContextKey(modelPath, name));
+      }
+   }
+   return keys;
+}
+
 /** Tier 3: nothing to rank, so enumerate what the targets name. */
 function runListing(
    ctx: PipelineContext,
@@ -144,7 +173,9 @@ function runListing(
          // card rather than competing for an entity slot.
          ((sourceName && e.kind === "source" && e.source === sourceName) ||
             request.kinds.has(e.kind)) &&
-         matchesScope(e, request),
+         matchesScope(e, request) &&
+         // A source the caller cannot enter spends no slot and is not counted.
+         !droppedSources.has(sourceContextKey(e.modelPath, e.source ?? "")),
    );
    // The limit caps entities; a drill-down's source row becomes the card and
    // does not spend a slot. Only a pure browse has a stable order, so only it
@@ -284,6 +315,19 @@ async function runContextQuery(
       environmentName,
       packageName,
    );
+   // Discovery under a lock: with the caller's givens in hand, a source whose
+   // lock cannot admit them on the secure givens is omitted like a deny-all
+   // source. The cached index is not touched; the request sees a copy whose
+   // dropped set is wider. See service/discovery_lock.ts.
+   if (resolved.givens) {
+      const locked = await lockedSourceKeys(pkgIndex.pkg, resolved.givens);
+      if (locked.size > 0) {
+         pkgIndex = {
+            ...pkgIndex,
+            droppedSources: new Set([...pkgIndex.droppedSources, ...locked]),
+         };
+      }
+   }
    const ctx: PipelineContext = {
       request: resolved,
       environmentStore,
