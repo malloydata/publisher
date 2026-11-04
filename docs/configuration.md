@@ -592,10 +592,12 @@ accents, punctuation and spacing, a partial phrase, and a typo (one edit in a wo
 two in a longer one). With an embedding provider, `fcj.valueEmbeddings` and `egress.preset: "full"` they
 are also matched by meaning; under the `default` preset no stored value leaves the server. A dimension no one tagged `#(index)` has no stored values to match.
 
-A read the server refuses because it is at `PUBLISHER_MAX_CONCURRENT_QUERIES`, or one that times out, leaves
-that dimension's values out of the build. The index still serves, the server log names the dimension, and
-the first question after a one-minute cool-down builds the index again in the background while the old one
-keeps answering. Any other failed read (a query error, a missing table) is skipped until the package
+Reads run one at a time, at most 60 seconds each and 5 minutes for the whole build. A read the server
+refuses because it is at `PUBLISHER_MAX_CONCURRENT_QUERIES`, one that times out, and one the 5 minutes did
+not reach leave that dimension's values out of the build. The index still serves, the server log names the
+dimension, and the first question after a cool-down builds the index again in the background, reading only
+those dimensions, while the old one keeps answering. The cool-down is one minute and doubles each time a
+build leaves values unread, up to an hour. Any other failed read (a query error, a missing table) is skipped until the package
 reloads, since reading again would fail the same way. A dimension that holds no values is not a failure.
 
 **Access.** A value is data, and a gate applies to it as it does to `execute_query`. A source with
