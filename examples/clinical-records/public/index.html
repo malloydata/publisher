@@ -104,7 +104,8 @@ SPDX-License-Identifier: MIT
         --hist-h: 160px;
         --col-surface: 220px;
         --page-w: 1120px;
-        --verdict-h: 132px;
+        /* The settled height, with the source link: no growth as it fills. */
+        --verdict-h: 153px;
         --col-control: 72px;
         --col-aside: 300px;
         --card-min: 320px;
@@ -356,11 +357,12 @@ SPDX-License-Identifier: MIT
          do not move when the governance export fills the rows. */
       .matrix {
         table-layout: fixed;
-        min-width: 640px;
+        min-width: 720px;
       }
       .matrix thead th:first-child,
       .matrix th[scope="row"] {
-        width: var(--col-surface);
+        /* Room for the chevron, the name on one line and the hint. */
+        width: calc(var(--col-surface) + 100px);
       }
       .matrix th[scope="row"] {
         padding: 0;
@@ -375,24 +377,67 @@ SPDX-License-Identifier: MIT
         box-sizing: border-box;
         cursor: pointer;
         display: flex;
-        flex-direction: column;
+        align-items: center;
+        gap: var(--sp-3);
         width: 100%;
-        position: relative;
-        padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-5);
+        padding: var(--sp-2) var(--sp-3);
         min-height: var(--row-h);
-        justify-content: center;
       }
-      .row-toggle::before {
-        content: "▸";
-        color: var(--text-soft);
+      .row-text {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+      }
+      /* A real control, not a glyph: a bordered chevron that turns when open. */
+      .row-chevron {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        border: 1px solid var(--border-strong, var(--border));
+        border-radius: 6px;
+        background: var(--surface);
+        position: relative;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .row-chevron::after {
+        content: "";
         position: absolute;
-        left: var(--sp-2);
-        top: 50%;
-        transform: translateY(-50%);
-        font-size: var(--fs-xs);
+        left: 7px;
+        top: 6px;
+        width: 6px;
+        height: 6px;
+        border-right: 2px solid var(--text-muted);
+        border-bottom: 2px solid var(--text-muted);
+        transform: rotate(-45deg);
+        transition: transform 0.15s;
       }
-      .is-open .row-toggle::before {
-        content: "▾";
+      .is-open .row-chevron::after {
+        transform: rotate(45deg);
+        left: 7px;
+        top: 5px;
+      }
+      .row-hint {
+        flex: none;
+        font-size: var(--fs-xs);
+        color: var(--accent);
+        font-weight: var(--fw-semi);
+        white-space: nowrap;
+      }
+      .domain-row {
+        cursor: pointer;
+      }
+      .domain-row:hover > th,
+      .domain-row.is-open > th {
+        background: var(--surface-2);
+      }
+      .domain-row:hover .row-chevron,
+      .is-open .row-chevron {
+        border-color: var(--accent);
+      }
+      .domain-row:hover .row-chevron::after,
+      .is-open .row-chevron::after {
+        border-color: var(--accent);
       }
       .row-toggle:focus-visible {
         outline: 2px solid var(--accent);
@@ -987,6 +1032,9 @@ SPDX-License-Identifier: MIT
           font-size: var(--fs-lg);
           white-space: nowrap;
         }
+        .verdict {
+          min-height: 178px;
+        }
         .access-wrap,
         .deid,
         .inv-meta {
@@ -995,6 +1043,128 @@ SPDX-License-Identifier: MIT
         .scroll-x {
           overflow-x: auto;
         }
+      }
+      /* How this was computed */
+      .run-total-line {
+        display: block;
+      }
+      .lede-runs {
+        /* Three lines at phone width: the count arrives after the text wraps. */
+        min-height: 3lh;
+        color: var(--text-muted);
+        font-size: var(--fs-sm);
+        margin-top: var(--sp-2);
+      }
+      /* Hold the summary line the panel will fill, so it does not push the page. */
+      .source-slot[id] {
+        min-height: 39px;
+      }
+      .source {
+        margin-top: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius, 10px);
+        background: var(--surface);
+      }
+      .source > summary {
+        cursor: pointer;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: var(--sp-2) var(--sp-3);
+        padding: var(--sp-2) var(--sp-3);
+        list-style: none;
+      }
+      .source > summary::-webkit-details-marker {
+        display: none;
+      }
+      .source > summary::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-right: 2px solid var(--accent);
+        border-bottom: 2px solid var(--accent);
+        transform: rotate(-45deg) translateY(-1px);
+        transition: transform 0.15s;
+      }
+      .source[open] > summary::before {
+        transform: rotate(45deg) translateY(-2px);
+      }
+      .src-title {
+        font-weight: var(--fw-semi);
+        color: var(--accent);
+      }
+      .src-count {
+        color: var(--text-muted);
+        font-size: var(--fs-sm);
+      }
+      .source > summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+      .src-lead {
+        margin: 0;
+        padding: 0 var(--sp-3) var(--sp-3);
+        color: var(--text-muted);
+        max-width: 72ch;
+      }
+      .src-group {
+        border-top: 1px solid var(--border);
+        padding: var(--sp-3);
+      }
+      .src-kind {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        font-size: var(--fs-sm);
+        color: var(--text-muted);
+        margin-bottom: var(--sp-2);
+      }
+      .src-code {
+        margin: 0 0 var(--sp-2);
+        padding: var(--sp-2) var(--sp-3);
+        background: var(--surface-2);
+        border-radius: 6px;
+        overflow-x: auto;
+        font-size: var(--fs-sm);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .src-runs {
+        font-size: var(--fs-sm);
+      }
+      .src-runs td:nth-child(4) {
+        white-space: nowrap;
+      }
+      .src-runs code {
+        font-size: var(--fs-xs);
+        word-break: break-all;
+      }
+      .src-runs tr.is-refused td:nth-child(3) {
+        color: var(--text-muted);
+      }
+      .verdict-source {
+        all: unset;
+        grid-column: 1 / -1;
+        justify-self: start;
+        cursor: pointer;
+        margin-top: var(--sp-2);
+        font-size: var(--fs-xs);
+        color: var(--accent);
+        font-weight: var(--fw-semi);
+      }
+      .verdict-source:hover {
+        text-decoration: underline;
+      }
+      .verdict-source:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .inv-model {
+        margin-bottom: var(--sp-3);
+      }
+      .inv-model h4 code {
+        text-transform: none;
+        letter-spacing: normal;
       }
     </style>
     <script src="./app/reserve.js"></script>
@@ -1018,7 +1188,14 @@ SPDX-License-Identifier: MIT
         <p class="lede">
           What this model serves, checked against the policy, read live from the
           model the server is serving now. Every number on this page comes from
-          the governance export or from a query the server answered.
+          the governance export or from a Malloy query the server answered.
+        </p>
+        <p class="lede-runs" id="lede-runs" data-reserve>
+          Open <em>How this was computed</em> under any section for the exact
+          request, the identity it was sent as, and the answer.
+          <span class="run-total-line"
+            >This visit: <strong id="run-total">counting…</strong></span
+          >
         </p>
       </header>
 
@@ -1074,7 +1251,7 @@ SPDX-License-Identifier: MIT
           <p class="section-sub">
             Fields reachable from each domain, by class, including fields
             reached through joins and fields whose class was inferred from what
-            they read. Open a domain for its gates, its controls and every
+            they read. Select a domain to open its annotations, gates, controls and every
             field's lineage.
           </p>
           <div class="card scroll-x" id="card-matrix" data-reserve>
@@ -1098,6 +1275,7 @@ SPDX-License-Identifier: MIT
               </tbody>
             </table>
           </div>
+          <div class="source-slot" id="src-matrix" data-reserve></div>
         </section>
 
         <section aria-labelledby="h-access">
@@ -1120,6 +1298,7 @@ SPDX-License-Identifier: MIT
               <p class="muted">Select a cell.</p>
             </aside>
           </div>
+          <div class="source-slot" id="src-access" data-reserve></div>
         </section>
 
         <section aria-labelledby="h-deid">
@@ -1152,6 +1331,7 @@ SPDX-License-Identifier: MIT
               <div class="stats" id="stats-deid" data-reserve></div>
             </div>
           </div>
+          <div class="source-slot" id="src-deid" data-reserve></div>
         </section>
 
         <section aria-labelledby="h-controls">
@@ -1182,6 +1362,7 @@ SPDX-License-Identifier: MIT
               </tbody>
             </table>
           </div>
+          <div class="source-slot" id="src-controls" data-reserve></div>
         </section>
 
         <section aria-labelledby="h-violations">
@@ -1198,6 +1379,24 @@ SPDX-License-Identifier: MIT
             data.
           </p>
           <ul class="violations" id="violations" data-reserve></ul>
+          <div class="source-slot">
+            <details class="source">
+              <summary>
+                <span class="src-title">How this was computed</span>
+                <span class="src-count">recorded when the example was built</span>
+              </summary>
+              <p class="src-lead">
+                Not live. Each variant replaces the package's
+                <code>domains.malloy</code> with the file in
+                <code>violations/</code>; a refusal is the message Publisher
+                answered when it loaded that file, and the two that load are
+                caught by the compliance review
+                (<code>compliance.py check</code>), which fails the controls
+                named. <code>violations/README.md</code> has the steps to
+                reproduce each one.
+              </p>
+            </details>
+          </div>
         </section>
       </div>
 

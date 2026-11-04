@@ -27,6 +27,8 @@ import {
 import { el, errorNote, fill } from "./dom.js";
 import { ageHistogram } from "./histogram.js";
 import { initExplore } from "./explore.js";
+import { allRuns, describeRuns, nextSeq, recordRun } from "./ledger.js";
+import { openSource, renderSource } from "./source.js";
 
 const $ = (id) => document.getElementById(id);
 const state = readHash(location.hash, ["view", "as", "surface", "cell"]);
@@ -39,20 +41,70 @@ const setState = (patch) => {
 
 async function loadGovernance() {
   const { environment, package: pkg } = window.Publisher.context;
-  const res = await fetch(
-    `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}/governance`,
-  );
+  const path = `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}/governance`;
+  const t0 = Date.now();
+  const seq = nextSeq();
+  const res = await fetch(path);
+  const run = {
+    seq,
+    sections: ["matrix", "controls"],
+    kind: "rest",
+    text: `GET ${path}`,
+    ms: Date.now() - t0,
+  };
   if (!res.ok) {
+    recordRun({ ...run, outcome: `${res.status}`, refused: true });
     const err = new Error(`governance export answered ${res.status}`);
     err.status = res.status;
     throw err;
   }
-  return res.json();
+  const gov = await res.json();
+  const published = gov.sources.filter((x) => x.published).length;
+  recordRun({
+    ...run,
+    outcome: `${gov.sources.length} sources, ${published} published`,
+  });
+  return gov;
+}
+
+/**
+ * Run a Malloy query against the model as a persona, and record it for the
+ * sections it feeds. `describe` turns the rows into the answer the panel shows.
+ */
+async function runMalloy(sections, persona, text, describe) {
+  const t0 = Date.now();
+  const base = {
+    seq: nextSeq(),
+    sections,
+    kind: "malloy",
+    model: MODEL,
+    text,
+    persona: persona.label,
+    givens: persona.givens,
+  };
+  try {
+    const rows = await window.Publisher.query(MODEL, text, {
+      givens: persona.givens,
+    });
+    recordRun({ ...base, ms: Date.now() - t0, outcome: describe(rows) });
+    return rows;
+  } catch (err) {
+    recordRun({
+      ...base,
+      ms: Date.now() - t0,
+      refused: err?.status === 403,
+      outcome:
+        err?.status === 403
+          ? "403, refused by the gate"
+          : `failed${err?.status ? ` (${err.status})` : ""}`,
+    });
+    throw err;
+  }
 }
 
 /* ── headline verdicts ─────────────────────────────────────────────────── */
 
-function verdictCard(id, value, caption, ok) {
+function verdictCard(id, value, caption, ok, source) {
   const card = $(id);
   card.classList.toggle("is-pass", ok);
   card.classList.toggle("is-fail", !ok);
@@ -65,8 +117,18 @@ function verdictCard(id, value, caption, ok) {
     }),
     el("span", { class: "verdict-value", text: value }),
     el("span", { class: "verdict-caption", text: caption }),
+    source
+      ? el("button", {
+          type: "button",
+          class: "verdict-source",
+          text: source.label,
+          onclick: () => openSource(source.slot),
+        })
+      : null,
   );
 }
+
+const FROM_EXPORT = { label: "From the governance export", slot: "src-matrix" };
 
 function renderVerdicts(published) {
   const v = verdicts(published);
@@ -75,18 +137,21 @@ function renderVerdicts(published) {
     ofTotal(v.classified, v.fields),
     "published fields carry a classification",
     v.classified === v.fields,
+    FROM_EXPORT,
   );
   verdictCard(
     "v-secure",
     ofTotal(v.secureGivens, v.gateGivens),
     "gate attributes are set by the identity provider",
     v.secureGivens === v.gateGivens && v.gated === v.surfaces,
+    FROM_EXPORT,
   );
   verdictCard(
     "v-ceiling",
     ofTotal(v.withinCeiling, v.surfaces),
     "domains serve only the classes they declare",
     v.withinCeiling === v.surfaces,
+    FROM_EXPORT,
   );
   return v;
 }
@@ -114,8 +179,17 @@ function renderMatrix(published) {
           renderMatrix(published);
         },
       },
-      el("span", { class: "surface-name", text: def.label }),
-      el("span", { class: "surface-who", text: def.who }),
+      el("span", { class: "row-chevron", "aria-hidden": "true" }),
+      el(
+        "span",
+        { class: "row-text" },
+        el("span", { class: "surface-name", text: def.label }),
+        el("span", { class: "surface-who", text: def.who }),
+      ),
+      el("span", {
+        class: "row-hint",
+        text: open ? "Hide" : "Fields & gates",
+      }),
     );
     const cells = CLASSES.map((c) => {
       const n = tally[c.id] ?? 0;
@@ -140,7 +214,14 @@ function renderMatrix(published) {
     rows.push(
       el(
         "tr",
-        { class: open ? "is-open" : "" },
+        {
+          class: open ? "domain-row is-open" : "domain-row",
+          // The whole row opens it; the button in the first cell is the
+          // keyboard and screen-reader control.
+          onclick: (e) => {
+            if (!e.target.closest(".row-toggle")) toggle.click();
+          },
+        },
         el("th", { scope: "row" }, toggle),
         cells,
       ),
@@ -209,9 +290,30 @@ function inventory(s) {
       ),
     ),
   );
+  const annotations = [
+    ...s.authorize.map((g) => `#(authorize) ${g.expression}`),
+    ...s.accessFilter.map((g) => `#(access_filter) ${g.expression}`),
+    s.carries?.length
+      ? `#(carries) [${s.carries.map((c) => JSON.stringify(c)).join(", ")}]`
+      : null,
+    s.controls.length
+      ? `#(control) [${s.controls.map((c) => JSON.stringify(c)).join(", ")}]`
+      : null,
+    `source: ${s.name} …`,
+  ].filter(Boolean);
   return el(
     "div",
     { class: "inventory" },
+    el(
+      "div",
+      { class: "inv-model" },
+      el("h4", {}, "In the model, ", el("code", { text: s.modelPath })),
+      el("pre", { class: "src-code" }, el("code", { text: annotations.join("\n") })),
+      el("p", {
+        class: "muted",
+        text: "The annotations on this domain, as the governance export reads them from the compiled model. Each field below carries its #(classification) from where it is defined.",
+      }),
+    ),
     el(
       "div",
       { class: "inv-meta" },
@@ -250,9 +352,12 @@ function inventory(s) {
 
 async function runProbe(surface, persona) {
   try {
-    const [row] = await window.Publisher.query(MODEL, probeQuery(surface), {
-      givens: persona.givens,
-    });
+    const [row] = await runMalloy(
+      ["access", "controls"],
+      persona,
+      probeQuery(surface),
+      (rows) => `${count(Number(rows[0]?.encounters ?? 0))} encounters`,
+    );
     return { rows: Number(row?.encounters ?? 0) };
   } catch (err) {
     if (err?.status === 403) return { rows: null };
@@ -372,6 +477,7 @@ async function renderAccess() {
     ofTotal(matched, keys.length),
     "access decisions match the policy's workforce table",
     matched === keys.length && decided === keys.length,
+    { label: `From ${keys.length} Malloy queries`, slot: "src-access" },
   );
 }
 
@@ -400,17 +506,24 @@ function showProvenance(s, p, r, total) {
 /* ── de-identification, measured ───────────────────────────────────────── */
 
 async function renderDeid() {
-  const persona = (id) => PERSONAS.find((p) => p.id === id).givens;
+  const persona = (id) => PERSONAS.find((p) => p.id === id);
   const side = async (key, histId, statsId, title) => {
     const def = DEID[key];
     try {
       const [ages, [prec]] = await Promise.all([
-        window.Publisher.query(MODEL, def.ages, {
-          givens: persona(def.persona),
-        }),
-        window.Publisher.query(MODEL, def.precision, {
-          givens: persona(def.persona),
-        }),
+        runMalloy(
+          ["deid"],
+          persona(def.persona),
+          def.ages,
+          (rows) => `${rows.length} age groups`,
+        ),
+        runMalloy(
+          ["deid"],
+          persona(def.persona),
+          def.precision,
+          (rows) =>
+            `oldest ${rows[0]?.oldest}, ${count(rows[0]?.places)} places, ${count(rows[0]?.dates)} dates`,
+        ),
       ]);
       const unknown = ages
         .filter((r) => r.age === null)
@@ -598,7 +711,17 @@ async function startScorecard() {
       el("tr", {}, el("td", { colSpan: CLASSES.length + 1 }, errorNote(err))),
     );
   }
+  renderSource(
+    "src-matrix",
+    "matrix",
+    "One request to Publisher's governance export, which reads the compiled model: the #(classification) on every field, and the #(carries), #(authorize), #(access_filter) and #(control) on every domain. The page counts fields by class from that answer, and the first three verdicts above are computed from it too. Open a domain for its annotations as written.",
+  );
   await renderAccess();
+  renderSource(
+    "src-access",
+    "access",
+    "Each cell is one Malloy query against the model, sent with that role's identity attributes as givens. Publisher evaluates the domain's #(authorize) gate before the query compiles, and its #(access_filter) row filter as it runs: a 403 is the gate refusing, and a smaller count is the filter in force.",
+  );
   // The surfaces whose row in the access grid differs from the policy.
   const mismatched = new Set(
     [...document.querySelectorAll("#access-body .is-mismatch")].map(
@@ -606,7 +729,18 @@ async function startScorecard() {
     ),
   );
   if (v) renderControls(published, v, mismatched);
+  renderSource(
+    "src-controls",
+    "controls",
+    "No query of its own. A control enforced in the model holds when the governance export shows it: classes, gates on secure givens, ceilings. An access control holds when its domain's row in the grid matches the policy. A control marked Review is left to the compliance review, which profiles the values.",
+  );
   await deid;
+  renderSource(
+    "src-deid",
+    "deid",
+    "Two Malloy queries per data set, each sent as the role the policy admits to it. The histogram is the first query; the three figures under it are the second.",
+  );
+  $("run-total").textContent = describeRuns(allRuns());
   rememberHeights();
   document.body.dataset.ready = "true";
 }
