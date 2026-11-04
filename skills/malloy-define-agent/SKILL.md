@@ -61,7 +61,7 @@ Two layout rules drop the agent:
 
 ## What is live today
 
-- Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs when someone asks for it, and a client may run one on demand (for example from the agent's Run item, or when a person asks for it by name). Keep the `cron` field real anyway: Publisher requires it and a future scheduler will read it. Say so to the user rather than promising a recurring job.
+- Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs only when someone asks for it. Say so to the user rather than promising a recurring job. Keep the `cron` field real anyway: Publisher requires it and a future scheduler will read it.
 - **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored, and a draft version's budget is ignored in favor of the published version's. Set the budget the work needs, not the biggest value.
 
 ## Strict keys: a typo drops the whole agent
@@ -80,10 +80,10 @@ Where things go:
 
 - **Standing behavior** (tone, rules, what to never do) goes in `instructions`.
 - **Procedure shared by several tasks, or by ad-hoc asks,** goes in one of the agent's own skills (`SKILL.md`, with `reference/*.md` files for the long parts; the agent's skill files total at most 256 KB). The task names it: "use the `weekly-metrics` skill". A task file has no reference files of its own, so a task that has grown too big is split by moving procedure into a skill, never into more task files.
-- **Write each task to run from a published package, not only a draft.** Say what to do when there is no prior run, no earlier output and no saved state (for example, start from the full period rather than "since the last check").
+- **Write each task to run with no saved state.** Say what to do when there is no prior run, no earlier output and no saved state (for example, start from the full period rather than "since the last check").
 - **Start every task file with a `# Title` heading;** clients index and route by it.
-- **Name the file so it reads as a short label** (`weekly-report.md`, under about 24 characters): clients such as Credible build a Run label from the file name.
-- **No shell preprocessing** in task text or in the task path: no `` !` `` and no ```` ```! ```` fences. Clients skip a task that has them.
+- **Name the file so it reads as a short label** (`weekly-report.md`, under about 24 characters): a client may build a label for the task from its file name.
+- **No shell preprocessing** in task text or in the task path: no exclamation mark directly before a backtick, inline or opening a code fence. Some hosts run such text as a shell command, so clients skip a task that has it.
 
 ## Writing instructions that work unattended
 

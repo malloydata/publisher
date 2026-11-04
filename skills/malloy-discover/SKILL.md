@@ -87,7 +87,7 @@ When reviewing tables and columns, capture:
 - Data distributions for key numeric and categorical columns
 
 ### Data Quality
-- **Check for duplicate rows** on primary keys (on a large table, sample first). Run `group_by: pk, aggregate: count(), having: count() > 1` on each key table. Duplicates cause `sum()` to return nonsensical values.
+- **Check for duplicate rows** on primary keys. Run `group_by: pk, aggregate: count(), having: count() > 1` on each key table. Duplicates cause `sum()` to return nonsensical values.
 - **Denormalized count columns**: beware pre-aggregated fields (e.g., `order_count` in a customer table) that may conflict with joined counts.
 - **Delimited list columns**: flag string columns containing comma-separated values.
 
@@ -95,7 +95,7 @@ When reviewing tables and columns, capture:
 
 **Every recommendation must be grounded in queried data, not schema inference.** During discovery, run `execute_query` to validate assumptions before proposing anything in later steps.
 
-**Sample before you scan.** A full-table `group_by` or `count()` over a large or warehouse-backed table is slow and can be costly. Start with a `limit` or a recent date range, and run the full scan only when the sample leaves a question it cannot answer, and the user has accepted the cost.
+**Sample before you scan.** A full-table `group_by` or `count()` over a large or warehouse-backed table is slow and can be costly. Shrink the input, not the output: a `where:` on a recent date range, or a first stage `select: *; limit: N` piped into the aggregate. A `limit` on the aggregate itself still reads every row. Run the full scan only when the sample leaves a question it cannot answer, and the user has accepted the cost. **Uniqueness is always that case:** a sample can find a duplicate key but never rule one out, so the duplicate-key and join-cardinality checks need the full table before you declare `primary_key` or `join_one`.
 
 | What to validate | Query to run |
 |-----------------|-------------|
