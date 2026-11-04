@@ -125,8 +125,8 @@ export const DEID = {
 };
 
 /**
- * The policy's controls, with how each is evidenced. "model": declared on a
- * source or field with #(control) and enforced at load. "server": Publisher
+ * The policy's controls, with how each is evidenced and where it is
+ * implemented. "model": an annotation in the model, enforced at load. "server": Publisher
  * itself, for every package. "review": a person or a review skill must judge
  * it against the data; nothing mechanical can.
  */
@@ -134,6 +134,7 @@ export const CONTROLS = [
   {
     id: "CL-01",
     text: "Every field on every published domain carries a classification.",
+    where: "#(classification) on every field, inherited by what derives from it",
     evidence: "model",
     check: "classified",
   },
@@ -146,23 +147,27 @@ export const CONTROLS = [
   {
     id: "AC-01",
     text: "Every domain that serves PHI is gated by workforce class.",
+    where: "#(authorize) on every domain",
     evidence: "model",
     check: "gated",
   },
   {
     id: "AC-02",
     text: "The base tables are not queryable by anyone.",
+    where: "#(authorize) false on every base source",
     evidence: "model",
   },
   {
     id: "AC-03",
     text: "A gate reads only attributes the identity provider sets.",
+    where: "#(secure) on every given a gate reads",
     evidence: "model",
     check: "secure",
   },
   {
     id: "AC-04",
     text: "A domain serves only the classes it declares.",
+    where: "#(carries) on every domain",
     evidence: "model",
     check: "ceiling",
   },
@@ -211,18 +216,21 @@ export const CONTROLS = [
   {
     id: "DI-01",
     text: "Dates reduced to the year; ages over 89 reported as 90.",
+    where: "deidentify.malloy: birth and event years, ages capped at 90",
     evidence: "model",
     check: "deid",
   },
   {
     id: "DI-02",
     text: "Geography reduced to the state or a three-digit ZIP.",
+    where: "deidentify.malloy: state, and three-digit ZIP with small areas as 000",
     evidence: "model",
     check: "deid",
   },
   {
     id: "DI-03",
     text: "No direct identifier on a de-identified domain.",
+    where: "#(carries) on research, which leaves out direct identifiers",
     evidence: "model",
     check: "ceiling",
   },
@@ -235,6 +243,7 @@ export const CONTROLS = [
   {
     id: "LDS-01",
     text: "No direct identifier on a limited data set.",
+    where: "#(carries) on the two limited data sets",
     evidence: "model",
     check: "ceiling",
   },

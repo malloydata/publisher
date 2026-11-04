@@ -3,8 +3,8 @@
 
 /**
  * The governance export over a real package load: every source of every
- * model, hidden ones marked, with gates, `#(carries)`, `#(control)` and
- * classified fields, sorted so the document is the same on every server.
+ * model, hidden ones marked, with gates, `#(carries)` and classified
+ * fields, sorted so the document is the same on every server.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
@@ -32,7 +32,6 @@ const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222',10,'org-
 
 const BASE = `##! experimental.access_modifiers
 #(authorize) false
-#(control) ["AC-02"]
 source: people is ${ROWS} include { internal: id, ssn, region, amount, org } extend {
    #(classification) ["phi.direct_identifier", "gdpr.personal"]
    dimension: social is ssn
@@ -57,10 +56,8 @@ given: ORGS :: string[]
 #(authorize) 'clinician' in $ROLES
 #(access_filter) org_id in $ORGS
 #(carries) ["phi.direct_identifier", "gdpr.personal", "phi.financial", "phi.quasi_identifier", "none"]
-#(control) ["AC-01", "MN-01", "soc2:CC6.1"]
 source: chart is people extend {
    dimension: masked is concat('***', social)
-   #(control) ["DI-01"]
    #(classification) "none"
    dimension: initial is substr(area, 1, 1)
    measure: total is spend.sum()
@@ -113,7 +110,7 @@ describe("packageGovernance", () => {
       return packageGovernance(pkg, "env", "pkg");
    }
 
-   it("describes every source, hidden and published, with gates, carries, controls and classified fields", async () => {
+   it("describes every source, hidden and published, with gates, carries and classified fields", async () => {
       const doc = await governance();
       expect(doc.environmentName).toBe("env");
       expect(doc.packageName).toBe("pkg");
@@ -131,7 +128,6 @@ describe("packageGovernance", () => {
       expect(people.deniedToAll).toBe(true);
       expect(people.authorize).toEqual([{ expression: "false", givens: [] }]);
       expect(people.carries).toBeUndefined();
-      expect(people.controls).toEqual(["AC-02"]);
       expect(
          people.fields.map((f) => [f.path, f.kind, f.classifications]),
       ).toEqual([
@@ -162,8 +158,6 @@ describe("packageGovernance", () => {
          "phi.financial",
          "phi.quasi_identifier",
       ]);
-      // Own controls only: AC-02 on the base is not inherited.
-      expect(chart.controls).toEqual(["AC-01", "MN-01", "soc2:CC6.1"]);
 
       const field = (p: string) => chart.fields.find((f) => f.path === p);
       expect(field("masked")).toEqual({
@@ -183,7 +177,6 @@ describe("packageGovernance", () => {
          kind: "dimension",
          classifications: ["none"],
          inputs: [{ field: "area", classifications: ["none"] }],
-         controls: ["DI-01"],
       });
       expect(field("total")).toMatchObject({
          kind: "measure",

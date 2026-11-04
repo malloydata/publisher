@@ -1,8 +1,8 @@
 // Seeded violation 01: see ../README.md. Swap in for domains.malloy.
 // The published domains: one per access decision in the policy's workforce
 // table. Each is gated on attributes Riverbend's identity provider sets
-// (`#(secure)` givens, policy AC-01, AC-03), declares the classes it serves
-// (`#(carries)`, AC-04), and names the controls it implements (`#(control)`).
+// (`#(secure)` givens, policy AC-01, AC-03) and declares the classes it serves
+// (`#(carries)`, AC-04).
 // Each extends a core, which inherits a locked base, so its own gate replaces
 // the lock on this route and nothing else re-opens it.
 ##! experimental { access_modifiers givens }
@@ -26,7 +26,6 @@ given: ATTRIBUTES :: string[]
 #(authorize) 'clinical' in $ROLES
 #(access_filter) ORGANIZATION in $ORGANIZATIONS
 #(carries) ["phi.direct_identifier", "phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
-#(control) ["AC-01", "AC-03", "AC-04", "AC-05", "MN-01", "CL-01", "hipaa:164.514(d)", "hipaa:164.312(a)(1)", "soc2:CC6.1", "nist:AC-3"]
 source: patient_chart is encounters_core extend {
   #(doc) The encounter's identifier.
   #(classification) "phi.direct_identifier"
@@ -45,7 +44,6 @@ source: patient_chart is encounters_core extend {
 #(authorize) 'billing' in $ROLES
 #(access_filter) ORGANIZATION in $ORGANIZATIONS
 #(carries) ["phi.direct_identifier", "phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
-#(control) ["AC-01", "AC-03", "AC-04", "AC-05", "MN-02", "CL-01", "hipaa:164.514(d)", "soc2:CC6.1", "nist:AC-6"]
 source: billing is encounters_core extend {
   #(doc) The encounter's identifier, the claim's reference.
   #(classification) "phi.direct_identifier"
@@ -59,7 +57,6 @@ source: billing is encounters_core extend {
 #(doc) A limited data set for quality and population health analysts: encounters, diagnoses and costs with dates, city, ZIP and age, and no direct identifier.
 #(authorize) 'quality' in $ROLES
 #(carries) ["phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
-#(control) ["AC-01", "AC-03", "AC-04", "AC-05", "MN-03", "LDS-01", "LDS-02", "CL-01", "hipaa:164.514(e)", "soc2:CC6.1"]
 source: population_health is encounters_core extend {
   join_one: patient is patients_lds on PATIENT = patient.Id
   join_one: organization is organizations_core on ORGANIZATION = organization.Id
@@ -68,13 +65,11 @@ source: population_health is encounters_core extend {
 
 #(doc) The same limited data set for an external partner, admitted only under an executed data use agreement.
 #(authorize) 'partner' in $ROLES and 'dua-signed' in $ATTRIBUTES
-#(control) ["AC-01", "AC-03", "AC-04", "MN-05", "LDS-01", "LDS-02", "hipaa:164.514(e)(4)"]
 source: partner_lds is population_health extend {}
 
 #(doc) De-identified encounters for IRB-approved researchers: years, state, three-digit ZIP and capped ages only, no identifier and no free text.
 #(authorize) 'researcher' in $ROLES
 #(carries) ["phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
-#(control) ["AC-01", "AC-03", "AC-04", "MN-04", "DI-01", "DI-02", "DI-03", "DI-04", "CL-01", "hipaa:164.514(b)(2)"]
 source: research is encounters_deid extend {
   join_one: patient is patients_deid on PATIENT = patient.Id
   join_many: conditions is conditions_deid on Id = conditions.ENCOUNTER

@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(classification) "<class>"` on a field, `#(carries) ["<class>", …]` on a
- * source, and `#(control) ["<id>", …]` on either: what a field is, what an
- * entry point may expose, and which of the policy's controls a thing
- * implements, all in the words of the package's access policy. Values are
+ * `#(classification) "<class>"` on a field and `#(carries) ["<class>", …]` on a
+ * source: what a field is and what an entry point may expose, both in the
+ * words of the package's access policy. Values are
  * quoted and lists are bracketed and comma-separated, read by Malloy's tag
  * parser (`readTagList`). Publisher reads the shape and never
- * the vocabulary: `phi.direct_identifier`, `confidential`, `pci.pan`,
- * `soc2:CC6.1` and `nist:AC-3` are all just text to it, and which values a
+ * the vocabulary: `phi.direct_identifier`, `confidential` and `pci.pan` are
+ * all just text to it, and which values a
  * package may use is the policy's to say and a review's to check. What
  * Publisher does with them:
  *
@@ -39,9 +38,6 @@
  *   inferred, or through a join) with any class off the list, or no class at
  *   all, is a leak, and a leak refuses the package load
  *   ({@link classificationLeaks}), the way a gate that does not parse does.
- * - **Controls.** `#(control)` tokens are collected per source and per field
- *   for the governance export (`governance.ts`), which is the control-to-
- *   implementation map a pipeline keeps and an auditor reads.
  *
  * Why the bracketed route and not a `# classification=` tag: it sits beside
  * `#(doc)` and the gates, the other annotations an agent reads for meaning
@@ -63,12 +59,11 @@ type ApiPackageWarning = NonNullable<
 
 /** `PackageWarning.code` of a published source with unclassified fields. */
 export const CLASSIFICATION_COVERAGE = "classification-coverage";
-/** `PackageWarning.code` of a `#(classification)` or `#(control)` annotation that names nothing usable. */
+/** `PackageWarning.code` of a `#(classification)` or `#(carries)` annotation that names nothing usable. */
 export const CLASSIFICATION_MALFORMED = "classification-malformed";
 
 const CLASSIFICATION_LINE = /^#\(classification\)(.*)$/s;
 const CARRIES_LINE = /^#\(carries\)(.*)$/s;
-const CONTROL_LINE = /^#\(control\)(.*)$/s;
 
 /** One annotation note, as `to_stable` (`{value}`) or a raw string carries it. */
 type AnnotationText = string | { value: string };
@@ -77,14 +72,10 @@ function annotationText(a: AnnotationText): string {
    return typeof a === "string" ? a : a.value;
 }
 
-/** Whether an annotation line is a `#(classification)`, `#(carries)` or `#(control)` note. */
+/** Whether an annotation line is a `#(classification)` or `#(carries)` note. */
 export function isClassificationLine(text: string): boolean {
    const t = text.trim();
-   return (
-      CLASSIFICATION_LINE.test(t) ||
-      CARRIES_LINE.test(t) ||
-      CONTROL_LINE.test(t)
-   );
+   return CLASSIFICATION_LINE.test(t) || CARRIES_LINE.test(t);
 }
 
 /** Codepoint order, so two servers on identical bytes agree. */
@@ -112,9 +103,7 @@ export function readTagList(
    const example =
       route === "carries"
          ? '["phi.clinical", "none"]'
-         : route === "control"
-           ? '["AC-01", "soc2:CC6.1"]'
-           : '"phi.direct_identifier" or ["phi.direct_identifier", "gdpr.personal"]';
+         : '"phi.direct_identifier" or ["phi.direct_identifier", "gdpr.personal"]';
    const fault = (why: string) => ({
       values: [] as string[],
       malformed: `has a #(${route}) annotation that ${why}; write ${list === "required" ? "a quoted, comma-separated list" : "a quoted string or a quoted, comma-separated list"}, such as #(${route}) ${example}`,
@@ -190,30 +179,6 @@ export function readClassification(
 }
 
 /**
- * The control identifiers a `#(control)` lists, as a sorted set: any text,
- * in any framework's format (`"CC6.1"`, `"AC-3"`, `"164.312(a)(1)"`,
- * `"soc2:CC6.1"`). A quoted list; a single quoted identifier is accepted too.
- * Several notes on one level combine.
- */
-export function readControls(annotations: ReadonlyArray<string> | undefined): {
-   values: string[];
-   malformed?: string;
-} {
-   if (!annotations || annotations.length === 0) return { values: [] };
-   const values: string[] = [];
-   const faults: string[] = [];
-   for (const content of routeContents(annotations, CONTROL_LINE)) {
-      const read = readTagList("control", content, { list: "optional" });
-      values.push(...read.values);
-      if (read.malformed) faults.push(read.malformed);
-   }
-   return {
-      values: tokenSet(values),
-      ...(faults.length > 0 ? { malformed: faults.join("; and ") } : {}),
-   };
-}
-
-/**
  * The classes a source's `#(carries)` lists, read from the nearest
  * declaration: the source's own notes, else the base it extends, and so on,
  * the way a gate is inherited. `declared` is false when no level declares one.
@@ -256,19 +221,6 @@ function ownTexts(node: AnnotationsDef): string[] {
    );
 }
 
-/**
- * The control identifiers a source declares on its OWN line, not those of a
- * base it extends: a control is a claim about what this source implements,
- * and an extension that replaces the base's gate does not implement the
- * base's control by inheritance.
- */
-export function readSourceControls(annotations: AnnotationsDef | undefined): {
-   values: string[];
-   malformed?: string;
-} {
-   return readControls(annotations ? ownTexts(annotations) : undefined);
-}
-
 /** The slice of a compiled field the lineage reads. */
 interface IrField {
    name?: string;
@@ -301,8 +253,6 @@ export interface FieldClassification {
     * reference, or the inputs of an unclassified intermediate it reads.
     */
    inputs: ClassifiedInput[];
-   /** The control identifiers the field's own `#(control)` lines name. */
-   controls: string[];
    /** Why an annotation on the field is unusable, when one is. */
    malformed?: string;
    /** True for a field under `private:` / `internal:`, which callers never reach. */
@@ -414,7 +364,6 @@ export function readSourceClassifications(
       const { field, owner } = entry;
       const texts = annotationTexts(field.annotations);
       const own = readClassification(texts);
-      const controls = readControls(texts);
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
       for (const ref of fieldReferences(field.e)) {
@@ -439,16 +388,12 @@ export function readSourceClassifications(
          own.values.length > 0
             ? []
             : tokenSet(inputs.flatMap((i) => i.classifications));
-      const faults = [own.malformed, controls.malformed].filter(
-         (f): f is string => f !== undefined,
-      );
       const result: FieldClassification = {
          declared: own.values,
          inferred,
          classifications: own.values.length > 0 ? own.values : inferred,
          inputs,
-         controls: controls.values,
-         ...(faults.length > 0 ? { malformed: faults.join("; and ") } : {}),
+         ...(own.malformed ? { malformed: own.malformed } : {}),
          hidden: field.accessModifier !== undefined,
          isField: isAtomicField(field),
          kind: fieldKind(field),
@@ -557,16 +502,6 @@ export function classificationWarnings(
    );
    const warnings: ApiPackageWarning[] = [];
    for (const s of sources) {
-      const sourceControls = readSourceControls(s.ir.annotations);
-      if (sourceControls.malformed) {
-         warnings.push({
-            model: s.modelPath,
-            subject: s.source,
-            code: CLASSIFICATION_MALFORMED,
-            severity: "warn",
-            message: `Source ${s.source} ${sourceControls.malformed}.`,
-         });
-      }
       for (const [path, c] of s.fields) {
          if (!c.malformed) continue;
          warnings.push({

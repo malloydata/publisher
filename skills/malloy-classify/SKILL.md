@@ -121,7 +121,7 @@ For each field, in order:
    columns: `birth_year is BIRTHDATE.year` reads a column, inherits nothing, and needs its own
    declaration, while `birth_year is birth_date.year` inherits `birth_date`'s class. Do not declare
    a class a field already inherits. Where the policy reduces one, declare the reduced class and
-   name the control on the field with `#(control) "DI-01"`.
+   name the control that allows it in the field's `#(doc)`.
 4. **Propose, then ask** when the class table does not name a field. Propose the most protective
    class that fits its meaning and mark it for the policy owner with one question. Demographics,
    state, units and specialties are typical. Never leave a field unproposed.

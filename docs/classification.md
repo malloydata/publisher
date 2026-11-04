@@ -3,23 +3,21 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Classification (`#(classification)`, `#(carries)` and `#(control)`)
+# Classification (`#(classification)` and `#(carries)`)
 
 > What this is: how a field declares the data classes it carries, how a derived field inherits
-> them, how a source declares the classes a caller may reach from it, and how either names the
-> policy controls it implements, all in the words of the package's access policy, so an agent
-> sees the classes of a field before it reads it, a review can check every entry point against the
-> policy, an entry point cannot serve what it says it does not carry, and a pipeline can export the
-> control-to-implementation map. To hide a column, use `private:`; to decide who may query a source, see
+> them, and how a source declares the classes a caller may reach from it, all in the words of the
+> package's access policy, so an agent sees the classes of a field before it reads it, a review can
+> check every entry point against the policy, an entry point cannot serve what it says it does not
+> carry, and a pipeline can export what each entry point serves. To hide a column, use `private:`; to decide who may query a source, see
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
-**The classes on the field; the ceiling and the controls on the source.** Every value is quoted, and every list is a quoted, comma-separated list in brackets, the form every list-valued annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`).
+**The classes on the field; the ceiling on the source.** Every value is quoted, and every list is a quoted, comma-separated list in brackets, the form every list-valued annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`).
 
 ```malloy
 #(authorize) 'researcher' in $ROLES
 #(carries) ["phi.clinical", "phi.financial", "phi.quasi_identifier", "gdpr.personal", "none"]
-#(control) ["AC-01", "DI-01", "soc2:CC6.1"]
 source: research is core extend {
   #(doc) Year of birth.
   #(classification) ["phi.quasi_identifier", "gdpr.personal"]
@@ -98,31 +96,6 @@ refused rather than enforced, because it would make every field a leak. A refuse
 on publish and reload, and the package is absent from `list_packages` and reported in
 `get_status`'s `loadErrors` with the message, like any other load failure.
 
-## `#(control)`: which controls a source or field implements
-
-Every compliance framework decomposes its policy into identified controls, SOC 2's `CC6.1`,
-NIST 800-53's `AC-3`, PCI DSS's `7.2.1`, ISO 27001's `A.5.15`, HIPAA's `164.312(a)(1)`, and an
-organization under several keeps a crosswalk between them. `#(control)` names the ones a source
-or a field implements, as a quoted list of identifiers in any format, with an optional framework
-prefix when a package answers to more than one (a single quoted identifier is accepted too):
-
-```malloy
-#(authorize) 'clinician' in $ROLES
-#(access_filter) encounters.organization_id in $ORGANIZATIONS
-#(control) ["AC-01", "MN-01", "hipaa:164.312(a)(1)", "soc2:CC6.1"]
-source: patient_chart is core extend {
-  #(control) ["DI-01"]
-  #(classification) "phi.quasi_identifier"
-  dimension: birth_year is BIRTHDATE.year
-}
-```
-
-Publisher reads the identifiers and never the vocabulary; quoting is what lets one carry a colon or
-parentheses (`"hipaa:164.312(a)(1)"`). A source's controls are its own line's, not inherited from a
-base it extends: a control is a claim about what this source implements, and an extension that
-replaces the base's gate does not implement the base's control by inheritance. A `#(control)` that
-is empty, unquoted or does not parse warns `classification-malformed`.
-
 ## The governance export
 
 `GET …/packages/{pkg}/governance`, or `malloy-pub get governance --environment <env> --package
@@ -130,9 +103,9 @@ is empty, unquoted or does not parse warns `classification-malformed`.
 every source of every compiled model, hidden ones included and marked `published: false`: the
 gates in force with the givens each reads, each marked `#(secure)` or not (a gate keyed on a
 plain given is a filter the caller can set, and the load refuses the package), its
-`#(carries)` list, its control identifiers, and
+`#(carries)` list, and
 every dimension and measure a caller can reach from it with its classes, whether they were
-declared or inferred, what they were inferred from, and the field's own controls. Everything
+declared or inferred, and what they were inferred from. Everything
 comes from the compiled model, so inherited gates, renamed fields, folded aliases and lineage are
 what the server actually serves. It is sorted by codepoint throughout and reads no clock, so two
 servers on identical bytes answer identical documents.
@@ -140,7 +113,9 @@ servers on identical bytes answer identical documents.
 Its reader is a pipeline. Check it in next to the policy and a pull request's diff shows "research
 now exposes `phi.direct_identifier`" before anything deploys; feed it to a review as the model
 inventory, so the review's checks are over the served truth rather than the files; hand it to an
-auditor as the control-to-implementation map, which is the document they ask for. Nothing in it
+auditor as the inventory of what each entry point serves, which is the document they ask for.
+Which policy control each part implements belongs in the review's control register
+([compliance-review.md](compliance-review.md)), where a check proves it. Nothing in it
 depends on who is asking, and it is not an access decision for any caller: enforcement stays with
 the gates and the load, and validation stays with the pipeline.
 
@@ -168,8 +143,8 @@ the gates and the load, and validation stays with the pipeline.
   `classification-coverage` warning naming the fields (`model` is its file, `subject` the source),
   in `GET …/packages/{pkg}` `warnings` and so in `get_status`. The point is the one an access
   policy makes: anything unclassified is data the policy has nothing to say about.
-- **A malformed note warns.** A `#(classification)` line with no class or with more than one
-  word, and a `#(control)` line with no token, warn `classification-malformed` naming the field or
+- **A malformed note warns.** A `#(classification)` line with no class, unquoted, or that does
+  not parse warns `classification-malformed` naming the field or
   source and the fix, whether or not coverage is in force; the usable lines beside it still count.
 
 ## What coverage and the ceiling read

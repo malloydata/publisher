@@ -6,41 +6,31 @@
 ##! experimental { access_modifiers givens }
 
 #(authorize) false
-#(control) ["AC-02"]
 source: patients_base is duckdb.table('data/patients.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: encounters_base is duckdb.table('data/encounters.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: organizations_base is duckdb.table('data/organizations.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: providers_base is duckdb.table('data/providers.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: payers_base is duckdb.table('data/payers.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: conditions_base is duckdb.table('data/conditions.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: medications_base is duckdb.table('data/medications.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: procedures_base is duckdb.table('data/procedures.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: observations_base is duckdb.table('data/observations.parquet')
 
 #(authorize) false
-#(control) ["AC-02"]
 source: zip3_small_population is duckdb.table('data/zip3_small_population.parquet')

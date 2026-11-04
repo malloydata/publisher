@@ -32,7 +32,6 @@ import {
    CLASSIFICATION_MALFORMED,
    isClassificationLine,
    readClassification,
-   readControls,
    readSourceClassifications,
 } from "./classification";
 import { compileModelFiles } from "../test_helpers/get_context_join_fixture";
@@ -78,41 +77,16 @@ describe("readClassification", () => {
       ).toContain("2 #(classification) annotations");
    });
 
-   it("tells a classification, carries or control line from any other annotation", () => {
+   it("tells a classification or carries line from any other annotation", () => {
       expect(isClassificationLine('#(classification) "x"')).toBe(true);
       expect(isClassificationLine("  #(classification)\n")).toBe(true);
       expect(isClassificationLine('#(carries) ["a", "b"]')).toBe(true);
-      expect(isClassificationLine('#(control) ["AC-3"]')).toBe(true);
+      // A report's filter-control note is not a classification line.
+      expect(isClassificationLine('#(control) label="Since"')).toBe(false);
       expect(isClassificationLine("#(doc) classification of things")).toBe(
          false,
       );
       expect(isClassificationLine("#(classification x)")).toBe(false);
-   });
-});
-
-describe("readControls", () => {
-   it("reads quoted lists in any framework's format, across notes, as a sorted set", () => {
-      expect(
-         readControls([
-            '#(control) ["soc2:CC6.1", "AC-3"]',
-            "#(doc) x",
-            '#(control) ["164.312(a)(1)", "AC-3"]',
-         ]),
-      ).toEqual({ values: ["164.312(a)(1)", "AC-3", "soc2:CC6.1"] });
-      expect(readControls(['#(control) "AC-02"'])).toEqual({
-         values: ["AC-02"],
-      });
-   });
-
-   it("refuses the space-delimited form and an unparseable list, keeping the good notes", () => {
-      const read = readControls([
-         "#(control) AC-01 AC-03",
-         '#(control) ["7.2.1"]',
-         '#(control) ["AC-01" "AC-02"]',
-      ]);
-      expect(read.values).toEqual(["7.2.1"]);
-      expect(read.malformed).toContain("is not quoted");
-      expect(read.malformed).toContain("does not parse");
    });
 });
 

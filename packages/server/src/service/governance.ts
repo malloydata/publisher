@@ -4,17 +4,16 @@
 /**
  * The governance export: one deterministic document describing what a loaded
  * package serves, source by source, in policy terms. For every source, the
- * gates in force with the givens each reads, its `#(carries)` ceiling, the
- * control identifiers it declares, and every reachable field with its
- * classes, whether they were declared or inferred, what they were inferred
- * from, and the field's own controls. Everything comes from the COMPILED
+ * gates in force with the givens each reads, its `#(carries)` ceiling, and
+ * every reachable field with its classes, whether they were declared or
+ * inferred, and what they were inferred from. Everything comes from the COMPILED
  * model, not the files, so inherited gates, renamed fields and lineage are
  * what the server actually serves.
  *
  * Its reader is a pipeline, not a person: checked in next to the policy so a
  * pull request's diff shows what a model change does to an entry point before it
  * deploys; fed to a review as the model inventory; handed to an auditor as
- * the control-to-implementation map. Ordering is by codepoint everywhere and
+ * the inventory of what each entry point serves. Ordering is by codepoint everywhere and
  * nothing in it depends on the clock, so two servers on identical bytes write
  * identical documents.
  */
@@ -27,7 +26,6 @@ import {
    isDeniedToAll,
    readCarries,
    readSourceClassifications,
-   readSourceControls,
 } from "./classification";
 import type { Package } from "./package";
 
@@ -104,7 +102,6 @@ export async function packageGovernance(
          );
          for (const name of secure) secureGivens.add(name);
          const carries = readCarries(ir.annotations);
-         const controls = readSourceControls(ir.annotations);
          const lineage = readSourceClassifications(ir.fields);
          const fields: ApiGovernanceField[] = Array.from(lineage)
             .filter(([, c]) => c.isField && !c.hidden)
@@ -117,7 +114,6 @@ export async function packageGovernance(
                   classifications: c.classifications,
                   ...(c.inferred.length > 0 ? { inferred: true as const } : {}),
                   ...(c.inputs.length > 0 ? { inputs: c.inputs } : {}),
-                  ...(c.controls.length > 0 ? { controls: c.controls } : {}),
                   ...(c.malformed ? { malformed: c.malformed } : {}),
                };
             });
@@ -131,7 +127,6 @@ export async function packageGovernance(
             ...(carries.declared
                ? { carries: Array.from(carries.classes).sort(byCodepoint) }
                : {}),
-            controls: controls.values,
             fields,
          });
       }

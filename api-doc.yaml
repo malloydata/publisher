@@ -2715,11 +2715,10 @@ paths:
       description: |
         One deterministic document describing what the package serves, source
         by source, in the words of its access policy: the gates in force on
-        each source with the givens each reads, its `#(carries)` ceiling, the
-        control identifiers it declares with `#(control)`, and every dimension
-        and measure a caller can reach from it with its classes
-        (`#(classification)`, declared or inferred from the fields it reads),
-        what an inferred set was inferred from, and the field's own controls.
+        each source with the givens each reads, its `#(carries)` ceiling, and
+        every dimension and measure a caller can reach from it with its classes
+        (`#(classification)`, declared or inferred from the fields it reads)
+        and what an inferred set was inferred from.
         Every model the package compiled is read, hidden ones included, each
         source marked `published`. Everything comes from the compiled model,
         not the files, so inherited gates, renamed fields and lineage are what
@@ -5693,7 +5692,6 @@ components:
           deniedToAll,
           authorize,
           accessFilter,
-          controls,
           fields,
         ]
       properties:
@@ -5726,13 +5724,6 @@ components:
           description: >-
             The classes the source's `#(carries)` lists, from the nearest
             declaration up its extend chain. Absent when none declares one.
-          items:
-            type: string
-        controls:
-          type: array
-          description: >-
-            The control identifiers the source's own `#(control)` lines name,
-            sorted; not inherited from a base.
           items:
             type: string
         fields:
@@ -5783,11 +5774,6 @@ components:
                 type: array
                 items:
                   type: string
-        controls:
-          type: array
-          description: The control identifiers the field's own `#(control)` lines name, sorted.
-          items:
-            type: string
         malformed:
           type: string
           description: Why an annotation on the field is unusable, when one is; the load also warns `classification-malformed`.

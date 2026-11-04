@@ -21,7 +21,7 @@ Everything below implements one of them.
 | `base.malloy`       | Base    | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                     |
 | `core.malloy`       | Core    | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some domains may serve are left out. |
 | `deidentify.malloy` | Core    | The Safe Harbor derivations, declared once: years for dates, ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02).                   |
-| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, declaring what it `#(carries)` and which `#(control)`s it implements.                                         |
+| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, and declaring what it `#(carries)`.                                         |
 | `index.malloy`      | Surface | The package's published surface: exports the five domains and nothing else.                                                                                                          |
 
 ## Analytical domains
@@ -65,8 +65,8 @@ has the table.
 ## Try it
 
 ```bash
-# Every source, its gates, carries, controls and classified fields:
-curl -s http://localhost:4000/api/v0/environments/examples/packages/clinical-records/governance | jq '.sources[] | select(.published) | {name, carries, controls}'
+# Every source, its gates, carries and classified fields:
+curl -s http://localhost:4000/api/v0/environments/examples/packages/clinical-records/governance | jq '.sources[] | select(.published) | {name, carries}'
 
 # A clinician at one organization (the trusted tier sets these givens in a real deployment):
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/clinical-records/models/index.malloy/query \

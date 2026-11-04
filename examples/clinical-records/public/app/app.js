@@ -283,11 +283,6 @@ function inventory(s) {
             ? "Measure"
             : "Declared",
       ),
-      el(
-        "td",
-        {},
-        (f.controls ?? []).map((c) => el("span", { class: "chip", text: c })),
-      ),
     ),
   );
   const annotations = [
@@ -295,9 +290,6 @@ function inventory(s) {
     ...s.accessFilter.map((g) => `#(access_filter) ${g.expression}`),
     s.carries?.length
       ? `#(carries) [${s.carries.map((c) => JSON.stringify(c)).join(", ")}]`
-      : null,
-    s.controls.length
-      ? `#(control) [${s.controls.map((c) => JSON.stringify(c)).join(", ")}]`
       : null,
     `source: ${s.name} …`,
   ].filter(Boolean);
@@ -318,16 +310,6 @@ function inventory(s) {
       "div",
       { class: "inv-meta" },
       el("div", {}, el("h4", { text: "Gates in force" }), gateList),
-      el(
-        "div",
-        {},
-        el("h4", { text: "Controls declared" }),
-        el(
-          "p",
-          {},
-          s.controls.map((c) => el("span", { class: "chip", text: c })),
-        ),
-      ),
     ),
     el(
       "table",
@@ -338,7 +320,7 @@ function inventory(s) {
         el(
           "tr",
           {},
-          ["Field", "Classes", "Lineage", "Controls"].map((h) =>
+          ["Field", "Classes", "Lineage"].map((h) =>
             el("th", { scope: "col", text: h }),
           ),
         ),
@@ -581,14 +563,6 @@ async function renderDeid() {
 /* ── controls register ─────────────────────────────────────────────────── */
 
 function renderControls(published, v, mismatched) {
-  const declaring = (id) =>
-    published
-      .filter(
-        (s) =>
-          s.controls.includes(id) ||
-          s.fields.some((f) => (f.controls ?? []).includes(id)),
-      )
-      .map((s) => s.name);
   const checks = {
     classified: v.classified === v.fields,
     gated: v.gated === v.surfaces,
@@ -630,7 +604,11 @@ function renderControls(published, v, mismatched) {
         el(
           "td",
           { class: "muted" },
-          c.note ?? (declaring(c.id).join(", ") || "Declared on the bases"),
+          c.note ??
+            c.where ??
+            (c.surfaces ?? [])
+              .map((x) => SURFACES.find((d) => d.name === x)?.label ?? x)
+              .join(", "),
         ),
         el(
           "td",
@@ -714,7 +692,7 @@ async function startScorecard() {
   renderSource(
     "src-matrix",
     "matrix",
-    "One request to Publisher's governance export, which reads the compiled model: the #(classification) on every field, and the #(carries), #(authorize), #(access_filter) and #(control) on every domain. The page counts fields by class from that answer, and the first three verdicts above are computed from it too. Open a domain for its annotations as written.",
+    "One request to Publisher's governance export, which reads the compiled model: the #(classification) on every field, and the #(carries), #(authorize) and #(access_filter) on every domain. The page counts fields by class from that answer, and the first three verdicts above are computed from it too. Open a domain for its annotations as written.",
   );
   await renderAccess();
   renderSource(

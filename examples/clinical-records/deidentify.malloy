@@ -19,20 +19,16 @@ source: patients_deid is patients_base include { internal: * } extend {
 
   #(doc) Year of birth.
   #(classification) "phi.quasi_identifier"
-  #(control) ["DI-01"]
   dimension: birth_year is year(BIRTHDATE)
   #(doc) Age in whole years on 2020-04-30, reported as 90 for every age over 89.
   #(classification) "phi.quasi_identifier"
-  #(control) ["DI-01"]
   dimension: age is pick 90 when floor(days(BIRTHDATE to @2020-04-30) / 365.25) > 89
     else floor(days(BIRTHDATE to @2020-04-30) / 365.25)
   #(doc) State of residence.
   #(classification) "none"
-  #(control) ["DI-02"]
   dimension: state is STATE
   #(doc) First three digits of the ZIP code, or '000' where that area has 20,000 people or fewer.
   #(classification) "phi.quasi_identifier"
-  #(control) ["DI-02"]
   dimension: zip3 is pick '000' when small_zip3.zip3 is not null
     else substr(ZIP, 1, 3)
   #(doc) Gender.
@@ -52,7 +48,6 @@ source: patients_deid is patients_base include { internal: * } extend {
 source: conditions_deid is conditions_base include { internal: * } extend {
   #(doc) Year the condition was diagnosed.
   #(classification) "phi.quasi_identifier"
-  #(control) ["DI-01"]
   dimension: onset_year is year(`START`)
   #(doc) SNOMED code of the condition.
   #(classification) "phi.clinical"
@@ -69,7 +64,6 @@ source: encounters_deid is encounters_base include { internal: * } extend {
   primary_key: Id
   #(doc) Year the encounter began.
   #(classification) "phi.quasi_identifier"
-  #(control) ["DI-01"]
   dimension: encounter_year is year(`START`)
   #(doc) Ambulatory, emergency, inpatient, wellness and so on.
   #(classification) "phi.clinical"
