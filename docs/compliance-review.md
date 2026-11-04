@@ -33,11 +33,18 @@ policy over Synthea data, plus five changes that each break a control
 
 ## What the check does
 
-It reads the package's [governance export](classification.md) and `GET /api/v0/status`, then:
+It reads what the served package publishes from three places: the package read's
+[classification summary](classification.md#the-classification-summary-on-the-package-read) (each
+domain's `#(carries)` and its fields by class), the model read (each domain's gates, and which
+givens are `#(secure)`), and `get_context` over the MCP endpoint (each published field with its
+classes). It reads `GET /api/v0/status` for load refusals. Then:
 
 - **Structure.** Every published field is classified; every domain is gated, on `#(secure)` givens
-  only; every unpublished source is locked; every domain declares `#(carries)` and serves nothing
-  beyond it or forbidden by the register.
+  only; every domain declares `#(carries)` and serves nothing beyond it or forbidden by the
+  register.
+- **Unpublished sources.** It reads the package's own `.malloy` files and queries every source the
+  package does not publish, through that source's own file, as an identity holding every role the
+  register names. Each must refuse. This is why the check runs from the package directory.
 - **Access.** It runs a count on every domain as every persona and compares the answer with the
   register: every row, the rows a row filter selects, or a 403.
 - **Values.** It runs one aggregate per published dimension, as a persona admitted to its domain,
@@ -58,14 +65,17 @@ it.
 Against a local Publisher serving the package, from the package directory:
 
 ```bash
-python3 skills/malloy-compliance-review/scripts/compliance.py check \
+cd examples/clinical-records
+python3 ../../skills/malloy-compliance-review/scripts/compliance.py check \
   --environment examples --package clinical-records \
   --register policies/controls.json --out-dir review
-python3 skills/malloy-compliance-review/scripts/compliance.py attest \
+python3 ../../skills/malloy-compliance-review/scripts/compliance.py attest \
   --report review/report.json --out review/attestation.md
 ```
 
-`--server` defaults to `http://localhost:4000`. Python 3.10 or newer, standard library only.
+`--server` defaults to `http://localhost:4000` and `--mcp` to `http://127.0.0.1:4040/mcp`, the
+server's two default ports. `--package-dir` defaults to the current directory. Python 3.10 or
+newer, standard library only.
 
 **Run it only against a server with no gateway in front.** Each persona's givens travel with its
 requests and are honored, because nothing upstream sets them. That is what lets a script ask "what

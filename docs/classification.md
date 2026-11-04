@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 > them, and how a source declares the classes a caller may reach from it, all in the words of the
 > package's access policy, so an agent sees the classes of a field before it reads it, a review can
 > check every entry point against the policy, an entry point cannot serve what it says it does not
-> carry, and a pipeline can export what each entry point serves. To hide a column, use `private:`; to decide who may query a source, see
+> carry, and a pipeline can read what each entry point serves. To hide a column, use `private:`; to decide who may query a source, see
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
@@ -96,28 +96,34 @@ refused rather than enforced, because it would make every field a leak. A refuse
 on publish and reload, and the package is absent from `list_packages` and reported in
 `get_status`'s `loadErrors` with the message, like any other load failure.
 
-## The governance export
+## The classification summary on the package read
 
-`GET …/packages/{pkg}/governance`, or `malloy-pub get governance --environment <env> --package
-<pkg>`, returns one JSON document describing what the loaded package serves, in policy terms. For
-every source of every compiled model, hidden ones included and marked `published: false`: the
-gates in force with the givens each reads, each marked `#(secure)` or not (a gate keyed on a
-plain given is a filter the caller can set, and the load refuses the package), its
-`#(carries)` list, and
-every dimension and measure a caller can reach from it with its classes, whether they were
-declared or inferred, and what they were inferred from. Everything
-comes from the compiled model, so inherited gates, renamed fields, folded aliases and lineage are
-what the server actually serves. It is sorted by codepoint throughout and reads no clock, so two
-servers on identical bytes answer identical documents.
+`GET …/packages/{pkg}` carries `classification`: for each published entry point, the classes its
+`#(carries)` declares and how many of its fields carry each class, inherited classes included,
+with the count left unclassified. It is on the single-package read only, never on a listing, and
+it covers only the sources discovery shows, so it reveals nothing curation hides. A source locked
+to every caller is left out, and the field is absent when nothing published carries a class.
 
-Its reader is a pipeline. Check it in next to the policy and a pull request's diff shows "research
-now exposes `phi.direct_identifier`" before anything deploys; feed it to a review as the model
-inventory, so the review's checks are over the served truth rather than the files; hand it to an
-auditor as the inventory of what each entry point serves, which is the document they ask for.
-Which policy control each part implements belongs in the review's control register
-([compliance-review.md](compliance-review.md)), where a check proves it. Nothing in it
-depends on who is asking, and it is not an access decision for any caller: enforcement stays with
-the gates and the load, and validation stays with the pipeline.
+```json
+"classification": {
+  "sources": [
+    {
+      "modelPath": "index.malloy",
+      "name": "research",
+      "carries": ["none", "phi.clinical", "phi.financial", "phi.quasi_identifier"],
+      "fields": 19,
+      "unclassified": 0,
+      "classCounts": { "none": 4, "phi.clinical": 5, "phi.financial": 2, "phi.quasi_identifier": 8 }
+    }
+  ]
+}
+```
+
+Everything else about a published entry point is already on the other reads: its gates, and which
+givens they read are `#(secure)`, on the model read (`GET …/models/{path}`); each field's classes,
+and what an inherited set was inherited from, on its `get_context` card. A review reads all three
+([compliance-review.md](compliance-review.md)). Which policy control each part implements belongs
+in the review's control register, where a check proves it.
 
 ## What Publisher does with a class
 

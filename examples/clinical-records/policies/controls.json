@@ -285,7 +285,7 @@
       "id": "AU-02",
       "text": "An inventory of every published surface, gate, class and field, from the served model.",
       "checks": [
-        "governance"
+        "inventory"
       ]
     },
     {

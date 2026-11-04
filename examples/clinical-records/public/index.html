@@ -354,7 +354,7 @@ SPDX-License-Identifier: MIT
       }
 
       /* Fixed layout: the column widths come from the static header, so they
-         do not move when the governance export fills the rows. */
+         do not move when the package read fills the rows. */
       .matrix {
         table-layout: fixed;
         min-width: 720px;
@@ -1187,7 +1187,7 @@ SPDX-License-Identifier: MIT
         <p class="lede">
           What this model serves, checked against the policy, read live from the
           model the server is serving now. Every number on this page comes from
-          the governance export or from a Malloy query the server answered.
+          the package and model reads or from a Malloy query the server answered.
         </p>
         <p class="lede-runs" id="lede-runs" data-reserve>
           Open <em>How this was computed</em> under any section for the exact
@@ -1268,7 +1268,7 @@ SPDX-License-Identifier: MIT
               <tbody id="matrix-body">
                 <tr>
                   <td colspan="6" class="muted matrix-loading">
-                    Loading the governance export…
+                    Loading the published domains…
                   </td>
                 </tr>
               </tbody>

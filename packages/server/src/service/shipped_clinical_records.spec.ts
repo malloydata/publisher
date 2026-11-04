@@ -27,7 +27,6 @@ import {
    BadRequestError,
    NotQueryableError,
 } from "../errors";
-import { packageGovernance } from "./governance";
 import { Package } from "./package";
 
 const EXAMPLE = path.resolve(
@@ -109,39 +108,43 @@ describe("examples/clinical-records, clean", () => {
       expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
    });
 
-   it("classifies every published field and gates every surface on secure givens only", async () => {
-      const doc = await packageGovernance(pkg, "examples", "clinical-records");
-      const published = doc.sources.filter((s) => s.published);
-      expect(published.map((s) => s.name).sort()).toEqual([
+   it("classifies every published field and gates every domain on secure givens only", () => {
+      const summary = pkg.getClassificationSummary();
+      expect(summary).toBeDefined();
+      const domains = summary!.sources;
+      expect(domains.map((d) => d.name).sort()).toEqual([
          "billing",
          "partner_lds",
          "patient_chart",
          "population_health",
          "research",
       ]);
-      expect(doc.secureGivens).toEqual([
-         "ATTRIBUTES",
-         "ORGANIZATIONS",
-         "ROLES",
-      ]);
-      for (const s of published) {
-         expect(s.fields.filter((f) => f.classifications.length === 0)).toEqual(
-            [],
-         );
-         const givens = [...s.authorize, ...s.accessFilter].flatMap(
-            (g) => g.givens,
-         );
-         expect(givens.length).toBeGreaterThan(0);
-         expect(givens.every((g) => g.secure)).toBe(true);
-         expect(s.carries).toBeDefined();
+      for (const d of domains) {
+         expect(d.unclassified).toBe(0);
+         expect(d.carries).toBeDefined();
+         // What a domain serves stays within what it declares.
+         for (const c of Object.keys(d.classCounts)) {
+            expect(d.carries).toContain(c);
+         }
       }
       for (const name of ["research", "population_health", "partner_lds"]) {
-         const s = published.find((p) => p.name === name)!;
-         expect(
-            s.fields.filter((f) =>
-               f.classifications.includes("phi.direct_identifier"),
-            ),
-         ).toEqual([]);
+         const d = domains.find((x) => x.name === name)!;
+         expect(d.classCounts["phi.direct_identifier"]).toBeUndefined();
+      }
+      // Every gate on a published domain reads only #(secure) givens.
+      const sources = pkg.getModel("index.malloy")!.getSources() ?? [];
+      for (const name of domains.map((d) => d.name)) {
+         const src = sources.find((x) => x.name === name)!;
+         const secure = new Set(
+            (src.givens ?? []).filter((g) => g.secure).map((g) => g.name),
+         );
+         const gates = [...(src.authorize ?? []), ...(src.accessFilter ?? [])];
+         expect(gates.length).toBeGreaterThan(0);
+         for (const gate of gates) {
+            const read = [...gate.matchAll(/\$([A-Z_]+)/g)].map((m) => m[1]);
+            expect(read.length).toBeGreaterThan(0);
+            for (const g of read) expect(secure.has(g)).toBe(true);
+         }
       }
    });
 

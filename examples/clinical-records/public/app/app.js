@@ -16,8 +16,8 @@ import {
   probeQuery,
 } from "./tiles.js";
 import {
-  classTally,
   count,
+  domainsFrom,
   ofTotal,
   probeOutcome,
   readHash,
@@ -37,34 +37,56 @@ const setState = (patch) => {
   history.replaceState(null, "", writeHash(state));
 };
 
-/* ── governance export ─────────────────────────────────────────────────── */
+/* ── the published domains: package summary + model read ─────────────── */
 
-async function loadGovernance() {
-  const { environment, package: pkg } = window.Publisher.context;
-  const path = `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}/governance`;
+/** GET a Publisher REST path as JSON, recorded for the sections it feeds. */
+async function getRecorded(path, sections, describe) {
   const t0 = Date.now();
   const seq = nextSeq();
   const res = await fetch(path);
   const run = {
     seq,
-    sections: ["matrix", "controls"],
+    sections,
     kind: "rest",
     text: `GET ${path}`,
     ms: Date.now() - t0,
   };
   if (!res.ok) {
     recordRun({ ...run, outcome: `${res.status}`, refused: true });
-    const err = new Error(`governance export answered ${res.status}`);
-    err.status = res.status;
-    throw err;
+    throw Object.assign(new Error(`${path} answered ${res.status}`), {
+      status: res.status,
+    });
   }
-  const gov = await res.json();
-  const published = gov.sources.filter((x) => x.published).length;
-  recordRun({
-    ...run,
-    outcome: `${gov.sources.length} sources, ${published} published`,
-  });
-  return gov;
+  const body = await res.json();
+  recordRun({ ...run, outcome: describe(body) });
+  return body;
+}
+
+/**
+ * The published domains: the package read's classification summary (each
+ * domain's #(carries) and its fields by class), and the model read of each
+ * domain's file (its gates, which givens are #(secure), its fields' declared
+ * classes).
+ */
+async function loadDomains() {
+  const { environment, package: pkg } = window.Publisher.context;
+  const base = `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}`;
+  const sections = ["matrix", "controls"];
+  const meta = await getRecorded(base, sections, (b) =>
+    b.classification
+      ? `classification for ${b.classification.sources.length} domains`
+      : "no classification summary",
+  );
+  const summary = meta.classification ?? { sources: [] };
+  const reads = {};
+  for (const modelPath of new Set(summary.sources.map((x) => x.modelPath))) {
+    reads[modelPath] = await getRecorded(
+      `${base}/models/${encodeURIComponent(modelPath)}`,
+      sections,
+      (b) => `${(b.sources ?? []).length} sources`,
+    );
+  }
+  return domainsFrom(summary, reads);
 }
 
 /**
@@ -128,7 +150,10 @@ function verdictCard(id, value, caption, ok, source) {
   );
 }
 
-const FROM_EXPORT = { label: "From the governance export", slot: "src-matrix" };
+const FROM_EXPORT = {
+  label: "From the package and model reads",
+  slot: "src-matrix",
+};
 
 function renderVerdicts(published) {
   const v = verdicts(published);
@@ -164,7 +189,7 @@ function renderMatrix(published) {
   for (const def of SURFACES) {
     const s = published.find((p) => p.name === def.name);
     if (!s) continue;
-    const tally = classTally(s.fields);
+    const tally = s.classCounts;
     const carries = new Set(s.carries ?? []);
     const open = state.surface === def.name;
     const toggle = el(
@@ -277,11 +302,11 @@ function inventory(s) {
       el(
         "td",
         { class: "muted" },
-        f.inputs?.length
-          ? `${f.inferred ? "Inferred from " : "Derived from "}${f.inputs.map((i) => i.field).join(", ")}`
-          : f.kind === "measure"
-            ? "Measure"
-            : "Declared",
+        f.classifications.length
+          ? "Declared where it is defined"
+          : s.unclassified === 0
+            ? "Inherited from the fields it reads"
+            : "Inherited, or unclassified",
       ),
     ),
   );
@@ -300,10 +325,14 @@ function inventory(s) {
       "div",
       { class: "inv-model" },
       el("h4", {}, "In the model, ", el("code", { text: s.modelPath })),
-      el("pre", { class: "src-code" }, el("code", { text: annotations.join("\n") })),
+      el(
+        "pre",
+        { class: "src-code" },
+        el("code", { text: annotations.join("\n") }),
+      ),
       el("p", {
         class: "muted",
-        text: "The annotations on this domain, as the governance export reads them from the compiled model. Each field below carries its #(classification) from where it is defined.",
+        text: "The annotations on this domain, as the model read reports them. Each field below shows the #(classification) declared where it is defined; a field with none declared inherits the classes of the fields it reads, which get_context reports.",
       }),
     ),
     el(
@@ -320,7 +349,7 @@ function inventory(s) {
         el(
           "tr",
           {},
-          ["Field", "Classes", "Lineage"].map((h) =>
+          ["Field", "Classes", "Source of the class"].map((h) =>
             el("th", { scope: "col", text: h }),
           ),
         ),
@@ -664,9 +693,9 @@ function renderViolations() {
 
 /* ── boot ──────────────────────────────────────────────────────────────── */
 
-/** The governance export, loaded once and shared by both views. */
-let governancePromise = null;
-const governance = () => (governancePromise ??= loadGovernance());
+/** The published domains, loaded once and shared by both views. */
+let domainsPromise = null;
+const domains = () => (domainsPromise ??= loadDomains());
 
 let scorecardStarted = false;
 let exploreStarted = false;
@@ -679,8 +708,7 @@ async function startScorecard() {
   let published = [];
   let v = null;
   try {
-    const gov = await governance();
-    published = gov.sources.filter((s) => s.published);
+    published = await domains();
     v = renderVerdicts(published);
     renderMatrix(published);
   } catch (err) {
@@ -692,7 +720,7 @@ async function startScorecard() {
   renderSource(
     "src-matrix",
     "matrix",
-    "One request to Publisher's governance export, which reads the compiled model: the #(classification) on every field, and the #(carries), #(authorize) and #(access_filter) on every domain. The page counts fields by class from that answer, and the first three verdicts above are computed from it too. Open a domain for its annotations as written.",
+    "Two reads of the served model. The package read's classification summary gives each domain's #(carries) and how many of its fields carry each class, inherited classes included; the model read gives each domain's #(authorize) and #(access_filter) gates, which givens are #(secure), and each field's declared #(classification). The first three verdicts above come from these too. Open a domain for its annotations as written.",
   );
   await renderAccess();
   renderSource(
@@ -710,7 +738,7 @@ async function startScorecard() {
   renderSource(
     "src-controls",
     "controls",
-    "No query of its own. A control enforced in the model holds when the governance export shows it: classes, gates on secure givens, ceilings. An access control holds when its domain's row in the grid matches the policy. A control marked Review is left to the compliance review, which profiles the values.",
+    "No query of its own. A control enforced in the model holds when the package and model reads show it: classes, gates on secure givens, ceilings. An access control holds when its domain's row in the grid matches the policy. A control marked Review is left to the compliance review, which profiles the values.",
   );
   await deid;
   renderSource(
@@ -741,13 +769,13 @@ function rememberHeights() {
 async function startExplore() {
   if (exploreStarted) return;
   exploreStarted = true;
-  let gov = null;
+  let published = [];
   try {
-    gov = await governance();
+    published = await domains();
   } catch {
     // The view still works without classes on its column headers.
   }
-  initExplore(gov, state.as || "clinician", (id) => setState({ as: id }));
+  initExplore(published, state.as || "clinician", (id) => setState({ as: id }));
 }
 
 function showView(view) {

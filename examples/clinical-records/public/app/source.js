@@ -56,7 +56,7 @@ function group(g) {
       }),
       g.kind === "malloy"
         ? el("span", {}, "run against ", el("code", { text: g.model }))
-        : el("span", { text: "Publisher's governance export" }),
+        : el("span", { text: "a Publisher REST read" }),
     ),
     el("pre", { class: "src-code" }, el("code", { text: g.text })),
     runTable(g.runs),

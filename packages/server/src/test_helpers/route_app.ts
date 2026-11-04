@@ -48,7 +48,6 @@ function controllers(stubs: Stubs): ApiControllers {
       "packageController",
       "modelController",
       "skillController",
-      "governanceController",
       "reportController",
       "databaseController",
       "queryController",

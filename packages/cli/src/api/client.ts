@@ -11,7 +11,6 @@ import {
   EnvironmentsApi,
   MaterializationActionActionEnum,
   MaterializationsApi,
-  GovernanceApi,
   ModelsApi,
   NotebooksApi,
   PackageMaterializationConfig,
@@ -25,7 +24,6 @@ export class PublisherClient {
   private connectionsApi: ConnectionsApi;
   private materializationsApi: MaterializationsApi;
   private modelsApi: ModelsApi;
-  private governanceApi: GovernanceApi;
   private notebooksApi: NotebooksApi;
   private databasesApi: DatabasesApi;
   private baseURL: string;
@@ -42,7 +40,6 @@ export class PublisherClient {
     this.connectionsApi = new ConnectionsApi(config);
     this.materializationsApi = new MaterializationsApi(config);
     this.modelsApi = new ModelsApi(config);
-    this.governanceApi = new GovernanceApi(config);
     this.notebooksApi = new NotebooksApi(config);
     this.databasesApi = new DatabasesApi(config);
   }
@@ -379,22 +376,6 @@ export class PublisherClient {
         environmentName,
         packageName,
         path,
-      );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
-  // Governance (read-only)
-  async getGovernance(
-    environmentName: string,
-    packageName: string,
-  ): Promise<any> {
-    try {
-      const response = await this.governanceApi.getGovernance(
-        environmentName,
-        packageName,
       );
       return response.data;
     } catch (error) {

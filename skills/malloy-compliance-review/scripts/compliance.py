@@ -17,7 +17,8 @@ class each field's values prove, beside how it is declared today, and exits 1
 when a field is declared below that; `skill:malloy-classify` proposes classes
 from it.
 
-`check` is the review: it reads the governance export, runs the static checks,
+`check` is the review: it reads the published domains (the package read's
+classification summary, the model read, and get_context), runs the static checks,
 probes every domain as every persona the register names, runs the value checks,
 and writes report.json and report.md with a verdict and evidence per control.
 It exits 1 when any control fails, so it gates CI. `skill:malloy-compliance-review`
@@ -52,12 +53,18 @@ from typing import Any
 # ── REST ──────────────────────────────────────────────────────────────────
 
 
+GIVEN_REF = re.compile(r"\$([A-Za-z_]\w*)")
+
+
 class Server:
-    def __init__(self, base: str, environment: str, package: str, model: str):
+    def __init__(self, base: str, environment: str, package: str, model: str,
+                 mcp: str = "http://127.0.0.1:4040/mcp", package_dir: str = "."):
         self.base = base.rstrip("/")
         self.environment = environment
         self.package = package
         self.model = model
+        self.mcp = mcp
+        self.package_dir = package_dir
 
     def _pkg(self) -> str:
         return (f"{self.base}/api/v0/environments/"
@@ -68,19 +75,95 @@ class Server:
         with urllib.request.urlopen(self._pkg() + path, timeout=120) as r:
             return json.load(r)
 
-    def governance(self) -> dict[str, Any]:
-        return self.get_json("/governance")
+    def context_fields(self) -> dict[str, list[dict[str, Any]]]:
+        """Every published dimension, by domain, with its classes, from
+        get_context over MCP (plain JSON-RPC over HTTP)."""
+        out: dict[str, list[dict[str, Any]]] = {}
+        offset = 0
+        for _ in range(50):
+            args: dict[str, Any] = {
+                "scopes": [{"environment": self.environment, "package": self.package}],
+                "search_targets": [{"target_type": "source"}, {"target_type": "dimension"}],
+            }
+            if offset:
+                args["offset"] = offset
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                               "params": {"name": "get_context", "arguments": args}}).encode()
+            req = urllib.request.Request(self.mcp, data=body, headers={
+                "content-type": "application/json", "accept": "application/json, text/event-stream"})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                raw = r.read().decode()
+            if not raw.lstrip().startswith("{"):
+                raw = [ln[5:] for ln in raw.splitlines() if ln.startswith("data:")][-1]
+            result = json.loads(raw).get("result") or {}
+            if result.get("isError"):
+                raise RuntimeError(f"get_context failed: {json.dumps(result)[:300]}")
+            content = result.get("content") or []
+            text = content[0].get("resource", {}).get("text") or content[0].get("text") or "{}"
+            page = json.loads(text)
+            for card in page.get("sources", []):
+                name = card["source_info"]["resource_id"]["source"]
+                fields = out.setdefault(name, [])
+                for e in card.get("entities", []):
+                    if e.get("entity_type") == "dimension":
+                        fields.append({"path": e["name"], "kind": "dimension",
+                                       "classifications": e.get("classifications") or []})
+            offset = page.get("next_offset") or 0
+            if not offset:
+                break
+        return out
+
+    def inventory(self) -> dict[str, Any]:
+        """The published domains: the package read's classification summary
+        (each domain's #(carries) and its fields by class), the model read of
+        each domain's file (gates, and which givens are #(secure)), and
+        get_context (each published dimension with its classes). Raises
+        HTTPError when the package is not served."""
+        meta = self.get_json("")
+        summary = meta.get("classification") or {"sources": []}
+        reads: dict[str, Any] = {}
+        try:
+            fields = self.context_fields()
+            fields_error = None
+        except Exception as e:  # noqa: BLE001 - reported as a finding, not a crash
+            fields, fields_error = {}, str(e)
+        sources = []
+        secure_all: set[str] = set()
+        for d in summary["sources"]:
+            path = d["modelPath"]
+            if path not in reads:
+                reads[path] = self.get_json(f"/models/{urllib.parse.quote(path, safe='')}")
+            api = next((x for x in reads[path].get("sources", []) if x["name"] == d["name"]), {})
+            secure = {g["name"] for g in api.get("givens", []) if g.get("secure")}
+            secure_all |= secure
+
+            def gates(exprs: list[str] | None) -> list[dict[str, Any]]:
+                return [{"expression": e,
+                         "givens": [{"name": n, "secure": n in secure}
+                                    for n in dict.fromkeys(GIVEN_REF.findall(e))]}
+                        for e in exprs or []]
+
+            sources.append({
+                "name": d["name"], "modelPath": path,
+                "carries": d.get("carries"), "classCounts": d.get("classCounts", {}),
+                "fieldCount": d.get("fields", 0), "unclassified": d.get("unclassified", 0),
+                "authorize": gates(api.get("authorize")), "accessFilter": gates(api.get("accessFilter")),
+                "fields": fields.get(d["name"], []),
+            })
+        return {"sources": sources, "secureGivens": sorted(secure_all),
+                "fieldsError": fields_error}
 
     def status(self) -> dict[str, Any]:
         with urllib.request.urlopen(f"{self.base}/api/v0/status", timeout=60) as r:
             return json.load(r)
 
-    def query(self, malloy: str, givens: dict[str, Any] | None) -> tuple[list[dict[str, Any]] | None, int | None, str | None]:
+    def query(self, malloy: str, givens: dict[str, Any] | None,
+              model: str | None = None) -> tuple[list[dict[str, Any]] | None, int | None, str | None]:
         """(rows, None, None) on success; (None, status, message) on refusal."""
         body = json.dumps({"query": malloy, "compactJson": True,
                            "givens": givens or {}}).encode()
         req = urllib.request.Request(
-            f"{self._pkg()}/models/{urllib.parse.quote(self.model, safe='')}/query",
+            f"{self._pkg()}/models/{urllib.parse.quote(model or self.model, safe='')}/query",
             data=body, headers={"content-type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=300) as r:
@@ -230,7 +313,8 @@ def profile_domain(server: Server, register: dict[str, Any], domain: dict[str, A
 
 
 def published(gov: dict[str, Any]) -> list[dict[str, Any]]:
-    return [s for s in gov["sources"] if s["published"]]
+    """The published domains; the inventory lists nothing else."""
+    return gov["sources"]
 
 
 def finding(control: str, status: str, text: str, evidence: str = "",
@@ -244,19 +328,17 @@ def finding(control: str, status: str, text: str, evidence: str = "",
 def check_coverage(gov, register, _ctx):
     out = []
     for s in published(gov):
-        missing = [f["path"] for f in s["fields"] if not f["classifications"]]
-        if missing:
-            out.append(finding("", "fail", f"{s['name']} publishes {len(missing)} unclassified fields",
+        if s["unclassified"]:
+            missing = [f["path"] for f in s["fields"] if not f["classifications"]]
+            out.append(finding("", "fail", f"{s['name']} publishes {s['unclassified']} unclassified fields",
                                ", ".join(missing[:12]), s["name"]))
     return out or [finding("", "pass", "every published field carries a class",
-                           f"{sum(len(s['fields']) for s in published(gov))} fields on {len(published(gov))} domains")]
+                           f"{sum(s['fieldCount'] for s in published(gov))} fields on {len(published(gov))} domains")]
 
 
 def check_gated(gov, register, _ctx):
     out = []
     for s in published(gov):
-        if s["deniedToAll"]:
-            continue
         if not s["authorize"] and not s["accessFilter"]:
             out.append(finding("", "fail", f"{s['name']} has no gate", "", s["name"]))
     return out or [finding("", "pass", "every published domain is gated")]
@@ -274,19 +356,46 @@ def check_secure(gov, register, _ctx):
                            ", ".join(gov.get("secureGivens", [])))]
 
 
-def check_locked(gov, register, _ctx):
-    out = []
-    # A domain is defined in one file and re-exported by the surface file, so
-    # its defining copy is unpublished but is the published source itself.
+def everyone(register: dict[str, Any]) -> dict[str, Any]:
+    """One identity holding every value of every given any persona holds: the
+    most a caller could be admitted to."""
+    out: dict[str, Any] = {}
+    for p in register.get("personas", {}).values():
+        for k, v in p.get("givens", {}).items():
+            if isinstance(v, list):
+                out[k] = list(dict.fromkeys([*out.get(k, []), *v]))
+            else:
+                out.setdefault(k, v)
+    return out
+
+
+SOURCE_DECL = re.compile(r"(?m)^\s*source:\s+([A-Za-z_]\w*)\s+is\b")
+
+
+def check_locked(gov, register, ctx):
+    """Every source the package does not publish refuses a caller holding
+    every role the register names. Read from the package's own files, run
+    from its directory, and probed through each file's own model path."""
+    server: Server = ctx["server"]
+    root = pathlib.Path(server.package_dir)
     published_names = {s["name"] for s in published(gov)}
-    for s in gov["sources"]:
-        if s["name"] in published_names:
-            continue
-        if not s["published"] and not s["deniedToAll"]:
-            out.append(finding("", "fail", f"{s['name']} ({s['modelPath']}) is not locked",
-                               "an unpublished source with no #(authorize) false is one export away from open"))
-    return out or [finding("", "pass", "every unpublished source is locked outright",
-                           f"{sum(1 for s in gov['sources'] if not s['published'])} sources")]
+    who = everyone(register)
+    out, probed = [], 0
+    for f in sorted(root.rglob("*.malloy")):
+        rel = f.relative_to(root).as_posix()
+        for name in dict.fromkeys(SOURCE_DECL.findall(f.read_text())):
+            if name in published_names:
+                continue
+            probed += 1
+            rows, status, _ = server.query(f"run: {name} -> {{ aggregate: n is count() }}", who, model=rel)
+            if rows is not None:
+                out.append(finding("", "fail", f"{name} ({rel}) answered a caller holding every role",
+                                   f"{rows[0].get('n')} rows; an unpublished source should refuse everyone"))
+    if not probed:
+        return [finding("", "review", "no unpublished source was found to probe",
+                        f"read .malloy files under {root.resolve()}; run from the package directory or pass --package-dir")]
+    return out or [finding("", "pass", "every unpublished source refuses a caller holding every role",
+                           f"{probed} sources probed")]
 
 
 def check_ceiling(gov, register, _ctx):
@@ -301,7 +410,7 @@ def check_ceiling(gov, register, _ctx):
         bad = forbidden & carries
         if bad:
             out.append(finding("", "fail", f"{s['name']} declares {', '.join(sorted(bad))}, which the policy forbids it", "", s["name"]))
-        served = {c for f in s["fields"] for c in f["classifications"]}
+        served = set(s["classCounts"])
         if served - carries:
             out.append(finding("", "fail", f"{s['name']} serves {', '.join(sorted(served - carries))} beyond its #(carries)", "", s["name"]))
     return out or [finding("", "pass", "every domain serves only what it declares, and declares nothing the policy forbids")]
@@ -326,7 +435,7 @@ def check_access(gov, register, ctx):
                 errors.append(f"{d} as {pid}: {status} {msg}")
     ctx["access"] = results
     # Scoped means a row filter is in force on the domain, read from the
-    # governance export rather than guessed from a row count.
+    # model rather than guessed from a row count.
     filtered = {s["name"]: bool(s["accessFilter"]) for s in published(gov)}
     out = []
     for d in domains:
@@ -357,6 +466,9 @@ def check_values(gov, register, ctx):
     ids = register.get("identifier_classes", {})
     direct_classes = set(ids.get("direct", []))
     any_identifier = direct_classes | set(ids.get("quasi", []))
+    if gov.get("fieldsError"):
+        return [finding("", "review", "the values could not be profiled: get_context did not list the fields",
+                        gov["fieldsError"])]
     profiles = []
     for s in published(gov):
         profiles.extend(profile_domain(server, register, s))
@@ -449,19 +561,21 @@ def check_refusals(gov, register, ctx):
                     loads[0]["evidence"])]
 
 
-def check_governance(gov, register, _ctx):
-    if not gov.get("sources"):
-        return [finding("", "fail", "the governance export lists no sources")]
-    if gov.get("unreadModels"):
-        return [finding("", "fail", "the governance export is incomplete",
-                        ", ".join(gov["unreadModels"]))]
-    return [finding("", "pass", "the governance export reads the served model in full",
-                    f"{len(gov['sources'])} sources, {len(published(gov))} published")]
+def check_inventory(gov, register, _ctx):
+    if not gov["sources"]:
+        return [finding("", "fail", "the package read reports no classified domain",
+                        "no classification summary: nothing published carries a class")]
+    if gov.get("fieldsError"):
+        return [finding("", "fail", "get_context could not list the published fields", gov["fieldsError"])]
+    listed = sum(len(s["fields"]) for s in gov["sources"])
+    return [finding("", "pass", "the served model's inventory reads in full",
+                    f"{len(gov['sources'])} domains, {sum(s['fieldCount'] for s in gov['sources'])} fields, "
+                    f"{listed} dimensions listed by get_context")]
 
 
 CHECKS = {
     "loads": check_loads,
-    "governance": check_governance,
+    "inventory": check_inventory,
     "refusals": check_refusals,
     "coverage": check_coverage,
     "gated": check_gated,
@@ -476,10 +590,10 @@ CHECKS = {
 def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
     ctx: dict[str, Any] = {"server": server}
     try:
-        gov = server.governance()
+        gov = server.inventory()
     except urllib.error.HTTPError as e:
-        # 404 for a package the server does not know, 400 (carrying the
-        # refusal) for one whose load failed.
+        # 404 for a package the server does not know, 400 or 404 for one
+        # whose load failed.
         if e.code not in (400, 404):
             raise
         # Not served at all: on a fresh server (CI) a refused change leaves no
@@ -732,7 +846,8 @@ def attestation_md(r: dict[str, Any]) -> str:
 
 
 def _server(a) -> Server:
-    return Server(a.server, a.environment, a.package, a.model)
+    return Server(a.server, a.environment, a.package, a.model,
+                  mcp=a.mcp, package_dir=a.package_dir)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -744,6 +859,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--environment", required=True)
         p.add_argument("--package", required=True)
         p.add_argument("--model", default="index.malloy")
+        p.add_argument("--mcp", default="http://127.0.0.1:4040/mcp",
+                       help="the server's MCP endpoint, for get_context")
+        p.add_argument("--package-dir", default=".",
+                       help="the package's files, for the unpublished-source probe")
         p.add_argument("--register", required=True)
         if name == "profile":
             p.add_argument("--out")
@@ -779,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
 
     server = _server(a)
     if a.cmd == "profile":
-        gov = server.governance()
+        gov = server.inventory()
         out = []
         for s in published(gov):
             out.extend(profile_domain(server, register, s))

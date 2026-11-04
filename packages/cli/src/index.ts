@@ -23,7 +23,6 @@ import * as materializationCommands from "./commands/materializations.js";
 import * as scheduleCommands from "./commands/schedule.js";
 import * as modelCommands from "./commands/models.js";
 import * as notebookCommands from "./commands/notebooks.js";
-import * as governanceCommands from "./commands/governance.js";
 import * as databaseCommands from "./commands/databases.js";
 
 const program = new Command();
@@ -243,21 +242,10 @@ program
             name,
           );
           break;
-        case "governance":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
-            process.exit(1);
-          }
-          await governanceCommands.getGovernance(
-            client,
-            options.environment,
-            options.package,
-          );
-          break;
         default:
           logError(`Unknown resource: ${resource}`);
           logOutput(
-            "Valid types: environment, package, connection, materialization, model, notebook, governance",
+            "Valid types: environment, package, connection, materialization, model, notebook",
           );
           process.exit(1);
       }

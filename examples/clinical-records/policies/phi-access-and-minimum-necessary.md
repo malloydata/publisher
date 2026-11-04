@@ -58,7 +58,7 @@ Riverbend identifies the following classes of persons who need access to PHI thr
 | Quality and population health analyst | A limited data set: clinical and financial data with dates, city, state, ZIP and age, no direct identifiers                   | Any direct identifier                                                  |
 | IRB-approved researcher               | De-identified data only                                                                                                       | Any identifier, any date below the year, any geography below the state |
 | External data partner                 | A limited data set, under an executed data use agreement                                                                      | Anything outside the agreement's scope; anything without an agreement  |
-| Privacy officer and auditor           | The platform's access records and governance exports                                                                          | Patient data through this platform                                     |
+| Privacy officer and auditor           | The platform's access records and compliance review reports                                                                  | Patient data through this platform                                     |
 
 ## Access controls
 

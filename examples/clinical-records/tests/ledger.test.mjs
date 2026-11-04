@@ -12,7 +12,11 @@ const probe = (domain, persona, sections = ["access"]) => ({
   text: `run: ${domain} -> { aggregate: encounters is count() }`,
   persona,
 });
-const gov = { sections: ["matrix", "controls"], kind: "rest", text: "GET /governance" };
+const gov = {
+  sections: ["matrix", "controls"],
+  kind: "rest",
+  text: "GET /packages/x",
+};
 
 test("a section shows only the requests that fed it", () => {
   const all = [gov, probe("billing", "Biller", ["access", "controls"])];
@@ -39,11 +43,17 @@ test("one group per query text, each with every identity it was sent as", () => 
 test("runs list in the order they were sent, not the order they finished", () => {
   const late = { ...probe("billing", "Biller"), seq: 1 };
   const early = { ...probe("billing", "Clinician"), seq: 2 };
-  assert.deepEqual(runsFor("access", [early, late]).map((r) => r.persona), ["Biller", "Clinician"]);
+  assert.deepEqual(
+    runsFor("access", [early, late]).map((r) => r.persona),
+    ["Biller", "Clinician"],
+  );
 });
 
 test("the summary counts each kind", () => {
-  assert.equal(describeRuns([gov, probe("a", "x"), probe("b", "y")]), "1 governance request · 2 Malloy queries");
+  assert.equal(
+    describeRuns([gov, probe("a", "x"), probe("b", "y")]),
+    "1 REST read · 2 Malloy queries",
+  );
   assert.equal(describeRuns([probe("a", "x")]), "1 Malloy query");
   assert.equal(describeRuns([]), "no requests");
 });

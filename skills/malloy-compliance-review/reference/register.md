@@ -29,7 +29,7 @@ is a complete one for a HIPAA minimum-necessary policy.
 | Outcome | Means | Proven by |
 | --- | --- | --- |
 | `rows` | Admitted, with every row | The count probe answers, and the domain has no row filter |
-| `scoped` | Admitted, with only the rows its givens select | The count probe answers, and the governance export shows a row filter in force |
+| `scoped` | Admitted, with only the rows its givens select | The count probe answers, and the model read shows a row filter in force |
 | `refused` | Not admitted | The count probe answers 403 |
 
 `scoped` is read from the model's row filter, never from a smaller count: a persona may be the only

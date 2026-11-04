@@ -37,13 +37,14 @@ export function groupByText(list) {
   return [...groups.values()];
 }
 
-/** "30 Malloy queries", "1 governance request · 2 Malloy queries". */
+/** "30 Malloy queries", "2 REST reads · 2 Malloy queries". */
 export function describeRuns(list) {
   const malloy = list.filter((r) => r.kind === "malloy").length;
   const rest = list.length - malloy;
   const parts = [];
-  if (rest) parts.push(`${rest} governance ${rest === 1 ? "request" : "requests"}`);
-  if (malloy) parts.push(`${malloy} Malloy ${malloy === 1 ? "query" : "queries"}`);
+  if (rest) parts.push(`${rest} REST ${rest === 1 ? "read" : "reads"}`);
+  if (malloy)
+    parts.push(`${malloy} Malloy ${malloy === 1 ? "query" : "queries"}`);
   return parts.join(" · ") || "no requests";
 }
 

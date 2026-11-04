@@ -129,6 +129,10 @@ import {
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
 import { classificationLeaks, classificationWarnings } from "./classification";
+import {
+   classificationSummary,
+   type ApiClassificationSummary,
+} from "./classification_summary";
 import { joinBypasses } from "./join_bypass";
 import { insecureGateGivens } from "./gate_given_warnings";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
@@ -302,6 +306,13 @@ export class Package {
       | {
            forModels: Map<string, Model>;
            value: readonly ApiSecureGivenSummary[] | undefined;
+        }
+      | undefined;
+   /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
+   private classificationSummaryMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: ApiClassificationSummary | undefined;
         }
       | undefined;
    private packagePath: string;
@@ -1434,6 +1445,24 @@ export class Package {
          { packageName: this.packageName },
       );
       this.secureGivensMemo = { forModels, value };
+      return value;
+   }
+
+   /**
+    * For each published entry point, its `#(carries)` and its field count by
+    * class, or `undefined` when nothing published is classified. Walks every
+    * published field, so it is memoized per models map and kept OFF
+    * {@link getPackageMetadata} (the `/status` poll path): only the
+    * single-package read attaches it.
+    */
+   public getClassificationSummary(): ApiClassificationSummary | undefined {
+      const memo = this.classificationSummaryMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = classificationSummary(forModels, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      this.classificationSummaryMemo = { forModels, value };
       return value;
    }
 
@@ -3537,8 +3566,17 @@ export class Package {
     * cannot store a snapshot that outlives the models it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (!("secureGivens" in packageMetadata)) return packageMetadata;
-      const { secureGivens: _computed, ...stored } = packageMetadata;
+      if (
+         !("secureGivens" in packageMetadata) &&
+         !("classification" in packageMetadata)
+      ) {
+         return packageMetadata;
+      }
+      const {
+         secureGivens: _computed,
+         classification: _summary,
+         ...stored
+      } = packageMetadata;
       return stored;
    }
 

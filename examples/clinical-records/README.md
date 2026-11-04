@@ -41,7 +41,7 @@ because each domain extends a core that inherits its base's lock.
 ## The data app
 
 `public/index.html` is a compliance scorecard for the person who signs off on a release: it reads
-the governance export and asks every domain the same question as every workforce class, live, and
+the package's classification summary and the model's gates, and asks every domain the same question as every workforce class, live, and
 checks each answer against the policy's workforce table. It leads with four verdicts (classified
 fields, gates on identity-provider attributes, domains within their declared ceiling, access
 decisions that match the policy), then shows what each domain may serve against what it serves,
@@ -65,8 +65,8 @@ has the table.
 ## Try it
 
 ```bash
-# Every source, its gates, carries and classified fields:
-curl -s http://localhost:4000/api/v0/environments/examples/packages/clinical-records/governance | jq '.sources[] | select(.published) | {name, carries}'
+# Every published domain, what it may serve, and its fields by class:
+curl -s http://localhost:4000/api/v0/environments/examples/packages/clinical-records | jq '.classification.sources[] | {name, carries, classCounts}'
 
 # A clinician at one organization (the trusted tier sets these givens in a real deployment):
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/clinical-records/models/index.malloy/query \

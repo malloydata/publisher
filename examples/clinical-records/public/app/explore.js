@@ -399,13 +399,13 @@ async function refresh() {
 }
 
 /**
- * Start the view. `governance` is the export the scorecard already loaded,
- * for the class of each sample column; `preset` is the persona to start as.
+ * Start the view. `domains` are the published domains the scorecard already
+ * loaded, for the declared class of each sample column; `preset` is the
+ * persona to start as.
  */
-export function initExplore(governance, preset, onPresetChange) {
+export function initExplore(domains, preset, onPresetChange) {
   classesByPath = new Map();
-  for (const s of governance?.sources ?? []) {
-    if (!s.published) continue;
+  for (const s of domains ?? []) {
     for (const f of s.fields)
       classesByPath.set(`${s.name}:${f.path}`, f.classifications);
   }

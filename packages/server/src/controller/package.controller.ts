@@ -138,7 +138,46 @@ export class PackageController {
          environmentName,
          packageName,
       );
-      return embeddingIndex ? { ...metadata, embeddingIndex } : metadata;
+      // The single-package read only: a listing and the `/status` poll stay
+      // cheap, and this one walks every published field (memoized).
+      const classification = await this.classificationSummary(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      return {
+         ...metadata,
+         ...(embeddingIndex ? { embeddingIndex } : {}),
+         ...(classification ? { classification } : {}),
+      };
+   }
+
+   /**
+    * The package's classification summary, or undefined when it classifies
+    * nothing or cannot be read. Never fails the request, like the index state.
+    */
+   private async classificationSummary(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiPackage["classification"] | undefined> {
+      try {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const pkg = await environment.getPackage(packageName, false, {
+            versionId,
+         });
+         return pkg.getClassificationSummary();
+      } catch (error) {
+         logger.debug("Could not read the package's classification summary", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
    }
 
    /**

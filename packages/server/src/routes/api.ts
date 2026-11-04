@@ -25,7 +25,6 @@ import {
 import type { QueryController } from "../controller/query.controller";
 import type { ReportController } from "../controller/report.controller";
 import type { SkillController } from "../controller/skill.controller";
-import type { GovernanceController } from "../controller/governance.controller";
 import type { StorageDestinationController } from "../controller/storage_destination.controller";
 import type { ThemeController } from "../controller/theme.controller";
 import {
@@ -73,7 +72,6 @@ export interface ApiControllers {
    packageController: PackageController;
    modelController: ModelController;
    skillController: SkillController;
-   governanceController: GovernanceController;
    reportController: ReportController;
    databaseController: DatabaseController;
    queryController: QueryController;
@@ -524,7 +522,6 @@ function registerPackageRoutes(
       packageController,
       modelController,
       skillController,
-      governanceController,
       reportController,
       environmentStore,
       versionController,
@@ -658,16 +655,6 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req) ?? "",
-            req.query.versionId,
-         ),
-      ),
-   );
-   app.get(
-      `${pkg}/governance`,
-      apiRoute((req) =>
-         governanceController.getGovernance(
-            req.params.environmentName,
-            req.params.packageName,
             req.query.versionId,
          ),
       ),

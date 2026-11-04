@@ -5,8 +5,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  classTally,
   count,
+  declaredClasses,
+  declaredFields,
+  domainsFrom,
   ofTotal,
   probeOutcome,
   readHash,
@@ -47,27 +49,25 @@ test("probeOutcome compares the server's answer with the policy's", () => {
   });
 });
 
-const surface = (over) => ({
+const domain = (over) => ({
   authorize: [
     { expression: "'x' in $ROLES", givens: [{ name: "ROLES", secure: true }] },
   ],
   accessFilter: [],
   carries: ["none", "phi.clinical"],
-  fields: [
-    { classifications: ["none"] },
-    { classifications: ["phi.clinical"] },
-  ],
+  classCounts: { none: 1, "phi.clinical": 1 },
+  fieldCount: 2,
+  unclassified: 0,
+  fields: [],
   ...over,
 });
 
 test("verdicts count classification, secure gates and the ceiling", () => {
   const v = verdicts([
-    surface(),
-    surface({
-      fields: [
-        { classifications: [] },
-        { classifications: ["phi.direct_identifier"] },
-      ],
+    domain(),
+    domain({
+      classCounts: { "phi.direct_identifier": 1 },
+      unclassified: 1,
       authorize: [
         {
           expression: "'y' in $MODE",
@@ -82,23 +82,105 @@ test("verdicts count classification, secure gates and the ceiling", () => {
   assert.equal(v.secureGivens, 1);
   assert.equal(v.surfaces, 2);
   assert.equal(v.gated, 2);
-  // The second surface serves a direct identifier it does not carry.
+  // The second domain serves a direct identifier it does not carry.
   assert.equal(v.withinCeiling, 1);
 });
 
-test("a surface with no #(carries) is not within a ceiling", () => {
-  assert.equal(verdicts([surface({ carries: undefined })]).withinCeiling, 0);
+test("a domain with no #(carries) is not within a ceiling", () => {
+  assert.equal(verdicts([domain({ carries: undefined })]).withinCeiling, 0);
 });
 
-test("classTally counts a field under each of its classes", () => {
+test("declaredClasses reads one quoted class or a quoted list", () => {
   assert.deepEqual(
-    classTally([
-      { classifications: ["a", "b"] },
-      { classifications: ["a"] },
-      { classifications: [] },
+    declaredClasses([
+      { value: "#(doc) x\n" },
+      { value: '#(classification) "none"\n' },
     ]),
-    { a: 2, b: 1, "(none declared)": 1 },
+    ["none"],
   );
+  assert.deepEqual(declaredClasses(['#(classification) ["a", "b"]']), [
+    "a",
+    "b",
+  ]);
+  assert.deepEqual(declaredClasses([]), []);
+});
+
+test("declaredFields flattens joins to dotted paths", () => {
+  const info = {
+    schema: {
+      fields: [
+        {
+          kind: "dimension",
+          name: "d",
+          annotations: [{ value: '#(classification) "none"' }],
+        },
+        { kind: "measure", name: "m", annotations: [] },
+        {
+          kind: "join",
+          name: "patient",
+          schema: {
+            fields: [
+              {
+                kind: "dimension",
+                name: "ssn",
+                annotations: [
+                  { value: '#(classification) "phi.direct_identifier"' },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
+  assert.deepEqual(declaredFields(info), [
+    { path: "d", kind: "dimension", classifications: ["none"] },
+    { path: "m", kind: "measure", classifications: [] },
+    {
+      path: "patient.ssn",
+      kind: "dimension",
+      classifications: ["phi.direct_identifier"],
+    },
+  ]);
+});
+
+test("domainsFrom joins the summary to the model read's gates and secure givens", () => {
+  const [d] = domainsFrom(
+    {
+      sources: [
+        {
+          modelPath: "index.malloy",
+          name: "chart",
+          carries: ["none"],
+          fields: 3,
+          unclassified: 1,
+          classCounts: { none: 2 },
+        },
+      ],
+    },
+    {
+      "index.malloy": {
+        sources: [
+          {
+            name: "chart",
+            authorize: ["'c' in $ROLES"],
+            accessFilter: ["org in $ORGS"],
+            givens: [
+              { name: "ROLES", secure: true },
+              { name: "ORGS", secure: false },
+            ],
+          },
+        ],
+        sourceInfos: [
+          JSON.stringify({ name: "chart", schema: { fields: [] } }),
+        ],
+      },
+    },
+  );
+  assert.equal(d.fieldCount, 3);
+  assert.equal(d.unclassified, 1);
+  assert.deepEqual(d.authorize[0].givens, [{ name: "ROLES", secure: true }]);
+  assert.deepEqual(d.accessFilter[0].givens, [{ name: "ORGS", secure: false }]);
 });
 
 test("hash state round-trips and drops unknown keys", () => {

@@ -134,7 +134,8 @@ export const CONTROLS = [
   {
     id: "CL-01",
     text: "Every field on every published domain carries a classification.",
-    where: "#(classification) on every field, inherited by what derives from it",
+    where:
+      "#(classification) on every field, inherited by what derives from it",
     evidence: "model",
     check: "classified",
   },
@@ -223,7 +224,8 @@ export const CONTROLS = [
   {
     id: "DI-02",
     text: "Geography reduced to the state or a three-digit ZIP.",
-    where: "deidentify.malloy: state, and three-digit ZIP with small areas as 000",
+    where:
+      "deidentify.malloy: state, and three-digit ZIP with small areas as 000",
     evidence: "model",
     check: "deid",
   },
@@ -264,7 +266,7 @@ export const CONTROLS = [
     id: "AU-02",
     text: "An inventory of every domain, gate, class and field, from the served model.",
     evidence: "server",
-    note: "This page reads it: GET …/packages/clinical-records/governance.",
+    note: "This page reads it: the package read's classification summary and the model read.",
   },
   {
     id: "AU-03",
@@ -302,7 +304,7 @@ export const VIOLATIONS = [
   },
   {
     id: "02",
-    what: "The limited data set serves the encounter's record number, declared #(classification) \"none\".",
+    what: 'The limited data set serves the encounter\'s record number, declared #(classification) "none".',
     controls: "LDS-01, CL-02",
     refused: false,
     reason:
