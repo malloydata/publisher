@@ -35,7 +35,11 @@ import { ServiceUnavailableError } from "../../errors";
 import { pollFor, pollUntil } from "../../test_helpers/poll";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
 import { _setFcjDeadlineForTests } from "./engine";
-import { _setFcjValueFetcherForTests, fcjStateOf } from "./engine_state";
+import {
+   _setFcjValueFetcherForTests,
+   fcjJudgeChat,
+   fcjStateOf,
+} from "./engine_state";
 import type { IndexValueFetcher } from "./values_index";
 import type { Package } from "../../service/package";
 import { heldResults } from "./pages";
@@ -309,23 +313,21 @@ describe("the search engine", () => {
       }
    });
 
-   it("fails the request, never skips the judge, when judgeLlm has no key", async () => {
+   it("fails the request, never skips the judge, when the judgeLlm model cannot be built", async () => {
       const chat = scriptedChat(() =>
          JSON.stringify({
             picks: [{ target: 1, candidates: [1] }],
             caveats: [],
          }),
       );
-      _setChatModelForTests(chat.model);
-      const saved = [process.env.JUDGE_LLM_API_KEY, process.env.LLM_API_KEY];
-      delete process.env.JUDGE_LLM_API_KEY;
-      delete process.env.LLM_API_KEY;
+      // The operator's provider needs a key and has none.
+      _setChatModelForTests(chat.model, { provider: "anthropic" });
       try {
          const { pkg } = await compileFcjFixture(undefined, undefined, {
             ...DEFAULT_PACKAGE_RETRIEVAL,
             fcj: {
                ...DEFAULT_FCJ_SETTINGS,
-               judgeLlm: { provider: "anthropic", model: "claude-haiku-5-5" },
+               judgeLlm: { model: "claude-haiku-5-5" },
             },
          });
          const handler = harness.handlerFor(pkg);
@@ -340,8 +342,21 @@ describe("the search engine", () => {
          // The index build may have used the chat model; the judge never did.
          expect(chat.prompts.some((p) => p.includes("Target 1 ("))).toBe(false);
       } finally {
-         if (saved[0] !== undefined) process.env.JUDGE_LLM_API_KEY = saved[0];
-         if (saved[1] !== undefined) process.env.LLM_API_KEY = saved[1];
+         _clearChatModelForTests();
+      }
+   });
+
+   it("builds the judgeLlm model on the operator's provider, host and key", () => {
+      _setChatModelForTests(scriptedChat(() => "{}").model, {
+         provider: "anthropic",
+         apiKey: "operator-key",
+         baseUrl: "https://llm.operator.example",
+      });
+      try {
+         const judgeModel = fcjJudgeChat({ model: "claude-haiku-5-5" });
+         expect(judgeModel?.provider).toBe("anthropic");
+         expect(judgeModel?.model).toBe("claude-haiku-5-5");
+      } finally {
          _clearChatModelForTests();
       }
    });

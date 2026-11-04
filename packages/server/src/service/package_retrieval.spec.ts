@@ -223,60 +223,28 @@ describe("publisher.json retrieval block", () => {
       );
    });
 
-   it("reads judgeLlm, the judge's own model, and rejects a bad one", () => {
+   it("reads judgeLlm, a model name only, and rejects a provider, host or key", () => {
       expect(
          parsePackageRetrieval({
-            fcj: {
-               judgeLlm: { provider: "anthropic", model: " claude-haiku-5-5 " },
-            },
+            fcj: { judgeLlm: { model: " claude-haiku-5-5 " } },
          }).fcj?.judgeLlm,
-      ).toEqual({ provider: "anthropic", model: "claude-haiku-5-5" });
-      expect(
-         parsePackageRetrieval({
-            fcj: {
-               judgeLlm: {
-                  provider: "vertex",
-                  model: "gemini-3.1-flash-lite",
-                  projectId: "p",
-                  location: "global",
-               },
-            },
-         }).fcj?.judgeLlm,
-      ).toEqual({
-         provider: "vertex",
-         model: "gemini-3.1-flash-lite",
-         projectId: "p",
-         location: "global",
-      });
+      ).toEqual({ model: "claude-haiku-5-5" });
       expect(
          parsePackageRetrieval({ fcj: { judgeLlm: null } }).fcj?.judgeLlm,
       ).toBeNull();
       expect(() =>
-         parsePackageRetrieval({
-            fcj: { judgeLlm: { provider: "claude", model: "x" } },
-         }),
+         parsePackageRetrieval({ fcj: { judgeLlm: {} } }),
       ).toThrow(
-         'Invalid publisher.json retrieval.fcj.judgeLlm.provider: expected one of openai, openai-compatible, ollama, anthropic, google, vertex, got "claude". Fix: "judgeLlm": { "provider": "anthropic", "model": "claude-haiku-5-5" }',
+         'Invalid publisher.json retrieval.fcj.judgeLlm.model: expected a non-empty string, got nothing. The provider, host and key are the server\'s retrieval.llm settings. Fix: "judgeLlm": { "model": "claude-haiku-5-5" }',
       );
-      expect(() =>
-         parsePackageRetrieval({
-            fcj: { judgeLlm: { provider: "anthropic" } },
-         }),
-      ).toThrow(
-         "Invalid publisher.json retrieval.fcj.judgeLlm.model: expected a non-empty string, got nothing.",
-      );
-      expect(() =>
-         parsePackageRetrieval({
-            fcj: { judgeLlm: { provider: "vertex", model: "g" } },
-         }),
-      ).toThrow(
-         "retrieval.fcj.judgeLlm.projectId: expected a non-empty string",
-      );
-      expect(() =>
-         parsePackageRetrieval({
-            fcj: { judgeLlm: { provider: "anthropic", model: "m", key: "k" } },
-         }),
-      ).toThrow("retrieval.fcj.judgeLlm: unknown key 'key'.");
+      // A package must not choose where the server's key and prompts go.
+      for (const key of ["provider", "baseUrl", "projectId", "location"]) {
+         expect(() =>
+            parsePackageRetrieval({
+               fcj: { judgeLlm: { model: "m", [key]: "x" } },
+            }),
+         ).toThrow(`retrieval.fcj.judgeLlm: unknown key '${key}'.`);
+      }
    });
 
    it("an unknown key is an error that names the valid keys, so a typo or a later release's key is not silently ignored", () => {
