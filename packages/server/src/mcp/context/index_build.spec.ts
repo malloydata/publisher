@@ -219,6 +219,24 @@ describe("index build", () => {
       expect(again.report.vectors.embedded).toBe(first.report.vectors.rows);
    });
 
+   it("sends no LLM request once a budget shared with an earlier step is spent", async () => {
+      const chat = scriptedChat(() => "{}");
+      // Source summaries spent the build's whole maxCallsPerSync.
+      const budget = new SyncRequestBudget(0);
+      const built = await buildFcjIndex({
+         pkgIndex: fixture.pkgIndex,
+         db,
+         provider: stubEmbeddingProvider(),
+         environmentName: "env",
+         packageName: "fixture",
+         settings: DEFAULT_FCJ_SETTINGS,
+         llm: { chat: chat.model, concurrency: 1, maxCallsPerSync: 100 },
+         budget,
+      });
+      expect(chat.prompts).toHaveLength(0);
+      expect(built.report.questions.written).toBe(0);
+   });
+
    it("embeds one derived row per node, and reuses every row on a rebuild", async () => {
       const first = await build();
       expect(first.report.vectors).toEqual({

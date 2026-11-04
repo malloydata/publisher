@@ -199,6 +199,12 @@ export async function buildFcjIndex(args: {
       environmentStore: EnvironmentStore;
       fetcher?: IndexValueFetcher;
    };
+   /**
+    * The build's LLM request budget, shared with the steps that ran before
+    * this one (source summaries). Absent: a fresh one of
+    * `llm.maxCallsPerSync`.
+    */
+   budget?: SyncRequestBudget;
    shouldStop?: () => boolean;
 }): Promise<FcjIndex> {
    const started = Date.now();
@@ -227,7 +233,8 @@ export async function buildFcjIndex(args: {
       }
    }
 
-   const budget = new SyncRequestBudget(args.llm?.maxCallsPerSync ?? 0);
+   const budget =
+      args.budget ?? new SyncRequestBudget(args.llm?.maxCallsPerSync ?? 0);
    const llmFor = (enabled: FcjSettings["docParts"]) =>
       enabled !== false && args.llm ? args.llm : undefined;
 

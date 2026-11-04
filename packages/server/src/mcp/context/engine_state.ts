@@ -290,6 +290,10 @@ async function buildFor(args: {
    const provider = embeddingConfigured() ? getEmbeddingProvider() : null;
    const llmSettings = activeLlmSettings();
    const chat = llmSettings ? fcjChat() : null;
+   // One retrieval.llm.maxCallsPerSync for the whole build: summaries, doc
+   // parts and questions all draw on it.
+   const budget = new SyncRequestBudget(llmSettings?.maxCallsPerSync ?? 0);
+   const shouldStop = () => !stillServed(args);
 
    // Source summaries: written by the summary step when the package has them
    // on, then read back. A failure to write them is reported, not fatal:
@@ -304,7 +308,8 @@ async function buildFor(args: {
             packageName,
             entities: pkgIndex.directEntities,
             settings: summarySettings,
-            budget: new SyncRequestBudget(summarySettings.maxCallsPerSync),
+            budget,
+            shouldStop,
          });
       } catch (error) {
          logger.warn(
@@ -353,8 +358,9 @@ async function buildFor(args: {
          environmentStore,
          ...(valueFetcherOverride ? { fetcher: valueFetcherOverride } : {}),
       },
+      budget,
       // A package removed mid-build stops reading values and embedding.
-      shouldStop: () => !stillServed(args),
+      shouldStop,
    });
 }
 
