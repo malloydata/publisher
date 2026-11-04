@@ -1115,7 +1115,6 @@ run: mid_ungated -> { aggregate: c }`,
          JSON.stringify({
             name: "pkg",
             retrieval: {
-               engine: "legacy",
                representation: "facets",
                keyphrases: "never",
                refine: { enabled: true, minLevel: "HIGH" },
@@ -1143,7 +1142,6 @@ run: mid_ungated -> { aggregate: c }`,
             (w) => w.message,
          );
          for (const key of [
-            "retrieval.engine",
             "retrieval.representation",
             "retrieval.keyphrases",
             "retrieval.refine",
