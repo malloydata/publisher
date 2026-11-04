@@ -55,6 +55,8 @@ Write Malloy using only the model's names. Load `skill:malloy-queries` for synta
 
 **Group by what the question asks for, and nothing more.** Every `group_by:` field sets the grain of the result. An extra field, such as a code or a type next to the policy, order or customer the question asks about, splits one entity into several rows when it has more than one value: the answer then lists that entity twice, and a count of rows stops being a count of entities. Add a detail column only when it cannot change the row count, or show it in a separate query.
 
+**Compute denominators in the query, not by hand.** The number of days, weeks or months in a span, a population count, a total to divide by: derive each from the data or with date functions in the query. A hand-counted span is easy to get wrong by one (53 months where the span touches 54), and the average built on it is then wrong.
+
 If you define a calculated field that is not already in the model, treat it carefully: ad-hoc definitions are a common source of subtle errors.
 
 - Announce it: tell the user you are adding an ad-hoc field, what it computes, and why the model does not provide it.
@@ -76,7 +78,7 @@ So when the model's own named view for this question computes a share, the answe
 
 Run the query with `execute_query`. Scope it to the environment, package, and model path from the discovery results, then run either an ad-hoc query (for example `run: order_items -> { group_by: ...; aggregate: ... }`) or a named source plus a view defined in the model. Probe first with small or counting queries to learn the data's shape, then run the query you will present. If it errors, change the part the message names and rerun. If the same error comes back, remove pieces (filters, joins, nested views) until the query compiles, then add them back one at a time; `skill:malloy-queries` has a table of error messages and fixes. Never present results from a query you have not actually run.
 
-**Run the query that answers the question last.** Probes, counts and sanity checks come before it, not after: the final query is the one a reader, a reviewer or a re-run treats as the answer, so it should return the rows or figures asked for, not a count of them. **For a full list, set `limit:` above the row count you expect.** A query without a limit can be cut at a server default (1,000 rows on some hosts), and a cut list reads as complete. If the result says a limit was hit, raise it and run again before you report.
+**Run the query that answers the question last.** Probes, counts and sanity checks come before it, not after: the final query is the one a reader, a reviewer or a re-run treats as the answer, so it should return the rows or figures asked for, not a count of them. **For a full list, set `limit:` above the row count you expect.** A query without a limit can be cut at a server default (1,000 rows on some hosts), and a cut list reads as complete. If the result says a limit was hit, raise it and run again before you report. **That final query carries every filter you applied.** Never drop rows from a result by hand because they don't belong: add the filter, run again, and present that result, so the rows you report are the rows the query returns.
 
 ## 5. Verify before trusting
 
