@@ -2,17 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(classification) <class>` on a field, `#(carries) <class>…` on a source,
- * and `#(control) <id>…` on either: what a field is, what a surface may
- * expose, and which of the policy's controls a thing implements, all in the
- * words of the package's access policy. Publisher reads the shape and never
+ * `#(classification) "<class>"` on a field, `#(carries) ["<class>", …]` on a
+ * source, and `#(control) ["<id>", …]` on either: what a field is, what an
+ * entry point may expose, and which of the policy's controls a thing
+ * implements, all in the words of the package's access policy. Values are
+ * quoted and lists are bracketed and comma-separated, read by Malloy's tag
+ * parser (`readTagList`). Publisher reads the shape and never
  * the vocabulary: `phi.direct_identifier`, `confidential`, `pci.pan`,
- * `soc2:CC6.1` and `nist:AC-3` are all one token to it, and which tokens a
+ * `soc2:CC6.1` and `nist:AC-3` are all just text to it, and which values a
  * package may use is the policy's to say and a review's to check. What
  * Publisher does with them:
  *
- * - **Sets.** A field carries a SET of classes, one `#(classification)` line
- *   per class, because one column commonly sits under several regimes at
+
+ * - **Sets.** A field carries a SET of classes, as a quoted list
+ *   (`#(classification) ["phi.direct_identifier", "gdpr.personal"]`), because one column commonly sits under several regimes at
  *   once (an SSN is a HIPAA identifier, GDPR personal data and NIST PII).
  * - **Lineage.** A field with no class of its own takes the union of the
  *   classes of the fields its expression reads
@@ -45,10 +48,11 @@
  * and policy, and Malloy claims no interpretation of it. The one rule a route
  * imposes is that the tokens follow the closing parenthesis, since Malloy
  * ends a route at the first whitespace: `#(classification phi)` warns
- * `malformed-route` at compile; `#(classification) phi` is the form.
+ * `malformed-route` at compile; `#(classification) "phi"` is the form.
  */
 
 import type { ModelDef } from "@malloydata/malloy";
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
 import type { Model } from "./model";
@@ -92,71 +96,120 @@ function tokenSet(tokens: Iterable<string>): string[] {
 }
 
 /**
- * The classes a field's annotations declare: one token per
- * `#(classification)` line, as a sorted set. `malformed` says why a line is
- * unusable (no token, or more than one), in the words the load warning uses;
- * the usable lines still count. An empty `values` with no `malformed` means
- * the field declares nothing.
+ * Read an annotation's content as a tag value: a quoted string (`"x"`) or a
+ * quoted, comma-separated list (`["x", "y"]`), the form every list-valued
+ * annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`). Parsed by
+ * Malloy's own tag parser, so a malformed list is a parse error with its
+ * reason, never a silent split. `values` is a sorted set; `malformed` says
+ * what is wrong in the words the load uses.
+ */
+export function readTagList(
+   route: string,
+   content: string,
+   { list }: { list: "required" | "optional" },
+): { values: string[]; malformed?: string } {
+   const trimmed = content.trim();
+   const example =
+      route === "carries"
+         ? '["phi.clinical", "none"]'
+         : route === "control"
+           ? '["AC-01", "soc2:CC6.1"]'
+           : '"phi.direct_identifier" or ["phi.direct_identifier", "gdpr.personal"]';
+   const fault = (why: string) => ({
+      values: [] as string[],
+      malformed: `has a #(${route}) annotation that ${why}; write ${list === "required" ? "a quoted, comma-separated list" : "a quoted string or a quoted, comma-separated list"}, such as #(${route}) ${example}`,
+   });
+   if (trimmed === "") return fault("names nothing");
+   // An environment reference would be hydrated from the server's own
+   // environment by the tag parser; never read one here.
+   if (/@env\./.test(trimmed)) return fault("reads the environment");
+   const isList = trimmed.startsWith("[");
+   if (!isList && !trimmed.startsWith('"')) {
+      return fault(`is not quoted ("${trimmed}")`);
+   }
+   if (!isList && list === "required") return fault("is not a list");
+   let parsed: ReturnType<typeof parseAnnotation>;
+   try {
+      parsed = parseAnnotation(`# v=${trimmed}`);
+   } catch (error) {
+      return fault(
+         `does not parse (${error instanceof Error ? error.message : String(error)})`,
+      );
+   }
+   if (parsed.log.length > 0) {
+      return fault(`does not parse (${parsed.log[0].message})`);
+   }
+   const items = isList
+      ? parsed.tag.array("v")?.map((item) => item.text())
+      : [parsed.tag.text("v")];
+   if (!items || items.some((item) => typeof item !== "string")) {
+      return fault("holds something other than quoted text");
+   }
+   const values = tokenSet((items as string[]).map((v) => v.trim()));
+   if (values.length === 0) return fault("names nothing");
+   if (values.some((v) => v === "")) return fault("names an empty value");
+   return { values };
+}
+
+/** The content after a route, from every note on that route. */
+function routeContents(
+   texts: ReadonlyArray<string>,
+   pattern: RegExp,
+): string[] {
+   return texts
+      .map((text) => pattern.exec(text.trim()))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => m[1]);
+}
+
+/**
+ * The classes a field's `#(classification)` declares: one quoted class, or a
+ * quoted list when the field sits under several regimes at once. One note per
+ * field; a second is `malformed`, since a list says it in one place.
+ * An empty `values` with no `malformed` means the field declares nothing.
  */
 export function readClassification(
    annotations: ReadonlyArray<AnnotationText> | undefined,
 ): { values: string[]; malformed?: string } {
    if (!annotations || annotations.length === 0) return { values: [] };
-   const lines = annotations
-      .map(annotationText)
-      .map((text) => CLASSIFICATION_LINE.exec(text.trim()))
-      .filter((m): m is RegExpExecArray => m !== null)
-      .map((m) => m[1].trim());
-   const values: string[] = [];
-   const faults: string[] = [];
-   for (const line of lines) {
-      const tokens = line.split(/\s+/).filter(Boolean);
-      if (tokens.length === 1) values.push(tokens[0]);
-      else if (tokens.length === 0) {
-         faults.push("a #(classification) line that names no class");
-      } else {
-         faults.push(
-            `a #(classification) line with ${tokens.length} words ("${line}"); ` +
-               `one class per line, such as phi.direct_identifier, and another ` +
-               `line for a second class`,
-         );
-      }
+   const contents = routeContents(
+      annotations.map(annotationText),
+      CLASSIFICATION_LINE,
+   );
+   if (contents.length === 0) return { values: [] };
+   if (contents.length > 1) {
+      return {
+         values: [],
+         malformed:
+            `has ${contents.length} #(classification) annotations; a field ` +
+            `has one, listing every class it carries, such as ` +
+            `#(classification) ["phi.direct_identifier", "gdpr.personal"]`,
+      };
    }
-   return {
-      values: tokenSet(values),
-      ...(faults.length > 0
-         ? { malformed: `has ${faults.join("; and ")}` }
-         : {}),
-   };
+   return readTagList("classification", contents[0], { list: "optional" });
 }
 
 /**
- * The control identifiers an annotation set names across its `#(control)`
- * lines, as a sorted set. Any token is an identifier: `CC6.1`, `AC-3`,
- * `7.2.1`, `164.312(a)(1)`, and `soc2:CC6.1` under a framework prefix. A
- * `#(control)` line with no token is `malformed`; the other lines still count.
+ * The control identifiers a `#(control)` lists, as a sorted set: any text,
+ * in any framework's format (`"CC6.1"`, `"AC-3"`, `"164.312(a)(1)"`,
+ * `"soc2:CC6.1"`). A quoted list; a single quoted identifier is accepted too.
+ * Several notes on one level combine.
  */
 export function readControls(annotations: ReadonlyArray<string> | undefined): {
    values: string[];
    malformed?: string;
 } {
    if (!annotations || annotations.length === 0) return { values: [] };
-   const lines = annotations
-      .map((text) => CONTROL_LINE.exec(text.trim()))
-      .filter((m): m is RegExpExecArray => m !== null)
-      .map((m) => m[1].trim());
-   const values = lines.flatMap((line) => line.split(/\s+/).filter(Boolean));
-   const empty = lines.some((line) => line.length === 0);
+   const values: string[] = [];
+   const faults: string[] = [];
+   for (const content of routeContents(annotations, CONTROL_LINE)) {
+      const read = readTagList("control", content, { list: "optional" });
+      values.push(...read.values);
+      if (read.malformed) faults.push(read.malformed);
+   }
    return {
       values: tokenSet(values),
-      ...(empty
-         ? {
-              malformed:
-                 "has a #(control) line that names no control; list the " +
-                 "policy's control identifiers it implements, such as AC-3 or " +
-                 "soc2:CC6.1, or delete the line",
-           }
-         : {}),
+      ...(faults.length > 0 ? { malformed: faults.join("; and ") } : {}),
    };
 }
 
@@ -164,8 +217,8 @@ export function readControls(annotations: ReadonlyArray<string> | undefined): {
  * The classes a source's `#(carries)` lists, read from the nearest
  * declaration: the source's own notes, else the base it extends, and so on,
  * the way a gate is inherited. `declared` is false when no level declares one.
- * `malformed` names a declaration with no class, which would make every field
- * a leak and so is refused rather than enforced.
+ * `malformed` names a declaration that is not a non-empty quoted list, which
+ * would make every field a leak and so is refused rather than enforced.
  */
 export function readCarries(annotations: AnnotationsDef | undefined): {
    declared: boolean;
@@ -175,23 +228,19 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
    let node: AnnotationsDef | undefined = annotations;
    // Bounded: an `inherits` chain is finite, but a malformed IR must not hang.
    for (let hops = 0; node && hops < 64; hops++) {
-      const texts = ownTexts(node);
-      const lines = texts
-         .map((text) => CARRIES_LINE.exec(text.trim()))
-         .filter((m): m is RegExpExecArray => m !== null)
-         .map((m) => m[1].trim());
-      if (lines.length > 0) {
-         const classes = new Set(
-            lines.flatMap((line) => line.split(/\s+/).filter(Boolean)),
-         );
-         if (classes.size === 0) {
-            return {
-               declared: true,
-               classes,
-               malformed:
-                  "has a #(carries) annotation that names no class; list the " +
-                  "classes a caller may reach from this source, or delete it",
-            };
+      const contents = routeContents(ownTexts(node), CARRIES_LINE);
+      if (contents.length > 0) {
+         const classes = new Set<string>();
+         for (const content of contents) {
+            const read = readTagList("carries", content, { list: "required" });
+            if (read.malformed) {
+               return {
+                  declared: true,
+                  classes: new Set(),
+                  malformed: read.malformed,
+               };
+            }
+            for (const v of read.values) classes.add(v);
          }
          return { declared: true, classes };
       }
@@ -525,10 +574,7 @@ export function classificationWarnings(
             subject: s.source,
             code: CLASSIFICATION_MALFORMED,
             severity: "warn",
-            message:
-               `Field ${path} of source ${s.source} ${c.malformed}. Write ` +
-               `"#(classification) <class>" on its own line above the field, ` +
-               `one line per class your policy names.`,
+            message: `Field ${path} of source ${s.source} ${c.malformed}.`,
          });
       }
    }
@@ -554,7 +600,7 @@ export function classificationWarnings(
             `#(classification): ${named}${more > 0 ? ` (+${more} more)` : ""}. ` +
             `This package classifies its fields, so every dimension and ` +
             `measure a caller can read needs a class, or the policy has ` +
-            `nothing to say about it. Write "#(classification) <class>" above ` +
+            `nothing to say about it. Write #(classification) "<class>" above ` +
             `each; a field reached through a join, or derived from a ` +
             `classified field, is classified where that field is declared.`,
       });
@@ -567,7 +613,7 @@ export function classificationWarnings(
  * `#(carries)` ceiling with a class not on the list, or with no class at
  * all, plus a `#(carries)` that names nothing. One message per finding, in
  * the words the author fixes it by. The load refuses the package when there
- * are any ({@link Package.formatClassificationLeaks}), so a surface never
+ * are any ({@link Package.formatClassificationLeaks}), so an entry point never
  * serves what it says it does not carry.
  */
 export function classificationLeaks(
@@ -599,7 +645,7 @@ export function classificationLeaks(
             messages.push(
                `${where} carries [${allowed}] but exposes ${path}, classified ` +
                   `${c.classifications.join(" ")}${via}. Remove the field ` +
-                  `from the surface, derive one of a class the surface carries ` +
+                  `from the source, derive one of a class the source carries ` +
                   `and declare it, or add the class to #(carries) if the ` +
                   `policy allows it.`,
             );

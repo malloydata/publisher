@@ -40,16 +40,16 @@ import type { ModelDef } from "@malloydata/malloy";
 import { Package } from "./package";
 
 describe("readClassification", () => {
-   it("reads one token per line, from a string or a {value} note, as a sorted set", () => {
+   it("reads one quoted class, or a quoted list, from a string or a {value} note", () => {
       expect(
-         readClassification(["#(classification) phi.direct_identifier"]),
+         readClassification(['#(classification) "phi.direct_identifier"']),
       ).toEqual({ values: ["phi.direct_identifier"] });
       expect(
          readClassification([
             { value: "#(doc) The patient's SSN.\n" },
-            { value: "#(classification)   gdpr.personal \n" },
-            { value: "#(classification) phi.direct_identifier" },
-            { value: "#(classification) gdpr.personal" },
+            {
+               value: '#(classification) ["phi.direct_identifier", "gdpr.personal"]\n',
+            },
          ]),
       ).toEqual({ values: ["gdpr.personal", "phi.direct_identifier"] });
    });
@@ -61,23 +61,28 @@ describe("readClassification", () => {
       });
    });
 
-   it("names the fault of a line with no class or several words, keeping the good lines", () => {
+   it("refuses an unquoted class, an empty note, an empty list, and a second note", () => {
+      expect(
+         readClassification(["#(classification) phi.direct_identifier"])
+            .malformed,
+      ).toContain("is not quoted");
       expect(readClassification(["#(classification)"]).malformed).toContain(
-         "names no class",
+         "names nothing",
       );
-      const mixed = readClassification([
-         "#(classification) phi direct identifier",
-         "#(classification) ok",
-      ]);
-      expect(mixed.malformed).toContain("3 words");
-      expect(mixed.values).toEqual(["ok"]);
+      expect(readClassification(["#(classification) []"]).malformed).toContain(
+         "names nothing",
+      );
+      expect(
+         readClassification(['#(classification) "a"', '#(classification) "b"'])
+            .malformed,
+      ).toContain("2 #(classification) annotations");
    });
 
    it("tells a classification, carries or control line from any other annotation", () => {
-      expect(isClassificationLine("#(classification) x")).toBe(true);
+      expect(isClassificationLine('#(classification) "x"')).toBe(true);
       expect(isClassificationLine("  #(classification)\n")).toBe(true);
-      expect(isClassificationLine("#(carries) a b")).toBe(true);
-      expect(isClassificationLine("#(control) AC-3")).toBe(true);
+      expect(isClassificationLine('#(carries) ["a", "b"]')).toBe(true);
+      expect(isClassificationLine('#(control) ["AC-3"]')).toBe(true);
       expect(isClassificationLine("#(doc) classification of things")).toBe(
          false,
       );
@@ -86,20 +91,28 @@ describe("readClassification", () => {
 });
 
 describe("readControls", () => {
-   it("collects tokens across lines, any format, as a sorted set", () => {
+   it("reads quoted lists in any framework's format, across notes, as a sorted set", () => {
       expect(
          readControls([
-            "#(control) soc2:CC6.1 AC-3",
+            '#(control) ["soc2:CC6.1", "AC-3"]',
             "#(doc) x",
-            "#(control) 164.312(a)(1) AC-3",
+            '#(control) ["164.312(a)(1)", "AC-3"]',
          ]),
       ).toEqual({ values: ["164.312(a)(1)", "AC-3", "soc2:CC6.1"] });
+      expect(readControls(['#(control) "AC-02"'])).toEqual({
+         values: ["AC-02"],
+      });
    });
 
-   it("names an empty line and keeps the rest", () => {
-      const read = readControls(["#(control)", "#(control) 7.2.1"]);
+   it("refuses the space-delimited form and an unparseable list, keeping the good notes", () => {
+      const read = readControls([
+         "#(control) AC-01 AC-03",
+         '#(control) ["7.2.1"]',
+         '#(control) ["AC-01" "AC-02"]',
+      ]);
       expect(read.values).toEqual(["7.2.1"]);
-      expect(read.malformed).toContain("names no control");
+      expect(read.malformed).toContain("is not quoted");
+      expect(read.malformed).toContain("does not parse");
    });
 });
 
@@ -107,13 +120,13 @@ describe("readSourceClassifications (lineage)", () => {
    const MODEL = `
 ##! experimental.access_modifiers
 source: people is duckdb.sql("select 1 as id, '999' as ssn, 'A' as first, 'B' as last, 10 as spend, 'MA' as st") include { internal: ssn public: * } extend {
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: social is ssn
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: first_name is first
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: spent is spend
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: state_code is st
 }
 
@@ -121,7 +134,7 @@ source: chart is people extend {
   rename: ssn_renamed is social
   dimension: copied is ssn_renamed
   dimension: masked is concat('***', copied)
-  #(classification) none
+  #(classification) "none"
   dimension: initials is substr(first_name, 1, 1)
   dimension: mixed is concat(first_name, spent)
   dimension: plain is upper(st)
@@ -302,7 +315,7 @@ describe("classification warnings on package load", () => {
       write(
          "orders.malloy",
          `source: orders is ${ROWS} extend {
-   #(classification) pii.direct_identifier
+   #(classification) "pii.direct_identifier"
    dimension: social is ssn
    dimension: area is region
    measure: n is count()
@@ -346,14 +359,14 @@ source: totals is ${ROWS} extend {
          severity: "warn",
       });
       expect(found[0].message).toContain("Field social of source orders");
-      expect(found[0].message).toContain("names no class");
+      expect(found[0].message).toContain("names nothing");
    });
 
    it("reads only the surface: a hidden base is reported where a published source reaches it, and a locked source not at all", async () => {
       write(
          "base.malloy",
          `source: people is ${ROWS} extend {
-   #(classification) pii.direct_identifier
+   #(classification) "pii.direct_identifier"
    dimension: social is ssn
    dimension: area is region
 }
@@ -370,7 +383,7 @@ source: locked is people extend {
 }
 
 source: directory is ${ROWS} extend {
-   #(classification) none
+   #(classification) "none"
    dimension: area is region
    join_one: person is people on person.id = id
 }
@@ -394,7 +407,7 @@ export { locked, directory }
          "orders.malloy",
          `##! experimental.access_modifiers
 source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
-   #(classification) pii.direct_identifier
+   #(classification) "pii.direct_identifier"
    dimension: social is ssn
    dimension: social_copy is social
    dimension: area is region
@@ -425,11 +438,11 @@ source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
          "base.malloy",
          `##! experimental.access_modifiers
 source: people is ${ROWS} include { internal: id, region, ssn, amount } extend {
-   #(classification) pii.direct_identifier
+   #(classification) "pii.direct_identifier"
    dimension: social is ssn
-   #(classification) financial
+   #(classification) "financial"
    dimension: spend is amount
-   #(classification) none
+   #(classification) "none"
    dimension: area is region
 }
 `,
@@ -439,7 +452,7 @@ source: people is ${ROWS} include { internal: id, region, ssn, amount } extend {
          `##! experimental.access_modifiers
 import "base.malloy"
 
-#(carries) financial none
+#(carries) ["financial", "none"]
 source: research is people include { internal: social } extend {
    dimension: masked is concat('***', social)
 }
@@ -459,9 +472,9 @@ export { research }
       write(
          "orders.malloy",
          `##! experimental.access_modifiers
-#(carries) none
+#(carries) ["none"]
 source: orders is ${ROWS} include { internal: id, region, ssn public: amount } extend {
-   #(classification) none
+   #(classification) "none"
    dimension: area is region
 }
 `,
@@ -476,9 +489,9 @@ source: orders is ${ROWS} include { internal: id, region, ssn public: amount } e
       write(
          "orders.malloy",
          `##! experimental.access_modifiers
-#(carries) none
+#(carries) ["none"]
 source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
-   #(classification) none
+   #(classification) "none"
    dimension: area is region
 }
 
@@ -494,7 +507,7 @@ source: empty_list is orders extend {}
          "source fine (orders.malloy) carries [none] but exposes n, which has no class",
       );
       expect(message).toContain(
-         "source empty_list (orders.malloy) has a #(carries) annotation that names no class",
+         "source empty_list (orders.malloy) has a #(carries) annotation that names nothing",
       );
    });
 
@@ -502,11 +515,11 @@ source: empty_list is orders extend {}
       write(
          "orders.malloy",
          `##! experimental.access_modifiers
-#(carries) none financial
+#(carries) ["none", "financial"]
 source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
-   #(classification) none
+   #(classification) "none"
    dimension: area is region
-   #(classification) financial
+   #(classification) "financial"
    measure: total is amount.sum()
    measure: total_again is total * 2
 }

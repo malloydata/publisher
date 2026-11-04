@@ -85,7 +85,7 @@ function renderVerdicts(published) {
   verdictCard(
     "v-ceiling",
     ofTotal(v.withinCeiling, v.surfaces),
-    "surfaces serve only the classes they declare",
+    "domains serve only the classes they declare",
     v.withinCeiling === v.surfaces,
   );
   return v;
@@ -281,7 +281,7 @@ async function renderAccess() {
     el(
       "tr",
       {},
-      el("th", { scope: "col", text: "Surface" }),
+      el("th", { scope: "col", text: "Domain" }),
       PERSONAS.map((p) => el("th", { scope: "col", text: p.label })),
     ),
   );

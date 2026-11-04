@@ -1045,7 +1045,7 @@ SPDX-License-Identifier: MIT
         <section aria-labelledby="h-matrix">
           <div class="section-head">
             <h2 id="h-matrix">
-              What each surface may serve, and what it serves
+              What each domain may serve, and what it serves
             </h2>
             <div class="legend">
               <span
@@ -1057,16 +1057,16 @@ SPDX-License-Identifier: MIT
             </div>
           </div>
           <p class="section-sub">
-            Fields reachable from each surface, by class, including fields
+            Fields reachable from each domain, by class, including fields
             reached through joins and fields whose class was inferred from what
-            they read. Open a surface for its gates, its controls and every
+            they read. Open a domain for its gates, its controls and every
             field's lineage.
           </p>
           <div class="card scroll-x">
             <table class="matrix">
               <thead>
                 <tr>
-                  <th scope="col">Surface</th>
+                  <th scope="col">Domain</th>
                   <th scope="col">Direct identifier</th>
                   <th scope="col">Quasi-identifier</th>
                   <th scope="col">Clinical</th>
@@ -1089,7 +1089,7 @@ SPDX-License-Identifier: MIT
           <div class="section-head"><h2 id="h-access">Who sees what</h2></div>
           <p class="section-sub">
             The same question, "how many encounters can I read?", asked of every
-            surface as every workforce class, live. The policy's workforce table
+            domain as every workforce class, live. The policy's workforce table
             is the expected answer; a cell that differs is flagged. Select a
             cell for the query and the identity it was asked with.
           </p>
@@ -1113,7 +1113,7 @@ SPDX-License-Identifier: MIT
           </div>
           <p class="section-sub">
             The same patients on the limited data set a quality analyst reads,
-            and on the de-identified surface a researcher reads. Ages over 89
+            and on the de-identified domain a researcher reads. Ages over 89
             become 90, dates become years, ZIP codes become three-digit areas
             (DI-01, DI-02).
           </p>
@@ -1210,7 +1210,7 @@ SPDX-License-Identifier: MIT
             <h2 id="h-discover">What it can discover</h2>
           </div>
           <p class="section-sub">
-            The model as this identity is shown it. A surface whose lock cannot
+            The model as this identity is shown it. A domain whose lock cannot
             admit it is not listed at all, the same answer an agent's
             <code>get_context</code> call gets.
           </p>
@@ -1221,9 +1221,9 @@ SPDX-License-Identifier: MIT
         <section aria-labelledby="h-rows">
           <div class="section-head"><h2 id="h-rows">What it can read</h2></div>
           <p class="section-sub">
-            The newest rows on the selected surface, read as this identity. Each
+            The newest rows on the selected domain, read as this identity. Each
             column carries its classes. The same patients look completely
-            different from one surface to the next: names and SSNs on the chart,
+            different from one domain to the next: names and SSNs on the chart,
             a city and an age on the limited data set, a year and a three-digit
             ZIP on research.
           </p>
@@ -1243,7 +1243,7 @@ SPDX-License-Identifier: MIT
               authenticates the person the agent works for and sets their
               <code>#(secure)</code> attributes on every call, so the agent
               never holds them and cannot change them. Every query it writes,
-              however clever, runs through the same surfaces, locks and row
+              however clever, runs through the same domains, locks and row
               filters as this page, and is recorded with the fields and classes
               it read.
             </p>

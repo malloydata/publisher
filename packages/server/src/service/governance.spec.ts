@@ -32,16 +32,15 @@ const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222',10,'org-
 
 const BASE = `##! experimental.access_modifiers
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: people is ${ROWS} include { internal: id, ssn, region, amount, org } extend {
-   #(classification) phi.direct_identifier
-   #(classification) gdpr.personal
+   #(classification) ["phi.direct_identifier", "gdpr.personal"]
    dimension: social is ssn
-   #(classification) phi.financial
+   #(classification) "phi.financial"
    dimension: spend is amount
-   #(classification) none
+   #(classification) "none"
    dimension: area is region
-   #(classification) phi.quasi_identifier
+   #(classification) "phi.quasi_identifier"
    dimension: org_id is org
 }
 `;
@@ -57,15 +56,15 @@ given: ORGS :: string[]
 
 #(authorize) 'clinician' in $ROLES
 #(access_filter) org_id in $ORGS
-#(carries) phi.direct_identifier gdpr.personal phi.financial phi.quasi_identifier none
-#(control) AC-01 MN-01 soc2:CC6.1
+#(carries) ["phi.direct_identifier", "gdpr.personal", "phi.financial", "phi.quasi_identifier", "none"]
+#(control) ["AC-01", "MN-01", "soc2:CC6.1"]
 source: chart is people extend {
    dimension: masked is concat('***', social)
-   #(control) DI-01
-   #(classification) none
+   #(control) ["DI-01"]
+   #(classification) "none"
    dimension: initial is substr(area, 1, 1)
    measure: total is spend.sum()
-   #(classification) none
+   #(classification) "none"
    measure: n is count()
 }
 

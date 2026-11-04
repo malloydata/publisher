@@ -99,22 +99,25 @@ In one sentence: **`internal:` and `private:` shape what's inside a source's pub
 
 ## `#(classification)`: what a field _is_, in the policy's words
 
-When a package has an access or data-handling policy, every published dimension and measure should say which class of data it carries, so an agent sees the class before reading the field and a review can check each surface against the policy. One annotation, one token, on the field, after the closing parenthesis:
+When a package has an access or data-handling policy, every published dimension and measure should say which class of data it carries, so an agent sees the class before reading the field and a review can check each surface against the policy. One annotation on the field, after the closing parenthesis: one quoted class, or a quoted, comma-separated list when the field sits under several regimes:
 
 ```malloy
 #(doc) Social security number.
-#(classification) phi.direct_identifier
+#(classification) "phi.direct_identifier"
 dimension: ssn is SSN
 
-#(classification) none
+#(classification) "none"
 measure: order_count is count()
+
+#(classification) ["phi.direct_identifier", "gdpr.personal"]
+dimension: member_ssn is SSN
 ```
 
-- The vocabulary is the policy's, not Malloy's: use the class names the policy document uses (`phi.direct_identifier`, `confidential`, `pci.pan`), and `none` for a field the policy has nothing to say about. Publisher checks only that each line is one token. A field under several regimes gets one line per class (`#(classification) phi.direct_identifier` and `#(classification) gdpr.personal` on the same SSN).
-- Write the class after the route. `#(classification phi.direct_identifier)` compiles with a `malformed-route` warning and declares nothing.
+- The vocabulary is the policy's, not Malloy's: use the class names the policy document uses (`phi.direct_identifier`, `confidential`, `pci.pan`), and `none` for a field the policy has nothing to say about. Publisher checks only the shape: quoted, and a list in `["a", "b"]` form like every other list-valued annotation. One `#(classification)` per field; an unquoted or space-delimited value warns `classification-malformed`.
+- Write the value after the route. `#(classification "phi.clinical")` compiles with a `malformed-route` warning and declares nothing.
 - Classify a field where it is declared; the classes ride every join to it, survive `extend` and `rename:`, and a field derived from it (`dimension: x is y`, `concat(y, …)`, `count(y)`) inherits them, as the union over everything it reads. Declare classes on a derived field only to override the inherited set (a year derived from a birth date is a quasi-identifier, not a direct one).
-- `#(carries) <class> …` on a source line lists every class a caller may reach from that source. A field with any class off the list, or no class, is a leak, and a leak refuses the package load, so write it on each entry point next to its `#(authorize)` and classify everything the surface exposes.
-- `#(control) <id> …` on a source line, or on a field, names the policy controls it implements, in the policy's own identifiers (`AC-01`, `soc2:CC6.1`, `164.312(a)(1)`); a source's controls are its own, not its base's. `GET …/packages/{pkg}/governance` exports every source's gates, carries, controls and classified fields as one JSON document a pipeline checks in and diffs.
+- `#(carries) ["<class>", …]` on a source line lists every class a caller may reach from that source. A field with any class off the list, or no class, is a leak, and a leak refuses the package load, so write it on each entry point next to its `#(authorize)` and classify everything it exposes.
+- `#(control) ["<id>", …]` on a source line, or on a field, names the policy controls it implements, in the policy's own identifiers (`AC-01`, `soc2:CC6.1`, `164.312(a)(1)`); a source's controls are its own, not its base's. `GET …/packages/{pkg}/governance` exports every source's gates, carries, controls and classified fields as one JSON document a pipeline checks in and diffs.
 - Once any field in a package is classified, Publisher warns (`classification-coverage`) about every published field that is not, so classify a package all at once rather than one source at a time. A field under `private:` or `internal:` is not demanded one.
 - It changes nothing about what a query returns. Pair it with `private:` to hide a column and with `#(authorize)` / `#(access_filter)` (see `skill:malloy-model`) to control who reads a source.
 

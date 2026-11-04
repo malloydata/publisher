@@ -8,25 +8,24 @@ SPDX-License-Identifier: MIT
 > What this is: how a field declares the data classes it carries, how a derived field inherits
 > them, how a source declares the classes a caller may reach from it, and how either names the
 > policy controls it implements, all in the words of the package's access policy, so an agent
-> sees the classes of a field before it reads it, a review can check every surface against the
-> policy, a surface cannot serve what it says it does not carry, and a pipeline can export the
+> sees the classes of a field before it reads it, a review can check every entry point against the
+> policy, an entry point cannot serve what it says it does not carry, and a pipeline can export the
 > control-to-implementation map. To hide a column, use `private:`; to decide who may query a source, see
 > [authorize.md](authorize.md); to decide what is discoverable at all, see
 > [discovery-and-access.md](discovery-and-access.md).
 
-**One line per class on the field; the ceiling and the controls on the source.**
+**The classes on the field; the ceiling and the controls on the source.** Every value is quoted, and every list is a quoted, comma-separated list in brackets, the form every list-valued annotation in Publisher uses (`tiles=[…]`, `# drill { to=[…] }`).
 
 ```malloy
 #(authorize) 'researcher' in $ROLES
-#(carries) phi.clinical phi.financial phi.quasi_identifier gdpr.personal none
-#(control) AC-01 DI-01 soc2:CC6.1
+#(carries) ["phi.clinical", "phi.financial", "phi.quasi_identifier", "gdpr.personal", "none"]
+#(control) ["AC-01", "DI-01", "soc2:CC6.1"]
 source: research is core extend {
   #(doc) Year of birth.
-  #(classification) phi.quasi_identifier
-  #(classification) gdpr.personal
+  #(classification) ["phi.quasi_identifier", "gdpr.personal"]
   dimension: birth_year is BIRTHDATE.year
 
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   measure: total_expenses is HEALTHCARE_EXPENSES.sum()
 
   // No annotation: inferred phi.financial, from total_expenses.
@@ -34,18 +33,21 @@ source: research is core extend {
 }
 ```
 
-A class is the one token after the closing parenthesis, and a field carries a **set** of them, one
-line per class, because one column commonly sits under several regimes at once: an SSN is a HIPAA
-direct identifier, GDPR personal data and NIST PII in the same column. **Publisher reads the shape
-and never the vocabulary.** `phi.direct_identifier`, `confidential`, `pci.pan` and `none` are all
-one token to it; which tokens a package may use, and what each permits, is the policy's to say and
-a review's to check. A dotted path is the convention (`<regime>.<class>`) that keeps regimes apart
-in one package, not a rule.
+A field's `#(classification)` is one quoted class, `"phi.financial"`, or a quoted list when the
+field sits under several regimes at once, `["phi.direct_identifier", "gdpr.personal"]`: an SSN is
+a HIPAA direct identifier, GDPR personal data and NIST PII in the same column. A field has one
+`#(classification)`; a second is malformed, because the list says it in one place. **Publisher
+reads the shape and never the vocabulary.** `"phi.direct_identifier"`, `"confidential"`,
+`"pci.pan"` and `"none"` are all just text to it; which classes a package may use, and what each
+permits, is the policy's to say and a review's to check. A dotted path is the convention
+(`<regime>.<class>`) that keeps regimes apart in one package, not a rule.
 
-Write the class after the route, not inside it. Malloy ends an annotation's route at the first
-whitespace, so `#(classification phi.direct_identifier)` compiles with a `malformed-route` warning
-and declares nothing; `#(classification) phi.direct_identifier` is the form. `#(carries)` lists
-its classes the same way, separated by spaces.
+The content after the route is read by Malloy's own tag parser, so a malformed value is a parse
+error with its reason, never a silent split: an unquoted class (`#(classification) phi.clinical`),
+a space-delimited list, or a list missing a comma warns `classification-malformed` and names the
+form to write. Write the value after the route, not inside it: Malloy ends an annotation's route at
+the first whitespace, so `#(classification "phi.clinical")` compiles with a `malformed-route`
+warning and declares nothing.
 
 ## Lineage: a derived field takes the class of what it reads
 
@@ -58,7 +60,7 @@ intermediate: if `masked` reads `copied` and `copied` reads `ssn`, `masked` carr
 class and reports `copied` as its input.
 
 - **A declared class wins, and the inputs stay visible.** `birth_year is BIRTHDATE.year` with
-  `#(classification) phi.quasi_identifier` is a quasi-identifier derived from a direct one. The
+  `#(classification) "phi.quasi_identifier"` is a quasi-identifier derived from a direct one. The
   card reports both, so a review can read a declared `none` against what it was derived from.
 - **Inputs of different classes union.** `concat(first_name, total_expenses)` reads a direct
   identifier and a financial field and carries both. That is the fail-closed reading: Publisher
@@ -70,11 +72,11 @@ class and reports `copied` as its input.
 - A hidden field (`private:`, `internal:`) is still an input: a public field derived from a
   private identifier carries the identifier's class.
 
-## `#(carries)`: the classes a surface may expose
+## `#(carries)`: the classes an entry point may expose
 
 `#(carries)` on a source lists every class a caller may reach from it. It is written on the
 source line next to the gate that admits callers, so the two statements a policy makes about a
-surface, who may enter and what they may see, sit on the same object and cannot drift. A source
+entry point, who may enter and what they may see, sit on the same object and cannot drift. A source
 that extends another and declares none inherits the base's list, the way it inherits a gate; its
 own declaration replaces it.
 
@@ -86,12 +88,12 @@ parse refuses it. The error names every leak, with the lineage it came through:
 ```
 source research (index.malloy) carries [phi.clinical, phi.financial, none] but exposes masked,
 classified phi.direct_identifier, inferred from social (phi.direct_identifier). Remove the field
-from the surface, derive one of a class the surface carries and declare it, or add the class to
-#(carries) if the policy allows it.
+from the source, derive one of a class the source carries and declare it, or add the class to
+#(carries) ["if", "the", "policy", "allows", "it."]
 ```
 
 An unclassified field on a `#(carries)` source is a leak too, since it has no class to be on
-the list; on such a surface every field must be classified. A `#(carries)` that names nothing is
+the list; on such a source every field must be classified. A `#(carries)` that names nothing is
 refused rather than enforced, because it would make every field a leak. A refused load is a 400
 on publish and reload, and the package is absent from `list_packages` and reported in
 `get_status`'s `loadErrors` with the message, like any other load failure.
@@ -101,24 +103,25 @@ on publish and reload, and the package is absent from `list_packages` and report
 Every compliance framework decomposes its policy into identified controls, SOC 2's `CC6.1`,
 NIST 800-53's `AC-3`, PCI DSS's `7.2.1`, ISO 27001's `A.5.15`, HIPAA's `164.312(a)(1)`, and an
 organization under several keeps a crosswalk between them. `#(control)` names the ones a source
-or a field implements, as tokens in any format, with an optional framework prefix when a package
-answers to more than one:
+or a field implements, as a quoted list of identifiers in any format, with an optional framework
+prefix when a package answers to more than one (a single quoted identifier is accepted too):
 
 ```malloy
 #(authorize) 'clinician' in $ROLES
 #(access_filter) encounters.organization_id in $ORGANIZATIONS
-#(control) AC-01 MN-01 hipaa:164.312(a)(1) soc2:CC6.1
+#(control) ["AC-01", "MN-01", "hipaa:164.312(a)(1)", "soc2:CC6.1"]
 source: patient_chart is core extend {
-  #(control) DI-01
-  #(classification) phi.quasi_identifier
+  #(control) ["DI-01"]
+  #(classification) "phi.quasi_identifier"
   dimension: birth_year is BIRTHDATE.year
 }
 ```
 
-Publisher reads the tokens and never the vocabulary. A source's controls are its own line's, not
-inherited from a base it extends: a control is a claim about what this source implements, and an
-extension that replaces the base's gate does not implement the base's control by inheritance. A
-`#(control)` line with no token warns `classification-malformed`.
+Publisher reads the identifiers and never the vocabulary; quoting is what lets one carry a colon or
+parentheses (`"hipaa:164.312(a)(1)"`). A source's controls are its own line's, not inherited from a
+base it extends: a control is a claim about what this source implements, and an extension that
+replaces the base's gate does not implement the base's control by inheritance. A `#(control)` that
+is empty, unquoted or does not parse warns `classification-malformed`.
 
 ## The governance export
 
@@ -195,15 +198,15 @@ A classification changes nothing about what a query returns. A field marked
 controls are elsewhere, and the class is what lets a review, and `#(carries)`, say whether they
 are the right ones:
 
-| To …                                           | Use                                       |
-| ---------------------------------------------- | ----------------------------------------- |
-| say what a field is                            | `#(classification)` (this page)           |
-| say what a surface may expose, and refuse more | `#(carries)` (this page)                  |
-| keep a column off a source's API               | `include { private: ssn }` / `internal:`  |
-| decide who may query a source                  | [`#(authorize)`](authorize.md)            |
-| decide which rows a caller sees                | [`#(access_filter)`](row-level-access.md) |
-| decide what is listed and queryable            | [`index.malloy`](discovery-and-access.md) |
+| To …                                                | Use                                       |
+| --------------------------------------------------- | ----------------------------------------- |
+| say what a field is                                 | `#(classification)` (this page)           |
+| say what an entry point may expose, and refuse more | `#(carries)` (this page)                  |
+| keep a column off a source's API                    | `include { private: ssn }` / `internal:`  |
+| decide who may query a source                       | [`#(authorize)`](authorize.md)            |
+| decide which rows a caller sees                     | [`#(access_filter)`](row-level-access.md) |
+| decide what is listed and queryable                 | [`index.malloy`](discovery-and-access.md) |
 
 A review that holds a policy ("researchers may read no direct identifier") checks it by reading
-each surface a researcher may enter, the classes it exposes, and the gates on it. The class is the
+each entry point a researcher may enter, the classes it exposes, and the gates on it. The class is the
 half of that statement the model supplies, and `#(carries)` is the half the model enforces.

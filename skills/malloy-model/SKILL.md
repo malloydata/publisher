@@ -390,4 +390,4 @@ A surface a policy calls de-identified (HIPAA Safe Harbor, 45 CFR 164.514(b)) re
 - age capped: `pick 90 when <age> > 89 else <age>`;
 - geography reduced to the state and a three-digit ZIP, reporting the small-population three-digit areas as `'000'` by joining a list of them kept as data, not prose.
 
-Classify each derivation (`#(classification) phi.quasi_identifier` for a year or a three-digit ZIP), tag it with the policy's control (`#(control) DI-01`), keep identifiers internal on the de-identified source, and give the surface a `#(carries)` that omits the identifier class, so a join that brings one back refuses the load. `examples/clinical-records/deidentify.malloy` is the worked version.
+Classify each derivation (`#(classification) "phi.quasi_identifier"` for a year or a three-digit ZIP), tag it with the policy's control (`#(control) ["DI-01"]`), keep identifiers internal on the de-identified source, and give the surface a `#(carries)` that omits the identifier class, so a join that brings one back refuses the load. `examples/clinical-records/deidentify.malloy` is the worked version.

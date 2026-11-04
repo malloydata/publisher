@@ -2,7 +2,7 @@
 // behind `include { internal: * }` and re-exposed as a named field with its
 // class (policy CL-01, CL-02). Each core inherits its base's lock, so a core
 // is a building block, never a place a caller enters. Identifiers that only
-// some surfaces may serve are NOT exposed here; a surface adds them.
+// some domains may serve are NOT exposed here; a domain adds them.
 ##! experimental { access_modifiers givens }
 
 import "base.malloy"
@@ -10,63 +10,63 @@ import "base.malloy"
 source: organizations_core is organizations_base include { internal: * } extend {
   primary_key: Id
   #(doc) Name of the care organization.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: organization_name is NAME
   #(doc) City the organization is in.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: organization_city is CITY
   #(doc) State the organization is in.
-  #(classification) none
+  #(classification) "none"
   dimension: organization_state is STATE
 }
 
 source: providers_core is providers_base include { internal: * } extend {
   primary_key: Id
   #(doc) The provider's name.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: provider_name is NAME
   #(doc) The provider's specialty.
-  #(classification) none
+  #(classification) "none"
   dimension: specialty is SPECIALITY
 }
 
 source: payers_core is payers_base include { internal: * } extend {
   primary_key: Id
   #(doc) The health plan or payer.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: payer_name is NAME
 }
 
 source: conditions_core is conditions_base include { internal: * } extend {
   #(doc) Date the condition was diagnosed.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: onset_date is `START`
   #(doc) SNOMED code of the condition.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: condition_code is CODE
   #(doc) The condition.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: condition is DESCRIPTION
   #(doc) Number of diagnoses.
-  #(classification) none
+  #(classification) "none"
   measure: diagnosis_count is count()
 }
 
 source: medications_core is medications_base include { internal: * } extend {
   #(doc) Date the medication was started.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: medication_start is `START`
   #(doc) RxNorm code of the medication.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: medication_code is CODE
   #(doc) The medication.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: medication is DESCRIPTION
   #(doc) Total cost of the medication, all dispenses.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: medication_cost is TOTALCOST
   #(doc) Number of prescriptions.
-  #(classification) none
+  #(classification) "none"
   measure: prescription_count is count()
   #(doc) Total medication cost.
   measure: total_medication_cost is medication_cost.sum()
@@ -74,19 +74,19 @@ source: medications_core is medications_base include { internal: * } extend {
 
 source: procedures_core is procedures_base include { internal: * } extend {
   #(doc) Date of the procedure.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: procedure_date is `DATE`
   #(doc) SNOMED code of the procedure.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: procedure_code is CODE
   #(doc) The procedure.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: procedure is DESCRIPTION
   #(doc) Billed cost of the procedure.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: procedure_cost is BASE_COST
   #(doc) Number of procedures.
-  #(classification) none
+  #(classification) "none"
   measure: procedure_count is count()
   #(doc) Total procedure cost.
   measure: total_procedure_cost is procedure_cost.sum()
@@ -94,85 +94,85 @@ source: procedures_core is procedures_base include { internal: * } extend {
 
 source: observations_core is observations_base include { internal: * } extend {
   #(doc) Date the observation was recorded.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: observed_at is `DATE`
   #(doc) LOINC code of the observation.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: observation_code is CODE
   #(doc) What was observed.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: observation is DESCRIPTION
   #(doc) The observed value, as recorded.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: observed_value is VALUE
   #(doc) Units of the observed value.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: units is UNITS
   #(doc) Number of observations.
-  #(classification) none
+  #(classification) "none"
   measure: observation_count is count()
 }
 
-// A patient with every identifier: for the surfaces whose workforce class
+// A patient with every identifier: for the domains whose workforce class
 // needs full PHI (policy MN-01, MN-02).
 source: patients_core is patients_base include { internal: * } extend {
   primary_key: Id
   #(doc) Synthea's patient identifier, a medical record number.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: patient_id is Id
   #(doc) Social Security number.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: ssn is SSN
   #(doc) Driver's license number.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: drivers_license is DRIVERS
   #(doc) Passport number.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: passport is PASSPORT
   #(doc) Given name.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: first_name is FIRST
   #(doc) Family name.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: last_name is LAST
   #(doc) Date of birth.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: birth_date is BIRTHDATE
   #(doc) Date of death, when the patient has died.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: death_date is DEATHDATE
   #(doc) Street address.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: street_address is ADDRESS
   #(doc) City of residence.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: city is CITY
   #(doc) County of residence.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: county is COUNTY
   #(doc) ZIP code of residence.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: zip is ZIP
   #(doc) State of residence.
-  #(classification) none
+  #(classification) "none"
   dimension: state is STATE
   #(doc) Gender.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: gender is GENDER
   #(doc) Race.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: race is RACE
   #(doc) Ethnicity.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: ethnicity is ETHNICITY
   #(doc) Lifetime healthcare expenses.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: healthcare_expenses is HEALTHCARE_EXPENSES
   #(doc) Lifetime healthcare costs covered by a payer.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: healthcare_coverage is HEALTHCARE_COVERAGE
   #(doc) Number of patients.
-  #(classification) none
+  #(classification) "none"
   measure: patient_count is count()
 }
 
@@ -181,28 +181,28 @@ source: patients_core is patients_base include { internal: * } extend {
 source: patients_lds is patients_base include { internal: * } extend {
   primary_key: Id
   #(doc) City of residence.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: city is CITY
   #(doc) ZIP code of residence.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: zip is ZIP
   #(doc) State of residence.
-  #(classification) none
+  #(classification) "none"
   dimension: state is STATE
   #(doc) Age in whole years on the data's snapshot date, 2020-04-30.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: age is floor(days(BIRTHDATE to @2020-04-30) / 365.25)
   #(doc) Gender.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: gender is GENDER
   #(doc) Race.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: race is RACE
   #(doc) Ethnicity.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: ethnicity is ETHNICITY
   #(doc) Number of patients.
-  #(classification) none
+  #(classification) "none"
   measure: patient_count is count()
 }
 
@@ -211,28 +211,28 @@ source: patients_lds is patients_base include { internal: * } extend {
 source: encounters_core is encounters_base include { internal: * } extend {
   primary_key: Id
   #(doc) When the encounter began.
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: started_at is `START`
   #(doc) Ambulatory, emergency, inpatient, wellness and so on.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: encounter_class is ENCOUNTERCLASS
   #(doc) SNOMED code of the encounter type.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: encounter_code is CODE
   #(doc) The encounter type.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: encounter_type is DESCRIPTION
   #(doc) Why the patient came in.
-  #(classification) phi.clinical
+  #(classification) "phi.clinical"
   dimension: reason is REASONDESCRIPTION
   #(doc) The encounter's billed claim cost.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: claim_cost is TOTAL_CLAIM_COST
   #(doc) The part of the claim the payer covered.
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   dimension: payer_coverage is PAYER_COVERAGE
   #(doc) Number of encounters.
-  #(classification) none
+  #(classification) "none"
   measure: encounter_count is count()
   #(doc) Total billed claim cost.
   measure: total_claim_cost is claim_cost.sum()

@@ -163,8 +163,8 @@ function renderDiscovery(visible) {
   const n = visible.size;
   $("discovery-caption").textContent =
     n === 0
-      ? "This identity can discover nothing in the package: no surface's lock admits it."
-      : `This identity can discover ${n} of ${SURFACES.length} surfaces. The others are not listed at all, so an agent working for it cannot learn they exist from discovery.`;
+      ? "This identity can discover nothing in the package: no domain's lock admits it."
+      : `This identity can discover ${n} of ${SURFACES.length} domains. The others are not listed at all, so an agent working for it cannot learn they exist from discovery.`;
 }
 
 /* ── the rows themselves ───────────────────────────────────────────────── */
@@ -194,7 +194,7 @@ async function renderSample(gen) {
       box,
       el("p", {
         class: "muted",
-        text: "This identity can read nothing: no surface admits it, so there is no surface to pick.",
+        text: "This identity can read nothing: no domain admits it, so there is no domain to pick.",
       }),
     );
     return;
@@ -278,7 +278,7 @@ async function renderSample(gen) {
       err?.status === 403
         ? el("p", {
             class: "note",
-            text: "Refused (403). This identity is not admitted to this surface.",
+            text: "Refused (403). This identity is not admitted to this domain.",
           })
         : errorNote(err),
     );

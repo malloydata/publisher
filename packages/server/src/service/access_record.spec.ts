@@ -29,17 +29,17 @@ given: ORGS :: string[]
 given: NOTE :: string is 'x'
 
 source: kids is duckdb.table('child') extend {
-   #(classification) none
+   #(classification) "none"
    dimension: label is name
 }
 
 #(access_filter) org_id in $ORGS
 source: accounts_src is duckdb.table('accounts') extend {
-   #(classification) phi.quasi_identifier
+   #(classification) "phi.quasi_identifier"
    dimension: area is region
-   #(classification) phi.direct_identifier
+   #(classification) "phi.direct_identifier"
    dimension: holder is owner
-   #(classification) phi.financial
+   #(classification) "phi.financial"
    measure: total is amount.sum()
    measure: n is count()
    join_one: kid is kids on kid.id = child_id

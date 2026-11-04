@@ -1,10 +1,10 @@
-// The package's published surface: the five entry points the policy's
+// The package's published surface: the five analytical domains the policy's
 // workforce table names. Bases, cores and the de-identification sources are
 // building blocks and are not exported, so a direct query to any of them is
-// refused (policy AC-02). The bare import carries the surfaces' secure givens
+// refused (policy AC-02). The bare import carries the domains' secure givens
 // onto this model's surface, where the gates read them.
 ##! experimental { access_modifiers givens }
 
-import "surfaces.malloy"
+import "domains.malloy"
 
 export { patient_chart, billing, population_health, partner_lds, research }

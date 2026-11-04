@@ -20,15 +20,15 @@ import { docText, getPackageIndex } from "./package_entities";
 const MODEL = `
 source: patients is duckdb.sql("select 1 as id, '999-11-2222' as ssn, 'MA' as st") extend {
   #(doc) Social security number.
-  #(classification) phi.direct_identifier
+  #(classification) "phi.direct_identifier"
   dimension: social is ssn
-  #(classification) phi.quasi_identifier
+  #(classification) "phi.quasi_identifier"
   dimension: state is st
   dimension: raw_state is st
-  #(classification) phi.financial
+  #(classification) "phi.financial"
   measure: patient_count is count()
   dimension: masked is concat('***', social)
-  #(classification) none
+  #(classification) "none"
   dimension: state_initial is substr(st, 1, 1)
 }
 
@@ -158,8 +158,8 @@ describe("classification on get_context entities", () => {
 
 describe("docText and classification", () => {
    it("does not fall back to the classification line as a description", () => {
-      expect(docText(["#(classification) phi.clinical"])).toBe("");
-      expect(docText(["#(classification) phi.clinical", "# currency"])).toBe(
+      expect(docText(['#(classification) "phi.clinical"'])).toBe("");
+      expect(docText(['#(classification) "phi.clinical"', "# currency"])).toBe(
          "# currency",
       );
    });

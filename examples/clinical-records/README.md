@@ -16,17 +16,17 @@ Everything below implements one of them.
 
 ## Layers
 
-| File                | Layer    | What it does                                                                                                                                                                          |
-| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `base.malloy`       | Base     | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                      |
-| `core.malloy`       | Core     | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some surfaces may serve are left out. |
-| `deidentify.malloy` | Core     | The Safe Harbor derivations, declared once: years for dates, ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02).                    |
-| `surfaces.malloy`   | Surfaces | One entry point per access decision, each gated on `#(secure)` givens, declaring what it `#(carries)` and which `#(control)`s it implements.                                          |
-| `index.malloy`      | Surface  | Exports the five surfaces and nothing else.                                                                                                                                           |
+| File                | Layer   | What it does                                                                                                                                                                         |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `base.malloy`       | Base    | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                     |
+| `core.malloy`       | Core    | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some domains may serve are left out. |
+| `deidentify.malloy` | Core    | The Safe Harbor derivations, declared once: years for dates, ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02).                   |
+| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, declaring what it `#(carries)` and which `#(control)`s it implements.                                         |
+| `index.malloy`      | Surface | The package's published surface: exports the five domains and nothing else.                                                                                                          |
 
-## Surfaces
+## Analytical domains
 
-| Surface             | Workforce class               | Gate                                                          | Carries                       |
+| Domain              | Workforce class               | Gate                                                          | Carries                       |
 | ------------------- | ----------------------------- | ------------------------------------------------------------- | ----------------------------- |
 | `patient_chart`     | treating clinician, care team | `'clinical' in $ROLES`, rows `ORGANIZATION in $ORGANIZATIONS` | full PHI                      |
 | `billing`           | billing and claims            | `'billing' in $ROLES`, rows `ORGANIZATION in $ORGANIZATIONS`  | identifiers, codes, financial |
@@ -35,16 +35,16 @@ Everything below implements one of them.
 | `research`          | IRB researcher                | `'researcher' in $ROLES`                                      | de-identified                 |
 
 `ROLES`, `ORGANIZATIONS` and `ATTRIBUTES` are `#(secure)`: Riverbend's identity provider sets them
-for the caller, and the request cannot (AC-03). A surface that dropped its gate would not open,
-because each surface extends a core that inherits its base's lock.
+for the caller, and the request cannot (AC-03). A domain that dropped its gate would not open,
+because each domain extends a core that inherits its base's lock.
 
 ## The data app
 
 `public/index.html` is a compliance scorecard for the person who signs off on a release: it reads
-the governance export and asks every surface the same question as every workforce class, live, and
+the governance export and asks every domain the same question as every workforce class, live, and
 checks each answer against the policy's workforce table. It leads with four verdicts (classified
-fields, gates on identity-provider attributes, surfaces within their declared ceiling, access
-decisions that match the policy), then shows what each surface may serve against what it serves,
+fields, gates on identity-provider attributes, domains within their declared ceiling, access
+decisions that match the policy), then shows what each domain may serve against what it serves,
 the access grid with the query and identity behind every cell, the de-identification measured on
 the same patients, the controls register, and the seeded violations. Served at
 `/environments/examples/packages/clinical-records/index.html`.
@@ -55,9 +55,9 @@ choose a persona.
 
 ## What Publisher enforces, and what it leaves to a review
 
-`violations/` holds five broken versions of `surfaces.malloy`. Three are refused at load: a
-de-identified surface that joins back to identifiers, a gate on a given the requester sets, and a
-surface re-opened over locked joins. Two load: an identifier declared `none`, and a billing surface
+`violations/` holds five broken versions of `domains.malloy`. Three are refused at load: a
+de-identified domain that joins back to identifiers, a gate on a given the requester sets, and a
+domain re-opened over locked joins. Two load: an identifier declared `none`, and a billing domain
 that lost its organization scope. Those are false or missing statements, not inconsistent ones, and
 catching them takes reading the policy and the data. [`violations/README.md`](violations/README.md)
 has the table.

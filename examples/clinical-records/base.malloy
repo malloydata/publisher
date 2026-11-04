@@ -1,46 +1,46 @@
 // The base layer: one source per Synthea table, 1:1 with the files in data/.
 // Every base is locked outright, so no caller queries a table directly
-// (policy AC-02), and nothing here is exported. The core and the surfaces
+// (policy AC-02), and nothing here is exported. The core and the domains
 // extend these; a source that extends a locked base without its own gate
 // inherits the lock.
 ##! experimental { access_modifiers givens }
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: patients_base is duckdb.table('data/patients.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: encounters_base is duckdb.table('data/encounters.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: organizations_base is duckdb.table('data/organizations.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: providers_base is duckdb.table('data/providers.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: payers_base is duckdb.table('data/payers.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: conditions_base is duckdb.table('data/conditions.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: medications_base is duckdb.table('data/medications.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: procedures_base is duckdb.table('data/procedures.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: observations_base is duckdb.table('data/observations.parquet')
 
 #(authorize) false
-#(control) AC-02
+#(control) ["AC-02"]
 source: zip3_small_population is duckdb.table('data/zip3_small_population.parquet')

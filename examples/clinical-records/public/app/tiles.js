@@ -133,7 +133,7 @@ export const DEID = {
 export const CONTROLS = [
   {
     id: "CL-01",
-    text: "Every field on every published surface carries a classification.",
+    text: "Every field on every published domain carries a classification.",
     evidence: "model",
     check: "classified",
   },
@@ -145,7 +145,7 @@ export const CONTROLS = [
   },
   {
     id: "AC-01",
-    text: "Every surface that serves PHI is gated by workforce class.",
+    text: "Every domain that serves PHI is gated by workforce class.",
     evidence: "model",
     check: "gated",
   },
@@ -162,13 +162,13 @@ export const CONTROLS = [
   },
   {
     id: "AC-04",
-    text: "A surface serves only the classes it declares.",
+    text: "A domain serves only the classes it declares.",
     evidence: "model",
     check: "ceiling",
   },
   {
     id: "AC-05",
-    text: "A join does not extend a surface's access.",
+    text: "A join does not extend a domain's access.",
     evidence: "server",
     note: "Publisher refuses a package whose published source joins a gated source it does not scope.",
   },
@@ -222,15 +222,15 @@ export const CONTROLS = [
   },
   {
     id: "DI-03",
-    text: "No direct identifier on a de-identified surface.",
+    text: "No direct identifier on a de-identified domain.",
     evidence: "model",
     check: "ceiling",
   },
   {
     id: "DI-04",
-    text: "No free-text field on a de-identified surface.",
+    text: "No free-text field on a de-identified domain.",
     evidence: "review",
-    note: "Free text is not a class; a review reads the research surface's fields.",
+    note: "Free text is not a class; a review reads the research domain's fields.",
   },
   {
     id: "LDS-01",
@@ -249,11 +249,11 @@ export const CONTROLS = [
     id: "AU-01",
     text: "Every query produces an access record.",
     evidence: "server",
-    note: "Publisher writes one record per query: caller, surface, gate decision, fields and classes read.",
+    note: "Publisher writes one record per query: caller, domain, gate decision, fields and classes read.",
   },
   {
     id: "AU-02",
-    text: "An inventory of every surface, gate, class and field, from the served model.",
+    text: "An inventory of every domain, gate, class and field, from the served model.",
     evidence: "server",
     note: "This page reads it: GET …/packages/clinical-records/governance.",
   },
@@ -293,7 +293,7 @@ export const VIOLATIONS = [
   },
   {
     id: "02",
-    what: "The limited data set serves the encounter's record number, declared #(classification) none.",
+    what: "The limited data set serves the encounter's record number, declared #(classification) "none".",
     controls: "LDS-01, CL-02",
     refused: false,
     reason:
@@ -305,7 +305,7 @@ export const VIOLATIONS = [
     controls: "MN-02",
     refused: false,
     reason:
-      "Loads: a role-gated surface over locked cores is the designed pattern, and the server cannot know MN-02 requires a scope. A biller at one organization reads all 967. The access grid on this page catches it, because it checks every decision against the policy's workforce table.",
+      "Loads: a role-gated domain over locked cores is the designed pattern, and the server cannot know MN-02 requires a scope. A biller at one organization reads all 967. The access grid on this page catches it, because it checks every decision against the policy's workforce table.",
   },
 ];
 
@@ -428,11 +428,11 @@ export const ATTEMPTS = [
     id: "raw-table",
     label: "Read the raw patient table",
     query: () => "run: patients_base -> { select: SSN, FIRST, LAST; limit: 5 }",
-    why: "Every table is a base source locked with #(authorize) false and left off the published surface (AC-02).",
+    why: "Every table is a base source locked with #(authorize) false and left off the package's published list, index.malloy (AC-02).",
   },
   {
     id: "core",
-    label: "Read the identified patient record behind every surface",
+    label: "Read the identified patient record behind every domain",
     query: () =>
       "run: patients_core -> { select: ssn, first_name, last_name; limit: 5 }",
     why: "Cores are building blocks: not exported from index.malloy, so not a place any caller can start.",
@@ -446,16 +446,16 @@ export const ATTEMPTS = [
   },
   {
     id: "hidden-column",
-    label: "Reach a raw column through a surface it can read",
+    label: "Reach a raw column through a domain it can read",
     query: (on) => `run: ${on} -> { group_by: patient.BIRTHDATE; limit: 5 }`,
-    why: "Every raw column is internal; a surface publishes only the named, classified fields.",
+    why: "Every raw column is internal; a domain publishes only the named, classified fields.",
   },
   {
     id: "own-join",
     label: "Write its own join back to the identified record",
     query: (on) =>
       `run: ${on} extend { join_one: p is patients_core on PATIENT = p.Id } -> { group_by: p.ssn; limit: 5 }`,
-    why: "A caller's join is the caller entering the joined source, which is held to the same surface and gates (AC-05).",
+    why: "A caller's join is the caller entering the joined source, which is held to the same published list and the same gates (AC-05).",
   },
   {
     id: "raw-sql",

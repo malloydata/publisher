@@ -62,7 +62,7 @@ async function load(dir: string): Promise<{
    }
 }
 
-/** A copy of the package with one seeded violation in place of surfaces.malloy. */
+/** A copy of the package with one seeded violation in place of domains.malloy. */
 function withViolation(name: string): { dir: string; cleanup: () => void } {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clinical-violation-"));
    for (const file of [
@@ -76,8 +76,8 @@ function withViolation(name: string): { dir: string; cleanup: () => void } {
    }
    fs.symlinkSync(path.join(EXAMPLE, "data"), path.join(dir, "data"));
    fs.copyFileSync(
-      path.join(EXAMPLE, "violations", name, "surfaces.malloy.txt"),
-      path.join(dir, "surfaces.malloy"),
+      path.join(EXAMPLE, "violations", name, "domains.malloy.txt"),
+      path.join(dir, "domains.malloy"),
    );
    return {
       dir,

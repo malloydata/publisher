@@ -12,7 +12,7 @@
  * what the server actually serves.
  *
  * Its reader is a pipeline, not a person: checked in next to the policy so a
- * pull request's diff shows what a model change does to a surface before it
+ * pull request's diff shows what a model change does to an entry point before it
  * deploys; fed to a review as the model inventory; handed to an auditor as
  * the control-to-implementation map. Ordering is by codepoint everywhere and
  * nothing in it depends on the clock, so two servers on identical bytes write
