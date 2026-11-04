@@ -729,6 +729,69 @@ source: other is duckdb.table('other.parquet') extend {
          );
          await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
          expect(sentBodies()[0].givens).toEqual({ REGION: "East" });
+         // The page can't see what `regional` reads, and says so in the section
+         // and on the run, rather than naming REGION as if it applied.
+         expect(
+            screen.getByTestId("model-givens-unknown").textContent,
+         ).toContain("may not apply to it");
+         expect(
+            (await screen.findByTestId("model-viewer-run-defaults"))
+               .textContent,
+         ).toBe(
+            "This page can't tell which givens this source reads. Where it reads one, it ran with REGION: East.",
+         );
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
+   });
+
+   it("says nothing of the kind where the scan can tell", async () => {
+      getModel.mockImplementation(() => Promise.resolve(twoGivenModel));
+      try {
+         render(<ModelViewer resourceUri={URI} />, { wrapper: serverWrapper });
+         expect(await screen.findByTestId("model-givens-section")).toBeTruthy();
+         expect(screen.queryByTestId("model-givens-unknown")).toBeNull();
+         fireEvent.click(
+            await screen.findByRole("button", { name: /by_name/ }),
+         );
+         expect(
+            (await screen.findByTestId("model-viewer-run-defaults"))
+               .textContent,
+         ).toBe("Ran with the default REGION: All.");
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
+   });
+
+   it("lists the givens of a model that declares nothing else", async () => {
+      getModel.mockImplementation(() =>
+         Promise.resolve({
+            data: {
+               sourceInfos: [],
+               queries: [],
+               sourceText: "given: REGION :: string is 'All'\n",
+               givens: [
+                  {
+                     name: "REGION",
+                     type: "string",
+                     default: "'All'",
+                     label: "Region",
+                  },
+               ],
+            },
+         }),
+      );
+      try {
+         render(<ModelViewer resourceUri={URI} />, { wrapper: serverWrapper });
+         expect(
+            await screen.findByText(
+               "This model defines no sources or queries.",
+            ),
+         ).toBeTruthy();
+         const section = screen.getByTestId("model-viewer-declared-givens");
+         expect(section.textContent).toContain("REGION");
+         expect(section.textContent).toContain("Region");
+         expect(screen.getByText("1 given")).toBeTruthy();
       } finally {
          getModel.mockImplementation(() => Promise.resolve(model));
       }

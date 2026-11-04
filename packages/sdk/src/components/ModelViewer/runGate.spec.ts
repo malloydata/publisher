@@ -22,8 +22,8 @@ describe("runGate", () => {
       expect(
          runGate([given("ROLE", "'analyst'"), given("REGION", "'us'")], []),
       ).toEqual({
-         kind: "defaults",
-         note: "Ran with defaults ROLE = 'analyst', REGION = 'us'",
+         kind: "noted",
+         note: "Ran with the defaults ROLE: analyst, REGION: us.",
       });
    });
 
@@ -36,8 +36,8 @@ describe("runGate", () => {
             ROLE: "'admin'",
          }),
       ).toEqual({
-         kind: "defaults",
-         note: "Ran with the default REGION = 'us'",
+         kind: "noted",
+         note: "Ran with the default REGION: us.",
       });
       // Absent is "use the default"; an empty string is a value, as on a
       // dashboard (the control's × is what unsets it).
@@ -62,6 +62,87 @@ describe("runGate", () => {
             "This needs a value for the given A (set it in the Givens section above) and the required filters F1, F2, which this page can't set; open the source in a dashboard or notebook.",
       });
    });
+
+   // The storefront's overview givens: each named as its control words it.
+   const category = {
+      ...given("CATEGORY", "f''"),
+      type: "filter<string>",
+      label: "Category",
+   };
+   const since = {
+      ...given("SINCE", "@2023-01-01"),
+      type: "date",
+      label: "Ordered since",
+   };
+   const minSale = {
+      ...given("MIN_SALE", "f''"),
+      type: "filter<number>",
+      label: "Minimum line total",
+   };
+   const region = { ...given("REGION"), label: "Region" };
+
+   it("names a default the way its control does, never as a Malloy literal", () => {
+      expect(runGate([category, since, minSale], [])).toEqual({
+         kind: "noted",
+         note: "Ran with the defaults Category: All, Ordered since: Jan 1, 2023, Minimum line total: Any.",
+      });
+      expect(runGate([region], [])).toEqual({
+         kind: "blocked",
+         reason:
+            "This needs a value for the given Region. Set it in the Givens section above.",
+      });
+   });
+
+   it("says it can't tell which givens a source reads, and what the run had for each", () => {
+      const all = new Set(["CATEGORY", "REGION", "SINCE"]);
+      expect(
+         runGate([category, region, since], [], { REGION: "West" }, all),
+      ).toEqual({
+         kind: "noted",
+         note: "This page can't tell which givens this source reads. Where it reads one, it ran with Region: West and the defaults Category: All, Ordered since: Jan 1, 2023.",
+      });
+      expect(runGate([region], [], { REGION: "West" }, all)).toEqual({
+         kind: "noted",
+         note: "This page can't tell which givens this source reads. Where it reads one, it ran with Region: West.",
+      });
+      // A given with no value still holds the run: if the source reads it, a
+      // run without it fails with no control to fix it.
+      expect(runGate([region], [], undefined, all)).toEqual({
+         kind: "blocked",
+         reason:
+            "This needs a value for the given Region. Set it in the Givens section above. This page can't tell whether this source reads it.",
+      });
+      expect(runGate([], [], undefined, all)).toEqual({ kind: "ok" });
+   });
+
+   it("names apart only the givens it can't tie to the source", () => {
+      // The source reads REGION in its own text and is built on an import that
+      // may read CATEGORY and SINCE.
+      const maybe = new Set(["CATEGORY", "SINCE"]);
+      expect(
+         runGate([category, region, since], [], { REGION: "West" }, maybe),
+      ).toEqual({
+         kind: "noted",
+         note: "This page can't tell whether this source reads Category or Ordered since. Where it does, it ran with the defaults Category: All, Ordered since: Jan 1, 2023.",
+      });
+      expect(runGate([category, region, since], [], undefined, maybe)).toEqual({
+         kind: "blocked",
+         reason:
+            "This needs a value for the given Region. Set it in the Givens section above.",
+      });
+      expect(
+         runGate([category, { ...minSale, default: undefined }], [], {}, maybe),
+      ).toEqual({
+         kind: "blocked",
+         reason:
+            "This needs a value for the given Minimum line total. Set it in the Givens section above.",
+      });
+      expect(runGate([category, region], [], {}, new Set(["REGION"]))).toEqual({
+         kind: "blocked",
+         reason:
+            "This needs a value for the given Region. Set it in the Givens section above. This page can't tell whether this source reads it.",
+      });
+   });
 });
 
 describe("givens the host fills", () => {
@@ -75,8 +156,8 @@ describe("givens the host fills", () => {
       );
       expect(givens.map((g) => g.name)).toEqual(["MIN"]);
       expect(runGate(givens, [])).toEqual({
-         kind: "defaults",
-         note: "Ran with the default MIN = 100",
+         kind: "noted",
+         note: "Ran with the default MIN: 100.",
       });
    });
 });

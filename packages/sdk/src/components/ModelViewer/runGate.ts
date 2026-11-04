@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { GivenInfo, GivenRequest } from "./modelGivens";
+import { summarizeGivenValue } from "../given/filterSummary";
+import type { GivenInfo, GivenRequest, GivenRequestValue } from "./modelGivens";
 
 /**
  * Whether a run from the explorer can be honest about its inputs.
@@ -13,11 +14,33 @@ import type { GivenInfo, GivenRequest } from "./modelGivens";
  * given with no default, or a `#(filter … required)` on the source (the
  * explorer has no filter controls), cannot run at all, so the card says what
  * is missing instead of showing a bare 400.
+ *
+ * Each given is named as its control on the page words it, `Ordered since:
+ * Jan 1, 2023`, never as a Malloy literal. A given the page can't tie to the
+ * source either way (`unknown`) is named apart: the card says it can't tell
+ * whether the source reads it, and what the run had for it where it does,
+ * rather than calling its default one the run ran at.
  */
 export type RunGate =
    | { kind: "ok" }
-   | { kind: "defaults"; note: string }
+   | { kind: "noted"; note: string }
    | { kind: "blocked"; reason: string };
+
+/** `A`, `A or B`, `A, B or C`. */
+export function wordList(
+   words: readonly string[],
+   conjunction: string,
+): string {
+   if (words.length <= 1) return words.join("");
+   return `${words.slice(0, -1).join(", ")} ${conjunction} ${words.at(-1)}`;
+}
+
+/** A given and its value as its control words them: `Region: West`, `Category: All`. */
+function givenWords(given: GivenInfo, value?: GivenRequestValue): string {
+   return `${given.label ?? given.name}: ${summarizeGivenValue(given, value)}`;
+}
+
+const labelOf = (given: GivenInfo) => given.label ?? given.name;
 
 export function runGate(
    givens: ReadonlyArray<GivenInfo> | undefined,
@@ -26,45 +49,75 @@ export function runGate(
     *  default". An empty string is a value, as on a dashboard (for a
     *  `filter<…>`, "All"). */
    values: GivenRequest | undefined = undefined,
+   /** Names of the givens the page can't tie to the source either way
+    *  (scanGivensForSource). */
+   unknown: ReadonlySet<string> | undefined = undefined,
 ): RunGate {
    // A given the host fills is never in `givens`: extractCompiledModelGivens
    // leaves it out.
+   const all = givens ?? [];
    const isSet = (g: GivenInfo) => values?.[g.name] !== undefined;
-   const missingGivens = (givens ?? [])
-      .filter((g) => !isSet(g) && g.default === undefined)
-      .map((g) => g.name);
+   const isUnknown = (g: GivenInfo) => unknown?.has(g.name) === true;
+   const missing = all.filter((g) => !isSet(g) && g.default === undefined);
    const required = requiredFilters ?? [];
-   if (missingGivens.length > 0 || required.length > 0) {
+   if (missing.length > 0 || required.length > 0) {
       // Two different remedies, said separately: a given can be set in the
       // panel above this card; a required filter has no control here.
       const givenPart =
-         missingGivens.length > 0
-            ? `a value for ${missingGivens.length === 1 ? "the given" : "the givens"} ${missingGivens.join(", ")}`
+         missing.length > 0
+            ? `a value for ${missing.length === 1 ? "the given" : "the givens"} ${missing.map(labelOf).join(", ")}`
             : "";
       const filterPart =
          required.length > 0
             ? `${required.length === 1 ? "the required filter" : "the required filters"} ${required.join(", ")}`
             : "";
+      // A run that may not read the given still waits for it: sent without one
+      // it does read, it fails with no control to fix it.
+      const maybeMissing = missing.filter(isUnknown);
+      const maybe =
+         maybeMissing.length === 0
+            ? ""
+            : maybeMissing.length === missing.length
+              ? ` This page can't tell whether this source reads ${missing.length === 1 ? "it" : "them"}.`
+              : ` This page can't tell whether this source reads ${wordList(maybeMissing.map(labelOf), "or")}.`;
       let reason: string;
       if (filterPart === "") {
-         reason = `This needs ${givenPart}. Set ${missingGivens.length === 1 ? "it" : "them"} in the Givens section above.`;
+         reason = `This needs ${givenPart}. Set ${missing.length === 1 ? "it" : "them"} in the Givens section above.${maybe}`;
       } else if (givenPart === "") {
          reason = `This needs ${filterPart}, which this page can't set; open the source in a dashboard or notebook.`;
       } else {
-         reason = `This needs ${givenPart} (set ${missingGivens.length === 1 ? "it" : "them"} in the Givens section above) and ${filterPart}, which this page can't set; open the source in a dashboard or notebook.`;
+         reason = `This needs ${givenPart} (set ${missing.length === 1 ? "it" : "them"} in the Givens section above) and ${filterPart}, which this page can't set; open the source in a dashboard or notebook.${maybe}`;
       }
       return { kind: "blocked", reason };
    }
-   const defaulted = (givens ?? []).filter(
-      (g) => !isSet(g) && g.default !== undefined,
-   );
-   if (defaulted.length > 0) {
-      return {
-         kind: "defaults",
-         note: `Ran with ${defaulted.length === 1 ? "the default" : "defaults"} ${defaulted
-            .map((g) => `${g.name} = ${g.default}`)
-            .join(", ")}`,
-      };
+   const defaultsOf = (list: GivenInfo[]) =>
+      list.length > 0
+         ? `${list.length === 1 ? "the default" : "the defaults"} ${list
+              .map((g) => givenWords(g))
+              .join(", ")}`
+         : "";
+   const known = all.filter((g) => !isUnknown(g));
+   const knownDefaults = defaultsOf(known.filter((g) => !isSet(g)));
+   const notes: string[] = [];
+   if (knownDefaults !== "") notes.push(`Ran with ${knownDefaults}.`);
+   const maybe = all.filter(isUnknown);
+   if (maybe.length > 0) {
+      const had = [
+         maybe
+            .filter(isSet)
+            .map((g) => givenWords(g, values?.[g.name]))
+            .join(", "),
+         defaultsOf(maybe.filter((g) => !isSet(g))),
+      ]
+         .filter((part) => part !== "")
+         .join(" and ");
+      notes.push(
+         maybe.length === all.length
+            ? `This page can't tell which givens this source reads. Where it reads one, it ran with ${had}.`
+            : `This page can't tell whether this source reads ${wordList(maybe.map(labelOf), "or")}. Where it does, it ran with ${had}.`,
+      );
    }
-   return { kind: "ok" };
+   return notes.length > 0
+      ? { kind: "noted", note: notes.join(" ") }
+      : { kind: "ok" };
 }

@@ -66,11 +66,43 @@ export function givensForSource(
    sourceName: string,
    givens: GivenInfo[],
 ): GivenInfo[] {
+   return scanGivensForSource(sourceText, sourceName, givens).givens;
+}
+
+/**
+ * {@link givensForSource}, and which of the givens it returns the scan can't
+ * tie to the source either way (`unknown`), so the page can say a value set for
+ * one may not apply. Where it fell back to every given, that is each one the
+ * source's own text in this file doesn't read: a source built on an import that
+ * reads a given itself is known to read it. Empty where the scan could tell.
+ */
+export function scanGivensForSource(
+   sourceText: string | undefined,
+   sourceName: string,
+   givens: GivenInfo[],
+): { givens: GivenInfo[]; unknown: ReadonlySet<string> } {
+   if (givens.length === 0) return { givens: [], unknown: new Set() };
    const walk = walkSource(sourceText, sourceName, givens);
-   if (!walk || walk.unresolved) return [...givens];
-   return givens.filter(
-      (g) => walk.readHere.has(g.name) || !walk.readByAnySource.has(g.name),
-   );
+   if (!walk) {
+      return {
+         givens: [...givens],
+         unknown: new Set(givens.map((g) => g.name)),
+      };
+   }
+   if (walk.unresolved) {
+      return {
+         givens: [...givens],
+         unknown: new Set(
+            givens.filter((g) => !walk.readHere.has(g.name)).map((g) => g.name),
+         ),
+      };
+   }
+   return {
+      givens: givens.filter(
+         (g) => walk.readHere.has(g.name) || !walk.readByAnySource.has(g.name),
+      ),
+      unknown: new Set(),
+   };
 }
 
 /**

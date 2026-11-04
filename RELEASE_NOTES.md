@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The model viewer says when it can't tell whether a source reads a given, names a run's givens as its controls do, and lists a givens-only model's givens
+
+On a server with `PUBLISHER_MODEL_PAGE=viewer`:
+
+- **Givens it can't tie to a source.** The viewer finds which givens a source reads in the model file's text, so it can't see what a source declared in another file reads, or what a source here builds on from one. It still shows and sends those givens, so a run never goes out without one it needs, and now says which they are: the Givens section says a value set for one may not apply to this source, and a run's card says it ran with those values only where the source reads them. A given the source's own text reads is known to apply, whatever the source is built on.
+- **Plain words.** A run's card names the defaults it ran at the way the Givens controls word them (`Ordered since: Jan 1, 2023`, `Category: All`), not as Malloy literals (`SINCE = @2023-01-01`, `CATEGORY = f''`), and a missing given by its label.
+- **A givens-only model** lists its givens (name, label, type, default, description) under "This model defines no sources or queries.", rather than showing nothing.
+
 ## [Unreleased] — `PUBLISHER_MODEL_PAGE=viewer` takes the Explorer out of the Console
 
 The Console's model page embeds the Malloy Explorer, which turns a structured query back into Malloy text with `ASTQuery.toMalloy()`, and `@malloydata/malloy-interfaces` writes a string value into that text unescaped: its `escapeString` is still a TODO. A value holding a double quote therefore ends the string early. Drilling into a result cell holding `27" Monitor` sends `drill: name = "27" Monitor"`, which fails to compile, and drilling into a cell holding `x" or "a" = "a` sends a filter that matches every row. Nobody has to type the quote: it only has to be in the data. The Explorer's filter box is not affected, because a typed filter is a filter expression, which upstream quotes correctly. The server bounds all of it: caller text compiles in restricted mode and the `#(authorize)` gates apply to whatever runs, so no query reaches data its caller could not already query.

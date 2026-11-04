@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { givensForSource, givensInheritedBy, givensReadBy } from "./givenUsage";
+import {
+   givensForSource,
+   givensInheritedBy,
+   givensReadBy,
+   scanGivensForSource,
+} from "./givenUsage";
 
 const g = (name: string) => ({ name, type: "number", modelFile: "m.malloy" });
 const GIVENS = [g("MIN_AMOUNT"), g("CATEGORY"), g("UNUSED"), g("MIN")];
@@ -170,6 +175,31 @@ source: via_compose is compose(local, regional)
       expect(names(givensForSource(text, "on_local", given))).toEqual([
          "REGION",
       ]);
+   });
+
+   it("names the givens it can't tie to the source either way", () => {
+      const text = `import { regional } from "regions.malloy"
+source: local is duckdb.table('l') extend {
+  where: region = $REGION
+}
+source: overview is regional extend {
+  where: region = $REGION
+}
+source: via_import is regional extend {
+  measure: n is count()
+}
+`;
+      const given = [g("REGION"), g("CODE")];
+      const unknown = (source: string) => [
+         ...scanGivensForSource(text, source, given).unknown,
+      ];
+      // Its own text reads REGION; what `regional` reads, it can't see.
+      expect(unknown("overview")).toEqual(["CODE"]);
+      expect(unknown("via_import")).toEqual(["REGION", "CODE"]);
+      // A source declared in another file: none of them.
+      expect(unknown("regional")).toEqual(["REGION", "CODE"]);
+      // Traced to the end: it can tell.
+      expect(unknown("local")).toEqual([]);
    });
 
    it("reaches a given an unexported source reads, through what extends or joins it", () => {

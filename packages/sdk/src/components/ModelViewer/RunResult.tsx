@@ -92,6 +92,9 @@ export function RunResult({
             givens ?? givensOfRun(run, sourceName),
             requiredFilters,
             run.givenValues,
+            !givens && sourceName
+               ? run.unknownGivensBySource?.get(sourceName)
+               : undefined,
          ),
       [run, sourceName, givens, requiredFilters],
    );
@@ -219,7 +222,7 @@ export function RunResult({
                      </PrimaryButton>
                   </Box>
                )}
-               {gate.kind === "defaults" && shownResult && !valuesChanged && (
+               {gate.kind === "noted" && shownResult && !valuesChanged && (
                   // What produced this result: a report shows its givens above
                   // the cells; the same view here must name the defaults it
                   // ran at, or it reads as a different answer.

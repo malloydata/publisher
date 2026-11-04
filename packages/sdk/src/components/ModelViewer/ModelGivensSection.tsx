@@ -9,6 +9,7 @@ import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { GivensPanel } from "../given/GivensPanel";
 import type { GivenInfo } from "./modelGivens";
 import { ModelSection } from "./ModelSection";
+import { wordList } from "./runGate";
 import { BodyText } from "./text";
 
 /** How long given values hold still before the suggest queries behind a select re-run. */
@@ -20,10 +21,14 @@ const GIVEN_SETTLE_MS = 400;
  * set every run below it. Inside it, the SDK's `GivensPanel` in its `bar`
  * layout, the dashboard's filter bar, so a given is set with the same control,
  * the same "Default: …" line and the same Reset on a model page as on a
- * dashboard. None when the source reads no given.
+ * dashboard. None when the source reads no given. When the page can't tell
+ * whether the source reads a given it shows, it says that a value set for it
+ * may not apply, rather than offering a control that looks as if it narrows
+ * every run.
  */
 export function ModelGivensSection({
    givens,
+   unknown,
    inheritedFrom,
    values,
    onChange,
@@ -36,6 +41,10 @@ export function ModelGivensSection({
 }: {
    /** The givens this source reads (host-filled ones already left out). */
    givens: ReadonlyArray<GivenInfo>;
+   /** Names of the givens shown that the page can't tie to the source either
+    *  way: its model file builds it on an import, a query or a `compose(…)`
+    *  (scanGivensForSource). */
+   unknown?: ReadonlySet<string>;
    /** Given name → the sources it is read by that the page can't open (the
     *  model doesn't export them), for the line naming where it comes from. */
    inheritedFrom?: ReadonlyMap<string, string[]>;
@@ -49,6 +58,16 @@ export function ModelGivensSection({
    declaredTypes: ReadonlyMap<string, string | undefined>;
 }) {
    const specs = useMemo(() => [...givens], [givens]);
+   const unknownNote = useMemo(() => {
+      const shown = givens.filter((g) => unknown?.has(g.name));
+      if (shown.length === 0) return undefined;
+      if (shown.length === givens.length)
+         return "This page can't tell which of these givens this source reads, so a value set here may not apply to it.";
+      return `This page can't tell whether this source reads ${wordList(
+         shown.map((g) => g.label ?? g.name),
+         "or",
+      )}, so a value set for ${shown.length === 1 ? "it" : "them"} may not apply.`;
+   }, [givens, unknown]);
    // A picker's options are read when it is first opened, never on render:
    // nothing on the page runs until the reader asks, and a suggest is a query
    // like any other. Once opened, its list stays live for the page.
@@ -102,6 +121,11 @@ export function ModelGivensSection({
                onControlOpen={onControlOpen}
             />
          </Box>
+         {unknownNote && (
+            <BodyText data-testid="model-givens-unknown" sx={{ mt: 1 }}>
+               {unknownNote}
+            </BodyText>
+         )}
          {inheritedFrom && inheritedFrom.size > 0 && (
             <BodyText data-testid="model-givens-inherited" sx={{ mt: 1 }}>
                {[...inheritedFrom]
