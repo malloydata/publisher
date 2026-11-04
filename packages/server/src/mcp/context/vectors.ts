@@ -110,6 +110,10 @@ export async function syncVectors(args: {
    const { db, provider, environmentName, packageName } = args;
    const table: VectorTable = args.table ?? "catalog_embeddings";
    const prefix = provider.documentPrefix ?? "";
+   // The requested vector length is part of a row's identity: a vector
+   // stored under another EMBEDDING_DIMENSIONS is embedded again, never
+   // reused beside query vectors of the new length.
+   const dimsTag = `\u0000dims=${provider.dimensions ?? "default"}`;
    const wanted = new Map<
       string,
       VectorRow & { input: string; hash: string }
@@ -119,7 +123,7 @@ export async function syncVectors(args: {
       wanted.set(`${r.node}\u0000${r.facet}`, {
          ...r,
          input,
-         hash: sha256(prefix + input),
+         hash: sha256(prefix + input + dimsTag),
       });
    }
    const stored = await db.all<StoredRow>(
@@ -229,20 +233,24 @@ export async function syncVectors(args: {
    };
 }
 
-/** Best dot product of `q` against a node's rows, and which facet gave it. */
+/**
+ * Best dot product of `q` against a node's rows, and which facet gave it. A
+ * row of another length is from another embedding setting and is skipped:
+ * its dot product with `q` means nothing.
+ */
 export function bestFacet(
    q: Float32Array,
    facets: readonly Facet[] | undefined,
 ): { score: number; facet: string } | undefined {
-   if (!facets || facets.length === 0) return undefined;
-   let best = facets[0];
-   let bestScore = dot(q, best.vec);
-   for (let i = 1; i < facets.length; i++) {
-      const s = dot(q, facets[i].vec);
+   let best: Facet | undefined;
+   let bestScore = -Infinity;
+   for (const f of facets ?? []) {
+      if (f.vec.length !== q.length) continue;
+      const s = dot(q, f.vec);
       if (s > bestScore) {
          bestScore = s;
-         best = facets[i];
+         best = f;
       }
    }
-   return { score: bestScore, facet: best.facet };
+   return best ? { score: bestScore, facet: best.facet } : undefined;
 }

@@ -197,6 +197,27 @@ describe("index build", () => {
          ...(llm ? { llm } : {}),
       });
 
+   it("embeds every row again when the requested vector length changes", async () => {
+      const first = await build();
+      expect(first.report.vectors.reused).toBe(0);
+      // The same model, asked for another length (EMBEDDING_DIMENSIONS).
+      const resized = Object.defineProperty(
+         Object.create(stubEmbeddingProvider()),
+         "dimensions",
+         { value: 64 },
+      );
+      const again = await buildFcjIndex({
+         pkgIndex: fixture.pkgIndex,
+         db,
+         provider: resized,
+         environmentName: "env",
+         packageName: "fixture",
+         settings: DEFAULT_FCJ_SETTINGS,
+      });
+      expect(again.report.vectors.reused).toBe(0);
+      expect(again.report.vectors.embedded).toBe(first.report.vectors.rows);
+   });
+
    it("embeds one derived row per node, and reuses every row on a rebuild", async () => {
       const first = await build();
       expect(first.report.vectors).toEqual({
