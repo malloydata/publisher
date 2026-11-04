@@ -33,10 +33,12 @@ import {
    getS3CredentialChainPolicy,
    getServerApiSettings,
    getUnresolvedPublisherConfigPath,
+   getVersionPromotionMode,
    isDuckDBMemoryLimitDisabled,
    isDuckdbSetupSqlAllowed,
    isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
+   isVersioningEnabled,
    schemaEmbeddingEnabled,
 } from "../config";
 import { parseFrameAncestors } from "../frame_ancestors";
@@ -46,6 +48,7 @@ import {
    getPackageLoadWorkerCount,
 } from "../package_load/package_load_pool";
 import type { RetrievalLlmConfig } from "../retrieval_config";
+import { callerHeaderName } from "../service/access_record";
 import { catalogAdminConfig } from "../service/catalog_admin";
 import { formatReadinessLine } from "../service/environment_store";
 import { allowUnverifiedHostKey } from "../service/proxy";
@@ -69,6 +72,9 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    host: () => settings.get("host"),
    rateLimit: () => settings.get("rateLimit"),
    frameAncestors: () => parseFrameAncestors(settings.get("frameAncestors")),
+   callerHeader: () => callerHeaderName(),
+   packageVersioning: () => isVersioningEnabled(),
+   versionPromotion: () => getVersionPromotionMode(),
    theme: ({ serverRoot }) => getInstanceTheme(serverRoot),
    environments: ({ serverRoot }) =>
       getPublisherConfig(serverRoot).environments.map(

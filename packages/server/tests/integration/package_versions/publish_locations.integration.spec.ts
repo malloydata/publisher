@@ -37,6 +37,7 @@ import {
 import fs from "fs";
 import path from "path";
 import { simpleGit, type SimpleGitOptions } from "simple-git";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const FIXTURES = path.resolve(__dirname, "../../fixtures/publish-locations");
 const FIXTURE_FOLDERS = [
@@ -48,7 +49,16 @@ const FIXTURE_FOLDERS = [
 const GIT_FIXTURES = "https://github.com/publisher-fixtures/";
 const ENV_NAME = "publish-locations-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 /** Copy a fixture folder's files into `target`. */
 function copyFixture(folder: string, target: string): void {
@@ -248,12 +258,11 @@ describe("publishing from each kind of location, over HTTP", () => {
    }, 180_000);
 
    afterEach(() => {
-      delete process.env[FLAG];
+      setVariable(FLAG, undefined);
    });
 
    afterAll(async () => {
-      if (savedFlag === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = savedFlag;
+      restoreSettings?.();
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -267,7 +276,7 @@ describe("publishing from each kind of location, over HTTP", () => {
    for (const kind of KINDS) {
       describe(kind.slug, () => {
          it("versioning on, a version: published, the same content again is 200, other content under it is 409", async () => {
-            process.env[FLAG] = "on";
+            setVariable(FLAG, "on");
             const name = `${kind.slug}-versioned`;
             const first = await publish(name, kind.location("sales-1.0.0"));
             expect([first.status, first.json.versionId]).toEqual([
@@ -302,7 +311,7 @@ describe("publishing from each kind of location, over HTTP", () => {
          });
 
          it("versioning off, no version: 200 every time, each publish replacing the package in place", async () => {
-            delete process.env[FLAG];
+            setVariable(FLAG, undefined);
             const name = `${kind.slug}-unversioned`;
             const first = await publish(
                name,

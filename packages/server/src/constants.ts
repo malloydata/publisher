@@ -90,6 +90,11 @@ export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
  * is shared by every pod serving the environment.
  */
 export const DEFAULT_POSTGRES_POOL_MAX = 5;
+/**
+ * Default request header the per-query access record copies as `caller`.
+ * Override at startup via `PUBLISHER_CALLER_HEADER`.
+ */
+export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";
 

@@ -23,6 +23,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versioning-flag-env";
 const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
@@ -30,11 +31,19 @@ const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const savedFlag = process.env[FLAG];
+/** The variables this suite sets, installed over the process's own settings. */
+const variables: Record<string, string | undefined> = {};
+let restoreSettings: (() => void) | undefined;
+
+/** Give the in-process server `name` at `value`, or unset, as a restart with it would. */
+function setVariable(name: string, value: string | undefined): void {
+   variables[name] = value;
+   restoreSettings?.();
+   restoreSettings = installVariables(variables);
+}
 
 function versioning(value: "on" | "off" | undefined): void {
-   if (value === undefined) delete process.env[FLAG];
-   else process.env[FLAG] = value;
+   setVariable(FLAG, value);
 }
 
 /** A package folder answering `answer`, with `manifest` as publisher.json. */
@@ -123,8 +132,7 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
       }).catch(() => undefined);
       await env?.stop();
       fs.rmSync(root, { recursive: true, force: true });
-      if (savedFlag === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = savedFlag;
+      restoreSettings?.();
    });
 
    it("/status reports the setting", async () => {

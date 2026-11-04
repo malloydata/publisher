@@ -10,6 +10,7 @@ import { join } from "node:path";
 import sinon from "sinon";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
+import { installSettings } from "../test_helpers/settings_env";
 import { attachDuckLakeForCreate, attachDuckLakeReadOnly } from "./connection";
 import { storageDestinationRoot } from "./connection_config";
 import {
@@ -125,12 +126,11 @@ describe("storage destination tables (plain DuckDB destination)", () => {
 // secret is created -- the secret statement is the proof the policy gate was
 // passed.
 describe("storage destination attach under destinations-only (DuckLake)", () => {
-   const ENV_KEYS = [
-      "S3_CREDENTIAL_CHAIN_POLICY",
-      "AWS_ACCESS_KEY_ID",
-      "AWS_SECRET_ACCESS_KEY",
-   ];
+   // DuckDB reads the AWS variables from the process itself; the policy is
+   // a setting.
+   const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
    const saved: Record<string, string | undefined> = {};
+   let restoreSettings: () => void;
    let secretStatements: string[];
    let allStatements: string[];
    let workDir: string;
@@ -161,7 +161,9 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
 
    beforeEach(() => {
       for (const key of ENV_KEYS) saved[key] = process.env[key];
-      process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      restoreSettings = installSettings({
+         env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+      }).restore;
       process.env.AWS_ACCESS_KEY_ID = "AKIAFAKE";
       process.env.AWS_SECRET_ACCESS_KEY = "fakesecret";
       secretStatements = [];
@@ -184,6 +186,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
    afterEach(() => {
       sinon.restore();
       rmSync(workDir, { recursive: true, force: true });
+      restoreSettings();
       for (const key of ENV_KEYS) {
          if (saved[key] === undefined) delete process.env[key];
          else process.env[key] = saved[key];

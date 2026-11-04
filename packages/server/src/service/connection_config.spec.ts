@@ -1399,15 +1399,13 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
    });
 
    describe("under S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
-      const original = process.env.S3_CREDENTIAL_CHAIN_POLICY;
+      let restoreSettings: () => void;
       beforeEach(() => {
-         process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+         restoreSettings = installSettings({
+            env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+         }).restore;
       });
-      afterEach(() => {
-         if (original === undefined)
-            delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
-         else process.env.S3_CREDENTIAL_CHAIN_POLICY = original;
-      });
+      afterEach(() => restoreSettings());
 
       // The policy exists to refuse chain auth on author-supplied connections; a
       // destination is the operator's own, and its shape check runs the same gate.

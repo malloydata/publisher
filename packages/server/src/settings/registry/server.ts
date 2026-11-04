@@ -1,8 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_CALLER_HEADER } from "../../constants";
 import { setting } from "../setting";
-import { boolean, integer, string, structured } from "../types";
+import { boolean, integer, oneOf, string, structured } from "../types";
 
 /** The configuration design's "Server (top level)" table. */
 export const server = [
@@ -71,6 +72,33 @@ export const server = [
       description:
          "The Content-Security-Policy frame-ancestors source list: who may embed the app.",
       aliases: { env: ["PUBLISHER_FRAME_ANCESTORS"] },
+   }),
+   setting({
+      key: "callerHeader",
+      type: string(),
+      default: DEFAULT_CALLER_HEADER,
+      description:
+         "Request header the access record copies as the caller: the identity the gateway in front of Publisher asserts.",
+      aliases: { env: ["PUBLISHER_CALLER_HEADER"] },
+   }),
+   setting({
+      key: "packageVersioning",
+      type: oneOf(["off", "on"]),
+      default: "off",
+      description:
+         "on publishes a package from a location as the version its publisher.json declares; off installs it in place. A transition setting #1381 removes.",
+      aliases: { env: ["PUBLISHER_PACKAGE_VERSIONING"] },
+   }),
+   setting({
+      key: "versionPromotion",
+      type: oneOf(["on-publish", "explicit"]),
+      default: "on-publish",
+      description:
+         "on-publish moves a package's latest to a newly published higher version; explicit leaves it to PUT …/latest.",
+      aliases: {
+         env: ["PUBLISHER_VERSION_PROMOTION"],
+         file: ["versionPromotion"],
+      },
    }),
    setting({
       key: "theme",

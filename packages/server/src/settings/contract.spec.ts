@@ -306,6 +306,125 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("'self'"),
       },
    ],
+   callerHeader: [
+      { name: "unset", expect: value("x-publisher-caller") },
+      {
+         name: "PUBLISHER_CALLER_HEADER, lowercased",
+         env: { PUBLISHER_CALLER_HEADER: "X-Gateway-User" },
+         expect: value("x-gateway-user"),
+      },
+      {
+         name: "surrounding space is dropped",
+         env: { PUBLISHER_CALLER_HEADER: " x-gateway-user " },
+         expect: value("x-gateway-user"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_CALLER_HEADER: "" },
+         expect: value("x-publisher-caller"),
+      },
+      {
+         name: "whitespace only is unset",
+         env: { PUBLISHER_CALLER_HEADER: "   " },
+         expect: value("x-publisher-caller"),
+      },
+   ],
+   packageVersioning: [
+      { name: "unset", expect: value(false) },
+      {
+         name: "PUBLISHER_PACKAGE_VERSIONING on",
+         env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
+         expect: value(true),
+      },
+      {
+         name: "off",
+         env: { PUBLISHER_PACKAGE_VERSIONING: "off" },
+         expect: value(false),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_PACKAGE_VERSIONING: " On " },
+         expect: value(true),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_PACKAGE_VERSIONING: "" },
+         expect: value(false),
+      },
+      {
+         name: "a boolean spelling is not one of its two values, and fails",
+         env: { PUBLISHER_PACKAGE_VERSIONING: "true" },
+         expect: fails("PUBLISHER_PACKAGE_VERSIONING"),
+      },
+      {
+         name: "the file is not read today",
+         file: { packageVersioning: "on" },
+         expect: warned(false, "is not read from the file"),
+      },
+   ],
+   versionPromotion: [
+      { name: "unset", expect: value("on-publish") },
+      {
+         name: "PUBLISHER_VERSION_PROMOTION",
+         env: { PUBLISHER_VERSION_PROMOTION: "explicit" },
+         expect: value("explicit"),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_VERSION_PROMOTION: " Explicit " },
+         expect: value("explicit"),
+      },
+      {
+         name: "the file",
+         file: { versionPromotion: "explicit" },
+         expect: value("explicit"),
+      },
+      {
+         name: "the variable wins over the file",
+         env: { PUBLISHER_VERSION_PROMOTION: "on-publish" },
+         file: { versionPromotion: "explicit" },
+         expect: value("on-publish"),
+      },
+      {
+         name: "a blank variable leaves the file's value",
+         env: { PUBLISHER_VERSION_PROMOTION: "" },
+         file: { versionPromotion: "explicit" },
+         expect: value("explicit"),
+      },
+      {
+         name: "a ${VAR} in the file",
+         env: { PROMOTION: "explicit" },
+         file: { versionPromotion: "${PROMOTION}" },
+         expect: value("explicit"),
+      },
+      {
+         name: "null in the file is unset",
+         file: { versionPromotion: null },
+         expect: value("on-publish"),
+      },
+      {
+         name: "an unknown mode in the variable fails",
+         env: { PUBLISHER_VERSION_PROMOTION: "later" },
+         expect: fails("versionPromotion from PUBLISHER_VERSION_PROMOTION"),
+      },
+      {
+         name: "an unknown mode in the file fails",
+         file: { versionPromotion: "manual" },
+         expect: fails(
+            'expected one of "on-publish" or "explicit", got "manual"',
+         ),
+      },
+      {
+         name: "a number in the file fails",
+         file: { versionPromotion: 1 },
+         expect: fails('expected one of "on-publish" or "explicit", got 1'),
+      },
+      {
+         name: "a file that cannot be parsed fails startup, where it gave the default",
+         file: "{ not json",
+         expect: fails("Failed to parse"),
+      },
+   ],
    theme: [
       { name: "unset", expect: value(undefined) },
       {

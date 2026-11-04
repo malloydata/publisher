@@ -84,3 +84,24 @@ export function withSettings<T>(
    restore();
    return result;
 }
+
+/**
+ * Make the current settings this process's own (its variables and config
+ * file, as they are read when nothing is installed) with `variables` over its
+ * variables, an `undefined` one unset, and return what puts the previous ones
+ * back. For a suite that runs the real app in-process, which keeps the server
+ * root it started with, and changes a variable between its cases.
+ */
+export function installVariables(
+   variables: Record<string, string | undefined>,
+): () => void {
+   const env: Record<string, string | undefined> = { ...process.env };
+   for (const [name, value] of Object.entries(variables)) {
+      if (value === undefined) delete env[name];
+      else env[name] = value;
+   }
+   const previous = Settings.install(Settings.load({ env }));
+   return () => {
+      Settings.install(previous);
+   };
+}

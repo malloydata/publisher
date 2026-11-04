@@ -8,8 +8,10 @@ import fs from "fs";
 import {
    getFreePort,
    pollUntil,
+   singlePackageConfig,
    spawnServer,
    tempDir,
+   writeSourcePackage,
    type SpawnedServer,
 } from "../../harness/spawn_server";
 
@@ -146,6 +148,114 @@ describe("settings in a running server", () => {
          expect(body.frozenConfig).toBe(true);
          expect(server.output()).toContain('"frozenConfig": "false"');
          expect(server.output()).toContain("a later release refuses");
+      });
+   });
+
+   /** What /status reports about package versions. */
+   async function versionStatus(server: SpawnedServer) {
+      return (await (
+         await fetch(`${server.baseUrl}/api/v0/status`)
+      ).json()) as { packageVersioning?: string; versionPromotion?: string };
+   }
+
+   describe("packageVersioning", () => {
+      it("is reported on /status, in any case", async () => {
+         const server = await boot({
+            env: { PUBLISHER_PACKAGE_VERSIONING: "On" },
+         });
+         expect((await versionStatus(server)).packageVersioning).toBe("on");
+      });
+
+      it("refuses to start on a value other than on or off", async () => {
+         expect(
+            await refused({ env: { PUBLISHER_PACKAGE_VERSIONING: "true" } }),
+         ).toContain(
+            'packageVersioning from PUBLISHER_PACKAGE_VERSIONING: expected one of "off" or "on", got "true"',
+         );
+      });
+   });
+
+   describe("versionPromotion", () => {
+      it("is reported on /status from the file, and the variable wins over it", async () => {
+         const config = { versionPromotion: "explicit", environments: [] };
+         const fromFile = await boot({
+            config,
+            env: { PUBLISHER_VERSION_PROMOTION: undefined },
+         });
+         expect((await versionStatus(fromFile)).versionPromotion).toBe(
+            "explicit",
+         );
+         const overridden = await boot({
+            config,
+            env: { PUBLISHER_VERSION_PROMOTION: "on-publish" },
+         });
+         expect((await versionStatus(overridden)).versionPromotion).toBe(
+            "on-publish",
+         );
+      });
+
+      it("refuses to start on a mode outside its set in the file", async () => {
+         expect(
+            await refused({
+               config: { versionPromotion: "manual", environments: [] },
+               env: { PUBLISHER_VERSION_PROMOTION: undefined },
+            }),
+         ).toContain(
+            'expected one of "on-publish" or "explicit", got "manual"',
+         );
+      });
+   });
+
+   describe("callerHeader", () => {
+      /** Boot serving one package, query it once with `headers`, and return the log. */
+      async function queried(
+         env: Record<string, string>,
+         headers: Record<string, string>,
+      ): Promise<string> {
+         const pkg = writeSourcePackage("callers");
+         cleanups.push(pkg.cleanup);
+         const server = await boot({
+            config: singlePackageConfig("e", {
+               name: "callers",
+               location: pkg.dir,
+            }),
+            env,
+         });
+         await server.waitUntilServing();
+         const res = await fetch(
+            `${server.baseUrl}/api/v0/environments/e/packages/callers/models/first.malloy/query`,
+            {
+               method: "POST",
+               headers: { "content-type": "application/json", ...headers },
+               body: JSON.stringify({
+                  query: "run: first_source -> { select: n }",
+               }),
+            },
+         );
+         expect(res.status).toBe(200);
+         await pollUntil(
+            () => server.output().includes("Access record"),
+            10_000,
+            100,
+         );
+         return server.output();
+      }
+
+      it("copies the configured header into the access record", async () => {
+         const log = await queried(
+            { PUBLISHER_CALLER_HEADER: "X-Gateway-User" },
+            { "x-gateway-user": "alice" },
+         );
+         expect(log).toContain('"caller":"alice"');
+      });
+
+      it("reads only the configured header, not the default one", async () => {
+         const log = await queried(
+            { PUBLISHER_CALLER_HEADER: "x-gateway-user" },
+            { "x-publisher-caller": "bob" },
+         );
+         expect(log).toContain("Access record");
+         expect(log).not.toContain('"caller":"bob"');
       });
    });
 

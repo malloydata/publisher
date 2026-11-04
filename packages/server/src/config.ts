@@ -147,7 +147,6 @@ export type Environment = {
 export type PublisherConfig = {
    theme?: Theme;
    retrieval?: RetrievalConfig;
-   versionPromotion?: VersionPromotionMode;
    environments: Environment[];
 };
 
@@ -161,11 +160,6 @@ export type PublisherConfig = {
  */
 export type PackageVersioningMode = "off" | "on";
 
-const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
-   "off",
-   "on",
-];
-
 /**
  * Who moves a package's `latest` version.
  *
@@ -175,11 +169,6 @@ const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
  *    does. For an orchestrator that decides when a version is ready to serve.
  */
 export type VersionPromotionMode = "on-publish" | "explicit";
-
-const VERSION_PROMOTION_MODES: readonly VersionPromotionMode[] = [
-   "on-publish",
-   "explicit",
-];
 
 export type ProcessedEnvironment = {
    name: string;
@@ -1118,95 +1107,27 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
          : undefined,
    );
 
-   const fileSettings =
-      processedConfig && typeof processedConfig === "object"
-         ? (processedConfig as Record<string, unknown>)
-         : {};
-   const versionPromotion = parseModeSetting(
-      fileSettings.versionPromotion,
-      `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
-      VERSION_PROMOTION_MODES,
-   );
-
    return {
       ...(instanceTheme ? { theme: instanceTheme } : {}),
       ...(retrieval ? { retrieval } : {}),
-      ...(versionPromotion ? { versionPromotion } : {}),
       environments,
    } as PublisherConfig;
 };
 
 /**
- * One of a closed set of modes, or undefined when unset (absent, null, or
- * blank). Matched case-insensitively. A value outside the set throws, naming
- * where it came from and what is allowed: a typo must not leave a server in a
- * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
- * `PUBLISHER_PACKAGE_VERSIONING` and `versionPromotion`.
- */
-function parseModeSetting<T extends string>(
-   raw: unknown,
-   where: string,
-   allowed: readonly T[],
-): T | undefined {
-   if (raw === undefined || raw === null) return undefined;
-   if (typeof raw === "string") {
-      const value = raw.trim().toLowerCase();
-      if (value === "") return undefined;
-      if ((allowed as readonly string[]).includes(value)) return value as T;
-   }
-   throw new Error(
-      `${where} must be one of ${allowed.join(" | ")} (got ${JSON.stringify(raw)})`,
-   );
-}
-
-/**
  * Whether a publish from a location publishes versions
- * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset). Read at call time, so a
- * test can switch it; a value outside on/off throws, and it is read at startup
- * so a typo fails the boot.
+ * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset).
  */
 export const isVersioningEnabled = (): boolean =>
-   parseModeSetting(
-      process.env.PUBLISHER_PACKAGE_VERSIONING,
-      "PUBLISHER_PACKAGE_VERSIONING",
-      PACKAGE_VERSIONING_MODES,
-   ) === "on";
+   settings.get("packageVersioning") === "on";
 
 /**
  * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when
  * set, otherwise `versionPromotion` in publisher.config.json, otherwise
  * `on-publish`.
  */
-export const getVersionPromotionMode = (
-   serverRoot: string,
-): VersionPromotionMode =>
-   parseModeSetting(
-      process.env.PUBLISHER_VERSION_PROMOTION,
-      "PUBLISHER_VERSION_PROMOTION",
-      VERSION_PROMOTION_MODES,
-   ) ??
-   readConfigMode(serverRoot, (config) => config.versionPromotion) ??
-   "on-publish";
-
-function readConfigMode<T>(
-   serverRoot: string,
-   pick: (config: PublisherConfig) => T | undefined,
-): T | undefined {
-   try {
-      return pick(getPublisherConfig(serverRoot));
-   } catch (error) {
-      // A file that cannot be parsed has no setting to give, and is reported
-      // where the config is loaded, the same split getSemanticIndexMaxEntities
-      // makes. An invalid mode value is a different error and still throws.
-      if (
-         error instanceof Error &&
-         error.message.startsWith("Failed to parse ")
-      ) {
-         return undefined;
-      }
-      throw error;
-   }
-}
+export const getVersionPromotionMode = (): VersionPromotionMode =>
+   settings.get("versionPromotion");
 
 /**
  * The entity cap for the semantic index: `retrieval.indexing.maxEntities`

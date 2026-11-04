@@ -27,7 +27,6 @@ import {
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const PEOPLE = `duckdb.sql("select * from (values (1,'org-a','999'),(2,'org-b','888')) as t(id, org, ssn)")`;
 const VISITS = `duckdb.sql("select * from (values (1,1,'org-a'),(2,2,'org-b')) as t(id, person_id, org)")`;
 
@@ -44,15 +43,12 @@ describe("join bypass refusal on package load", () => {
    let duckdb: DuckDBConnection;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {

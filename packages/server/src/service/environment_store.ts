@@ -685,7 +685,7 @@ export class EnvironmentStore {
                   ),
                {
                   sourceLocation: configured.location,
-                  promotion: getVersionPromotionMode(this.serverRootPath),
+                  promotion: getVersionPromotionMode(),
                   validate: (loaded) => formatPublishRejections(loaded),
                },
             );
@@ -861,12 +861,6 @@ export class EnvironmentStore {
 
       try {
          await this.storageManager.initialize(reInit);
-
-         // Read both versioning settings now, so a value outside the set fails
-         // initialization naming the setting, rather than surfacing at the first
-         // publish that reads it.
-         isVersioningEnabled();
-         getVersionPromotionMode(this.serverRootPath);
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen();
 
@@ -1685,13 +1679,8 @@ export class EnvironmentStore {
       // Whether a publish from a location publishes versions, so an
       // orchestrator mid-rollout can tell. A server from before versions sends
       // no field, which means "off".
-      status.packageVersioning = versioningEnabledForStatus() ? "on" : "off";
-      // A malformed value failed initialization, which this reports.
-      try {
-         status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
-      } catch {
-         // Left absent.
-      }
+      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
+      status.versionPromotion = getVersionPromotionMode();
 
       const environments = await this.listEnvironments(true, options);
 
@@ -2896,18 +2885,5 @@ export class EnvironmentStore {
       }
 
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
-   }
-}
-
-/**
- * The versioning flag for /status, which must answer even when the flag's
- * value is malformed: that failed initialization, and /status is where the
- * failure is reported.
- */
-function versioningEnabledForStatus(): boolean {
-   try {
-      return isVersioningEnabled();
-   } catch {
-      return false;
    }
 }

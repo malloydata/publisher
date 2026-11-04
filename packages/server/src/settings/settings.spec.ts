@@ -37,6 +37,11 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    host: "PUBLISHER_HOST",
    rateLimit: "PUBLISHER_RATE_LIMIT",
    frameAncestors: "PUBLISHER_FRAME_ANCESTORS",
+   // Not in the design's tables: a setting added since takes its derived name
+   // from the start, as the design asks of a new setting.
+   callerHeader: "PUBLISHER_CALLER_HEADER",
+   packageVersioning: "PUBLISHER_PACKAGE_VERSIONING",
+   versionPromotion: "PUBLISHER_VERSION_PROMOTION",
    root: "PUBLISHER_ROOT",
    config: "PUBLISHER_CONFIG",
    useBundledDefault: "PUBLISHER_USE_BUNDLED_DEFAULT",
