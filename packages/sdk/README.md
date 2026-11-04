@@ -348,9 +348,11 @@ const resourceUri = encodeResourceUri({
 A model's page. Which page is the server's: its `PUBLISHER_MODEL_PAGE`, which `/status` reports and
 `useServer().modelPage` reads. On the default, `explorer`, it is the visual query builder below; on
 `viewer`, it is the model viewer ([`ModelViewer`](#modelviewer)) with a Copy link action on its
-heading, and builds no query. `Model` shows neither until `/status` answers. It takes every
-`ModelViewer` prop; `onChange` and `runOnDemand` apply to the Explorer page only. A host that wants
-the viewer whatever its server says renders `ModelViewer` itself.
+heading, and builds no query. `Model` shows neither until `/status` answers, and shows the viewer
+when `/status` cannot be read. It takes every `ModelViewer` prop, but the Explorer page reads only
+`resourceUri`, `maxResultSize`, `givens` and `onGivensChange`, besides its own `onChange` and
+`runOnDemand`; the other props are the viewer's, and do nothing on an `explorer` server. A host that
+wants the viewer whatever its server says renders `ModelViewer` itself.
 
 The Explorer writes the queries it builds back to Malloy text through `@malloydata/malloy-interfaces`,
 which puts a string value in unescaped (`escapeString` is a TODO), so a drilled value holding a double

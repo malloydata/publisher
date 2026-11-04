@@ -193,7 +193,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   `linear` for a story read top to bottom, `grid` for a view scanned at a glance —
   [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
-  every action generates valid Malloy, so metrics stay correct across joins. Or, on a server started
+  every action generates Malloy, so metrics stay correct across joins. Or, on a server started
   with `PUBLISHER_MODEL_PAGE=viewer`, **browse a model** instead: open a `.malloy` file in the
   [Console](docs/console.md) to read each source it exposes, field by field with its Malloy, and run
   its views and named queries.

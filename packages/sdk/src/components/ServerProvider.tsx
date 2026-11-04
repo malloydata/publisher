@@ -33,6 +33,9 @@ import { ThemeProvider } from "../theme/ThemeContext";
 import type { ReportUiOverrides } from "../theme/ui";
 import type { Theme, ThemeMode } from "../theme/types";
 import { globalQueryClient } from "../utils/queryClient";
+import { modelPageOf, type ModelPage } from "./modelPage";
+
+export type { ModelPage };
 
 const THEME_MODE_STORAGE_KEY = "publisher:themeMode";
 
@@ -90,20 +93,13 @@ export interface ServerContextValue {
    /**
     * Which page `Model` shows, the server's `PUBLISHER_MODEL_PAGE` from
     * `/status`: `explorer`, the Malloy Explorer, unless the server says
-    * `viewer`. `explorer` too while `/status` loads, when it failed, and from a
-    * server that predates the setting, so wait on `isLoadingStatus` before
-    * showing anything the Explorer would replace.
+    * `viewer`, and `viewer` when `/status` could not be read (see
+    * {@link modelPageOf}). `explorer` while `/status` loads and from a server
+    * that predates the setting, so wait on `isLoadingStatus` before showing
+    * anything the Explorer would replace.
     */
    modelPage: ModelPage;
 }
-
-/**
- * The model page a server asks for. The Explorer writes the queries it builds
- * back to Malloy text with string values unescaped (`escapeString` in
- * `@malloydata/malloy-interfaces` is a TODO), so a drilled value holding a
- * double quote rewrites its query; `viewer` shows a page that builds none.
- */
-export type ModelPage = "explorer" | "viewer";
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
 
@@ -222,6 +218,10 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    // instanceTheme without a full page reload.
    const statusQuery = useQuery({
       queryKey: ["status"],
+      // Retried, unlike the client's other reads: the model page depends on
+      // the answer for the whole session, and one dropped request would
+      // otherwise settle it.
+      retry: 3,
       queryFn: async () => {
          const response = await apiClients.publisher.getStatus();
          return response.data as {
@@ -238,8 +238,10 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
 
    const frozenConfig = statusQuery.data?.frozenConfig;
    const instanceTheme = statusQuery.data?.theme;
-   const modelPage: ModelPage =
-      statusQuery.data?.modelPage === "viewer" ? "viewer" : "explorer";
+   const modelPage = modelPageOf(
+      statusQuery.data,
+      statusQuery.isError && statusQuery.data === undefined,
+   );
    const isLoadingStatus = statusQuery.isLoading;
 
    // Preserve original semantics: while loading or on error, mirror the

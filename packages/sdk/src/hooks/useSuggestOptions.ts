@@ -358,6 +358,9 @@ export function useSuggestOptions(
          givens === undefined ? null : JSON.stringify(givens),
          // Only a text source keys on its definitions, so no other key changes shape.
          ...(preamble === undefined ? [] : [preamble]),
+         // Quoted names are a different query: a list fetched before /status
+         // said viewer is asked again, quoted. The default key is unchanged.
+         ...(quoteSuggestNames ? ["quoteNames"] : []),
       ];
       const run = async (
          search: string | undefined,

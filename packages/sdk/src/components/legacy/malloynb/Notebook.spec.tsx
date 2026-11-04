@@ -103,7 +103,7 @@ mock.module("../../Model/ModelExplorerDialog", () => ({
 }));
 
 // The server's /status answer: the model page a test switches to `viewer`.
-const serverContext: { modelPage?: string } = {};
+const serverContext: { modelPage?: string; isLoadingStatus?: boolean } = {};
 mockServerProvider(
    {
       notebooks: { getNotebook, executeNotebookCell },
@@ -181,6 +181,19 @@ it("offers no 'Data sources' dialog on a server whose model page is the viewer",
       );
    } finally {
       delete serverContext.modelPage;
+   }
+});
+
+// Nor while /status loads: until the server has said which page it shows, a
+// viewer server must not offer the Explorer even briefly.
+it("offers no 'Data sources' dialog while /status loads", async () => {
+   serverContext.isLoadingStatus = true;
+   try {
+      render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      expect(screen.queryByLabelText("Data sources")).toBeNull();
+   } finally {
+      delete serverContext.isLoadingStatus;
    }
 });
 

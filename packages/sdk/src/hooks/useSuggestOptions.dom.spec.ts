@@ -213,6 +213,33 @@ it("quotes the suggest's names on a server whose model page is the viewer", asyn
    );
 });
 
+// A list fetched before /status answered went unquoted; once it says viewer
+// the list is a different query, so it is asked again, quoted.
+it("asks again, quoted, when the server's model page turns out to be the viewer", async () => {
+   const specs: Given[] = [
+      {
+         name: "YEAR",
+         control: "select",
+         suggest: { source: "sales", dimension: "year" },
+      },
+   ];
+   const { rerender } = renderHook(
+      () => useSuggestOptions("env", "pkg", "README.malloy", specs),
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
+   expect((executeQueryModel.mock.calls[0][3] as { query: string }).query).toBe(
+      buildSuggestQuery("sales", "year"),
+   );
+
+   serverContext.modelPage = "viewer";
+   rerender();
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+   expect((executeQueryModel.mock.calls[1][3] as { query: string }).query).toBe(
+      buildSuggestQuery("sales", "year", undefined, { quoteNames: true }),
+   );
+});
+
 describe("a list cut off at the limit", () => {
    /** `n` distinct values for one column, `Value 0001` … in order. */
    const rows = (column: string, n: number) =>

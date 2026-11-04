@@ -82,17 +82,41 @@ const UNESCAPED_MALLOY_CALLS = [
       message: `The Explorer or the query builder ${UNESCAPED_MALLOY_MESSAGE}`,
    },
 ];
-// The Explorer, and the files that load it, its query builder or its
-// stylesheet. A server shows it unless `PUBLISHER_MODEL_PAGE=viewer`, and the
-// Console keeps both pages, so these are exempt. Named one by one, so a new
-// file that reaches for the Explorer is still refused.
+// The Explorer and the loader of its query builder. A server shows it unless
+// `PUBLISHER_MODEL_PAGE=viewer`, and the Console keeps both pages, so these
+// two are exempt from every rule above. Named one by one, so a new file that
+// reaches for the Explorer is still refused.
 const EXPLORER_FILES = [
-   "packages/app/src/App.tsx",
-   "packages/sdk/src/components/Model/ExplorerPage.tsx",
    "packages/sdk/src/components/Model/SourcesExplorer.tsx",
    "packages/sdk/src/components/ReportBuilder/loadMalloy.ts",
+];
+// Files that load only the Explorer's stylesheet: that one import is allowed,
+// and every other ban, the unescaped writers' among them, still holds.
+const EXPLORER_STYLESHEET_FILES = [
+   "packages/app/src/App.tsx",
+   "packages/sdk/src/components/Model/ExplorerPage.tsx",
    "packages/sdk/src/components/legacy/malloynb/CellRunnerView.tsx",
 ];
+// The bare package goes in `paths`: a negated pattern cannot re-include
+// `styles.css` once a pattern matching its parent has excluded it.
+const UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET = {
+   paths: [
+      {
+         name: "@malloydata/malloy-explorer",
+         message: UNESCAPED_MALLOY_IMPORTS[0].message,
+      },
+   ],
+   patterns: [
+      {
+         ...UNESCAPED_MALLOY_IMPORTS[0],
+         group: [
+            "@malloydata/malloy-explorer/**",
+            "!@malloydata/malloy-explorer/styles.css",
+         ],
+      },
+      UNESCAPED_MALLOY_IMPORTS[1],
+   ],
+};
 const LEGACY_MALLOYNB_IMPORT = {
    group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
    message:
@@ -201,6 +225,24 @@ export default [
          ],
          "@typescript-eslint/no-restricted-imports": "off",
          "no-restricted-syntax": "off",
+      },
+   },
+   {
+      // The stylesheet's importers (see EXPLORER_STYLESHEET_FILES): only
+      // `no-restricted-imports` is replaced, so the name and call bans above
+      // still apply to them.
+      files: EXPLORER_STYLESHEET_FILES,
+      rules: {
+         "no-restricted-imports": [
+            "error",
+            {
+               paths: UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.paths,
+               patterns: [
+                  LEGACY_MALLOYNB_IMPORT,
+                  ...UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
+               ],
+            },
+         ],
       },
    },
 ];

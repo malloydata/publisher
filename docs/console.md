@@ -150,7 +150,7 @@ is a Console convenience.
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
   and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
-  every action generates valid Malloy, and you can view the Malloy and SQL behind any result. The
+  every action generates Malloy, and you can view the Malloy and SQL behind any result. The
   Explorer writes a drilled value into that Malloy unescaped, so a value holding a double quote
   rewrites its query.
 - **Browse a model** — on a server started with `PUBLISHER_MODEL_PAGE=viewer` (see
