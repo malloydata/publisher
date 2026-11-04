@@ -13,6 +13,7 @@ const browserGlobals = [
    "getComputedStyle",
    "history",
    "Intl",
+   "localStorage",
    "location",
    "Node",
    "requestAnimationFrame",

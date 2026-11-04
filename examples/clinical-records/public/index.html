@@ -352,9 +352,23 @@ SPDX-License-Identifier: MIT
         border-bottom: none;
       }
 
+      /* Fixed layout: the column widths come from the static header, so they
+         do not move when the governance export fills the rows. */
+      .matrix {
+        table-layout: fixed;
+        min-width: 640px;
+      }
+      .matrix thead th:first-child,
       .matrix th[scope="row"] {
         width: var(--col-surface);
+      }
+      .matrix th[scope="row"] {
         padding: 0;
+      }
+      /* First visit: hold the five domain rows the export will fill. */
+      .matrix-loading {
+        height: calc(5 * 55px);
+        vertical-align: top;
       }
       .row-toggle {
         all: unset;
@@ -983,6 +997,7 @@ SPDX-License-Identifier: MIT
         }
       }
     </style>
+    <script src="./app/reserve.js"></script>
   </head>
   <body>
     <main>
@@ -1062,7 +1077,7 @@ SPDX-License-Identifier: MIT
             they read. Open a domain for its gates, its controls and every
             field's lineage.
           </p>
-          <div class="card scroll-x">
+          <div class="card scroll-x" id="card-matrix" data-reserve>
             <table class="matrix">
               <thead>
                 <tr>
@@ -1076,7 +1091,7 @@ SPDX-License-Identifier: MIT
               </thead>
               <tbody id="matrix-body">
                 <tr>
-                  <td colspan="6" class="muted">
+                  <td colspan="6" class="muted matrix-loading">
                     Loading the governance export…
                   </td>
                 </tr>
@@ -1094,7 +1109,7 @@ SPDX-License-Identifier: MIT
             cell for the query and the identity it was asked with.
           </p>
           <div class="access-wrap">
-            <div class="card scroll-x">
+            <div class="card scroll-x" id="card-access" data-reserve>
               <table class="access">
                 <thead id="access-head"></thead>
                 <tbody id="access-body"></tbody>
@@ -1126,7 +1141,7 @@ SPDX-License-Identifier: MIT
               <div class="hist-box" id="hist-lds">
                 <span class="skeleton">…</span>
               </div>
-              <div class="stats" id="stats-lds"></div>
+              <div class="stats" id="stats-lds" data-reserve></div>
             </div>
             <div class="card">
               <h3>De-identified</h3>
@@ -1134,7 +1149,7 @@ SPDX-License-Identifier: MIT
               <div class="hist-box" id="hist-deid">
                 <span class="skeleton">…</span>
               </div>
-              <div class="stats" id="stats-deid"></div>
+              <div class="stats" id="stats-deid" data-reserve></div>
             </div>
           </div>
         </section>
@@ -1147,7 +1162,7 @@ SPDX-License-Identifier: MIT
             truth depends on judgment about the data, which no load-time check
             can supply.
           </p>
-          <div class="card scroll-x">
+          <div class="card scroll-x" id="card-controls" data-reserve>
             <table class="controls">
               <thead>
                 <tr>
@@ -1182,7 +1197,7 @@ SPDX-License-Identifier: MIT
             against the policy; catching them takes reading the policy and the
             data.
           </p>
-          <ul class="violations" id="violations"></ul>
+          <ul class="violations" id="violations" data-reserve></ul>
         </section>
       </div>
 

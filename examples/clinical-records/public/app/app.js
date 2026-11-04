@@ -607,7 +607,23 @@ async function startScorecard() {
   );
   if (v) renderControls(published, v, mismatched);
   await deid;
+  rememberHeights();
   document.body.dataset.ready = "true";
+}
+
+// Save where each script-filled block settled, for reserve.js to apply on the
+// next visit, then release this visit's reservation so the blocks can resize.
+function rememberHeights() {
+  const heights = {};
+  for (const node of document.querySelectorAll("[data-reserve][id]")) {
+    heights[node.id] = Math.round(node.getBoundingClientRect().height);
+  }
+  try {
+    localStorage.setItem(window.reservedHeightsKey, JSON.stringify(heights));
+  } catch {
+    // No storage: the next visit reserves only what index.html does.
+  }
+  document.getElementById("reserved-heights")?.remove();
 }
 
 async function startExplore() {
