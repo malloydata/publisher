@@ -362,7 +362,8 @@ SPDX-License-Identifier: MIT
         display: flex;
         flex-direction: column;
         width: 100%;
-        padding: var(--sp-2) var(--sp-3);
+        position: relative;
+        padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-5);
         min-height: var(--row-h);
         justify-content: center;
       }
@@ -370,7 +371,10 @@ SPDX-License-Identifier: MIT
         content: "▸";
         color: var(--text-soft);
         position: absolute;
-        margin-left: calc(-1 * var(--sp-3));
+        left: var(--sp-2);
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: var(--fs-xs);
       }
       .is-open .row-toggle::before {
         content: "▾";
