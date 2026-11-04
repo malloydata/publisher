@@ -25,7 +25,8 @@ import { useId } from "react";
  * with the same padding every time — a text Cancel and a filled confirm, the
  * two roles `buttons.tsx` names.
  *
- * The title takes a node as well as a string, so a dialog that titles itself with
+ * `ModelExplorerDialog` stays off it deliberately: it is `fullScreen`. The
+ * title takes a node as well as a string, so a dialog that titles itself with
  * more than text (`RowsDialog`, `MaterializationDetailDialog`) can move onto
  * this rather than hand-roll its own close button and type.
  */

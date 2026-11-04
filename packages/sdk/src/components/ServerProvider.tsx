@@ -87,7 +87,23 @@ export interface ServerContextValue {
     * theme in `publisher.config.json`.
     */
    instanceTheme?: Theme;
+   /**
+    * Which page `Model` shows, the server's `PUBLISHER_MODEL_PAGE` from
+    * `/status`: `explorer`, the Malloy Explorer, unless the server says
+    * `viewer`. `explorer` too while `/status` loads, when it failed, and from a
+    * server that predates the setting, so wait on `isLoadingStatus` before
+    * showing anything the Explorer would replace.
+    */
+   modelPage: ModelPage;
 }
+
+/**
+ * The model page a server asks for. The Explorer writes the queries it builds
+ * back to Malloy text with string values unescaped (`escapeString` in
+ * `@malloydata/malloy-interfaces` is a TODO), so a drilled value holding a
+ * double quote rewrites its query; `viewer` shows a page that builds none.
+ */
+export type ModelPage = "explorer" | "viewer";
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
 
@@ -211,6 +227,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
          return response.data as {
             frozenConfig?: boolean;
             theme?: Theme;
+            modelPage?: ModelPage;
          };
       },
    });
@@ -221,6 +238,8 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
 
    const frozenConfig = statusQuery.data?.frozenConfig;
    const instanceTheme = statusQuery.data?.theme;
+   const modelPage: ModelPage =
+      statusQuery.data?.modelPage === "viewer" ? "viewer" : "explorer";
    const isLoadingStatus = statusQuery.isLoading;
 
    // Preserve original semantics: while loading or on error, mirror the
@@ -290,6 +309,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
       mutable,
       isLoadingStatus,
       instanceTheme,
+      modelPage,
    };
 
    return (

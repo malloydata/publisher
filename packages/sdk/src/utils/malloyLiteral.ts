@@ -99,12 +99,21 @@ function datePart(value: unknown): string | undefined {
    return /^(\d{4}-\d{2}-\d{2})/.exec(String(value))?.[1];
 }
 
+/** An ISO date or timestamp, the only text a Malloy `@` literal is written from. */
+const ISO_DATE_OR_TIMESTAMP =
+   /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/;
+
 /**
  * A filter value as a Malloy literal; unlike `malloyLiteral`, a Date is spelled
- * as a local-time day. A string is always a quoted string, whatever it holds.
+ * as a local-time day. A string is a quoted string, whatever it holds, except
+ * where `isDate` says the dimension is a date and the string is an ISO date or
+ * timestamp, which is written as a date literal (`@2024-01-31`). Any other
+ * string stays quoted with `isDate` too: written after `@` unquoted, a value
+ * like `2024-01-31 or true` became Malloy.
  */
 export function formatMalloyValue(
    value: string | number | boolean | Date | null | undefined,
+   isDate: boolean = false,
 ): string {
    if (value === null || value === undefined) {
       return "null";
@@ -112,6 +121,14 @@ export function formatMalloyValue(
 
    if (value instanceof Date) {
       return `@${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+   }
+
+   if (
+      isDate &&
+      typeof value === "string" &&
+      ISO_DATE_OR_TIMESTAMP.test(value)
+   ) {
+      return `@${value}`;
    }
 
    if (typeof value === "string") {

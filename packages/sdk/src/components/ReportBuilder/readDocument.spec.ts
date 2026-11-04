@@ -977,9 +977,10 @@ describe("the compiler stays lazy", () => {
       expect(read("loadMalloy.ts")).toContain(
          'await import("@malloydata/malloy")',
       );
-      expect(read("loadMalloy.ts")).toContain(
-         'await import("@malloydata/malloy-tag")',
-      );
+      for (const pkg of ["malloy-tag", "malloy-query-builder"])
+         expect(read("loadMalloy.ts")).toContain(
+            `await import("@malloydata/${pkg}")`,
+         );
       expect(read("readDocument.ts")).not.toContain(
          'import("@malloydata/malloy-tag")',
       );

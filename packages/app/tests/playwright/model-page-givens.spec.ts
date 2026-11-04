@@ -3,10 +3,13 @@
 
 import { expect, Page, Request, test } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
+import { requireModelViewer } from "./helpers/publisherStatus";
 
 /**
- * The model page's givens, on the storefront's `overview.malloy`, whose
- * `overview` source reads five givens with select and multiselect pickers.
+ * The model viewer's givens, on a server with `PUBLISHER_MODEL_PAGE=viewer`
+ * (skipped on any other; see `requireModelViewer`), on the storefront's
+ * `overview.malloy`, whose `overview` source reads five givens with select and
+ * multiselect pickers.
  *
  * Two things the page promises: it sends nothing until the reader opens a row
  * or a picker (each picker's options are a query of their own), and the given
@@ -34,6 +37,10 @@ async function openOverview(page: Page, search: string): Promise<void> {
 }
 
 test.describe("model-page-givens", () => {
+   test.beforeAll(async ({ baseURL }) => {
+      await requireModelViewer(baseURL!);
+   });
+
    test("sends nothing on render, and reads a picker's options when it is opened", async ({
       page,
    }) => {

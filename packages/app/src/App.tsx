@@ -10,6 +10,7 @@ import {
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
+import "@malloydata/malloy-explorer/styles.css";
 import * as React from "react";
 import { Suspense, useMemo } from "react";
 import {

@@ -4354,6 +4354,18 @@ components:
             The `versionPromotion` setting this server runs with. With
             "explicit", a publish never moves a package's `latest`; only
             `PUT .../packages/{packageName}/latest` does.
+        modelPage:
+          type: string
+          enum: ["explorer", "viewer"]
+          readOnly: true
+          description: >-
+            Which page the Console shows for a model (`PUBLISHER_MODEL_PAGE`,
+            "explorer" by default). "explorer" is the Malloy Explorer, which
+            writes the queries it builds back to Malloy text with string
+            values unescaped, so a drilled value holding a double quote
+            rewrites its query. "viewer" shows a page that builds no query,
+            and takes the Explorer out of the legacy notebook too. Absent from
+            a server that predates the setting, which reads as "explorer".
         emptyReason:
           type: string
           readOnly: true

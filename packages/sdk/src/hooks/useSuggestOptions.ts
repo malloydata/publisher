@@ -135,21 +135,40 @@ export function buildSuggestQuery(
    dimension: string,
    /** Text the values must contain, ignoring case: a search of a truncated list. */
    search?: string,
+   options: SuggestQueryOptions = {},
 ): string {
    // One row past the limit, so a list that was cut off says so.
    const limit =
       (search === undefined ? SUGGEST_OPTION_LIMIT : SUGGEST_SEARCH_LIMIT) + 1;
-   const field = quotedPath(dimension);
+   const quoted = options.quoteNames === true;
+   const name = quoted ? quotedName : (text: string) => text;
+   const field = quoted ? quotedPath(dimension) : dimension;
+   const orderBy = quoted
+      ? quotedName(outputFieldName(dimension))
+      : (dimension.split(".").at(-1) ?? dimension);
    return (
-      `run: ${quotedName(source)} -> {\n` +
+      `run: ${name(source)} -> {\n` +
       `  group_by: ${field}\n` +
       (search === undefined
          ? ""
          : `  where: ${containsCondition(field, search)}\n`) +
-      `  order_by: ${quotedName(outputFieldName(dimension))} asc\n` +
+      `  order_by: ${orderBy} asc\n` +
       `  limit: ${limit}\n` +
       `}`
    );
+}
+
+/** How {@link buildSuggestQuery} writes its names. */
+export interface SuggestQueryOptions {
+   /**
+    * Backtick-quote every name (the source, each segment of the dimension's
+    * path, the output column), so a reserved word (`year`, `source`) or a name
+    * with a space is still read as a name. Off, the names are written as the
+    * `suggest` gave them, as before; a keyword then fails the query. On for a
+    * server whose `PUBLISHER_MODEL_PAGE` is `viewer`, and always in the model
+    * viewer.
+    */
+   quoteNames?: boolean;
 }
 
 /**
@@ -274,6 +293,12 @@ export function useSuggestOptions(
     * nothing runs until the reader asks). Absent, every picker's list is.
     */
    only?: ReadonlySet<string>,
+   /**
+    * Quote every name in a generated suggest query (see
+    * {@link SuggestQueryOptions}). Absent, the server's model page decides:
+    * quoted on a `viewer` server, written as given otherwise.
+    */
+   quoteNames?: boolean,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -295,7 +320,8 @@ export function useSuggestOptions(
    /** Server search, per given, for a truncated suggest over a dimension. */
    search: Map<string, OptionSearch>;
 } {
-   const { apiClients } = useServer();
+   const { apiClients, modelPage } = useServer();
+   const quoteSuggestNames = quoteNames ?? modelPage === "viewer";
 
    // Only a picker needs options; a text box or a slider would just be issuing
    // a query whose answer it never shows.
@@ -358,6 +384,7 @@ export function useSuggestOptions(
                                suggest.source as string,
                                suggest.dimension as string,
                                search,
+                               { quoteNames: quoteSuggestNames },
                             ),
                     ),
                     compactJson: true,

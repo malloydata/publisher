@@ -77,6 +77,8 @@ export function ModelGivensSection({
       applied,
       undefined,
       opened,
+      // The viewer writes every name quoted, whatever the server's model page.
+      true,
    );
    return (
       <ModelSection

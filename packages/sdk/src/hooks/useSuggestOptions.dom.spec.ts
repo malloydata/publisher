@@ -28,7 +28,9 @@ const executeQueryModel = mock(
    ) => pending(),
 );
 
-mockServerProvider({ models: { executeQueryModel } });
+// What `/status` said: a test sets the model page and clears it again.
+const serverContext: { modelPage?: string } = {};
+mockServerProvider({ models: { executeQueryModel } }, serverContext);
 
 const { buildSuggestQuery, SUGGEST_OPTION_LIMIT, useSuggestOptions } =
    await import("./useSuggestOptions");
@@ -90,6 +92,7 @@ const renderGated = (applied = APPLIED) =>
 beforeEach(() => {
    clearCache();
    executeQueryModel.mockClear();
+   delete serverContext.modelPage;
 });
 
 it("sends the version with the suggest query and keys on it", async () => {
@@ -187,6 +190,29 @@ it("runs a suggest as the document's definitions plus one run:, by name or by di
    ]);
 });
 
+// A server whose PUBLISHER_MODEL_PAGE is viewer writes every name quoted; the
+// default writes them as the suggest gave them (every other test here).
+it("quotes the suggest's names on a server whose model page is the viewer", async () => {
+   serverContext.modelPage = "viewer";
+   renderHook(
+      () =>
+         useSuggestOptions("env", "pkg", "README.malloy", [
+            {
+               name: "MAKER",
+               control: "select",
+               suggest: { source: "recalls", dimension: "maker.name" },
+            },
+         ]),
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   expect((executeQueryModel.mock.calls[0][3] as { query: string }).query).toBe(
+      buildSuggestQuery("recalls", "maker.name", undefined, {
+         quoteNames: true,
+      }),
+   );
+});
+
 describe("a list cut off at the limit", () => {
    /** `n` distinct values for one column, `Value 0001` … in order. */
    const rows = (column: string, n: number) =>
@@ -248,7 +274,7 @@ describe("a list cut off at the limit", () => {
          buildSuggestQuery("recalls", "manufacturer", "General Motors"),
       );
       expect(sent).toContain(
-         "where: strpos(lower(`manufacturer`::string), 'general motors') > 0",
+         "where: strpos(lower(manufacturer::string), 'general motors') > 0",
       );
       expect(search!.key[0]).toBe("givenSuggestSearch");
       executeQueryModel.mockImplementation(() => pending());

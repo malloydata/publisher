@@ -125,6 +125,14 @@ source: a is one extend {
       const suggest = back.localGivens?.[0].suggest;
       expect(suggest).toEqual({ source: "a", dimension: "products.category" });
       expect(buildSuggestQuery(suggest!.source!, suggest!.dimension)).toBe(
+         `run: a -> {\n  group_by: products.category\n  order_by: category asc\n  limit: ${SUGGEST_OPTION_LIMIT + 1}\n}`,
+      );
+      // On a server whose model page is the viewer, every name quoted.
+      expect(
+         buildSuggestQuery(suggest!.source!, suggest!.dimension, undefined, {
+            quoteNames: true,
+         }),
+      ).toBe(
          `run: \`a\` -> {\n  group_by: \`products\`.\`category\`\n  order_by: \`category\` asc\n  limit: ${SUGGEST_OPTION_LIMIT + 1}\n}`,
       );
    });

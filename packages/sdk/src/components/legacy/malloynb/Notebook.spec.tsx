@@ -11,7 +11,8 @@
  * test noticing, so it is asserted here rather than only on the hook.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import {
    cacheKeys,
    clearCache,
@@ -26,8 +27,8 @@ const NOTEBOOK: RawNotebook = {
       {
          type: "code",
          text: "import { orders } from './orders.malloy'",
-         // An import cell with `newSources` is where the "Data sources" icon
-         // used to appear; the test below asserts it no longer does.
+         // `newSources` is what makes the cell's "Data sources" icon appear;
+         // see `NotebookCell.tsx`'s `hasValidImport` check.
          newSources: [JSON.stringify({ name: "orders" })],
       } as RawNotebook["notebookCells"][number],
    ],
@@ -40,6 +41,9 @@ const NOTEBOOK: RawNotebook = {
                control: "select",
                suggest: { source: "orders", dimension: "region" },
             },
+            // Plain text, unlike REGION: the "Data sources" dialog test below
+            // needs a control `fireEvent.change` can drive directly, rather
+            // than a select whose options load from a suggest query.
             { name: "TENANT", type: "string" },
          ],
       },
@@ -65,8 +69,8 @@ const executeQueryModel = mock(
    ) => pending(),
 );
 // The notebook's real run path for a code cell, distinct from
-// `executeQueryModel`: without it, the import cell this spec adds fails with
-// "not a function" on every render.
+// `executeQueryModel`: without it, the cell this spec adds (for the "Data
+// sources" dialog) fails with "not a function" on every render.
 const executeNotebookCell = mock(
    (
       _environmentName: string,
@@ -76,10 +80,37 @@ const executeNotebookCell = mock(
    ) => pending(),
 );
 
-mockServerProvider({
-   notebooks: { getNotebook, executeNotebookCell },
-   models: { executeQueryModel },
-});
+// Stubbed rather than let the cell's "Data sources" dialog reach the real
+// ModelExplorer: that pulls in the lazy-loaded, WASM-backed
+// `@malloydata/malloy-explorer`, which is not this file's business. Only what
+// the notebook hands it matters here, so the stub just records its props.
+const dataSourcesDialogProps = mock(
+   (_props: {
+      open: boolean;
+      startingGivens?: Record<string, string>;
+      data?: { givens?: { name?: string }[] };
+   }) => {},
+);
+mock.module("../../Model/ModelExplorerDialog", () => ({
+   ModelExplorerDialog: (props: {
+      open: boolean;
+      startingGivens?: Record<string, string>;
+      data?: { givens?: { name?: string }[] };
+   }) => {
+      dataSourcesDialogProps(props);
+      return null as ReactNode;
+   },
+}));
+
+// The server's /status answer: the model page a test switches to `viewer`.
+const serverContext: { modelPage?: string } = {};
+mockServerProvider(
+   {
+      notebooks: { getNotebook, executeNotebookCell },
+      models: { executeQueryModel },
+   },
+   serverContext,
+);
 
 const { default: Notebook } = await import("./Notebook");
 
@@ -92,6 +123,7 @@ beforeEach(() => {
    getNotebook.mockClear();
    executeQueryModel.mockClear();
    executeNotebookCell.mockClear();
+   dataSourcesDialogProps.mockClear();
 });
 
 it("runs its suggest queries against the version it was opened at", async () => {
@@ -111,13 +143,45 @@ it("sends none when the notebook was opened without one", async () => {
    expect(executeQueryModel.mock.calls[0][3].versionId).toBeUndefined();
 });
 
-// An import cell used to open the Explorer on its sources. The Explorer wrote a
-// drilled value into Malloy unescaped, so it is gone, and with it the button.
-it("offers no 'Data sources' explorer on an import cell", async () => {
+it("opens a cell's 'Data sources' dialog with the notebook's current values", async () => {
    render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
 
-   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
-   expect(screen.queryByLabelText("Data sources")).toBeNull();
+   // The control sits in its filter button's popover.
+   fireEvent.click(await screen.findByRole("button", { name: /^TENANT: / }));
+   const input = (await screen.findByLabelText("TENANT")) as HTMLInputElement;
+   fireEvent.change(input, { target: { value: "acme" } });
+   // Wait for the control's own re-render before opening the dialog: without
+   // it the click can land on the render that has not yet carried the new
+   // value into `cellStartingGivens`.
+   await waitFor(() => expect(input.value).toBe("acme"));
+
+   fireEvent.click(await screen.findByLabelText("Data sources"));
+
+   await waitFor(() =>
+      expect(dataSourcesDialogProps.mock.calls.at(-1)?.[0]?.open).toBe(true),
+   );
+   const lastCall = dataSourcesDialogProps.mock.calls.at(-1)?.[0];
+   expect(lastCall?.startingGivens).toEqual({ TENANT: "acme" });
+   // The values alone render nothing: the dialog needs the declarations too.
+   expect(lastCall?.data?.givens?.map((given) => given.name)).toContain(
+      "TENANT",
+   );
+});
+
+// A server with PUBLISHER_MODEL_PAGE=viewer takes the Explorer out of the
+// Console, and the "Data sources" dialog is the Explorer.
+it("offers no 'Data sources' dialog on a server whose model page is the viewer", async () => {
+   serverContext.modelPage = "viewer";
+   try {
+      render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      expect(screen.queryByLabelText("Data sources")).toBeNull();
+      expect(dataSourcesDialogProps).not.toHaveBeenCalledWith(
+         expect.objectContaining({ open: true }),
+      );
+   } finally {
+      delete serverContext.modelPage;
+   }
 });
 
 // DEPRECATED FEATURE COVERAGE — delete together with

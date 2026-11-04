@@ -307,6 +307,7 @@ keep their file paths and gain derived variables and flags.
 |---|---|---|---|---|
 | `versionPromotion` (file), `PUBLISHER_VERSION_PROMOTION` ([#1354](https://github.com/malloydata/publisher/pull/1354)) | `versionPromotion` (enum: `on-publish`, `explicit`) | unchanged | `--version-promotion` | the key and variable already follow this design; the flag is new |
 | `PUBLISHER_PACKAGE_VERSIONING` (#1354) | `packageVersioning` (enum: `on`, `off`) | unchanged | — | a transition setting that [#1381](https://github.com/malloydata/publisher/issues/1381) removes, so it keeps its name and is exempt from the `Enabled` rule |
+| `PUBLISHER_MODEL_PAGE` (#1498) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
 | `JUDGE_LLM_API_KEY` (#1469) | `retrieval.fcj.judgeLlm.apiKey` (secret, default `retrieval.llm.apiKey`) | `PUBLISHER_RETRIEVAL_FCJ_JUDGE_LLM_API_KEY` | — (secret) | `retrieval.fcj.judgeLlm` is provisional |
 
 Until step 2 ships, a new setting takes its derived name from the start, as `PUBLISHER_VERSION_PROMOTION`

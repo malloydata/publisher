@@ -6,20 +6,23 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
+import { requireModelViewer } from "./helpers/publisherStatus";
 
 /**
- * A model whose data holds double quotes, on the model page.
+ * A model whose data holds double quotes, on the model page of a server with
+ * `PUBLISHER_MODEL_PAGE=viewer`. Skipped on any other server (see
+ * `requireModelViewer`).
  *
- * The page used to embed the Explorer, which wrote a drilled cell back into
+ * The default page embeds the Explorer, which writes a drilled cell back into
  * Malloy with `ASTQuery.toMalloy()`. `@malloydata/malloy-interfaces` puts a
  * string value into that text unescaped (its `escapeString` is a TODO), so
- * drilling into `27" Monitor` sent `drill: name = "27" Monitor"`, a compile
- * error, and drilling into `x" or "a" = "a` sent a filter that matched every
- * row. Nobody had to type anything: the values are data.
+ * drilling into `27" Monitor` sends `drill: name = "27" Monitor"`, a compile
+ * error, and drilling into `x" or "a" = "a` sends a filter that matches every
+ * row. Nobody has to type anything: the values are data.
  *
- * The Explorer is gone, and the page is the model viewer. These specs hold it
- * to that: the same data is listed and queried, each value comes back as
- * written, and nothing on the page writes a value into Malloy text.
+ * These specs hold the `viewer` page, the model viewer, to what it promises:
+ * the same data is listed and queried, each value comes back as written, and
+ * nothing on the page writes a value into Malloy text.
  *
  * Like notebook-givens, the spec writes its model into the `storefront`
  * package directory and reloads the package, so run it against a normal
@@ -67,12 +70,19 @@ async function openFixtureModel(page: Page): Promise<void> {
 }
 
 test.describe("model-page-literals", () => {
+   // Whether beforeAll got as far as writing the fixture: on a server that
+   // skips the spec it did not, and a reload would only disturb other specs.
+   let wrote = false;
+
    test.beforeAll(async ({ baseURL }) => {
+      await requireModelViewer(baseURL!);
       await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
+      wrote = true;
       await reloadPackage(baseURL!);
    });
 
    test.afterAll(async ({ baseURL }) => {
+      if (!wrote) return;
       await fs.unlink(path.join(PKG_DIR, FIXTURE_MODEL)).catch(() => undefined);
       await reloadPackage(baseURL!).catch(() => undefined);
    });

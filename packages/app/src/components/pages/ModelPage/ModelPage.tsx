@@ -139,9 +139,12 @@ function ModelPage() {
          <Box sx={PAGE_FRAME_SX}>
             <Model
                resourceUri={resourceUri}
-               // The source on screen is in the address, so a link to one opens
-               // on it. Replaced, not pushed: picking a source is a choice
-               // within this page, and Back should leave the model.
+               // The Explorer page's named queries wait for their Run; the model
+               // viewer's run only when opened anyway.
+               runOnDemand={true}
+               // The model viewer's source on screen is in the address, so a
+               // link to one opens on it. Replaced, not pushed: picking a source
+               // is a choice within this page, and Back should leave the model.
                sourceName={query.source}
                onSourceChange={(source) => setParam("source", source)}
                givens={query}

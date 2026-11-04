@@ -49,5 +49,9 @@ export * from "./RenderedResult";
 export * from "./Report";
 export * from "./legacy";
 export { ServerProvider, useServer } from "./ServerProvider";
-export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
+export type {
+   ModelPage,
+   ServerContextValue,
+   ServerProviderProps,
+} from "./ServerProvider";
 export * from "./DocumentStorage";

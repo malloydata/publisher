@@ -21,14 +21,16 @@ const compat = new FlatCompat({
 // `@malloydata/malloy-interfaces` writes a string value into Malloy text
 // unescaped: its `escapeString` is a TODO, so a value holding a double quote
 // closes the literal and the rest is read as Malloy. `ASTQuery.toMalloy()` and
-// `queryToMalloy` both go through it, and the Explorer was built on them, so a
-// drilled `27" Monitor` was a compile error and a crafted value widened the
-// filter it was drilled into. `filterToMalloy` goes through the same function,
+// `queryToMalloy` both go through it, and the Explorer is built on them, so a
+// drilled `27" Monitor` is a compile error and a crafted value widens the
+// filter it is drilled into. `filterToMalloy` goes through the same function,
 // and `@malloydata/malloy-query-builder`'s `ASTQuery` writes through them, so
-// nothing here may load that package. The two writers are refused where they
+// nothing new may load that package. The two writers are refused where they
 // are imported, aliased or re-exported, and where they are called; the SDK
 // reads `@malloydata/malloy-interfaces` for its types alone, through `import
-// type`. Lift these once a `@malloydata/*` bump carries the upstream fix.
+// type`. The Explorer's own files are exempt by name (EXPLORER_FILES, below)
+// while `PUBLISHER_MODEL_PAGE=explorer` still shows it. Lift these once a
+// `@malloydata/*` bump carries the upstream fix.
 const UNESCAPED_MALLOY_MESSAGE =
    "writes string values into Malloy unescaped (escapeString in @malloydata/malloy-interfaces is a TODO), so a value holding a double quote rewrites the query. Run a named query, or write the text with malloyLiteral / escapeMalloyString.";
 const UNESCAPED_MALLOY_IMPORTS = [
@@ -80,6 +82,22 @@ const UNESCAPED_MALLOY_CALLS = [
       message: `The Explorer or the query builder ${UNESCAPED_MALLOY_MESSAGE}`,
    },
 ];
+// The Explorer, and the files that load it, its query builder or its
+// stylesheet. A server shows it unless `PUBLISHER_MODEL_PAGE=viewer`, and the
+// Console keeps both pages, so these are exempt. Named one by one, so a new
+// file that reaches for the Explorer is still refused.
+const EXPLORER_FILES = [
+   "packages/app/src/App.tsx",
+   "packages/sdk/src/components/Model/ExplorerPage.tsx",
+   "packages/sdk/src/components/Model/SourcesExplorer.tsx",
+   "packages/sdk/src/components/ReportBuilder/loadMalloy.ts",
+   "packages/sdk/src/components/legacy/malloynb/CellRunnerView.tsx",
+];
+const LEGACY_MALLOYNB_IMPORT = {
+   group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
+   message:
+      "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
+};
 
 export default [
    {
@@ -167,16 +185,22 @@ export default [
          "no-restricted-imports": [
             "error",
             {
-               patterns: [
-                  {
-                     group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
-                     message:
-                        "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
-                  },
-                  ...UNESCAPED_MALLOY_IMPORTS,
-               ],
+               patterns: [LEGACY_MALLOYNB_IMPORT, ...UNESCAPED_MALLOY_IMPORTS],
             },
          ],
+      },
+   },
+   {
+      // The Explorer's own files (see EXPLORER_FILES). Last, so it replaces the
+      // blocks above for them; the legacy fence still holds.
+      files: EXPLORER_FILES,
+      rules: {
+         "no-restricted-imports": [
+            "error",
+            { patterns: [LEGACY_MALLOYNB_IMPORT] },
+         ],
+         "@typescript-eslint/no-restricted-imports": "off",
+         "no-restricted-syntax": "off",
       },
    },
 ];

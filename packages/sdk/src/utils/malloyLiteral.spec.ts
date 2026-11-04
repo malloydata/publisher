@@ -77,6 +77,11 @@ describe("formatMalloyValue", () => {
       expect(formatMalloyValue("O'Neil")).toBe("'O\\'Neil'");
       expect(formatMalloyValue(42)).toBe("42");
       expect(formatMalloyValue(false)).toBe("false");
+      expect(formatMalloyValue("2024-01-31", true)).toBe("@2024-01-31");
+      expect(formatMalloyValue(new Date(2024, 0, 5), true)).toBe("@2024-01-05");
+   });
+
+   it("spells a Date as a local-time day without isDate too", () => {
       expect(formatMalloyValue(new Date(2024, 0, 5))).toBe("@2024-01-05");
    });
 
@@ -85,5 +90,17 @@ describe("formatMalloyValue", () => {
       expect(formatMalloyValue("2024-01-31 or true")).toBe(
          "'2024-01-31 or true'",
       );
+   });
+
+   // With isDate, only an ISO date or timestamp is written after `@`: the text
+   // goes into the query unquoted, so anything else stays a quoted string.
+   it("writes a date literal from isDate only for an ISO date or timestamp", () => {
+      expect(formatMalloyValue("2024-01-31 09:30:00", true)).toBe(
+         "@2024-01-31 09:30:00",
+      );
+      expect(formatMalloyValue("2024-01-31 or true", true)).toBe(
+         "'2024-01-31 or true'",
+      );
+      expect(formatMalloyValue("yesterday", true)).toBe("'yesterday'");
    });
 });

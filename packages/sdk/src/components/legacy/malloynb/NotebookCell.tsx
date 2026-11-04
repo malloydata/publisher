@@ -19,12 +19,15 @@ import {
    Tooltip,
 } from "@mui/material";
 import React, { useEffect, useState } from "react";
+import type { Given } from "../../../client";
 import { usePublisherTheme } from "../../../theme/ThemeContext";
 import { parseResourceUri } from "../../../utils/formatting";
 import { ErrorDetailAlert } from "../../ApiErrorDisplay";
 import { AppDialog } from "../../AppDialog";
 import { highlight } from "../../highlighter";
+import { ModelExplorerDialog } from "../../Model/ModelExplorerDialog";
 import { FloatingIconButton } from "../../FloatingIconButton";
+import { useServer } from "../../ServerProvider";
 import { Prose } from "../../Prose";
 import type { NavigationClick } from "../../click_helper";
 import { useDrill, type DrillNavigation } from "../../drill";
@@ -81,6 +84,14 @@ interface NotebookCellProps {
     * drill inert rather than dead-ended, and removes the affordance with it.
     */
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
+   /**
+    * The notebook's current control values, to seed the "Data Sources"
+    * dialog's own so exploring from a cell starts from what the reader is
+    * looking at rather than the model's bare defaults.
+    */
+   givens?: Record<string, string>;
+   /** The notebook's declared givens, so that dialog renders their controls. */
+   givenSpecs?: Given[];
 }
 
 export function NotebookCell({
@@ -94,12 +105,21 @@ export function NotebookCell({
    onDrillSelf,
    canDrillSelf,
    onDrillNavigate,
+   givens,
+   givenSpecs,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [resultsDialogOpen, setResultsDialogOpen] =
       React.useState<boolean>(false);
    const [highlightedMalloyCode, setHighlightedMalloyCode] =
       React.useState<string>();
+   const [sourcesDialogOpen, setSourcesDialogOpen] =
+      React.useState<boolean>(false);
+   // The "Data sources" dialog is the Malloy Explorer, which a server with
+   // `PUBLISHER_MODEL_PAGE=viewer` takes out of the Console; it waits on
+   // `/status` so such a server never offers it.
+   const { modelPage, isLoadingStatus } = useServer();
+   const explorerAllowed = !isLoadingStatus && modelPage !== "viewer";
 
    const [copyMessage, setCopyMessage] = useState("");
 
@@ -148,6 +168,58 @@ export function NotebookCell({
       !!cell.text &&
       (IMPORT_NAMES_REGEX.test(cell.text) ||
          IMPORT_MODEL_PATH_REGEX.test(cell.text));
+   const getInitialSourceIndex = () => {
+      if (!cell.newSources || cell.newSources.length === 0) return 0;
+
+      let importNames = [];
+      let importPath = "";
+
+      if (cell.text) {
+         const namesMatch = cell.text.match(IMPORT_NAMES_REGEX);
+         if (namesMatch) {
+            importNames = namesMatch[1].split(",").map((name) => name.trim());
+         }
+
+         const pathMatch = cell.text.match(IMPORT_MODEL_PATH_REGEX);
+         if (pathMatch) {
+            importPath = pathMatch[1].trim();
+         }
+      }
+
+      for (let i = 0; i < cell.newSources.length; i++) {
+         try {
+            const sourceInfo = JSON.parse(cell.newSources[i]);
+
+            // Match either by imported name or by path
+            if (
+               (importNames.length > 0 &&
+                  importNames.includes(sourceInfo.name)) ||
+               (importPath && importPath === sourceInfo.path)
+            ) {
+               return i;
+            }
+         } catch (_e) {
+            continue; // Skip invalid JSON
+         }
+      }
+
+      return 0; // Default to the first source
+   };
+
+   // Memoized: the dialog's given controls key off this object's identity.
+   const modelDataFromNewSources = React.useMemo(
+      () =>
+         cell.newSources && cell.newSources.length > 0
+            ? {
+                 sourceInfos: cell.newSources,
+                 resource: resourceUri,
+                 // A cell's sources carry no givens of their own; without the
+                 // notebook's, the dialog has no controls and a gated source 403s.
+                 givens: givenSpecs,
+              }
+            : undefined,
+      [cell.newSources, resourceUri, givenSpecs],
+   );
 
    const { mode } = usePublisherTheme();
    useEffect(() => {
@@ -276,10 +348,31 @@ export function NotebookCell({
                               }}
                            />
                         )}
+                        {hasValidImport && explorerAllowed && (
+                           <FloatingIconButton
+                              aria-label="Data sources"
+                              sx={{ flexShrink: 0 }}
+                              onClick={() => setSourcesDialogOpen(true)}
+                           >
+                              <SearchIcon />
+                           </FloatingIconButton>
+                        )}
                      </Box>
                   </CleanMetricCard>
                </Stack>
             )}
+
+            {/* Data Sources Dialog */}
+            <ModelExplorerDialog
+               open={sourcesDialogOpen && explorerAllowed}
+               onClose={() => setSourcesDialogOpen(false)}
+               title="Data Sources"
+               hasValidImport={hasValidImport}
+               resourceUri={resourceUri}
+               data={modelDataFromNewSources}
+               initialSelectedSourceIndex={getInitialSourceIndex()}
+               startingGivens={givens}
+            />
 
             {codeDialog}
             {/* Results Dialog */}

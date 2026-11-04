@@ -178,7 +178,7 @@ ServerProvider (required wrapper)
 ├── Home (list all environments)
 │   └── Environment (show packages in an environment)
 │       └── Package (show models, notebooks, connections)
-│           ├── Model (a model's sources, fields and named queries, read-only)
+│           ├── Model (visual query builder + named queries)
 │           └── Notebook (read-only notebook viewer)
 ```
 
@@ -345,21 +345,58 @@ const resourceUri = encodeResourceUri({
 
 ### Model
 
-A model's page: the model viewer (`ModelViewer`) with a Copy link action on its heading. `Model` takes every `ModelViewer` prop.
+A model's page. Which page is the server's: its `PUBLISHER_MODEL_PAGE`, which `/status` reports and
+`useServer().modelPage` reads. On the default, `explorer`, it is the visual query builder below; on
+`viewer`, it is the model viewer ([`ModelViewer`](#modelviewer)) with a Copy link action on its
+heading, and builds no query. `Model` shows neither until `/status` answers. It takes every
+`ModelViewer` prop; `onChange` and `runOnDemand` apply to the Explorer page only. A host that wants
+the viewer whatever its server says renders `ModelViewer` itself.
+
+The Explorer writes the queries it builds back to Malloy text through `@malloydata/malloy-interfaces`,
+which puts a string value in unescaped (`escapeString` is a TODO), so a drilled value holding a double
+quote rewrites its query.
 
 ```tsx
 import { Model, encodeResourceUri } from "@malloy-publisher/sdk";
 
+interface ModelProps extends ModelViewerProps {
+   resourceUri: string;
+   onChange?: (query: QueryExplorerResult) => void; // The Explorer page only
+   runOnDemand?: boolean; // The Explorer page only. Default: false
+   maxResultSize?: number; // Default: 0 (no limit)
+}
+
+interface QueryExplorerResult {
+   query: string | undefined;
+   malloyQuery: Malloy.Query | string | undefined;
+   malloyResult: Malloy.Result | undefined;
+}
+
+// Usage
 const resourceUri = encodeResourceUri({
    environmentName: "my-environment",
    packageName: "analytics",
    modelPath: "models/orders.malloy",
 });
 
-<Model resourceUri={resourceUri} maxResultSize={512 * 1024} />;
+<Model
+   resourceUri={resourceUri}
+   runOnDemand={true}
+   maxResultSize={512 * 1024}
+   onChange={(result) => {
+      console.log("Query:", result.query);
+      console.log("Result:", result.malloyResult);
+   }}
+/>;
 ```
 
-`runOnDemand` is still accepted and deprecated: every view and query runs when it is opened, never on render.
+**Features (the Explorer page):**
+
+- Source selector (dropdown for models with multiple sources)
+- Visual query builder (Malloy Explorer integration)
+- Named queries display
+- Full-screen dialog mode
+- Copy link to current view
 
 Copy link copies the page's address. Pass `givens` and `onGivensChange` (`useGivenUrlParams` does both for a react-router host) so the address carries the given values the page is running with, and a link opens with them applied.
 
@@ -415,7 +452,43 @@ It reads only the Publisher API, and sends nothing until a reader opens a row or
 
 The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`. A run sends, and is cached under, only the values of the givens it reads, so changing another source's given leaves its result current.
 
-There is no query builder. The Explorer that `Model` used to embed is removed: it wrote structured queries back to Malloy text through `@malloydata/malloy-interfaces`, which does not escape string values yet. To query from a host page, write the Malloy yourself with each value spelled by `malloyLiteral`, and run it with `QueryResult`.
+---
+
+### ModelExplorer
+
+A lower-level component for embedding the query builder without the full Model chrome.
+
+```tsx
+import {
+   ModelExplorer,
+   useModelData,
+   encodeResourceUri,
+} from "@malloy-publisher/sdk";
+
+interface ModelExplorerProps {
+   data?: CompiledModel; // Pre-loaded model data
+   onChange?: (query: QueryExplorerResult) => void;
+   existingQuery?: QueryExplorerResult; // Initialize with existing query
+   initialSelectedSourceIndex?: number; // Default: 0
+   onSourceChange?: (index: number) => void;
+   resourceUri: string;
+}
+
+// Usage with automatic data loading
+<ModelExplorer
+   resourceUri={resourceUri}
+   onChange={(result) => console.log(result)}
+/>;
+
+// Usage with pre-loaded data
+const { data } = useModelData(resourceUri);
+
+<ModelExplorer
+   data={data}
+   resourceUri={resourceUri}
+   onChange={(result) => console.log(result)}
+/>;
+```
 
 ---
 
@@ -1192,9 +1265,10 @@ Import the SDK styles in your app entry point:
 ```tsx
 // Main SDK styles (required)
 import "@malloy-publisher/sdk/styles.css";
-```
 
-`@malloy-publisher/sdk/malloy-explorer.css` still resolves, to the same rules as `styles.css`, and is deprecated.
+// If using Model/ModelExplorer outside of Publisher
+import "@malloy-publisher/sdk/malloy-explorer.css";
+```
 
 ---
 
@@ -1394,6 +1468,53 @@ function DataTable() {
 
 ---
 
+### Example: Interactive Model Explorer
+
+```tsx
+import {
+   ServerProvider,
+   ModelExplorer,
+   encodeResourceUri,
+} from "@malloy-publisher/sdk";
+import "@malloy-publisher/sdk/styles.css";
+import "@malloy-publisher/sdk/malloy-explorer.css";
+import { useState } from "react";
+
+function Explorer() {
+   const [selectedQuery, setSelectedQuery] = useState(null);
+
+   const resourceUri = encodeResourceUri({
+      environmentName: "my-environment",
+      packageName: "analytics",
+      modelPath: "models/orders.malloy",
+   });
+
+   return (
+      <div style={{ display: "flex", gap: "20px" }}>
+         <div style={{ flex: 1 }}>
+            <h2>Build Your Query</h2>
+            <ModelExplorer
+               resourceUri={resourceUri}
+               onChange={(result) => {
+                  setSelectedQuery(result);
+                  console.log("Generated Query:", result.query);
+               }}
+            />
+         </div>
+
+         {selectedQuery && (
+            <div style={{ flex: 1 }}>
+               <h2>Query Preview</h2>
+               <pre>{selectedQuery.query}</pre>
+            </div>
+         )}
+      </div>
+   );
+}
+```
+
+---
+
 ### Example: Lightweight Client-Only Setup
 
 For minimal bundle size when you only need API access:
@@ -1442,7 +1563,9 @@ function EnvironmentList() {
 | `Home`                    | Environment listing landing page                |
 | `Environment`             | Package listing for an environment              |
 | `Package`                 | Package detail (models, notebooks, connections) |
-| `Model`                   | A model's sources, fields and named queries     |
+| `Model`                   | Full model explorer with visual query builder   |
+| `ModelExplorer`           | Lower-level query builder component             |
+| `ModelExplorerDialog`     | Model explorer in a modal dialog                |
 | `Notebook`                | Read-only notebook viewer                       |
 | `DocumentStorageProvider` | Context for document storage                    |
 | `QueryResult`             | Execute and display query                       |
@@ -1450,6 +1573,7 @@ function EnvironmentList() {
 | `EmbeddedQueryResult`     | Render serialized query config                  |
 | `Loading`                 | Loading spinner with text                       |
 | `ApiErrorDisplay`         | Error display component                         |
+| `SourcesExplorer`         | Source schema browser                           |
 | `ConnectionExplorer`      | Connection management UI                        |
 
 ### Exported Hooks
@@ -1484,11 +1608,14 @@ function EnvironmentList() {
 | `ParsedResource`         | Parsed resource URI components   |
 | `ServerContextValue`     | Server context interface         |
 | `ServerProviderProps`    | ServerProvider props             |
+| `QueryExplorerResult`    | Query builder result             |
+| `SourceAndPath`          | Source info with model path      |
 | `DocumentStorage`        | Document storage interface       |
 | `DocumentLocator`        | Workspace + path, with layout    |
 | `DocumentType`           | `"grid"` or `"linear"`           |
 | `Workspace`              | Workspace metadata               |
 | `ApiError`               | Standardized API error           |
+| `ModelExplorerProps`     | ModelExplorer props              |
 | `DimensionFiltersConfig` | Dimensional filter configuration |
 
 ---
