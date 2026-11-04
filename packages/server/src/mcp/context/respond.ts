@@ -155,6 +155,21 @@ export async function respond(args: {
             prev.targetReasons ??= new Map();
             prev.targetReasons.set(target_, reason);
          }
+         // Another target's matched values for the same field: keep both
+         // targets', one per (value, searchText).
+         if (row.values?.length) {
+            const merged = [...(prev.values ?? [])];
+            const seen = new Set(
+               merged.map((v) => `${v.value}\u0000${v.searchText}`),
+            );
+            for (const v of row.values) {
+               const k = `${v.value}\u0000${v.searchText}`;
+               if (seen.has(k)) continue;
+               seen.add(k);
+               merged.push(v);
+            }
+            prev.values = merged;
+         }
          return prev;
       }
       if (target_ !== undefined && score !== undefined) {

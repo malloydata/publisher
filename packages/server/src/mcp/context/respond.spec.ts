@@ -231,6 +231,53 @@ describe("respond", () => {
       expect(await valuesOf([])).toBeUndefined();
    });
 
+   it("keeps every target's values when several targets pick one field, in either order", async () => {
+      const ARRIVES = "dimension:flights@travel.malloy:arrives_at";
+      const valuesFor = async (targets: FindTarget[]) => {
+         const out = await answer(targets, (home) =>
+            home === "flights@travel.malloy"
+               ? targets
+                    .filter((x) => x.type !== "measure")
+                    .map((x) => ({ target: x.index, keys: [ARRIVES] }))
+               : [],
+         );
+         const arrives = (out.sources as Card[])
+            .flatMap((c) => c.entities ?? [])
+            .find((e) => e.entity_id === "dimension:flights:arrives_at")!;
+         return (
+            (arrives.values ?? []) as Array<{
+               value: string;
+               search_text: string;
+            }>
+         )
+            .map((v) => `${v.search_text} -> ${v.value}`)
+            .sort();
+      };
+      const both = [
+         "Chicago -> Chicago O'Hare (ORD)",
+         "Denver -> Denver International (DIA)",
+      ];
+      const measure = t(0, "measure", "how many flights");
+      // A dimension target first, then a value target for the same field.
+      expect(
+         await valuesFor([
+            measure,
+            t(1, "dimension", "arrival airport"),
+            t(2, "dimensional_value", "Denver"),
+            t(3, "dimensional_value", "Chicago"),
+         ]),
+      ).toEqual(both);
+      // The value targets first.
+      expect(
+         await valuesFor([
+            measure,
+            t(1, "dimensional_value", "Chicago"),
+            t(2, "dimensional_value", "Denver"),
+            t(3, "dimension", "arrival airport"),
+         ]),
+      ).toEqual(both);
+   });
+
    it("says a field offered for a value has no values indexed", async () => {
       const out = await answer([t(0, "dimensional_value", "DIA")], (home) =>
          home === "flights@travel.malloy"
