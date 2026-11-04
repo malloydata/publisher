@@ -116,6 +116,8 @@ export async function respond(args: {
    valueFetcher?: ValueFetcher;
    /** Fields returned beside the picks, marked "also likely" (also_likely.ts). */
    alsoLikely?: readonly AlsoLikelyField[];
+   /** Aborted at the request's deadline: no gated lookup starts after it. */
+   signal?: AbortSignal;
 }): Promise<FcjAnswer> {
    const { index, request, connected, verdicts, targets } = args;
    const warnings: string[] = [];
@@ -652,6 +654,8 @@ async function valuesFor(
    if (target.type !== "dimensional_value" || !owner.gated) return [];
    if (node.dataType && node.dataType !== "string") return [];
    const { request } = args;
+   // Past the request's deadline nobody reads the answer: do not take a query slot.
+   if (args.signal?.aborted) return [];
    try {
       const got = await (args.valueFetcher ?? defaultValueFetcher)({
          environmentStore: args.environmentStore,

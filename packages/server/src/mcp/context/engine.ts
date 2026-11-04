@@ -232,6 +232,8 @@ export function _setFcjDeadlineForTests(ms: number | undefined): void {
 }
 
 type FcjQueryArgs = {
+   /** Aborted when the deadline passes; set by runFcjQuery. */
+   signal?: AbortSignal;
    request: ResolvedRequest;
    environmentStore: EnvironmentStore;
    pkgIndex: PackageIndex;
@@ -244,14 +246,17 @@ type FcjQueryArgs = {
  * Answer a ranked request within {@link FCJ_REQUEST_DEADLINE_MS}. A search
  * that runs out of time answers every target as unresolved, with a warning
  * naming the narrower scope to retry with; it never falls back to a cheaper
- * search. The abandoned search's model calls finish on their own and their
- * result is discarded.
+ * search. At the deadline the search is aborted: its judge calls are
+ * cancelled and no gated value lookup starts, so a client's retry does not
+ * queue behind work nobody will read. (The embedding of the search text and
+ * a lookup already running finish on their own.)
  */
 export async function runFcjQuery(
    args: FcjQueryArgs,
 ): Promise<ReturnType<typeof jsonResource>> {
    const ms = deadlineForTests ?? FCJ_REQUEST_DEADLINE_MS;
-   const search = runFcjSearch(args);
+   const controller = new AbortController();
+   const search = runFcjSearch({ ...args, signal: controller.signal });
    // Past the deadline nobody awaits it; a later failure is not unhandled.
    search.catch(() => undefined);
    let timer: ReturnType<typeof setTimeout> | undefined;
@@ -264,6 +269,7 @@ export async function runFcjQuery(
    } finally {
       clearTimeout(timer);
    }
+   controller.abort(new Error("the get_context search ran out of time"));
    const state = fcjStateOf(args.pkgIndex.pkg);
    const index = state?.status === "ready" ? state.index : undefined;
    return jsonResource(args.uri, {
@@ -477,6 +483,7 @@ async function runFcjSearch(
             splitRules: split !== undefined,
             itemPicks: settings.splitItemPicks,
             readingsRule: settings.readingsRule,
+            ...(args.signal ? { signal: args.signal } : {}),
          });
       } catch (error) {
          logger.warn("[get_context fcj] The judge failed", {
@@ -570,6 +577,7 @@ async function runFcjSearch(
       targets,
       environmentStore,
       alsoLikely: [...alsoLikely, ...dateRange],
+      ...(args.signal ? { signal: args.signal } : {}),
    });
    stages.push({
       name: "respond",

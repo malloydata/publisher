@@ -48,6 +48,7 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import type { IndexValueFetcher } from "./values_index";
 import type { Package } from "../../service/package";
 import { heldResults } from "./pages";
+import type { ChatModel } from "../../providers/types";
 import {
    DEFAULT_FCJ_SETTINGS,
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -413,6 +414,47 @@ describe("fcj request deadline", () => {
          _setFcjDeadlineForTests(undefined);
          // Let the abandoned judge call finish before the next test.
          await new Promise((resolve) => setTimeout(resolve, 1_100));
+         _clearChatModelForTests();
+      }
+   });
+
+   it("cancels the judge call that was still running at the deadline", async () => {
+      const reply = JSON.stringify({ picks: [], caveats: [] });
+      const base = scriptedChat(() => reply).model;
+      let judgeSignal: AbortSignal | undefined;
+      const hanging: ChatModel = {
+         provider: base.provider,
+         model: base.model,
+         complete: (req) => base.complete(req),
+         completeJson: (req) => {
+            if (!req.prompt.includes("<targets>"))
+               return base.completeJson(req);
+            judgeSignal = req.signal;
+            // Never answers on its own: only an abort ends it.
+            return new Promise((_resolve, reject) =>
+               req.signal?.addEventListener("abort", () =>
+                  reject(req.signal?.reason),
+               ),
+            );
+         },
+      };
+      _setChatModelForTests(hanging);
+      try {
+         const { pkg } = await compileFcjFixture();
+         const handler = harness.handlerFor(pkg);
+         const request = {
+            search_targets: [
+               { target_type: "measure", search_text: "number of flights" },
+            ],
+            scopes,
+         };
+         _setFcjDeadlineForTests(200);
+         await pollUntilBuilt(handler, request);
+         const { payload } = await callPayload(handler, request);
+         expect(payload.unresolved_targets).toHaveLength(1);
+         expect(judgeSignal?.aborted).toBe(true);
+      } finally {
+         _setFcjDeadlineForTests(undefined);
          _clearChatModelForTests();
       }
    });

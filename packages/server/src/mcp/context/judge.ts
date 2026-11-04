@@ -804,6 +804,8 @@ export async function judge(args: {
    itemPicks?: number;
    /** `readingsRule`: add JUDGE_READINGS_RULES to the instructions. */
    readingsRule?: boolean;
+   /** Aborted when the request's deadline passes: no call is sent after, and one in flight is cancelled. */
+   signal?: AbortSignal;
 }): Promise<JudgeVerdict[]> {
    return runPooled(args.clusters, args.concurrency, async (cluster) => {
       const cap = cluster.peers ? (args.listRoutes ?? 0) : 0;
@@ -834,7 +836,9 @@ export async function judge(args: {
          ...(args.readingsRule ? [JUDGE_READINGS_RULES] : []),
          ...(args.splitRules ? [judgeSplitRules(args.itemPicks ?? 0)] : []),
       ].join("\n\n");
+      args.signal?.throwIfAborted();
       const reply = await args.chat.completeJson({
+         ...(args.signal ? { signal: args.signal } : {}),
          system,
          prompt: renderJudgePrompt(
             args.index,
