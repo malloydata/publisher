@@ -48,7 +48,10 @@ import {
    resolveDocParts,
    type DocParts,
 } from "./doc_parts";
-import { getEgressPreset } from "../../retrieval_config";
+import {
+   getDimensionValueSettings,
+   getEgressPreset,
+} from "../../retrieval_config";
 import { KeywordIndex } from "./keyword";
 import {
    promptShowsValues,
@@ -278,10 +281,15 @@ export async function buildFcjIndex(args: {
    // Value index. Before the questions, because the `values` wording shows a
    // field's stored values on its line.
    let values = new ValueIndex([]);
+   // The operator's switch wins over the package's: with value search off,
+   // no warehouse value is read at all.
+   const operatorValues = getDimensionValueSettings().enabled;
    let valueReport: FcjBuildReport["values"] = {
-      skipped: "retrieval.fcj.values is false",
+      skipped: operatorValues
+         ? "retrieval.fcj.values is false"
+         : "retrieval.dimensionValues.enabled is false in publisher.config.json",
    };
-   if (settings.values) {
+   if (settings.values && operatorValues) {
       const built = await buildValueIndex({
          catalog,
          parts,

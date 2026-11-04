@@ -89,29 +89,16 @@ export type RetrievalConfig = {
 
 /** The `retrieval.dimensionValues` block, as the operator wrote it. */
 export type DimensionValuesConfig = {
-   /** `false` turns value search off; a `dimensional_value` target then gets the "No index" warning. */
+   /**
+    * `false` turns value search off: no `#(index)` value is read when a
+    * package's search index is built, and a `dimensional_value` target gets
+    * the "No index" warning.
+    */
    enabled?: boolean;
-   /** Most candidate dimensions searched for one call. */
-   maxDimensions?: number;
-   /** Distinct values read from one dimension before falling back to a text filter. */
-   maxValuesPerDimension?: number;
-   /** Timeout for one lookup query, in milliseconds. */
-   timeoutMs?: number;
-   /** Timeout for the whole value step of one call, in milliseconds. */
-   budgetMs?: number;
-   /** How long a dimension's distinct values are reused, in milliseconds. 0 turns the cache off. */
-   cacheTtlMs?: number;
 };
 
 /** What each `retrieval.dimensionValues` key means when the operator leaves it out. */
-export const DIMENSION_VALUE_DEFAULTS = {
-   enabled: true,
-   maxDimensions: 12,
-   maxValuesPerDimension: 2_000,
-   timeoutMs: 8_000,
-   budgetMs: 15_000,
-   cacheTtlMs: 600_000,
-} as const;
+export const DIMENSION_VALUE_DEFAULTS = { enabled: true } as const;
 
 /**
  * Default for `retrieval.indexing.maxEntities`. A package past this is not
@@ -443,21 +430,14 @@ function parseEgress(raw: unknown): { preset: EgressPreset } | undefined {
    return { preset: obj.preset as EgressPreset };
 }
 
-const DIMENSION_VALUE_KEYS = [
-   "enabled",
-   "maxDimensions",
-   "maxValuesPerDimension",
-   "timeoutMs",
-   "budgetMs",
-   "cacheTtlMs",
-] as const;
+const DIMENSION_VALUE_KEYS = ["enabled"] as const;
 
 function parseDimensionValues(raw: unknown): DimensionValuesConfig {
    const fields = block(
       raw,
       "retrieval.dimensionValues",
       DIMENSION_VALUE_KEYS,
-      `"dimensionValues": { "maxDimensions": 12, "cacheTtlMs": 600000 }`,
+      `"dimensionValues": { "enabled": false }`,
    );
    const out: DimensionValuesConfig = {};
    if (fields.enabled !== undefined && fields.enabled !== null) {
@@ -467,37 +447,6 @@ function parseDimensionValues(raw: unknown): DimensionValuesConfig {
          );
       }
       out.enabled = fields.enabled;
-   }
-   for (const key of [
-      "maxDimensions",
-      "maxValuesPerDimension",
-      "timeoutMs",
-      "budgetMs",
-   ] as const) {
-      const value = positiveInt(
-         fields[key],
-         `retrieval.dimensionValues.${key}`,
-         `set it to e.g. ${DIMENSION_VALUE_DEFAULTS[key]}`,
-      );
-      if (value !== undefined) out[key] = value;
-   }
-   // Zero is meaningful here (no cache), so positiveInt cannot read it.
-   const ttl = fields.cacheTtlMs;
-   if (ttl !== undefined && ttl !== null) {
-      const parsed =
-         typeof ttl === "string" && /^\d+$/.test(ttl.trim())
-            ? Number(ttl.trim())
-            : ttl;
-      if (
-         typeof parsed !== "number" ||
-         !Number.isSafeInteger(parsed) ||
-         parsed < 0
-      ) {
-         throw new Error(
-            `Invalid retrieval.dimensionValues.cacheTtlMs: expected a non-negative integer, got ${describe(ttl)}. Fix: "cacheTtlMs": 600000, or 0 to turn the cache off`,
-         );
-      }
-      out.cacheTtlMs = parsed;
    }
    return out;
 }

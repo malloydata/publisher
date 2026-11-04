@@ -613,10 +613,9 @@ path, with the caller's givens:
 A value search that pins no dimension says which gated sources it skipped.
 
 **Settings.** `retrieval.dimensionValues.enabled` in `publisher.config.json` (default `true`): `false`
-makes a `dimensional_value` target answer with the "No index for target_type" warning. The other
-`dimensionValues` keys (`maxDimensions`, `maxValuesPerDimension`, `timeoutMs`, `budgetMs`, `cacheTtlMs`)
-belonged to the earlier search, are still accepted so an existing file loads, no longer do anything, and
-are warned about at startup.
+reads no `#(index)` value when a package's index is built, whatever the package's `fcj.values` says, and
+makes a `dimensional_value` target answer with the "No index for target_type" warning. It is the block's
+only key.
 
 ## Semantic ranking for `search_database_schema`
 

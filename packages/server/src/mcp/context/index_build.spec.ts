@@ -337,6 +337,19 @@ describe("index build", () => {
          expect(rows).toEqual([]);
       });
 
+      it("reads no stored value when the operator turned value search off", async () => {
+         setRetrievalConfig({
+            egress: { preset: "full" },
+            dimensionValues: { enabled: false },
+         });
+         const built = await withValues();
+         expect(built.values.size).toBe(0);
+         expect(built.report.values).toEqual({
+            skipped:
+               "retrieval.dimensionValues.enabled is false in publisher.config.json",
+         });
+      });
+
       it("leaves no row in any engine table once the package is deleted", async () => {
          await withValues();
          const count = async (table: string) =>

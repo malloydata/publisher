@@ -103,46 +103,20 @@ describe("value matching", () => {
 // ---------------------------------------------------------------------------
 
 describe("retrieval.dimensionValues settings", () => {
-   it("accepts the documented keys, and a zero cache lifetime", () => {
+   it("accepts enabled, and names the one valid key on any other", () => {
       expect(
-         parseRetrievalConfig({
-            dimensionValues: {
-               enabled: false,
-               maxDimensions: 5,
-               maxValuesPerDimension: 100,
-               timeoutMs: 1000,
-               budgetMs: 2000,
-               cacheTtlMs: 0,
-            },
-         })?.dimensionValues,
-      ).toEqual({
-         enabled: false,
-         maxDimensions: 5,
-         maxValuesPerDimension: 100,
-         timeoutMs: 1000,
-         budgetMs: 2000,
-         cacheTtlMs: 0,
-      });
-   });
-
-   it("names the valid keys on a typo", () => {
+         parseRetrievalConfig({ dimensionValues: { enabled: false } })
+            ?.dimensionValues,
+      ).toEqual({ enabled: false });
       expect(() =>
-         parseRetrievalConfig({ dimensionValues: { maxDimension: 5 } }),
+         parseRetrievalConfig({ dimensionValues: { maxDimensions: 5 } }),
       ).toThrow(
-         "Invalid retrieval.dimensionValues: unknown key 'maxDimension'. Valid keys: enabled, maxDimensions, maxValuesPerDimension, timeoutMs, budgetMs, cacheTtlMs.",
-      );
-   });
-
-   it("refuses a bad value with the fix", () => {
-      expect(() =>
-         parseRetrievalConfig({ dimensionValues: { maxDimensions: 0 } }),
-      ).toThrow(
-         "Invalid retrieval.dimensionValues.maxDimensions: expected a positive integer, got 0. Fix: set it to e.g. 12",
+         "Invalid retrieval.dimensionValues: unknown key 'maxDimensions'. Valid keys: enabled.",
       );
       expect(() =>
-         parseRetrievalConfig({ dimensionValues: { cacheTtlMs: -1 } }),
+         parseRetrievalConfig({ dimensionValues: { enabled: "no" } }),
       ).toThrow(
-         "Invalid retrieval.dimensionValues.cacheTtlMs: expected a non-negative integer, got -1.",
+         'Invalid retrieval.dimensionValues.enabled: expected a boolean, got "no". Fix: "enabled": false',
       );
    });
 });

@@ -237,19 +237,6 @@ if (retrievalConfig?.indexing?.maxEntities !== undefined) {
       "retrieval.indexing.maxEntities in publisher.config.json no longer does anything: the search index has no entity cap. Fix: remove the key.",
    );
 }
-for (const key of [
-   "maxDimensions",
-   "maxValuesPerDimension",
-   "timeoutMs",
-   "budgetMs",
-   "cacheTtlMs",
-] as const) {
-   if (retrievalConfig?.dimensionValues?.[key] !== undefined) {
-      logger.warn(
-         `retrieval.dimensionValues.${key} in publisher.config.json no longer does anything: value search reads values once, when a package's search index is built. Fix: remove the key.`,
-      );
-   }
-}
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
    ? new PackageMemoryGovernor(memoryGovernorConfig)
