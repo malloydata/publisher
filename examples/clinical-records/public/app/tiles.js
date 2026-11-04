@@ -293,7 +293,7 @@ export const VIOLATIONS = [
   },
   {
     id: "02",
-    what: "The limited data set serves the encounter's record number, declared #(classification) "none".",
+    what: "The limited data set serves the encounter's record number, declared #(classification) \"none\".",
     controls: "LDS-01, CL-02",
     refused: false,
     reason:
