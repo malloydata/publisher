@@ -268,7 +268,6 @@ describe("publisher.json retrieval block", () => {
 
 describe("keys of the retrieval block that an earlier release read", () => {
    const OLD_BLOCK = {
-      engine: "legacy",
       representation: "facets",
       keyphrases: "always",
       refine: { enabled: true, minLevel: "HIGH" },
@@ -292,8 +291,14 @@ describe("keys of the retrieval block that an earlier release read", () => {
       ).not.toThrow();
       // Not even a value the old release refused.
       expect(
-         parsePackageRetrieval({ engine: "new", refine: "on", rerank: 3 }),
+         parsePackageRetrieval({ refine: "on", rerank: 3 }),
       ).toEqual({ promptPaths: {} });
+   });
+
+   it("do not include engine, which no release read: it is an unknown key", () => {
+      expect(() => parsePackageRetrieval({ engine: "fcj" })).toThrow(
+         "unknown key 'engine'",
+      );
    });
 
    it("keep the keys that still work beside them", async () => {
@@ -309,7 +314,6 @@ describe("keys of the retrieval block that an earlier release read", () => {
    it("are reported once each, naming the key and saying it no longer does anything", () => {
       const warnings = ignoredRetrievalWarnings(OLD_BLOCK);
       expect(warnings).toEqual([
-         "publisher.json retrieval.engine no longer does anything and is ignored: get_context has one search engine now, and every package uses it. Fix: remove the key.",
          "publisher.json retrieval.representation no longer does anything and is ignored: the search index no longer keeps a per-entity text representation. Fix: remove the key.",
          "publisher.json retrieval.keyphrases no longer does anything and is ignored: the search index no longer writes keyphrases. Fix: remove the key.",
          "publisher.json retrieval.refine no longer does anything and is ignored: the engine's judge step replaces it (retrieval.fcj.judge turns that step off). Fix: remove the key.",

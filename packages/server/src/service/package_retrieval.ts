@@ -50,7 +50,6 @@ const SOURCE_SUMMARY_KEYS = ["enabled"] as const;
  * took its place.
  */
 const IGNORED_RETRIEVAL_KEYS: Readonly<Record<string, string>> = {
-   engine: "get_context has one search engine now, and every package uses it.",
    representation:
       "the search index no longer keeps a per-entity text representation.",
    keyphrases: "the search index no longer writes keyphrases.",
