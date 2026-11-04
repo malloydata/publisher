@@ -55,9 +55,11 @@ export function givensOfNamedQuery(
  * (and the sources it extends, derives from or joins, which its queries run
  * through — exported or not), plus the model-wide ones no source reads — a
  * given used only by a top-level query, or by nothing yet, belongs to every
- * page. Falls back to every given when the model's text is absent or the
- * source's declaration is not one this can find, so a page never hides a
- * control it might need.
+ * page. Falls back to every given when the model's text is absent, when the
+ * source's declaration is not one this can find, and when the source builds on
+ * something the text doesn't declare (an imported source, a query, a
+ * `compose(…)`), whose reads it can't see: a page never hides a control it
+ * might need, and a run never goes out without a value it reads.
  */
 export function givensForSource(
    sourceText: string | undefined,
@@ -65,7 +67,7 @@ export function givensForSource(
    givens: GivenInfo[],
 ): GivenInfo[] {
    const walk = walkSource(sourceText, sourceName, givens);
-   if (!walk) return [...givens];
+   if (!walk || walk.unresolved) return [...givens];
    return givens.filter(
       (g) => walk.readHere.has(g.name) || !walk.readByAnySource.has(g.name),
    );
@@ -120,13 +122,15 @@ function walkSource(
    // Through every source the model declares, exported or not: a given an
    // unexported base reads is still one this source's queries need.
    const reached = new Set<string>();
+   let unresolved = false;
    const visit = (name: string) => {
       if (reached.has(name)) return;
       reached.add(name);
       const block = blocks.get(name);
       if (!block) return;
-      for (const upstream of upstreamSources(block, name, blocks))
-         visit(upstream);
+      const upstream = upstreamOf(block, name, blocks);
+      if (upstream.unresolved) unresolved = true;
+      for (const source of upstream.sources) visit(source);
    };
    visit(sourceName);
    const readHere = new Set<string>();
@@ -134,7 +138,7 @@ function walkSource(
       for (const g of givensReadBy(blocks.get(name), givens))
          readHere.add(g.name);
    }
-   return { blocks, reached, readHere, readByAnySource };
+   return { blocks, reached, readHere, readByAnySource, unresolved };
 }
 
 /** A top-level statement's first line: a declaration keyword or an annotation at column 0. */
@@ -177,21 +181,52 @@ function sourceBlocks(masked: string): Map<string, string> {
    return blocks;
 }
 
-/** The model's own sources a declaration builds on: its base, and its joins' targets. */
-function upstreamSources(
+/**
+ * What a declaration builds on, its base and its joins' targets: the model's
+ * own sources among them, and whether any is something else the text doesn't
+ * declare as a source (an imported source, a query, a `compose(…)`), whose
+ * givens it can't see. A connection's table or SQL (`duckdb.table(…)`) reads
+ * none.
+ */
+function upstreamOf(
    block: string,
    name: string,
    declared: ReadonlyMap<string, string>,
-): string[] {
-   const found: string[] = [];
-   const base = new RegExp(
-      `source\\s*:\\s*\`?${escapeRegExp(name)}\`?\\s+is\\s+\`?([A-Za-z_]\\w*)\`?\\s*(?:->|extend\\b|$)`,
-      "m",
+): { sources: string[]; unresolved: boolean } {
+   const sources: string[] = [];
+   let unresolved = false;
+   const add = (target: string | null | undefined) => {
+      if (target === null || target === name) return;
+      if (target !== undefined && declared.has(target)) sources.push(target);
+      else unresolved = true;
+   };
+   const head = new RegExp(
+      `source\\s*:\\s*\`?${escapeRegExp(name)}\`?\\s+is\\s+`,
    ).exec(block);
-   if (base) found.push(base[1]);
-   const join =
-      /join_\w+\s*:\s*`?([A-Za-z_]\w*)`?(?:\s+is\s+`?([A-Za-z_]\w*)`?)?/g;
-   for (let m = join.exec(block); m; m = join.exec(block))
-      found.push(m[2] ?? m[1]);
-   return found.filter((s) => s !== name && declared.has(s));
+   if (head)
+      add(sourceExpressionTarget(block.slice(head.index + head[0].length)));
+   const join = /join_\w+\s*:\s*`?([A-Za-z_]\w*)`?(\s+is\s+)?/g;
+   for (let m = join.exec(block); m; m = join.exec(block)) {
+      add(
+         m[2]
+            ? sourceExpressionTarget(block.slice(m.index + m[0].length))
+            : m[1],
+      );
+   }
+   return { sources, unresolved };
+}
+
+/**
+ * The source a source expression starts from: a name; `null` for a
+ * connection's table or SQL (`duckdb.table(…)`), which reads no given; and
+ * `undefined` for anything else (`compose(…)`, a parenthesized query), which
+ * this can't follow.
+ */
+function sourceExpressionTarget(expression: string): string | null | undefined {
+   const start = /^`?([A-Za-z_]\w*)`?/.exec(expression);
+   if (!start) return undefined;
+   const next = expression.slice(start[0].length).trimStart();
+   if (next.startsWith(".")) return null;
+   if (next.startsWith("(")) return undefined;
+   return start[1];
 }

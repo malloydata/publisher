@@ -348,11 +348,17 @@ const resourceUri = encodeResourceUri({
 A model's page. Which page is the server's: its `PUBLISHER_MODEL_PAGE`, which `/status` reports and
 `useServer().modelPage` reads. On the default, `explorer`, it is the visual query builder below; on
 `viewer`, it is the model viewer ([`ModelViewer`](#modelviewer)) with a Copy link action on its
-heading, and builds no query. `Model` shows neither until `/status` answers, and shows the viewer
-when `/status` cannot be read. It takes every `ModelViewer` prop, but the Explorer page reads only
-`resourceUri`, `maxResultSize`, `givens` and `onGivensChange`, besides its own `onChange` and
-`runOnDemand`; the other props are the viewer's, and do nothing on an `explorer` server. A host that
-wants the viewer whatever its server says renders `ModelViewer` itself.
+heading, and builds no query. A server that predates the setting sends no `modelPage`, which reads
+as `explorer`. `Model` shows neither page until `/status` answers (while a retry is paused offline or
+in a hidden tab, too), and shows the viewer when `/status` cannot be read. It takes every
+`ModelViewer` prop, but the Explorer page reads only `resourceUri`, `maxResultSize`, `givens` and
+`onGivensChange`, besides its own `onChange` and `runOnDemand`; the other props are the viewer's, and
+do nothing on an `explorer` server. A host that wants the viewer whatever its server says renders
+`ModelViewer` itself.
+
+The Explorer's own components, [`ModelExplorer`](#modelexplorer), `ModelExplorerDialog` and
+`SourcesExplorer`, ignore the setting: each is the Explorer wherever it is drawn, so a host that
+renders one checks `useServer().modelPage` first.
 
 The Explorer writes the queries it builds back to Malloy text through `@malloydata/malloy-interfaces`,
 which puts a string value in unescaped (`escapeString` is a TODO), so a drilled value holding a double
@@ -452,13 +458,15 @@ It reads only the Publisher API, and sends nothing until a reader opens a row or
 - `renderSourceDetail`: a card under the source's header.
 - `describePickerSource`: a summary (marked as generated) and chips on a source's line in the picker.
 
-The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`. A run sends, and is cached under, only the values of the givens it reads, so changing another source's given leaves its result current.
+The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`. A run sends, and is cached under, only the values of the givens it reads, so changing another source's given leaves its result current. Which givens those are is read from the model file's text, so a source built on something the file doesn't declare (an imported source, a query) shows and sends every given.
 
 ---
 
 ### ModelExplorer
 
-A lower-level component for embedding the query builder without the full Model chrome.
+A lower-level component for embedding the query builder without the full Model chrome. It is the
+Explorer whatever the server's `PUBLISHER_MODEL_PAGE` says, so check `useServer().modelPage` before
+drawing it; [`Model`](#model) does.
 
 ```tsx
 import {

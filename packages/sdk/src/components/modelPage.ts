@@ -25,3 +25,24 @@ export function modelPageOf(
    if (failed) return "viewer";
    return status?.modelPage === "viewer" ? "viewer" : "explorer";
 }
+
+/**
+ * The model page, and whether to wait for it, from the `/status` query as
+ * react-query reports it. It waits while the query is pending, with no answer
+ * and no error yet, which includes a retry paused offline or in a hidden tab:
+ * there react-query's `isLoading` is false although nothing has answered, and
+ * a `viewer` server would draw the Explorer.
+ */
+export function modelPageState(query: {
+   data: { modelPage?: unknown } | undefined;
+   isPending: boolean;
+   isError: boolean;
+}): { modelPage: ModelPage; isLoadingStatus: boolean } {
+   return {
+      modelPage: modelPageOf(
+         query.data,
+         query.isError && query.data === undefined,
+      ),
+      isLoadingStatus: query.isPending,
+   };
+}

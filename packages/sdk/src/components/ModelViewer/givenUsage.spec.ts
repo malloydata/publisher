@@ -119,6 +119,59 @@ describe("givensForSource", () => {
       expect(givensForSource(TEXT, "missing", GIVENS)).toEqual(GIVENS);
    });
 
+   it("keeps every given when a source builds on or joins what the file doesn't declare", () => {
+      // `regional` comes from the import and may read REGION; `local` reads it
+      // here, so without the fallback the scan would settle that only `local`
+      // does, and a run on the others would go out without it.
+      const text = `import "regions.malloy"
+source: local is duckdb.table('l') extend {
+  where: region = $REGION
+}
+source: other is duckdb.table('o') extend {
+  where: code = $CODE
+}
+source: on_local is local extend {
+  measure: n is count()
+}
+query: by_region is local -> { group_by: region }
+source: via_import is regional extend {
+  measure: n is count()
+}
+source: via_include is regional include {
+  public: *
+}
+source: via_join is duckdb.table('t') extend {
+  join_one: r is regional on r.id = id
+}
+source: via_join_by_name is duckdb.table('t') extend {
+  join_one: regional with region_id
+}
+source: via_query is by_region extend {
+  measure: n is count()
+}
+source: via_compose is compose(local, regional)
+`;
+      const given = [g("REGION"), g("CODE")];
+      for (const source of [
+         "via_import",
+         "via_include",
+         "via_join",
+         "via_join_by_name",
+         "via_query",
+         "via_compose",
+      ]) {
+         expect([source, names(givensForSource(text, source, given))]).toEqual([
+            source,
+            ["CODE", "REGION"],
+         ]);
+      }
+      // What the file does declare still narrows: a table, and its own source.
+      expect(names(givensForSource(text, "local", given))).toEqual(["REGION"]);
+      expect(names(givensForSource(text, "on_local", given))).toEqual([
+         "REGION",
+      ]);
+   });
+
    it("reaches a given an unexported source reads, through what extends or joins it", () => {
       const text = `source: base_orders is pg.table('public.orders') extend {
   where: amount >= $MIN_AMOUNT

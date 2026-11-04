@@ -65,8 +65,11 @@ const UNESCAPED_MALLOY_IMPORT_NAMES = [
 const UNESCAPED_MALLOY_CALLS = [
    "error",
    {
+      // Any reach for the member, called or not: `q.toMalloy()`,
+      // `q.toMalloy.call(q)`, `const f = q.toMalloy`, `q["toMalloy"]()`, and
+      // `const { toMalloy } = q`.
       selector:
-         "CallExpression[callee.property.name=/^(toMalloy|queryToMalloy|filterToMalloy)$/]",
+         "MemberExpression[property.name=/^(toMalloy|queryToMalloy|filterToMalloy)$/], MemberExpression[computed=true][property.value=/^(toMalloy|queryToMalloy|filterToMalloy)$/], ObjectPattern > Property[key.name=/^(toMalloy|queryToMalloy|filterToMalloy)$/]",
       message: `ASTQuery.toMalloy(), queryToMalloy or filterToMalloy ${UNESCAPED_MALLOY_MESSAGE}`,
    },
    {
@@ -82,13 +85,73 @@ const UNESCAPED_MALLOY_CALLS = [
       message: `The Explorer or the query builder ${UNESCAPED_MALLOY_MESSAGE}`,
    },
 ];
-// The Explorer and the loader of its query builder. A server shows it unless
-// `PUBLISHER_MODEL_PAGE=viewer`, and the Console keeps both pages, so these
-// two are exempt from every rule above. Named one by one, so a new file that
-// reaches for the Explorer is still refused.
+// The Explorer itself. A server shows it unless `PUBLISHER_MODEL_PAGE=viewer`,
+// and the Console keeps both pages, so it is exempt from every rule above.
+// Named one by one, so a new file that reaches for the Explorer is still
+// refused. The query builder's loader, `loadQueryBuilder` in the shared
+// `loadMalloy.ts`, disables the one rule its dynamic import needs, inline.
 const EXPLORER_FILES = [
    "packages/sdk/src/components/Model/SourcesExplorer.tsx",
-   "packages/sdk/src/components/ReportBuilder/loadMalloy.ts",
+];
+// The SDK's own Explorer modules, and the query builder's loader. Only a page
+// that has checked `useServer().modelPage` may show the Explorer, so only
+// these files may import them: `Model` (through `ExplorerPage`), the legacy
+// notebook's "Data sources" (`NotebookCell`), the Explorer's own chain, and
+// the barrels that export it. A type import is fine.
+const EXPLORER_MODULE_MESSAGE =
+   "is the Explorer, which a server with PUBLISHER_MODEL_PAGE=viewer does not show: only a page that checks useServer().modelPage may import it. Add the file to EXPLORER_CALLERS in eslint.config.mjs once it does.";
+const EXPLORER_MODULE_IMPORTS = [
+   {
+      group: [
+         "**/SourcesExplorer",
+         "**/ModelExplorer",
+         "**/ModelExplorerDialog",
+         "**/ExplorerPage",
+      ],
+      allowTypeImports: true,
+      message: `This module ${EXPLORER_MODULE_MESSAGE}`,
+   },
+   {
+      group: ["**/Model", "**/components"],
+      importNames: ["ModelExplorer", "ModelExplorerDialog", "SourcesExplorer"],
+      allowTypeImports: true,
+      message: `ModelExplorer, ModelExplorerDialog and SourcesExplorer: each ${EXPLORER_MODULE_MESSAGE}`,
+   },
+   {
+      group: ["**/loadMalloy"],
+      importNames: ["loadQueryBuilder"],
+      message: `loadQueryBuilder loads the Explorer's query builder, and ${EXPLORER_MODULE_MESSAGE}`,
+   },
+];
+// The Console reaches the same components through the SDK's package name.
+const EXPLORER_IMPORT_NAMES = [
+   "error",
+   {
+      paths: [
+         ...UNESCAPED_MALLOY_IMPORT_NAMES[1].paths,
+         {
+            name: "@malloy-publisher/sdk",
+            importNames: [
+               "ModelExplorer",
+               "ModelExplorerDialog",
+               "SourcesExplorer",
+            ],
+            allowTypeImports: true,
+            message: `ModelExplorer, ModelExplorerDialog and SourcesExplorer: each ${EXPLORER_MODULE_MESSAGE}`,
+         },
+      ],
+   },
+];
+const EXPLORER_CALLERS = [
+   "packages/sdk/src/index.ts",
+   "packages/sdk/src/components/index.ts",
+   "packages/sdk/src/components/Model/index.ts",
+   "packages/sdk/src/components/Model/Model.tsx",
+   "packages/sdk/src/components/Model/ExplorerPage.tsx",
+   "packages/sdk/src/components/Model/ModelExplorer.tsx",
+   "packages/sdk/src/components/Model/ModelExplorerDialog.tsx",
+   "packages/sdk/src/components/legacy/malloynb/NotebookCell.tsx",
+   "packages/sdk/src/**/*.spec.{ts,tsx}",
 ];
 // Files that load only the Explorer's stylesheet: that one import is allowed,
 // and every other ban, the unescaped writers' among them, still holds.
@@ -192,9 +255,31 @@ export default [
             "error",
             { patterns: UNESCAPED_MALLOY_IMPORTS },
          ],
+         "@typescript-eslint/no-restricted-imports": EXPLORER_IMPORT_NAMES,
+         "no-restricted-syntax": UNESCAPED_MALLOY_CALLS,
+      },
+   },
+   {
+      // The SDK's own Explorer modules by path (EXPLORER_MODULE_IMPORTS), in
+      // the SDK alone: the Console's `components` folder is its own.
+      files: ["packages/sdk/src/**/*.{ts,tsx}"],
+      rules: {
+         "@typescript-eslint/no-restricted-imports": [
+            "error",
+            {
+               ...EXPLORER_IMPORT_NAMES[1],
+               patterns: EXPLORER_MODULE_IMPORTS,
+            },
+         ],
+      },
+   },
+   {
+      // The Explorer's callers (see EXPLORER_CALLERS): the unescaped writers'
+      // names stay refused.
+      files: EXPLORER_CALLERS,
+      rules: {
          "@typescript-eslint/no-restricted-imports":
             UNESCAPED_MALLOY_IMPORT_NAMES,
-         "no-restricted-syntax": UNESCAPED_MALLOY_CALLS,
       },
    },
    {

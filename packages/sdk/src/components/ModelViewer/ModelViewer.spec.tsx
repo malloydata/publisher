@@ -4,6 +4,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
+   cacheKeys,
    clearCache,
    mockServerProvider,
    serverWrapper,
@@ -344,11 +345,35 @@ describe("ModelViewer givens", () => {
 
 describe("ModelViewer host props", () => {
    it("reads a hidden file, and keeps it apart from the curated read", async () => {
+      const { unmount } = render(<ModelViewer resourceUri={URI} />, {
+         wrapper: serverWrapper,
+      });
+      await screen.findByRole("heading", { name: "items", level: 1 });
+      unmount();
       render(<ModelViewer resourceUri={URI} includeHiddenFilesAndSources />, {
          wrapper: serverWrapper,
       });
       await screen.findByRole("heading", { name: "items", level: 1 });
-      expect(getModel.mock.calls[0][4]).toBe(true);
+      expect(getModel.mock.calls.map((call) => call[4])).toEqual([false, true]);
+      // Two entries: the curated read's answer is never served for the hidden
+      // read, nor the hidden file's text to a reader who can't edit it.
+      const keys = cacheKeys("model-viewer-sources");
+      expect(keys).toHaveLength(2);
+      expect(keys.filter((key) => key.includes("off-surface"))).toHaveLength(1);
+   });
+
+   it("says a field's code couldn't be read when a host's entities failed", async () => {
+      // `running_total` has no declaration in the file's text, so its code is
+      // the host's to give; a failed read says so rather than spinning.
+      render(<ModelViewer resourceUri={URI} entities={[]} entitiesError />, {
+         wrapper: serverWrapper,
+      });
+      fireEvent.click(
+         await screen.findByRole("button", { name: /^running_total/ }),
+      );
+      expect(
+         await screen.findByText("Couldn't load this model's code right now."),
+      ).toBeTruthy();
    });
 
    it("sends its labels with every run and reports each run that settles", async () => {
@@ -593,6 +618,24 @@ describe("ModelViewer extensions", () => {
       ).toBeTruthy();
       expect(executeQueryModel).not.toHaveBeenCalled();
    });
+
+   it("reads a host's values afresh for each generation it names", async () => {
+      const fetchSamples = mock(() => Promise.resolve(["a", "b"]));
+      const viewer = (samplesGeneration: string) => (
+         <ModelViewer
+            resourceUri={URI}
+            extensions={{ fetchSamples, samplesGeneration }}
+         />
+      );
+      const { rerender } = render(viewer("r1"), { wrapper: serverWrapper });
+      fireEvent.click(await screen.findByRole("button", { name: /^name/ }));
+      await waitFor(() => expect(fetchSamples).toHaveBeenCalledTimes(1));
+      rerender(viewer("r1"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fetchSamples).toHaveBeenCalledTimes(1);
+      rerender(viewer("r2"));
+      await waitFor(() => expect(fetchSamples).toHaveBeenCalledTimes(2));
+   });
 });
 
 // `items` reads REGION; `other` reads CODE.
@@ -649,6 +692,43 @@ describe("ModelViewer runs and the values they read", () => {
          expect(screen.queryByTestId("model-viewer-run-stale")).toBeNull();
          expect(executeQueryModel).toHaveBeenCalledTimes(1);
          expect(sentBodies()[0].givens).toEqual({ REGION: "West" });
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
+   });
+
+   it("shows and sends a given its source may read through an import", async () => {
+      // `items` builds on `regional`, from the import, which may read REGION;
+      // `other` reads it here, so a scan that stopped at the file would settle
+      // that `items` doesn't, and its run would go out without the value.
+      const sourceText = `import "regions.malloy"
+source: items is regional extend {
+  dimension: name is upper(raw_name)
+  view: by_name is { group_by: name }
+}
+source: other is duckdb.table('other.parquet') extend {
+  where: code = $REGION
+}
+`;
+      getModel.mockImplementation(() =>
+         Promise.resolve({
+            data: {
+               ...twoGivenModel.data,
+               sourceText,
+               givens: [{ name: "REGION", type: "string" }],
+            },
+         }),
+      );
+      try {
+         render(<ModelViewer resourceUri={URI} givens={{ REGION: "East" }} />, {
+            wrapper: serverWrapper,
+         });
+         expect(await screen.findByTestId("model-givens-section")).toBeTruthy();
+         fireEvent.click(
+            await screen.findByRole("button", { name: /by_name/ }),
+         );
+         await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+         expect(sentBodies()[0].givens).toEqual({ REGION: "East" });
       } finally {
          getModel.mockImplementation(() => Promise.resolve(model));
       }
