@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { DuckDBConnection as MalloyDuckDB } from "@malloydata/db-duckdb";
+import type { Connection } from "@malloydata/malloy";
+import { Model } from "../../service/model";
+import { DEFAULT_PACKAGE_RETRIEVAL } from "../../service/package_retrieval";
+import { getPackageIndex } from "../tools/package_entities";
+import { storeServing } from "../../test_helpers/get_context_join_fixture";
 import { setRetrievalConfig } from "../../retrieval_config";
 import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import { createCatalogTables } from "../../storage/duckdb/schema";
@@ -553,5 +562,131 @@ describe("index build", () => {
       expect(shown.every((l) => l.endsWith(" Values: Boston, Denver."))).toBe(
          true,
       );
+   });
+});
+
+describe("the value index on a model with access gates", () => {
+   // Every gated source here carries an #(index) dimension, so only the
+   // derivation of `gated` (catalogInputOf) keeps its values out.
+   const GATED_FILES: Record<string, string> = {
+      "gates.malloy": `##! experimental.givens
+given:
+  ROLE :: string
+  TENANTS :: string[]
+
+#(authorize) 'analyst' = $ROLE
+source: authorized is duckdb.sql("select 'a' as label") extend {
+  #(index)
+  dimension: tag is label
+}
+
+#(access_filter) label in $TENANTS
+source: filtered is duckdb.sql("select 'f' as label") extend {
+  #(index)
+  dimension: tag is label
+}
+
+source: authorized_ext is authorized extend {
+  #(index)
+  dimension: tag2 is label
+}
+
+source: open is duckdb.sql("select 'o' as label") extend {
+  #(index)
+  dimension: tag is label
+}
+`,
+      // A #(secure) given is in scope for every source of its file, so each
+      // of them counts as gated: the safe side, and why it has a file of its own.
+      "secure.malloy": `##! experimental.givens
+#(secure)
+given: TENANT :: string is 'w'
+
+source: secure_reader is duckdb.sql("select 's' as label") extend {
+  where: label = $TENANT
+  #(index)
+  dimension: tag is label
+}
+`,
+      "reports.malloy": `import "gates.malloy"
+
+source: imported_ext is authorized extend {
+  #(index)
+  dimension: tag3 is label
+}
+`,
+   };
+
+   it("reads and embeds only the ungated source's values, whatever the gate and wherever the source is served", async () => {
+      // Real Models: the compiled sources carry the gates (getSources), which
+      // the compiler-only fixture does not.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fcj-gated-"));
+      const duckdb = new MalloyDuckDB("duckdb", ":memory:", dir);
+      const models = new Map<string, Model>();
+      for (const [file, text] of Object.entries(GATED_FILES)) {
+         fs.writeFileSync(path.join(dir, file), text);
+      }
+      for (const file of Object.keys(GATED_FILES)) {
+         const model = await Model.create(
+            "fixture",
+            dir,
+            file,
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+         models.set(file, model);
+      }
+      const pkg = {
+         getPackageName: () => "fixture",
+         getRetrievalSettings: () => DEFAULT_PACKAGE_RETRIEVAL,
+         listSkills: () => [],
+         listModels: async () => [...models.keys()].map((p) => ({ path: p })),
+         getModel: (p: string) => models.get(p),
+      };
+      const pkgIndex = await getPackageIndex(
+         storeServing(pkg),
+         "env",
+         "fixture",
+      );
+      const { db, close } = await openTempDb(createCatalogTables);
+      const asked: string[] = [];
+      setRetrievalConfig({ egress: { preset: "full" } });
+      try {
+         const built = await buildFcjIndex({
+            pkgIndex,
+            db,
+            provider: stubEmbeddingProvider(),
+            environmentName: "env",
+            packageName: "fixture",
+            settings: DEFAULT_FCJ_SETTINGS,
+            valueRead: {
+               environmentStore: {} as never,
+               fetcher: async (req) => {
+                  asked.push(`${req.modelPath}:${req.source}.${req.dimension}`);
+                  return {
+                     values: [{ value: `${req.source}-value`, count: 1 }],
+                     truncated: false,
+                  };
+               },
+            },
+         });
+         expect(asked).toEqual(["gates.malloy:open.tag"]);
+         const stored = await db.all<{ value: string }>(
+            "SELECT DISTINCT value FROM dimension_values",
+         );
+         expect(stored.map((r) => r.value)).toEqual(["open-value"]);
+         const embedded = await db.all<{ node_key: string }>(
+            "SELECT node_key FROM value_embeddings",
+         );
+         expect(embedded.map((r) => r.node_key)).toEqual(["open-value"]);
+         expect(built.values.distinctValues()).toEqual(["open-value"]);
+      } finally {
+         setRetrievalConfig(undefined);
+         await close();
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
    });
 });
