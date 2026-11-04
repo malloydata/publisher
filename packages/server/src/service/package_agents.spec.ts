@@ -15,6 +15,7 @@ import {
    expect,
    it,
 } from "bun:test";
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -26,6 +27,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import { computeSourceContentSha } from "./package_revision";
 import type { EnvironmentStore } from "./environment_store";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -417,6 +419,234 @@ describe("package agents", () => {
          const metadata = pkg.getPackageMetadata();
          expect(metadata.description).toBe("patched");
          expect(metadata.agents?.map((a) => a.name)).toEqual(["analyst"]);
+      });
+   });
+
+   describe("skill assets", () => {
+      const A = "agents/analyst/skills/conventions/assets";
+      const LISTED = "conventions/assets";
+      const sha = (text: string) =>
+         createHash("sha256").update(text).digest("hex");
+
+      beforeEach(() => manifest({ agents: { analyst: analyst() } }));
+
+      it("keeps an agent without assets at the definitionSha it had before assets existed", async () => {
+         const pkg = await load();
+         expect(pkg.getAgent("analyst")!.source!.definitionSha).toBe(
+            "521f46badf332e853cb97d2bbdaf3e32fcc3f9a9c1478bba2fd3c64eb1c3e47d",
+         );
+         const agent = pkg.getAgent("analyst")!;
+         expect("assets" in agent).toBe(false);
+         expect("asset_roots" in agent).toBe(false);
+      });
+
+      it("lists assets in the full view and counts them in the summary", async () => {
+         write(`${A}/index.html`, "<h1>hi</h1>");
+         write(`${A}/css/app.css`, "body{}");
+         const pkg = await load();
+
+         const full = pkg.getAgent("analyst")!;
+         expect(full.asset_roots).toEqual({
+            conventions: "agents/analyst/skills/conventions",
+         });
+         expect(full.assets).toEqual([
+            {
+               relative_filepath: `${LISTED}/css/app.css`,
+               bytes: 6,
+               sha256: sha("body{}"),
+            },
+            {
+               relative_filepath: `${LISTED}/index.html`,
+               bytes: 11,
+               sha256: sha("<h1>hi</h1>"),
+            },
+         ]);
+         expect(JSON.stringify(full)).not.toContain("<h1>hi</h1>");
+
+         const summary = pkg.getAgent("analyst", "summary")!;
+         expect(summary.asset_counts).toEqual({ conventions: 2 });
+         expect(summary).not.toHaveProperty("assets");
+         expect(summary).not.toHaveProperty("asset_roots");
+         expect(summary.source).toEqual(full.source);
+      });
+
+      it("serves a listed asset through the skill-file lookup, REST and MCP, and nothing unlisted", async () => {
+         write(`${A}/index.html`, "<h1>hi</h1>");
+         write(
+            `${A}/unlisted.malloy`,
+            `source: x is duckdb.sql("select 1 as id")\n`,
+         );
+         write("secret.txt", "outside");
+         const pkg = await load();
+         const listed = `${LISTED}/index.html`;
+         const expected = {
+            relative_filepath: listed,
+            file_contents: "<h1>hi</h1>",
+            source: pkg.getAgent("analyst")!.source,
+         };
+
+         expect(pkg.getAgentSkillFile("analyst", listed)).toEqual(expected);
+         const store = {
+            getEnvironment: async () => ({ getPackage: async () => pkg }),
+         } as unknown as EnvironmentStore;
+         expect(
+            await new SkillController(store).getAgentSkillFile(
+               "env",
+               "pkg",
+               "analyst",
+               listed,
+            ),
+         ).toEqual(expected);
+         type Handler = (p: unknown) => Promise<{
+            content: Array<{ resource?: { text: string } }>;
+         }>;
+         let handler: Handler | undefined;
+         registerGetAgentTool(
+            {
+               tool: (_n: string, _d: string, _s: unknown, h: Handler) => {
+                  handler = h;
+               },
+            } as never,
+            store,
+         );
+         const viaMcp = JSON.parse(
+            (
+               await handler!({
+                  scopes: [{ environment: "env", package: "pkg" }],
+                  agent_name: "analyst",
+                  skill_path: listed,
+               })
+            ).content[0]!.resource!.text,
+         );
+         expect(viaMcp.skillFile).toEqual(expected);
+
+         for (const bad of [
+            `${LISTED}/unlisted.malloy`,
+            `${LISTED}/missing.html`,
+            `${LISTED}/../../../../../secret.txt`,
+            "conventions/assets",
+         ]) {
+            expect(pkg.getAgentSkillFile("analyst", bad)).toBeUndefined();
+         }
+      });
+
+      it("refuses to serve a listed asset that became a link after the load", async () => {
+         write(`${A}/index.html`, "<h1>hi</h1>");
+         write("secret.txt", "outside");
+         const pkg = await load();
+         fs.rmSync(path.join(dir, A, "index.html"));
+         fs.symlinkSync(
+            path.join(dir, "secret.txt"),
+            path.join(dir, A, "index.html"),
+         );
+         expect(
+            pkg.getAgentSkillFile("analyst", `${LISTED}/index.html`),
+         ).toBeUndefined();
+      });
+
+      it("drops the agent and says why when an asset is a link", async () => {
+         write("secret.txt", "outside");
+         fs.mkdirSync(path.join(dir, A), { recursive: true });
+         fs.symlinkSync(
+            path.join(dir, "secret.txt"),
+            path.join(dir, A, "link.txt"),
+         );
+         const pkg = await load();
+         expect(pkg.getAgent("analyst")).toBeUndefined();
+         const warning = pkg
+            .getPackageMetadata()
+            .warnings?.find((w) => w.message?.includes("link.txt"));
+         expect(warning?.message).toStartWith(
+            "Package agent 'analyst' is not served:",
+         );
+      });
+
+      it("moves definitionSha and the content sha when an asset changes", async () => {
+         write(`${A}/index.html`, "one");
+         const pkg = await load();
+         const definition = pkg.getAgent("analyst")!.source!.definitionSha;
+         const content = pkg.getSourceContentSha();
+
+         write(`${A}/index.html`, "two");
+         await pkg.reloadAllModels({});
+         expect(pkg.getAgent("analyst")!.source!.definitionSha).not.toBe(
+            definition,
+         );
+         expect(pkg.getSourceContentSha()).not.toBe(content);
+         expect(pkg.getAgent("analyst")!.assets![0]!.sha256).toBe(sha("two"));
+      });
+
+      it("hashes a precomputed asset sha instead of reading the file again", () => {
+         write("a.txt", "one");
+         const shas = new Map([["a.txt", sha("listed")]]);
+         const before = computeSourceContentSha(
+            dir,
+            ["a.txt"],
+            undefined,
+            shas,
+         );
+         write("a.txt", "two");
+         expect(computeSourceContentSha(dir, ["a.txt"], undefined, shas)).toBe(
+            before,
+         );
+         expect(computeSourceContentSha(dir, ["a.txt"])).not.toBe(before);
+      });
+
+      it("ignores a package's own skills/<x>/assets", async () => {
+         write(
+            "skills/top/SKILL.md",
+            "---\nname: top\ndescription: d\n---\n\nbody\n",
+         );
+         write("skills/top/assets/a.txt", "x");
+         write("skills/top/assets/publisher.json", "{}");
+         const pkg = await load();
+         expect(pkg.listSkills().map((s) => s.name)).toEqual(["top"]);
+         expect(
+            pkg
+               .getPackageMetadata()
+               .warnings?.filter((w) => w.message?.includes("assets")) ?? [],
+         ).toEqual([]);
+         expect(pkg.getAgent("analyst")).toBeDefined();
+      });
+
+      it("keeps an agent served, with a warning, when assets/ holds a PNG", async () => {
+         fs.mkdirSync(path.join(dir, A), { recursive: true });
+         fs.writeFileSync(
+            path.join(dir, A, "logo.png"),
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00]),
+         );
+         write(`${A}/ok.txt`, "fine");
+         const pkg = await load();
+         expect(
+            pkg.getAgent("analyst")!.assets!.map((a) => a.relative_filepath),
+         ).toEqual([`${LISTED}/ok.txt`]);
+         expect(
+            pkg
+               .getPackageMetadata()
+               .warnings?.some(
+                  (w) =>
+                     w.severity === "warn" &&
+                     w.message?.includes("logo.png") &&
+                     w.message.startsWith("Package agent 'analyst'"),
+               ),
+         ).toBe(true);
+         expect(
+            pkg.getAgentSkillFile("analyst", `${LISTED}/logo.png`),
+         ).toBeUndefined();
+      });
+
+      it("keeps an agent served when assets/ holds more than 1,000 entries", async () => {
+         for (let i = 0; i < 1001; i++) write(`${A}/n${i}.txt`, "x");
+         const pkg = await load();
+         expect(pkg.getAgent("analyst")).toBeDefined();
+         expect(
+            pkg
+               .getPackageMetadata()
+               .warnings?.some((w) => w.message?.includes("1000 entries")),
+         ).toBe(true);
+         expect(pkg.getAgent("analyst")!.assets!.length).toBeLessThanOrEqual(
+            1000,
+         );
       });
    });
 
