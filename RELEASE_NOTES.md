@@ -21,13 +21,19 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — get_context has one search engine
+## [Unreleased] — get_context has one search engine (BREAKING)
 
 Every ranked `get_context` request is now answered by the find, list, judge engine, for every package: it ranks each target against the whole package (embedding closeness, keyword match and stored values, fused by rank), shows a model the best candidates grouped by source with the join routes between them, and returns what the model picks. A request with no `search_text` is still a listing and is unchanged. The engine's settings are under `retrieval.fcj` in `publisher.json`; the defaults now put it in list mode (`connect: "list"`) with `listTopK: 30`, `listUnion: 30`, `dropRoutesAt: 4` and `readingsRule: true`, and `docs/configuration.md` describes them.
 
-The earlier search is gone, and so are its settings. `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch` and the prompts `keyphrase`, `refine`, `rerank` and `sourceMatch` in `publisher.json` no longer do anything. A package that still sets them loads, the keys are ignored, and the package's `warnings` name each one; remove them. `retrieval.indexing.maxEntities` in `publisher.config.json` is ignored the same way, with a warning at startup, and `EMBEDDING_MIN_SIMILARITY` now applies to `search_database_schema` only. A response no longer carries `below_cutoff_count` or `total_entities`; it carries `clusters`, `coverage`, `unresolved_targets` and `engine`, and a long answer pages with `offset` and `next_offset`.
+The earlier search is gone, and so are its settings. `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch` and the prompts `keyphrase`, `refine`, `rerank` and `sourceMatch` in `publisher.json` no longer do anything. A package that still sets them loads, the keys are ignored, and the package's `warnings` name each one; remove them. `retrieval.indexing.maxEntities` in `publisher.config.json` is ignored the same way, with a warning at startup, and `EMBEDDING_MIN_SIMILARITY` now applies to `search_database_schema` only. A response now also carries `clusters`, `coverage`, `unresolved_targets` and `engine`, and a long answer pages with `offset` and `next_offset`.
 
-An agent that calls `get_context` needs no change. What changes for an operator: a package's first ranked answer after a load or reload is `retrieval: "indexing"` until its search index is built, and a failed judge call fails the request with `retrieval_reason: "llm-stage-failed"` (set `retrieval.fcj.judge` to `false` to answer without it). A search that runs past 90 seconds answers every target in `unresolved_targets`, with a warning naming a narrower scope to retry with.
+The request is unchanged, so an agent's calls still work. What can break, for an agent or a client that reads the response:
+
+- `below_cutoff_count` and `total_entities` are gone from the response.
+- The `retrieval_reason` values `too-many-entities` and `cooldown` are no longer produced.
+- A failed judge call fails the request with `retrieval_reason: "llm-stage-failed"` rather than answering without it (set `retrieval.fcj.judge` to `false` to answer without the judge).
+- A server with no embedding key answers ranked requests with `retrieval: "lexical"`.
+- A package's first ranked answer after a load or reload is `retrieval: "indexing"` until its search index is built. A search that runs past 90 seconds answers every target in `unresolved_targets`, with a warning naming a narrower scope to retry with.
 
 For a `dimensional_value` target the judge sees how each field's stored values matched and their scores. Under `egress.preset: "full"` it also sees the values and names the ones it means: a value it was shown and did not name is left out, and it answers no field when no value is the one typed or a form of it. A field offered for a value whose values are not indexed comes with a warning saying they were not checked. Agents are told to scope a value search to its field (`scopes[].source` and `entity_name`) once they know it.
 
