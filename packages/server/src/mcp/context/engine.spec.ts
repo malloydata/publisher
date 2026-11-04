@@ -39,7 +39,10 @@ import {
    _setFcjValueFetcherForTests,
    fcjJudgeChat,
    fcjStateOf,
+   kickFcjBuild,
 } from "./engine_state";
+import { ENGINE_TABLES } from "./catalog_store";
+import type { EnvironmentStore } from "../../service/environment_store";
 import type { IndexValueFetcher } from "./values_index";
 import type { Package } from "../../service/package";
 import { heldResults } from "./pages";
@@ -675,6 +678,49 @@ describe("splitBundles", () => {
       );
       expect(p2.retrieval_trace_full.fcj.split).toBeUndefined();
       expect(p2.retrieval_trace_full.fcj.find).toHaveLength(1);
+   });
+});
+
+describe("a package removed while its index builds", () => {
+   afterAll(() => _setFcjValueFetcherForTests(fcjValueFetcher));
+
+   it("stops the build, keeps no state, and leaves no stored value behind", async () => {
+      const { pkg } = await compileFcjFixture();
+      let served: unknown = pkg;
+      const environment = {
+         getPackage: async () => pkg,
+         peekPackage: () => served,
+         getStaleCompileErrors: () => new Map(),
+      };
+      const store = {
+         getEnvironment: async () => environment,
+         peekEnvironment: () => environment,
+         storageManager: { getDuckDbConnection: () => harness.db },
+      } as unknown as EnvironmentStore;
+      const asked: string[] = [];
+      _setFcjValueFetcherForTests(async (req) => {
+         asked.push(req.source);
+         // The package is deleted during its first value read.
+         served = undefined;
+         return fcjValueFetcher(req);
+      });
+      kickFcjBuild({
+         environmentStore: store,
+         environmentName: "env",
+         packageName: "fixture",
+         pkg: pkg as Package,
+      });
+      expect(
+         await pollUntil(() => fcjStateOf(pkg as Package) === undefined, 5_000),
+      ).toBe(true);
+      // The read in flight finished; no other dimension was read.
+      expect(asked).toEqual(["cities"]);
+      for (const table of ENGINE_TABLES) {
+         const rows = await harness.db.all(
+            `SELECT 1 FROM ${table} WHERE environment_name = 'env' AND package_name = 'fixture'`,
+         );
+         expect([table, rows.length]).toEqual([table, 0]);
+      }
    });
 });
 

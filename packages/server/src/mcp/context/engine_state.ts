@@ -22,6 +22,7 @@
 import { activeLlmSettings, getChatModel } from "../../providers/active";
 import { createChatModel } from "../../providers/registry";
 import type { ChatModel, LlmSettings } from "../../providers/types";
+import { deleteEngineRows } from "./catalog_store";
 import {
    embeddingConfigured,
    getEmbeddingProvider,
@@ -122,7 +123,7 @@ export function kickFcjBuild(args: {
    packageName: string;
    pkg: Package;
 }): void {
-   const { environmentStore, environmentName, packageName, pkg } = args;
+   const { environmentName, packageName, pkg } = args;
    const state = states.get(pkg);
    if (state?.status === "building") return;
    if (state?.status === "ready") {
@@ -144,16 +145,14 @@ export function kickFcjBuild(args: {
    }
    states.set(pkg, { status: "building", startedAt: Date.now() });
    void embeddingSyncQueue.enqueue(async () => {
-      // A package unloaded or replaced while this waited must stay gone.
-      const served = environmentStore
-         .peekEnvironment?.(environmentName)
-         ?.peekPackage?.(packageName);
-      if (served !== undefined && served !== pkg) {
+      // A package unloaded, deleted or replaced while this waited must stay gone.
+      if (!stillServed(args)) {
          states.delete(pkg);
          return;
       }
       try {
          const index = await buildFor(args);
+         if (await droppedDuringBuild(args)) return;
          states.set(pkg, readyState(index, environmentName, packageName));
       } catch (error) {
          const message = error instanceof Error ? error.message : String(error);
@@ -165,6 +164,49 @@ export function kickFcjBuild(args: {
          states.set(pkg, { status: "error", message, failedAt: Date.now() });
       }
    });
+}
+
+/**
+ * Whether `pkg` is still the package served under its name. A store that
+ * cannot say (a spec's stand-in, with no peekEnvironment) counts as served;
+ * the real store always can, so an unloaded, deleted or replaced package
+ * answers false.
+ */
+function stillServed(args: Parameters<typeof kickFcjBuild>[0]): boolean {
+   const store = args.environmentStore;
+   if (typeof store.peekEnvironment !== "function") return true;
+   const environment = store.peekEnvironment(args.environmentName);
+   return environment?.peekPackage?.(args.packageName) === args.pkg;
+}
+
+/**
+ * After a build: when the package went away while it ran, drop its state and
+ * remove the rows the build wrote, since the delete's own cleanup may have
+ * run before them. The stored values are warehouse data and must not
+ * outlive the package.
+ */
+async function droppedDuringBuild(
+   args: Parameters<typeof kickFcjBuild>[0],
+): Promise<boolean> {
+   if (stillServed(args)) return false;
+   states.delete(args.pkg);
+   try {
+      await deleteEngineRows(
+         args.environmentStore.storageManager.getDuckDbConnection(),
+         args.environmentName,
+         args.packageName,
+      );
+   } catch (error) {
+      logger.warn(
+         "[get_context fcj] The rows of a package removed during its index build could not be deleted",
+         {
+            environmentName: args.environmentName,
+            packageName: args.packageName,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+   }
+   return true;
 }
 
 /** The ready state for a new index, due for a rebuild when value reads failed. */
@@ -201,18 +243,16 @@ function rebuildForValues(
    args: Parameters<typeof kickFcjBuild>[0],
    state: Extract<FcjState, { status: "ready" }>,
 ): void {
-   const { environmentStore, environmentName, packageName, pkg } = args;
+   const { environmentName, packageName, pkg } = args;
    states.set(pkg, { ...state, rebuilding: true });
    void embeddingSyncQueue.enqueue(async () => {
-      const served = environmentStore
-         .peekEnvironment?.(environmentName)
-         ?.peekPackage?.(packageName);
-      if (served !== undefined && served !== pkg) {
+      if (!stillServed(args)) {
          states.delete(pkg);
          return;
       }
       try {
          const index = await buildFor(args);
+         if (await droppedDuringBuild(args)) return;
          states.set(pkg, readyState(index, environmentName, packageName));
       } catch (error) {
          logger.warn(
@@ -313,6 +353,8 @@ async function buildFor(args: {
          environmentStore,
          ...(valueFetcherOverride ? { fetcher: valueFetcherOverride } : {}),
       },
+      // A package removed mid-build stops reading values and embedding.
+      shouldStop: () => !stillServed(args),
    });
 }
 
