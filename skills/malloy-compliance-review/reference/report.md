@@ -27,6 +27,13 @@ report says so at the top. Read the two halves of that together: the controls th
 fail, because the change on disk breaks them, and `refusals` holds, because the change was not
 deployed. The fix is to the files on disk; the served model is still the last good one.
 
+## A package that is not served
+
+On a fresh server, as in CI, a change Publisher refuses at load leaves no earlier model to serve, so
+the package is absent. The report says so at the top. The controls the refusal names fail; every
+other control needs review, marked "not checked", because nothing could be checked. A package the
+server does not know at all fails `loads`: check the environment and package names.
+
 ## Evidence
 
 Every finding carries its evidence as counts: `53346 distinct of 53346 rows, uuid 100%`,

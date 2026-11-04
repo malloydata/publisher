@@ -293,6 +293,31 @@ class ChecksTest(unittest.TestCase):
             c.run_check(FakeServer(governance()), {**REGISTER, "access": {"chart": {"nobody": "rows"}},
                                                    "controls": [{"id": "X", "checks": ["access"]}]})
 
+    def test_a_package_that_is_not_served_fails_by_its_refusal_and_lets_nothing_pass(self):
+        class Unserved(FakeServer):
+            def governance(self):
+                raise c.urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
+
+        server = Unserved(governance(), load_errors=[{
+            "message": "source research (index.malloy) carries [none] but exposes person.ssn, classified phi.direct_identifier."}])
+        r = run(server, [{"id": "AC-04", "checks": ["loads:ceiling", "ceiling"]},
+                         {"id": "AC-05", "checks": ["loads:join"]},
+                         {"id": "MN-01", "checks": ["access:chart"]},
+                         {"id": "AU-03", "checks": ["refusals"]},
+                         {"id": "AU-01", "status": "not_provable_here"}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["fail", "review", "review", "pass", "not_provable_here"])
+        self.assertTrue(r["unloaded"])
+        self.assertIn("not serving this package", c.report_md(r))
+
+    def test_an_unknown_package_fails(self):
+        class Unknown(FakeServer):
+            def governance(self):
+                raise c.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+
+        r = run(Unknown(governance()), [{"id": "AC-04", "checks": ["loads:ceiling"]}])
+        self.assertEqual(r["controls"][0]["status"], "fail")
+        self.assertIn("does not serve", r["controls"][0]["findings"][0]["text"])
+
     def test_an_unknown_check_is_refused(self):
         with self.assertRaises(SystemExit):
             run(FakeServer(governance()), [{"id": "X-01", "checks": ["telepathy"]}])

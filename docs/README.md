@@ -61,6 +61,7 @@ there for the primitive, then follow the application you need.
 | [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`index.malloy`) — the visibility axis.                   |
 | [classification.md](classification.md)             | Declare _what a field is_ (`#(classification)`), in the policy's words, for agents and reviews.        |
 | [access-record.md](access-record.md)               | The one structured line written per query: who, which source, which gates, which fields and classes.   |
+| [compliance-review.md](compliance-review.md)       | Check a package against a written access policy on every change, and attest to the result.             |
 | [security-posture.md](security-posture.md)         | Understand what Publisher does and does not defend against, before deploying it or adding a feature.   |
 
 ## Deploy & operate

@@ -474,8 +474,19 @@ CHECKS = {
 
 
 def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
-    gov = server.governance()
     ctx: dict[str, Any] = {"server": server}
+    try:
+        gov = server.governance()
+    except urllib.error.HTTPError as e:
+        # 404 for a package the server does not know, 400 (carrying the
+        # refusal) for one whose load failed.
+        if e.code not in (400, 404):
+            raise
+        # Not served at all: on a fresh server (CI) a refused change leaves no
+        # earlier model to fall back to. The refusal still names the control
+        # it breaks; nothing else can be checked, and nothing is let pass.
+        gov = None
+        ctx["unloaded"] = True
     personas = register.get("personas", {})
     for d, want in register.get("access", {}).items():
         for pid in want:
@@ -487,8 +498,17 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
             kind = name.split(":")[0]
             if kind not in CHECKS:
                 raise SystemExit(f"register control {c['id']} names an unknown check {name!r}; known: {', '.join(CHECKS)}")
-            if kind not in by_check:
+            if kind in by_check:
+                continue
+            if gov is None and kind not in ("loads", "refusals"):
+                by_check[kind] = [{**finding("", "review", f"not checked: {server.package} is not being served"),
+                                   "unscoped": True}]
+            else:
                 by_check[kind] = CHECKS[kind](gov, register, ctx)
+            if gov is None and kind == "loads" and by_check[kind][0]["status"] == "pass":
+                by_check[kind] = [{**finding("", "fail", f"the server does not serve {server.package}",
+                                             "no load error names it either: check the environment and package names"),
+                                   "unscoped": True}]
     controls = []
     for c in register["controls"]:
         fs: list[dict[str, Any]] = []
@@ -498,13 +518,20 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
             for f in by_check[kind]:
                 # A scoped check (`access:billing`, `values:research`) takes only its domain's findings.
                 # A scope names a domain or, for `loads`, a kind of refusal.
-                if scope and f["status"] != "pass" and scope not in (f.get("domain"), f.get("kind")):
+                if (scope and f["status"] != "pass" and not f.get("unscoped")
+                        and scope not in (f.get("domain"), f.get("kind"))):
                     continue
                 fs.append({**f, "control": c["id"], "check": name})
             if scope and len(fs) == before:
                 # Every finding of this check was about something else.
-                fs.append({**finding(c["id"], "pass", f"nothing {kind} reports touches {scope}"),
-                           "check": name})
+                if ctx.get("unloaded"):
+                    # A refused load may stop at its first kind of refusal, so
+                    # silence about this scope proves nothing.
+                    fs.append({**finding(c["id"], "review", f"not checked: nothing {kind} reports touches {scope}, "
+                                         "and the package is not being served"), "check": name})
+                else:
+                    fs.append({**finding(c["id"], "pass", f"nothing {kind} reports touches {scope}"),
+                               "check": name})
         if c.get("status") in ("not_provable_here", "review"):
             status = c["status"]
         elif not fs:
@@ -527,6 +554,7 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
         "controls": controls,
         "profiled_fields": len(ctx.get("profiles", [])),
         "stale": bool(ctx.get("stale")),
+        "unloaded": bool(ctx.get("unloaded")),
     }
 
 
@@ -643,6 +671,9 @@ def report_md(r: dict[str, Any]) -> str:
         *(["> **The server refused this package's latest files and is still serving the model it compiled before.** "
             "The refusals are the failures below. Every other result describes that older model, not the files on disk.",
             ""] if r.get("stale") else []),
+        *(["> **The server is not serving this package.** Its files were refused at load with no earlier model "
+            "to fall back to, or it is not configured. The load failures below say which; no other check could run.",
+            ""] if r.get("unloaded") else []),
         "| Control | Status | Requirement |",
         "| --- | --- | --- |",
     ]

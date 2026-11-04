@@ -151,7 +151,11 @@ protected rather than merely removed from discovery: a lock is truth-evaluated o
 refused caller gets a 403 and no SQL. `#(access_filter)` is not,
 because it decides rows and `/compile` returns none. A source that is both hidden and locked still
 answers `/compile` with the boundary's generic 404, so the exemption cannot be used to enumerate
-gated names.
+gated names. In a deployment, admit `/compile` and `compile_model` at the gateway only for the
+role that authors the package, so a caller who may only query cannot use the authoring loop to read a
+hidden source's schema. A compliance review treats the same gap as a finding: an unpublished source
+with no `#(authorize) false` is one export away from open, and the `locked_bases` check in
+[compliance-review.md](compliance-review.md) fails it.
 
 The boundary checks the source a query **runs**. A query over an exported source that joins a
 hidden source still runs, and returns the joined fields.
