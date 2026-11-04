@@ -83,6 +83,8 @@ export interface Setting<K extends string = string, T = unknown> {
    readonly shortFlags?: readonly string[];
    /** No flag; never logged, reported, or echoed in an error. */
    readonly secret: boolean;
+   /** No flag, though no secret: the design gives it none (`packageVersioning`). */
+   readonly noFlag?: true;
    readonly aliases: Aliases;
    /** Carries the value type for `settings.get`; never set. */
    readonly valueType?: { value: T };
@@ -97,6 +99,7 @@ interface Entry<K extends string, T> {
    kind?: SettingKind;
    shortFlags?: readonly string[];
    secret?: boolean;
+   noFlag?: true;
    aliases?: Aliases;
 }
 
@@ -124,6 +127,7 @@ export function setting<K extends string, T>(
          ? { shortFlags: entry.shortFlags }
          : {}),
       secret: entry.secret ?? false,
+      ...(entry.noFlag ? { noFlag: true as const } : {}),
       aliases: entry.aliases ?? {},
    };
 }

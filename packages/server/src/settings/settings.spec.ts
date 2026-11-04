@@ -128,6 +128,7 @@ const DESIGN_FLAGS: Partial<Record<SettingKey, string>> = {
    "admin.port": "--admin-port",
    "admin.storage.keyId": "--admin-storage-key-id",
    "query.maxRows": "--query-max-rows",
+   versionPromotion: "--version-promotion",
 };
 
 const named = REGISTRY.filter((entry) => entry.kind !== "structured");
@@ -174,7 +175,9 @@ describe("the registry", () => {
 
    it("gives a secret no flag, a launch setting no file key, and a structured one only a file key", () => {
       for (const entry of REGISTRY) {
-         if (entry.secret) expect(entry.aliases.flags ?? []).toEqual([]);
+         if (entry.secret || entry.noFlag) {
+            expect(entry.aliases.flags ?? []).toEqual([]);
+         }
          if (entry.kind === "launch") {
             expect(entry.aliases.file ?? []).toEqual([]);
          }
@@ -684,7 +687,9 @@ describe("step 2: the derived names", () => {
    });
 
    it("reads every setting but a secret from its derived flag, and a boolean's --no- form", () => {
-      for (const entry of named.filter((entry) => !entry.secret)) {
+      for (const entry of named.filter(
+         (entry) => !entry.secret && !entry.noFlag,
+      )) {
          const { raw, value } = sample(entry);
          const flag = derivedFlagName(entry.key);
          const isSwitch = entry.type instanceof BooleanType;
@@ -711,6 +716,18 @@ describe("step 2: the derived names", () => {
             cwd: "/nonexistent",
          }).warnings.map((warning) => warning.message),
       ).toContain("Unknown flag --admin-catalog-database, so it is ignored.");
+      // packageVersioning is no secret, but the design gives it no flag.
+      const versioning = Settings.load({
+         argv: ["--package-versioning", "on"],
+         env: {},
+         cwd: "/nonexistent",
+      });
+      expect(versioning.get("packageVersioning")).toBe("off");
+      expect(
+         versioning.warnings.some((warning) =>
+            warning.message.startsWith("Unknown flag --package-versioning"),
+         ),
+      ).toBe(true);
    });
 
    it("reads every setting but a launch setting from its key in the file", () => {
@@ -755,7 +772,11 @@ describe("step 2: the derived names", () => {
                   `${key} from ${name}`,
                );
             });
-            if (!entry.secret && !(entry.type instanceof BooleanType)) {
+            if (
+               !entry.secret &&
+               !entry.noFlag &&
+               !(entry.type instanceof BooleanType)
+            ) {
                const flag = derivedFlagName(entry.key);
                withSettings({ argv: [flag, raw] }, () => {
                   expect(() => settings.get(key), flag).toThrow(

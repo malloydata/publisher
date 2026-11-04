@@ -96,6 +96,8 @@ export const server = [
       description:
          "on publishes a package from a location as the version its publisher.json declares; off installs it in place. A transition setting #1381 removes.",
       notes: "`on` or `off`: whether a publish from a location publishes an immutable [package version](package-versions.md) numbered by its `publisher.json` `version` (a missing or non-semver `version` is then a 400), or installs the package in place as before versions. A transition setting: a future release removes it and requires a `version` ([#1381](https://github.com/malloydata/publisher/issues/1381)). Versions published while it was on keep serving when it is off. Any other value fails startup.",
+      // The design gives a transition setting no flag.
+      noFlag: true,
       aliases: { env: ["PUBLISHER_PACKAGE_VERSIONING"] },
    }),
    setting({

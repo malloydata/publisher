@@ -36,7 +36,7 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **An old and a new name given different values fail startup**, rather than one quietly winning. Examples are `MCP_PORT=4141` with `PUBLISHER_MCP_PORT=4242`, and a `retrieval.embedding.model` in the file that differs from `EMBEDDING_MODEL`. Values are compared after they are read, so a negated old name (`PUBLISHER_NO_MCP_CONFIG=1`) agrees with its positive new one (`PUBLISHER_MCP_CONFIG_FILE_ENABLED=false`).
 - **`useBundledDefault` counts the variables.** `SERVER_ROOT=/x` (or `PUBLISHER_ROOT`) now turns off the bundled sample config, as `--server_root` already did.
 - **Every setting can be in the file**, except the launch settings (`root`, `config`, `useBundledDefault`, `initializeStorage`, `watchEnvironments`), which startup warns about there. A secret in the file must be a `${VAR}` reference: a literal one fails startup. `retrieval.embedding` and `retrieval.llm` now accept their `apiKey`, and `retrieval.embedding` accepts `minSimilarity` and `connectionSchemaIndexingEnabled`.
-- A secret has no flag, and is never logged or echoed in an error.
+- A secret has no flag, and is never logged or echoed in an error. `packageVersioning` has no flag either: the design gives that transition setting none.
 
 ## [Unreleased] — Settings are read once, from one registry, and bad values fail startup
 

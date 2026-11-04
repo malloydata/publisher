@@ -1598,6 +1598,8 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--host",
    "--rate-limit",
    "--frame-ancestors",
+   "--caller-header",
+   "--version-promotion",
    "--root",
    "--server_root",
    "--config",

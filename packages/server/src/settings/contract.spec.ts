@@ -360,9 +360,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_PACKAGE_VERSIONING"),
       },
       {
-         name: "the file is not read today",
+         name: "the file, under its key",
          file: { packageVersioning: "on" },
-         expect: warned(false, "is not read from the file"),
+         expect: value(true),
       },
    ],
    versionPromotion: [

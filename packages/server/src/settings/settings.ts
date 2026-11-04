@@ -237,7 +237,8 @@ export interface SettingName {
  * Every name a setting is read under, current first: the derived variable,
  * flag (with `--no-` for a boolean) and file key; the short flags the design
  * keeps; and today's names where the design renamed them, which are
- * deprecated. A secret has no flag, a structured setting is file-only and a
+ * deprecated. A secret has no flag, nor has a setting the design gives none
+ * (`noFlag`); a structured setting is file-only and a
  * launch setting has no file key.
  */
 export function namesOf(entry: RegisteredSetting): {
@@ -261,7 +262,7 @@ export function namesOf(entry: RegisteredSetting): {
       if (!flags.some((flag) => flag.name === name)) flags.push({ name, old });
    };
    if (!structured) {
-      if (!entry.secret) {
+      if (!entry.secret && !entry.noFlag) {
          addFlag(derivedFlag, false);
          if (entry.type instanceof BooleanType) {
             addFlag(`--no-${derivedFlag.slice(2)}`, false);
