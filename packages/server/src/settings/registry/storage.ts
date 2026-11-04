@@ -82,7 +82,7 @@ export const storage = [
       default: false,
       description:
          "Fire packages' materialization schedules from this process; never on an orchestrated worker.",
-      notes: "Opt-in: enable the standalone materialization scheduler, which fires each loaded package's `materialization.schedule` cron so a self-hosted Publisher rebuilds on a cadence with no control plane. **Never set this on a control-plane-driven (orchestrated) worker** \u2014 it is the primary guard against double-driving refresh. See [materialization.md](materialization.md).",
+      notes: "Opt-in: enable the standalone materialization scheduler, which fires each loaded package's `materialization.schedule` cron, and each published package version's (see [package-versions.md](package-versions.md#materializations)), so a self-hosted Publisher rebuilds on a cadence with no control plane. **Never set this on a control-plane-driven (orchestrated) worker** \u2014 it is the primary guard against double-driving refresh. See [materialization.md](materialization.md).",
       aliases: { env: ["PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER"] },
    }),
    setting({

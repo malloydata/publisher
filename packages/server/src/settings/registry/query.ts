@@ -75,7 +75,7 @@ export const query = [
       type: integer({ min: 1 }),
       default: DEFAULT_POSTGRES_POOL_MAX,
       description: "Open sessions per plain Postgres connection.",
-      notes: "Per-process cap on open database sessions for each plain (non-proxied) Postgres connection. Each query uses its own session and closes it; when all are busy a query waits up to 30 s for one, then fails with HTTP 502. Across a fleet the ceiling is roughly this value times the pods serving the environment, so size it against the role's `CONNECTION LIMIT`. Must be a positive integer.",
+      notes: "Per-process cap on open database sessions for each Postgres connection, including one reached through an SSH proxy. Each query uses its own session and closes it; when all are busy a query waits up to 30 s for one, then fails with HTTP 502. Across a fleet the ceiling is roughly this value times the pods serving the environment, so size it against the role's `CONNECTION LIMIT`. Must be a positive integer.",
       aliases: { env: ["PUBLISHER_POSTGRES_POOL_MAX"] },
    }),
    setting({

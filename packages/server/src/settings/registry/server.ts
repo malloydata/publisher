@@ -86,6 +86,7 @@ export const server = [
       default: DEFAULT_CALLER_HEADER,
       description:
          "Request header the access record copies as the caller: the identity the gateway in front of Publisher asserts.",
+      notes: "The request header whose value the per-query access record copies as `caller`: the identity the gateway in front of Publisher asserts. Opaque to Publisher; see [access-record.md](access-record.md).",
       aliases: { env: ["PUBLISHER_CALLER_HEADER"] },
    }),
    setting({
@@ -94,6 +95,7 @@ export const server = [
       default: "off",
       description:
          "on publishes a package from a location as the version its publisher.json declares; off installs it in place. A transition setting #1381 removes.",
+      notes: "`on` or `off`: whether a publish from a location publishes an immutable [package version](package-versions.md) numbered by its `publisher.json` `version` (a missing or non-semver `version` is then a 400), or installs the package in place as before versions. A transition setting: a future release removes it and requires a `version` ([#1381](https://github.com/malloydata/publisher/issues/1381)). Versions published while it was on keep serving when it is off. Any other value fails startup.",
       aliases: { env: ["PUBLISHER_PACKAGE_VERSIONING"] },
    }),
    setting({
@@ -102,6 +104,7 @@ export const server = [
       default: "on-publish",
       description:
          "on-publish moves a package's latest to a newly published higher version; explicit leaves it to PUT …/latest.",
+      notes: "`on-publish` or `explicit`: what publishing a package version does to its `latest`. `on-publish` moves `latest` to the new version unless a higher one already is; `explicit` never moves it, so only `PUT .../packages/{package}/latest` does, for an orchestrator that decides when a version is ready. Also settable as `versionPromotion` in `publisher.config.json`; the variable wins. Any other value fails startup. See [package-versions.md](package-versions.md).",
       aliases: {
          env: ["PUBLISHER_VERSION_PROMOTION"],
          file: ["versionPromotion"],

@@ -42,7 +42,7 @@ export const access = [
       default: "any",
       description:
          "Where an s3 connection may use the host's credentials: any, destinations-only or off.",
-      notes: "Where an `s3` connection may set `provider: credential_chain`, which acts as the host's own identity (an EKS pod's IRSA role, an EC2 instance profile): `any`, `destinations-only` (an operator-configured storage destination only), or `off`.",
+      notes: "Where an S3 connection or attachment may use `provider: credential_chain`, which makes DuckDB resolve the **host's own** credentials (an EKS pod's IRSA role, an EC2 instance profile) instead of a configured key pair. `any`: allowed everywhere. `destinations-only`: allowed on a [storage destination](connections.md#storage-destinations) and on an admin-API catalog, and refused on an environment connection or attachment, which an author may supply. A destination is declared by whoever writes the environment (its config file, or `storageDestinations` on `POST`/`PATCH /environments`), so under this policy keep those writes to operators. `off`: refused everywhere. A refused config fails at load, on create and update, and by the connection test, with an error naming the policy. Any other value fails startup.",
       aliases: { env: ["S3_CREDENTIAL_CHAIN_POLICY"] },
    }),
    setting({
