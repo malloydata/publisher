@@ -48,7 +48,7 @@ Agents live under the `agents` object of the package's `publisher.json`, keyed b
 | `description` | Required. One line saying what the agent is for. |
 | `instructions` | Required. Package-relative path of a `.md` file with no frontmatter. At most 16 KB. |
 | `model` | Optional. A model name, or `inherit` (the default) for the caller's own. |
-| `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/`). Frontmatter `name` must match the directory name. All of the agent's skill files together are at most 256 KB; over that, the agent is dropped, not truncated. |
+| `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/` and `assets/`). Frontmatter `name` must match the directory name. All of the agent's Markdown (`SKILL.md` and `reference/*.md`) together is at most 256 KB; over that, the agent is dropped, not truncated. `assets/` has its own budget (below). |
 | `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field cron expression in UTC, and the package-relative path of a `.md` task file of at most 16 KB. |
 | `budget` | Optional. An object whose optional fields are `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set only the ones the work needs; an unset field keeps the platform's default. |
 
@@ -84,6 +84,8 @@ Where things go:
 - **Start every task file with a `# Title` heading;** clients index and route by it.
 - **Name the file so it reads as a short label** (`weekly-report.md`, under about 24 characters): a client may build a label for the task from its file name.
 - **No shell preprocessing** in task text or in the task path: no exclamation mark directly before a backtick, and no code fence whose opening backticks are followed by an exclamation mark. Some hosts run such text as a shell command, so clients skip a task that has it.
+- **Files the agent copies go in the skill's `assets/`, never in Markdown.** A chart module, a component library, a page template, a stylesheet: anything the agent drops into what it builds rather than reads. Publisher lists assets without their contents and the caller copies them, so they cost no context and are never retyped. Pasting code into a `SKILL.md` or reference file "to copy byte for byte" spends that file's bytes as output tokens on every build and invites copy errors. Point at an asset by its skill-relative path (`assets/charts.js`). Limits: UTF-8 text only (ship images as SVG), each file under 1 MiB, at most 4 MiB and 200 files per agent and 8 MiB per package, path segments of letters, digits, `.`, `_` and `-`. A file that breaks one, or a `.malloy` file, is skipped with a load warning. A symlink, a nested `publisher.json` or `SKILL.md`, `..` in a name or two names differing only in case drops the whole agent, so keep `assets/` plain files.
+- **Markdown is what the model reads, so keep it short.** One-sentence skill `description`s: every caller lists all skills' descriptions against one shared budget. Keep each `SKILL.md` under 500 lines, link reference files one level deep from it (no reference that points to another reference), and start any reference over 100 lines with a table of contents.
 
 ## Writing instructions that work unattended
 
@@ -101,6 +103,6 @@ The reader of `instructions` and task files has no one to ask. Write for a run n
 1. Confirm the job, and that the user wants an agent rather than an answer.
 2. Pick a name that meets the regex, and a one-line description.
 3. Write `agents/<name>/instructions.md`, and a task file per schedule (a `# Title` heading, a short file name, a few KB).
-4. Add skills only for knowledge the agent needs and the package does not already carry.
+4. Add skills only for knowledge the agent needs and the package does not already carry. Put any file the agent copies under that skill's `assets/`.
 5. Add the `agents.<name>` entry to `publisher.json`, with a `budget` if the work has natural limits, setting only the fields that matter (`{ "wall_clock_minutes": 60 }` alone is fine).
 6. Call `reload_package`, read its load warnings, then `get_agent` to confirm the agent is served. Tell the user plainly that schedules do not run and budgets are not enforced yet.
