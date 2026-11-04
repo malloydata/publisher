@@ -308,3 +308,168 @@ export const VIOLATIONS = [
       "Loads: a role-gated surface over locked cores is the designed pattern, and the server cannot know MN-02 requires a scope. A biller at one organization reads all 967. The access grid on this page catches it, because it checks every decision against the policy's workforce table.",
   },
 ];
+
+/* ── Explore as a role ──────────────────────────────────────────────────── */
+
+/** The values the identity editor offers for each #(secure) given. */
+export const ROLE_VALUES = [
+  { value: "clinical", label: "clinical" },
+  { value: "billing", label: "billing" },
+  { value: "quality", label: "quality" },
+  { value: "researcher", label: "researcher" },
+  { value: "partner", label: "partner" },
+];
+
+/** Four real organizations from the synthetic data, by encounter volume. */
+export const ORGANIZATIONS = [
+  {
+    id: "be4c63f3-8d38-3fa9-a183-62045b5c85f6",
+    name: "VA Boston Healthcare System",
+  },
+  {
+    id: "d311e70d-86e7-3c03-b115-53892bcf7ef1",
+    name: "Worcester Outpatient Clinic",
+  },
+  {
+    id: "d692e283-0833-3201-8e55-4f868a9c0736",
+    name: "Hallmark Health System",
+  },
+  { id: DEMO_ORG, name: "Cambridge Health Alliance" },
+];
+
+export const ATTRIBUTE_VALUES = [
+  { value: "dua-signed", label: "dua-signed (an executed data use agreement)" },
+];
+
+/** What each surface's sample shows: the newest rows, every column a model field path. */
+export const SAMPLES = {
+  patient_chart: {
+    fields: [
+      "patient.first_name",
+      "patient.last_name",
+      "patient.ssn",
+      "patient.birth_date",
+      "organization.organization_name",
+      "started_at",
+      "encounter_type",
+      "reason",
+      "claim_cost",
+    ],
+    order: "started_at desc",
+  },
+  billing: {
+    fields: [
+      "encounter_id",
+      "patient.last_name",
+      "patient.ssn",
+      "payer.payer_name",
+      "started_at",
+      "encounter_type",
+      "claim_cost",
+      "payer_coverage",
+    ],
+    order: "started_at desc",
+  },
+  population_health: {
+    fields: [
+      "started_at",
+      "patient.age",
+      "patient.city",
+      "patient.zip",
+      "encounter_type",
+      "reason",
+      "claim_cost",
+    ],
+    order: "started_at desc",
+  },
+  partner_lds: {
+    fields: [
+      "started_at",
+      "patient.age",
+      "patient.city",
+      "patient.zip",
+      "encounter_type",
+      "reason",
+      "claim_cost",
+    ],
+    order: "started_at desc",
+  },
+  research: {
+    fields: [
+      "encounter_year",
+      "patient.age",
+      "patient.zip3",
+      "patient.state",
+      "encounter_type",
+      "reason",
+      "claim_cost",
+    ],
+    order: "encounter_year desc",
+  },
+};
+
+export const SAMPLE_ROWS = 12;
+
+/** The query behind a surface's sample. One text per surface, built here only. */
+export const sampleQuery = (surface) => {
+  const s = SAMPLES[surface];
+  return `run: ${surface} -> { select: ${s.fields.join(", ")}; order_by: ${s.order}; limit: ${SAMPLE_ROWS} }`;
+};
+
+/**
+ * What an agent acting for this identity might try, over MCP or anywhere
+ * else. Each runs live as the identity in the editor. `on` is a surface the
+ * identity can read, for the attempts that start from one. `local` marks the
+ * one attempt whose outcome differs on a bare local server: there is no
+ * trusted tier here to replace the attributes a request claims.
+ */
+export const ATTEMPTS = [
+  {
+    id: "raw-table",
+    label: "Read the raw patient table",
+    query: () => "run: patients_base -> { select: SSN, FIRST, LAST; limit: 5 }",
+    why: "Every table is a base source locked with #(authorize) false and left off the published surface (AC-02).",
+  },
+  {
+    id: "core",
+    label: "Read the identified patient record behind every surface",
+    query: () =>
+      "run: patients_core -> { select: ssn, first_name, last_name; limit: 5 }",
+    why: "Cores are building blocks: not exported from index.malloy, so not a place any caller can start.",
+  },
+  {
+    id: "chart",
+    label: "Query the full patient chart",
+    query: () =>
+      "run: patient_chart -> { select: patient.ssn, patient.last_name; limit: 5 }",
+    why: "The chart is locked to the clinical role, and its rows to the caller's organizations (AC-01, MN-01).",
+  },
+  {
+    id: "hidden-column",
+    label: "Reach a raw column through a surface it can read",
+    query: (on) => `run: ${on} -> { group_by: patient.BIRTHDATE; limit: 5 }`,
+    why: "Every raw column is internal; a surface publishes only the named, classified fields.",
+  },
+  {
+    id: "own-join",
+    label: "Write its own join back to the identified record",
+    query: (on) =>
+      `run: ${on} extend { join_one: p is patients_core on PATIENT = p.Id } -> { group_by: p.ssn; limit: 5 }`,
+    why: "A caller's join is the caller entering the joined source, which is held to the same surface and gates (AC-05).",
+  },
+  {
+    id: "raw-sql",
+    label: "Read the data file with SQL",
+    query: () =>
+      "run: duckdb.table('data/patients.parquet') -> { select: SSN; limit: 5 }",
+    why: "A caller cannot declare a data root: query text is held to the model's published sources.",
+  },
+  {
+    id: "claim-role",
+    label: "Claim a role it was not given",
+    query: () => "run: patient_chart -> { aggregate: encounters is count() }",
+    extraRole: "clinical",
+    local: true,
+    why: "In a deployment ROLES is #(secure): the gateway replaces whatever the request claims, so the claim never reaches the engine. This local server has no gateway, so the claim is honored here, and that difference is the reason #(secure) exists.",
+  },
+];

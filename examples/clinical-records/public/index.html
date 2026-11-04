@@ -110,6 +110,7 @@ SPDX-License-Identifier: MIT
         --card-min: 320px;
         --measure: 760px;
         --provenance-h: 220px;
+        --chip-w: 168px;
       }
       @media (prefers-color-scheme: dark) {
         :root {
@@ -727,6 +728,243 @@ SPDX-License-Identifier: MIT
         font-size: var(--fs-xs);
       }
 
+      .tabs {
+        display: flex;
+        gap: var(--sp-2);
+        border-bottom: 1px solid var(--border);
+        margin-bottom: var(--sp-6);
+      }
+      .tabs [role="tab"] {
+        all: unset;
+        cursor: pointer;
+        padding: var(--sp-2) var(--sp-4);
+        font-weight: var(--fw-semi);
+        color: var(--text-muted);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .tabs [role="tab"][aria-selected="true"] {
+        color: var(--accent-strong);
+        border-bottom-color: var(--accent);
+      }
+      .tabs [role="tab"]:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .identity {
+        padding: var(--sp-4);
+        display: grid;
+        gap: var(--sp-4);
+      }
+      .presets {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+      }
+      .preset {
+        font: inherit;
+        font-size: var(--fs-sm);
+        cursor: pointer;
+        padding: var(--sp-1) var(--sp-3);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+      }
+      .preset[aria-pressed="true"] {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: var(--accent-strong);
+      }
+      .givens {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--sp-4);
+      }
+      .given {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--sp-3);
+        margin: 0;
+        display: grid;
+        gap: var(--sp-1);
+        align-content: start;
+      }
+      .given legend {
+        padding: 0 var(--sp-1);
+        display: flex;
+        gap: var(--sp-2);
+        align-items: center;
+      }
+      .check {
+        display: flex;
+        gap: var(--sp-2);
+        align-items: center;
+        font-size: var(--fs-sm);
+        cursor: pointer;
+      }
+      .identity-sent {
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+      }
+
+      .discovery {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-3);
+      }
+      .surface-chip {
+        font: inherit;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        text-align: left;
+        min-width: var(--chip-w);
+        padding: var(--sp-2) var(--sp-3);
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .surface-chip.is-visible {
+        border-color: var(--accent);
+      }
+      .surface-chip.is-visible[aria-pressed="true"] {
+        background: var(--accent-soft);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .surface-chip.is-hidden {
+        cursor: not-allowed;
+        background: var(--surface-sunken);
+        color: var(--text-soft);
+        border-style: dashed;
+      }
+      .sc-name {
+        font-weight: var(--fw-semi);
+      }
+      .sc-state {
+        font-size: var(--fs-xs);
+      }
+      .is-visible .sc-state {
+        color: var(--accent-strong);
+      }
+
+      .sample {
+        padding: var(--sp-4);
+      }
+      .sample-caption {
+        margin-bottom: var(--sp-3);
+      }
+      .rows th,
+      .rows td {
+        font-size: var(--fs-xs);
+        padding: var(--sp-1) var(--sp-2);
+        white-space: nowrap;
+      }
+      .rows th {
+        vertical-align: top;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .rows td.null {
+        color: var(--text-soft);
+        font-style: italic;
+      }
+      .query {
+        margin-top: var(--sp-3);
+        font-size: var(--fs-sm);
+        color: var(--text-muted);
+      }
+      code.block {
+        display: block;
+        background: var(--surface-sunken);
+        padding: var(--sp-2);
+        border-radius: var(--radius-sm);
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-top: var(--sp-2);
+        font-size: var(--fs-xs);
+      }
+
+      .agent-intro {
+        display: grid;
+        gap: var(--sp-3);
+        max-width: var(--measure);
+        margin-bottom: var(--sp-4);
+      }
+      .attempts {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: var(--sp-3);
+        counter-reset: att;
+      }
+      .attempt {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: var(--sp-3) var(--sp-4);
+      }
+      .attempt.is-stopped {
+        border-left-color: var(--pass);
+      }
+      .attempt.is-allowed {
+        border-left-color: var(--scoped);
+      }
+      .attempt.is-local {
+        border-left-color: var(--review);
+      }
+      .attempt.is-leak {
+        border-left-color: var(--fail);
+        background: var(--fail-soft);
+      }
+      .attempt-head {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        align-items: baseline;
+      }
+      .attempt-label {
+        font-weight: var(--fw-semi);
+        color: var(--text-strong);
+      }
+      .attempt-result {
+        font-size: var(--fs-xs);
+        font-weight: var(--fw-semi);
+        padding: 0 var(--sp-2);
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+      }
+      .is-stopped .attempt-result {
+        background: var(--pass-soft);
+        color: var(--pass);
+      }
+      .is-allowed .attempt-result {
+        background: var(--scoped-soft);
+        color: var(--scoped);
+      }
+      .is-local .attempt-result {
+        background: var(--review-soft);
+        color: var(--review);
+      }
+      .is-leak .attempt-result {
+        background: var(--fail);
+        color: var(--surface);
+      }
+      .attempt-why,
+      .attempt-msg {
+        font-size: var(--fs-sm);
+        margin-top: var(--sp-2);
+      }
+      .attempt-why {
+        color: var(--text-muted);
+      }
+      .attempt-msg {
+        font-family: var(--font-mono);
+        font-size: var(--fs-xs);
+      }
       @media (max-width: 860px) {
         .verdicts {
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -749,12 +987,12 @@ SPDX-License-Identifier: MIT
   <body>
     <main>
       <p class="demo-banner" role="note">
-        <strong>Local demo.</strong> The access grid below sends each persona's
-        identity attributes (<code>ROLES</code>, <code>ORGANIZATIONS</code>,
-        <code>ATTRIBUTES</code>) from this page. In a deployment those are
-        <code>#(secure)</code>: the identity provider sets them for the
-        signed-in viewer, the request cannot, and this page could not choose a
-        persona.
+        <strong>Local demo.</strong> This page sends the identity attributes
+        (<code>ROLES</code>, <code>ORGANIZATIONS</code>,
+        <code>ATTRIBUTES</code>) itself, for the access grid and for whoever you
+        explore as. In a deployment those are <code>#(secure)</code>: the
+        identity provider sets them for the signed-in viewer, the request
+        cannot, and neither this page nor an agent could choose an identity.
       </p>
 
       <header class="page">
@@ -769,158 +1007,255 @@ SPDX-License-Identifier: MIT
         </p>
       </header>
 
-      <div class="verdicts" aria-label="Verdicts">
-        <div class="verdict" id="v-classified">
-          <span class="verdict-value skeleton">…</span>
-        </div>
-        <div class="verdict" id="v-secure">
-          <span class="verdict-value skeleton">…</span>
-        </div>
-        <div class="verdict" id="v-ceiling">
-          <span class="verdict-value skeleton">…</span>
-        </div>
-        <div class="verdict" id="v-access">
-          <span class="verdict-value skeleton">…</span>
-        </div>
-      </div>
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button
+          type="button"
+          role="tab"
+          data-view="scorecard"
+          aria-selected="true"
+        >
+          Scorecard
+        </button>
+        <button
+          type="button"
+          role="tab"
+          data-view="explore"
+          aria-selected="false"
+        >
+          Explore as a role
+        </button>
+      </nav>
 
-      <section aria-labelledby="h-matrix">
-        <div class="section-head">
-          <h2 id="h-matrix">What each surface may serve, and what it serves</h2>
-          <div class="legend">
-            <span
-              ><i class="l-allowed"></i>Declared in
-              <code>#(carries)</code></span
-            >
-            <span><i class="l-closed"></i>Not declared</span>
-            <span><i class="l-violation"></i>Served, not declared</span>
+      <div id="view-scorecard" role="tabpanel">
+        <div class="verdicts" aria-label="Verdicts">
+          <div class="verdict" id="v-classified">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+          <div class="verdict" id="v-secure">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+          <div class="verdict" id="v-ceiling">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+          <div class="verdict" id="v-access">
+            <span class="verdict-value skeleton">…</span>
           </div>
         </div>
-        <p class="section-sub">
-          Fields reachable from each surface, by class, including fields reached
-          through joins and fields whose class was inferred from what they read.
-          Open a surface for its gates, its controls and every field's lineage.
-        </p>
-        <div class="card scroll-x">
-          <table class="matrix">
-            <thead>
-              <tr>
-                <th scope="col">Surface</th>
-                <th scope="col">Direct identifier</th>
-                <th scope="col">Quasi-identifier</th>
-                <th scope="col">Clinical</th>
-                <th scope="col">Financial</th>
-                <th scope="col">None</th>
-              </tr>
-            </thead>
-            <tbody id="matrix-body">
-              <tr>
-                <td colspan="6" class="muted">
-                  Loading the governance export…
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
 
-      <section aria-labelledby="h-access">
-        <div class="section-head"><h2 id="h-access">Who sees what</h2></div>
-        <p class="section-sub">
-          The same question, "how many encounters can I read?", asked of every
-          surface as every workforce class, live. The policy's workforce table
-          is the expected answer; a cell that differs is flagged. Select a cell
-          for the query and the identity it was asked with.
-        </p>
-        <div class="access-wrap">
+        <section aria-labelledby="h-matrix">
+          <div class="section-head">
+            <h2 id="h-matrix">
+              What each surface may serve, and what it serves
+            </h2>
+            <div class="legend">
+              <span
+                ><i class="l-allowed"></i>Declared in
+                <code>#(carries)</code></span
+              >
+              <span><i class="l-closed"></i>Not declared</span>
+              <span><i class="l-violation"></i>Served, not declared</span>
+            </div>
+          </div>
+          <p class="section-sub">
+            Fields reachable from each surface, by class, including fields
+            reached through joins and fields whose class was inferred from what
+            they read. Open a surface for its gates, its controls and every
+            field's lineage.
+          </p>
           <div class="card scroll-x">
-            <table class="access">
-              <thead id="access-head"></thead>
-              <tbody id="access-body"></tbody>
+            <table class="matrix">
+              <thead>
+                <tr>
+                  <th scope="col">Surface</th>
+                  <th scope="col">Direct identifier</th>
+                  <th scope="col">Quasi-identifier</th>
+                  <th scope="col">Clinical</th>
+                  <th scope="col">Financial</th>
+                  <th scope="col">None</th>
+                </tr>
+              </thead>
+              <tbody id="matrix-body">
+                <tr>
+                  <td colspan="6" class="muted">
+                    Loading the governance export…
+                  </td>
+                </tr>
+              </tbody>
             </table>
           </div>
-          <aside class="card provenance" id="provenance" aria-live="polite">
-            <h4>Provenance</h4>
-            <p class="muted">Select a cell.</p>
-          </aside>
-        </div>
-      </section>
+        </section>
 
-      <section aria-labelledby="h-deid">
-        <div class="section-head">
-          <h2 id="h-deid">De-identification, measured</h2>
-        </div>
-        <p class="section-sub">
-          The same patients on the limited data set a quality analyst reads, and
-          on the de-identified surface a researcher reads. Ages over 89 become
-          90, dates become years, ZIP codes become three-digit areas (DI-01,
-          DI-02).
-        </p>
-        <div class="deid">
-          <div class="card">
-            <h3>Limited data set</h3>
-            <p class="sub">
-              population_health, as a quality analyst · patients by age
+        <section aria-labelledby="h-access">
+          <div class="section-head"><h2 id="h-access">Who sees what</h2></div>
+          <p class="section-sub">
+            The same question, "how many encounters can I read?", asked of every
+            surface as every workforce class, live. The policy's workforce table
+            is the expected answer; a cell that differs is flagged. Select a
+            cell for the query and the identity it was asked with.
+          </p>
+          <div class="access-wrap">
+            <div class="card scroll-x">
+              <table class="access">
+                <thead id="access-head"></thead>
+                <tbody id="access-body"></tbody>
+              </table>
+            </div>
+            <aside class="card provenance" id="provenance" aria-live="polite">
+              <h4>Provenance</h4>
+              <p class="muted">Select a cell.</p>
+            </aside>
+          </div>
+        </section>
+
+        <section aria-labelledby="h-deid">
+          <div class="section-head">
+            <h2 id="h-deid">De-identification, measured</h2>
+          </div>
+          <p class="section-sub">
+            The same patients on the limited data set a quality analyst reads,
+            and on the de-identified surface a researcher reads. Ages over 89
+            become 90, dates become years, ZIP codes become three-digit areas
+            (DI-01, DI-02).
+          </p>
+          <div class="deid">
+            <div class="card">
+              <h3>Limited data set</h3>
+              <p class="sub">
+                population_health, as a quality analyst · patients by age
+              </p>
+              <div class="hist-box" id="hist-lds">
+                <span class="skeleton">…</span>
+              </div>
+              <div class="stats" id="stats-lds"></div>
+            </div>
+            <div class="card">
+              <h3>De-identified</h3>
+              <p class="sub">research, as a researcher · patients by age</p>
+              <div class="hist-box" id="hist-deid">
+                <span class="skeleton">…</span>
+              </div>
+              <div class="stats" id="stats-deid"></div>
+            </div>
+          </div>
+        </section>
+
+        <section aria-labelledby="h-controls">
+          <div class="section-head"><h2 id="h-controls">Controls</h2></div>
+          <p class="section-sub">
+            Each control in the policy, how it is evidenced, and whether it
+            holds. "Needs review" is not a failure: it marks a control whose
+            truth depends on judgment about the data, which no load-time check
+            can supply.
+          </p>
+          <div class="card scroll-x">
+            <table class="controls">
+              <thead>
+                <tr>
+                  <th scope="col">Control</th>
+                  <th scope="col">Requirement</th>
+                  <th scope="col">Evidence</th>
+                  <th scope="col">Where</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody id="controls-body">
+                <tr>
+                  <td colspan="5" class="muted">
+                    Waiting for the access grid…
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="h-violations">
+          <div class="section-head">
+            <h2 id="h-violations">
+              What the server refuses, and what it leaves to review
+            </h2>
+          </div>
+          <p class="section-sub">
+            Five deliberately broken versions of this model, in
+            <code>violations/</code>. Three are internally inconsistent, and the
+            server refuses to load them. Two are consistent and still wrong
+            against the policy; catching them takes reading the policy and the
+            data.
+          </p>
+          <ul class="violations" id="violations"></ul>
+        </section>
+      </div>
+
+      <div id="view-explore" role="tabpanel" hidden>
+        <section aria-labelledby="h-identity">
+          <div class="section-head"><h2 id="h-identity">Who is asking</h2></div>
+          <p class="section-sub">
+            These are the three attributes the model's gates read. Each is
+            <code>#(secure)</code>: in a deployment the identity provider sets
+            them for the signed-in person, for a dashboard and for an agent
+            alike, and nothing in a request can change them. Here, you set them.
+            Start from a workforce class, then change anything.
+          </p>
+          <div class="card identity">
+            <div class="presets" id="identity-presets"></div>
+            <div class="givens" id="identity-givens"></div>
+            <p class="identity-sent">
+              Sent as <code id="identity-json"></code>
             </p>
-            <div class="hist-box" id="hist-lds">
-              <span class="skeleton">…</span>
-            </div>
-            <div class="stats" id="stats-lds"></div>
           </div>
-          <div class="card">
-            <h3>De-identified</h3>
-            <p class="sub">research, as a researcher · patients by age</p>
-            <div class="hist-box" id="hist-deid">
-              <span class="skeleton">…</span>
-            </div>
-            <div class="stats" id="stats-deid"></div>
+        </section>
+
+        <section aria-labelledby="h-discover">
+          <div class="section-head">
+            <h2 id="h-discover">What it can discover</h2>
           </div>
-        </div>
-      </section>
+          <p class="section-sub">
+            The model as this identity is shown it. A surface whose lock cannot
+            admit it is not listed at all, the same answer an agent's
+            <code>get_context</code> call gets.
+          </p>
+          <div class="discovery" id="discovery"></div>
+          <p class="note" id="discovery-caption"></p>
+        </section>
 
-      <section aria-labelledby="h-controls">
-        <div class="section-head"><h2 id="h-controls">Controls</h2></div>
-        <p class="section-sub">
-          Each control in the policy, how it is evidenced, and whether it holds.
-          "Needs review" is not a failure: it marks a control whose truth
-          depends on judgment about the data, which no load-time check can
-          supply.
-        </p>
-        <div class="card scroll-x">
-          <table class="controls">
-            <thead>
-              <tr>
-                <th scope="col">Control</th>
-                <th scope="col">Requirement</th>
-                <th scope="col">Evidence</th>
-                <th scope="col">Where</th>
-                <th scope="col">Status</th>
-              </tr>
-            </thead>
-            <tbody id="controls-body">
-              <tr>
-                <td colspan="5" class="muted">Waiting for the access grid…</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
+        <section aria-labelledby="h-rows">
+          <div class="section-head"><h2 id="h-rows">What it can read</h2></div>
+          <p class="section-sub">
+            The newest rows on the selected surface, read as this identity. Each
+            column carries its classes. The same patients look completely
+            different from one surface to the next: names and SSNs on the chart,
+            a city and an age on the limited data set, a year and a three-digit
+            ZIP on research.
+          </p>
+          <div class="card sample" id="sample"></div>
+        </section>
 
-      <section aria-labelledby="h-violations">
-        <div class="section-head">
-          <h2 id="h-violations">
-            What the server refuses, and what it leaves to review
-          </h2>
-        </div>
-        <p class="section-sub">
-          Five deliberately broken versions of this model, in
-          <code>violations/</code>. Three are internally inconsistent, and the
-          server refuses to load them. Two are consistent and still wrong
-          against the policy; catching them takes reading the policy and the
-          data.
-        </p>
-        <ul class="violations" id="violations"></ul>
-      </section>
+        <section aria-labelledby="h-agent">
+          <div class="section-head">
+            <h2 id="h-agent">An agent acting for this identity</h2>
+          </div>
+          <div class="agent-intro">
+            <p>
+              An agent reaches this model through Publisher's MCP endpoint, with
+              two tools that matter here: <code>get_context</code> to discover
+              sources and fields, and <code>execute_query</code> to run Malloy.
+              Neither is a side door. The gateway in front of the engine
+              authenticates the person the agent works for and sets their
+              <code>#(secure)</code> attributes on every call, so the agent
+              never holds them and cannot change them. Every query it writes,
+              however clever, runs through the same surfaces, locks and row
+              filters as this page, and is recorded with the fields and classes
+              it read.
+            </p>
+            <p>
+              Below are the moves an agent, a careless one or a hostile one,
+              would try to get past this identity's access. Each runs live, as
+              this identity, against the model the server is serving now.
+            </p>
+          </div>
+          <ol class="attempts" id="attempts"></ol>
+        </section>
+      </div>
     </main>
     <script src="/sdk/publisher.js"></script>
     <script type="module" src="./app/app.js"></script>

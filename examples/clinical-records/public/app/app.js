@@ -26,9 +26,10 @@ import {
 } from "./format.js";
 import { el, errorNote, fill } from "./dom.js";
 import { ageHistogram } from "./histogram.js";
+import { initExplore } from "./explore.js";
 
 const $ = (id) => document.getElementById(id);
-const state = readHash(location.hash, ["surface", "cell"]);
+const state = readHash(location.hash, ["view", "as", "surface", "cell"]);
 const setState = (patch) => {
   Object.assign(state, patch);
   history.replaceState(null, "", writeHash(state));
@@ -572,13 +573,22 @@ function renderViolations() {
 
 /* ── boot ──────────────────────────────────────────────────────────────── */
 
-async function main() {
+/** The governance export, loaded once and shared by both views. */
+let governancePromise = null;
+const governance = () => (governancePromise ??= loadGovernance());
+
+let scorecardStarted = false;
+let exploreStarted = false;
+
+async function startScorecard() {
+  if (scorecardStarted) return;
+  scorecardStarted = true;
   renderViolations();
   const deid = renderDeid();
   let published = [];
   let v = null;
   try {
-    const gov = await loadGovernance();
+    const gov = await governance();
     published = gov.sources.filter((s) => s.published);
     v = renderVerdicts(published);
     renderMatrix(published);
@@ -598,6 +608,42 @@ async function main() {
   if (v) renderControls(published, v, mismatched);
   await deid;
   document.body.dataset.ready = "true";
+}
+
+async function startExplore() {
+  if (exploreStarted) return;
+  exploreStarted = true;
+  let gov = null;
+  try {
+    gov = await governance();
+  } catch {
+    // The view still works without classes on its column headers.
+  }
+  initExplore(gov, state.as || "clinician", (id) => setState({ as: id }));
+}
+
+function showView(view) {
+  const explore = view === "explore";
+  $("view-scorecard").hidden = explore;
+  $("view-explore").hidden = !explore;
+  for (const tab of document.querySelectorAll("[role=tab]")) {
+    tab.setAttribute(
+      "aria-selected",
+      tab.dataset.view === (explore ? "explore" : "scorecard")
+        ? "true"
+        : "false",
+    );
+  }
+  setState({ view: explore ? "explore" : "" });
+  if (explore) startExplore();
+  else startScorecard();
+}
+
+function main() {
+  for (const tab of document.querySelectorAll("[role=tab]")) {
+    tab.addEventListener("click", () => showView(tab.dataset.view));
+  }
+  showView(state.view === "explore" ? "explore" : "scorecard");
 }
 
 main();
