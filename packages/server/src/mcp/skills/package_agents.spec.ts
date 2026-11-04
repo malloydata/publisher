@@ -13,6 +13,19 @@ import {
    summarizeAgentSkillFile,
 } from "./package_skills";
 
+const isWindows = process.platform === "win32";
+const isRoot = process.getuid?.() === 0;
+// macOS and Windows default to case-insensitive filesystems, where two names that differ only by case cannot coexist.
+const caseSensitiveFs = (() => {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "case-probe-"));
+   try {
+      fs.writeFileSync(path.join(dir, "A"), "");
+      return !fs.existsSync(path.join(dir, "a"));
+   } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+   }
+})();
+
 describe("readPackageAgents", () => {
    let pkg: string;
    let outside: string;
@@ -867,16 +880,21 @@ describe("readPackageAgents", () => {
             expect(result.contentShas.size).toBe(0);
          });
 
-         it("skips, rather than drops, an unreadable file under a path containing 'link'", () => {
-            if (process.getuid?.() === 0) return;
-            write(`${ASSETS}/link/x.txt`, "x");
-            fs.chmodSync(path.join(pkg, ASSETS, "link/x.txt"), 0);
-            write(`${ASSETS}/ok.txt`, "fine");
-            const result = read({ analyst: analyst() });
-            expect(result.agents.has("analyst")).toBe(true);
-            expect(listed(result)).toEqual([`${LISTED}/ok.txt`]);
-            expect(warned(result, "link/x.txt", "cannot be read")).toBe(true);
-         });
+         // chmod revokes nothing on Windows or for root.
+         it.skipIf(isWindows || isRoot)(
+            "skips, rather than drops, an unreadable file under a path containing 'link'",
+            () => {
+               write(`${ASSETS}/link/x.txt`, "x");
+               fs.chmodSync(path.join(pkg, ASSETS, "link/x.txt"), 0);
+               write(`${ASSETS}/ok.txt`, "fine");
+               const result = read({ analyst: analyst() });
+               expect(result.agents.has("analyst")).toBe(true);
+               expect(listed(result)).toEqual([`${LISTED}/ok.txt`]);
+               expect(warned(result, "link/x.txt", "cannot be read")).toBe(
+                  true,
+               );
+            },
+         );
 
          it("serves a skill named like an Object.prototype key, with its own root", () => {
             write(
@@ -931,14 +949,16 @@ describe("readPackageAgents", () => {
             droppedWith("alias.txt");
          });
 
-         it("when assets is itself a symlink, out of the package or within it", () => {
+         it("when assets is itself a symlink out of the package", () => {
             analyst();
             fs.mkdirSync(path.join(outside, "files"));
             fs.writeFileSync(path.join(outside, "files/x.txt"), "x");
             fs.symlinkSync(path.join(outside, "files"), path.join(pkg, ASSETS));
             droppedWith("conventions/assets");
+         });
 
-            fs.rmSync(path.join(pkg, ASSETS));
+         it("when assets is itself a symlink within the package", () => {
+            analyst();
             write("elsewhere/x.txt", "x");
             fs.symlinkSync(path.join(pkg, "elsewhere"), path.join(pkg, ASSETS));
             droppedWith("conventions/assets");
@@ -965,17 +985,23 @@ describe("readPackageAgents", () => {
             droppedWith("a..b.txt");
          });
 
-         it("on two assets that differ only by case", () => {
-            write(`${ASSETS}/Logo.svg`, "x");
-            write(`${ASSETS}/logo.svg`, "y");
-            droppedWith("only by case");
-         });
+         it.skipIf(!caseSensitiveFs)(
+            "on two assets that differ only by case",
+            () => {
+               write(`${ASSETS}/Logo.svg`, "x");
+               write(`${ASSETS}/logo.svg`, "y");
+               droppedWith("only by case");
+            },
+         );
 
-         it("on two directories that differ only by case", () => {
-            write(`${ASSETS}/Dir/a.txt`, "x");
-            write(`${ASSETS}/dir/b.txt`, "y");
-            droppedWith("only by case");
-         });
+         it.skipIf(!caseSensitiveFs)(
+            "on two directories that differ only by case",
+            () => {
+               write(`${ASSETS}/Dir/a.txt`, "x");
+               write(`${ASSETS}/dir/b.txt`, "y");
+               droppedWith("only by case");
+            },
+         );
       });
 
       describe("package budget", () => {
