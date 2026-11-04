@@ -76,6 +76,7 @@ describe("value index build", () => {
       expect(index.size).toBe(5);
       expect(report).toMatchObject({
          dimensionsRead: 2,
+         dimensionsReused: 0,
          valuesFromData: 5,
          valuesFromDocs: 0,
          cut: [],
@@ -137,6 +138,56 @@ describe("value index build", () => {
       } finally {
          cities.gated = false;
       }
+   });
+
+   it("stops reading when the build's read budget is spent, and names the rest as failed", async () => {
+      asked.length = 0;
+      const { report } = await buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(),
+         readBudgetMs: 0,
+      });
+      expect(asked).toEqual([]);
+      expect(report.failed).toEqual(
+         [CITY, ARRIVES].map((dimension) => ({
+            dimension,
+            reason: "not read: this build's value reads used their 0 s budget",
+         })),
+      );
+   });
+
+   it("given the build it replaces, reads only the dimensions that failed there", async () => {
+      const first = await buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(async (req) => {
+            if (req.source === "cities")
+               throw new ServiceUnavailableError("busy");
+            return fetcher(req);
+         }),
+      });
+      asked.length = 0;
+      const { index, report } = await buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(),
+         previous: first,
+      });
+      expect(asked.map((r) => r.source)).toEqual(["cities"]);
+      expect(report).toMatchObject({ dimensionsRead: 1, dimensionsReused: 1 });
+      expect(index.values.map((v) => v.value).sort()).toEqual(
+         [
+            "Boulder",
+            "Chicago O'Hare (ORD)",
+            "Denver",
+            "Denver International (DIA)",
+            "N/A",
+         ].sort(),
+      );
    });
 
    it("reports a failed read and goes on", async () => {

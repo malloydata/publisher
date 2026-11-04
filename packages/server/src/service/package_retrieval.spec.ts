@@ -232,9 +232,7 @@ describe("publisher.json retrieval block", () => {
       expect(
          parsePackageRetrieval({ fcj: { judgeLlm: null } }).fcj?.judgeLlm,
       ).toBeNull();
-      expect(() =>
-         parsePackageRetrieval({ fcj: { judgeLlm: {} } }),
-      ).toThrow(
+      expect(() => parsePackageRetrieval({ fcj: { judgeLlm: {} } })).toThrow(
          'Invalid publisher.json retrieval.fcj.judgeLlm.model: expected a non-empty string, got nothing. The provider, host and key are the server\'s retrieval.llm settings. Fix: "judgeLlm": { "model": "claude-haiku-5-5" }',
       );
       // A package must not choose where the server's key and prompts go.
@@ -290,9 +288,9 @@ describe("keys of the retrieval block that an earlier release read", () => {
          assertRequiredStagesAvailable(settings, false),
       ).not.toThrow();
       // Not even a value the old release refused.
-      expect(
-         parsePackageRetrieval({ refine: "on", rerank: 3 }),
-      ).toEqual({ promptPaths: {} });
+      expect(parsePackageRetrieval({ refine: "on", rerank: 3 })).toEqual({
+         promptPaths: {},
+      });
    });
 
    it("do not include engine, which no release read: it is an unknown key", () => {

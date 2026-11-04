@@ -24,10 +24,7 @@ export const CLUSTER_SETTINGS: FcjSettings = {
    listUnion: 0,
    readingsRule: false,
 };
-import {
-   loadedRetrievalConfig,
-   setRetrievalConfig,
-} from "../retrieval_config";
+import { loadedRetrievalConfig, setRetrievalConfig } from "../retrieval_config";
 import { createCatalogTables } from "../storage/duckdb/schema";
 import { buildFcjIndex, type FcjIndex } from "../mcp/context/index_build";
 import type { IndexValueFetcher } from "../mcp/context/values_index";

@@ -45,7 +45,11 @@ import {
    resolveSourceSummaries,
 } from "../tools/source_summaries";
 import { buildFcjIndex, type FcjIndex } from "./index_build";
-import type { IndexValueFetcher } from "./values_index";
+import type {
+   IndexValueFetcher,
+   ValueBuildReport,
+   ValueIndex,
+} from "./values_index";
 
 export type FcjState =
    | { status: "building"; startedAt: number }
@@ -54,6 +58,11 @@ export type FcjState =
         index: FcjIndex;
         /** Set when value reads failed: when to build again for them. */
         rebuildAt?: number;
+        /**
+         * Builds in a row that left values unread. Each doubles the wait
+         * before the next ({@link valueRetryDelayMs}).
+         */
+        valueFailures?: number;
         /** A rebuild for failed value reads is queued; this index serves until it lands. */
         rebuilding?: boolean;
      }
@@ -209,35 +218,60 @@ async function droppedDuringBuild(
    return true;
 }
 
-/** The ready state for a new index, due for a rebuild when value reads failed. */
+/** The longest wait between builds for unread values. */
+export const VALUE_RETRY_MAX_DELAY_MS = 3_600_000;
+
+/**
+ * The wait before building again for unread values, after `failures` builds
+ * in a row left some unread: the provider cool-down, doubled each time, up to
+ * an hour. A dimension that always times out is then read about once an hour
+ * rather than once a minute.
+ */
+export function valueRetryDelayMs(failures: number): number {
+   return Math.min(
+      VALUE_RETRY_MAX_DELAY_MS,
+      PROVIDER_FAILURE_COOLDOWN_MS * 2 ** Math.max(0, failures - 1),
+   );
+}
+
+/**
+ * The ready state for a new index, due for a rebuild when value reads failed.
+ * `failuresBefore` counts the builds in a row before this one that left
+ * values unread.
+ */
 function readyState(
    index: FcjIndex,
    environmentName: string,
    packageName: string,
+   failuresBefore = 0,
 ): FcjState {
    const values = index.report.values;
    const failed = "failed" in values ? values.failed : [];
    if (failed.length === 0) return { status: "ready", index };
+   const valueFailures = failuresBefore + 1;
+   const retryAfterMs = valueRetryDelayMs(valueFailures);
    logger.warn(
-      "[get_context fcj] Some #(index) values could not be read; the index serves without them and is built again after a cool-down",
+      "[get_context fcj] Some #(index) values could not be read; the index serves without them and reads them again after a cool-down",
       {
          environmentName,
          packageName,
          failed,
-         retryAfterMs: PROVIDER_FAILURE_COOLDOWN_MS,
+         retryAfterMs,
       },
    );
    return {
       status: "ready",
       index,
-      rebuildAt: Date.now() + PROVIDER_FAILURE_COOLDOWN_MS,
+      rebuildAt: Date.now() + retryAfterMs,
+      valueFailures,
    };
 }
 
 /**
- * Build a ready index again because some of its value reads failed. The old
- * index serves until the new one is ready. If the rebuild fails, the old one
- * stays, due again after another cool-down.
+ * Build a ready index again because some of its value reads failed. Only
+ * the dimensions whose reads failed are read; the rest keep their values.
+ * The old index serves until the new one is ready. If the rebuild fails, the
+ * old one stays, due again after a longer cool-down.
  */
 function rebuildForValues(
    args: Parameters<typeof kickFcjBuild>[0],
@@ -251,9 +285,23 @@ function rebuildForValues(
          return;
       }
       try {
-         const index = await buildFor(args);
+         const previous = state.index.report.values;
+         const index = await buildFor(
+            args,
+            "failed" in previous
+               ? { index: state.index.values, report: previous }
+               : undefined,
+         );
          if (await droppedDuringBuild(args)) return;
-         states.set(pkg, readyState(index, environmentName, packageName));
+         states.set(
+            pkg,
+            readyState(
+               index,
+               environmentName,
+               packageName,
+               state.valueFailures ?? 0,
+            ),
+         );
       } catch (error) {
          logger.warn(
             "[get_context fcj] The search index could not be built again for its missing values; the earlier index keeps serving",
@@ -263,21 +311,26 @@ function rebuildForValues(
                error: error instanceof Error ? error.message : String(error),
             },
          );
+         const valueFailures = (state.valueFailures ?? 0) + 1;
          states.set(pkg, {
             status: "ready",
             index: state.index,
-            rebuildAt: Date.now() + PROVIDER_FAILURE_COOLDOWN_MS,
+            rebuildAt: Date.now() + valueRetryDelayMs(valueFailures),
+            valueFailures,
          });
       }
    });
 }
 
-async function buildFor(args: {
-   environmentStore: EnvironmentStore;
-   environmentName: string;
-   packageName: string;
-   pkg: Package;
-}): Promise<FcjIndex> {
+async function buildFor(
+   args: {
+      environmentStore: EnvironmentStore;
+      environmentName: string;
+      packageName: string;
+      pkg: Package;
+   },
+   previousValues?: { index: ValueIndex; report: ValueBuildReport },
+): Promise<FcjIndex> {
    const { environmentStore, environmentName, packageName, pkg } = args;
    const pkgIndex = await getPackageIndex(
       environmentStore,
@@ -359,6 +412,7 @@ async function buildFor(args: {
          ...(valueFetcherOverride ? { fetcher: valueFetcherOverride } : {}),
       },
       budget,
+      ...(previousValues ? { previousValues } : {}),
       // A package removed mid-build stops reading values and embedding.
       shouldStop,
    });

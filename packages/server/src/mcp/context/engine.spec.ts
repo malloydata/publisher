@@ -40,6 +40,8 @@ import {
    fcjJudgeChat,
    fcjStateOf,
    kickFcjBuild,
+   VALUE_RETRY_MAX_DELAY_MS,
+   valueRetryDelayMs,
 } from "./engine_state";
 import { ENGINE_TABLES } from "./catalog_store";
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -736,8 +738,9 @@ describe("a value read the server refused", () => {
    };
    /** A fetcher whose reads of `cities.city` fail `failures` times, at the query cap. */
    const refusing = (failures: number) => {
-      const reads = { city: 0 };
+      const reads = { city: 0, flights: 0 };
       const fetcher: IndexValueFetcher = async (req) => {
+         if (req.source === "flights") reads.flights += 1;
          if (req.source === "cities") {
             reads.city += 1;
             if (reads.city <= failures) {
@@ -761,8 +764,9 @@ describe("a value read the server refused", () => {
    const askAfterCooldown = async (
       handler: ReturnType<SemanticHarness["handlerFor"]>,
       pkg: unknown,
+      waitMs = PROVIDER_FAILURE_COOLDOWN_MS,
    ) => {
-      setSystemTime(new Date(Date.now() + PROVIDER_FAILURE_COOLDOWN_MS + 1));
+      setSystemTime(new Date(Date.now() + waitMs + 1));
       let served;
       try {
          served = await callPayload(handler, ask);
@@ -823,27 +827,42 @@ describe("a value read the server refused", () => {
       });
    });
 
-   it("keeps serving and reads again at most once per cool-down when every read fails", async () => {
+   it("keeps serving, reads only the failed dimension again, and doubles the wait each time it fails", async () => {
       const { reads, fetcher } = refusing(Number.POSITIVE_INFINITY);
       _setFcjValueFetcherForTests(fetcher);
       const { pkg } = await compileFcjFixture();
       const handler = harness.handlerFor(pkg);
       await untilSemantic(handler, ask);
-      expect(reads.city).toBe(1);
+      expect(reads).toEqual({ city: 1, flights: 1 });
 
       for (const round of [2, 3]) {
-         const served = await askAfterCooldown(handler, pkg);
+         const wait = valueRetryDelayMs(round - 1);
+         // Just inside the wait, nothing is read.
+         setSystemTime(new Date(Date.now() + wait - 1_000));
+         try {
+            await callPayload(handler, ask);
+         } finally {
+            setSystemTime();
+         }
+         expect(reads.city).toBe(round - 1);
+         const served = await askAfterCooldown(handler, pkg, wait);
          expect(served.payload.retrieval).toBe("semantic");
          expect(reads.city).toBe(round);
+         // The dimension that was read keeps its values and is not read again.
+         expect(reads.flights).toBe(1);
          const state = stateOf(pkg);
          expect(state?.status).toBe("ready");
          if (state?.status !== "ready") return;
-         expect(state.rebuildAt).toBeGreaterThan(Date.now());
+         expect(state.valueFailures).toBe(round);
          expect(cityValues(pkg)).toEqual([]);
-         // A second question inside the new cool-down reads nothing.
-         await callPayload(handler, ask);
-         expect(reads.city).toBe(round);
+         expect(
+            state.index.values.values.some(
+               (v) => v.value === "Denver International (DIA)",
+            ),
+         ).toBe(true);
       }
+      expect(valueRetryDelayMs(2)).toBe(2 * PROVIDER_FAILURE_COOLDOWN_MS);
+      expect(valueRetryDelayMs(20)).toBe(VALUE_RETRY_MAX_DELAY_MS);
    });
 
    it("does not read an empty dimension again: no values is an answer, not a failure", async () => {

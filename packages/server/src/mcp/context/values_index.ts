@@ -92,6 +92,15 @@ export type IndexValueFetcher = (
 export const VALUE_READ_TIMEOUT_MS = 60_000;
 
 /**
+ * The most time one build spends reading values, across all of a package's
+ * `#(index)` dimensions. Reads run one at a time, so without it a package
+ * with many slow dimensions would hold the build for dimensions x 60s.
+ * Dimensions not reached are reported as failed, so the next build (after a
+ * cool-down) reads them, and only them.
+ */
+export const VALUE_READ_BUDGET_MS = 300_000;
+
+/**
  * The read: the `limit` most frequent non-null values of one dimension,
  * through the normal query path, with no givens (an ungated source needs
  * none) and no `#(authorize)` bypass.
@@ -463,6 +472,8 @@ function sortMatches(list: ValueMatch[]): ValueMatch[] {
 /** What the value build did, for the build report. */
 export interface ValueBuildReport {
    dimensionsRead: number;
+   /** Dimensions the replaced build read, whose values were kept rather than read again. */
+   dimensionsReused: number;
    valuesFromData: number;
    valuesFromDocs: number;
    /** Dimensions with more distinct values than the cap: the most frequent were kept. */
@@ -472,9 +483,11 @@ export interface ValueBuildReport {
    /**
     * `#(index)` dimensions whose read was refused for a reason that clears on
     * its own: the server was at its concurrent-query cap, or the read timed
-    * out. Their values are missing from this build, and the engine rebuilds
-    * the index after a cool-down (engine_state.ts). Any other failed read is
-    * in `skipped`, since reading again would fail the same way.
+    * out, or the build's read budget ran out before it. Their values are
+    * missing from this build, and the engine rebuilds the index after a
+    * cool-down that doubles each time (engine_state.ts), reading only these.
+    * Any other failed read is in `skipped`, since reading again would fail
+    * the same way.
     */
    failed: Array<{ dimension: string; reason: string }>;
    ms: number;
@@ -523,11 +536,31 @@ export async function buildValueIndex(args: {
    };
    db?: DuckDBConnection;
    shouldStop?: () => boolean;
+   /**
+    * The index this build replaces, after some of its reads failed. A
+    * dimension it read is not read again: its values are reused. Only the
+    * dimensions in its report's `failed` are read.
+    */
+   previous?: { index: ValueIndex; report: ValueBuildReport };
+   /** Test seam for {@link VALUE_READ_BUDGET_MS}. */
+   readBudgetMs?: number;
 }): Promise<{ index: ValueIndex; report: ValueBuildReport }> {
    const started = Date.now();
+   const budgetMs = args.readBudgetMs ?? VALUE_READ_BUDGET_MS;
+   const reread = args.previous
+      ? new Set(args.previous.report.failed.map((f) => f.dimension))
+      : undefined;
+   const previousValues = new Map<string, IndexedValue[]>();
+   for (const v of args.previous?.index.values ?? []) {
+      if (v.origin !== "data") continue;
+      const list = previousValues.get(v.dimension) ?? [];
+      list.push(v);
+      previousValues.set(v.dimension, list);
+   }
    const values: IndexedValue[] = [];
    const report: ValueBuildReport = {
       dimensionsRead: 0,
+      dimensionsReused: 0,
       valuesFromData: 0,
       valuesFromDocs: 0,
       cut: [],
@@ -563,6 +596,25 @@ export async function buildValueIndex(args: {
          continue;
       }
       if (args.shouldStop?.()) break;
+      if (reread && !reread.has(node.key)) {
+         // Read by the build this one replaces: keep what it got.
+         const kept = previousValues.get(node.key) ?? [];
+         values.push(...kept);
+         report.dimensionsReused += 1;
+         report.valuesFromData += kept.length;
+         const cut = args.previous!.report.cut.find(
+            (c) => c.dimension === node.key,
+         );
+         if (cut) report.cut.push(cut);
+         continue;
+      }
+      if (Date.now() - started >= budgetMs) {
+         report.failed.push({
+            dimension: node.key,
+            reason: `not read: this build's value reads used their ${Math.round(budgetMs / 1000)} s budget`,
+         });
+         continue;
+      }
       const fetcher = args.read.fetcher ?? defaultIndexValueFetcher;
       try {
          const got = await fetcher({
