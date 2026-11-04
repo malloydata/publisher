@@ -1,8 +1,9 @@
 ##! experimental.givens
 
-given:
-  GROUPS :: number[]
-  ROLES :: string[]
+#(secure)
+given: GROUPS :: number[]
+#(secure)
+given: ROLES :: string[]
 
 // A row-level gate, grafted onto whatever runs over this source.
 #(access_filter) id in $GROUPS

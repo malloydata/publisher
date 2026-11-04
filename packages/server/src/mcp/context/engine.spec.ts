@@ -34,7 +34,8 @@ import {
 import { ServiceUnavailableError } from "../../errors";
 import { pollFor, pollUntil } from "../../test_helpers/poll";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/retrieval_shared";
-import { _setFcjDeadlineForTests } from "./engine";
+import { _setFcjDeadlineForTests, inScope } from "./engine";
+import { sourceContextKey } from "../tools/package_entities";
 import {
    _setFcjValueFetcherForTests,
    fcjJudgeChat,
@@ -929,5 +930,30 @@ describe("a value read the server refused", () => {
       }
       expect(stateOf(pkg)?.status).toBe("ready");
       expect(reads).toBe(1);
+   });
+});
+
+describe("inScope with sources the caller may not see", () => {
+   it("leaves out every node of a dropped source, in each file it resolves in, and nothing else", async () => {
+      const { catalog } = await compileFcjFixture();
+      const request = {
+         environmentName: "env",
+         packageName: "fixture",
+      } as unknown as Parameters<typeof inScope>[0];
+      // `orders` resolves in shop.malloy and, imported, in reports.malloy.
+      const allow = inScope(
+         request,
+         new Set([sourceContextKey("shop.malloy", "orders")]),
+      );
+      const nodes = [...catalog.nodes.values()];
+      const hidden = nodes.filter((n) => !allow(n));
+      expect(hidden.length).toBeGreaterThan(0);
+      expect(hidden.every((n) => n.source === "orders")).toBe(true);
+      expect(
+         nodes.filter((n) => n.source === "orders").every((n) => !allow(n)),
+      ).toBe(true);
+      expect(nodes.filter((n) => n.source === "flights").every(allow)).toBe(
+         true,
+      );
    });
 });

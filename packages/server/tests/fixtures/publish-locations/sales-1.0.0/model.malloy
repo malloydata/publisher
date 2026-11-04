@@ -1,0 +1,3 @@
+source: numbers is duckdb.sql("SELECT 1 AS answer") extend {
+  view: which is { select: answer }
+}

@@ -24,6 +24,7 @@ import { ReportController } from "./controller/report.controller";
 import { SkillController } from "./controller/skill.controller";
 import { StorageDestinationController } from "./controller/storage_destination.controller";
 import { ThemeController } from "./controller/theme.controller";
+import { VersionController } from "./controller/version.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    drainingGuard,
@@ -35,6 +36,10 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
+import {
+   legacyPackageNameBodyMiddleware,
+   legacyPackageNameMiddleware,
+} from "./legacy_package_name";
 import { logger, loggerMiddleware } from "./logger";
 import {
    assertDuckDBResourceConfig,
@@ -264,6 +269,39 @@ const storageDestinationController = new StorageDestinationController(
 const materializationController = new MaterializationController(
    materializationService,
 );
+const versionController = new VersionController(environmentStore);
+// Archiving a version reclaims the tables it alone owns, in the background.
+environmentStore.setVersionArchivedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.reclaimVersionTables(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// Deleting a version stops its builds and reclaims those tables, in the
+// background, once its row is gone.
+environmentStore.setVersionDeletedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.cleanUpDeletedVersion(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// A publish of a version id a delete freed first reclaims what the deleted
+// version still owes, if that delete's cleanup has not run yet.
+environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
+   materializationService.reclaimOwedNow(environment, packageName, versionId),
+);
+// A reclaim that a crash cut short is finished once the environments have
+// loaded: nothing else would start it again.
+void environmentStore.finishedInitialization.then(
+   () => materializationService.reclaimArchivedVersions(),
+   () => undefined,
+);
 /**
  * Start the standalone materialization scheduler, or return null when
  * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is off (the default, so an
@@ -287,6 +325,10 @@ const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
 export const mcpApp = createMcpApp(environmentStore);
+
+// Before every package route, the data-app static routes included: a package
+// version named in a combined package name (see legacy_package_name).
+app.use(legacyPackageNameMiddleware());
 
 // The data-app static routes come before the SPA catch-all and (in dev) the
 // Vite proxy.
@@ -323,6 +365,7 @@ app.use(
 );
 
 app.use(bodyParser.json({ limit: "1mb" }));
+app.use(legacyPackageNameBodyMiddleware());
 
 try {
    const metricsHandler = getPrometheusMetricsHandler();
@@ -354,6 +397,7 @@ registerApiRoutes(app, API_PREFIX, {
    compileController,
    materializationController,
    storageDestinationController,
+   versionController,
 });
 
 // Legacy `/projects/...` aliases; must precede the SPA catch-all.

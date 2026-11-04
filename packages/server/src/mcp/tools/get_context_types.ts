@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
+import type { GivenValue } from "@malloydata/malloy";
 import type { Package } from "../../service/package";
 import type { SearchTargetType } from "./get_context_request";
+import type { ClassifiedInput } from "../../service/classification";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -44,6 +46,17 @@ export interface Entity {
    aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    dataType?: string;
+   // The data classes of a dimension or measure, sorted, as the package's
+   // policy names them: its own `#(classification)` lines, or the union of
+   // the classes of the fields it reads when it declares none. Absent when
+   // neither gives one.
+   classifications?: string[];
+   // True when `classifications` was inferred from the fields the expression
+   // reads rather than declared on the field.
+   classificationInferred?: true;
+   // The classified fields the expression reads, by path from the source,
+   // nearest first. Present on a derived field; absent on a raw column.
+   classificationInputs?: ClassifiedInput[];
    // For a field reached THROUGH a join, the traversal that reaches it
    // ("orders", or "order_items.inventory_items"), which is also the dotted
    // prefix of `name`. Absent on a source's own fields. See collectJoinedFields.
@@ -87,6 +100,12 @@ export interface ResultEntity {
    rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
+   /** The field's classes, declared or inferred; absent when neither gives one. */
+   classifications?: string[];
+   /** True when the class came from the fields the expression reads. */
+   classificationInferred?: true;
+   /** The classified fields the expression reads, nearest first. */
+   classificationInputs?: ClassifiedInput[];
    /** The join traversal reaching this field; absent on a source's own. */
    joinPath?: string;
    /**
@@ -214,6 +233,14 @@ export interface ResolvedValueSearch {
  */
 export interface ResolvedRequest {
    /**
+    * The caller's givens as the trusted tier set them. Sources whose lock
+    * cannot admit the caller on the secure ones are omitted, and dimension
+    * value lookups read them through the query path, where they unlock
+    * `#(authorize)` and `#(access_filter)` exactly as for `execute_query`.
+    * Entity ranking never reads them. Absent: none.
+    */
+   givens?: Record<string, GivenValue>;
+   /**
     * Only `source` targets, none with text: the catalog browse. The one
     * request with a resumable order, so the only one `offset` applies to, and
     * the one whose cards go thin.
@@ -234,12 +261,6 @@ export interface ResolvedRequest {
    valueSearches: ResolvedValueSearch[];
    /** `dimensional_value` targets sent with no `search_text`, for a warning. Absent when none. */
    textlessValueTargets?: number;
-   /**
-    * Given values the caller sent. Used only to read dimension values through
-    * the query path, where they unlock `#(authorize)` and `#(access_filter)`
-    * exactly as they do for `execute_query`; entity ranking never reads them.
-    */
-   givens?: Record<string, unknown>;
    /** Filter parameter values; read by value lookups for sources with required filters. */
    filterParams?: Record<string, string | string[]>;
    /** True when no target carried search text: enumerate, do not rank. */

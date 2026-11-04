@@ -70,6 +70,7 @@ query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const ACCESS_FILTERED = `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS
@@ -79,6 +80,7 @@ query: all_gated is gated -> { aggregate: c }
 `;
 
 const AUTHORIZED = `##! experimental.givens
+#(secure)
 given: ROLE :: string
 
 #(authorize) 'analyst' = $ROLE

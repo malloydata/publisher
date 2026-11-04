@@ -9,12 +9,14 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   noVersions,
 } from "../../../test/serverProvider";
 
 let agents: unknown[] | undefined;
 
 mockServerProvider(
    {
+      versions: noVersions,
       packages: {
          getPackage: () =>
             Promise.resolve({

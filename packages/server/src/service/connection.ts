@@ -2757,7 +2757,7 @@ export function resolveProxiedTls(
 function buildProxiedPostgresConnection(
    metadata: EnvironmentConnectionMetadata,
    endpoint: ProxyEndpoint,
-): PooledPostgresConnection {
+): EnvironmentPooledPostgresConnection {
    const name = metadata.apiConnection.name!;
    const pg = metadata.apiConnection.postgresConnection;
    if (!pg) {
@@ -2775,14 +2775,11 @@ function buildProxiedPostgresConnection(
    const { query, ssl } = resolveProxiedTls(name, pg.host, pg.sslmode);
    const connectionString = `postgresql://${auth}${endpoint.host}:${endpoint.port}${db}${query}`;
    const setupSQL = statementTimeoutSetupSQL(name, pg);
-   return new PooledPostgresConnection({
+   return new EnvironmentPooledPostgresConnection({
       name,
       connectionString,
       ...(ssl ? { ssl } : {}),
       ...(setupSQL ? { setupSQL } : {}),
-      // Pool sizing mirrors buildSnowflakePrivateKeyConnection.
-      poolMin: 1,
-      poolMax: 20,
    });
 }
 
@@ -2966,7 +2963,10 @@ export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
    environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
-   { origin = "connection" }: { origin?: ConnectionOrigin } = {},
+   {
+      origin = "connection",
+      openProxy: openTunnel = openProxy,
+   }: { origin?: ConnectionOrigin; openProxy?: typeof openProxy } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
@@ -2980,7 +2980,7 @@ export function buildEnvironmentMalloyConfig(
    const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
    const proxyConnectionCache = new Map<
       string,
-      Promise<PooledPostgresConnection>
+      Promise<EnvironmentPooledPostgresConnection>
    >();
    const postgresConnectionCache = new Map<
       string,
@@ -2988,6 +2988,19 @@ export function buildEnvironmentMalloyConfig(
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
+   const closePromises = new WeakMap<Connection, Promise<void>>();
+   // An evicted tunnel has left the caches, so release finds its cleanup here.
+   const evictions = new Set<Promise<void>>();
+
+   // pg-pool rejects a second end(), so every close path shares one run.
+   function closeOnce(connection: Connection): Promise<void> {
+      let closePromise = closePromises.get(connection);
+      if (!closePromise) {
+         closePromise = connection.close();
+         closePromises.set(connection, closePromise);
+      }
+      return closePromise;
+   }
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
       config: contextOverlay({ rootDirectory: environmentPath }),
@@ -3084,7 +3097,7 @@ export function buildEnvironmentMalloyConfig(
                      );
                   }
                   connectionPromise = (async () => {
-                     const endpoint = await openProxy(metadata.proxy!, {
+                     const endpoint = await openTunnel(metadata.proxy!, {
                         host: pgConfig.host!,
                         port: pgConfig.port!,
                      });
@@ -3096,6 +3109,34 @@ export function buildEnvironmentMalloyConfig(
                         // Registered only after the build succeeds, so a failed
                         // build leaves no orphaned tunnel in proxyEndpoints.
                         proxyEndpoints.set(name!, endpoint);
+                        // A dead tunnel is evicted so the next lookup dials a
+                        // fresh one; the identity check skips a superseded entry.
+                        endpoint.onClose((cause) => {
+                           if (
+                              proxyConnectionCache.get(name!) !==
+                              connectionPromise
+                           ) {
+                              return;
+                           }
+                           proxyConnectionCache.delete(name!);
+                           proxyEndpoints.delete(name!);
+                           logger.info(
+                              "SSH tunnel died; rebuilding on the next query",
+                              { connection: name, error: cause?.message },
+                           );
+                           const eviction = Promise.allSettled([
+                              closeOnce(connection).catch((error) =>
+                                 logger.warn(
+                                    "Failed to close evicted proxied connection",
+                                    { connection: name, error },
+                                 ),
+                              ),
+                              endpoint.close(),
+                           ]).then(() => {
+                              evictions.delete(eviction);
+                           });
+                           evictions.add(eviction);
+                        });
                         return connection;
                      } catch (err) {
                         await endpoint.close().catch(() => {});
@@ -3219,8 +3260,9 @@ export function buildEnvironmentMalloyConfig(
             malloyConfig.shutdown("close"),
             ...wrapperPromises.map(async (promise) => {
                const connection = await promise;
-               await connection.close();
+               await closeOnce(connection);
             }),
+            ...evictions,
          ]);
          // Tunnels close only after the builds above settle: an in-flight
          // openProxy registers its endpoint inside that promise, and the tunnel

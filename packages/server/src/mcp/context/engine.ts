@@ -25,6 +25,7 @@
  * warning says the page is from a new run.
  */
 
+import { sourceContextKey } from "../tools/package_entities";
 import {
    EMBEDDING_QUERY_TIMEOUT_MS,
    embeddingConfigured,
@@ -136,8 +137,25 @@ export function findTargetsOf(request: ResolvedRequest): FindTarget[] {
 }
 
 /** Whether a node survives the request's model, source and entity scope. */
-export function inScope(request: ResolvedRequest) {
+export function inScope(
+   request: ResolvedRequest,
+   /**
+    * Sources this request may not see, by sourceContextKey: the deny-all
+    * sources, plus those whose lock cannot admit the caller's givens
+    * (get_context_tool.ts). The index is built once per package, so a
+    * caller's lock is applied here, before find, connect and the judge.
+    */
+   dropped: ReadonlySet<string> = new Set(),
+) {
    return (node: CatalogNode): boolean => {
+      if (
+         dropped.size > 0 &&
+         node.modelPaths.some((mp) =>
+            dropped.has(sourceContextKey(mp, node.source)),
+         )
+      ) {
+         return false;
+      }
       if (request.modelPath && !node.modelPaths.includes(request.modelPath)) {
          return false;
       }
@@ -363,7 +381,7 @@ async function runFcjSearch(
    const settings = fcjSettingsOf(pkg.getRetrievalSettings?.());
    const stages: StageRow[] = [];
    const targets = findTargetsOf(request);
-   const allow = inScope(request);
+   const allow = inScope(request, pkgIndex.droppedSources);
    // `splitBundles`: a list target is also searched item by item.
    const plan: SplitPlan | undefined = settings.splitBundles
       ? planSplit(targets, settings.listTopK, knownPhraseOf(index))

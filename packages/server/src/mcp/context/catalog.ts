@@ -22,7 +22,7 @@
 
 import type { ModelDef } from "@malloydata/malloy";
 import type { Relationship } from "@malloydata/malloy-interfaces";
-import { compareText as comparePaths } from "../tools/retrieval_shared";
+import { compareText as comparePaths } from "../../compare_text";
 import {
    docOnlyText,
    docText,

@@ -114,6 +114,37 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(invalidIncremental);
    }
+   // A `#(carries)` ceiling is strict at load too: a surface that lists what
+   // it carries must not serve a field outside the list, and a warning would
+   // leave it serving. The message names every leak so one fix clears them.
+   const leaks = pkg.formatClassificationLeaks();
+   if (leaks) {
+      logger.error(
+         `Package ${packageName} exposes a field outside a source's #(carries)`,
+         { packageName, detail: leaks },
+      );
+      throw new BadRequestError(leaks);
+   }
+   // A gate keyed on a plain given is strict at load: the caller could satisfy
+   // it by sending a value, so it is a filter wearing a control's name.
+   const insecure = pkg.formatInsecureGateGivens();
+   if (insecure) {
+      logger.error(
+         `Package ${packageName} gates a source on a given that is not #(secure)`,
+         { packageName, detail: insecure },
+      );
+      throw new BadRequestError(insecure);
+   }
+   // An author join that bypasses a gate is strict at load for the same
+   // reason: the joined rows would reach every admitted caller unscoped.
+   const bypasses = pkg.formatJoinBypasses();
+   if (bypasses) {
+      logger.error(
+         `Package ${packageName} has a join that bypasses a gate on what it joins`,
+         { packageName, detail: bypasses },
+      );
+      throw new BadRequestError(bypasses);
+   }
    // `#@ preaggregate` is strict at load too (see
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
    // only warns.

@@ -42,6 +42,7 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
+      versionId?: unknown,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -63,6 +64,7 @@ export class CompileController {
                   includeSql,
                   givens,
                   scope,
+                  versionId,
                ),
          );
          outcome = result.status;
@@ -88,6 +90,7 @@ export class CompileController {
       includeSql: boolean,
       givens: Record<string, GivenValue> | undefined,
       scope: CompileScope,
+      versionId: unknown,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -110,6 +113,7 @@ export class CompileController {
          includeSql,
          givens,
          scope,
+         versionId,
       );
 
       const hasErrors = problems.some((p) => p.severity === "error");

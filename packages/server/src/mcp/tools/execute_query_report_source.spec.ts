@@ -67,6 +67,7 @@ export { flights, orders }`,
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS

@@ -200,6 +200,16 @@ The third argument, `opts`, is optional:
 | `queryName` | string | Run a saved query or view by name. Pair with `sourceName` for a view on a source; alone it runs a model-level query |
 | `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` or `/apps/<env>/<pkg>/` |
 | `givens` | object | A name→value map bound as Malloy [`given:`](./givens.md) runtime parameters for this query. Safe parameterization, not string interpolation |
+| `versionId` | string | Query this published version of the package instead of its `latest` (with [package versioning](./package-versions.md) on). A page opened with `?versionId=` in its URL already queries that version of its own package, when the package has it |
+
+**Versions.** With [package versioning](./package-versions.md) on, a page opened
+at `…/index.html?versionId=1.2.0` pins every query it makes to its own package
+to version 1.2.0, once a read of the package confirms it has that version;
+otherwise the page queries `latest`. A query that sets `opts.package` to
+another package gets that package's `latest`, and `opts.versionId` pins a
+single query. Only the URL pins: the page's own
+relative requests (`./app.js`, a stylesheet's `url()`) carry no query string,
+so they are served from `latest` unless the page adds `?versionId=` to them.
 
 `queryName` (with `sourceName` for a view on a source) is the alternative to
 passing a `run:` string as the second argument; use one path or the other, and

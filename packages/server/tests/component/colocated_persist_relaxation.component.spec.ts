@@ -136,6 +136,7 @@ describe("colocated persist + row-level #(access_filter): compose end to end", (
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: base is duckdb.sql("""
@@ -197,6 +198,7 @@ source: orders is base -> { select: org_id, amount } extend {}
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 #(access_filter) org_id = $ORG
@@ -253,6 +255,7 @@ source: derived is locked extend {} -> { select: org_id, amount }
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: GROUPS :: number[]
 
 source: base is duckdb.sql("""
@@ -288,6 +291,7 @@ source: locked_out is base -> { select: org_id, amount } extend {}
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: base is duckdb.sql("""
@@ -345,6 +349,7 @@ source: orders is base -> { select: org_id, amount } extend {}
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: raw is duckdb.sql("""
@@ -400,6 +405,7 @@ source: rollup is base_orders -> { select: org_id, amount }
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence composite_sources givens }
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -459,6 +465,7 @@ source: comp is combo -> { select: org_id, amount }
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence givens }
 
+#(secure)
 given: ORG :: string
 
 source: base is duckdb.sql("""
@@ -504,6 +511,7 @@ source: orders is base -> { select: id, org_id, amount } extend {
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence givens }
 
+#(secure)
 given: GROUPS :: string[]
 
 source: base is duckdb.sql("""
@@ -556,6 +564,7 @@ source: orders is base -> { select: id, org_id, amount }
                "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given: ORG :: number
 
 source: base is duckdb.sql("""

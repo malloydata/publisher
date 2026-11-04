@@ -32,6 +32,7 @@ export function registerSpaFallback(
    // resolves from storage (see `LoadedRoutes`). The cost: an environment or
    // package not loaded yet (a cold start, a lazily loaded environment) gets
    // the 404 page, which names the canonical URL that does load it.
+   // A versioned package is found by name through its loaded `latest`.
    const loadedPackage = (environmentName: string, packageName: string) =>
       environmentStore
          .getLoadedEnvironments()
@@ -39,8 +40,7 @@ export function registerSpaFallback(
             (environment) =>
                environment.getEnvironmentName() === environmentName,
          )
-         ?.getLoadedPackages()
-         .find((pkg) => pkg.getPackageName() === packageName);
+         ?.peekPackage(packageName);
    const loadedRoutes: LoadedRoutes = {
       hasEnvironment: (environmentName) =>
          environmentStore

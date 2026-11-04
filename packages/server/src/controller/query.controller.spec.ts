@@ -66,6 +66,8 @@ function controllerWith({
    const pkg = {
       getModel: () => (model ? fakeModel : undefined),
       getDeclaredQueryMetadata: () => null,
+      // A package with no published versions.
+      getVersionId: () => undefined,
    };
    const getEnvironment = sinon.stub().resolves({
       assertCanAdmitQuery: () => {},

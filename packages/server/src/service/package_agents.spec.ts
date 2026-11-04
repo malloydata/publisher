@@ -88,6 +88,7 @@ describe("package agents", () => {
       schedules: [
          { cron: "0 13 * * MON", task: "agents/analyst/tasks/weekly.md" },
       ],
+      budget: { turns: 30, job_minutes: 15 },
    });
    const other = () => ({
       description: "Other",
@@ -116,6 +117,7 @@ describe("package agents", () => {
             schedules: [
                { cron: "0 13 * * MON", task: "agents/analyst/tasks/weekly.md" },
             ],
+            budget: { turns: 30, job_minutes: 15 },
          },
          {
             name: "other",
@@ -146,6 +148,7 @@ describe("package agents", () => {
                taskContent: "Summarize last week.",
             },
          ],
+         budget: { turns: 30, job_minutes: 15 },
          warnings: [],
          source: {
             environment: "env",
@@ -435,6 +438,7 @@ describe("package agents", () => {
          );
          const agent = await controller.getAgent("env", "pkg", "analyst");
          expect(Object.keys(agent).sort()).toEqual([
+            "budget",
             "description",
             "instructions",
             "model",

@@ -60,6 +60,7 @@ const PLAIN = `source: plain is duckdb.table('orgtable') extend {
 /** Row-filter gate: forwarding GROUPS lets the caller scope the rows they see. */
 const GROUPS_GATE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -72,6 +73,7 @@ source: gated is duckdb.table('orgtable') extend {
 /** Lock gate: forwarding ROLE either admits or 403s. */
 const ROLE_LOCK = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -147,6 +149,7 @@ run: gated -> { aggregate: c }
          {
             "deep_base.malloy": `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -258,6 +261,7 @@ run: gated -> { aggregate: c }
          {
             "tenant_base.malloy": `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number is 1
 
@@ -272,6 +276,7 @@ source: visible_rows is rows extend {}
 `,
             "tenant_gate.malloy": `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number
 
@@ -309,6 +314,7 @@ run: gated_tenant -> { aggregate: c }
 
    const TENANT_BASE = `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number is 1
 
@@ -523,6 +529,7 @@ run: gated -> { aggregate: c }
 // reached only through the hub's `mid_gated`.
 const OG_BASE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -534,6 +541,7 @@ source: ungated_deep is duckdb.table('orgtable') extend {
 
 const OG_GATE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 

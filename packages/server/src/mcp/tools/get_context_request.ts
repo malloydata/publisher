@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod/v3";
+import type { GivenValue } from "@malloydata/malloy";
 import { getDimensionValueSettings } from "../../retrieval_config";
 import type {
    ResolvedRequest,
@@ -120,7 +121,7 @@ export const convergedContextShape = {
       .record(z.unknown())
       .nullish()
       .describe(
-         "Given values, as execute_query takes them. Read only by `dimensional_value` lookups, which run through the same access gates as a query: send the givens a gate needs, or that source's values are withheld.",
+         "The givens in force for this caller, as the trusted tier set them, and as execute_query takes them. A source whose #(authorize) lock cannot admit the caller on the #(secure) givens supplied, or reads a secure given not supplied, is omitted, as a source locked with `false` is. A `dimensional_value` lookup on a gated source runs through the same gates as a query, so its values are withheld without the givens it needs. Plain givens and row filters hide nothing. Omit to see every published source.",
       ),
    user_prompt: z
       .string()
@@ -214,7 +215,6 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       searches,
       valueSearches,
       ...(textlessValueTargets > 0 ? { textlessValueTargets } : {}),
-      ...(params.givens ? { givens: params.givens } : {}),
       ...(params.filter_params ? { filterParams: params.filter_params } : {}),
       listingOnly,
       // Pinning an entity by name turns code on, even over an explicit
@@ -223,6 +223,9 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
       offset: params.offset ?? 0,
+      ...(params.givens && Object.keys(params.givens).length > 0
+         ? { givens: params.givens as Record<string, GivenValue> }
+         : {}),
    };
 }
 

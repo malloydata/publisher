@@ -3,7 +3,10 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "./DuckDBConnection";
-import { MaterializationRepository } from "./MaterializationRepository";
+import {
+   DuplicateActiveMaterializationError,
+   MaterializationRepository,
+} from "./MaterializationRepository";
 import { initializeSchema } from "./schema";
 
 // Capture the SQL + params of reads (all) and writes (run) without touching a
@@ -177,5 +180,111 @@ describe("MaterializationRepository cascade deletes are records-only", () => {
       expect(runCalls[0].sql).toContain("DELETE FROM materializations");
       expect(runCalls[0].sql).not.toContain("DROP");
       expect(runCalls[0].params).toEqual(["env-1", "pkg-a"]);
+   });
+});
+
+// The version a run built, and the slot it holds while active: one run per
+// package by default, one per version for a run that writes only its own
+// version's tables.
+describe("MaterializationRepository versions (real DuckDB)", () => {
+   const ENV_ID = "env-v";
+   const PKG = "pkg-v";
+   const dbs: DuckDBConnection[] = [];
+
+   afterEach(async () => {
+      while (dbs.length) await dbs.pop()!.close();
+   });
+
+   async function freshRepo(): Promise<MaterializationRepository> {
+      const db = new DuckDBConnection(":memory:");
+      dbs.push(db);
+      await db.initialize();
+      await initializeSchema(db);
+      await db.run(
+         `INSERT INTO environments (id, name, path, created_at, updated_at)
+          VALUES (?, 'v-env', '/tmp/v-env', now(), now())`,
+         [ENV_ID],
+      );
+      return new MaterializationRepository(db);
+   }
+
+   it("records the version a run built, and null for a package with none", async () => {
+      const repo = await freshRepo();
+      const versioned = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.2.0",
+      });
+      expect(versioned.version).toBe("1.2.0");
+      expect((await repo.getById(versioned.id))?.version).toBe("1.2.0");
+      const plain = await repo.create(ENV_ID, "other", "PENDING");
+      expect(plain.version).toBeNull();
+   });
+
+   it("lets each version hold its own slot, but never two runs one slot", async () => {
+      const repo = await freshRepo();
+      const v1 = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.0.0",
+         lockVersion: "1.0.0",
+      });
+      const v2 = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "2.0.0",
+         lockVersion: "2.0.0",
+      });
+      // The package's own slot is a third, separate one.
+      const shared = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "2.0.0",
+      });
+      await expect(
+         repo.create(ENV_ID, PKG, "PENDING", null, {
+            version: "1.0.0",
+            lockVersion: "1.0.0",
+         }),
+      ).rejects.toBeInstanceOf(DuplicateActiveMaterializationError);
+      await expect(repo.create(ENV_ID, PKG, "PENDING")).rejects.toBeInstanceOf(
+         DuplicateActiveMaterializationError,
+      );
+
+      expect((await repo.getActive(ENV_ID, PKG, "1.0.0"))?.id).toBe(v1.id);
+      expect((await repo.getActive(ENV_ID, PKG, "2.0.0"))?.id).toBe(v2.id);
+      expect((await repo.getActive(ENV_ID, PKG))?.id).toBe(shared.id);
+   });
+
+   it("keeps a run's slot while it moves between active states, and frees it at the end", async () => {
+      const repo = await freshRepo();
+      const run = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.0.0",
+         lockVersion: "1.0.0",
+      });
+      await repo.update(run.id, { status: "MANIFEST_ROWS_READY" });
+      expect((await repo.getActive(ENV_ID, PKG, "1.0.0"))?.id).toBe(run.id);
+      // Still not the package's slot: an auto-run of the package can start.
+      expect(await repo.getActive(ENV_ID, PKG)).toBeNull();
+
+      await repo.update(run.id, { status: "MANIFEST_FILE_READY" });
+      expect(await repo.getActive(ENV_ID, PKG, "1.0.0")).toBeNull();
+      const next = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.0.0",
+         lockVersion: "1.0.0",
+      });
+      expect((await repo.getActive(ENV_ID, PKG, "1.0.0"))?.id).toBe(next.id);
+   });
+
+   it("lists one version's runs, with or without those from before any version", async () => {
+      const repo = await freshRepo();
+      const legacy = await repo.create(ENV_ID, PKG, "CANCELLED");
+      const v1 = await repo.create(ENV_ID, PKG, "CANCELLED", null, {
+         version: "1.0.0",
+      });
+      const v2 = await repo.create(ENV_ID, PKG, "CANCELLED", null, {
+         version: "2.0.0",
+      });
+      const ids = async (
+         options?: Parameters<MaterializationRepository["list"]>[2],
+      ) => (await repo.list(ENV_ID, PKG, options)).map((m) => m.id).sort();
+
+      expect(await ids({ version: "1.0.0" })).toEqual([v1.id]);
+      expect(await ids({ version: "1.0.0", includeUnversioned: true })).toEqual(
+         [legacy.id, v1.id].sort(),
+      );
+      expect(await ids()).toEqual([legacy.id, v1.id, v2.id].sort());
    });
 });
