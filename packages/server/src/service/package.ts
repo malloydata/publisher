@@ -73,6 +73,7 @@ import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import {
    PACKAGE_SKILLS_DIR,
+   readAgentAsset,
    readPackageAgents,
    readSkillsDir,
    summarizeAgentSkillFile,
@@ -488,7 +489,14 @@ export class Package {
    ): ApiAgent | undefined {
       const agent = this.packageAgents.get(name);
       if (!agent) return undefined;
-      const { definitionSha, skillMeta, ...definition } = agent;
+      const { definitionSha, skillMeta, asset_roots, assets, ...definition } =
+         agent;
+      const counts = new Map<string, number>();
+      for (const a of assets ?? []) {
+         const skill = a.relative_filepath.split("/")[0]!;
+         counts.set(skill, (counts.get(skill) ?? 0) + 1);
+      }
+      const assetCounts = Object.fromEntries(counts);
       return {
          ...definition,
          skills:
@@ -497,11 +505,15 @@ export class Package {
                : definition.skills.map((f) =>
                     summarizeAgentSkillFile(f, skillMeta),
                  ),
+         ...(assets &&
+            (skills === "full"
+               ? { asset_roots, assets }
+               : { asset_counts: assetCounts })),
          source: this.agentSource(definitionSha),
       };
    }
 
-   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem. */
+   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem; a listed asset is matched exactly, then read from disk and re-checked against its listed sha. */
    public getAgentSkillFile(
       name: string,
       relativeFilepath: string,
@@ -510,8 +522,17 @@ export class Package {
       const file = agent?.skills.find(
          (f) => f.relative_filepath === relativeFilepath,
       );
-      if (!agent || !file) return undefined;
-      return { ...file, source: this.agentSource(agent.definitionSha) };
+      if (!agent) return undefined;
+      if (file) {
+         return { ...file, source: this.agentSource(agent.definitionSha) };
+      }
+      const text = readAgentAsset(this.packagePath, agent, relativeFilepath);
+      if (text === undefined) return undefined;
+      return {
+         relative_filepath: relativeFilepath,
+         file_contents: text,
+         source: this.agentSource(agent.definitionSha),
+      };
    }
 
    /**
@@ -549,6 +570,7 @@ export class Package {
          ],
          // The declaration is hashed whole, so an edit to a dropped agent moves it too.
          declaration,
+         agents.contentShas,
       );
    }
 
