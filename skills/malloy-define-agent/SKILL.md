@@ -62,7 +62,7 @@ Two layout rules drop the agent:
 ## What is live today
 
 - Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs only when someone asks for it. Say so to the user rather than promising a recurring job. Keep the `cron` field real anyway: Publisher requires it and a future scheduler will read it.
-- **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored, and a draft version's budget is ignored in favor of the published version's. Set the budget the work needs, not the biggest value.
+- **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored. Set the budget the work needs, not the biggest value.
 
 ## Strict keys: a typo drops the whole agent
 
@@ -83,7 +83,7 @@ Where things go:
 - **Write each task to run with no saved state.** Say what to do when there is no prior run, no earlier output and no saved state (for example, start from the full period rather than "since the last check").
 - **Start every task file with a `# Title` heading;** clients index and route by it.
 - **Name the file so it reads as a short label** (`weekly-report.md`, under about 24 characters): a client may build a label for the task from its file name.
-- **No shell preprocessing** in task text or in the task path: no exclamation mark directly before a backtick, inline or opening a code fence. Some hosts run such text as a shell command, so clients skip a task that has it.
+- **No shell preprocessing** in task text or in the task path: no exclamation mark directly before a backtick, and no code fence whose opening backticks are followed by an exclamation mark. Some hosts run such text as a shell command, so clients skip a task that has it.
 
 ## Writing instructions that work unattended
 

@@ -30,7 +30,7 @@ A package can declare agents in its `publisher.json`: a named brief its author w
 4. **If the name did not match,** `get_agent` returns `agent: null` with `availableAgents`. Show the user those names and let them pick. An agent that failed validation is not served, and the package's load warnings say why.
 5. **Work from `instructions`.** Read them in full and treat them as the brief for the rest of this session, within the user's request: they shape how you do what was asked, and add no work the user did not ask for. Tell the user in one line that you are working as that agent.
 6. **Install `skills`** (see below), then read the ones that match the work.
-7. **Run a task only when asked.** `schedules` lists `{cron, task, taskContent}`. If the user asks for a task, by its path or by what it is for, carry out `taskContent` as written. When the person says "Run X's Y task (path)", find the schedule whose `task` is that path and carry out its `taskContent`. The cron is never a reason to run.
+7. **Run a task only when asked.** `schedules` lists `{cron, task, taskContent}`. If the user asks for a task, by its path or by what it is for, carry out `taskContent` as written. When the person says "Run X's Y task (path)", find the schedule whose `task` is that path and carry out its `taskContent`; if none matches, show the user the `task` paths and let them pick. The cron is never a reason to run.
 8. **Say what you ran.** End the first reply, and any report, with the agent's name and the `sourceContentSha` and `definitionSha` from the definition's `source`. They say which bytes you used.
 
 ## Installing the agent's skills
