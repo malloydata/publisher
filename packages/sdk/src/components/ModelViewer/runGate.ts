@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { summarizeGivenValue } from "../given/filterSummary";
+import { describeGivenValue } from "../given/filterSummary";
 import type { GivenInfo, GivenRequest, GivenRequestValue } from "./modelGivens";
 
 /**
@@ -19,12 +19,18 @@ import type { GivenInfo, GivenRequest, GivenRequestValue } from "./modelGivens";
  * Jan 1, 2023`, never as a Malloy literal. A given the page can't tie to the
  * source either way (`unknown`) is named apart: the card says it can't tell
  * whether the source reads it, and what the run had for it where it does,
- * rather than calling its default one the run ran at.
+ * rather than calling its default one the run ran at. Values are named whole
+ * (`describeGivenValue`), never cut to a button's width: the note is the record
+ * of what produced the result.
+ *
+ * A run held only for givens the page can't tie to the source can run anyway
+ * (`canRunAnyway`), at the reader's word: if the source does read one, the run
+ * fails, and the card has already said why.
  */
 export type RunGate =
    | { kind: "ok" }
    | { kind: "noted"; note: string }
-   | { kind: "blocked"; reason: string };
+   | { kind: "blocked"; reason: string; canRunAnyway: boolean };
 
 /** `A`, `A or B`, `A, B or C`. */
 export function wordList(
@@ -35,9 +41,9 @@ export function wordList(
    return `${words.slice(0, -1).join(", ")} ${conjunction} ${words.at(-1)}`;
 }
 
-/** A given and its value as its control words them: `Region: West`, `Category: All`. */
+/** A given and its value as its control words them, whole: `Region: West`, `Category: All`. */
 function givenWords(given: GivenInfo, value?: GivenRequestValue): string {
-   return `${given.label ?? given.name}: ${summarizeGivenValue(given, value)}`;
+   return `${given.label ?? given.name}: ${describeGivenValue(given, value)}`;
 }
 
 const labelOf = (given: GivenInfo) => given.label ?? given.name;
@@ -52,6 +58,11 @@ export function runGate(
    /** Names of the givens the page can't tie to the source either way
     *  (scanGivensForSource). */
    unknown: ReadonlySet<string> | undefined = undefined,
+   /** The reader chose to run without the missing givens the page can't tie
+    *  to the source; honored only when those are all that holds the run. */
+   runAnyway = false,
+   /** What the run reads from: its source, or a named query with none. */
+   subject: "source" | "query" = "source",
 ): RunGate {
    // A given the host fills is never in `givens`: extractCompiledModelGivens
    // leaves it out.
@@ -60,7 +71,12 @@ export function runGate(
    const isUnknown = (g: GivenInfo) => unknown?.has(g.name) === true;
    const missing = all.filter((g) => !isSet(g) && g.default === undefined);
    const required = requiredFilters ?? [];
-   if (missing.length > 0 || required.length > 0) {
+   const canRunAnyway =
+      required.length === 0 &&
+      missing.length > 0 &&
+      missing.every((g) => isUnknown(g));
+   const skipped = runAnyway && canRunAnyway ? missing : [];
+   if (skipped.length === 0 && (missing.length > 0 || required.length > 0)) {
       // Two different remedies, said separately: a given can be set in the
       // panel above this card; a required filter has no control here.
       const givenPart =
@@ -78,8 +94,8 @@ export function runGate(
          maybeMissing.length === 0
             ? ""
             : maybeMissing.length === missing.length
-              ? ` This page can't tell whether this source reads ${missing.length === 1 ? "it" : "them"}.`
-              : ` This page can't tell whether this source reads ${wordList(maybeMissing.map(labelOf), "or")}.`;
+              ? ` This page can't tell whether this ${subject} reads ${missing.length === 1 ? "it" : "them"}.`
+              : ` This page can't tell whether this ${subject} reads ${wordList(maybeMissing.map(labelOf), "or")}.`;
       let reason: string;
       if (filterPart === "") {
          reason = `This needs ${givenPart}. Set ${missing.length === 1 ? "it" : "them"} in the Givens section above.${maybe}`;
@@ -88,7 +104,7 @@ export function runGate(
       } else {
          reason = `This needs ${givenPart} (set ${missing.length === 1 ? "it" : "them"} in the Givens section above) and ${filterPart}, which this page can't set; open the source in a dashboard or notebook.${maybe}`;
       }
-      return { kind: "blocked", reason };
+      return { kind: "blocked", reason, canRunAnyway };
    }
    const defaultsOf = (list: GivenInfo[]) =>
       list.length > 0
@@ -96,11 +112,17 @@ export function runGate(
               .map((g) => givenWords(g))
               .join(", ")}`
          : "";
-   const known = all.filter((g) => !isUnknown(g));
-   const knownDefaults = defaultsOf(known.filter((g) => !isSet(g)));
    const notes: string[] = [];
+   if (skipped.length > 0) {
+      notes.push(
+         `Ran without a value for ${skipped.length === 1 ? "the given" : "the givens"} ${wordList(skipped.map(labelOf), "and")}, which this page can't tell this ${subject} reads.`,
+      );
+   }
+   const ran = all.filter((g) => !skipped.includes(g));
+   const known = ran.filter((g) => !isUnknown(g));
+   const knownDefaults = defaultsOf(known.filter((g) => !isSet(g)));
    if (knownDefaults !== "") notes.push(`Ran with ${knownDefaults}.`);
-   const maybe = all.filter(isUnknown);
+   const maybe = ran.filter(isUnknown);
    if (maybe.length > 0) {
       const had = [
          maybe
@@ -112,9 +134,9 @@ export function runGate(
          .filter((part) => part !== "")
          .join(" and ");
       notes.push(
-         maybe.length === all.length
-            ? `This page can't tell which givens this source reads. Where it reads one, it ran with ${had}.`
-            : `This page can't tell whether this source reads ${wordList(maybe.map(labelOf), "or")}. Where it does, it ran with ${had}.`,
+         maybe.length === ran.length
+            ? `This page can't tell which givens this ${subject} reads. Where it reads one, it ran with ${had}.`
+            : `This page can't tell whether this ${subject} reads ${wordList(maybe.map(labelOf), "or")}. Where it does, it ran with ${had}.`,
       );
    }
    return notes.length > 0

@@ -3,10 +3,12 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   givensDeclaredIn,
    givensForSource,
    givensInheritedBy,
    givensReadBy,
    scanGivensForSource,
+   scanGivensOfNamedQuery,
 } from "./givenUsage";
 
 const g = (name: string) => ({ name, type: "number", modelFile: "m.malloy" });
@@ -235,5 +237,68 @@ source: by_target is pg.sql("SELECT 1") extend {
             new Set([...exported, "base_orders"]),
          ),
       ).toEqual(new Map());
+   });
+});
+
+describe("scanGivensOfNamedQuery", () => {
+   const given = [g("REGION"), g("CODE"), g("MIN")];
+   const names = (list: ReadonlyArray<{ name: string }>) =>
+      list.map((x) => x.name).sort();
+   // `items` is a model source whose own scan couldn't tie CODE to it.
+   const bySource = new Map([["items", [g("REGION"), g("CODE")]]]);
+   const unknownBySource = new Map([["items", new Set(["CODE"])]]);
+
+   it("takes a source it names, with what that source's scan couldn't tie", () => {
+      const scan = scanGivensOfNamedQuery(
+         "query: q is items -> { group_by: name }",
+         given,
+         bySource,
+         unknownBySource,
+      );
+      expect(names(scan.givens)).toEqual(["CODE", "REGION"]);
+      expect([...scan.unknown]).toEqual(["CODE"]);
+   });
+
+   it("can't tie any given it doesn't read itself when it runs over what the model doesn't hold", () => {
+      // `regional` comes from an import the model doesn't export.
+      const scan = scanGivensOfNamedQuery(
+         "query: q is regional -> { where: amount > $MIN; group_by: name }",
+         given,
+         bySource,
+         unknownBySource,
+      );
+      expect(names(scan.givens)).toEqual(["CODE", "MIN", "REGION"]);
+      expect([...scan.unknown].sort()).toEqual(["CODE", "REGION"]);
+   });
+
+   it("knows a query over a table reads only what its text does", () => {
+      const scan = scanGivensOfNamedQuery(
+         "query: q is duckdb.table('t') -> { where: amount > $MIN }",
+         given,
+         bySource,
+         unknownBySource,
+      );
+      expect(names(scan.givens)).toEqual(["MIN"]);
+      expect(scan.unknown.size).toBe(0);
+   });
+
+   it("is every given, none known, without its text", () => {
+      const scan = scanGivensOfNamedQuery(undefined, given, bySource);
+      expect(names(scan.givens)).toEqual(["CODE", "MIN", "REGION"]);
+      expect(scan.unknown.size).toBe(3);
+   });
+});
+
+describe("givensDeclaredIn", () => {
+   it("names the givens a file declares itself, not those it imports", () => {
+      const text = `import { CODE } from "codes.malloy"
+// MIN :: number in a comment is not a declaration
+given:
+  REGION :: filter<string> is f''
+`;
+      expect([
+         ...givensDeclaredIn(text, [g("REGION"), g("CODE"), g("MIN")]),
+      ]).toEqual(["REGION"]);
+      expect(givensDeclaredIn(undefined, [g("REGION")]).size).toBe(0);
    });
 });

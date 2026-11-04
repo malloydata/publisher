@@ -23,7 +23,11 @@ import {
    type EntitiesByField,
    type FieldEntity,
 } from "./fieldEntities";
-import { givensInheritedBy, scanGivensForSource } from "./givenUsage";
+import {
+   givensDeclaredIn,
+   givensInheritedBy,
+   scanGivensForSource,
+} from "./givenUsage";
 import { HeaderBar } from "./HeaderBar";
 import { isNotFoundOrForbidden } from "./httpStatus";
 import { joinAccess, type JoinLink } from "./joinAccess";
@@ -50,6 +54,7 @@ import {
 } from "./sourcePicker";
 import type { SourceNavItem } from "./SourcesDropdown";
 import { SourcesNav } from "./SourcesNav";
+import { wordList } from "./runGate";
 import { BodyText } from "./text";
 import { CONTENT_COLUMN_SX, FILE_VIEW_TOP_GAP, FLAT_PANE_SX } from "./surface";
 import { MONO_FONT_FAMILY, MONO_FONT_VAR, TEXT_TERTIARY } from "./theme";
@@ -140,6 +145,27 @@ const NO_ENTITIES: ReadonlyMap<string, EntitiesByField> = new Map();
 /** A model's display name: its file name without `.malloy`. */
 function modelDisplayName(modelPath: string): string {
    return (modelPath.split("/").pop() ?? modelPath).replace(/\.malloy$/, "");
+}
+
+/**
+ * Where a givens-only model's givens come from: the compiled model lists the
+ * ones it imports beside its own, so the line says which are which.
+ */
+function givensOnlyWhere(
+   sourceText: string | undefined,
+   givens: ReadonlyArray<GivenInfo>,
+): string {
+   const declared = givensDeclaredIn(sourceText, givens);
+   const imported = givens.filter((g) => !declared.has(g.name));
+   const readsNone = "Nothing on this page reads them.";
+   if (imported.length === 0)
+      return `Declared here for the models that import this file. ${readsNone}`;
+   if (imported.length === givens.length)
+      return `Imported from another file, for the models that import this one. ${readsNone}`;
+   return `For the models that import this file. ${wordList(
+      imported.map((g) => g.name),
+      "and",
+   )} ${imported.length === 1 ? "comes" : "come"} from a file this one imports; the rest are declared here. ${readsNone}`;
 }
 
 /**
@@ -544,9 +570,11 @@ export function ModelViewer({
                      count={givens.length}
                      testId="model-viewer-declared-givens"
                   >
-                     <BodyText sx={{ mb: 1 }}>
-                        Declared here for the models that import this file.
-                        Nothing on this page reads them.
+                     <BodyText
+                        data-testid="model-viewer-declared-givens-where"
+                        sx={{ mb: 1 }}
+                     >
+                        {givensOnlyWhere(sourceText, givens)}
                      </BodyText>
                      <GivenFacts givens={givens} />
                   </ModelSection>

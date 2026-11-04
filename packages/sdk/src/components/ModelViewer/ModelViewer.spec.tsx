@@ -792,6 +792,112 @@ source: other is duckdb.table('other.parquet') extend {
          expect(section.textContent).toContain("REGION");
          expect(section.textContent).toContain("Region");
          expect(screen.getByText("1 given")).toBeTruthy();
+         expect(
+            screen.getByTestId("model-viewer-declared-givens-where")
+               .textContent,
+         ).toBe(
+            "Declared here for the models that import this file. Nothing on this page reads them.",
+         );
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
+   });
+
+   it("says which of a givens-only model's givens it imports", async () => {
+      // The compiled model lists CODE too, which the file only imports.
+      getModel.mockImplementation(() =>
+         Promise.resolve({
+            data: {
+               sourceInfos: [],
+               queries: [],
+               sourceText:
+                  "import { CODE } from \"codes.malloy\"\ngiven: REGION :: string is 'All'\n",
+               givens: [
+                  { name: "REGION", type: "string", default: "'All'" },
+                  { name: "CODE", type: "string", default: "'x'" },
+               ],
+            },
+         }),
+      );
+      try {
+         render(<ModelViewer resourceUri={URI} />, { wrapper: serverWrapper });
+         expect(
+            (await screen.findByTestId("model-viewer-declared-givens-where"))
+               .textContent,
+         ).toBe(
+            "For the models that import this file. CODE comes from a file this one imports; the rest are declared here. Nothing on this page reads them.",
+         );
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
+   });
+
+   // `items` builds on `regional`, from the import, and REGION has no default:
+   // the page can't tell whether `items` reads it.
+   const importedRequired = (queries: unknown[] = [], text = "") => ({
+      data: {
+         ...twoGivenModel.data,
+         queries,
+         sourceText: `import "regions.malloy"
+source: items is regional extend {
+  dimension: name is upper(raw_name)
+  view: by_name is { group_by: name }
+}
+source: other is duckdb.table('other.parquet') extend {
+  where: code = $REGION
+}
+${text}`,
+         givens: [{ name: "REGION", type: "string" }],
+      },
+   });
+
+   it("runs anyway, at the reader's word, without a given the page can't tie to the source", async () => {
+      getModel.mockImplementation(() => Promise.resolve(importedRequired()));
+      try {
+         render(<ModelViewer resourceUri={URI} />, { wrapper: serverWrapper });
+         fireEvent.click(
+            await screen.findByRole("button", { name: /by_name/ }),
+         );
+         expect(
+            (await screen.findByTestId("model-viewer-run-blocked")).textContent,
+         ).toContain("This page can't tell whether this source reads it.");
+         expect(executeQueryModel).not.toHaveBeenCalled();
+         fireEvent.click(screen.getByRole("button", { name: "Run anyway" }));
+         await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+         expect(sentBodies()[0].givens).toBeUndefined();
+         expect(
+            (await screen.findByTestId("model-viewer-run-defaults"))
+               .textContent,
+         ).toBe(
+            "Ran without a value for the given REGION, which this page can't tell this source reads.",
+         );
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
+   });
+
+   it("says the same of a named query that runs over an imported source", async () => {
+      getModel.mockImplementation(() =>
+         Promise.resolve(
+            importedRequired(
+               [{ name: "by_region" }],
+               "query: by_region is regional -> { group_by: name }\n",
+            ),
+         ),
+      );
+      try {
+         render(<ModelViewer resourceUri={URI} />, { wrapper: serverWrapper });
+         fireEvent.click(
+            await screen.findByRole("button", { name: /by_region/ }),
+         );
+         expect(
+            (await screen.findByTestId("model-viewer-run-blocked")).textContent,
+         ).toBe(
+            "This needs a value for the given REGION. Set it in the Givens section above. This page can't tell whether this query reads it.",
+         );
+         expect(
+            screen.getByRole("button", { name: "Run anyway" }),
+         ).toBeTruthy();
       } finally {
          getModel.mockImplementation(() => Promise.resolve(model));
       }

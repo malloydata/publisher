@@ -48,16 +48,19 @@ describe("runGate", () => {
    it("refuses when a given has no default or a filter is required, and says what is missing", () => {
       expect(runGate([given("ROLE")], [])).toEqual({
          kind: "blocked",
+         canRunAnyway: false,
          reason:
             "This needs a value for the given ROLE. Set it in the Givens section above.",
       });
       expect(runGate([], ["Customer ID"])).toEqual({
          kind: "blocked",
+         canRunAnyway: false,
          reason:
             "This needs the required filter Customer ID, which this page can't set; open the source in a dashboard or notebook.",
       });
       expect(runGate([given("A"), given("B", "1")], ["F1", "F2"])).toEqual({
          kind: "blocked",
+         canRunAnyway: false,
          reason:
             "This needs a value for the given A (set it in the Givens section above) and the required filters F1, F2, which this page can't set; open the source in a dashboard or notebook.",
       });
@@ -88,6 +91,7 @@ describe("runGate", () => {
       });
       expect(runGate([region], [])).toEqual({
          kind: "blocked",
+         canRunAnyway: false,
          reason:
             "This needs a value for the given Region. Set it in the Givens section above.",
       });
@@ -109,6 +113,7 @@ describe("runGate", () => {
       // run without it fails with no control to fix it.
       expect(runGate([region], [], undefined, all)).toEqual({
          kind: "blocked",
+         canRunAnyway: true,
          reason:
             "This needs a value for the given Region. Set it in the Givens section above. This page can't tell whether this source reads it.",
       });
@@ -127,6 +132,7 @@ describe("runGate", () => {
       });
       expect(runGate([category, region, since], [], undefined, maybe)).toEqual({
          kind: "blocked",
+         canRunAnyway: false,
          reason:
             "This needs a value for the given Region. Set it in the Givens section above.",
       });
@@ -134,13 +140,63 @@ describe("runGate", () => {
          runGate([category, { ...minSale, default: undefined }], [], {}, maybe),
       ).toEqual({
          kind: "blocked",
+         canRunAnyway: false,
          reason:
             "This needs a value for the given Minimum line total. Set it in the Givens section above.",
       });
       expect(runGate([category, region], [], {}, new Set(["REGION"]))).toEqual({
          kind: "blocked",
+         canRunAnyway: true,
          reason:
             "This needs a value for the given Region. Set it in the Givens section above. This page can't tell whether this source reads it.",
+      });
+   });
+
+   it("runs anyway, at the reader's word, without givens it can't tie to the source", () => {
+      const maybe = new Set(["REGION", "CATEGORY"]);
+      expect(runGate([region, category], [], {}, maybe, true)).toEqual({
+         kind: "noted",
+         note: "Ran without a value for the given Region, which this page can't tell this source reads. This page can't tell which givens this source reads. Where it reads one, it ran with the default Category: All.",
+      });
+      // Never for a given the source is known to read, nor past a required
+      // filter: those runs fail, with nothing the reader can do.
+      expect(runGate([region], [], {}, new Set(), true)).toMatchObject({
+         kind: "blocked",
+         canRunAnyway: false,
+      });
+      expect(
+         runGate([region], ["Customer ID"], {}, new Set(["REGION"]), true),
+      ).toMatchObject({ kind: "blocked", canRunAnyway: false });
+   });
+
+   it("names a named query with no source as the query, not a source", () => {
+      expect(
+         runGate(
+            [region],
+            [],
+            { REGION: "West" },
+            new Set(["REGION"]),
+            false,
+            "query",
+         ),
+      ).toEqual({
+         kind: "noted",
+         note: "This page can't tell which givens this query reads. Where it reads one, it ran with Region: West.",
+      });
+   });
+
+   it("names every value a run had, never cut to a button's width", () => {
+      const picked = "Outerwear,Footwear,Dresses,Swimwear";
+      expect(
+         runGate(
+            [{ ...category, control: "multiselect" as const }],
+            [],
+            { CATEGORY: picked },
+            new Set(["CATEGORY"]),
+         ),
+      ).toEqual({
+         kind: "noted",
+         note: "This page can't tell which givens this source reads. Where it reads one, it ran with Category: Outerwear, Footwear, Dresses, Swimwear.",
       });
    });
 });

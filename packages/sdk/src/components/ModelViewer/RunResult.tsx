@@ -45,6 +45,7 @@ export function RunResult({
    query,
    sourceName,
    givens,
+   givensUnknown,
    mode = "result",
    renderCode,
    onShownChange,
@@ -58,6 +59,9 @@ export function RunResult({
    /** The givens the run reads, where its source can't say (a named query the
     *  model gives no source); else its source's. */
    givens?: ReadonlyArray<GivenInfo>;
+   /** With `givens`: those of them the page can't tie to the run either way
+    *  (scanGivensOfNamedQuery). Without, its source's (`unknownGivensBySource`). */
+   givensUnknown?: ReadonlySet<string>;
    /** Which body to show. The switching is the card's job; this renders
     *  whichever mode it is told. */
    mode?: RunResultMode;
@@ -86,17 +90,24 @@ export function RunResult({
    const requiredFilters = sourceName
       ? run.requiredFiltersBySource?.get(sourceName)
       : undefined;
+   // "Run anyway", at the values it was chosen for: a change of value asks again.
+   const [anywayAt, setAnywayAt] = useState<string | null>(null);
+   const runAnyway = anywayAt === givensKey;
    const gate: RunGate = useMemo(
       () =>
          runGate(
             givens ?? givensOfRun(run, sourceName),
             requiredFilters,
             run.givenValues,
-            !givens && sourceName
-               ? run.unknownGivensBySource?.get(sourceName)
-               : undefined,
+            givens
+               ? givensUnknown
+               : sourceName
+                 ? run.unknownGivensBySource?.get(sourceName)
+                 : undefined,
+            runAnyway,
+            givens ? "query" : "source",
          ),
-      [run, sourceName, givens, requiredFilters],
+      [run, sourceName, givens, givensUnknown, requiredFilters, runAnyway],
    );
    const { result, isSuccess, isError, error, refetch } = useRunQuery({
       run,
@@ -168,9 +179,31 @@ export function RunResult({
          ) : gate.kind === "blocked" ? (
             // Refused, not failed: a bare 400 would say nothing about the
             // value the model wanted.
-            <BodyText data-testid="model-viewer-run-blocked">
-               {gate.reason}
-            </BodyText>
+            <Box
+               sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1.5,
+                  flexWrap: "wrap",
+               }}
+            >
+               <BodyText data-testid="model-viewer-run-blocked">
+                  {gate.reason}
+               </BodyText>
+               {gate.canRunAnyway && (
+                  // Held only for givens the source may not read: the reader's
+                  // call, since a source that does read one fails without it.
+                  <PrimaryButton
+                     size="small"
+                     onClick={() => {
+                        setAnywayAt(givensKey);
+                        setArmedKey(givensKey);
+                     }}
+                  >
+                     Run anyway
+                  </PrimaryButton>
+               )}
+            </Box>
          ) : isError && !valuesChanged ? (
             <QueryFailure
                query={query}
