@@ -24,6 +24,10 @@ export const CLUSTER_SETTINGS: FcjSettings = {
    listUnion: 0,
    readingsRule: false,
 };
+import {
+   loadedRetrievalConfig,
+   setRetrievalConfig,
+} from "../retrieval_config";
 import { createCatalogTables } from "../storage/duckdb/schema";
 import { buildFcjIndex, type FcjIndex } from "../mcp/context/index_build";
 import type { IndexValueFetcher } from "../mcp/context/values_index";
@@ -67,6 +71,9 @@ export async function buildFcjIndexFixture(
       ? await compileFcjFixture(files, {})
       : await compileFcjFixture();
    const { db, close } = await openTempDb(createCatalogTables);
+   // Under `full`, so the stored values are embedded and matched by meaning.
+   const saved = loadedRetrievalConfig();
+   setRetrievalConfig({ ...saved, egress: { preset: "full" } });
    const index = await buildFcjIndex({
       pkgIndex: fixture.pkgIndex,
       db,
@@ -75,6 +82,6 @@ export async function buildFcjIndexFixture(
       packageName: "fixture",
       settings,
       valueRead: { environmentStore: {} as never, fetcher: fcjValueFetcher },
-   });
+   }).finally(() => setRetrievalConfig(saved));
    return { ...fixture, index, close };
 }

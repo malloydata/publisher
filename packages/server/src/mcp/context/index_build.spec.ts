@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { setRetrievalConfig } from "../../retrieval_config";
 import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import { createCatalogTables } from "../../storage/duckdb/schema";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -257,6 +258,8 @@ describe("index build", () => {
    });
 
    describe("value vectors", () => {
+      beforeEach(() => setRetrievalConfig({ egress: { preset: "full" } }));
+      afterEach(() => setRetrievalConfig(undefined));
       const withValues = (
          settings = DEFAULT_FCJ_SETTINGS,
          provider = stubEmbeddingProvider(),
@@ -279,6 +282,20 @@ describe("index build", () => {
          "Denver International (DIA)",
          "Chicago O'Hare (ORD)",
       ];
+
+      it("embeds no stored value under the default egress preset, and says why", async () => {
+         setRetrievalConfig(undefined);
+         const built = await withValues();
+         expect(built.values.embedded).toBe(0);
+         expect(built.report.valueVectors).toMatchObject({
+            values: 4,
+            embedded: 0,
+            skipped:
+               'egress.preset is "default": stored values are sent to the embedding provider only under "full"',
+         });
+         const rows = await db.all("SELECT * FROM value_embeddings");
+         expect(rows).toEqual([]);
+      });
 
       it("embeds each distinct stored value once, and reuses them on a rebuild", async () => {
          const first = await withValues();
@@ -443,15 +460,21 @@ describe("index build", () => {
          '"questions": ["...", "...", "...", "...", "..."]',
       );
       seen.length = 0;
-      // The values wording is a new prompt, so every row is written again,
-      // and an #(index) dimension shows its stored values on its line.
+      // Under the default egress preset the values wording shows no stored
+      // value: they are data, and leave the server only under `full`.
+      await run({ ...DEFAULT_FCJ_SETTINGS, questionsPrompt: "values" });
+      expect(seen.every((p) => !p.includes(" Values: "))).toBe(true);
+      seen.length = 0;
+      // Under `full`, an #(index) dimension shows its stored values on its
+      // line, so only those two lines are written again.
+      setRetrievalConfig({ egress: { preset: "full" } });
       const withValues = await run({
          ...DEFAULT_FCJ_SETTINGS,
          questionsPrompt: "values",
-      });
+      }).finally(() => setRetrievalConfig(undefined));
       expect(withValues.report.questions).toMatchObject({
-         written: 39,
-         reused: 0,
+         written: 2,
+         reused: 37,
       });
       const lines = seen.flatMap((p) => numberedLines(p).map(([, l]) => l));
       const shown = lines.filter((l) => l.includes(" Values: "));

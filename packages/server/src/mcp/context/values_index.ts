@@ -15,11 +15,11 @@
  * so a source the query path would refuse contributes nothing. A gated
  * source's values are never stored here and never embedded; they are
  * reachable only through the query-time lookup with the caller's givens
- * (get_context_values.ts). The values of `#(index)` dimensions on ungated
- * sources, and the value lists docs give, ARE embedded with
- * `retrieval.fcj.valueEmbeddings` on (the default): the modeler opted those
- * dimensions in with the tag, so their values go to the embedding provider,
- * as the matched values already go to the judge's model.
+ * (get_context_values.ts). The values read from ungated sources leave the
+ * server only under `egress.preset: "full"`: then the judge sees them, the
+ * `values` question wording shows them to the LLM, and
+ * `retrieval.fcj.valueEmbeddings` (on by default) embeds them. Under
+ * `default` they are matched by spelling alone and sent nowhere.
  *
  * Two ways to match, each giving the find stage its own ranked list:
  *

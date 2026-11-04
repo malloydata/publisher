@@ -119,7 +119,8 @@ export interface FcjSettings {
     * PROVISIONAL, on by default. With `values` on, the stored values are also
     * embedded at index time (`value_embeddings`), and the find stage ranks
     * dimensions by the meaning of a target's value phrases as a fourth list,
-    * beside the spelling match. Gated sources' values are never embedded.
+    * beside the spelling match. Only under `egress.preset: "full"`: values
+    * are data. Gated sources' values are never embedded.
     * Off: spelling only, as before.
     */
    valueEmbeddings: boolean;
@@ -151,7 +152,8 @@ export interface FcjSettings {
    /**
     * PROVISIONAL, `questions` by default. Which wording of prompts/questions.ts
     * writes the index-time rows of a field: questions a person asks, the
-    * search phrases an agent types, or questions that use the field's values.
+    * search phrases an agent types, or questions that use the field's values
+    * (its stored values only under `egress.preset: "full"`).
     * A package prompt file (`retrieval.prompts.questions`) wins over it.
     */
    questionsPrompt: QuestionsPrompt;
