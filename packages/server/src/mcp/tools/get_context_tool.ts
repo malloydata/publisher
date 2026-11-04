@@ -45,7 +45,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 
 ## Contract rules
 - Use returned names verbatim; never invent one.
-- One call answers: describe the fields you need as search_targets; sources return with them nested.
+- One target per concept, not a list in one search_text. A source returns only its matched fields, not all of them.
 - scopes is REQUIRED: exactly one environment and package (list_packages).
 - Read warnings and any error/stale field before trusting a number or calling data absent.
 - A source's joins are all listed: empty means none. In an answer, never write a join; tell the user.
@@ -54,7 +54,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Empty sources: nothing answered; see unresolved_targets.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. dimensional_value: search_text is one value as typed, beside its dimension target; stored strings return in entities[].values (gated sources need givens, as in execute_query). Once its field is known, scope to it (source, entity_name): unscoped is slower. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages results. include_code or a pinned entity_name returns code.
+search_targets: {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. dimensional_value: search_text is one value as typed, beside its dimension target; stored strings return in entities[].values (gated sources need givens, as in execute_query). Once its field is known, scope to it (source, entity_name): unscoped is slower. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages results. include_code or a pinned entity_name returns code.
 
 ## Response
 sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, values[] {value, relevance}, matched_targets[].match_reason.
