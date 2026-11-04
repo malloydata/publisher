@@ -2670,6 +2670,19 @@ def judge_unusable(events: list[dict[str, Any]], text: str) -> bool:
         parse_verdict(text).get("reason") == "judge_unparseable")
 
 
+def platform_reexec(publisher: str | None) -> bool:
+    """Whether a platform run re-executes predictions through a hosted data plane.
+
+    A hosted data plane serves the same REST query API as a local Publisher,
+    behind a login. With its https base passed as --publisher and a token in
+    EVAL_PUBLISHER_TOKEN, the judge grades the rows a user would see in the
+    product instead of the answer's prose about them. Without either, a
+    platform run keeps the old behaviour: no re-execution.
+    """
+    return bool(os.environ.get("EVAL_PUBLISHER_TOKEN") and publisher
+                and publisher.startswith("https://"))
+
+
 def prediction_for(case: dict[str, Any], att: dict[str, Any],
                    a: argparse.Namespace, art: pathlib.Path,
                    reexec: bool) -> str:
@@ -2716,6 +2729,26 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
         rows, err = try_query(a.publisher, a.environment, a.package, mp, q,
                               givens=givens)
         rendered = (f"(re-execution failed: {err})" if err else format_rows(rows))
+        # A user sees every result table the agent produced, not just the last.
+        # Re-run the agent's other distinct queries (most recent first, up to
+        # 5) so a multi-part answer is graded on all of its tables.
+        others, seen = [], {q}
+        qs = att.get("queries") or []
+        qg = att.get("query_givens") or [None] * len(qs)
+        for oq, og in reversed(list(zip(qs, qg))):
+            if oq and oq not in seen:
+                seen.add(oq); others.append((oq, as_givens(og)))
+            if len(others) >= 5:
+                break
+        if others:
+            parts = ["FINAL QUERY RESULT:", rendered]
+            for i, (oq, og) in enumerate(others, 1):
+                orows, oerr = try_query(a.publisher, a.environment, a.package,
+                                        mp, oq, givens=og)
+                parts += ["", f"EARLIER QUERY {i} (the agent also ran):", oq,
+                          f"(re-execution failed: {oerr})" if oerr
+                          else format_rows(orows, limit=30)]
+            rendered = "\n".join(parts)
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(
         {"query": q, "givens": givens, "rendered": rendered}, indent=2))
@@ -3732,10 +3765,17 @@ def main(argv: list[str] | None = None) -> int:
             print("  ! no --scope, so the version reaches run.json but not the "
                   "calls: the answerer will get whatever version the workspace "
                   "serves. Pass --scope ENV/PACKAGE@VERSION to pin them.")
-        model_src, pinned_sha, reexec, served = "", None, False, None
-        print("  ! platform target: predictions are not re-executed and the "
-              "judge does not see the model source; verdicts rest on the "
-              "answer text and the golden alone")
+        model_src, pinned_sha, served = "", None, None
+        # Re-execute through the hosted data plane when it was given explicitly
+        # with a token: the judge then grades the rows a user would see, not the
+        # answer's prose about them.
+        reexec = platform_reexec(a.publisher)
+        if reexec:
+            print(f"  platform target: re-executing predictions through {a.publisher}")
+        else:
+            print("  ! platform target: predictions are not re-executed and the "
+                  "judge does not see the model source; verdicts rest on the "
+                  "answer text and the golden alone")
     else:
         snap = a.out / "model.malloy"
         served = served_model_path(a.publisher, a.environment, a.package,

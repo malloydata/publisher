@@ -209,9 +209,15 @@ nonsense rather than an error:
 Which target for which job:
 
 - **Baseline what customers experience:** Remote. It is the deployed model
-  through the deployed engine, which is the thing they actually hit. The judge
-  sees no re-executed rows on a Remote run (there is no local copy of the
-  bytes), so its verdicts rest on the answer text and the golden; say so.
+  through the deployed engine, which is the thing they actually hit. By
+  default the judge sees no re-executed rows on a Remote run (there is no local
+  copy of the bytes), so its verdicts rest on the answer text and the golden;
+  say so. Where the host's data plane serves the same REST query API, pass its
+  https base as `--publisher` and a token in `EVAL_PUBLISHER_TOKEN`: the
+  answerer's queries are then re-executed against the published model, and the
+  judge grades the rows a user would see. Measured 2026-11-03 on a 97-case
+  set: without it, a correct 95-row answer failed on a miscount in its prose,
+  and a 1,212-row answer went to `needs_human` because only a sample was shown.
 - **Improve and accept:** local, because the acceptance check needs compile,
   reload, and a fresh re-answer between edits. Publishing to a customer
   environment to score an edit is not something this loop does. Where the host

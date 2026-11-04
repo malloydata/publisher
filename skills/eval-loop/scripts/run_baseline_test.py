@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -2402,6 +2403,81 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertFalse(rb.renders_goldens(ns(no_judge=True)))
         self.assertFalse(rb.renders_goldens(ns(rebuild=True)))
         self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
+
+
+class PlatformReexec(unittest.TestCase):
+    """A platform run re-executes only through an https data plane with a token."""
+
+    def setUp(self):
+        self.saved = os.environ.pop("EVAL_PUBLISHER_TOKEN", None)
+
+    def tearDown(self):
+        os.environ.pop("EVAL_PUBLISHER_TOKEN", None)
+        if self.saved is not None:
+            os.environ["EVAL_PUBLISHER_TOKEN"] = self.saved
+
+    def test_without_a_token_nothing_is_re_executed(self):
+        self.assertFalse(rb.platform_reexec("https://acme-data.example.com"))
+
+    def test_a_local_publisher_is_not_taken_for_the_data_plane(self):
+        # The [model] port default points at a local server, which is not
+        # serving the published model the answerer used.
+        os.environ["EVAL_PUBLISHER_TOKEN"] = "t"
+        self.assertFalse(rb.platform_reexec("http://localhost:4811"))
+        self.assertFalse(rb.platform_reexec(None))
+
+    def test_a_token_and_an_https_data_plane_re_execute(self):
+        os.environ["EVAL_PUBLISHER_TOKEN"] = "t"
+        self.assertTrue(rb.platform_reexec("https://acme-data.example.com"))
+
+
+class EveryQueryReexecuted(unittest.TestCase):
+    """The judge sees every result table the answer produced, not only the last.
+
+    Measured 2026-11-03: a question asking for renewals by day, week, month and
+    year was answered with one query per grain. Only the last (day) was
+    re-executed, so the judge called a fully correct answer near_match. With
+    the other queries re-executed it graded it a match.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.a = argparse.Namespace(
+            publisher="https://data.example.com", environment="e", package="p",
+            model_path="model.malloy")
+        self.ran = []
+
+        def fake(base, env, pkg, model, q, givens=None):
+            self.ran.append(q)
+            return [{"q": q}], None
+        self.patch = unittest.mock.patch.object(rb, "try_query", fake)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def ask(self, queries):
+        att = {"final_query": queries[-1], "queries": queries}
+        return rb.prediction_for({"qid": "q"}, att, self.a, self.tmp, True)
+
+    def test_earlier_queries_are_shown_after_the_final_one(self):
+        got = self.ask(["run: by_year", "run: by_month", "run: by_day"])
+        self.assertEqual(self.ran, ["run: by_day", "run: by_month", "run: by_year"])
+        self.assertLess(got.index("FINAL QUERY RESULT"), got.index("EARLIER QUERY 1"))
+        self.assertIn("run: by_year", got)
+
+    def test_a_repeated_query_is_run_once(self):
+        self.ask(["run: a", "run: b", "run: a", "run: b"])
+        self.assertEqual(self.ran, ["run: b", "run: a"])
+
+    def test_at_most_five_earlier_queries(self):
+        self.ask([f"run: q{i}" for i in range(9)])
+        self.assertEqual(len(self.ran), 6)
+
+    def test_a_single_query_answer_is_unchanged(self):
+        got = self.ask(["run: only"])
+        self.assertNotIn("EARLIER QUERY", got)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ swallow.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import urllib.error
 import urllib.parse
@@ -119,9 +120,18 @@ def query(base: str, environment: str, package: str, model: str, malloy: str,
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
+        headers=_headers())
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return rows_from_result(json.loads(r.read().decode()))
+
+
+def _headers() -> dict[str, str]:
+    """JSON headers, plus a bearer token when EVAL_PUBLISHER_TOKEN is set: a hosted
+    data plane serves the same REST API as a local Publisher, behind a login."""
+    h = {"Content-Type": "application/json"}
+    if os.environ.get("EVAL_PUBLISHER_TOKEN"):
+        h["Authorization"] = "Bearer " + os.environ["EVAL_PUBLISHER_TOKEN"]
+    return h
 
 
 def try_query(base: str, environment: str, package: str, model: str,
