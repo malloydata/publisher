@@ -8,6 +8,7 @@
  */
 
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
+import { deleteEngineRows } from "../context/catalog_store";
 import {
    deleteEnvironmentSourceSummaries,
    deletePackageSourceSummaries,
@@ -98,17 +99,19 @@ export interface EmbeddingIndexStatus {
 }
 
 /**
- * Remove a deleted package's rows from the tables an earlier release's index
- * wrote (cached embeddings and keyphrases), and its source summaries. Nothing
- * reads or writes the first two now; the delete keeps a long-lived database
- * from holding them for a package that is gone. Best-effort: a missed cleanup
- * is inert, because every read is scoped by environment and package.
+ * Remove a deleted package's rows: the engine's tables (its catalog, LLM
+ * output, vectors and stored values), the tables an earlier release's index
+ * wrote (cached embeddings and keyphrases, which nothing reads or writes
+ * now), and its source summaries. The stored values are warehouse data, so
+ * they must not outlive the package.
  */
 export async function deletePackageEmbeddings(
    db: DuckDBConnection,
    environmentName: string,
    packageName: string,
 ): Promise<void> {
+   // First: these hold warehouse values, the rest only model text.
+   await deleteEngineRows(db, environmentName, packageName);
    await db.run(
       `DELETE FROM entity_embeddings
        WHERE environment_name = ? AND package_name = ?`,
@@ -127,6 +130,7 @@ export async function deleteEnvironmentEmbeddings(
    db: DuckDBConnection,
    environmentName: string,
 ): Promise<void> {
+   await deleteEngineRows(db, environmentName);
    await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
       environmentName,
    ]);

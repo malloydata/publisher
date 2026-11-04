@@ -34,6 +34,7 @@ import {
 } from "../../test_helpers/get_context_llm_harness";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {
+   createCatalogTables,
    createEntityEmbeddingsTable,
    createEntityKeyphrasesTable,
    createSourceSummariesTable,
@@ -60,7 +61,9 @@ beforeAll(async () => {
    db = new DuckDBConnection(path.join(tempDir, "test.db"));
    await db.initialize();
    await createSourceSummariesTable(db);
-   // deletePackageEmbeddings also clears the tables an earlier release wrote.
+   // deletePackageEmbeddings also clears the engine's tables and the tables
+   // an earlier release wrote.
+   await createCatalogTables(db);
    await createEntityEmbeddingsTable(db);
    await createEntityKeyphrasesTable(db);
 });

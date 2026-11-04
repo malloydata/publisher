@@ -2904,8 +2904,9 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       embeddingCleanupBlocks = true;
       await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
 
+      // The first statement of the cleanup; it never resolves, so it is the only one.
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
@@ -2919,7 +2920,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       await store.deleteEnvironmentFromDatabase("wiring-env");
 
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env"]);

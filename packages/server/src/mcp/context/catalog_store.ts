@@ -42,7 +42,12 @@ export async function saveCatalog(
    catalog: Catalog,
    textOf: (nodeKey: string) => string,
 ): Promise<void> {
-   await deleteCatalog(db, environmentName, packageName);
+   for (const table of ["catalog_nodes", "catalog_edges"]) {
+      await db.run(
+         `DELETE FROM ${table} WHERE environment_name = ? AND package_name = ?`,
+         [environmentName, packageName],
+      );
+   }
    const now = new Date().toISOString();
    await insertBatched(
       db,
@@ -78,16 +83,39 @@ export async function saveCatalog(
    );
 }
 
-export async function deleteCatalog(
+/**
+ * Every table the engine writes per package (schema.ts createCatalogTables).
+ * Kept beside the writer so a new table is added to the delete with it.
+ */
+export const ENGINE_TABLES = [
+   "catalog_nodes",
+   "catalog_edges",
+   "doc_parts",
+   "node_questions",
+   "catalog_embeddings",
+   "dimension_values",
+   "value_embeddings",
+] as const;
+
+/**
+ * Remove a deleted package's rows (or, with no `packageName`, a deleted
+ * environment's) from every engine table. `dimension_values` and
+ * `value_embeddings` hold warehouse values, so a delete must not leave them.
+ */
+export async function deleteEngineRows(
    db: DuckDBConnection,
    environmentName: string,
-   packageName: string,
+   packageName?: string,
 ): Promise<void> {
-   for (const table of ["catalog_nodes", "catalog_edges"]) {
-      await db.run(
-         `DELETE FROM ${table} WHERE environment_name = ? AND package_name = ?`,
-         [environmentName, packageName],
-      );
+   for (const table of ENGINE_TABLES) {
+      await (packageName === undefined
+         ? db.run(`DELETE FROM ${table} WHERE environment_name = ?`, [
+              environmentName,
+           ])
+         : db.run(
+              `DELETE FROM ${table} WHERE environment_name = ? AND package_name = ?`,
+              [environmentName, packageName],
+           ));
    }
 }
 

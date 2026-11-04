@@ -17,6 +17,7 @@ import {
    scriptedChat,
    stubEmbeddingProvider,
 } from "../../test_helpers/get_context_llm_harness";
+import { deleteEngineRows, ENGINE_TABLES } from "./catalog_store";
 import { listItems, resolveDocParts, splitDocByRules } from "./doc_parts";
 import { buildFcjIndex } from "./index_build";
 import { KeywordIndex, stem, terms } from "./keyword";
@@ -316,6 +317,24 @@ describe("index build", () => {
          });
          const rows = await db.all("SELECT * FROM value_embeddings");
          expect(rows).toEqual([]);
+      });
+
+      it("leaves no row in any engine table once the package is deleted", async () => {
+         await withValues();
+         const count = async (table: string) =>
+            Number(
+               (
+                  await db.all<{ n: number }>(
+                     `SELECT count(*) AS n FROM ${table} WHERE environment_name = 'env' AND package_name = 'fixture'`,
+                  )
+               )[0].n,
+            );
+         expect(await count("dimension_values")).toBeGreaterThan(0);
+         expect(await count("value_embeddings")).toBeGreaterThan(0);
+         await deleteEngineRows(db, "env", "fixture");
+         for (const table of ENGINE_TABLES) {
+            expect([table, await count(table)]).toEqual([table, 0]);
+         }
       });
 
       it("embeds each distinct stored value once, and reuses them on a rebuild", async () => {
