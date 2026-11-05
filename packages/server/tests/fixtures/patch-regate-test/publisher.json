@@ -1,0 +1,5 @@
+{
+   "name": "patch-regate-test",
+   "description": "A package whose hidden source gates on a plain given.",
+   "explores": ["index.malloy"]
+}

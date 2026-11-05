@@ -66,6 +66,7 @@ import {
 } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
+import { applyLoadGates } from "./package_load_gates";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import {
    compileSource,
@@ -3133,7 +3134,28 @@ export class Environment {
          normalizedExplores !== undefined
             ? _package.formatInvalidExplores()
             : "";
-      const invalidMsg = [exploresMsg, policyMsg].filter(Boolean).join("\n");
+      // Only a change to what is queryable re-runs the gates that judge it.
+      const listingChanged =
+         JSON.stringify([explores ?? null, queryableSources ?? "declared"]) !==
+         JSON.stringify([
+            existing.explores ?? null,
+            existing.queryableSources ?? "declared",
+         ]);
+      let gateMsg = "";
+      if (listingChanged) {
+         try {
+            applyLoadGates(_package);
+         } catch (error) {
+            if (!(error instanceof BadRequestError)) {
+               _package.setPackageMetadata(existing);
+               throw error;
+            }
+            gateMsg = error.message;
+         }
+      }
+      const invalidMsg = [exploresMsg, policyMsg, gateMsg]
+         .filter(Boolean)
+         .join("\n");
       if (invalidMsg) {
          _package.setPackageMetadata(existing);
          throw new BadRequestError(invalidMsg);

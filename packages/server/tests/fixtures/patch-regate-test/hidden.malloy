@@ -1,0 +1,5 @@
+##! experimental.givens
+given: ORGS :: string[]
+
+#(access_filter) org in $ORGS
+source: leaky is duckdb.sql("select 1 as id, 'org-a' as org")

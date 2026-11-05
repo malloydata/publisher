@@ -742,29 +742,56 @@ export interface PublishedSource {
 }
 
 /**
+ * True when this source's declaration was already visited through another
+ * model, and records it otherwise. A source with no recorded location is
+ * keyed to its own model, so it is never skipped.
+ */
+export function alreadySeen(
+   seen: Set<string>,
+   model: Model,
+   modelPath: string,
+   name: string,
+): boolean {
+   const key = model.definitionIdentity(name) ?? `${modelPath}\0${name}`;
+   if (seen.has(key)) return true;
+   seen.add(key);
+   return false;
+}
+
+/**
  * Every source the package publishes, with its reachable fields classified.
  * `isListed` says which models are on the surface, the same answer
  * `listModels()` gives; `getSourceInfos()` says which sources a listed model
  * exports. A model with no compiled definition contributes nothing.
+ * `includeHidden` also takes the sources a model does not export, each once
+ * however many models import it.
  */
 export function publishedSources(
    models: ReadonlyMap<string, Model>,
    isListed: (modelPath: string) => boolean,
+   includeHidden = false,
 ): PublishedSource[] {
    const out: PublishedSource[] = [];
+   const seen = new Set<string>();
    for (const [modelPath, model] of models) {
       if (!isListed(modelPath)) continue;
       let sourceInfos: ReturnType<Model["getSourceInfos"]>;
       let apiSources: ReturnType<Model["getSources"]>;
       let modelDef: ModelDef | undefined;
       try {
-         sourceInfos = model.getSourceInfos();
-         apiSources = model.getSources();
+         sourceInfos = model.getSourceInfos(includeHidden);
+         apiSources = model.getSources(includeHidden);
          modelDef = model.getModelDef();
       } catch {
          continue;
       }
       for (const sourceInfo of sourceInfos ?? []) {
+         if (
+            includeHidden &&
+            alreadySeen(seen, model, modelPath, sourceInfo.name)
+         ) {
+            continue;
+         }
          const ir = findIrSource(modelDef, sourceInfo.name);
          if (!ir) continue;
          const apiSource = apiSources?.find((s) => s.name === sourceInfo.name);
@@ -937,9 +964,10 @@ export function classificationWarnings(
 export function classificationLeaks(
    models: ReadonlyMap<string, Model>,
    isListed: (modelPath: string) => boolean,
+   includeHidden = false,
 ): string[] {
    const messages: string[] = [];
-   for (const s of publishedSources(models, isListed)) {
+   for (const s of publishedSources(models, isListed, includeHidden)) {
       const carries = readCarries(s.ir.annotations);
       if (!carries.declared) continue;
       const where = `source ${s.source} (${s.modelPath})`;

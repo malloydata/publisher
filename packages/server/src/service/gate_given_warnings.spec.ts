@@ -155,6 +155,55 @@ export { open }
       expect(pkg.getPackageMetadata().name).toBe("pkg");
    });
 
+   const HIDDEN_GATE = (secure: boolean) => `##! experimental.givens
+${secure ? "#(secure)\n" : ""}given: ORGS :: string[]
+#(access_filter) org in $ORGS
+source: a is ${ROWS}
+`;
+   const writeSurface = (queryableSources: "all" | "declared") => {
+      write(
+         "publisher.json",
+         JSON.stringify({ name: "pkg", description: "g", queryableSources }),
+      );
+      write(
+         "index.malloy",
+         `##! experimental.givens
+import "hidden.malloy"
+source: open is ${ROWS}
+export { open }
+`,
+      );
+   };
+
+   it("refuses a hidden source gated on a plain given when every source is queryable", async () => {
+      writeSurface("all");
+      write("hidden.malloy", HIDDEN_GATE(false));
+      const message = await refusal();
+      expect(message).toContain("source a (hidden.malloy) is gated on $ORGS");
+   });
+
+   it("names a source imported into several models once", async () => {
+      writeSurface("all");
+      write("hidden.malloy", HIDDEN_GATE(false));
+      write("other.malloy", `import "hidden.malloy"\n`);
+      const message = await refusal();
+      expect(message.match(/source a \(/g)).toHaveLength(1);
+   });
+
+   it("loads the same hidden source when its given is #(secure)", async () => {
+      writeSurface("all");
+      write("hidden.malloy", HIDDEN_GATE(true));
+      const pkg = await load();
+      expect(pkg.getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("still loads the hidden plain-given source when only declared sources are queryable", async () => {
+      writeSurface("declared");
+      write("hidden.malloy", HIDDEN_GATE(false));
+      const pkg = await load();
+      expect(pkg.getPackageMetadata().name).toBe("pkg");
+   });
+
    it("refuses a gate on a plain given when another model declares the same name #(secure)", async () => {
       write(
          "a.malloy",

@@ -39,7 +39,7 @@ import {
    type AuthorizeGrammarParsedTerm,
 } from "./authorize_grammar";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { findIrSource, isDeniedToAll } from "./classification";
+import { alreadySeen, findIrSource, isDeniedToAll } from "./classification";
 import {
    MAX_JOIN_PATHS,
    MAX_JOIN_RECURSION_DEPTH,
@@ -205,22 +205,30 @@ function packageHasGate(models: ReadonlyMap<string, Model>): boolean {
 export function joinBypasses(
    models: ReadonlyMap<string, Model>,
    isListed: (modelPath: string) => boolean,
+   includeHidden = false,
 ): string[] {
    const messages: string[] = [];
    const truncated: string[] = [];
+   const seen = new Set<string>();
    for (const [modelPath, model] of models) {
       if (!isListed(modelPath)) continue;
       let sourceInfos: ReturnType<Model["getSourceInfos"]>;
       let apiSources: ReturnType<Model["getSources"]>;
       let modelDef: ModelDef | undefined;
       try {
-         sourceInfos = model.getSourceInfos();
-         apiSources = model.getSources();
+         sourceInfos = model.getSourceInfos(includeHidden);
+         apiSources = model.getSources(includeHidden);
          modelDef = model.getModelDef();
       } catch {
          continue;
       }
       for (const sourceInfo of sourceInfos ?? []) {
+         if (
+            includeHidden &&
+            alreadySeen(seen, model, modelPath, sourceInfo.name)
+         ) {
+            continue;
+         }
          const entry = findIrSource(modelDef, sourceInfo.name) as
             | IrJoin
             | undefined;
