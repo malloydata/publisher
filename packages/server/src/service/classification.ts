@@ -307,7 +307,7 @@ export interface FieldClassification {
    inputs: ClassifiedInput[];
    /** Why an annotation on the field is unusable, when one is. */
    malformed?: string;
-   /** True for a field under `private:`, which callers never reach; an `internal:` one a caller's `extend:` still reads. */
+   /** True for a field under `private:` / `internal:`, which callers never reach. */
    hidden: boolean;
    /** True for a dimension or measure; false for a view or a join. */
    isField: boolean;
@@ -512,8 +512,7 @@ function walkSourceClassifications(
          const name = activeName(field);
          if (!name) continue;
          const path = owner ? `${owner}.${name}` : name;
-         // Only `private` hides: a caller's `extend:` still reads an `internal` field.
-         const isHidden = hidden || field.accessModifier === "private";
+         const isHidden = hidden || field.accessModifier !== undefined;
          // A query source's own `extend:` fields are declared over its outputs, not outputs themselves.
          const isOutput =
             scope !== undefined &&

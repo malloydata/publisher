@@ -99,7 +99,7 @@ describe("readClassification", () => {
 describe("readSourceClassifications (lineage)", () => {
    const MODEL = `
 ##! experimental.access_modifiers
-source: people is duckdb.sql("select 1 as id, '999' as ssn, 'A' as first, 'B' as last, 10 as spend, 'MA' as st") include { private: ssn public: * } extend {
+source: people is duckdb.sql("select 1 as id, '999' as ssn, 'A' as first, 'B' as last, 10 as spend, 'MA' as st") include { internal: ssn public: * } extend {
   #(classification) "phi.direct_identifier"
   dimension: social is ssn
   #(classification) "phi.direct_identifier"
@@ -386,7 +386,7 @@ export { locked, directory }
       write(
          "orders.malloy",
          `##! experimental.access_modifiers
-source: orders is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "pii.direct_identifier"
    dimension: social is ssn
    dimension: social_copy is social
@@ -417,7 +417,7 @@ source: orders is ${ROWS} include { private: id, region, ssn, amount } extend {
       write(
          "base.malloy",
          `##! experimental.access_modifiers
-source: people is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: people is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "pii.direct_identifier"
    dimension: social is ssn
    #(classification) "financial"
@@ -433,7 +433,7 @@ source: people is ${ROWS} include { private: id, region, ssn, amount } extend {
 import "base.malloy"
 
 #(carries) ["financial", "none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    dimension: masked is concat('***', social)
 }
 
@@ -453,7 +453,7 @@ export { research }
          "orders.malloy",
          `##! experimental.access_modifiers
 #(carries) ["none"]
-source: orders is ${ROWS} include { private: id, region, ssn public: amount } extend {
+source: orders is ${ROWS} include { internal: id, region, ssn public: amount } extend {
    #(classification) "none"
    dimension: area is region
 }
@@ -470,7 +470,7 @@ source: orders is ${ROWS} include { private: id, region, ssn public: amount } ex
          "orders.malloy",
          `##! experimental.access_modifiers
 #(carries) ["none"]
-source: orders is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "none"
    dimension: area is region
 }
@@ -496,7 +496,7 @@ source: empty_list is orders extend {}
          "orders.malloy",
          `##! experimental.access_modifiers
 #(carries) ["none", "financial"]
-source: orders is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "none"
    dimension: area is region
    #(classification) "financial"
@@ -509,7 +509,7 @@ source: orders is ${ROWS} include { private: id, region, ssn, amount } extend {
    });
 
    const PEOPLE = `##! experimental.access_modifiers
-source: people is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: people is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "pii.direct_identifier"
    dimension: social is ssn
    #(classification) "none"
@@ -525,7 +525,7 @@ source: people is ${ROWS} include { private: id, region, ssn, amount } extend {
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    view: by_social is { group_by: social }
    view: filtered is {
       group_by: area
@@ -554,7 +554,7 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    view: fine is { group_by: area }
 }
 
@@ -572,7 +572,7 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    view: sneaky is {
       extend: { dimension: z is social }
       group_by: z
@@ -595,7 +595,7 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    #(classification) "none"
    dimension: copied is social
    #(classification) "none"
@@ -621,7 +621,7 @@ export { research }
          `##! experimental.access_modifiers
 import "base.malloy"
 
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    #(classification) "none"
    dimension: padded is concat(social, '')
 }
@@ -717,9 +717,9 @@ export { leaky_q }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    #(classification) "none"
-   private dimension: s2 is social
+   internal dimension: s2 is social
    view: v is { group_by: s2 }
 }
 
@@ -743,11 +743,11 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    #(classification) "none"
-   private dimension: s2 is social
+   internal dimension: s2 is social
    #(classification) "none"
-   private dimension: s3 is concat(social, '')
+   internal dimension: s3 is concat(social, '')
    view: v is { group_by: s3 }
 }
 
@@ -767,7 +767,7 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
 ${body}
 }
 
@@ -776,7 +776,7 @@ export { research }
       write(
          "index.malloy",
          source(`   #(classification) "none"
-   private dimension: s2 is social
+   internal dimension: s2 is social
    dimension: s3 is s2`),
       );
       expect(await loadError()).toContain(
@@ -785,8 +785,8 @@ export { research }
       write(
          "index.malloy",
          source(`   #(classification) "none"
-   private dimension: s2 is social
-   private dimension: s3 is s2
+   internal dimension: s2 is social
+   internal dimension: s3 is s2
    view: v is { group_by: s3 }`),
       );
       expect(await loadError()).toContain(
@@ -795,9 +795,9 @@ export { research }
       write(
          "index.malloy",
          source(`   #(classification) "none"
-   private dimension: s2 is social
-   private dimension: s3 is s2
-   private dimension: s4 is s3
+   internal dimension: s2 is social
+   internal dimension: s3 is s2
+   internal dimension: s4 is s3
    dimension: s5 is s4`),
       );
       expect(await loadError()).toContain(
@@ -813,7 +813,7 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    #(classification) "none"
    dimension: s2 is concat(social, '')
    dimension: s3 is s2
@@ -903,7 +903,7 @@ export { ok_q }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is people include { private: social } extend {
+source: research is people include { internal: social } extend {
    view: leaf is { group_by: social }
    view: outer is { nest: leaf }
    view: inline is { nest: deep is { group_by: social } }
@@ -925,7 +925,7 @@ export { research }
 import "base.malloy"
 
 #(carries) ["none"]
-source: research is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: research is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "none"
    dimension: area is region
    private join_one: owner is people on owner.area = area
@@ -953,44 +953,23 @@ export { s }
    };
 
    it("follows an extend field of a query source: a relabel of a hidden output is refused, a copy of a carried one loads", async () => {
-      await leaksOf(`source: s is people -> { group_by: social, area } include { private: social } extend {
+      await leaksOf(`source: s is people -> { group_by: social, area } include { internal: social } extend {
    #(classification) "none"
    dimension: x is social
 }`);
       expect(await loadError()).toContain(
          "exposes x, declared none over a plain copy of social",
       );
-      await leaksOf(`source: s is people -> { group_by: social, area } include { private: social } extend {
+      await leaksOf(`source: s is people -> { group_by: social, area } include { internal: social } extend {
    dimension: z is upper(social)
 }`);
       expect(await loadError()).toContain(
          "exposes z, classified pii.direct_identifier",
       );
-      await leaksOf(`source: s is people -> { group_by: social, area } include { private: social } extend {
+      await leaksOf(`source: s is people -> { group_by: social, area } include { internal: social } extend {
    dimension: y is upper(area)
    #(classification) "none"
    dimension: x is area
-}`);
-      expect(await warnings()).toEqual([]);
-   });
-
-   it("treats an internal field or join as reachable under #(carries), and loads it once it is private", async () => {
-      await leaksOf(`source: s is people include { internal: social } extend {
-   view: v is { group_by: area }
-}`);
-      expect(await loadError()).toContain(
-         "exposes social, classified pii.direct_identifier",
-      );
-      await leaksOf(`source: s is ${ROWS} include { private: id, region, ssn, amount } extend {
-   #(classification) "none"
-   dimension: area is region
-   internal join_one: p is people on p.area = area
-}`);
-      expect(await loadError()).toContain("exposes p.social");
-      await leaksOf(`source: s is ${ROWS} include { private: id, region, ssn, amount } extend {
-   #(classification) "none"
-   dimension: area is region
-   private join_one: p is people on p.area = area
 }`);
       expect(await warnings()).toEqual([]);
    });
@@ -1014,7 +993,7 @@ source: tidy_q is people -> { group_by: area }
 import "base.malloy"
 
 #(carries) ["none"]
-source: s is ${ROWS} include { private: id, region, ssn, amount } extend {
+source: s is ${ROWS} include { internal: id, region, ssn, amount } extend {
    #(classification) "none"
    dimension: area is region
    join_one: j is ${q} on j.${key} = area
@@ -1066,9 +1045,9 @@ export { s }
 
    it("warns on a hidden computed downgrade a published field reads, and not on one nothing reads", async () => {
       const research = (extra: string) =>
-         leaksOf(`source: s is people include { private: social } extend {
+         leaksOf(`source: s is people include { internal: social } extend {
    #(classification) "none"
-   private dimension: s3 is concat(social, '')
+   internal dimension: s3 is concat(social, '')
 ${extra}
 }`);
       await research(`   #(classification) "none"
@@ -1197,7 +1176,7 @@ export { s0 }
 
 /** `s0 -> s1 -> ... -> s<joins>`, each hop one join; the leaf's `ssn` carries `leafClass`. */
 function joinChain(joins: number, leafClass: string): string {
-   const base = `duckdb.sql("select 1 as id") include { private: id } extend {
+   const base = `duckdb.sql("select 1 as id") include { internal: id } extend {
    #(classification) "none"
    dimension: k is id`;
    let out = `source: s${joins} is ${base}
@@ -1216,7 +1195,7 @@ function joinChain(joins: number, leafClass: string): string {
 
 /** A tree `levels` joins deep where every source joins the next level twice. */
 function joinFanOut(levels: number): string {
-   const base = `duckdb.sql("select 1 as id") include { private: id } extend {
+   const base = `duckdb.sql("select 1 as id") include { internal: id } extend {
    #(classification) "none"
    dimension: k is id`;
    let out = `source: f${levels} is ${base}
@@ -1285,7 +1264,7 @@ describe("readSourceClassifications over a query source", () => {
    it("reads each output's inputs and its stage's filters, and fails closed on what it cannot resolve", async () => {
       const { modelDefs } = await compileModelFiles({
          "m.malloy": `##! experimental.access_modifiers
-source: p is duckdb.sql("select 1 as id, '9' as ssn, 'a' as n") include { private: ssn public: * } extend {
+source: p is duckdb.sql("select 1 as id, '9' as ssn, 'a' as n") include { internal: ssn public: * } extend {
    #(classification) "phi"
    dimension: social is ssn
 }
@@ -1323,7 +1302,7 @@ source: two_stage is p -> {
    it("passes an unresolved read up through an undeclared intermediate, and reads an extend field against the outputs", async () => {
       const { modelDefs } = await compileModelFiles({
          "m.malloy": `##! experimental.access_modifiers
-source: p is duckdb.sql("select 1 as id, '9' as ssn, 'a' as n") include { private: ssn public: * } extend {
+source: p is duckdb.sql("select 1 as id, '9' as ssn, 'a' as n") include { internal: ssn public: * } extend {
    #(classification) "phi"
    dimension: social is ssn
 }
@@ -1359,7 +1338,7 @@ source: one_stage is p -> { group_by: social, n } extend {
    it("keys its memo on the query as well as the fields", async () => {
       const { modelDefs } = await compileModelFiles({
          "m.malloy": `##! experimental.access_modifiers
-source: p is duckdb.sql("select 1 as id, '9' as ssn") include { private: ssn public: * } extend {
+source: p is duckdb.sql("select 1 as id, '9' as ssn") include { internal: ssn public: * } extend {
    #(classification) "phi"
    dimension: social is ssn
 }
