@@ -403,4 +403,22 @@ describe("raw SQL writes exactly one record, as ungated", () => {
          delete process.env.PUBLISHER_MAX_QUERY_ROWS;
       }
    });
+
+   it("redacts a credential the driver quotes back in its error", async () => {
+      const controller = controllerOver(
+         sinon
+            .stub()
+            .rejects(
+               new Error(
+                  "connect failed for postgres://svc:hunter2@db:5432/x password=hunter2",
+               ),
+            ),
+      );
+      await expect(
+         controller.getConnectionQueryData("env", "warehouse", "SELECT 1", ""),
+      ).rejects.toThrow();
+      const [record] = records();
+      expect(record.error).toBeDefined();
+      expect(record.error).not.toContain("hunter2");
+   });
 });
