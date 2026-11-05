@@ -7,16 +7,28 @@
  * caller who supplies the given reads only its rows, and one who omits a
  * required given is refused.
  */
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { GivenValue } from "@malloydata/malloy";
 import {
    loadTempPackage,
-   usePackageLoadPool,
    type LoadedTempPackage,
 } from "../test_helpers/temp_package";
+import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+} from "../package_load/package_load_pool";
 import { unrecordedAudit } from "./access_record";
 
-usePackageLoadPool();
+const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
+beforeAll(async () => {
+   process.env.PACKAGE_LOAD_WORKERS = "1";
+   await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+});
+afterAll(async () => {
+   await __setPackageLoadPoolForTests(null);
+   if (ORIGINAL_WORKERS === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
+   else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_WORKERS;
+});
 
 let temp: LoadedTempPackage | undefined;
 afterEach(async () => {
