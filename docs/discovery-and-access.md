@@ -115,6 +115,26 @@ says nothing about the model. That holds only when the model carries no `#(autho
 `#(access_filter)`, and every source the text joins is on the surface or derived from one; otherwise
 it is the plain 404.
 
+## Discovery under a lock
+
+Curation decides what exists for everyone. A `#(authorize)` lock decides who may enter a source,
+and discovery can read it too, when it knows who is asking. `get_context` takes a `givens`
+parameter and `GET …/models/{path}` a `givens` query parameter, each the caller's givens as the
+trusted tier set them. A source whose lock cannot admit the caller on the `#(secure)` givens
+supplied, or whose lock reads a secure given the trusted tier did not supply, is omitted from the
+listing and the ranked results, with its fields, queries and source info, the way a source locked
+with `#(authorize) false` always is. The counts count only what is shown.
+
+Only a secure given takes part. A plain given is whatever the request supplies, so hiding on it
+would hide nothing from a caller who can send any value; a lock term on a plain given is not
+evaluated and the source stays listed. `#(access_filter)` row filters never hide anything: they
+scope rows, not schema. With no givens supplied, every published source is listed, as before.
+
+This is discovery, not enforcement. The query route's gates decide what is served, and they decide
+the same way whether or not the source was listed; what this buys is an agent that sees only what
+its caller can enter, and nothing for an adversarial agent to learn from a listing that a query
+would not already answer. See [authorize.md](authorize.md) for the lock and `#(secure)`.
+
 ## Curating, and what curation is not
 
 `export { … }` is a discovery filter and a query boundary over _what exists_; `#(authorize)` is the
@@ -131,7 +151,11 @@ protected rather than merely removed from discovery: a lock is truth-evaluated o
 refused caller gets a 403 and no SQL. `#(access_filter)` is not,
 because it decides rows and `/compile` returns none. A source that is both hidden and locked still
 answers `/compile` with the boundary's generic 404, so the exemption cannot be used to enumerate
-gated names.
+gated names. In a deployment, admit `/compile` and `compile_model` at the gateway only for the
+role that authors the package, so a caller who may only query cannot use the authoring loop to read a
+hidden source's schema. A compliance review treats the same gap as a finding: an unpublished source
+with no `#(authorize) false` is one export away from open, and the `locked_bases` check in
+[compliance-review.md](compliance-review.md) fails it.
 
 The boundary checks the source a query **runs**. A query over an exported source that joins a
 hidden source still runs, and returns the joined fields.

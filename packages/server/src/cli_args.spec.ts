@@ -17,6 +17,8 @@ describe("applyCliArgs", () => {
       ["--config", "PUBLISHER_CONFIG_PATH"],
       ["--mcp_port", "MCP_PORT"],
       ["--mcp_host", "MCP_HOST"],
+      ["--admin_port", "PUBLISHER_ADMIN_PORT"],
+      ["--admin_host", "PUBLISHER_ADMIN_HOST"],
       ["--shutdown_drain_duration_seconds", "SHUTDOWN_DRAIN_DURATION_SECONDS"],
       [
          "--shutdown_graceful_close_timeout_seconds",
@@ -36,6 +38,21 @@ describe("applyCliArgs", () => {
       const env = apply(["--init", "--no-mcp-config"], { NODE_ENV: "test" });
       expect(env.INITIALIZE_STORAGE).toBe("true");
       expect(env.PUBLISHER_NO_MCP_CONFIG).toBe("true");
+   });
+
+   it("maps each API switch to its variable, on bare and off with no-, overriding the variable", () => {
+      const env = apply(["--no-serving-api-enabled", "--admin-api-enabled"], {
+         NODE_ENV: "test",
+         PUBLISHER_SERVING_API_ENABLED: "true",
+         PUBLISHER_ADMIN_API_ENABLED: "false",
+      });
+      expect(env.PUBLISHER_SERVING_API_ENABLED).toBe("false");
+      expect(env.PUBLISHER_ADMIN_API_ENABLED).toBe("true");
+      const off = apply(["--serving-api-enabled", "--no-admin-api-enabled"], {
+         NODE_ENV: "test",
+      });
+      expect(off.PUBLISHER_SERVING_API_ENABLED).toBe("true");
+      expect(off.PUBLISHER_ADMIN_API_ENABLED).toBe("false");
    });
 
    it("appends repeated --watch-env to an existing PUBLISHER_WATCH", () => {

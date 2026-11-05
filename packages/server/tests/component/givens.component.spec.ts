@@ -18,7 +18,7 @@ let removePkgDir: () => void;
 let duckdbConnection: DuckDBConnection;
 
 const SEED_SQL = `
-CREATE TABLE IF NOT EXISTS orders (
+CREATE OR REPLACE TABLE orders (
    order_id INTEGER,
    region VARCHAR,
    order_date DATE

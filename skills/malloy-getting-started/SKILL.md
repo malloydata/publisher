@@ -98,7 +98,7 @@ Two tools, in this order.
 }
 ```
 
-**One call answers.** The response groups the fields that matched under the sources holding them, so describing the fields is the whole search: there is no second call to drill into a source. Two variations are worth knowing:
+**One call usually answers.** The response groups the fields that matched under the sources holding them, so there is no drill-down step: describe each field you need as its own target. A source in the results is not every field it holds, though. When a field you need is missing, a target is listed in `unresolved_targets`, or a warning says results were cut, call again with `source` in the scope and one target per missing concept. Two variations are worth knowing:
 
 - Omit a target's `search_text` to enumerate that type instead of ranking it. A lone `{"target_type": "source"}` is the catalog browse, which returns a thin card per source (a one-line summary rather than the full doc) and pages with `offset` and `next_offset`.
 - Add `source` to the scope to narrow to one source, which is also how to read that source's full doc after a browse.
@@ -135,11 +135,12 @@ No `.malloy` files in the workspace? The user can say "model my data" and `mallo
 
 ### Every skill, by what it is for
 
-This is a catalogue of what exists, not of what is loaded. A host that installs one group (`analysis`, `modeling` or `eval`) takes that group's skills alone, so a name below may not be installed. The names are plain text, not `skill:` references, for that reason.
+This is a catalogue of what exists, not of what is loaded. A host that installs one group (`analysis`, `modeling`, `eval` or `governance`) takes that group's skills alone, so a name below may not be installed. The names are plain text, not `skill:` references, for that reason.
 
 - **Answering and presenting:** `malloy-analysis` (a data question, or open-ended exploration), `malloy-phrase-detection` (turn a question into search targets for `get_context`), `malloy-queries` (query syntax and compile errors), `malloy-charts` (chart choice, renderer tags, scale rules), `malloy-reports` (a saved report: a `.malloy` file with an `## artifact` tag at the package root, laid out as a grid, which is a dashboard, or linear, which is a notebook), `malloy-analysis-report` (combine queries you already ran into a report), `malloy-dashboards` and `malloy-notebooks` (the old names of `malloy-reports`, kept as pointers to it), `malloy-source-unreachable` (a source missing from discovery, or a query refused with a 404 or 403), `malloy-html-data-apps` (in-package HTML data apps: design, runtime, embedding).
 - **Modeling, in order:** `malloy-modeling` (the driver), `malloy-discover` (silent data discovery, prior art), `malloy-define` (scope, source plan, field definitions), `malloy-model` (write and curate the `.malloy` files), `malloy-document` (`#(doc)` tags), `malloy-model-as-you-go` (grow the model from answered questions), `malloy-gotchas-modeling` (mistakes to avoid, and fixing compile errors in a model), `malloy-review` (review existing Malloy), `malloy-lookml-review` and `malloy-powerbi-review` (prior-art adapters).
-- **Serving a package:** `malloy-publish` (move a finished model into a served package), `malloy-materialization` (persist an expensive source, and tune what to persist and when), `malloy-run-agent` (adopt an agent a package declares, only when the user names it).
+- **Serving a package:** `malloy-publish` (move a finished model into a served package), `malloy-materialization` (persist an expensive source, and tune what to persist and when), `malloy-define-agent` (declare an agent in a package: layout, limits, instructions that work unattended), `malloy-run-agent` (adopt an agent a package declares, only when the user names it).
+- **Checking a package against an access policy** (the `governance` group): `malloy-classify` (propose each field's data class from the policy and the values, for approval), `malloy-compliance-review` (turn the policy into a register of checks, run it against the served package, report and attest).
 - **Evaluating a model** (the `eval` group, which neither `analysis` nor `modeling` includes): `eval-loop` (the loop), `eval-answer`, `eval-judge`, `eval-diagnose`, `eval-improve`, `eval-import`, `eval-report`.
 
 ## Contract

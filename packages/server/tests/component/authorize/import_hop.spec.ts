@@ -25,6 +25,7 @@ import { loadAuthorizeModel } from "../../../src/test_helpers/authorize_fixture"
 /** The gated source, in its own file so importers get an UNEXPORTED entry. */
 const GIVEN_ONLY_GATE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -36,6 +37,7 @@ source: gated is duckdb.table('orgtable') extend {
 
 const ROW_FIELD_GATE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 

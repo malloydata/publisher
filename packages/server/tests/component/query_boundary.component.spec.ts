@@ -1796,6 +1796,7 @@ source: table_r is duckdb.sql("select 1 as id") extend {
          fs.writeFileSync(
             path.join(tempDir, "orders.malloy"),
             `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS
@@ -1928,6 +1929,7 @@ source: mine is orders extend {
          fs.writeFileSync(
             path.join(tempDir, "orders.malloy"),
             `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS

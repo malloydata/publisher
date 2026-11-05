@@ -50,9 +50,15 @@ import {
    type RollupPlan,
 } from "./preaggregation_synthesis";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import {
+   RollupCoverageError,
+   rollupCoverageViolation,
+   rollupMeasuresByMember,
+} from "./preaggregation_coverage";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
+import { summarizeQueryAccess, type QueryAccessSummary } from "./access_record";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
@@ -183,6 +189,7 @@ import {
    findFilterAnnotationDeclaringSource,
    type DocumentLocationLike,
    type SiblingModelDefResolver,
+   type StageLike,
 } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
 // methods of the same names; without the alias, converting one of them to an
@@ -2464,7 +2471,12 @@ export class Model {
             "runnable",
             await this.resolveAuthorizeSourceFromRunnable(runnable),
          );
-         await this.assertNoMisboundInheritedFilters(runnable);
+         await this.assertNoMisboundInheritedFilters(
+            runnable,
+            new Set(),
+            "entry_point",
+            options?.callerJoins?.region,
+         );
          return runnable;
       }
 
@@ -2517,14 +2529,17 @@ export class Model {
          );
       }
       const rowLevel = [...entryPointRowLevel, ...callerJoinRowLevel];
-      if (rowLevel.length === 0) {
-         // No gate anywhere: still prove no inherited filter came unbound, as
-         // every exit does.
-         await this.assertNoMisboundInheritedFilters(runnable);
-         return runnable;
-      }
       const siteOf = (graft: RowLevelGraftEntry): AuthorizeGateSite =>
          graft.callerJoinPath ? "caller_join" : "entry_point";
+      // Before any exit, `checkOnly` included: `/compile` must refuse what the
+      // query route refuses. A grafted runnable is checked again below.
+      await this.assertNoMisboundInheritedFilters(
+         runnable,
+         new Set(),
+         rowLevel.length > 0 ? siteOf(rowLevel[0]) : undefined,
+         options?.callerJoins?.region,
+      );
+      if (rowLevel.length === 0) return runnable;
 
       if (!options?.recompile) {
          // Without `recompile` the filter cannot attach, so a caller that will
@@ -2587,6 +2602,7 @@ export class Model {
             recompiled,
             new Set(rowLevel.map((r) => r.condition)),
             siteOf(rowLevel[0]),
+            options?.callerJoins?.region,
          );
          this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
          return recompiled;
@@ -2604,12 +2620,13 @@ export class Model {
 
    /**
     * Resolve the run-target `SourceDef`/`ModelDef`, the composite member it
-    * resolved to, and two signals `isOwnFreshFilter` (`./filter_binding_guard`)
-    * uses to identify a condition parsed from THIS request's own text:
+    * resolved to, and two signals `./filter_binding_guard` uses to identify a
+    * condition parsed from THIS request's own text:
     *
-    * - `compiledUrl`: the synthetic `internal://` URL of the request's text.
-    *   `undefined` for a named run, whose URL is the model file's — a misbind
-    *   baked into a declared query must not claim freshness by sharing it.
+    * - `compiledUrl`: the synthetic `internal://` URL of the request's text,
+    *   which locates the caller-written span. `undefined` for a named run,
+    *   whose URL is the model file's — a misbind baked into a declared query
+    *   must not be taken for caller text by sharing it.
     * - `queryLocation`: `prepared._query.location`. Needed because `query: q2
     *   is X extend { where: … }` can leave the struct carrying X's location,
     *   so q2's own filter sits outside the struct's span.
@@ -2625,6 +2642,7 @@ export class Model {
       compositeResolvedSourceDef: SourceDef | undefined;
       compiledUrl: string | undefined;
       queryLocation: DocumentLocationLike | undefined;
+      pipeline: readonly StageLike[] | undefined;
    }> {
       try {
          const prepared = (await runnable.getPreparedQuery()) as {
@@ -2632,6 +2650,7 @@ export class Model {
                structRef?: unknown;
                compositeResolvedSourceDef?: SourceDef;
                location?: DocumentLocationLike;
+               pipeline?: readonly StageLike[];
             };
             _modelDef?: ModelDef;
          };
@@ -2643,6 +2662,7 @@ export class Model {
                compositeResolvedSourceDef: undefined,
                compiledUrl: undefined,
                queryLocation: undefined,
+               pipeline: undefined,
             };
          const structRef = prepared._query?.structRef;
          const struct =
@@ -2663,6 +2683,7 @@ export class Model {
                   ? prepared._query.location.url
                   : undefined,
             queryLocation: prepared._query?.location,
+            pipeline: prepared._query?.pipeline,
          };
       } catch {
          // Not fail-open: if getPreparedQuery() throws here, execution's own
@@ -2674,6 +2695,7 @@ export class Model {
             compositeResolvedSourceDef: undefined,
             compiledUrl: undefined,
             queryLocation: undefined,
+            pipeline: undefined,
          };
       }
    }
@@ -3007,6 +3029,7 @@ export class Model {
       },
       alreadyProven: ReadonlySet<FilterCondition> = new Set(),
       site: AuthorizeGateSite = "entry_point",
+      callerRegion?: CallerRegion,
    ): Promise<void> {
       const {
          struct,
@@ -3014,6 +3037,7 @@ export class Model {
          compositeResolvedSourceDef,
          compiledUrl,
          queryLocation,
+         pipeline,
       } = await this.resolveRunTargetStruct(runnable);
       const target = compositeResolvedSourceDef ?? struct;
       if (!target) return;
@@ -3021,12 +3045,26 @@ export class Model {
          assertInheritedSourceFiltersBind(
             target,
             modelDef,
-            { compiledUrl, queryLocation },
+            {
+               callerText:
+                  callerRegion?.kind === "span"
+                     ? {
+                          url: callerRegion.url,
+                          fromLine: callerRegion.fromLine,
+                       }
+                     : callerRegion && compiledUrl
+                       ? { url: compiledUrl, fromLine: 0 }
+                       : undefined,
+               queryLocation,
+               virtualUrl:
+                  callerRegion?.kind === "span" ? callerRegion.url : undefined,
+            },
             this.siblingModelDefResolver,
             undefined,
             undefined,
             alreadyProven,
             struct,
+            pipeline,
          );
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", site);
@@ -3907,6 +3945,11 @@ export class Model {
 
    public getType(): ModelType {
       return this.modelType;
+   }
+
+   /** The givens this model surfaces, as `CompiledModel.givens` reports them. */
+   public getGivens(): readonly ApiGiven[] {
+      return this.givens ?? [];
    }
 
    /**
@@ -5411,6 +5454,12 @@ export class Model {
    ): Promise<{
       result: Malloy.Result;
       /**
+       * What this query accessed, for the access record (`access_record.ts`):
+       * the source entered, the gates and decision, the fields read with their
+       * classes, the row count. Absent only when building it failed.
+       */
+      access?: QueryAccessSummary;
+      /**
        * The JSON of the `responseShape` asked for, built once. Callers should
        * send this string: it is the bytes the byte cap measured, and a payload
        * too large to serialize surfaces here as a 413 rather than a bare 500.
@@ -5741,29 +5790,38 @@ export class Model {
                );
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               // info, not debug: a fallback is otherwise silent (the query
-               // succeeds), so this is how an operator learns why a package
-               // never serves from storage. The compiler's "undefined object"
-               // reads the same for an unpersisted and a stale source, so both
-               // sets are reported.
-               const { shapeSources, staleSources } = serveShapeDiagnostics(
-                  this.storageServe.serveBindings,
-                  this.storageServe.freshServeBindings(Date.now()),
-               );
-               logger.info(
-                  "storage serve-shape ineligible for this query; serving live",
-                  {
-                     modelPath: this.modelPath,
-                     error:
-                        shapeErr instanceof Error
-                           ? shapeErr.message
-                           : String(shapeErr),
-                     // A name absent from both sets is not materialized at all.
-                     shapeSources,
-                     // Bound, but withheld by the freshness gate for this query.
-                     staleSources,
-                  },
-               );
+               // A rollup refused for this query's aggregates is per-query and
+               // expected, not a reason the package never serves from storage.
+               if (shapeErr instanceof RollupCoverageError) {
+                  logger.debug(
+                     "storage rollup cannot answer this query; serving live",
+                     { modelPath: this.modelPath, error: shapeErr.message },
+                  );
+               } else {
+                  // info, not debug: a fallback is otherwise silent (the query
+                  // succeeds), so this is how an operator learns why a package
+                  // never serves from storage. The compiler's "undefined
+                  // object" reads the same for an unpersisted and a stale
+                  // source, so both sets are reported.
+                  const { shapeSources, staleSources } = serveShapeDiagnostics(
+                     this.storageServe.serveBindings,
+                     this.storageServe.freshServeBindings(Date.now()),
+                  );
+                  logger.info(
+                     "storage serve-shape ineligible for this query; serving live",
+                     {
+                        modelPath: this.modelPath,
+                        error:
+                           shapeErr instanceof Error
+                              ? shapeErr.message
+                              : String(shapeErr),
+                        // A name absent from both sets is not materialized at all.
+                        shapeSources,
+                        // Bound, but withheld by the freshness gate for this query.
+                        staleSources,
+                     },
+                  );
+               }
             }
          }
 
@@ -5805,13 +5863,20 @@ export class Model {
                   givens: querySurfaceGivens,
                   buildManifest,
                });
+               // Compiling proves only that the chosen member DEFINES every
+               // field used; `count()` uses none and resolves to a rollup.
+               const uncovered = rollupCoverageViolation(
+                  (await candidate.getPreparedQuery())._query,
+                  rollupMeasuresByMember(this.preaggregateRollupPlans),
+               );
+               if (uncovered) throw new RollupCoverageError(uncovered);
                runnable = candidate;
                preaggRouted = true;
             } catch (preaggErr) {
                // Expected and common: the companion imports only the sources it
-               // rolls up.
+               // rolls up, and a rollup stores only its declared measures.
                logger.debug(
-                  "query does not compile against the pre-aggregation model; serving live",
+                  "query cannot be served from the pre-aggregation model; serving live",
                   {
                      modelPath: this.modelPath,
                      error:
@@ -6008,6 +6073,10 @@ export class Model {
             {
                abortSignal,
                maxRows,
+               usage: Model.statementUsage(
+                  queryMetadataInput,
+                  this.packageName,
+               ),
                queryMetadata: (connectionName) =>
                   this.resolveQueryMetadata(
                      queryMetadataInput,
@@ -6119,6 +6188,10 @@ export class Model {
                {
                   abortSignal,
                   maxRows,
+                  usage: Model.statementUsage(
+                     queryMetadataInput,
+                     this.packageName,
+                  ),
                   // Re-resolved: the first bag was for the STORAGE connection.
                   // The correlation id rides in the input, so it is kept.
                   queryMetadata: (connectionName) =>
@@ -6184,8 +6257,30 @@ export class Model {
       if (queryCostBytes !== undefined) {
          queryScannedBytesCounter().add(queryCostBytes, metricAttributes);
       }
+      // Never fails the query: an unreadable prepared query yields a record
+      // with no fields, and a thrown summary yields none.
+      let access: QueryAccessSummary | undefined;
+      try {
+         access = await summarizeQueryAccess({
+            runnable,
+            modelDef: this.modelDef,
+            apiSources: this.sources,
+            modelGivens: this.givens,
+            source: compiledSource ?? sourceName,
+            givens,
+            bypassAuthorize,
+            grafts: this.rowLevelFilteredRunnables.get(runnable) ?? [],
+            rowCount: queryResults.totalRows,
+         });
+      } catch (err) {
+         logger.debug("Access summary unavailable", {
+            modelPath: this.modelPath,
+            error: (err as Error).message,
+         });
+      }
       return {
          result: wrappedResult,
+         ...(access ? { access } : {}),
          serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
@@ -6245,6 +6340,25 @@ export class Model {
          ...(args.servedFrom
             ? { "malloy.model.query.served_from": args.servedFrom }
             : {}),
+      };
+   }
+
+   /** The usage hook for a statement, when its caller says which connections are metered. */
+   private static statementUsage(
+      input: ModelQueryMetadataInput | undefined,
+      packageName: string,
+   ):
+      | {
+           metered: (connectionName: string) => boolean;
+           environment: string;
+           package: string;
+        }
+      | undefined {
+      if (!input?.meteredConnection || !input.environment) return undefined;
+      return {
+         metered: input.meteredConnection,
+         environment: input.environment,
+         package: packageName,
       };
    }
 
@@ -6945,6 +7059,10 @@ export class Model {
                {
                   abortSignal,
                   maxRows: cellMaxRows,
+                  usage: Model.statementUsage(
+                     queryMetadataInput,
+                     this.packageName,
+                  ),
                   queryMetadata: async (connectionName) => {
                      // The compiled run target, as in getQueryResults.
                      const cellCompiledSource =

@@ -25,7 +25,7 @@ import {
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import utc from "dayjs/plugin/utc";
 import {
    createContext,
@@ -33,11 +33,13 @@ import {
    type ReactNode,
    useContext,
    useEffect,
+   useRef,
    useState,
 } from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
+import { useSettledDraft } from "../../hooks/useSettledDraft";
 import {
    type OptionSearch,
    SUGGEST_OPTION_LIMIT,
@@ -286,6 +288,9 @@ export function GivenInput({
    // that was cut off. Called for every given, as hooks must be; inert unless
    // the picker below renders with a search to run.
    const [typed, setTyped] = useState("");
+   // The thumb(s) while the reader holds them; the value commits on release.
+   const [drag, setDrag] = useState<number | number[] | null>(null);
+   const gesture = useRef<number | number[] | null>(null);
    const search = useOptionSearch(
       pickerControl ? optionSearch : undefined,
       typed,
@@ -529,9 +534,16 @@ export function GivenInput({
          return unrepresentable("number");
       }
       // An unset control rests at the low end, which is the no-op threshold.
-      const position = current ?? rangeMin;
+      const dragged = drag !== null;
+      const position = dragged
+         ? Array.isArray(drag)
+            ? drag[0]
+            : drag
+         : (current ?? rangeMin);
       // And an unset range spans the whole track, which selects everything.
-      const thumbs: [number, number] = handles ?? [rangeMin, rangeMax];
+      const thumbs: [number, number] = Array.isArray(drag)
+         ? [drag[0], drag[1]]
+         : (handles ?? [rangeMin, rangeMax]);
       // A range reads as `lo to hi`, and as `≥ lo` once the upper handle is at
       // the ceiling, which is also what the value on the wire says.
       const rangeReadout =
@@ -547,8 +559,9 @@ export function GivenInput({
       // third state: not unset, and not `≥ position` either. Printing
       // `≥ rangeMin` for it asserted a lower bound nobody had chosen, just as
       // counting it unset had hidden that an override was in force at all.
-      const emptyFilterOverride = numericFilter && value === "";
-      const isOverridden = current !== undefined || emptyFilterOverride;
+      const emptyFilterOverride = numericFilter && value === "" && !dragged;
+      const isOverridden =
+         current !== undefined || emptyFilterOverride || dragged;
       // TWO LIMITATIONS here, both reachable as soon as a given carries
       // `rangeMin`/`rangeMax`, and both about the plain `number` arm rather than
       // the filter arm. Written when no server populated those fields; slice 6
@@ -651,6 +664,16 @@ export function GivenInput({
                   // gives the thumb somewhere to be.
                   sx={{ py: 0, mt: 0.5 }}
                   onChange={(_event, next) => {
+                     gesture.current = next;
+                     setDrag(next);
+                  }}
+                  // MUI repeats the previous gesture's value for a click that
+                  // moved nothing, which would bring a cleared value back.
+                  onChangeCommitted={() => {
+                     const next = gesture.current;
+                     gesture.current = null;
+                     setDrag(null);
+                     if (next === null) return;
                      if (numericFilter) {
                         const [lo, hi] = Array.isArray(next)
                            ? [next[0], next[1]]
@@ -750,28 +773,18 @@ export function GivenInput({
    // was in force. The text box shows the filter as written, and editable.
    if (isDateFilter && dateIsPickable) {
       const parsed = bareDate ? dayjs.utc(value as string) : null;
+      // Cleared means UNSET, `null`, not an empty filter expression. `""` is a
+      // value for a filter given (the empty string is meaningful there), so it
+      // reached the wire as a filter of no characters instead of dropping the
+      // override.
       return (
-         <LocalizationProvider dateAdapter={AdapterDayjs}>
-            <DatePicker
-               label={label}
-               value={parsed?.isValid() ? parsed : null}
-               // Cleared means UNSET, `null`, not an empty filter expression.
-               // `""` is a value for a filter given (the empty string is
-               // meaningful there), so it reached the wire as a filter of no
-               // characters instead of dropping the override.
-               onChange={(next) =>
-                  onChange(next ? next.format("YYYY-MM-DD") : null)
-               }
-               slotProps={{
-                  textField: {
-                     fullWidth: true,
-                     size: "small",
-                     helperText: helperNode,
-                  },
-                  field: { clearable: true, onClear: () => onChange(null) },
-               }}
-            />
-         </LocalizationProvider>
+         <SettledDatePicker
+            label={label}
+            committed={parsed?.isValid() ? parsed : null}
+            toValue={(next) => next.format("YYYY-MM-DD")}
+            onChange={onChange}
+            helperText={helperNode}
+         />
       );
    }
 
@@ -842,11 +855,10 @@ export function GivenInput({
    }
 
    if (type === "number") {
-      const num = typeof value === "number" ? value : "";
       // Track whether a value is OVERRIDDEN, the way the string branch below
       // does, rather than whether the box happens to render non-empty. A
-      // non-number renders blank (see `num` above), and keying the revert off
-      // that blank left the user no way to clear it.
+      // non-number renders blank, and keying the revert off that blank left
+      // the user no way to clear it.
       const isOverridden = value !== undefined && value !== null;
       // `""` is an empty box, not an unreadable value. `paramToGiven` now reads
       // `?N=` as UNSET so it no longer arrives here at all, but a host passing
@@ -856,25 +868,15 @@ export function GivenInput({
          return unrepresentable("number");
       }
       return (
-         <TextField
+         <SettledTextField
             label={label}
             type="number"
-            value={num}
-            onChange={(e) => {
-               const v = e.target.value;
-               onChange(v === "" ? null : Number(v));
-            }}
+            committed={typeof value === "number" ? String(value) : ""}
+            onCommit={(text) => onChange(text === "" ? null : Number(text))}
             placeholder={defaultDisplay}
             helperText={helperNode}
-            slotProps={{
-               input: {
-                  endAdornment: isOverridden && (
-                     <ClearAdornment onClear={() => onChange(null)} />
-                  ),
-               },
-            }}
-            fullWidth
-            size="small"
+            isOverridden={isOverridden}
+            onClear={() => onChange(null)}
          />
       );
    }
@@ -918,27 +920,15 @@ export function GivenInput({
       // The date picker shows a format mask, not a placeholder, so the default
       // rides on the shared helper line.
       return (
-         <LocalizationProvider dateAdapter={AdapterDayjs}>
-            <DatePicker
-               label={label}
-               value={dateValue}
-               // The clicked day rebuilt in UTC, never `next.toDate()`, which
-               // is local-mode and lands a day out. See `pickedDayToUtc`.
-               onChange={(next) =>
-                  onChange(
-                     next ? pickedDayToUtc(next, asDate ?? undefined) : null,
-                  )
-               }
-               slotProps={{
-                  textField: {
-                     fullWidth: true,
-                     size: "small",
-                     helperText: helperNode,
-                  },
-                  field: { clearable: true, onClear: () => onChange(null) },
-               }}
-            />
-         </LocalizationProvider>
+         <SettledDatePicker
+            label={label}
+            committed={dateValue}
+            // The picked day rebuilt in UTC, never `next.toDate()`, which is
+            // local-mode and lands a day out. See `pickedDayToUtc`.
+            toValue={(next) => pickedDayToUtc(next, asDate ?? undefined)}
+            onChange={onChange}
+            helperText={helperNode}
+         />
       );
    }
 
@@ -956,10 +946,10 @@ export function GivenInput({
    const str = typeof value === "string" ? value : "";
    const isOverridden = value !== undefined && value !== null;
    return (
-      <TextField
+      <SettledTextField
          label={label}
-         value={str}
-         onChange={(e) => onChange(e.target.value)}
+         committed={str}
+         onCommit={onChange}
          placeholder={
             isOverridden
                ? undefined
@@ -967,16 +957,136 @@ export function GivenInput({
                  (type.startsWith("filter<") ? type : undefined))
          }
          helperText={helperNode}
+         isOverridden={isOverridden}
+         emptyOverrides
+         onClear={() => onChange(null)}
+      />
+   );
+}
+
+/**
+ * A text box that applies what is typed once the reader pauses, tabs away or
+ * presses Enter, rather than on every keystroke: under autorun each applied
+ * value is a wave of queries, and one wave per keystroke floods the workers.
+ */
+function SettledTextField({
+   label,
+   type,
+   committed,
+   onCommit,
+   placeholder,
+   helperText,
+   isOverridden,
+   emptyOverrides = false,
+   onClear,
+}: {
+   label: string;
+   type?: "number";
+   committed: string;
+   onCommit: (text: string) => void;
+   placeholder: string | undefined;
+   helperText: ReactNode;
+   isOverridden: boolean;
+   /** An emptied box is a deliberate `""` override, not a revert to the default. */
+   emptyOverrides?: boolean;
+   onClear: () => void;
+}) {
+   const { draft, change, reset, bind } = useSettledDraft(committed, onCommit, {
+      unset: emptyOverrides && !isOverridden,
+   });
+   return (
+      <TextField
+         label={label}
+         type={type}
+         value={draft}
+         onChange={(e) => change(e.target.value)}
+         placeholder={placeholder}
+         helperText={helperText}
          slotProps={{
             input: {
                endAdornment: isOverridden && (
-                  <ClearAdornment onClear={() => onChange(null)} />
+                  <ClearAdornment
+                     onClear={() => {
+                        // Before the revert, so the blur it provokes finds
+                        // nothing left to commit.
+                        reset("");
+                        onClear();
+                     }}
+                  />
                ),
             },
          }}
+         {...bind}
          fullWidth
          size="small"
       />
+   );
+}
+
+// Calendar parts, not instants: a typed day is local midnight and the committed
+// one is UTC, which are equal days but different instants outside UTC.
+const sameDay = (a: Dayjs | null, b: Dayjs | null) =>
+   a === null || b === null
+      ? a === b
+      : a.year() === b.year() &&
+        a.month() === b.month() &&
+        a.date() === b.date();
+
+/**
+ * A day picker that applies a typed date once the reader pauses or tabs away,
+ * for the same reason as `SettledTextField`: each section typed into the field
+ * is a valid date of its own. A day clicked in the calendar applies at once.
+ */
+function SettledDatePicker({
+   label,
+   committed,
+   toValue,
+   onChange,
+   helperText,
+   minDate,
+}: {
+   label: string;
+   committed: Dayjs | null;
+   toValue: (picked: Dayjs) => GivenValue;
+   onChange: (next: GivenValue) => void;
+   helperText?: ReactNode;
+   minDate?: Dayjs;
+}) {
+   const { draft, change, reset, bind } = useSettledDraft<Dayjs | null>(
+      committed,
+      // A half-typed date is an invalid Dayjs, which is not a value yet.
+      (next) => {
+         if (next === null) onChange(null);
+         else if (next.isValid()) onChange(toValue(next));
+      },
+      { same: sameDay },
+   );
+   return (
+      <LocalizationProvider dateAdapter={AdapterDayjs}>
+         <DatePicker
+            label={label}
+            value={draft}
+            minDate={minDate}
+            onChange={change}
+            slotProps={{
+               textField: {
+                  fullWidth: true,
+                  size: "small",
+                  helperText,
+                  ...bind,
+               },
+               field: {
+                  clearable: true,
+                  onClear: () => {
+                     reset(null);
+                     onChange(null);
+                  },
+               },
+               // Keeps the click from blurring, and so committing, the field first.
+               clearButton: { onMouseDown: (e) => e.preventDefault() },
+            }}
+         />
+      </LocalizationProvider>
    );
 }
 
@@ -1011,7 +1121,9 @@ function ClearButton({
 
 function ClearAdornment({ onClear }: { onClear: () => void }) {
    return (
-      <InputAdornment position="end">
+      // Keeps focus in the field, so the click does not first blur it into a
+      // commit of whatever was typed.
+      <InputAdornment position="end" onMouseDown={(e) => e.preventDefault()}>
          <ClearButton onClear={onClear} edge="end" />
       </InputAdornment>
    );
@@ -1249,31 +1361,31 @@ function TimeRangeControl({
             <MenuItem value={CUSTOM_RANGE}>Custom range</MenuItem>
          </TextField>
          {custom && (
-            <LocalizationProvider dateAdapter={AdapterDayjs}>
-               <DatePicker
+            <>
+               <SettledDatePicker
                   label="From"
-                  value={day(draft.from)}
+                  committed={day(draft.from)}
+                  toValue={(d) => d.format("YYYY-MM-DD")}
                   onChange={(next) =>
                      commitDays({
                         ...draft,
-                        from: next ? next.format("YYYY-MM-DD") : undefined,
+                        from: next === null ? undefined : String(next),
                      })
                   }
-                  slotProps={{ textField: { size: "small" } }}
                />
-               <DatePicker
+               <SettledDatePicker
                   label="To"
-                  value={day(draft.to)}
+                  committed={day(draft.to)}
                   minDate={day(draft.from) ?? undefined}
+                  toValue={(d) => d.format("YYYY-MM-DD")}
                   onChange={(next) =>
                      commitDays({
                         ...draft,
-                        to: next ? next.format("YYYY-MM-DD") : undefined,
+                        to: next === null ? undefined : String(next),
                      })
                   }
-                  slotProps={{ textField: { size: "small" } }}
                />
-            </LocalizationProvider>
+            </>
          )}
       </Stack>
    );

@@ -984,14 +984,14 @@ describe("ducklake shape validation", () => {
       );
    });
 
-   it("rejects a missing bucketUrl at load", () => {
+   it("accepts a missing bucketUrl at load: the catalog's recorded data path is used", () => {
       const c = {
          ...valid,
          ducklakeConnection: { catalog: valid.ducklakeConnection!.catalog },
       } as ApiConnection;
-      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
-         /Storage bucketUrl is required for DuckLake/i,
-      );
+      expect(() =>
+         assembleEnvironmentConnections([c], "/tmp/env"),
+      ).not.toThrow();
    });
 
    // metadataSchema reaches TWO grammars: a quoted string literal in the ATTACH,
@@ -1052,6 +1052,86 @@ describe("ducklake shape validation", () => {
             assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
+   });
+
+   // The attach applies a catalog's own sslmode and throws on one it cannot
+   // honor, so a bad value is caught here instead of at every query or build.
+   const withCatalogPg = (pg: Record<string, unknown>): ApiConnection =>
+      ({
+         ...valid,
+         ducklakeConnection: {
+            ...valid.ducklakeConnection,
+            catalog: {
+               postgresConnection: {
+                  ...valid.ducklakeConnection!.catalog!.postgresConnection,
+                  ...pg,
+               },
+            },
+         },
+      }) as ApiConnection;
+
+   it("accepts a catalog sslmode the attach can apply", () => {
+      for (const ok of ["disable", "no-verify", "verify-full"]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: ok })],
+               "/tmp/env",
+            ),
+         ).not.toThrow();
+      }
+   });
+
+   it("rejects a catalog sslmode the attach would refuse", () => {
+      for (const bad of ["require", "prefer", "allow", ""]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: bad })],
+               "/tmp/env",
+            ),
+         ).toThrow(
+            /DuckLake catalog of connection 'lake' has unsupported sslmode/,
+         );
+      }
+   });
+
+   it("rejects a catalog verify-ca with no CA bundle", () => {
+      const saved = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: "verify-ca" })],
+               "/tmp/env",
+            ),
+         ).toThrow(/uses sslmode 'verify-ca' but no readable CA bundle/);
+      } finally {
+         if (saved === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = saved;
+      }
+   });
+
+   it("ignores a catalog sslmode beside a connectionString, which the attach ignores too", () => {
+      expect(() =>
+         assembleEnvironmentConnections(
+            [
+               withCatalogPg({
+                  connectionString: "host=h dbname=d sslmode=require",
+                  sslmode: "require",
+               }),
+            ],
+            "/tmp/env",
+         ),
+      ).not.toThrow();
+   });
+
+   it("rejects a destination whose catalog sslmode the attach would refuse, alone", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         withCatalogPg({ sslmode: "require" }),
+         valid,
+      ]);
+      expect(rejected.map((r) => r.name)).toEqual(["lake"]);
+      expect(rejected[0].reason).toMatch(/unsupported sslmode 'require'/);
+      expect(accepted).toHaveLength(1);
    });
 });
 
@@ -1399,6 +1479,38 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
       const { accepted, rejected } = validateStorageDestinations([good, bad]);
       expect(accepted.map((d) => d.name)).toEqual(["good"]);
       expect(rejected.map((r) => r.name)).toEqual(["bad"]);
+   });
+
+   describe("under S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+      const original = process.env.S3_CREDENTIAL_CHAIN_POLICY;
+      beforeEach(() => {
+         process.env.S3_CREDENTIAL_CHAIN_POLICY = "destinations-only";
+      });
+      afterEach(() => {
+         if (original === undefined)
+            delete process.env.S3_CREDENTIAL_CHAIN_POLICY;
+         else process.env.S3_CREDENTIAL_CHAIN_POLICY = original;
+      });
+
+      // The policy exists to refuse chain auth on author-supplied connections; a
+      // destination is the operator's own, and its shape check runs the same gate.
+      it("accepts a chain-auth destination", () => {
+         const { accepted, rejected } = validateStorageDestinations([
+            destination({ provider: "credential_chain" }),
+         ]);
+         expect(rejected).toEqual([]);
+         expect(accepted).toHaveLength(1);
+      });
+
+      it("assembles a chain-auth destination only when told its origin", () => {
+         const chain = destination({ provider: "credential_chain" });
+         expect(() => assembleEnvironmentConnections([chain])).toThrow(
+            /not permitted/,
+         );
+         expect(() =>
+            assembleEnvironmentConnections([chain], "", "storage-destination"),
+         ).not.toThrow();
+      });
    });
 });
 

@@ -80,13 +80,20 @@ Use `uv pip install -e ".[test]"` inside `packages/python-client` to install dev
 pytest tests/ -q
 ```
 
+On every PR into `main`, `build.yml` also builds the wheel and sdist (through
+`.github/workflows/python-sdk.yml`), starts a Publisher server built from the PR, installs the wheel
+into a clean venv on every Python version `pyproject.toml` declares, and drives the server through it
+(`scripts/smoke-test-wheel.py`). That runs on server-only PRs too, since a server change can break
+the SDK without touching `api-doc.yaml`. A PR that changes `requires-python` or the version
+classifiers changes what that job tests.
+
 ### Releasing to PyPI
 
-1. Bump `version` in `pyproject.toml` following PEP 440.
-2. Commit + tag: `git tag -s sdk-python-v0.2.0 -m "Malloy Publisher Python SDK 0.2.0"`
-3. Push the tag – GitHub Action builds & publishes using the `PYPI_TOKEN` secret.
-
-Pre-releases (`a`, `b`, `rc`) are supported; production releases must NOT include those suffixes.
+Nothing to do. The SDK releases in lockstep with `@malloy-publisher/sdk`, `app` and `server`: each
+Publisher release (`release.yml`) stamps its version into `pyproject.toml` on the release branch,
+builds and verifies the SDK from that branch, and uploads it to PyPI through trusted publishing (OIDC;
+there is no API token). Do not bump `version` in `pyproject.toml` by hand; the release PR merges the
+released number back. See *Publishing to PyPI* in `.github/workflows/CONTEXT.md`.
 
 ### Pre-commit hook
 

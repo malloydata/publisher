@@ -1811,3 +1811,53 @@ export function extractErrorDataFromError(error: unknown): {
    }
    return errorData;
 }
+
+const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
+const AZURE_DATA_EXTENSIONS = [
+   ".parquet",
+   ".csv",
+   ".json",
+   ".jsonl",
+   ".ndjson",
+];
+
+/**
+ * Validates an Azure URL against the three supported patterns:
+ *   1. Single file:         path/file.parquet
+ *   2. Directory glob:      path/*.ext   (direct children only, no sub-dirs)
+ *   3. Recursive:           path/**      (all data files recursively)
+ */
+export function validateAzureUrl(url: string, fieldName: string): void {
+   if (!AZURE_SUPPORTED_SCHEMES.some((s) => url.startsWith(s))) {
+      throw new BadRequestError(
+         `Azure ${fieldName} must use one of: ${AZURE_SUPPORTED_SCHEMES.join(", ")}`,
+      );
+   }
+
+   const pathWithoutQuery = url.split("?")[0];
+   const stars = (pathWithoutQuery.match(/\*/g) || []).length;
+
+   if (stars === 0) {
+      // Single file — must end with a data extension
+      const lower = pathWithoutQuery.toLowerCase();
+      if (!AZURE_DATA_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: a single-file URL must end with a data file extension (${AZURE_DATA_EXTENSIONS.join(", ")})`,
+         );
+      }
+   } else if (pathWithoutQuery.endsWith("**")) {
+      // Recursive — valid, no further checks needed
+   } else {
+      // Must be exactly path/*.ext — one star, in the last path segment only
+      const lastSegment = pathWithoutQuery.split("/").pop() || "";
+      if (stars !== 1 || !lastSegment.startsWith("*")) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: only three URL patterns are supported:\n` +
+               `  • Single file:      path/file.parquet\n` +
+               `  • Directory glob:   path/*.ext  (direct children only)\n` +
+               `  • Recursive:        path/**     (all data files in subtree)\n` +
+               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
+         );
+      }
+   }
+}

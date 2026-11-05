@@ -742,6 +742,8 @@ export function storageRefreshFor(params: {
    persistSource: PersistSource;
    instruction: BuildInstruction;
    destinationName: string;
+   /** The destination's schema (see storageTablePath); absent is `main`. */
+   destinationSchema?: string;
    physicalTableName: string;
    /** The unprojected build SQL — see storageDeltaTarget. */
    buildSQL: string;
@@ -755,6 +757,7 @@ export function storageRefreshFor(params: {
             sourceType,
             handle,
             destinationName: params.destinationName,
+            destinationSchema: params.destinationSchema,
             physicalTableName: params.physicalTableName,
             quotedTablePath,
             lineage,

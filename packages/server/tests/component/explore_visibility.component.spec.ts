@@ -145,6 +145,7 @@ export { customers }`,
          path.join(tempDir, "base.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ID :: number
 

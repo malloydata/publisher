@@ -1,7 +1,7 @@
 ##! experimental.givens
 
-given:
-  ROLES :: string[]
+#(secure)
+given: ROLES :: string[]
 
 #(authorize) 'admin' in $ROLES
 source: locked is duckdb.table('data/orders.csv') extend {

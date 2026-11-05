@@ -185,6 +185,8 @@ A `ducklake` connection pairs a **catalog** — a metadata database, typically P
 
 Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
 
+The storage credential reaches only the catalog's data path. Publisher scopes the DuckDB secret it creates to `bucketUrl` (or, when the config leaves it out, to the path the catalog recorded), and on S3 turns off DuckDB's fallback to the host's `AWS_*` keys, so a read of any other object through this connection is unsigned. See [What the storage credential reaches](ducklake.md#what-the-storage-credential-reaches).
+
 ## Storage destinations
 
 A `#@ persist storage=<name>` source is built into, and served from, a
@@ -378,6 +380,12 @@ A proxy makes the server open an outbound SSH tunnel to a tenant-configured host
 connection configuration is the authorization boundary; host-key pinning is the trust
 control on the tunnel itself, and is required unless the deployment opts out.
 
+A tunnel that drops is detected, logged and rebuilt on the next query. Queries in flight at the
+drop fail with a connection error. A query that was waiting for a free session when the tunnel
+dropped waits out its 30 s and then fails with the "no free database session" error, which
+blames load; the tunnel-closed warning in the log is the real cause, and a retry gets the
+rebuilt tunnel.
+
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
@@ -430,7 +438,8 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
   `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
   for the longest build, not only for interactive queries.
 
-Neither setting is applied to a DuckLake catalog connection.
+A DuckLake catalog connection given as fields applies `sslmode` (when unset, the deployment
+`PGSSLMODE` applies) but not `statementTimeoutMilliseconds`.
 
 #### Effect on persisted sources
 

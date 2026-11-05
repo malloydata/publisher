@@ -7,6 +7,7 @@ import path from "path";
 import { components } from "../api";
 import {
    ALLOW_DUCKDB_SETUP_SQL_ENV,
+   ConnectionOrigin,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
    parseBoolEnv,
@@ -706,7 +707,10 @@ function validateMotherDuckShape(connection: ApiConnection): void {
    }
 }
 
-function validateDuckLakeShape(connection: ApiConnection): void {
+function validateDuckLakeShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin,
+): void {
    // Every field the ATTACH demands (see attachDuckLakeWithMode). A
    // destination is only attached at its first BUILD, so a field missed here
    // would surface hours after the config change that caused it.
@@ -718,11 +722,8 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
       );
    }
-   if (!connection.ducklakeConnection.storage?.bucketUrl) {
-      throw new Error(
-         `Storage bucketUrl is required for DuckLake: ${connection.name}`,
-      );
-   }
+   // No bucketUrl is allowed: the catalog must then exist, and its recorded
+   // data path is used (connection.ts, dataPathClauses).
    // Shape only, as in the duckdb branch: a throw here fails the ENTIRE
    // environment. The mutual-exclusion and enum guards are safe; the key-pair
    // requirement is NOT applied, because failing every other connection over
@@ -730,8 +731,19 @@ function validateDuckLakeShape(connection: ApiConnection): void {
    // validateStorageDestinations rejects one destination at a time, so it
    // applies the full check.
    const storage = connection.ducklakeConnection.storage;
-   if (storage.s3Connection) {
-      validateS3ProviderShape(storage.s3Connection, connection.name);
+   if (storage?.s3Connection) {
+      validateS3ProviderShape(storage.s3Connection, connection.name, origin);
+   }
+   // The attach applies the catalog's own sslmode (buildPgConnectionString) and
+   // throws on a value it cannot honor, at every query or build. An enum check,
+   // like the guards above. A connectionString carries its own sslmode and the
+   // field is ignored beside it, so it is not checked there.
+   const catalogPg = connection.ducklakeConnection.catalog.postgresConnection;
+   if (catalogPg.sslmode != null && !catalogPg.connectionString) {
+      validatePostgresSslmode(
+         `DuckLake catalog of connection '${connection.name}'`,
+         catalogPg.sslmode,
+      );
    }
    // metadataSchema reaches the ATTACH as a quoted string literal AND the
    // catalog-format preflight as a quoted identifier. Rather than escape one
@@ -749,6 +761,21 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          throw new Error(
             `DuckLake catalog metadataSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
+               `${connection.name}`,
+         );
+      }
+   }
+   // destinationSchema becomes part of every stored table's path, quoted as an
+   // identifier by quoteTablePath; a plain identifier keeps that one grammar.
+   const destinationSchema = connection.ducklakeConnection.destinationSchema;
+   if (destinationSchema !== undefined && destinationSchema !== null) {
+      if (
+         typeof destinationSchema !== "string" ||
+         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
+      ) {
+         throw new Error(
+            `DuckLake destinationSchema must be a plain identifier ` +
+               `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
                `${connection.name}`,
          );
       }
@@ -857,7 +884,10 @@ function validatePublisherShape(connection: ApiConnection): void {
  * switch rather than a lookup table, so a caller-supplied type selects only a
  * function named here.
  */
-function validateTypeShape(connection: ApiConnection): void {
+function validateTypeShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin,
+): void {
    switch (connection.type) {
       case "sqlserver":
          return validateSqlServerShape(connection);
@@ -868,7 +898,7 @@ function validateTypeShape(connection: ApiConnection): void {
       case "motherduck":
          return validateMotherDuckShape(connection);
       case "ducklake":
-         return validateDuckLakeShape(connection);
+         return validateDuckLakeShape(connection, origin);
       case "trino":
          return validateTrinoShape(connection);
       case "databricks":
@@ -880,7 +910,10 @@ function validateTypeShape(connection: ApiConnection): void {
    }
 }
 
-function validateConnectionShape(connection: ApiConnection): void {
+function validateConnectionShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin = "connection",
+): void {
    if (connection.proxy) {
       validateProxyShape(connection, connection.proxy);
    }
@@ -907,7 +940,7 @@ function validateConnectionShape(connection: ApiConnection): void {
       );
    }
 
-   validateTypeShape(connection);
+   validateTypeShape(connection, origin);
 }
 
 /**
@@ -1039,7 +1072,7 @@ export function validateStorageDestinations(
       }
 
       try {
-         validateConnectionShape(destination);
+         validateConnectionShape(destination, "storage-destination");
          // The full credential check, which validateConnectionShape cannot
          // afford (its throw fails a whole environment): a destination is only
          // attached at its first BUILD, so a missing credential would surface
@@ -1443,6 +1476,7 @@ function buildCoreEntry(
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
+   origin: ConnectionOrigin = "connection",
 ): AssembledEnvironmentConnections {
    const pojo: CoreConnectionsPojo = { connections: {} };
    const metadata = new Map<string, EnvironmentConnectionMetadata>();
@@ -1466,7 +1500,7 @@ export function assembleEnvironmentConnections(
 
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
-      validateConnectionShape(connection);
+      validateConnectionShape(connection, origin);
       warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);

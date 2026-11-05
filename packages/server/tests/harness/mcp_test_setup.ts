@@ -70,7 +70,7 @@ async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment>
 
    // --- IMPORTANT: Import server *after* setting env var ---
    // Dynamically import the actual app instance
-   const { mcpApp } = await import("../../src/server");
+   const { mcpApp } = await import("../../src/main_server");
 
    // An OS-assigned port: suites set up one after another under the mutex,
    // and a fixed port could be held by anything else on the machine.

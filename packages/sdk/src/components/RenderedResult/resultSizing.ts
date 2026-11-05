@@ -377,3 +377,6 @@ export function resolveResultHeight({
  * (`ResultContainer` sets it); the renderer overrides in `RenderedResult` read it.
  */
 export const TIGHT_ATTR = "data-publisher-tight";
+
+/** The box a dashboard tile's result scrolls in when it is taller than its cap. */
+export const RESULT_SCROLLER_CLASS = "publisher-result-scroller";

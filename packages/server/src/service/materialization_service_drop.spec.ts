@@ -8,6 +8,7 @@ import { makeMaterialization } from "../test_helpers/materialization_test_fixtur
 import {
    buildEnvironmentStub,
    createMocks,
+   UNVERSIONED_ENVIRONMENT,
    withQueryMetadataOn,
 } from "../test_helpers/materialization_service_harness";
 import { MaterializationService } from "./materialization_service";
@@ -43,6 +44,7 @@ describe("deleteMaterialization", () => {
          });
          const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
@@ -91,6 +93,7 @@ describe("deleteMaterialization", () => {
          });
          const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
@@ -166,6 +169,7 @@ describe("deleteMaterialization", () => {
          const storageSpy = sinon.stub().resolves();
          const colocatedSpy = sinon.stub().resolves();
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),

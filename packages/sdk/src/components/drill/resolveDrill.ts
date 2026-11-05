@@ -27,6 +27,8 @@ import {
    filterInnerType,
    isFilterType,
 } from "../given/filterValue";
+import type { DrillClause } from "./drillClauses";
+import type { RowsDimension, RowsTarget } from "./rowsTarget";
 
 /**
  * The parsed-tag surface this module reads, structurally typed.
@@ -40,6 +42,8 @@ export interface DrillTagReader {
    tag(...at: string[]): DrillTagReader | undefined;
    text(...at: string[]): string | undefined;
    textArray(...at: string[]): string[] | undefined;
+   array?(...at: string[]): DrillTagReader[] | undefined;
+   has?(...at: string[]): boolean;
 }
 
 /** The clicked field, as much of it as drill reads. */
@@ -55,6 +59,8 @@ export interface DrillField {
     * carry the method; absent, the field is taken at its word.
     */
    wasDimension?: () => boolean;
+   /** The column header: the field's `# label`, else its name. */
+   getLabel?: () => string;
 }
 
 /**
@@ -79,6 +85,19 @@ export interface DrillClickPayload {
     * this value" runs against is read from here.
     */
    context?: string;
+   /**
+    * Every dimension of the clicked row, enclosing rows included, as the
+    * renderer's `onDrill` reports them. Set by `RenderedResult` for a table
+    * cell; absent for a click the renderer reports no row for.
+    */
+   drillClauses?: readonly DrillClause[];
+   /** The query timezone, which a truncated timestamp in a clause is read in. */
+   timezone?: string;
+   /**
+    * Set by a host that shows no rows for this click's tile (a restricted
+    * one). Tag drills still apply.
+    */
+   noRows?: boolean;
 }
 
 /**
@@ -93,6 +112,16 @@ export interface DrillRowsRequest {
    label: string;
    /** {@link DrillClickPayload.context}, when the host set one. */
    context?: string;
+   /** {@link DrillClickPayload.drillClauses}: the whole row, not just `field`. */
+   drillClauses?: readonly DrillClause[];
+   /** {@link DrillClickPayload.timezone}. */
+   timezone?: string;
+   /** The source and filters the rows run with, from the result's metadata. */
+   target?: RowsTarget;
+   /** The row's dimensions as code with their values, from `drillClauses`. */
+   dimensions?: readonly RowsDimension[];
+   /** The clicked field's code, for a click that came with no row. */
+   code?: string;
 }
 
 /** The literal `to=self`: filter the current view instead of leaving it. */

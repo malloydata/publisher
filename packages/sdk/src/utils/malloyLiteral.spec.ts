@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { malloyLiteral } from "./malloyLiteral";
+import { formatMalloyValue, malloyLiteral } from "./malloyLiteral";
 
 describe("malloyLiteral", () => {
    it("spells a value the way its given's type reads it", () => {
@@ -39,5 +39,16 @@ describe("malloyLiteral", () => {
       expect(malloyLiteral(Number.NaN)).toBeUndefined();
       expect(malloyLiteral({})).toBeUndefined();
       expect(malloyLiteral(new Date("nope"))).toBeUndefined();
+   });
+});
+
+describe("formatMalloyValue", () => {
+   it("spells filter values, dates as local-time days", () => {
+      expect(formatMalloyValue(null)).toBe("null");
+      expect(formatMalloyValue("O'Neil")).toBe("'O\\'Neil'");
+      expect(formatMalloyValue(42)).toBe("42");
+      expect(formatMalloyValue(false)).toBe("false");
+      expect(formatMalloyValue("2024-01-31", true)).toBe("@2024-01-31");
+      expect(formatMalloyValue(new Date(2024, 0, 5), true)).toBe("@2024-01-05");
    });
 });

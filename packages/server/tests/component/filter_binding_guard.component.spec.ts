@@ -38,6 +38,7 @@ import {
 } from "@malloydata/malloy";
 import { describe, expect, it, spyOn } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
+import { logger } from "../../src/logger";
 import { malloyGivenToApi, type MalloyGiven } from "../../src/service/given";
 import { Model } from "../../src/service/model";
 import type { Package } from "../../src/service/package";
@@ -130,6 +131,34 @@ async function expectDeniedViaPackage(
    await expect(
       model!.getQueryResults(undefined, undefined, queryText, {}, true, givens),
    ).rejects.toBeInstanceOf(AccessDeniedError);
+}
+
+/** Denied because a filter's field resolves differently, not for an unrelated reason. */
+async function expectBindingDeniedViaPackage(
+   pkg: Package,
+   modelPath: string,
+   queryText: string,
+): Promise<void> {
+   const debug = spyOn(logger, "debug");
+   try {
+      await expectDeniedViaPackage(pkg, modelPath, queryText);
+      const reasons = debug.mock.calls
+         .filter(
+            (c) =>
+               String(c[0]) ===
+               "Inherited source filter binding check failed; denying",
+         )
+         .map((c) =>
+            String(
+               ((c as unknown[])[1] as { error?: string } | undefined)?.error,
+            ),
+         );
+      expect(reasons.join("\n")).toContain(
+         "resolves to a different field on the executed source",
+      );
+   } finally {
+      debug.mockRestore();
+   }
 }
 
 async function expectServesWithCountViaPackage(
@@ -270,6 +299,7 @@ async function buildGatedModel(
 describe("filter binding guard — #(access_filter) row-level gate stays bound to its original field", () => {
    it("a row filter stays bound when the entry point is re-extended (except+rename, model-declared)", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -298,6 +328,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
 
    it("a row filter stays bound when the entry point is re-extended (accept+rename, model-declared)", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -326,6 +357,7 @@ source: w_misbind is gated_parent extend { accept: id, val, n, owner } extend { 
 
    it("a row filter stays bound through a transitive dimension reference (except+rename)", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -356,6 +388,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
    it("a row filter stays bound when the caller declares a named derivation (except+rename, caller-text)", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -387,6 +420,7 @@ run: mine -> { group_by: id; aggregate: n is count() }
    it("a row filter stays bound across an import boundary (except+rename, package-derived)", async () => {
       const base = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -424,6 +458,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
    it("renaming a field that no filter reads still serves (negative)", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -455,6 +490,7 @@ source: renamed_unrelated is gated_parent extend { rename: label is val }
    it("a query_source entry point still serves (negative)", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -486,6 +522,7 @@ source: qchild is gated_parent -> { group_by: id, org_id, val; aggregate: n is c
    it("`#(authorize)` lock, which reads no field, is unaffected by a rename on the entry point", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -839,6 +876,7 @@ run: filtered_parent extend { except: val } extend { rename: val is note } -> { 
 describe("filter binding guard — caller-text inline extend, no separate source: declaration (headline vector)", () => {
    const MODEL_TEXT = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
   TENANT :: string
@@ -1023,6 +1061,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
             "m.malloy": `##! experimental.givens
 ##! experimental.access_modifiers
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1127,6 +1166,7 @@ source: base_filtered is duckdb.table('orgtable') extend {
    it("serves for a #(access_filter)-gated source", async () => {
       const { model, cleanup } = await createModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1186,6 +1226,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1397,6 +1438,7 @@ import { derived } from "b.malloy"
          {
             "a.malloy": `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1490,6 +1532,7 @@ describe("filter binding guard — an unresolvable executed struct denies rather
       const { model, cleanup } = await createModel(
          `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1562,6 +1605,7 @@ import { derived } from "b.malloy"
    const SEL_GATED = {
       "a.malloy": `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1714,6 +1758,7 @@ query: q1 is base_filtered extend { except: org_id } extend { rename: org_id is 
       const { model, cleanup } = await createModel(
          `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1776,6 +1821,7 @@ describe("filter binding guard — a derived source's own unrelated annotation n
    // should deny.
    const GATE_FILE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1950,6 +1996,7 @@ describe("filter binding guard — a caller-written join into a row-gated source
    // distinct from every other test in this file.
    const MODEL = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -2037,6 +2084,108 @@ source: base is duckdb.table('orgtable') extend {
             { id: 3, porg: 2 },
             { id: 4, porg: 2 },
          ]);
+      } finally {
+         await cleanup();
+      }
+   });
+});
+
+describe("filter binding guard — a source's own where: crossing a join to a query source", () => {
+   // A query source's joined struct gets a fresh `QuerySource-<uuid>` name per compile.
+   const CLOSE = `
+source: deal_first_close is duckdb.sql("select 1 as deal_id, cast(null as integer) as close_type union all select 2, 7 union all select 3, cast(null as integer)") -> { group_by: deal_id, close_type } extend { primary_key: deal_id }
+`;
+   const dealsFile = (dealsExtend: string) => `
+import "close.malloy"
+
+source: deals_incl is duckdb.sql("select 1 as deal_id, false as is_deleted union all select 2, false union all select 3, true") extend {
+   join_one: deal_first_close on deal_id = deal_first_close.deal_id
+   dimension: is_open is deal_first_close.close_type is null
+   measure: n is count()
+}
+
+source: deals is deals_incl extend { ${dealsExtend} }
+`;
+   const files = (dealsExtend: string, pipelineWhere: string) => ({
+      "close.malloy": CLOSE,
+      "deals.malloy": dealsFile(dealsExtend),
+      "pipeline.malloy": `
+import "deals.malloy"
+
+source: pipeline_now is deals extend { where: ${pipelineWhere} }
+`,
+      "index.malloy": `
+import "deals.malloy"
+import "pipeline.malloy"
+
+export { pipeline_now, deals }
+`,
+   });
+   const COUNT = "run: pipeline_now -> { aggregate: n is count() }";
+
+   it("serves a source whose own where: reads a field joined from a query source", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectServesWithCountViaPackage(pkg, "index.malloy", COUNT, 2);
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("serves a source that adds its own where: to an inherited one across the join", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("where: is_open", "not is_deleted"),
+      );
+      try {
+         await expectServesWithCountViaPackage(pkg, "index.malloy", COUNT, 1);
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller extend that renames a field the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectBindingDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            "run: pipeline_now extend { rename: open_flag is is_open } -> { aggregate: n is count() }",
+         );
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller extend that drops a field the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectBindingDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            "run: pipeline_now extend { except: is_open } -> { aggregate: n is count() }",
+         );
+      } finally {
+         await cleanup();
+      }
+   });
+
+   it("still denies a caller-named source that drops and redefines the field the where: reads", async () => {
+      const { pkg, cleanup } = await createPackageWithFiles(
+         files("", "is_open"),
+      );
+      try {
+         await expectBindingDeniedViaPackage(
+            pkg,
+            "index.malloy",
+            `source: evil is pipeline_now extend { except: is_open } extend { dimension: is_open is true }
+run: evil -> { aggregate: n is count() }`,
+         );
       } finally {
          await cleanup();
       }

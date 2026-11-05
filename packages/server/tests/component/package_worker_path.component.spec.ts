@@ -173,6 +173,7 @@ run: s -> { where: d ~ @2025 aggregate: n }
          path.join(tempDir, "gated.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -239,6 +240,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -271,6 +273,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
             `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -304,6 +307,7 @@ run: plain -> { aggregate: c }
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -431,6 +435,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          path.join(tempDir, "split.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
   ROLE :: string[]
@@ -471,6 +476,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          path.join(tempDir, "badgate.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -501,6 +507,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          path.join(tempDir, "og_base.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -514,6 +521,7 @@ source: ungated_deep is ${table} extend {
          path.join(tempDir, "og_gate.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 
@@ -1001,34 +1009,29 @@ run: mid_ungated -> { aggregate: c }`,
       [
          "an unknown retrieval key",
          JSON.stringify({ name: "pkg", retrieval: { rephrase: true } }),
-         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts\./,
+         /retrieval: unknown key 'rephrase'\. Valid keys: sourceSummary, prompts, fcj\./,
       ],
       [
-         "an invalid retrieval.refine.minLevel",
+         "an invalid retrieval.fcj.perTarget",
          JSON.stringify({
             name: "pkg",
-            retrieval: { refine: { minLevel: "NONE" } },
+            retrieval: { fcj: { perTarget: 0 } },
          }),
-         /retrieval\.refine\.minLevel: expected one of LOW, MEDIUM, HIGH/,
+         /retrieval\.fcj\.perTarget: expected an integer from 1 to 500/,
       ],
       [
-         "an invalid retrieval.rerank.topSources",
+         "an invalid retrieval.sourceSummary.enabled",
          JSON.stringify({
             name: "pkg",
-            retrieval: { rerank: { topSources: 0 } },
+            retrieval: { sourceSummary: { enabled: "yes" } },
          }),
-         /retrieval\.rerank\.topSources: expected a positive integer/,
-      ],
-      [
-         "an invalid retrieval.representation",
-         JSON.stringify({ name: "pkg", retrieval: { representation: "x" } }),
-         /retrieval\.representation: expected one of single, facets/,
+         /retrieval\.sourceSummary\.enabled: expected "auto", true or false/,
       ],
       [
          "a retrieval prompt path that climbs out of the package",
          JSON.stringify({
             name: "pkg",
-            retrieval: { prompts: { keyphrase: "../p.md" } },
+            retrieval: { prompts: { judge: "../p.md" } },
          }),
          /resolves outside the package directory/,
       ],
@@ -1067,15 +1070,14 @@ run: mid_ungated -> { aggregate: c }`,
 
    it("reads the retrieval block, prompt file included, at load and again on reload", async () => {
       fs.mkdirSync(path.join(tempDir, "prompts"));
-      fs.writeFileSync(path.join(tempDir, "prompts", "k.md"), "first prompt");
+      fs.writeFileSync(path.join(tempDir, "prompts", "j.md"), "first prompt");
       fs.writeFileSync(
          path.join(tempDir, "publisher.json"),
          JSON.stringify({
             name: "pkg",
             retrieval: {
-               representation: "facets",
-               keyphrases: "never",
-               prompts: { keyphrase: "prompts/k.md" },
+               fcj: { perTarget: 50 },
+               prompts: { judge: "prompts/j.md" },
             },
          }),
       );
@@ -1087,9 +1089,8 @@ run: mid_ungated -> { aggregate: c }`,
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const settings = pkg.getRetrievalSettings();
-         expect(settings.representation).toBe("facets");
-         expect(settings.keyphrases).toBe("never");
-         expect(settings.prompts.keyphrase?.text).toBe("first prompt");
+         expect(settings.fcj?.perTarget).toBe(50);
+         expect(settings.prompts.judge?.text).toBe("first prompt");
 
          // A package with no block takes the defaults.
          fs.writeFileSync(
@@ -1102,11 +1103,57 @@ run: mid_ungated -> { aggregate: c }`,
             tempDir,
             malloyConfig,
          );
-         expect(plain.getRetrievalSettings()).toEqual({
-            representation: "single",
-            keyphrases: "auto",
+         expect(plain.getRetrievalSettings()).toEqual({ prompts: {} });
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("loads a package whose publisher.json still sets the keys of the removed search, and warns about each", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            retrieval: {
+               representation: "facets",
+               keyphrases: "never",
+               refine: { enabled: true, minLevel: "HIGH" },
+               rerank: { topSources: 3 },
+               sourceMatch: { enabled: false },
+               // No such file: a prompt of a removed step is never read.
+               prompts: { refine: "prompts/refine.md" },
+               fcj: { perTarget: 50 },
+            },
+         }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "trivial.malloy"),
+         `source: nums is duckdb.sql("select 1 as a")`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // The settings that still work are read; the rest are not in them.
+         expect(pkg.getRetrievalSettings()).toEqual({
+            fcj: expect.objectContaining({ perTarget: 50 }),
             prompts: {},
          });
+         const messages = (pkg.getPackageMetadata().warnings ?? []).map(
+            (w) => w.message,
+         );
+         for (const key of [
+            "retrieval.representation",
+            "retrieval.keyphrases",
+            "retrieval.refine",
+            "retrieval.rerank",
+            "retrieval.sourceMatch",
+            "retrieval.prompts.refine",
+         ]) {
+            const mine = messages.filter((m) =>
+               m?.startsWith(`publisher.json ${key} no longer does anything`),
+            );
+            expect(mine).toHaveLength(1);
+         }
       } finally {
          await duckdb.close();
       }
@@ -1121,6 +1168,7 @@ run: mid_ungated -> { aggregate: c }`,
             `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given:
   ORG :: number
 

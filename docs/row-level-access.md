@@ -12,10 +12,10 @@ SPDX-License-Identifier: MIT
 Three related but distinct things live here — keep them apart:
 
 - **Row-level filtering** — a source scopes its own rows by a caller-supplied given. This is a
-  convenience and a performance/UX tool (each caller sees only their slice). It is *not*, by itself,
+  convenience and a performance/UX tool (each caller sees only their slice). It is _not_, by itself,
   a security boundary: a caller who omits the given may see everything.
 - **Row-level access control** — the same row scoping, made **mandatory** and validated with an
-  `#(access_filter)` gate, behind a trusted tier. Now a caller *cannot* opt out of their slice, and the
+  `#(access_filter)` gate, behind a trusted tier. Now a caller _cannot_ opt out of their slice, and the
   scoping value is one the trusted tier asserts from verified identity.
 - **Row-level authorize** — the gate itself does the row scoping, instead of pairing it with a
   separate `where:`. See [Row-level authorize](#row-level-authorize) below.
@@ -46,7 +46,7 @@ curl -X POST .../models/orders.malloy/query \
 ```
 
 On its own this is filtering, not access control: because `TENANT` has no default, a caller who omits
-it isn't scoped to a tenant, and a caller who supplies a *different* tenant sees that tenant's rows.
+it isn't scoped to a tenant, and a caller who supplies a _different_ tenant sees that tenant's rows.
 To make the scoping a boundary, add a gate.
 
 ## Row-level access control
@@ -61,9 +61,10 @@ an empty result:
 ```malloy
 ##! experimental.givens
 
+#(secure)
 given: TENANTS :: string[]
 
-// Deny unless the caller asserts a tenant on the allow-list.
+// Deny unless the trusted tier resolved the caller to a tenant on the allow-list.
 #(access_filter) tenant in $TENANTS
 source: orders is duckdb.table('orders.parquet') extend {
   where: tenant in $TENANTS
@@ -87,6 +88,7 @@ one: instead of an all-or-nothing admit decision, the gate itself becomes the ro
 ```malloy
 ##! experimental.givens
 
+#(secure)
 given: GROUPS :: string[]
 
 #(access_filter) org_id in $GROUPS
@@ -111,7 +113,7 @@ write or to keep in sync.
   or a comparison the grammar does not accept belongs in `where:` instead, with the gate covering
   only the admit/deny decision.
 - **A row-level `#(access_filter)` gate alone** — when the access decision and the row scope are
-  the *same* comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
+  the _same_ comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
   once as a gate. An unset or empty given fails closed to zero rows, with no matching pair of
   expressions that could drift apart.
 
@@ -154,7 +156,7 @@ curl -s -X POST $API/index.malloy/query -H 'content-type: application/json' \
 ## Locking the base source
 
 Neither `where:` nor `#(access_filter)` is walked through joins — both apply to the source a query
-enters through. (A row-level gate on the entry point may *reference* a field on a joined source —
+enters through. (A row-level gate on the entry point may _reference_ a field on a joined source —
 see [authorize.md § entry point](authorize.md#the-entry-point-and-only-the-entry-point) — but that
 is not the same as a joined source's own gate firing; the rule here is unchanged.) `#(access_filter)`
 _is_ carried to an extension that declares no gate of its own, but an extension declaring its OWN

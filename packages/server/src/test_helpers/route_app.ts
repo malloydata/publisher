@@ -9,6 +9,10 @@
  */
 
 import express from "express";
+import {
+   legacyPackageNameBodyMiddleware,
+   legacyPackageNameMiddleware,
+} from "../legacy_package_name";
 import { queryConcurrencyMiddleware } from "../query_concurrency";
 import { registerApiRoutes, type ApiControllers } from "../routes/api";
 import { registerDataAppListRoute } from "../routes/data_apps";
@@ -50,6 +54,7 @@ function controllers(stubs: Stubs): ApiControllers {
       "compileController",
       "materializationController",
       "storageDestinationController",
+      "versionController",
    ];
    return Object.fromEntries(
       names.map((name) => [name, stubs[name] ?? unstubbed(name)]),
@@ -59,7 +64,9 @@ function controllers(stubs: Stubs): ApiControllers {
 /** Both route tables, mounted the way server.ts mounts them. */
 export function buildRouteApp(stubs: Stubs = {}): express.Express {
    const app = express();
+   app.use(legacyPackageNameMiddleware());
    app.use(express.json());
+   app.use(legacyPackageNameBodyMiddleware());
    const c = controllers({
       // The deprecated-route controller is constructed at registration and
       // only stores this reference.

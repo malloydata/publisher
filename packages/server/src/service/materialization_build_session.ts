@@ -5,7 +5,6 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
-   type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
 import {
@@ -27,7 +26,7 @@ import { logger } from "../logger";
 import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
-import { projectToPublicColumns } from "./build_plan";
+import { plannedSources, projectToPublicColumns } from "./build_plan";
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
@@ -49,6 +48,7 @@ import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    escapeSQL,
+   managedSearchPathSql,
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
@@ -58,6 +58,12 @@ import {
    assertServesInDuckDB,
    type ServeBinding,
 } from "./materialization_serve_transform";
+import {
+   DEFAULT_DESTINATION_SCHEMA,
+   destinationSchemaOf,
+   storageTablePath,
+} from "./storage_table_path";
+import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -496,6 +502,16 @@ export function passthroughSourceType(
    if ((PASSTHROUGH_SOURCE_TYPES as readonly string[]).includes(type ?? "")) {
       return type as FederatedSourceType;
    }
+   if (type === "ducklake") {
+      // Reached only when isSameCatalog said no: say why, not just "unsupported".
+      throw new BadRequestError(
+         `Cannot materialize a 'ducklake' source into a storage destination ` +
+            `that is a different catalog. A DuckLake source builds only into its ` +
+            `own catalog, matched by the catalog database's host, port and ` +
+            `databaseName (a connectionString is never matched), its ` +
+            `metadataSchema, and its data path when both configs state one.`,
+      );
+   }
    throw new BadRequestError(
       `Cannot materialize a '${type}' source into a storage destination: the ` +
          `native query-passthrough build supports source connections of type ` +
@@ -707,6 +723,12 @@ export async function buildSourceIntoStorage(params: {
    sourceConnection: ApiConnection;
    /** The source-dialect compiled SELECT (`getSQL` output), verbatim. */
    buildSQL: string;
+   /**
+    * Whether the source's compiled definition carries SQL its author wrote
+    * ({@link carriesAuthorSql}). Read only for a same-catalog build, which runs
+    * on a read-write session and must refuse author SQL; absent counts as true.
+    */
+   sourceCarriesAuthorSql?: boolean;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
@@ -747,6 +769,9 @@ export async function buildSourceIntoStorage(params: {
    const read = params.deps?.read ?? issuePassthroughRead;
 
    assertSupportedDestination(destinationName, destinationConnection);
+   if (isSameCatalog(sourceConnection, destinationConnection)) {
+      return buildSameCatalogIntoStorage(params);
+   }
    const sourceType = passthroughSourceType(sourceConnection);
 
    // Its own instance, so its attach and credentials cannot collide with any
@@ -769,6 +794,12 @@ export async function buildSourceIntoStorage(params: {
          destinationName,
          destinationConnection,
          environmentPath,
+      );
+      await assertDestinationSchemaExists(
+         session,
+         destinationName,
+         destinationName,
+         destinationConnection,
       );
 
       if (destinationConnection.type === "ducklake") {
@@ -803,7 +834,11 @@ export async function buildSourceIntoStorage(params: {
       // renders the path (an already-quoted name passes through). A mismatch
       // surfaces only at run time, past the live fallback, and 400s every query.
       const target = quoteManifestTablePath(
-         `${destinationName}.${physicalTableName}`,
+         storageTablePath(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
          STORAGE_TARGET_DIALECT,
       );
 
@@ -913,6 +948,93 @@ export async function buildSourceIntoStorage(params: {
 }
 
 /**
+ * A source that reads the catalog it is built into (a file loaded into a data
+ * store, then persisted there): a plain CTAS on one read-write attach, with no
+ * federation, no passthrough and no egress.
+ *
+ * The session is read-write on the catalog, so it runs only SQL Malloy
+ * generated: a source whose compiled definition carries author SQL (an `.sql()`
+ * source, a `sql_number()` and its kind) is refused, as every DuckLake source
+ * was before, which keeps the invariant the build path has always held: no
+ * user SQL runs on a read-write lake session.
+ *
+ * The catalog is attached under the SOURCE connection's name, not the
+ * destination's: the two may differ (sameness is decided by catalog identity),
+ * and the compiled SQL names tables as that connection resolves them, either
+ * bare (a managed connection, so the session's search path is its `main`) or
+ * qualified with the connection's own name. The target is written under the
+ * same alias, so it lands in the one attached catalog either way.
+ *
+ * Always a full build: an incremental refresh is offered only to a passthrough
+ * source, so `incremental` is not consulted here.
+ */
+async function buildSameCatalogIntoStorage(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   sourceConnection: ApiConnection;
+   buildSQL: string;
+   sourceCarriesAuthorSql?: boolean;
+   physicalTableName: string;
+   partitionColumns?: string[];
+   environmentPath: string;
+}): Promise<StorageBuildResult> {
+   const { destinationName, destinationConnection, physicalTableName } = params;
+   const alias = params.sourceConnection.name || destinationName;
+   if (params.sourceCarriesAuthorSql !== false) {
+      throw new BadRequestError(
+         `Cannot materialize a source that reads storage destination ` +
+            `'${destinationName}' and carries SQL its author wrote (an .sql() source ` +
+            `or a sql_* expression) or reads a file or URL as a table: a build on the catalog ` +
+            `runs only Malloy's own SQL over the catalog's tables. Express it that way. ` +
+            `Dropping storage= does not help when the source's own connection is the catalog.`,
+      );
+   }
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `build_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      await attachDestinationReadWrite(
+         session,
+         alias,
+         destinationConnection,
+         params.environmentPath,
+      );
+      await assertDestinationSchemaExists(
+         session,
+         alias,
+         destinationName,
+         destinationConnection,
+      );
+      await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+      await pinSessionToUTC(session);
+      await session.runSQL(managedSearchPathSql(alias));
+      const target = quoteManifestTablePath(
+         storageTablePath(
+            alias,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
+         STORAGE_TARGET_DIALECT,
+      );
+      const schema = await createTableAndDescribe(
+         session,
+         target,
+         params.buildSQL,
+         params.partitionColumns ?? [],
+      );
+      // Reads no warehouse, as a chained build does: nothing was charged.
+      return {
+         storageDestinationName: destinationName,
+         schema,
+         readCost: null,
+      };
+   } finally {
+      await dispose();
+   }
+}
+
+/**
  * Build a CHAINED `storage=` source from its upstreams' already-materialized
  * tables in the destination, instead of recomputing them from the warehouse.
  * The downstream is then a pure function of the parents' STORED rows.
@@ -969,6 +1091,12 @@ export async function buildDownstreamIntoStorage(params: {
          destinationConnection,
          environmentPath,
       );
+      await assertDestinationSchemaExists(
+         session,
+         destinationName,
+         destinationName,
+         destinationConnection,
+      );
       if (destinationConnection.type === "ducklake") {
          // See buildSourceIntoStorage: keep rows out of the catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
@@ -1002,17 +1130,22 @@ export async function buildDownstreamIntoStorage(params: {
             message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
          });
       }
-      // `getBuildPlan`, not `getBuildTargets`: targets render every source's SQL
-      // while planning, and the rebound virtual parents cannot render without
-      // the `virtualMap`, which that call cannot take.
-      const plan = model.getBuildPlan();
-      let downstream: PersistSource | undefined;
-      for (const ps of Object.values(plan.sources)) {
-         if (ps.name === downstreamName) {
-            downstream = ps;
-            break;
-         }
+      // Planning renders every source's SQL, and the rebound virtual parents
+      // render only through the `virtualMap`.
+      const targets = await runtime.getBuildTargets(model, { virtualMap });
+      const unbuildable = targets.unbuildable.find(
+         (u) => u.source.name === downstreamName,
+      );
+      if (unbuildable) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model could not plan '${downstreamName}' over ` +
+               `the rebound parents: ${unbuildable.problem.message}`,
+         });
       }
+      const downstream = plannedSources(targets).find(
+         (ps) => ps.name === downstreamName,
+      );
       if (!downstream) {
          // The downstream references something the rebind model lacks (an
          // uncarried parent refinement, a live leaf). The caller falls back.
@@ -1021,6 +1154,20 @@ export async function buildDownstreamIntoStorage(params: {
                `Chained build model did not yield a persist source named ` +
                `'${downstreamName}' (the downstream references something the ` +
                `rebound parents don't provide).`,
+         });
+      }
+      // The CTAS runs on a read-write session on the destination, as a
+      // same-catalog build does, so the same rule holds: only SQL Malloy
+      // generated. The rebound parents are virtual, so this reads the
+      // downstream's own definition. Marked eligible, so the caller recomputes
+      // from raw, where author SQL runs in the source warehouse (or a
+      // same-catalog source is refused).
+      if (carriesAuthorSql(downstream._sourceDef)) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained source '${downstreamName}' carries SQL its author wrote ` +
+               `(an .sql() source, a sql_* expression, or a file or URL table), ` +
+               `which does not run on the destination's read-write session.`,
          });
       }
       // Projected to public columns so hidden (`except:` / access-restricted)
@@ -1032,7 +1179,11 @@ export async function buildDownstreamIntoStorage(params: {
 
       // Quoted as in buildSourceIntoStorage, to match the serve side.
       const target = quoteManifestTablePath(
-         `${destinationName}.${physicalTableName}`,
+         storageTablePath(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
          STORAGE_TARGET_DIALECT,
       );
       const schema = await createTableAndDescribe(
@@ -1065,6 +1216,8 @@ export async function buildDownstreamIntoStorage(params: {
  */
 export async function assertStorageServeShapeCompiles(params: {
    destinationName: string;
+   /** The destination's schema (see storageTablePath); absent is `main`. */
+   destinationSchema?: string;
    sourceName: string;
    virtualHandle: string;
    physicalTableName: string;
@@ -1078,7 +1231,11 @@ export async function assertStorageServeShapeCompiles(params: {
       sourceName,
       destinationName,
       virtualHandle,
-      tablePath: `${destinationName}.${physicalTableName}`,
+      tablePath: storageTablePath(
+         destinationName,
+         physicalTableName,
+         params.destinationSchema,
+      ),
       schema: params.schema
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string })),
@@ -1113,10 +1270,11 @@ export async function assertStorageServeShapeCompiles(params: {
 export function dropStorageTableSql(
    destinationName: string,
    physicalTableName: string,
+   schema?: string,
 ): string {
    // Must name the table the way the build CREATEd it (see the CTAS sites).
    return `DROP TABLE IF EXISTS ${quoteManifestTablePath(
-      `${destinationName}.${physicalTableName}`,
+      storageTablePath(destinationName, physicalTableName, schema),
       STORAGE_TARGET_DIALECT,
    )}`;
 }
@@ -1158,7 +1316,11 @@ export async function dropStorageTable(params: {
          environmentPath,
       );
       await session.runSQL(
-         dropStorageTableSql(destinationName, physicalTableName),
+         dropStorageTableSql(
+            destinationName,
+            physicalTableName,
+            destinationSchemaOf(destinationConnection),
+         ),
       );
    } finally {
       await dispose();
@@ -1369,6 +1531,35 @@ function assertSupportedDestination(
          `Storage destination '${destinationName}' is type '${type}', but ` +
             `'storage=' destinations must be one of ` +
             `${STORAGE_DESTINATION_TYPES.join(", ")}.`,
+      );
+   }
+}
+
+/**
+ * Throw a clean 400 when the destination's `destinationSchema` is not a schema
+ * in the attached catalog. No build creates a schema (the catalog's owner does),
+ * so without this a typo fails every build into the destination with DuckDB's
+ * bare "schema does not exist". `main` always exists and is not checked.
+ */
+async function assertDestinationSchemaExists(
+   session: DuckDBConnection,
+   attachName: string,
+   destinationName: string,
+   destinationConnection: ApiConnection,
+): Promise<void> {
+   const schema = destinationSchemaOf(destinationConnection);
+   if (schema === DEFAULT_DESTINATION_SCHEMA) return;
+   const result = await session.runSQL(
+      `SELECT 1 FROM duckdb_schemas() WHERE database_name = '${escapeSQL(attachName)}' ` +
+         // DuckDB resolves identifiers case-insensitively, as the CTAS would.
+         `AND lower(schema_name) = lower('${escapeSQL(schema)}')`,
+   );
+   const rows = Array.isArray(result) ? result : (result.rows ?? []);
+   if (rows.length === 0) {
+      throw new BadRequestError(
+         `Storage destination '${destinationName}' declares destinationSchema ` +
+            `'${schema}', but its catalog has no schema by that name. Create it ` +
+            `in the catalog, or correct destinationSchema.`,
       );
    }
 }

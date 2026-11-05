@@ -74,3 +74,35 @@ function datePart(value: unknown): string | undefined {
          : value.toISOString().slice(0, 10);
    return /^(\d{4}-\d{2}-\d{2})/.exec(String(value))?.[1];
 }
+
+/** A filter value as a Malloy literal; unlike `malloyLiteral`, a Date is spelled as a local-time day. */
+export function formatMalloyValue(
+   value: string | number | boolean | Date | null | undefined,
+   isDate: boolean = false,
+): string {
+   if (value === null || value === undefined) {
+      return "null";
+   }
+
+   if (isDate) {
+      if (value instanceof Date) {
+         return `@${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+      }
+      // A string is assumed to already be ISO.
+      return `@${value}`;
+   }
+
+   if (typeof value === "string") {
+      return `'${escapeMalloyString(value)}'`;
+   }
+
+   if (typeof value === "number") {
+      return String(value);
+   }
+
+   if (typeof value === "boolean") {
+      return value ? "true" : "false";
+   }
+
+   return String(value);
+}

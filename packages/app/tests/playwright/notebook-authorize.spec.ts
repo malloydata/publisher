@@ -43,6 +43,7 @@ const PKG_DIR = path.resolve(
 
 const MODEL_SOURCE = `##! experimental.givens
 
+#(secure)
 given: role :: string
 
 #(authorize) 'analyst' = $role

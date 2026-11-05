@@ -152,8 +152,39 @@ export type PublisherConfig = {
    theme?: Theme;
    mcp?: McpConfig;
    retrieval?: RetrievalConfig;
+   versionPromotion?: VersionPromotionMode;
    environments: Environment[];
 };
+
+/**
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off` (the default). A TRANSITION
+ * flag, read from the environment only, and checked in one place: the publish
+ * from a location. Off, that publish installs the package in place as before
+ * versions; on, it publishes the version its publisher.json declares and
+ * refuses a tree that declares none. #1381 removes the flag and the off branch
+ * together, once every deployment runs with it on.
+ */
+export type PackageVersioningMode = "off" | "on";
+
+const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
+   "off",
+   "on",
+];
+
+/**
+ * Who moves a package's `latest` version.
+ *
+ *  - `on-publish` (default): a publish makes the new version `latest` unless a
+ *    higher version already is.
+ *  - `explicit`: a publish never moves it; only `PUT .../packages/{name}/latest`
+ *    does. For an orchestrator that decides when a version is ready to serve.
+ */
+export type VersionPromotionMode = "on-publish" | "explicit";
+
+const VERSION_PROMOTION_MODES: readonly VersionPromotionMode[] = [
+   "on-publish",
+   "explicit",
+];
 
 export type ProcessedEnvironment = {
    name: string;
@@ -231,7 +262,14 @@ function parseFloatEnv(name: string, example: string): number | undefined {
 }
 
 export function parseBoolEnv(name: string): boolean | undefined {
-   const raw = process.env[name];
+   return parseBoolString(process.env[name], name);
+}
+
+/** A boolean as a variable spells it: `1/true/yes/on`, `0/false/no/off`, any case; blank is unset. */
+function parseBoolString(
+   raw: string | undefined,
+   name: string,
+): boolean | undefined {
    if (raw === undefined || raw.trim() === "") return undefined;
    const normalised = raw.trim().toLowerCase();
    if (["1", "true", "yes", "on"].includes(normalised)) return true;
@@ -890,7 +928,7 @@ export const getMaxConcurrentQueries = (): number => {
 };
 
 /**
- * Cap on open sessions for one plain (non-proxied) Postgres connection
+ * Cap on open sessions for one Postgres connection
  * (`PUBLISHER_POSTGRES_POOL_MAX`, default {@link DEFAULT_POSTGRES_POOL_MAX}).
  * `0` is rejected: the pool could open nothing.
  */
@@ -958,6 +996,9 @@ export const isDuckdbSetupSqlAllowed = (): boolean =>
  */
 export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
 
+/** Who authored a connection config, which is what S3CredentialChainPolicy turns on. */
+export type ConnectionOrigin = "connection" | "storage-destination";
+
 /**
  * Resolve the S3 credential-chain policy from `S3_CREDENTIAL_CHAIN_POLICY`; falls
  * back to `any` when unset or empty.
@@ -1018,19 +1059,12 @@ const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
  * The `storage=` deployment mode from `PERSIST_STORAGE_MODE` (default `off`).
  * Case-insensitive; throws on an unrecognized value.
  */
-export const getPersistStorageMode = (): PersistStorageMode => {
-   const raw = process.env.PERSIST_STORAGE_MODE;
-   if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim().toLowerCase();
-   if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
-      return value as PersistStorageMode;
-   }
-   throw new Error(
-      `PERSIST_STORAGE_MODE must be one of ${PERSIST_STORAGE_MODES.join(
-         " | ",
-      )} (got ${JSON.stringify(raw)})`,
-   );
-};
+export const getPersistStorageMode = (): PersistStorageMode =>
+   parseModeSetting(
+      process.env.PERSIST_STORAGE_MODE,
+      "PERSIST_STORAGE_MODE",
+      PERSIST_STORAGE_MODES,
+   ) ?? "off";
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist
@@ -1146,6 +1180,73 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
    }
    // `--config` may be relative; a relative anchor would follow the reader's cwd.
    return path.resolve(path.dirname(resolved.path));
+};
+
+/**
+ * Which of the server's APIs this process may run: `servingApiEnabled` (the
+ * main API and MCP, and the environments they serve) and `adminApiEnabled` (the
+ * admin API, when its port is set), both `true` by default.
+ * `declaresEnvironments` is whether the config lists any.
+ *
+ * Each is a top-level setting of the config, given as its key in the file, as
+ * `PUBLISHER_SERVING_API_ENABLED` / `PUBLISHER_ADMIN_API_ENABLED`, or as
+ * `--[no-]serving-api-enabled` / `--[no-]admin-api-enabled` (cli_args.ts sets
+ * the variable, so a flag wins over it), and the variable wins over the file.
+ * In the file the value is `true` or `false`, or a `${VAR}` reference read as a
+ * variable is. A config that cannot be read contributes nothing: the main
+ * server reports that file's error itself, on /status.
+ */
+export type ServerApiSettings = {
+   servingApiEnabled: boolean;
+   adminApiEnabled: boolean;
+   declaresEnvironments: boolean;
+};
+
+const SERVER_API_SETTINGS = {
+   servingApiEnabled: "PUBLISHER_SERVING_API_ENABLED",
+   adminApiEnabled: "PUBLISHER_ADMIN_API_ENABLED",
+} as const;
+
+function readConfigObject(serverRoot: string): Record<string, unknown> | null {
+   const resolved = resolvePublisherConfigPath(serverRoot);
+   if (!resolved || resolved.isBundledDefault) return null;
+   try {
+      const raw: unknown = JSON.parse(fs.readFileSync(resolved.path, "utf8"));
+      return raw && typeof raw === "object" && !Array.isArray(raw)
+         ? (raw as Record<string, unknown>)
+         : null;
+   } catch {
+      return null;
+   }
+}
+
+export const getServerApiSettings = (serverRoot: string): ServerApiSettings => {
+   const config = readConfigObject(serverRoot) ?? {};
+   // A misspelled value must not quietly run an API the operator turned off.
+   const setting = (key: keyof typeof SERVER_API_SETTINGS): boolean => {
+      const fromEnv = parseBoolEnv(SERVER_API_SETTINGS[key]);
+      if (fromEnv !== undefined) return fromEnv;
+      const value = config[key];
+      if (value === undefined) return true;
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string" && /\$\{[A-Z_][A-Z0-9_]*\}/.test(value)) {
+         const fromFile = parseBoolString(
+            substituteEnvVars(value),
+            `"${key}" in ${PUBLISHER_CONFIG_NAME}`,
+         );
+         if (fromFile !== undefined) return fromFile;
+      }
+      throw new Error(
+         `Invalid ${PUBLISHER_CONFIG_NAME}: "${key}" must be true or false, got ${JSON.stringify(value)}.`,
+      );
+   };
+   const environments = config.environments ?? config.projects;
+   return {
+      servingApiEnabled: setting("servingApiEnabled"),
+      adminApiEnabled: setting("adminApiEnabled"),
+      declaresEnvironments:
+         Array.isArray(environments) && environments.length > 0,
+   };
 };
 
 /**
@@ -1288,14 +1389,97 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
          : undefined,
    );
 
+   const settings =
+      processedConfig && typeof processedConfig === "object"
+         ? (processedConfig as Record<string, unknown>)
+         : {};
+   const versionPromotion = parseModeSetting(
+      settings.versionPromotion,
+      `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
+      VERSION_PROMOTION_MODES,
+   );
+
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
       ...(mcp ? { mcp } : {}),
       ...(retrieval ? { retrieval } : {}),
+      ...(versionPromotion ? { versionPromotion } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * One of a closed set of modes, or undefined when unset (absent, null, or
+ * blank). Matched case-insensitively. A value outside the set throws, naming
+ * where it came from and what is allowed: a typo must not leave a server in a
+ * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
+ * `PUBLISHER_PACKAGE_VERSIONING` and `versionPromotion`.
+ */
+function parseModeSetting<T extends string>(
+   raw: unknown,
+   where: string,
+   allowed: readonly T[],
+): T | undefined {
+   if (raw === undefined || raw === null) return undefined;
+   if (typeof raw === "string") {
+      const value = raw.trim().toLowerCase();
+      if (value === "") return undefined;
+      if ((allowed as readonly string[]).includes(value)) return value as T;
+   }
+   throw new Error(
+      `${where} must be one of ${allowed.join(" | ")} (got ${JSON.stringify(raw)})`,
+   );
+}
+
+/**
+ * Whether a publish from a location publishes versions
+ * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset). Read at call time, so a
+ * test can switch it; a value outside on/off throws, and it is read at startup
+ * so a typo fails the boot.
+ */
+export const isVersioningEnabled = (): boolean =>
+   parseModeSetting(
+      process.env.PUBLISHER_PACKAGE_VERSIONING,
+      "PUBLISHER_PACKAGE_VERSIONING",
+      PACKAGE_VERSIONING_MODES,
+   ) === "on";
+
+/**
+ * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when
+ * set, otherwise `versionPromotion` in publisher.config.json, otherwise
+ * `on-publish`.
+ */
+export const getVersionPromotionMode = (
+   serverRoot: string,
+): VersionPromotionMode =>
+   parseModeSetting(
+      process.env.PUBLISHER_VERSION_PROMOTION,
+      "PUBLISHER_VERSION_PROMOTION",
+      VERSION_PROMOTION_MODES,
+   ) ??
+   readConfigMode(serverRoot, (config) => config.versionPromotion) ??
+   "on-publish";
+
+function readConfigMode<T>(
+   serverRoot: string,
+   pick: (config: PublisherConfig) => T | undefined,
+): T | undefined {
+   try {
+      return pick(getPublisherConfig(serverRoot));
+   } catch (error) {
+      // A file that cannot be parsed has no setting to give, and is reported
+      // where the config is loaded, the same split getSemanticIndexMaxEntities
+      // makes. An invalid mode value is a different error and still throws.
+      if (
+         error instanceof Error &&
+         error.message.startsWith("Failed to parse ")
+      ) {
+         return undefined;
+      }
+      throw error;
+   }
+}
 
 /**
  * Read the `mcp` block. Like `theme`, a bad field is warned about and dropped,
@@ -1504,30 +1688,6 @@ export const isMcpIncludeHiddenFilesAndSources = (
          { error: error instanceof Error ? error.message : String(error) },
       );
       return false;
-   }
-};
-
-export const getConnectionsFromPublisherConfig = (
-   serverRoot: string,
-   environmentName: string,
-): Connection[] => {
-   try {
-      const publisherConfig = getPublisherConfig(serverRoot);
-      if (!Array.isArray(publisherConfig.environments)) {
-         return [];
-      }
-      const environment = publisherConfig.environments.find(
-         (e) => e && e.name === environmentName,
-      );
-      return Array.isArray(environment?.connections)
-         ? environment.connections
-         : [];
-   } catch (error) {
-      logger.error(
-         `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
-         { error: error instanceof Error ? error.message : String(error) },
-      );
-      return [];
    }
 };
 

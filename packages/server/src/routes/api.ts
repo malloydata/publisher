@@ -11,17 +11,26 @@
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
+import { callerHeaderName } from "../service/access_record";
+import { traceIdOf } from "../logger";
 import type { CompileController } from "../controller/compile.controller";
 import type { ConnectionController } from "../controller/connection.controller";
 import type { DatabaseController } from "../controller/database.controller";
 import type { MaterializationController } from "../controller/materialization.controller";
 import type { ModelController } from "../controller/model.controller";
-import type { PackageController } from "../controller/package.controller";
+import {
+   setPackagePatchDeprecationHeaders,
+   type PackageController,
+} from "../controller/package.controller";
 import type { QueryController } from "../controller/query.controller";
 import type { ReportController } from "../controller/report.controller";
 import type { SkillController } from "../controller/skill.controller";
 import type { StorageDestinationController } from "../controller/storage_destination.controller";
 import type { ThemeController } from "../controller/theme.controller";
+import {
+   registerVersionRoutes,
+   type VersionController,
+} from "../controller/version.controller";
 import type { WatchModeController } from "../controller/watch-mode.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
@@ -33,7 +42,12 @@ import {
    parseNonNegativeIntParam,
 } from "../query_param_utils";
 import { timeReportRead } from "../report_metrics";
-import { booleanParamOr400, setCollectionReloadError } from "../route_params";
+import {
+   assertListingTakesNoVersionId,
+   booleanParamOr400,
+   queryVersionIdOf,
+   setCollectionReloadError,
+} from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { ThemeStore } from "../service/theme_store";
@@ -43,9 +57,10 @@ import {
    jsonRoute,
    logRefusal,
    sendRouteError,
-   setVersionIdError,
    wildcardParam,
+   markDeprecated,
 } from "./json_route";
+import { registerStorageDestinationRoutes } from "./storage_destinations";
 import { reportWriteRoute } from "./report_write";
 
 export interface ApiControllers {
@@ -63,6 +78,7 @@ export interface ApiControllers {
    compileController: CompileController;
    materializationController: MaterializationController;
    storageDestinationController: StorageDestinationController;
+   versionController: VersionController;
 }
 
 // Caps long-lived SSE streams so they cannot exhaust sockets or memory.
@@ -83,7 +99,13 @@ export function registerApiRoutes(
    registerConnectionRoutes(app, apiPrefix, env, pkg, c);
    registerPackageRoutes(app, apiPrefix, env, pkg, c);
    registerQueryRoutes(app, pkg, c);
-   registerMaterializationRoutes(app, env, pkg, c);
+   registerMaterializationRoutes(app, pkg, c);
+   // Deprecated: the admin API's catalog resources replace them.
+   registerStorageDestinationRoutes(
+      app,
+      apiPrefix,
+      c.storageDestinationController,
+   );
 }
 
 function registerStatusAndThemeRoutes(
@@ -141,12 +163,22 @@ function registerWatchModeRoutes(
    pkg: string,
    { environmentStore, watchModeController }: ApiControllers,
 ): void {
+   // Deprecated here: the admin API serves watch mode, an operator's control.
    app.get(
       `${apiPrefix}/watch-mode/status`,
+      markDeprecated,
       watchModeController.getWatchStatus,
    );
-   app.post(`${apiPrefix}/watch-mode/start`, watchModeController.startWatching);
-   app.post(`${apiPrefix}/watch-mode/stop`, watchModeController.stopWatchMode);
+   app.post(
+      `${apiPrefix}/watch-mode/start`,
+      markDeprecated,
+      watchModeController.startWatching,
+   );
+   app.post(
+      `${apiPrefix}/watch-mode/stop`,
+      markDeprecated,
+      watchModeController.stopWatchMode,
+   );
 
    // Live-reload SSE for in-package HTML dashboards. It never starts watch
    // mode, so an arbitrary fetch cannot mutate global watch state; it reports
@@ -163,7 +195,10 @@ function registerWatchModeRoutes(
             envName,
             false,
          );
-         await environment.getPackage(pkgName, false); // 404 if missing
+         // 404 if missing; 404/410 for a version it does not serve.
+         await environment.getPackage(pkgName, false, {
+            versionId: req.query.versionId,
+         });
       } catch (error) {
          sendRouteError(res, error as Error, logRefusal(req, error as Error));
          return;
@@ -348,6 +383,9 @@ function registerConnectionRoutes(
    ] as const) {
       const packageName = (req: express.Request) =>
          scoped ? req.params.packageName : undefined;
+      // A package-scoped route reads the version its request names.
+      const versionId = (req: express.Request) =>
+         scoped ? req.query.versionId : undefined;
       app.get(
          `${prefix}/schemas`,
          apiRoute((req) =>
@@ -355,6 +393,7 @@ function registerConnectionRoutes(
                req.params.environmentName,
                req.params.connectionName,
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -367,6 +406,7 @@ function registerConnectionRoutes(
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -379,6 +419,7 @@ function registerConnectionRoutes(
                req.params.schemaName,
                req.params.tablePath,
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -391,28 +432,32 @@ function registerConnectionRoutes(
       handler: (
          req: express.Request,
          packageName: string | undefined,
+         versionId: unknown,
       ) => Promise<unknown>,
    ) => {
       app.post(
          `${conn}${suffix}`,
          queryConcurrency(),
-         apiRoute((req) => handler(req, undefined)),
+         apiRoute((req) => handler(req, undefined, undefined)),
       );
       app.post(
          `${pkgConn}${suffix}`,
          queryConcurrency(),
-         apiRoute((req) => handler(req, req.params.packageName)),
+         apiRoute((req) =>
+            handler(req, req.params.packageName, req.query.versionId),
+         ),
       );
    };
-   bothScopes("/sqlSource", (req, packageName) =>
+   bothScopes("/sqlSource", (req, packageName, versionId) =>
       connectionController.getConnectionSqlSource(
          req.params.environmentName,
          req.params.connectionName,
          req.body.sqlStatement as string,
          packageName,
+         versionId,
       ),
    );
-   bothScopes("/sqlQuery", (req, packageName) =>
+   bothScopes("/sqlQuery", (req, packageName, versionId) =>
       connectionController.getConnectionQueryData(
          req.params.environmentName,
          req.params.connectionName,
@@ -423,16 +468,47 @@ function registerConnectionRoutes(
             queryMetadata: req.body?.queryMetadata,
             queryClass: req.body?.queryClass,
          },
+         versionId,
       ),
    );
-   bothScopes("/sqlTemporaryTable", (req, packageName) =>
+   bothScopes("/sqlTemporaryTable", (req, packageName, versionId) =>
       connectionController.getConnectionTemporaryTable(
          req.params.environmentName,
          req.params.connectionName,
          req.body.sqlStatement as string,
          packageName,
+         versionId,
       ),
    );
+}
+
+/**
+ * The `givens` query parameter, a JSON object the trusted tier sets for the
+ * caller, so a model read can omit sources the caller cannot enter (see
+ * service/discovery_lock.ts). `null` when absent; `undefined` after a 400
+ * has been sent for one that is not a JSON object.
+ */
+function givensParamOr400(
+   req: express.Request,
+   res: express.Response,
+): Record<string, GivenValue> | null | undefined {
+   const raw = req.query.givens;
+   if (raw === undefined) return null;
+   if (typeof raw === "string") {
+      try {
+         const parsed = JSON.parse(raw) as unknown;
+         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed as Record<string, GivenValue>;
+         }
+      } catch {
+         // fall through to the 400
+      }
+   }
+   res.status(400).json({
+      code: 400,
+      message: "givens must be one JSON object",
+   });
+   return undefined;
 }
 
 function registerPackageRoutes(
@@ -448,11 +524,13 @@ function registerPackageRoutes(
       skillController,
       reportController,
       environmentStore,
+      versionController,
    } = c;
 
    app.get(
       `${env}/packages`,
       jsonRoute((req, res) => {
+         assertListingTakesNoVersionId(req.query.versionId);
          if (req.query.reload !== undefined) {
             setCollectionReloadError(
                res,
@@ -470,9 +548,18 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.body,
          );
-         return added?.getPackageMetadata();
+         // The same metadata as before for a package with no versions; a
+         // published version also carries the package's current `latest`.
+         if (!added) return undefined;
+         const environment = await environmentStore.getEnvironment(
+            req.params.environmentName,
+            false,
+         );
+         return environment.describePackage(added);
       }),
    );
+   // A package's published versions, their lifecycle and its `latest`.
+   registerVersionRoutes(app, pkg, versionController);
    app.get(
       pkg,
       jsonRoute((req, res) => {
@@ -482,18 +569,21 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             reload,
+            req.query.versionId,
          );
       }),
    );
+   // Deprecated (see setPackagePatchDeprecationHeaders), and kept working.
    app.patch(
       pkg,
-      apiRoute((req) =>
-         packageController.updatePackage(
+      apiRoute((req, res) => {
+         setPackagePatchDeprecationHeaders(res);
+         return packageController.updatePackage(
             req.params.environmentName,
             req.params.packageName,
             req.body,
-         ),
-      ),
+         );
+      }),
    );
    app.delete(
       pkg,
@@ -517,7 +607,7 @@ function registerPackageRoutes(
          return modelController.listModels(
             req.params.environmentName,
             req.params.packageName,
-            { includeHiddenFilesAndSources },
+            { includeHiddenFilesAndSources, versionId: req.query.versionId },
          );
       }),
    );
@@ -530,11 +620,17 @@ function registerPackageRoutes(
             "includeHiddenFilesAndSources",
          );
          if (includeHiddenFilesAndSources === undefined) return;
+         const givens = givensParamOr400(req, res);
+         if (givens === undefined) return;
          return modelController.getModel(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            { includeHiddenFilesAndSources },
+            {
+               includeHiddenFilesAndSources,
+               versionId: req.query.versionId,
+               ...(givens ? { givens } : {}),
+            },
          );
       }),
    );
@@ -548,6 +644,7 @@ function registerPackageRoutes(
          skillController.listSkills(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -558,6 +655,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req) ?? "",
+            req.query.versionId,
          ),
       ),
    );
@@ -567,6 +665,7 @@ function registerPackageRoutes(
          skillController.listAgents(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -585,6 +684,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             skills,
+            req.query.versionId,
          );
       }),
    );
@@ -596,6 +696,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             wildcardParam(req) ?? "",
+            req.query.versionId,
          ),
       ),
    );
@@ -615,6 +716,7 @@ function registerPackageRoutes(
          reportController.listReports(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -626,6 +728,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
+            req.query.versionId,
          ),
       ),
    );
@@ -639,10 +742,6 @@ function registerQueryRoutes(
    { queryController, databaseController, compileController }: ApiControllers,
 ): void {
    app.post(`${pkg}/models/*?/query`, queryConcurrency(), async (req, res) => {
-      if (req.body.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -680,7 +779,7 @@ function registerQueryRoutes(
             {
                queryMetadata: req.body?.queryMetadata,
                queryClass: req.body?.queryClass,
-               versionId: req.body?.versionId as string | undefined,
+               versionId: queryVersionIdOf(req),
             },
             // Disables the author's `#(authorize)` gates. From a header, never
             // the body, and nothing here bounds who may send it: the
@@ -689,6 +788,12 @@ function registerQueryRoutes(
             readBypassAuthorize(req),
             includeHiddenFilesAndSources,
             disconnected.signal,
+            // For the access record: who the gateway says is asking, and the
+            // trace this request belongs to. See docs/access-record.md.
+            {
+               caller: req.get(callerHeaderName()),
+               traceId: traceIdOf(req),
+            },
          );
          setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
          res.status(200).json(result);
@@ -705,6 +810,7 @@ function registerQueryRoutes(
          databaseController.listDatabases(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -724,6 +830,7 @@ function registerQueryRoutes(
             req.body.givens as Record<string, GivenValue> | undefined,
             // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
+            req.query.versionId,
          ),
       ),
    );
@@ -731,9 +838,8 @@ function registerQueryRoutes(
 
 function registerMaterializationRoutes(
    app: express.Express,
-   env: string,
    pkg: string,
-   { materializationController, storageDestinationController }: ApiControllers,
+   { materializationController }: ApiControllers,
 ): void {
    // Package-scoped: a materialization is a run of one package's persist
    // sources and cannot exist without a package.
@@ -761,6 +867,7 @@ function registerMaterializationRoutes(
             {
                limit: parseNonNegativeIntParam(req.query.limit),
                offset: parseNonNegativeIntParam(req.query.offset),
+               versionId: req.query.versionId,
             },
          ),
       ),
@@ -772,6 +879,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            req.query.versionId,
          ),
       ),
    );
@@ -788,6 +896,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            req.query.versionId,
          );
       }),
    );
@@ -800,49 +909,9 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
+            { dropTables, versionId: req.query.versionId },
          );
          res.status(204).send();
       }),
-   );
-
-   // Table lifecycle inside an environment's storage destinations, for an
-   // orchestrator that assigns its own physical table names. Destinations are
-   // never reachable through the connection routes, so these are the only way
-   // to drop, enumerate, or reclaim the storage behind a table in one.
-   const destination = `${env}/storageDestinations/:destinationName`;
-   app.get(
-      `${destination}/schemas/:schemaName/tables`,
-      apiRoute((req) =>
-         storageDestinationController.listTables(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-         ),
-      ),
-   );
-   app.delete(
-      `${destination}/schemas/:schemaName/tables/:tableName`,
-      apiRoute(async (req, res) => {
-         await storageDestinationController.dropTable(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-            req.params.tableName,
-         );
-         res.status(204).send();
-      }),
-   );
-   app.post(
-      `${destination}/fileCleanups`,
-      apiRoute(
-         (req) =>
-            storageDestinationController.createFileCleanup(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         { status: 201 },
-      ),
    );
 }

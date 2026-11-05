@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import {
+   getFreePort,
    pollUntil,
    singlePackageConfig,
    spawnServer,
@@ -39,6 +40,8 @@ const PKG_NAME = "watch-it-pkg";
 
 interface TestServer {
    baseUrl: string;
+   /** The admin listener, where watch mode is one resource. */
+   adminUrl: string;
    /** publisher_data/<env>/<pkg>: a symlink under watch mode, a real dir otherwise. */
    mountedPkgPath: string;
    /** Writable source package dir the tests mutate to simulate source edits. */
@@ -61,12 +64,16 @@ const modelsText = async (baseUrl: string): Promise<string> => {
  */
 async function startServer(opts: { watch: boolean }): Promise<TestServer> {
    const src = writeSourcePackage(PKG_NAME);
+   const adminPort = await getFreePort();
    const server = await spawnServer({
       config: singlePackageConfig(ENV_NAME, {
          name: PKG_NAME,
          location: src.dir,
       }),
-      env: { PUBLISHER_WATCH: opts.watch ? ENV_NAME : undefined },
+      env: {
+         PUBLISHER_WATCH: opts.watch ? ENV_NAME : undefined,
+         PUBLISHER_ADMIN_PORT: String(adminPort),
+      },
    });
    const stop = async () => {
       await server.stop();
@@ -80,6 +87,7 @@ async function startServer(opts: { watch: boolean }): Promise<TestServer> {
    }
    return {
       baseUrl: server.baseUrl,
+      adminUrl: `http://127.0.0.1:${adminPort}`,
       mountedPkgPath: path.join(
          server.serverRoot,
          "publisher_data",
@@ -288,6 +296,37 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
    });
 
    // ── stop ──────────────────────────────────────────────────────────
+
+   it("is one resource on the admin API: read, set, turn off, set again", async () => {
+      const admin = `${server!.adminUrl}/api/v0/watch-mode`;
+      const read = async () =>
+         (await (await fetch(admin)).json()) as {
+            enabled: boolean;
+            environmentName: string;
+         };
+      expect(await read()).toMatchObject({
+         enabled: true,
+         environmentName: ENV_NAME,
+      });
+      const missing = await fetch(admin, {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ environmentName: "no-such-env" }),
+      });
+      expect(missing.status).toBe(404);
+      expect((await fetch(admin, { method: "DELETE" })).status).toBe(204);
+      expect((await read()).enabled).toBe(false);
+      const set = await fetch(admin, {
+         method: "PUT",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ environmentName: ENV_NAME }),
+      });
+      expect(set.status).toBe(200);
+      expect(await set.json()).toMatchObject({
+         enabled: true,
+         environmentName: ENV_NAME,
+      });
+   });
 
    it("stops watching and reports disabled", async () => {
       const stop = await fetch(`${baseUrl}/api/v0/watch-mode/stop`, {

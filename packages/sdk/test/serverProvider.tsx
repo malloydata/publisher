@@ -69,6 +69,21 @@ export function clearCache() {
    globalQueryClient.clear();
 }
 
+/**
+ * The versions client of a server whose package has no versions: the listing
+ * answers 404, as the server does for a package with none. A spec that renders
+ * a package page and mocks no versions client reads this one, since a listing
+ * that fails otherwise (no client at all) turns the page's edits off.
+ */
+export const noVersions = {
+   listPackageVersions: () =>
+      Promise.reject(
+         Object.assign(new Error("Request failed with status code 404"), {
+            response: { status: 404, data: { message: "no versions" } },
+         }),
+      ),
+};
+
 /** A request that never settles, so nothing renders past its loading state. */
 export function pending<T = never>(): Promise<T> {
    return new Promise<T>(() => {});

@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import type { WatchModeController } from "./controller/watch-mode.controller";
+import { createAdminApp } from "./routes/admin";
 import { buildRouteApp, registeredRoutes } from "./test_helpers/route_app";
 
 /**
@@ -59,5 +61,30 @@ describe("REST route parity with api-doc.yaml", () => {
    it("no /pages listing path or operationId survives in the spec", () => {
       expect(apiDoc).not.toContain("/pages:");
       expect(apiDoc).not.toContain("operationId: list-pages");
+   });
+});
+
+describe("admin route parity with admin-api-doc.yaml", () => {
+   const adminDoc = readFileSync(
+      resolve(REPO_ROOT, "admin-api-doc.yaml"),
+      "utf8",
+   );
+   const served = registeredRoutes(
+      createAdminApp(null, {} as WatchModeController),
+   )
+      .filter((route) => route.path.startsWith("/api/v0/"))
+      .map((route) => `${route.method} ${shape(route.path)}`)
+      .sort();
+
+   it("serves exactly the operations the admin spec declares", () => {
+      expect(served).toEqual(specOperations(adminDoc));
+   });
+
+   it("names no main-API resource in an admin path", () => {
+      for (const op of served) {
+         expect(op).not.toMatch(
+            /environments|packages|connections|storageDestinations/,
+         );
+      }
    });
 });

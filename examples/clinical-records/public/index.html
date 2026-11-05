@@ -1,0 +1,1476 @@
+<!doctype html>
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PHI access, verified</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <style>
+      /* ── Token contract ─────────────────────────────────────────────────────
+       Warm paper neutrals, because this page is read slowly and carefully at
+       sign-off time. The accent is a clinical teal, the color of the domain.
+       Semantic colors carry meaning, and the meaning is about the POLICY, not
+       about access: a refusal the policy requires is good news here, so
+       "refused" is a calm neutral and only "not per policy" is red.
+       A size, space, radius, duration or color that is not a token is a bug. */
+      :root {
+        --font-sans:
+          system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial,
+          sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+        --bg: #f4f1ec;
+        --surface: #fefdfb;
+        --surface-2: #f8f5f1;
+        --surface-sunken: #efebe5;
+        --border: #e4ddd4;
+        --border-strong: #cfc5b8;
+
+        --text-strong: #1b1714;
+        --text: #3f3832;
+        --text-muted: #7a7067;
+        --text-soft: #a1968b;
+
+        --accent: #2a9d8f;
+        --accent-strong: #19675e;
+        --accent-soft: #dff1ee;
+
+        --pass: #1f7a52;
+        --pass-soft: #e2f3ea;
+        --fail: #c03b2b;
+        --fail-soft: #fbe5e1;
+        --review: #a35f0b;
+        --review-soft: #fbefdc;
+        --refused: #6b6259;
+        --refused-soft: #ece7e1;
+        --scoped: #1d5f8f;
+        --scoped-soft: #e1edf6;
+
+        --class-direct: #b5402f;
+        --class-direct-soft: #f8e2dd;
+        --class-quasi: #9a6a12;
+        --class-quasi-soft: #f6ecd8;
+        --class-clinical: #1d5f8f;
+        --class-clinical-soft: #e1edf6;
+        --class-financial: #5b4b9a;
+        --class-financial-soft: #ebe7f6;
+        --class-none: #6b6259;
+        --class-none-soft: #ece7e1;
+
+        --grid: #ebe5dd;
+        --tick: #9d9287;
+
+        /* Type: closed, ratio-based, eight steps. */
+        --fs-xs: 11px;
+        --fs-sm: 12px;
+        --fs-md: 14px;
+        --fs-base: 16px;
+        --fs-lg: 20px;
+        --fs-xl: 26px;
+        --fs-2xl: 34px;
+        --fs-3xl: 46px;
+        --fw-normal: 400;
+        --fw-medium: 500;
+        --fw-semi: 600;
+        --fw-display: 750;
+        --lh-tight: 1.15;
+        --lh-body: 1.5;
+        --tr-display: -0.02em;
+        --tr-caps: 0.06em;
+
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 16px;
+        --sp-5: 24px;
+        --sp-6: 32px;
+        --sp-7: 48px;
+
+        --radius-sm: 4px;
+        --radius: 8px;
+        --radius-lg: 12px;
+        --shadow-card: 0 1px 2px rgba(60, 44, 32, 0.06);
+
+        --dur-fast: 120ms;
+        --dur-base: 200ms;
+        --dur-loop: 1400ms;
+        --ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+        --row-h: 44px;
+        --hist-h: 160px;
+        --col-surface: 220px;
+        --page-w: 1120px;
+        /* The settled height, with the source link: no growth as it fills. */
+        --verdict-h: 153px;
+        --col-control: 72px;
+        --col-aside: 300px;
+        --card-min: 320px;
+        --measure: 760px;
+        --provenance-h: 220px;
+        --chip-w: 168px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1714;
+          --surface: #231f1b;
+          --surface-2: #2a2520;
+          --surface-sunken: #1f1b17;
+          --border: #3a332c;
+          --border-strong: #4d4439;
+          --text-strong: #f5f0ea;
+          --text: #ddd4ca;
+          --text-muted: #a89d91;
+          --text-soft: #7d7368;
+          --accent: #4fc1b2;
+          --accent-strong: #8fded3;
+          --accent-soft: #1d3a36;
+          --pass: #6fcf9c;
+          --pass-soft: #1d3428;
+          --fail: #f08a7a;
+          --fail-soft: #3d2420;
+          --review: #e8b25e;
+          --review-soft: #3a2d18;
+          --refused: #b3a89c;
+          --refused-soft: #2e2924;
+          --scoped: #7ab6e2;
+          --scoped-soft: #1c2d3b;
+          --class-direct: #f08a7a;
+          --class-direct-soft: #3d2420;
+          --class-quasi: #e8b25e;
+          --class-quasi-soft: #3a2d18;
+          --class-clinical: #7ab6e2;
+          --class-clinical-soft: #1c2d3b;
+          --class-financial: #b3a3ec;
+          --class-financial-soft: #2a2540;
+          --class-none: #b3a89c;
+          --class-none-soft: #2e2924;
+          --grid: #332d27;
+          --tick: #7d7368;
+          --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font: var(--fw-normal) var(--fs-md) / var(--lh-body) var(--font-sans);
+      }
+      main {
+        max-width: var(--page-w);
+        margin: 0 auto;
+        padding: var(--sp-6) var(--sp-5) var(--sp-7);
+      }
+      code {
+        font-family: var(--font-mono);
+        font-size: var(--fs-sm);
+      }
+      h1,
+      h2,
+      h3,
+      h4 {
+        color: var(--text-strong);
+        margin: 0;
+        line-height: var(--lh-tight);
+      }
+      h1 {
+        font-size: var(--fs-2xl);
+        font-weight: var(--fw-display);
+        letter-spacing: var(--tr-display);
+      }
+      h2 {
+        font-size: var(--fs-lg);
+        font-weight: var(--fw-semi);
+      }
+      h4 {
+        font-size: var(--fs-xs);
+        font-weight: var(--fw-semi);
+        text-transform: uppercase;
+        letter-spacing: var(--tr-caps);
+        color: var(--text-muted);
+        margin-bottom: var(--sp-2);
+      }
+      p {
+        margin: 0;
+      }
+      .muted {
+        color: var(--text-muted);
+      }
+      .note {
+        color: var(--text-muted);
+        font-size: var(--fs-sm);
+        margin-top: var(--sp-2);
+      }
+      .is-error {
+        color: var(--fail);
+      }
+
+      .demo-banner {
+        background: var(--review-soft);
+        color: var(--text-strong);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--sp-3) var(--sp-4);
+        font-size: var(--fs-sm);
+        margin-bottom: var(--sp-5);
+      }
+      .demo-banner strong {
+        color: var(--review);
+      }
+
+      header.page {
+        margin-bottom: var(--sp-6);
+      }
+      header.page .eyebrow {
+        font-size: var(--fs-xs);
+        text-transform: uppercase;
+        letter-spacing: var(--tr-caps);
+        color: var(--accent-strong);
+        font-weight: var(--fw-semi);
+      }
+      header.page h1 {
+        margin: var(--sp-2) 0;
+      }
+      header.page .lede {
+        font-size: var(--fs-base);
+        color: var(--text);
+        max-width: var(--measure);
+      }
+
+      .verdicts {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--sp-4);
+        margin-bottom: var(--sp-7);
+      }
+      .verdict {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: var(--sp-4) var(--sp-4) var(--sp-5);
+        box-shadow: var(--shadow-card);
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: var(--sp-3);
+        align-items: baseline;
+        min-height: var(--verdict-h);
+        border-top: 4px solid var(--border-strong);
+      }
+      .verdict.is-pass {
+        border-top-color: var(--pass);
+      }
+      .verdict.is-fail {
+        border-top-color: var(--fail);
+      }
+      .verdict-mark {
+        font-size: var(--fs-lg);
+        font-weight: var(--fw-semi);
+      }
+      .is-pass .verdict-mark {
+        color: var(--pass);
+      }
+      .is-fail .verdict-mark {
+        color: var(--fail);
+      }
+      .verdict-value {
+        font-size: var(--fs-xl);
+        font-weight: var(--fw-display);
+        color: var(--text-strong);
+        letter-spacing: var(--tr-display);
+        font-variant-numeric: tabular-nums;
+      }
+      .verdict-caption {
+        grid-column: 1 / -1;
+        font-size: var(--fs-sm);
+        color: var(--text-muted);
+        margin-top: var(--sp-2);
+      }
+
+      section {
+        margin-bottom: var(--sp-7);
+      }
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: var(--sp-4);
+        margin-bottom: var(--sp-2);
+      }
+      .section-sub {
+        color: var(--text-muted);
+        max-width: var(--measure);
+        margin-bottom: var(--sp-4);
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-card);
+        overflow: hidden;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: var(--sp-2) var(--sp-3);
+        border-bottom: 1px solid var(--border);
+        vertical-align: middle;
+      }
+      thead th {
+        font-size: var(--fs-xs);
+        text-transform: uppercase;
+        letter-spacing: var(--tr-caps);
+        color: var(--text-muted);
+        font-weight: var(--fw-semi);
+        background: var(--surface-2);
+      }
+      tbody tr:last-child > * {
+        border-bottom: none;
+      }
+
+      /* Fixed layout: the column widths come from the static header, so they
+         do not move when the package read fills the rows. */
+      .matrix {
+        table-layout: fixed;
+        min-width: 720px;
+      }
+      .matrix thead th:first-child,
+      .matrix th[scope="row"] {
+        /* Room for the chevron, the name on one line and the hint. */
+        width: calc(var(--col-surface) + 100px);
+      }
+      .matrix th[scope="row"] {
+        padding: 0;
+      }
+      /* First visit: hold the five domain rows the export will fill. */
+      .matrix-loading {
+        height: calc(5 * 55px);
+        vertical-align: top;
+      }
+      .row-toggle {
+        all: unset;
+        box-sizing: border-box;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+        width: 100%;
+        padding: var(--sp-2) var(--sp-3);
+        min-height: var(--row-h);
+      }
+      .row-text {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+      }
+      /* A real control, not a glyph: a bordered chevron that turns when open. */
+      .row-chevron {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        border: 1px solid var(--border-strong, var(--border));
+        border-radius: 6px;
+        background: var(--surface);
+        position: relative;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .row-chevron::after {
+        content: "";
+        position: absolute;
+        left: 7px;
+        top: 6px;
+        width: 6px;
+        height: 6px;
+        border-right: 2px solid var(--text-muted);
+        border-bottom: 2px solid var(--text-muted);
+        transform: rotate(-45deg);
+        transition: transform 0.15s;
+      }
+      .is-open .row-chevron::after {
+        transform: rotate(45deg);
+        left: 7px;
+        top: 5px;
+      }
+      .row-hint {
+        flex: none;
+        font-size: var(--fs-xs);
+        color: var(--accent);
+        font-weight: var(--fw-semi);
+        white-space: nowrap;
+      }
+      .domain-row {
+        cursor: pointer;
+      }
+      .domain-row:hover > th,
+      .domain-row.is-open > th {
+        background: var(--surface-2);
+      }
+      .domain-row:hover .row-chevron,
+      .is-open .row-chevron {
+        border-color: var(--accent);
+      }
+      .domain-row:hover .row-chevron::after,
+      .is-open .row-chevron::after {
+        border-color: var(--accent);
+      }
+      .row-toggle:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+      .surface-name {
+        font-weight: var(--fw-semi);
+        color: var(--text-strong);
+      }
+      .surface-who {
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+      }
+      .matrix td.cell {
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        font-weight: var(--fw-medium);
+      }
+      .cell.is-allowed {
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .cell.is-closed {
+        color: var(--text-soft);
+        background: var(--surface-sunken);
+      }
+      .cell.is-violation {
+        background: var(--fail-soft);
+        color: var(--fail);
+        box-shadow: inset 0 0 0 2px var(--fail);
+      }
+      .legend {
+        display: flex;
+        gap: var(--sp-4);
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+      }
+      .legend i {
+        display: inline-block;
+        width: var(--sp-3);
+        height: var(--sp-3);
+        border-radius: var(--radius-sm);
+        margin-right: var(--sp-1);
+        vertical-align: -1px;
+      }
+      .legend .l-allowed {
+        background: var(--accent-soft);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .legend .l-closed {
+        background: var(--surface-sunken);
+      }
+      .legend .l-violation {
+        background: var(--fail-soft);
+        box-shadow: inset 0 0 0 2px var(--fail);
+      }
+
+      .inventory-row > td {
+        background: var(--surface-2);
+        padding: var(--sp-4);
+      }
+      .inventory {
+        display: grid;
+        gap: var(--sp-4);
+      }
+      .inv-meta {
+        display: grid;
+        gap: var(--sp-4);
+      }
+      .gates {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: var(--sp-2);
+      }
+      .fields {
+        background: var(--surface);
+        border-radius: var(--radius);
+      }
+      .fields td,
+      .fields th {
+        padding: var(--sp-1) var(--sp-3);
+        font-size: var(--fs-sm);
+      }
+
+      .chip {
+        display: inline-block;
+        font-size: var(--fs-xs);
+        padding: 0 var(--sp-2);
+        border-radius: var(--radius-sm);
+        background: var(--surface-sunken);
+        color: var(--text);
+        margin: 0 var(--sp-1) var(--sp-1) 0;
+        line-height: var(--lh-body);
+      }
+      .chip.is-secure {
+        background: var(--pass-soft);
+        color: var(--pass);
+      }
+      .chip.is-insecure {
+        background: var(--fail-soft);
+        color: var(--fail);
+      }
+      .chip.class-phi-direct_identifier {
+        background: var(--class-direct-soft);
+        color: var(--class-direct);
+      }
+      .chip.class-phi-quasi_identifier {
+        background: var(--class-quasi-soft);
+        color: var(--class-quasi);
+      }
+      .chip.class-phi-clinical {
+        background: var(--class-clinical-soft);
+        color: var(--class-clinical);
+      }
+      .chip.class-phi-financial {
+        background: var(--class-financial-soft);
+        color: var(--class-financial);
+      }
+      .chip.class-none {
+        background: var(--class-none-soft);
+        color: var(--class-none);
+      }
+      .chip.evidence-model {
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+      .chip.evidence-server {
+        background: var(--scoped-soft);
+        color: var(--scoped);
+      }
+      .chip.evidence-review {
+        background: var(--review-soft);
+        color: var(--review);
+      }
+
+      .access-wrap {
+        display: grid;
+        grid-template-columns: 1fr var(--col-aside);
+        gap: var(--sp-4);
+        align-items: start;
+      }
+      .access th[scope="row"] {
+        width: var(--col-surface);
+        font-weight: var(--fw-semi);
+        color: var(--text-strong);
+      }
+      .access td.probe {
+        padding: var(--sp-1);
+        height: var(--row-h);
+      }
+      .probe-btn {
+        all: unset;
+        box-sizing: border-box;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        padding: var(--sp-1) var(--sp-2);
+        border-radius: var(--radius-sm);
+        transition: filter var(--dur-fast) var(--ease);
+      }
+      .probe-btn:hover {
+        filter: brightness(0.97);
+      }
+      .probe-btn:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+      .probe-outcome {
+        font-size: var(--fs-xs);
+        font-weight: var(--fw-semi);
+      }
+      .probe-rows {
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .probe-flag {
+        font-size: var(--fs-xs);
+        color: var(--fail);
+        font-weight: var(--fw-semi);
+      }
+      .is-refused .probe-btn {
+        background: var(--refused-soft);
+        color: var(--refused);
+      }
+      .is-scoped .probe-btn {
+        background: var(--scoped-soft);
+        color: var(--scoped);
+      }
+      .is-rows .probe-btn {
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+      .is-mismatch .probe-btn {
+        background: var(--fail-soft);
+        color: var(--fail);
+        box-shadow: inset 0 0 0 2px var(--fail);
+      }
+      .skeleton {
+        display: inline-block;
+        color: var(--text-soft);
+        animation: pulse var(--dur-loop) var(--ease) infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.35;
+        }
+      }
+      .provenance {
+        padding: var(--sp-4);
+        min-height: var(--provenance-h);
+      }
+      .provenance dl {
+        margin: 0;
+        display: grid;
+        gap: var(--sp-1);
+      }
+      .provenance dt {
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: var(--tr-caps);
+        margin-top: var(--sp-2);
+      }
+      .provenance dd {
+        margin: 0;
+        word-break: break-word;
+      }
+
+      .deid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--sp-4);
+      }
+      .deid .card {
+        padding: var(--sp-4);
+      }
+      .deid h3 {
+        font-size: var(--fs-base);
+        font-weight: var(--fw-semi);
+      }
+      .deid .sub {
+        color: var(--text-muted);
+        font-size: var(--fs-sm);
+        margin-bottom: var(--sp-3);
+      }
+      .hist-box {
+        height: var(--hist-h);
+      }
+      .hist {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: var(--sp-3);
+        margin-top: var(--sp-3);
+      }
+      .stat {
+        display: flex;
+        flex-direction: column;
+      }
+      .stat-value {
+        font-size: var(--fs-lg);
+        font-weight: var(--fw-display);
+        color: var(--text-strong);
+        font-variant-numeric: tabular-nums;
+      }
+      .stat-label {
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+      }
+
+      .controls td,
+      .controls th {
+        font-size: var(--fs-sm);
+      }
+      .controls th[scope="row"] {
+        width: var(--col-control);
+      }
+      .status {
+        font-size: var(--fs-xs);
+        font-weight: var(--fw-semi);
+        padding: 0 var(--sp-2);
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+      }
+      .status-pass {
+        background: var(--pass-soft);
+        color: var(--pass);
+      }
+      .status-fail {
+        background: var(--fail-soft);
+        color: var(--fail);
+      }
+      .status-review {
+        background: var(--review-soft);
+        color: var(--review);
+      }
+
+      .violations {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
+        gap: var(--sp-4);
+      }
+      .violations li {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: var(--sp-4);
+        border-left: 4px solid var(--pass);
+        display: grid;
+        gap: var(--sp-2);
+        align-content: start;
+      }
+      .violations li.is-review {
+        border-left-color: var(--review);
+      }
+      .v-head {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--sp-2);
+        font-size: var(--fs-xs);
+      }
+      .v-what {
+        color: var(--text-strong);
+        font-weight: var(--fw-medium);
+      }
+      .refusal {
+        display: block;
+        background: var(--surface-sunken);
+        padding: var(--sp-2);
+        border-radius: var(--radius-sm);
+        white-space: pre-wrap;
+        font-size: var(--fs-xs);
+      }
+
+      .tabs {
+        display: flex;
+        gap: var(--sp-2);
+        border-bottom: 1px solid var(--border);
+        margin-bottom: var(--sp-6);
+      }
+      .tabs [role="tab"] {
+        all: unset;
+        cursor: pointer;
+        padding: var(--sp-2) var(--sp-4);
+        font-weight: var(--fw-semi);
+        color: var(--text-muted);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .tabs [role="tab"][aria-selected="true"] {
+        color: var(--accent-strong);
+        border-bottom-color: var(--accent);
+      }
+      .tabs [role="tab"]:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .identity {
+        padding: var(--sp-4);
+        display: grid;
+        gap: var(--sp-4);
+      }
+      .presets {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+      }
+      .preset {
+        font: inherit;
+        font-size: var(--fs-sm);
+        cursor: pointer;
+        padding: var(--sp-1) var(--sp-3);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+      }
+      .preset[aria-pressed="true"] {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: var(--accent-strong);
+      }
+      .givens {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--sp-4);
+      }
+      .given {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--sp-3);
+        margin: 0;
+        display: grid;
+        gap: var(--sp-1);
+        align-content: start;
+      }
+      .given legend {
+        padding: 0 var(--sp-1);
+        display: flex;
+        gap: var(--sp-2);
+        align-items: center;
+      }
+      .check {
+        display: flex;
+        gap: var(--sp-2);
+        align-items: center;
+        font-size: var(--fs-sm);
+        cursor: pointer;
+      }
+      .identity-sent {
+        font-size: var(--fs-xs);
+        color: var(--text-muted);
+      }
+
+      .discovery {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-3);
+      }
+      .surface-chip {
+        font: inherit;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        text-align: left;
+        min-width: var(--chip-w);
+        padding: var(--sp-2) var(--sp-3);
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .surface-chip.is-visible {
+        border-color: var(--accent);
+      }
+      .surface-chip.is-visible[aria-pressed="true"] {
+        background: var(--accent-soft);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .surface-chip.is-hidden {
+        cursor: not-allowed;
+        background: var(--surface-sunken);
+        color: var(--text-soft);
+        border-style: dashed;
+      }
+      .sc-name {
+        font-weight: var(--fw-semi);
+      }
+      .sc-state {
+        font-size: var(--fs-xs);
+      }
+      .is-visible .sc-state {
+        color: var(--accent-strong);
+      }
+
+      .sample {
+        padding: var(--sp-4);
+      }
+      .sample-caption {
+        margin-bottom: var(--sp-3);
+      }
+      .rows th,
+      .rows td {
+        font-size: var(--fs-xs);
+        padding: var(--sp-1) var(--sp-2);
+        white-space: nowrap;
+      }
+      .rows th {
+        vertical-align: top;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .rows td.null {
+        color: var(--text-soft);
+        font-style: italic;
+      }
+      .query {
+        margin-top: var(--sp-3);
+        font-size: var(--fs-sm);
+        color: var(--text-muted);
+      }
+      code.block {
+        display: block;
+        background: var(--surface-sunken);
+        padding: var(--sp-2);
+        border-radius: var(--radius-sm);
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-top: var(--sp-2);
+        font-size: var(--fs-xs);
+      }
+
+      .agent-intro {
+        display: grid;
+        gap: var(--sp-3);
+        max-width: var(--measure);
+        margin-bottom: var(--sp-4);
+      }
+      .attempts {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: var(--sp-3);
+        counter-reset: att;
+      }
+      .attempt {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: var(--sp-3) var(--sp-4);
+      }
+      .attempt.is-stopped {
+        border-left-color: var(--pass);
+      }
+      .attempt.is-allowed {
+        border-left-color: var(--scoped);
+      }
+      .attempt.is-local {
+        border-left-color: var(--review);
+      }
+      .attempt.is-leak {
+        border-left-color: var(--fail);
+        background: var(--fail-soft);
+      }
+      .attempt-head {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        align-items: baseline;
+      }
+      .attempt-label {
+        font-weight: var(--fw-semi);
+        color: var(--text-strong);
+      }
+      .attempt-result {
+        font-size: var(--fs-xs);
+        font-weight: var(--fw-semi);
+        padding: 0 var(--sp-2);
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+      }
+      .is-stopped .attempt-result {
+        background: var(--pass-soft);
+        color: var(--pass);
+      }
+      .is-allowed .attempt-result {
+        background: var(--scoped-soft);
+        color: var(--scoped);
+      }
+      .is-local .attempt-result {
+        background: var(--review-soft);
+        color: var(--review);
+      }
+      .is-leak .attempt-result {
+        background: var(--fail);
+        color: var(--surface);
+      }
+      .attempt-why,
+      .attempt-msg {
+        font-size: var(--fs-sm);
+        margin-top: var(--sp-2);
+      }
+      .attempt-why {
+        color: var(--text-muted);
+      }
+      .attempt-msg {
+        font-family: var(--font-mono);
+        font-size: var(--fs-xs);
+      }
+      @media (max-width: 860px) {
+        .verdicts {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .verdict-value {
+          font-size: var(--fs-lg);
+          white-space: nowrap;
+        }
+        .verdict {
+          min-height: 178px;
+        }
+        .access-wrap,
+        .deid,
+        .inv-meta {
+          grid-template-columns: 1fr;
+        }
+        .scroll-x {
+          overflow-x: auto;
+        }
+      }
+      /* How this was computed */
+      .run-total-line {
+        display: block;
+      }
+      .lede-runs {
+        /* Three lines at phone width: the count arrives after the text wraps. */
+        min-height: 3lh;
+        color: var(--text-muted);
+        font-size: var(--fs-sm);
+        margin-top: var(--sp-2);
+      }
+      /* Hold the summary line the panel will fill, so it does not push the page. */
+      .source-slot[id] {
+        min-height: 39px;
+      }
+      .source {
+        margin-top: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius, 10px);
+        background: var(--surface);
+      }
+      .source > summary {
+        cursor: pointer;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: var(--sp-2) var(--sp-3);
+        padding: var(--sp-2) var(--sp-3);
+        list-style: none;
+      }
+      .source > summary::-webkit-details-marker {
+        display: none;
+      }
+      .source > summary::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-right: 2px solid var(--accent);
+        border-bottom: 2px solid var(--accent);
+        transform: rotate(-45deg) translateY(-1px);
+        transition: transform 0.15s;
+      }
+      .source[open] > summary::before {
+        transform: rotate(45deg) translateY(-2px);
+      }
+      .src-title {
+        font-weight: var(--fw-semi);
+        color: var(--accent);
+      }
+      .src-count {
+        color: var(--text-muted);
+        font-size: var(--fs-sm);
+      }
+      .source > summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+      .src-lead {
+        margin: 0;
+        padding: 0 var(--sp-3) var(--sp-3);
+        color: var(--text-muted);
+        max-width: 72ch;
+      }
+      .src-group {
+        border-top: 1px solid var(--border);
+        padding: var(--sp-3);
+      }
+      .src-kind {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        font-size: var(--fs-sm);
+        color: var(--text-muted);
+        margin-bottom: var(--sp-2);
+      }
+      .src-code {
+        margin: 0 0 var(--sp-2);
+        padding: var(--sp-2) var(--sp-3);
+        background: var(--surface-2);
+        border-radius: 6px;
+        overflow-x: auto;
+        font-size: var(--fs-sm);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .src-runs {
+        font-size: var(--fs-sm);
+      }
+      .src-runs td:nth-child(4) {
+        white-space: nowrap;
+      }
+      .src-runs code {
+        font-size: var(--fs-xs);
+        word-break: break-all;
+      }
+      .src-runs tr.is-refused td:nth-child(3) {
+        color: var(--text-muted);
+      }
+      .verdict-source {
+        all: unset;
+        grid-column: 1 / -1;
+        justify-self: start;
+        cursor: pointer;
+        margin-top: var(--sp-2);
+        font-size: var(--fs-xs);
+        color: var(--accent);
+        font-weight: var(--fw-semi);
+      }
+      .verdict-source:hover {
+        text-decoration: underline;
+      }
+      .verdict-source:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .inv-model {
+        margin-bottom: var(--sp-3);
+      }
+      .inv-model h4 code {
+        text-transform: none;
+        letter-spacing: normal;
+      }
+    </style>
+    <script src="./app/reserve.js"></script>
+  </head>
+  <body>
+    <main>
+      <p class="demo-banner" role="note">
+        <strong>Local demo.</strong> This page sends the identity attributes
+        (<code>ROLES</code>, <code>ORGANIZATIONS</code>,
+        <code>ATTRIBUTES</code>) itself, for the access grid and for whoever you
+        explore as. In a deployment those are <code>#(secure)</code>: the
+        identity provider sets them for the signed-in viewer, the request
+        cannot, and neither this page nor an agent could choose an identity.
+      </p>
+
+      <header class="page">
+        <div class="eyebrow">
+          Riverbend Health · PHI Access and Minimum Necessary Policy
+        </div>
+        <h1>PHI access, verified</h1>
+        <p class="lede">
+          What this model serves, checked against the policy, read live from the
+          model the server is serving now. Every number on this page comes from
+          the package and model reads or from a Malloy query the server answered.
+        </p>
+        <p class="lede-runs" id="lede-runs" data-reserve>
+          Open <em>How this was computed</em> under any section for the exact
+          request, the identity it was sent as, and the answer.
+          <span class="run-total-line"
+            >This visit: <strong id="run-total">counting…</strong></span
+          >
+        </p>
+      </header>
+
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button
+          type="button"
+          role="tab"
+          data-view="scorecard"
+          aria-selected="true"
+        >
+          Scorecard
+        </button>
+        <button
+          type="button"
+          role="tab"
+          data-view="explore"
+          aria-selected="false"
+        >
+          Explore as a role
+        </button>
+      </nav>
+
+      <div id="view-scorecard" role="tabpanel">
+        <div class="verdicts" aria-label="Verdicts">
+          <div class="verdict" id="v-classified">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+          <div class="verdict" id="v-secure">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+          <div class="verdict" id="v-ceiling">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+          <div class="verdict" id="v-access">
+            <span class="verdict-value skeleton">…</span>
+          </div>
+        </div>
+
+        <section aria-labelledby="h-matrix">
+          <div class="section-head">
+            <h2 id="h-matrix">
+              What each domain may serve, and what it serves
+            </h2>
+            <div class="legend">
+              <span
+                ><i class="l-allowed"></i>Declared in
+                <code>#(carries)</code></span
+              >
+              <span><i class="l-closed"></i>Not declared</span>
+              <span><i class="l-violation"></i>Served, not declared</span>
+            </div>
+          </div>
+          <p class="section-sub">
+            Fields reachable from each domain, by class, including fields
+            reached through joins and fields whose class was inferred from what
+            they read. Select a domain to open its annotations, gates and every
+            field's lineage.
+          </p>
+          <div class="card scroll-x" id="card-matrix" data-reserve>
+            <table class="matrix">
+              <thead>
+                <tr>
+                  <th scope="col">Domain</th>
+                  <th scope="col">Direct identifier</th>
+                  <th scope="col">Quasi-identifier</th>
+                  <th scope="col">Clinical</th>
+                  <th scope="col">Financial</th>
+                  <th scope="col">None</th>
+                </tr>
+              </thead>
+              <tbody id="matrix-body">
+                <tr>
+                  <td colspan="6" class="muted matrix-loading">
+                    Loading the published domains…
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="source-slot" id="src-matrix" data-reserve></div>
+        </section>
+
+        <section aria-labelledby="h-access">
+          <div class="section-head"><h2 id="h-access">Who sees what</h2></div>
+          <p class="section-sub">
+            The same question, "how many encounters can I read?", asked of every
+            domain as every workforce class, live. The policy's workforce table
+            is the expected answer; a cell that differs is flagged. Select a
+            cell for the query and the identity it was asked with.
+          </p>
+          <div class="access-wrap">
+            <div class="card scroll-x" id="card-access" data-reserve>
+              <table class="access">
+                <thead id="access-head"></thead>
+                <tbody id="access-body"></tbody>
+              </table>
+            </div>
+            <aside class="card provenance" id="provenance" aria-live="polite">
+              <h4>Provenance</h4>
+              <p class="muted">Select a cell.</p>
+            </aside>
+          </div>
+          <div class="source-slot" id="src-access" data-reserve></div>
+        </section>
+
+        <section aria-labelledby="h-deid">
+          <div class="section-head">
+            <h2 id="h-deid">De-identification, measured</h2>
+          </div>
+          <p class="section-sub">
+            The same patients on the limited data set a quality analyst reads,
+            and on the de-identified domain a researcher reads. Ages over 89
+            become 90, dates become years, ZIP codes become three-digit areas
+            (DI-01, DI-02).
+          </p>
+          <div class="deid">
+            <div class="card">
+              <h3>Limited data set</h3>
+              <p class="sub">
+                population_health, as a quality analyst · patients by age
+              </p>
+              <div class="hist-box" id="hist-lds">
+                <span class="skeleton">…</span>
+              </div>
+              <div class="stats" id="stats-lds" data-reserve></div>
+            </div>
+            <div class="card">
+              <h3>De-identified</h3>
+              <p class="sub">research, as a researcher · patients by age</p>
+              <div class="hist-box" id="hist-deid">
+                <span class="skeleton">…</span>
+              </div>
+              <div class="stats" id="stats-deid" data-reserve></div>
+            </div>
+          </div>
+          <div class="source-slot" id="src-deid" data-reserve></div>
+        </section>
+
+        <section aria-labelledby="h-controls">
+          <div class="section-head"><h2 id="h-controls">Controls</h2></div>
+          <p class="section-sub">
+            Each control in the policy, how it is evidenced, and whether it
+            holds. "Needs review" is not a failure: it marks a control whose
+            truth depends on judgment about the data, which no load-time check
+            can supply.
+          </p>
+          <div class="card scroll-x" id="card-controls" data-reserve>
+            <table class="controls">
+              <thead>
+                <tr>
+                  <th scope="col">Control</th>
+                  <th scope="col">Requirement</th>
+                  <th scope="col">Evidence</th>
+                  <th scope="col">Where</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody id="controls-body">
+                <tr>
+                  <td colspan="5" class="muted">
+                    Waiting for the access grid…
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="source-slot" id="src-controls" data-reserve></div>
+        </section>
+
+        <section aria-labelledby="h-violations">
+          <div class="section-head">
+            <h2 id="h-violations">
+              What the server refuses, and what it leaves to review
+            </h2>
+          </div>
+          <p class="section-sub">
+            Five deliberately broken versions of this model, in
+            <code>violations/</code>. Three are internally inconsistent, and the
+            server refuses to load them. Two are consistent and still wrong
+            against the policy; catching them takes reading the policy and the
+            data.
+          </p>
+          <ul class="violations" id="violations" data-reserve></ul>
+          <div class="source-slot">
+            <details class="source">
+              <summary>
+                <span class="src-title">How this was computed</span>
+                <span class="src-count">recorded when the example was built</span>
+              </summary>
+              <p class="src-lead">
+                Not live. Each variant replaces the package's
+                <code>domains.malloy</code> with the file in
+                <code>violations/</code>; a refusal is the message Publisher
+                answered when it loaded that file, and the two that load are
+                caught by the compliance review
+                (<code>compliance.py check</code>), which fails the controls
+                named. <code>violations/README.md</code> has the steps to
+                reproduce each one.
+              </p>
+            </details>
+          </div>
+        </section>
+      </div>
+
+      <div id="view-explore" role="tabpanel" hidden>
+        <section aria-labelledby="h-identity">
+          <div class="section-head"><h2 id="h-identity">Who is asking</h2></div>
+          <p class="section-sub">
+            These are the three attributes the model's gates read. Each is
+            <code>#(secure)</code>: in a deployment the identity provider sets
+            them for the signed-in person, for a dashboard and for an agent
+            alike, and nothing in a request can change them. Here, you set them.
+            Start from a workforce class, then change anything.
+          </p>
+          <div class="card identity">
+            <div class="presets" id="identity-presets"></div>
+            <div class="givens" id="identity-givens"></div>
+            <p class="identity-sent">
+              Sent as <code id="identity-json"></code>
+            </p>
+          </div>
+        </section>
+
+        <section aria-labelledby="h-discover">
+          <div class="section-head">
+            <h2 id="h-discover">What it can discover</h2>
+          </div>
+          <p class="section-sub">
+            The model as this identity is shown it. A domain whose lock cannot
+            admit it is not listed at all, the same answer an agent's
+            <code>get_context</code> call gets.
+          </p>
+          <div class="discovery" id="discovery"></div>
+          <p class="note" id="discovery-caption"></p>
+        </section>
+
+        <section aria-labelledby="h-rows">
+          <div class="section-head"><h2 id="h-rows">What it can read</h2></div>
+          <p class="section-sub">
+            The newest rows on the selected domain, read as this identity. Each
+            column carries its classes. The same patients look completely
+            different from one domain to the next: names and SSNs on the chart,
+            a city and an age on the limited data set, a year and a three-digit
+            ZIP on research.
+          </p>
+          <div class="card sample" id="sample"></div>
+        </section>
+
+        <section aria-labelledby="h-agent">
+          <div class="section-head">
+            <h2 id="h-agent">An agent acting for this identity</h2>
+          </div>
+          <div class="agent-intro">
+            <p>
+              An agent reaches this model through Publisher's MCP endpoint, with
+              two tools that matter here: <code>get_context</code> to discover
+              sources and fields, and <code>execute_query</code> to run Malloy.
+              Neither is a side door. The gateway in front of the engine
+              authenticates the person the agent works for and sets their
+              <code>#(secure)</code> attributes on every call, so the agent
+              never holds them and cannot change them. Every query it writes,
+              however clever, runs through the same domains, locks and row
+              filters as this page, and is recorded with the fields and classes
+              it read.
+            </p>
+            <p>
+              Below are the moves an agent, a careless one or a hostile one,
+              would try to get past this identity's access. Each runs live, as
+              this identity, against the model the server is serving now.
+            </p>
+          </div>
+          <ol class="attempts" id="attempts"></ol>
+        </section>
+      </div>
+    </main>
+    <script src="/sdk/publisher.js"></script>
+    <script type="module" src="./app/app.js"></script>
+  </body>
+</html>

@@ -40,6 +40,7 @@ import path from "path";
 import { AccessDeniedError } from "../errors";
 import { malloyGivenToApi, type MalloyGiven } from "../service/given";
 import { Model } from "../service/model";
+import { seededDuckdb as seededTempDuckdb } from "./temp_package";
 
 export const AUTHORIZE_SEED_SQL = `
 CREATE OR REPLACE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
@@ -74,12 +75,8 @@ INSERT INTO child VALUES (1, 'north'), (2, 'south');
 `;
 
 /** A fresh in-memory DuckDB carrying {@link AUTHORIZE_SEED_SQL}. */
-export async function seededDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of AUTHORIZE_SEED_SQL.split(";")) {
-      if (stmt.trim()) await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
+export function seededDuckdb(): Promise<DuckDBConnection> {
+   return seededTempDuckdb(AUTHORIZE_SEED_SQL);
 }
 
 export function connectionsFor(

@@ -4,15 +4,12 @@
 import { useEffect, useState } from "react";
 
 /**
- * How long a changed parameter has to stay changed before the notebook runs.
+ * How long a changed value has to stay changed before it is acted on: a given
+ * input commits after it, and the notebook waits it again before running.
  *
- * Aborting the superseded run is not enough on its own: an abort cancels the
- * HTTP request, but the cells already dispatched have reached the server and go
- * on compiling and running against the customer's warehouse, and their answers
- * are then thrown away. So autorun on a text control put one wave of doomed
- * queries on that warehouse per keystroke. `origin/main` bounded the load by
- * refusing to start a second run at all, which dropped the newest values;
- * waiting for the value to settle bounds it without making that trade.
+ * Aborting a superseded run is not enough on its own: an abort cancels the
+ * HTTP request, but cells already dispatched have reached the server and go on
+ * running against the customer's warehouse, and their answers are thrown away.
  */
 export const GIVEN_SETTLE_MS = 400;
 

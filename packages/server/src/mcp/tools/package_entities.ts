@@ -3,16 +3,21 @@
 
 import path from "path";
 import { fileURLToPath } from "url";
-import lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
+import {
+   findIrSource,
+   isClassificationLine,
+   readClassification,
+   readSourceClassifications,
+   type FieldClassification,
+} from "../../service/classification";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
-import type { PipelineSettings } from "./get_context_pipeline";
-import { compareText } from "./retrieval_shared";
+import { compareText } from "../../compare_text";
 import type {
    Entity,
    JoinReach,
@@ -32,7 +37,7 @@ import type {
 export const SOURCE_DOC_MAX_CHARS = 500;
 export const JOIN_DOC_MAX_CHARS = 200;
 
-function truncateDoc(doc: string, max: number): string {
+export function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
    const cut = doc.slice(0, max);
    const lastSpace = cut.lastIndexOf(" ");
@@ -67,8 +72,42 @@ export function docText(
    const doc = docOnlyText(annotations);
    if (doc) return doc;
    if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
+   // A `#(classification)` note has its own card field, so it is not doc text.
+   const lines = annotations
+      .map((a) => (typeof a === "string" ? a : a.value))
+      .filter((line) => !isClassificationLine(line));
    return lines.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The classification an entity reports: the lineage's answer for the field's
+ * path when the compiled model is at hand (declared, or inferred from the
+ * fields it reads, with those inputs), else the field's own annotation.
+ */
+function classificationOf(
+   lineage: Map<string, FieldClassification> | undefined,
+   path: string,
+   annotations?: Array<string | { value: string }>,
+): Pick<
+   Entity,
+   "classifications" | "classificationInferred" | "classificationInputs"
+> {
+   const known = lineage?.get(path);
+   if (known) {
+      return {
+         ...(known.classifications.length > 0
+            ? { classifications: known.classifications }
+            : {}),
+         ...(known.inferred.length > 0
+            ? { classificationInferred: true as const }
+            : {}),
+         ...(known.inputs.length > 0
+            ? { classificationInputs: known.inputs }
+            : {}),
+      };
+   }
+   const { values } = readClassification(annotations);
+   return values.length > 0 ? { classifications: values } : {};
 }
 
 /**
@@ -433,6 +472,8 @@ function collectJoinedFields(args: {
    depth: number;
    nextId: () => string;
    out: Entity[];
+   /** The entry source's lineage, keyed by dotted path; absent for a stand-in. */
+   lineage?: Map<string, FieldClassification>;
 }): void {
    const {
       fields,
@@ -443,6 +484,7 @@ function collectJoinedFields(args: {
       depth,
       nextId,
       out,
+      lineage,
    } = args;
    for (const field of fields) {
       if (field.kind === "join") {
@@ -465,6 +507,11 @@ function collectJoinedFields(args: {
          modelPath,
          doc: docText(field.annotations),
          embedDoc: docOnlyText(field.annotations),
+         ...classificationOf(
+            lineage,
+            `${joinPath}.${field.name}`,
+            field.annotations,
+         ),
          joinPath,
          relationship: fanout,
          ...(field.kind === "measure" || field.kind === "dimension"
@@ -553,6 +600,13 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             sourceName,
             sourceTextFor,
          );
+         // What each reachable field is, declared or by lineage. Absent for a
+         // stand-in with no compiled model; fields then report their own note.
+         const lineage = modelDef
+            ? readSourceClassifications(
+                 findIrSource(modelDef, sourceName)?.fields,
+              )
+            : undefined;
          // Keyed per (model path, source) like the card, so a card never shows
          // another file's givens or gates.
          if (!governance.has(governanceKey)) {
@@ -656,6 +710,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   depth: 1,
                   nextId: () => String(n++),
                   out: entities,
+                  lineage,
                });
                continue;
             }
@@ -679,7 +734,14 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                embedDoc: docOnlyText(field.annotations),
                ...(field.kind === "view"
                   ? {}
-                  : { dataType: malloyType(field) }),
+                  : {
+                       dataType: malloyType(field),
+                       ...classificationOf(
+                          lineage,
+                          field.name,
+                          field.annotations,
+                       ),
+                    }),
                ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
                ...(!isView && fieldProvenance?.aliasOf
                   ? { aliasOf: fieldProvenance.aliasOf }
@@ -912,6 +974,20 @@ function collapseAliases(entities: Entity[]): Entity[] {
             keep.embedDoc = donor.embedDoc;
          }
       }
+      // A class belongs to the column, so a spelling's class is the group's:
+      // `state is st` classified and `raw_state is st` not are one column
+      // with one class, whichever spelling survives.
+      if (!keep.classifications) {
+         const donor = members.find((e) => e !== keep && e.classifications);
+         if (donor) {
+            keep.classifications = donor.classifications;
+            if (donor.classificationInferred)
+               keep.classificationInferred = true;
+            if (donor.classificationInputs) {
+               keep.classificationInputs = donor.classificationInputs;
+            }
+         }
+      }
       const folded = members.filter((e) => e !== keep);
       keep.aliases = folded.map((e) => e.name);
       for (const e of folded) {
@@ -1012,21 +1088,6 @@ function buildSourceContext(
 const indexCache = new WeakMap<Package, PackageIndex>();
 
 /**
- * The entities the semantic index embeds and searches. With joins made at
- * assembly that is the direct fields only: a joined copy would be embedded
- * again under a longer name and take a window slot from the field it copies.
- * The lexical path ranks `retrievalEntities` regardless.
- */
-export function embeddedEntitiesOf(
-   pkgIndex: PackageIndex,
-   settings: PipelineSettings,
-): readonly Entity[] {
-   return settings.joins === "assembly"
-      ? pkgIndex.directEntities
-      : pkgIndex.retrievalEntities;
-}
-
-/**
  * Every entity except a joined copy that assembly will rebuild from the
  * topology: one whose join reaches an indexed target source holding a direct
  * field of that name (or one folded away, `aliasedAway`). A joined field
@@ -1063,7 +1124,7 @@ function directEntitiesOf(
    return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
 }
 
-/** Get, or lazily build and cache, the lunr entity index for a package. */
+/** Get, or lazily build and cache, the entity index for a package. */
 export async function getPackageIndex(
    environmentStore: EnvironmentStore,
    environmentName: string,
@@ -1088,20 +1149,6 @@ export async function packageIndexOf(
    const collected = await collectEntities(pkg);
    const { entities } = collected;
    const byId = new Map(entities.map((e) => [e.id, e]));
-   const index = lunr(function () {
-      this.ref("id");
-      this.field("name", { boost: 4 });
-      this.field("source");
-      this.field("doc");
-      for (const e of entities) {
-         this.add({
-            id: e.id,
-            name: e.name,
-            source: e.source ?? "",
-            doc: e.doc,
-         });
-      }
-   });
    const retrievalEntities = Object.freeze(Array.from(byId.values()));
    const built: PackageIndex = {
       pkg,
@@ -1113,7 +1160,6 @@ export async function packageIndexOf(
          collected.aliasedAway,
       ),
       topology: collected.topology,
-      index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
       droppedSources: collected.droppedSources,

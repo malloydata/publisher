@@ -5,7 +5,16 @@ import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
-import { BadRequestError, ModelNotFoundError } from "../errors";
+import {
+   BadRequestError,
+   internalErrorToHttpError,
+   ModelNotFoundError,
+} from "../errors";
+import {
+   emitAccessRecord,
+   outcomeOf,
+   type QueryAccessSummary,
+} from "../service/access_record";
 import {
    buildQueryMetadataInput,
    parseQueryClass,
@@ -28,7 +37,92 @@ export class QueryController {
       this.environmentStore = environmentStore;
    }
 
+   /**
+    * Answer a query and emit its access record (`access_record.ts`), on
+    * success and on refusal alike. `audit` is what only the HTTP boundary
+    * knows: the caller identity from the deployment's header and the trace id.
+    */
    public async getQuery(
+      environmentName: string,
+      packageName: string,
+      modelPath: string,
+      sourceName: string,
+      queryName: string,
+      query: string,
+      compactJson: boolean = false,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
+      metadata?: {
+         queryMetadata?: unknown;
+         queryClass?: unknown;
+         versionId?: unknown;
+      },
+      bypassAuthorize?: boolean,
+      includeHiddenFilesAndSources?: boolean,
+      clientSignal?: AbortSignal,
+      audit: { caller?: string; traceId?: string } = {},
+   ): Promise<ApiQuery> {
+      const started = performance.now();
+      const base = {
+         event: "access" as const,
+         environment: environmentName,
+         package: packageName,
+         modelPath,
+         ...(queryName ? { queryName } : {}),
+         ...(sourceName ? { requestedSource: sourceName } : {}),
+         adHoc: Boolean(query),
+         ...(audit.caller ? { caller: audit.caller } : {}),
+         ...(audit.traceId ? { traceId: audit.traceId } : {}),
+      };
+      try {
+         const answered = await this.runQuery(
+            environmentName,
+            packageName,
+            modelPath,
+            sourceName,
+            queryName,
+            query,
+            compactJson,
+            filterParams,
+            bypassFilters,
+            givens,
+            metadata,
+            bypassAuthorize,
+            includeHiddenFilesAndSources,
+            clientSignal,
+         );
+         emitAccessRecord({
+            ...base,
+            ...(answered.version ? { version: answered.version } : {}),
+            ...answered.access,
+            outcome: "ok",
+            status: 200,
+            durationMs: Math.round(performance.now() - started),
+            servedFrom: answered.api.servedFrom,
+            ...(answered.api.executionTimeMs !== undefined
+               ? { executionTimeMs: answered.api.executionTimeMs }
+               : {}),
+         });
+         return answered.api;
+      } catch (error) {
+         // A disconnected client's abort is not an access decision.
+         if (clientSignal?.aborted) throw error;
+         const { status } = internalErrorToHttpError(error as Error, {
+            log: false,
+         });
+         emitAccessRecord({
+            ...base,
+            outcome: outcomeOf(error, status),
+            status,
+            durationMs: Math.round(performance.now() - started),
+            error: (error as Error).message,
+         });
+         throw error;
+      }
+   }
+
+   private async runQuery(
       environmentName: string,
       packageName: string,
       modelPath: string,
@@ -43,7 +137,7 @@ export class QueryController {
       metadata?: {
          queryMetadata?: unknown;
          queryClass?: unknown;
-         versionId?: string;
+         versionId?: unknown;
       },
       /**
        * Skip `#(authorize)` gates for this request. Set from the
@@ -55,7 +149,11 @@ export class QueryController {
       includeHiddenFilesAndSources?: boolean,
       /** Aborted when the HTTP client disconnects: cancels the query with it. */
       clientSignal?: AbortSignal,
-   ): Promise<ApiQuery> {
+   ): Promise<{
+      api: ApiQuery;
+      access?: QueryAccessSummary;
+      version?: string;
+   }> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
       try {
@@ -73,7 +171,9 @@ export class QueryController {
       // through a query. Loaded packages bypass the package-load admission
       // gate, so this is the only guard for query traffic on a hot pod.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: metadata?.versionId,
+      });
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -83,6 +183,7 @@ export class QueryController {
       } else {
          const {
             result,
+            access,
             serializedResult,
             rowLimit,
             rowLimitSource,
@@ -106,8 +207,10 @@ export class QueryController {
                      pkg: p,
                      request: requestMetadata,
                      queryClass,
-                     // Always undefined: the route 501s any versionId first.
-                     version: metadata?.versionId,
+                     // The version that answered (latest when none was
+                     // named), not the raw request value; undefined for a
+                     // package with no versions.
+                     version: p.getVersionId(),
                      noLayersLogMessage:
                         "No query-metadata layers for connection",
                   }),
@@ -124,7 +227,7 @@ export class QueryController {
             validateRenderTags(result),
             p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
-         return {
+         const api = {
             // Serialized by the model: re-stringifying here would copy the
             // payload, and an oversized one would surface as a bare 500 rather
             // than the byte cap's 413.
@@ -144,6 +247,11 @@ export class QueryController {
             executionTimeMs,
             queryCostBytes,
          } as ApiQuery;
+         return {
+            api,
+            ...(access ? { access } : {}),
+            ...(p.getVersionId() ? { version: p.getVersionId() } : {}),
+         };
       }
    }
 }

@@ -656,8 +656,12 @@ describe("ReportEditor, when a new version of the file arrives", () => {
 
       fireEvent.click(button("Load it"));
       expect(await screen.findByText("Elsewhere")).toBeDefined();
+      // A boolean, not the element: a failed toBeNull() on a happy-dom element
+      // formats its whole object graph, synchronously, on every poll.
       await waitFor(() =>
-         expect(screen.queryByText(/changed since you opened it/)).toBeNull(),
+         expect(
+            screen.queryByText(/changed since you opened it/) === null,
+         ).toBe(true),
       );
       expect(button("Undo").hasAttribute("disabled")).toBe(true);
    });

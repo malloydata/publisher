@@ -120,8 +120,21 @@ export function buildEnvironmentStub(opts: {
          return destination;
       }),
       getEnvironmentPath: () => opts.environmentPath ?? "/tmp/env",
+      ...UNVERSIONED_ENVIRONMENT,
    };
 }
+
+/**
+ * The version surface of an environment whose packages have no published
+ * versions. Every fake environment the materialization specs build spreads it
+ * in.
+ */
+export const UNVERSIONED_ENVIRONMENT = {
+   getVersionService: () => null,
+   getLoadedVersionIds: () => [],
+   peekVersion: () => undefined,
+   registerVersionBuild: () => () => undefined,
+};
 
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
 export function setPackage(
@@ -139,6 +152,7 @@ export function setPackage(
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({
+      ...UNVERSIONED_ENVIRONMENT,
       getPackage: sinon.stub().resolves(pkg),
       withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
          fn(),

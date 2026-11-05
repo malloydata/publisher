@@ -35,21 +35,26 @@ export class LegacyReportController {
       this.environmentStore = environmentStore;
    }
 
-   private async packageOf(environmentName: string, packageName: string) {
+   private async packageOf(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ) {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      return environment.getPackage(packageName, false);
+      return environment.getPackage(packageName, false, { versionId });
    }
 
    public async listDashboards(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiDashboard[]> {
       recordDeprecatedUsage("dashboards_list");
       return listDashboards(
-         await this.packageOf(environmentName, packageName),
+         await this.packageOf(environmentName, packageName, versionId),
          environmentName,
       );
    }
@@ -58,11 +63,12 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
       dashboardName: string,
+      versionId?: unknown,
    ): Promise<ApiDashboardManifest> {
       recordDeprecatedUsage("dashboard_get");
       // Throws AmbiguousReportNameError (409) when two grid reports share it.
       const dashboard = await getDashboard(
-         await this.packageOf(environmentName, packageName),
+         await this.packageOf(environmentName, packageName, versionId),
          environmentName,
          dashboardName,
       );
@@ -77,10 +83,11 @@ export class LegacyReportController {
    public async listNotebooks(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiNotebook[]> {
       recordDeprecatedUsage("notebooks_list");
       return listNotebooks(
-         await this.packageOf(environmentName, packageName),
+         await this.packageOf(environmentName, packageName, versionId),
          environmentName,
       );
    }
@@ -89,13 +96,10 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
       notebookPath: string,
+      versionId?: unknown,
    ): Promise<ApiRawNotebook> {
       recordDeprecatedUsage("notebook_get");
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const p = await environment.getPackage(packageName, false);
+      const p = await this.packageOf(environmentName, packageName, versionId);
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
@@ -115,6 +119,7 @@ export class LegacyReportController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
+      versionId?: unknown,
    ): Promise<NotebookCellRunResult> {
       recordDeprecatedUsage("notebook_cell");
       const environment = await this.environmentStore.getEnvironment(
@@ -124,7 +129,7 @@ export class LegacyReportController {
       // Shed load before any disk / DB work: loaded packages bypass the
       // package-load admission gate.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);

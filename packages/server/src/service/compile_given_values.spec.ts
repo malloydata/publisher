@@ -17,7 +17,8 @@ const MODEL = `##! experimental.givens
 
 given:
   FLAG :: filter<boolean> is f''
-  ROLE :: string
+#(secure)
+given: ROLE :: string
 
 source: orders is duckdb.sql("SELECT 1 as id, true as big") extend {
   measure: c is count()

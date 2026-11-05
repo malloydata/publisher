@@ -73,6 +73,7 @@ import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import {
    PACKAGE_SKILLS_DIR,
+   readAgentAsset,
    readPackageAgents,
    readSkillsDir,
    summarizeAgentSkillFile,
@@ -128,6 +129,13 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import { classificationLeaks, classificationWarnings } from "./classification";
+import {
+   classificationSummary,
+   type ApiClassificationSummary,
+} from "./classification_summary";
+import { joinBypasses } from "./join_bypass";
+import { insecureGateGivens } from "./gate_given_warnings";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -162,8 +170,13 @@ import {
    type ReportTag,
 } from "./report";
 import { filterFreshManifest } from "./freshness";
+import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
+import {
+   type ApiSecureGivenSummary,
+   summarizeSecureGivens,
+} from "./secure_givens";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 import {
    applyLoadGates,
@@ -284,10 +297,33 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
+   /**
+    * {@link summarizeSecureGivens} over the `models` map it was computed for.
+    * Keyed on that map's identity, so whatever replaces `models` gets a fresh
+    * summary on the next read; a `Model`'s givens and compile error are fixed
+    * at construction, so the same map always yields the same answer.
+    */
+   private secureGivensMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: readonly ApiSecureGivenSummary[] | undefined;
+        }
+      | undefined;
+   /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
+   private classificationSummaryMemo:
+      | {
+           forModels: Map<string, Model>;
+           value: ApiClassificationSummary | undefined;
+        }
+      | undefined;
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
+   /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
+   private serveDestinationSchema?: (
+      destinationName: string,
+   ) => string | undefined;
    // Bound build manifest (sourceEntityId -> { tableName }): routes persist
    // sources to their materialized tables for served queries and the /compile
    // preview alike, so previewed SQL matches executed SQL. Surfaced on /status
@@ -317,7 +353,7 @@ export class Package {
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
-   // `#@ persist` sources getBuildPlan() did not treat as build roots, which
+   // `#@ persist` sources Malloy's build walk did not plan, which
    // would silently serve live. Warned, and refused at build.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
    // Which sources may be served from a materialized table, decided at compile
@@ -395,7 +431,7 @@ export class Package {
       this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
-      this.packageMetadata = packageMetadata;
+      this.packageMetadata = Package.storableMetadata(packageMetadata);
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
@@ -424,13 +460,18 @@ export class Package {
          description: a.description,
          model: a.model,
          schedules: a.schedules.map(({ cron, task }) => ({ cron, task })),
+         ...(a.budget && { budget: a.budget }),
       }));
    }
 
    private agentSource(definitionSha: string): ApiAgentSource {
+      const versionId = this.getVersionId();
       return {
          environment: this.environmentName,
          package: this.packageName,
+         // A published version's agent can be fetched again by it after
+         // `latest` moves; absent for a package with no versions.
+         ...(versionId ? { versionId } : {}),
          sourceContentSha: this.sourceContentSha,
          definitionSha,
          servedRevision: this.servedRevision,
@@ -448,7 +489,14 @@ export class Package {
    ): ApiAgent | undefined {
       const agent = this.packageAgents.get(name);
       if (!agent) return undefined;
-      const { definitionSha, skillMeta, ...definition } = agent;
+      const { definitionSha, skillMeta, asset_roots, assets, ...definition } =
+         agent;
+      const counts = new Map<string, number>();
+      for (const a of assets ?? []) {
+         const skill = a.relative_filepath.split("/")[0]!;
+         counts.set(skill, (counts.get(skill) ?? 0) + 1);
+      }
+      const assetCounts = Object.fromEntries(counts);
       return {
          ...definition,
          skills:
@@ -457,11 +505,15 @@ export class Package {
                : definition.skills.map((f) =>
                     summarizeAgentSkillFile(f, skillMeta),
                  ),
+         ...(assets &&
+            (skills === "full"
+               ? { asset_roots, assets }
+               : { asset_counts: assetCounts })),
          source: this.agentSource(definitionSha),
       };
    }
 
-   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem. */
+   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem; a listed asset is matched exactly, then read from disk and re-checked against its listed sha. */
    public getAgentSkillFile(
       name: string,
       relativeFilepath: string,
@@ -470,8 +522,17 @@ export class Package {
       const file = agent?.skills.find(
          (f) => f.relative_filepath === relativeFilepath,
       );
-      if (!agent || !file) return undefined;
-      return { ...file, source: this.agentSource(agent.definitionSha) };
+      if (!agent) return undefined;
+      if (file) {
+         return { ...file, source: this.agentSource(agent.definitionSha) };
+      }
+      const text = readAgentAsset(this.packagePath, agent, relativeFilepath);
+      if (text === undefined) return undefined;
+      return {
+         relative_filepath: relativeFilepath,
+         file_contents: text,
+         source: this.agentSource(agent.definitionSha),
+      };
    }
 
    /**
@@ -509,6 +570,7 @@ export class Package {
          ],
          // The declaration is hashed whole, so an edit to a dropped agent moves it too.
          declaration,
+         agents.contentShas,
       );
    }
 
@@ -1280,6 +1342,11 @@ export class Package {
       return undefined;
    }
 
+   /** The published version this package is, or undefined for a package with none. */
+   public getVersionId(): string | undefined {
+      return this.packageMetadata.versionId ?? undefined;
+   }
+
    public getPackageName(): string {
       return this.packageName;
    }
@@ -1382,6 +1449,46 @@ export class Package {
    }
 
    /**
+    * The `#(secure)` givens of the models and notebooks now installed, or
+    * `undefined` when that is unknown (see {@link summarizeSecureGivens}).
+    * Computed on first read after `models` is replaced and then returned by
+    * reference: the array is frozen, so callers share it.
+    */
+   private currentSecureGivens(): readonly ApiSecureGivenSummary[] | undefined {
+      const memo = this.secureGivensMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = summarizeSecureGivens(
+         [...forModels.entries()].map(([modelPath, model]) => ({
+            modelPath,
+            givens: model.getGivens(),
+            compiled: model.getCompilationError() === undefined,
+         })),
+         { packageName: this.packageName },
+      );
+      this.secureGivensMemo = { forModels, value };
+      return value;
+   }
+
+   /**
+    * For each published entry point, its `#(carries)` and its field count by
+    * class, or `undefined` when nothing published is classified. Walks every
+    * published field, so it is memoized per models map and kept OFF
+    * {@link getPackageMetadata} (the `/status` poll path): only the
+    * single-package read attaches it.
+    */
+   public getClassificationSummary(): ApiClassificationSummary | undefined {
+      const memo = this.classificationSummaryMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = classificationSummary(forModels, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      this.classificationSummaryMemo = { forModels, value };
+      return value;
+   }
+
+   /**
     * ON THE `/status` POLL PATH: runs for every package every few seconds.
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
@@ -1401,6 +1508,13 @@ export class Package {
          // Overlaid so a metadata PATCH body can neither set nor wipe it.
          agents: this.rawAgents === undefined ? undefined : this.listAgents(),
       };
+      // Never stored in `packageMetadata` (see storableMetadata): memoized per
+      // models map and frozen, so it is returned by reference. Left off, not
+      // `[]`, when it is unknown.
+      const secureGivens = this.currentSecureGivens();
+      if (secureGivens !== undefined) {
+         metadata.secureGivens = secureGivens;
+      }
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
@@ -1425,6 +1539,9 @@ export class Package {
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
+         ...classificationWarnings(this.models, (modelPath) =>
+            this.isListedModelPath(modelPath),
+         ),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -1628,13 +1745,21 @@ export class Package {
     * Eligibility must be POSITIVE: a failed plan compute or a source missing
     * from the plan must not read as consent. Refused bindings are dropped, and
     * that source serves live, which is always correct.
+    *
+    * A published version also binds only the tables its own definition built.
+    * Storage bindings are keyed by source NAME, and the versions of a
+    * `scope: package` package share its tables under unchanged names, so an
+    * entry whose `sourceEntityId` none of this version's same-named sources
+    * has was built by another version's definition, and that source serves
+    * live. (The colocated tier is keyed by content address already.)
     */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
       const derived = deriveServeBindings(
-         entries,
+         this.getVersionId() === undefined ? entries : this.ownEntries(entries),
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
+         this.serveDestinationSchema,
       );
       const eligibility = this.sourceEligibility;
       // Keyed by NAME: a rollup passes only because `collectSourceEligibility`
@@ -1668,6 +1793,36 @@ export class Package {
    }
 
    /**
+    * The entries this version's own sources built: same name, same content
+    * address. See {@link bindStorageServeBindings}.
+    */
+   private ownEntries(
+      entries: Record<string, ManifestEntry>,
+   ): Record<string, ManifestEntry> {
+      const own = new Set(
+         Object.values(this.buildPlan?.sources ?? {}).map(
+            (source) => `${source.name}\u0000${source.sourceEntityId}`,
+         ),
+      );
+      const kept: Record<string, ManifestEntry> = {};
+      for (const [key, entry] of Object.entries(entries)) {
+         if (own.has(`${entry.sourceName}\u0000${entry.sourceEntityId}`)) {
+            kept[key] = entry;
+            continue;
+         }
+         logger.info(
+            "Serving a source live: its stored table was built from another version's definition",
+            {
+               packageName: this.packageName,
+               versionId: this.getVersionId(),
+               sourceName: entry.sourceName,
+            },
+         );
+      }
+      return kept;
+   }
+
+   /**
     * Compile each model's pre-aggregation companion so the serve path can route
     * to a rollup. Re-run after a manifest bind, since the companion compiles
     * against the manifest. A no-op for a model with no `#@ preaggregate`.
@@ -1687,6 +1842,17 @@ export class Package {
       for (const model of this.models.values()) {
          model.setServeBindings(this.storageServeBindings);
       }
+   }
+
+   /**
+    * How a serve binding names a destination's schema, so it reads the table
+    * where the build wrote it (storageTablePath). Absent, every destination is
+    * `main`, the pre-existing layout.
+    */
+   public setServeDestinationSchema(
+      resolver: (destinationName: string) => string | undefined,
+   ): void {
+      this.serveDestinationSchema = resolver;
    }
 
    /**
@@ -1766,8 +1932,8 @@ export class Package {
    }
 
    /**
-    * Warnings for `#@ persist` sources getBuildPlan() did not treat as build
-    * roots (e.g. a filtered pass-through), which would otherwise silently serve
+    * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
+    * a filtered pass-through), which would otherwise silently serve
     * live. Independent of {@link buildPlan}: a package whose only persist
     * source is dropped has no plan.
     */
@@ -1949,6 +2115,41 @@ export class Package {
    /** The {@link incrementalPolicyWarnings}, one per line, or "" if valid. */
    public formatInvalidIncrementalPolicy(): string {
       return this.incrementalPolicyWarnings().join("\n");
+   }
+
+   /**
+    * REJECTION messages for every field a `#(carries)` surface exposes outside
+    * its list (docs/classification.md), one per line, empty when there are
+    * none. Strict at load, like an invalid incremental policy: a surface that
+    * says what it carries must not serve what it does not.
+    */
+   public formatClassificationLeaks(): string {
+      return classificationLeaks(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every author join from a published source that
+    * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
+    * when there are none. Strict at load, like a `#(carries)` leak.
+    */
+   public formatJoinBypasses(): string {
+      return joinBypasses(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
+   }
+
+   /**
+    * REJECTION messages for every published source gated on a given that is
+    * not `#(secure)` (`gate_given_warnings.ts`), one per line, empty when
+    * there are none. Strict at load: a gate a caller can satisfy by sending a
+    * value is a filter, not a control.
+    */
+   public formatInsecureGateGivens(): string {
+      return insecureGateGivens(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      ).join("\n");
    }
 
    /**
@@ -2369,6 +2570,26 @@ export class Package {
       return await model.getFileText(this.packagePath);
    }
 
+   /**
+    * Whether `listModels()` lists a model: a `.malloy` file that is not a
+    * report, on the surface when the package has one (or hidden too, with
+    * `includeHidden`). The one answer to "is this model published", shared
+    * with the lints that read only published models.
+    */
+   private isListedModelPath(
+      modelPath: string,
+      includeHidden: boolean = false,
+   ): boolean {
+      const exploreSet = this.exploreSet();
+      if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+      // A linear report is listed as a report, surface or not.
+      if (this.getReportLayout(modelPath) === "linear") return false;
+      // A grid report is listed as a report, even when `explores` lists it.
+      if (!exploreSet) return true;
+      if (this.isServedReport(modelPath)) return false;
+      return includeHidden || exploreSet.has(modelPath);
+   }
+
    public async listModels(
       options: { includeHiddenFilesAndSources?: boolean } = {},
    ): Promise<ApiModel[]> {
@@ -2380,18 +2601,12 @@ export class Package {
          !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
-            .filter((modelPath) => {
-               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-               // A linear report is listed as a report, surface or not.
-               if (this.getReportLayout(modelPath) === "linear") return false;
-               // A grid report is listed as a report, even when `explores` lists it.
-               if (!exploreSet) return true;
-               if (this.isServedReport(modelPath)) return false;
-               return (
-                  options.includeHiddenFilesAndSources ||
-                  exploreSet.has(modelPath)
-               );
-            })
+            .filter((modelPath) =>
+               this.isListedModelPath(
+                  modelPath,
+                  options.includeHiddenFilesAndSources,
+               ),
+            )
             .map(async (modelPath) => {
                let error: string | undefined;
                try {
@@ -3325,8 +3540,26 @@ export class Package {
       });
       // Forward slashes work on Windows DuckDB and avoid escaping.
       const normalizedPath = fullPath.replace(/\\/g, "/");
+      // DuckDB reads `[`, `?` and `*` in a table path as a glob, so such a
+      // path would report other files' columns and rows (`[x].csv` reads
+      // `x.csv`). The check covers the whole path, since a glob in a folder
+      // name matches sibling folders. List it as unreadable instead.
+      if (/[[?*]/.test(normalizedPath)) {
+         throw new Error(
+            `Cannot read ${databasePath}: its path holds [, ? or *, which DuckDB reads as a pattern matching other files. Rename the file, or the folder holding it, without those characters.`,
+         );
+      }
+      // DuckDB's table-path check refuses a bare path holding a space or a
+      // quote, which left such a file listed as unreadable. So the path goes
+      // in as a single-quoted SQL literal, which the check accepts and
+      // canonicalizes to the same SQL a bare path gets.
+      const tableLiteral = `'${sqlLiteral(normalizedPath, "duckdb")}'`;
+      // That literal sits in a Malloy double-quoted string, so `\` and `"` are
+      // escaped for it. Normalizing above left no backslash, but escaping it
+      // keeps this step correct on its own.
+      const malloyString = `"${tableLiteral.replace(/[\\"]/g, "\\$&")}"`;
       const model = runtime.loadModel(
-         `source: temp is duckdb.table('${normalizedPath}')`,
+         `source: temp is duckdb.table(${malloyString})`,
       );
       const modelDef = await model.getModel();
       const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;
@@ -3349,8 +3582,28 @@ export class Package {
       this.environmentName = environmentName;
    }
 
+   /**
+    * `packageMetadata` without the fields computed from the installed models,
+    * so a caller that round-trips `getPackageMetadata()` (or a PATCH body)
+    * cannot store a snapshot that outlives the models it describes.
+    */
+   private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
+      if (
+         !("secureGivens" in packageMetadata) &&
+         !("classification" in packageMetadata)
+      ) {
+         return packageMetadata;
+      }
+      const {
+         secureGivens: _computed,
+         classification: _summary,
+         ...stored
+      } = packageMetadata;
+      return stored;
+   }
+
    public setPackageMetadata(packageMetadata: ApiPackage) {
-      this.packageMetadata = packageMetadata;
+      this.packageMetadata = Package.storableMetadata(packageMetadata);
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
       this.applySiblingModelResolverToModels();

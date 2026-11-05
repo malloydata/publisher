@@ -18,10 +18,11 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { BuildManifest, FixedConnectionMap } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { computeSourceEntityId } from "./build_plan";
+import { computeSourceEntityId, plannedSources } from "./build_plan";
 import {
    duckdbTestConnections,
    loadTestModel,
+   loadTestRuntime,
 } from "../test_helpers/incremental_test_harness";
 
 // Two rows on the SAME DAY at different hours. A day-truncated store collapses
@@ -77,9 +78,12 @@ const tables: Record<string, string> = {};
 beforeAll(async () => {
    ({ duckdb, connections } = duckdbTestConnections());
    const digest = await duckdb.getDigest();
-   const compiled = await loadTestModel(connections, MODEL).getModel();
+   const { runtime, materializer } = loadTestRuntime(connections, MODEL);
+   const compiled = await materializer.getModel();
    const entries: BuildManifest["entries"] = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
+   for (const source of plannedSources(
+      await runtime.getBuildTargets(compiled),
+   )) {
       const table = `mz_${source.name}`;
       await duckdb.runSQL(
          `CREATE OR REPLACE TABLE ${table} AS ${source.getSQL()}`,

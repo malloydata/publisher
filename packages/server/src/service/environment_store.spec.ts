@@ -26,7 +26,6 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
-import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -169,6 +168,12 @@ stubStorageManager({
          _environmentId: string,
          _name: string,
       ): Promise<MockData | null> => null,
+
+      // ===== VERSION METHODS: no package here has versions =====
+      listVersions: async (): Promise<unknown[]> => [],
+      listVersionsByEnvironment: async (): Promise<unknown[]> => [],
+      hasVersions: async (): Promise<boolean> => false,
+      getVersion: async (): Promise<null> => null,
 
       createPackage: async (data: MockData): Promise<MockData> => ({
          id: "test-package-id",
@@ -332,6 +337,10 @@ describe("EnvironmentStore Service", () => {
    });
 
    afterEach(async () => {
+      // A test that boots its own store never awaits this one, whose
+      // initialization recreates serverRootPath. Left running, it can land
+      // between the rm and the mkdir below, which then fails with EEXIST.
+      await environmentStore.finishedInitialization;
       // Clean up the test directory after each test
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
@@ -1722,6 +1731,22 @@ describe("EnvironmentStore Service", () => {
       },
    );
 
+   it("fails initialization on a versionPromotion outside its set", async () => {
+      // The store beforeEach made is still initializing in the background;
+      // let it finish, or it can recreate the test directory while afterEach
+      // is removing it (EEXIST on its mkdir).
+      await environmentStore.finishedInitialization;
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ versionPromotion: "manual", environments: [] }),
+      );
+      const badPromotion = new EnvironmentStore(serverRootPath);
+      await badPromotion.finishedInitialization;
+      expect((await badPromotion.getStatus()).initError).toContain(
+         '"versionPromotion" in publisher.config.json must be one of on-publish | explicit',
+      );
+   });
+
    it("omits initError when initialization succeeds", async () => {
       await environmentStore.finishedInitialization;
       const status = await environmentStore.getStatus();
@@ -2881,12 +2906,10 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
    });
 
    afterEach(() => {
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
@@ -2903,8 +2926,9 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       embeddingCleanupBlocks = true;
       await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
 
+      // The first statement of the cleanup; it never resolves, so it is the only one.
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
@@ -2918,7 +2942,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       await store.deleteEnvironmentFromDatabase("wiring-env");
 
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env"]);

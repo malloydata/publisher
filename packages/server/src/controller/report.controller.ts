@@ -11,6 +11,7 @@ import {
    FrozenConfigError,
    InvalidModelPathError,
    PackageNotFoundError,
+   PackageVersionError,
    WriteConflictError,
    WriteRollbackFailedError,
    WriteRolledBackError,
@@ -97,6 +98,15 @@ function outcomeOf(error: Error): {
    return { outcome: "refused", reason };
 }
 
+/**
+ * The version option for a package read: none when the caller names no
+ * version, so an unversioned read asks for the package exactly as before.
+ */
+export const versionOptions = (
+   versionId: unknown,
+): [{ versionId: unknown }] | [] =>
+   versionId === undefined ? [] : [{ versionId }];
+
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
    createHash("sha256").update(text, "utf8").digest("hex");
@@ -118,12 +128,17 @@ export class ReportController {
    public async listReports(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiReport[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(
+         packageName,
+         false,
+         ...versionOptions(versionId),
+      );
       return p.listReports();
    }
 
@@ -132,12 +147,17 @@ export class ReportController {
       environmentName: string,
       packageName: string,
       reportPath: string,
+      versionId?: unknown,
    ): Promise<ApiReportManifest> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(
+         packageName,
+         false,
+         ...versionOptions(versionId),
+      );
       const report =
          typeof reportPath === "string" && reportPath.length > 0
             ? await p.getReport(reportPath)
@@ -167,6 +187,7 @@ export class ReportController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
+      versionId?: unknown,
    ): Promise<ApiModelSourceWriteResult> {
       // One record per attempt, including the throws.
       const startedAt = Date.now();
@@ -187,6 +208,7 @@ export class ReportController {
             packageName,
             modelPath,
             body,
+            versionId,
          );
          recordReportWrite(
             result.created ? "created" : "replaced",
@@ -207,6 +229,7 @@ export class ReportController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
+      versionId?: unknown,
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
@@ -245,6 +268,17 @@ export class ReportController {
          environmentName,
          false,
       );
+      // A published version is immutable, so a package that has versions takes
+      // no in-place write whatever version is named; one with none has no
+      // version to name (404).
+      const versions = environment.getVersionService();
+      if (versions && (await versions.isVersioned(packageName))) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable. Change the file in the package's source and publish a new version.`,
+         );
+      }
+      await versions?.resolve(packageName, versionId);
       // Loads the package, or 404s.
       await environment.getPackage(packageName, false);
 

@@ -142,6 +142,18 @@ export interface CompileSourceHost {
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
    /** Load (or return) the package; the caller already holds its lock. */
    loadPackageLocked(packageName: string): Promise<Package>;
+   /**
+    * The published version a compile runs in, loaded, or undefined for the
+    * package's single unversioned slot. A malformed, unknown or archived
+    * `versionId` throws (400, 404, 410). `underLock` is the re-check made
+    * holding the package lock: a first versioned publish may have committed
+    * while the compile waited, leaving `<pkg>/` holding versions.
+    */
+   versionedPackage(
+      packageName: string,
+      versionId: unknown,
+      underLock: boolean,
+   ): Promise<Package | undefined>;
 }
 
 /** What /compile answers, at every scope. */
@@ -197,6 +209,7 @@ export async function compileSource(
    includeSql: boolean = false,
    givens?: Record<string, GivenValue>,
    scope: CompileScope = "append",
+   versionId?: unknown,
 ): Promise<CompileSourceResult> {
    const request: CompileRequest = {
       packageName,
@@ -207,16 +220,24 @@ export async function compileSource(
       scope,
    };
    assertValidCompileRequest(request);
-   // Hold the per-package mutex across every disk read (the model file and
-   // the imports `runtime.loadModel` resolves), which excludes install's
-   // rename swap and delete's rename-to-retired, so a compile never observes
-   // a half-rewritten tree.
-   return host.withPackageLock(packageName, async () => {
-      const ctx = await openCompileContext(host, request);
+   const compileIn = async (versioned: Package | undefined) => {
+      const ctx = await openCompileContext(host, request, versioned);
       if (scope === "package") return compilePackageDryRun(ctx);
       if (scope === "file") return compileFile(ctx);
       return compileAppend(ctx);
-   });
+   };
+   // A published version compiles in its own folder with no lock: its files
+   // never change.
+   const versioned = await host.versionedPackage(packageName, versionId, false);
+   if (versioned) return compileIn(versioned);
+   // An unversioned package compiles in its single slot, holding the
+   // per-package mutex across every disk read (the model file and the imports
+   // `runtime.loadModel` resolves), which excludes install's rename swap and
+   // delete's rename-to-retired, so a compile never observes a half-rewritten
+   // tree.
+   return host.withPackageLock(packageName, async () =>
+      compileIn(await host.versionedPackage(packageName, versionId, true)),
+   );
 }
 
 /** The argument checks every scope runs before taking the package lock. */
@@ -286,17 +307,17 @@ function assertValidCompileRequest({
 async function openCompileContext(
    host: CompileSourceHost,
    request: CompileRequest,
+   /** The published version compiled in; undefined for the unversioned slot. */
+   versioned: Package | undefined,
 ): Promise<CompileContext> {
    const { packageName, modelName, source, givens, scope } = request;
    // Sanitized join: input segments are allowlisted above; the
    // resolve-and-contain check here is the secondary guard CodeQL's
    // path-injection sanitizer recognises.
-   const modelPath = safeJoinUnderRoot(
-      host.environmentPath,
-      packageName,
-      modelName,
-   );
-   const packagePath = safeJoinUnderRoot(host.environmentPath, packageName);
+   const packagePath = versioned
+      ? versioned.getPackagePath()
+      : safeJoinUnderRoot(host.environmentPath, packageName);
+   const modelPath = safeJoinUnderRoot(packagePath, modelName);
    // "append": a virtual file beside the model (so relative imports resolve)
    // holding the model plus the source. "file" (and "package" with a
    // source): the virtual file IS modelPath, so importers compile against
@@ -327,7 +348,8 @@ async function openCompileContext(
       },
    };
 
-   const pkg = await host.loadPackageLocked(packageName);
+   // Locked variant: an unversioned compile already holds the package mutex.
+   const pkg = versioned ?? (await host.loadPackageLocked(packageName));
 
    const { gateModel, hasExactGateModel } = await resolveGateModel(
       pkg,

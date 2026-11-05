@@ -16,6 +16,7 @@ import {
 } from "../materialization_metrics";
 import type { ManifestEntry } from "../storage/DatabaseInterface";
 import { quoteManifestTablePath } from "./quoting";
+import { storageTablePath } from "./storage_table_path";
 
 /**
  * A dimension or measure from the author's source, re-declared on the serve
@@ -214,6 +215,8 @@ export function groupAliasesByName(
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
    aliasesBySourceName: Record<string, string[]>,
+   /** A destination's schema by name (see storageTablePath); absent, or answering undefined, is `main`. */
+   destinationSchema?: (destinationName: string) => string | undefined,
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
    // Names that OWN a table. An alias never claims one, or the name would be
@@ -254,7 +257,11 @@ export function deriveServeBindings(
             virtualHandle: entry.sourceEntityId,
             // Qualified with the attach alias: unqualified, it would resolve
             // against the serve session's default catalog.
-            tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
+            tablePath: storageTablePath(
+               entry.storageDestinationName,
+               entry.physicalTableName,
+               destinationSchema?.(entry.storageDestinationName),
+            ),
             schema,
             freshAsOf: entry.dataAsOf,
             freshnessWindowSeconds: entry.freshnessWindowSeconds,

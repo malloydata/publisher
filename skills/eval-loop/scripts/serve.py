@@ -24,7 +24,7 @@ WHY THIS EXISTS
 
 The doctrine has always said "serve the model persistently, not `&` from a
 shell that exits", and gave no recipe. A server launched from a shell wrapper
-is SIGTERM'd with the wrapper's session when it exits; both VideoAmp servers
+is SIGTERM'd with the wrapper's session when it exits; both servers of a past run
 were lost that way once, and the answerer read the dead server's empty body as
 a bad answer. This starts the server in its OWN session (setsid semantics via
 start_new_session), redirects its output to a log in the server root, writes a

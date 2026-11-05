@@ -208,11 +208,8 @@ export interface QueryContext {
    environment?: string;
    package?: string;
    /**
-    * Published version id, when the query runs against a versioned package.
-    *
-    * Not yet reachable: the only supplier is a query request's `versionId`,
-    * which the route rejects with 501. It keeps its slot in
-    * {@link CONTEXT_SHED_ORDER}.
+    * Published version id, when the query runs against a versioned package:
+    * the version of the package that ran it (see QueryController).
     */
    version?: string;
    /** Package-relative model path, for query paths. */
@@ -534,6 +531,12 @@ export interface ModelQueryMetadataInput {
       enforced?: QueryMetadata | null;
    } | null;
    /**
+    * Whether a statement on this connection is metered: a storage destination,
+    * or a connection an orchestrator marked `managed`. Supplied by the
+    * controller with the layers above; absent means nothing is metered.
+    */
+   meteredConnection?: (connectionName: string) => boolean;
+   /**
     * The package's declared bag — the least specific author-declared layer.
     * Supplied by the controller, which owns the package; the model knows only
     * its own file and its package's NAME.
@@ -555,7 +558,10 @@ export function buildQueryMetadataInput(args: {
       getApiConnection(connectionName: string): {
          queryMetadata?: QueryMetadata;
          queryMetadataEnforced?: QueryMetadata;
+         managed?: boolean;
       };
+      /** Throws for a name that is not a configured storage destination. */
+      getStorageDestination?(destinationName: string): unknown;
    };
    pkg: { getDeclaredQueryMetadata(): QueryMetadata | null };
    request?: QueryMetadata;
@@ -584,6 +590,21 @@ export function buildQueryMetadataInput(args: {
             // has no metric and loses the ENFORCED layer.
             logger.debug(args.noLayersLogMessage, { connectionName, error });
             return null;
+         }
+      },
+      meteredConnection: (connectionName) => {
+         try {
+            if (environment.getApiConnection(connectionName).managed === true) {
+               return true;
+            }
+         } catch {
+            // Not a connection; a served stored source runs on its destination.
+         }
+         try {
+            environment.getStorageDestination?.(connectionName);
+            return environment.getStorageDestination !== undefined;
+         } catch {
+            return false;
          }
       },
    };

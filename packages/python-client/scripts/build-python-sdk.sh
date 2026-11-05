@@ -55,9 +55,20 @@ openapi-python-client generate \
     --overwrite
 
 # Step 5: Add version to __init__.py
+#
+# Appended, not substituted. This used to be a sed replacing an existing
+# `__version__ = "..."` line, but the generator's __init__.py has none, so the
+# sed matched nothing, exited 0, and no build ever set __version__. Step 4
+# regenerates the directory from scratch, so there is never an earlier line to
+# collide with. Then assert the exact line, because printf succeeds whether or
+# not the result is what was meant.
 echo "Adding version to SDK __init__.py..."
 VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-sed -i.bak "s/__version__ = \".*\"/__version__ = \"$VERSION\"/" "$SDK_OUTPUT_DIR/__init__.py" && rm "$SDK_OUTPUT_DIR/__init__.py.bak"
+printf '\n__version__ = "%s"\n' "$VERSION" >> "$SDK_OUTPUT_DIR/__init__.py"
+if ! grep -qx "__version__ = \"$VERSION\"" "$SDK_OUTPUT_DIR/__init__.py"; then
+  echo "❌  $SDK_OUTPUT_DIR/__init__.py does not declare __version__ = \"$VERSION\" after stamping it." >&2
+  exit 1
+fi
 
 # Step 6: Format generated code
 echo "Formatting generated code..."

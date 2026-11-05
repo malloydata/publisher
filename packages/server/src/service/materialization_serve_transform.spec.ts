@@ -15,6 +15,7 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
+import { plannedSources } from "./build_plan";
 import {
    assertServesInDuckDB,
    buildChainedStorageBuildModel,
@@ -1228,14 +1229,15 @@ describe("buildChainedStorageBuildModel (stack-on-parent transient build model)"
       const compiled = await runtime
          .loadModel(new URL(url), { importBaseURL: new URL(root) })
          .getModel();
-      const plan = compiled.getBuildPlan();
-      const names = Object.values(plan.sources).map((s) => s.name);
+      const virtualMap = buildVirtualMap([parent]);
+      // Planning renders each source's SQL, which reads the rebound parent
+      // through the map.
+      runtime.virtualMap = virtualMap;
+      const planned = plannedSources(await runtime.getBuildTargets(compiled));
+      const names = planned.map((s) => s.name);
       // Only the downstream is a persist source; the rebound parent is virtual.
       expect(names).toEqual(["monthly_orders"]);
-      const downstream = Object.values(plan.sources).find(
-         (s) => s.name === "monthly_orders",
-      )!;
-      const virtualMap = buildVirtualMap([parent]);
+      const downstream = planned.find((s) => s.name === "monthly_orders")!;
       const sql = downstream.getSQL({ virtualMap });
       // The generated SQL reads the parent's content-addressed lake table, not
       // a re-scan of raw — the whole point of stacking on the parent.
@@ -1322,7 +1324,7 @@ describe("buildChainedStorageBuildModel with intermediates and the author's flag
       "  group_by: order_month\n" +
       "  aggregate: monthly_total is total.sum()\n}";
 
-   function compile(model: string, tag: string) {
+   function runtimeFor(model: string, tag: string) {
       const conn = new DuckDBConnection("lake", ":memory:");
       const root = `file:///${tag}/`;
       const url = `${root}m.malloy`;
@@ -1330,9 +1332,14 @@ describe("buildChainedStorageBuildModel with intermediates and the author's flag
          urlReader: new InMemoryURLReader(new Map([[url, model]])),
          connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
       });
-      return runtime
-         .loadModel(new URL(url), { importBaseURL: new URL(root) })
-         .getModel();
+      const materializer = runtime.loadModel(new URL(url), {
+         importBaseURL: new URL(root),
+      });
+      return { runtime, materializer };
+   }
+
+   function compile(model: string, tag: string) {
+      return runtimeFor(model, tag).materializer.getModel();
    }
 
    it("emits the intermediates after the parents and before the downstream", () => {
@@ -1359,12 +1366,14 @@ describe("buildChainedStorageBuildModel with intermediates and the author's flag
          destinationName: "lake",
          derived: [wide],
       });
-      const compiled = await compile(model, "t4-intermediate");
-      const downstream = Object.values(compiled.getBuildPlan().sources).find(
-         (s) => s.name === "monthly",
-      );
+      const { runtime, materializer } = runtimeFor(model, "t4-intermediate");
+      const virtualMap = buildVirtualMap([parent]);
+      runtime.virtualMap = virtualMap;
+      const downstream = plannedSources(
+         await runtime.getBuildTargets(await materializer.getModel()),
+      ).find((s) => s.name === "monthly");
       expect(downstream).toBeDefined();
-      const sql = downstream!.getSQL({ virtualMap: buildVirtualMap([parent]) });
+      const sql = downstream!.getSQL({ virtualMap });
       expect(sql).toContain("daily__mabc");
    });
 

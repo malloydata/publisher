@@ -7,7 +7,7 @@ import { EventEmitter } from "events";
 import { RequestHandler } from "express";
 import path from "path";
 import { components } from "../api";
-import { internalErrorToHttpError } from "../errors";
+import { EnvironmentNotFoundError, internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import { EnvironmentStore } from "../service/environment_store";
@@ -165,47 +165,70 @@ export class WatchModeController {
       this.watcher.on("unlink", onEvent("unlink"));
    }
 
-   public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
-      return res.json({
+   /** What is being watched: the admin API's `watch-mode` resource. */
+   public current(): WatchStatusRes {
+      return {
          enabled: !!this.watchingPath,
          watchingPath: this.watchingPath ?? "",
          environmentName: this.watchingEnvironmentName ?? "",
-      });
-   };
+      };
+   }
 
-   public startWatching: Handler<StartWatchReq, { error: string }> = async (
-      req,
-      res,
-   ) => {
-      const watchName = req.body.environmentName ?? "";
-      try {
-         assertSafePackageName(watchName);
-      } catch (error) {
-         logger.error(error);
-         const { status, json } = internalErrorToHttpError(error as Error);
-         res.status(status).json({ error: json.message });
-         return;
-      }
+   /**
+    * Watches `environmentName`, replacing any other watch. Throws a
+    * BadRequestError for an unsafe name and an EnvironmentNotFoundError for an
+    * environment that is not configured or has no packages.
+    */
+   public async watch(environmentName: string): Promise<WatchStatusRes> {
+      assertSafePackageName(environmentName);
       const environmentManifest =
          await EnvironmentStore.reloadEnvironmentManifest(
             this.environmentStore.serverRootPath,
          );
       const environment = environmentManifest.environments.find(
-         (e) => e.name === watchName,
+         (e) => e.name === environmentName,
       );
       if (
          !environment ||
          !environment.packages ||
          environment.packages.length === 0
       ) {
-         res.status(404).json({
-            error: `Environment ${watchName} not found or has no packages`,
-         });
-         return;
+         throw new EnvironmentNotFoundError(
+            `Environment ${environmentName} not found or has no packages`,
+         );
       }
+      await this.ensureWatching(environmentName);
+      return this.current();
+   }
+
+   /** Stops watching. Idempotent. */
+   public async unwatch(): Promise<void> {
+      if (this.watcher) {
+         await this.watcher.close();
+         this.watcher = null;
+      }
+      this.watchingPath = null;
+      this.watchingEnvironmentName = null;
+   }
+
+   // DEPRECATED: the main API's `/watch-mode/status|start|stop` handlers, kept
+   // with their response shapes until those routes are removed.
+
+   public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
+      return res.json(this.current());
+   };
+
+   public startWatching: Handler<StartWatchReq, { error: string }> = async (
+      req,
+      res,
+   ) => {
       try {
-         await this.ensureWatching(watchName);
+         await this.watch(req.body.environmentName ?? "");
       } catch (error) {
+         if (error instanceof EnvironmentNotFoundError) {
+            res.status(404).json({ error: error.message });
+            return;
+         }
          logger.error(error);
          // Take the mapper's message, not error.message: a watch-path
          // EACCES/ENOSPC carries an internal filesystem path.
@@ -217,12 +240,7 @@ export class WatchModeController {
    };
 
    public stopWatchMode: Handler = async (_req, res) => {
-      if (this.watcher) {
-         await this.watcher.close();
-         this.watcher = null;
-      }
-      this.watchingPath = null;
-      this.watchingEnvironmentName = null;
+      await this.unwatch();
       res.json();
    };
 }
