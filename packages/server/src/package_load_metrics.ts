@@ -98,6 +98,8 @@ export function recordPackageLoadPhases(
  * - `lint`: linting them.
  * - `build_plan`: applying the persist build plan the worker derived, or
  *   deriving it here when the worker left it at its soft deadline.
+ * - `entities`: extracting what each model declares for an indexer
+ *   (`Package.entities`), its `#(index)` fingerprint queries included.
  * - `total`: the load end to end, as `Package.create` runs it.
  *
  * Each is wall-clock time. The main-thread stages yield to the event loop as
@@ -111,11 +113,12 @@ export type PackageLoadPhase =
    | "discovery"
    | "lint"
    | "build_plan"
+   | "entities"
    | "total";
 
 const phaseDuration = lazyHistogram(
    "publisher_package_load_phase_duration_ms",
-   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
+   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, entities, total).",
    { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 

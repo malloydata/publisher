@@ -145,11 +145,47 @@ export class PackageController {
          packageName,
          versionId,
       );
+      // Single-package reads only, like `classification`: a listing and the
+      // `/status` poll would otherwise carry every package's entities.
+      const entities = await this.packageEntities(
+         environmentName,
+         packageName,
+         versionId,
+      );
       return {
          ...metadata,
          ...(embeddingIndex ? { embeddingIndex } : {}),
          ...(classification ? { classification } : {}),
+         ...(entities ? { entities } : {}),
       };
+   }
+
+   /**
+    * The package's entities, or undefined when it has none or cannot be read.
+    * Never fails the request.
+    */
+   private async packageEntities(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiPackage["entities"] | undefined> {
+      try {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const pkg = await environment.getPackage(packageName, false, {
+            versionId,
+         });
+         return pkg.getEntities();
+      } catch (error) {
+         logger.debug("Could not read the package's entities", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
    }
 
    /**

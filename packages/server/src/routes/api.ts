@@ -555,7 +555,13 @@ function registerPackageRoutes(
             req.params.environmentName,
             false,
          );
-         return environment.describePackage(added);
+         // The load response carries what the package declares for an
+         // indexer; a listing never does (see Package.getEntities).
+         const entities = added.getEntities();
+         return {
+            ...(await environment.describePackage(added)),
+            ...(entities ? { entities } : {}),
+         };
       }),
    );
    // A package's published versions, their lifecycle and its `latest`.

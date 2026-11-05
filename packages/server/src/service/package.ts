@@ -15,10 +15,18 @@ import {
    FixedConnectionMap,
    MalloyConfig,
    MalloyError,
+   Model as MalloyModel,
    SourceDef,
    type ModelDef,
 } from "@malloydata/malloy";
 import { publisherMeter } from "../telemetry";
+import {
+   type EntitiesModelFile,
+   EntitiesValidationError,
+   extractPackageEntities,
+} from "./entities/extract";
+import type { ModelCompileResult } from "./entities/internal_types";
+import { toApiEntities } from "./entities/to_api";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
@@ -242,6 +250,7 @@ interface ReportDiscovery {
 }
 
 export type ApiPackage = components["schemas"]["Package"];
+type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -309,6 +318,13 @@ export class Package {
            value: readonly ApiSecureGivenSummary[] | undefined;
         }
       | undefined;
+   /**
+    * What every `.malloy` model declares, in the form an indexer reads
+    * (`Package.entities`). Computed once at load from the models as they
+    * compiled then, before any manifest is bound, and frozen; a reload that
+    * rebinds models does not change it.
+    */
+   private entities: readonly ApiModelEntities[] | undefined;
    /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
    private classificationSummaryMemo:
       | {
@@ -1244,6 +1260,9 @@ export class Package {
       const buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
 
       applyLoadGates(pkg);
+      const entitiesStarted = performance.now();
+      await pkg.computeEntities();
+      const entitiesMs = performance.now() - entitiesStarted;
       // After the gates, so a bad declaration is rejected before a companion is
       // compiled. Unbound, the companion recomputes from the base until a bind.
       await pkg.pushPreaggregateServeModels();
@@ -1256,6 +1275,7 @@ export class Package {
          discovery: reportTimings.discoveryMs,
          lint: reportTimings.lintMs,
          build_plan: buildPlanMs,
+         entities: entitiesMs,
          total: performance.now() - startTime,
       });
       return pkg;
@@ -1441,6 +1461,65 @@ export class Package {
                })),
          };
       });
+   }
+
+   /**
+    * {@link entities}, or undefined before the package has loaded. Frozen, so
+    * callers share it.
+    */
+   public getEntities(): readonly ApiModelEntities[] | undefined {
+      return this.entities;
+   }
+
+   /**
+    * Compute {@link entities} from the models now installed. Throws a
+    * `BadRequestError` naming every annotation the extraction cannot honor,
+    * which fails the load as a gate does.
+    */
+   private async computeEntities(): Promise<void> {
+      const modelFiles: EntitiesModelFile[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         const absolutePath = path.join(this.packagePath, modelPath);
+         const modelDef = model.getModelDef();
+         const compilationError = model.getCompilationError();
+         if (compilationError !== undefined || modelDef === undefined) {
+            modelFiles.push({
+               relativePath: modelPath,
+               absolutePath,
+               error: compilationError?.message ?? "The model did not compile.",
+            });
+            continue;
+         }
+         modelFiles.push({
+            relativePath: modelPath,
+            absolutePath,
+            model: new MalloyModel(modelDef, [], []),
+            text: await fs.readFile(absolutePath, "utf-8"),
+         });
+      }
+      let results: ModelCompileResult[];
+      try {
+         results = await extractPackageEntities({
+            packageRoot: this.packagePath,
+            modelFiles,
+            manifest: {
+               explores: this.packageMetadata.explores,
+               queryableSources: this.packageMetadata.queryableSources,
+            },
+            connections: this.malloyConfig.connections,
+         });
+      } catch (error) {
+         if (error instanceof EntitiesValidationError) {
+            logger.error(
+               `Package ${this.packageName} declares an annotation its index cannot honor`,
+               { packageName: this.packageName, detail: error.message },
+            );
+            throw new BadRequestError(error.message);
+         }
+         throw error;
+      }
+      this.entities = Object.freeze(toApiEntities(results));
    }
 
    /** How this package is searched and indexed (publisher.json `retrieval`). */
@@ -3590,13 +3669,15 @@ export class Package {
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
       if (
          !("secureGivens" in packageMetadata) &&
-         !("classification" in packageMetadata)
+         !("classification" in packageMetadata) &&
+         !("entities" in packageMetadata)
       ) {
          return packageMetadata;
       }
       const {
          secureGivens: _computed,
          classification: _summary,
+         entities: _entities,
          ...stored
       } = packageMetadata;
       return stored;
