@@ -267,6 +267,17 @@ describe("get_context with no package named", () => {
       ]);
    });
 
+   it("does not repeat the stale note for the package it entered", async () => {
+      const store = storeOf({
+         prod: { packages: [{ name: "sales" }], stale: { sales: "boom" } },
+         dev: { packages: [], stale: {} },
+      });
+      const outcome = await resolveLevel({}, store);
+      expect(outcome.kind === "scoped" && outcome.warnings).toEqual([
+         "This server serves one package, so this call entered prod/sales, and lists its sources. Name it in scopes from now on.",
+      ]);
+   });
+
    it("names other environments' failures when one environment holds every package", async () => {
       const store = storeOf({
          prod: { packages: [{ name: "a" }, { name: "b" }] },

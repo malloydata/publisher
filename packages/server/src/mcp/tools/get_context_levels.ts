@@ -96,6 +96,8 @@ function packageInfoOf(
 function healthWarnings(
    envs: readonly CatalogEnvironment[],
    stale: boolean,
+   /** `env/package` left out of the stale list: an entered package, whose own stale note the response already carries. */
+   except?: string,
 ): string[] {
    const out: string[] = [];
    for (const env of envs) {
@@ -119,7 +121,8 @@ function healthWarnings(
       const old = envs.flatMap((env) =>
          env.packages
             .filter((p) => p.stale)
-            .map((p) => `${env.name}/${p.name}`),
+            .map((p) => `${env.name}/${p.name}`)
+            .filter((name) => name !== except),
       );
       if (old.length > 0) {
          out.push(
@@ -218,7 +221,7 @@ export async function resolveLevel(
          `${why}, so this call entered ${env.name}/${pkgName}${what}. Name it in scopes from now on.`,
          // A package that failed to load would otherwise read as not there:
          // "the only package" is only true of the ones that loaded.
-         ...healthWarnings(catalog, true),
+         ...healthWarnings(catalog, true, `${env.name}/${pkgName}`),
       ];
       const scoped: ScopedParams = {
          ...params,
