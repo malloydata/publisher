@@ -5011,8 +5011,13 @@ components:
                   `warn`; see docs/classification.md).
                   `classification-malformed`: a `#(classification)` annotation
                   that names no single class (one per field, `subject` the
-                  source; `warn`). The per-file
-                  report findings (`notebook-…`, `report-…`) and the report
+                  source; `warn`).
+                  `classification-downgrade`: a field that declares a lower
+                  class than the fields its expression reads, which Publisher
+                  cannot tell from a real de-identification, so a review has
+                  to (one per field, `subject` the source; `warn`; a plain
+                  copy under `#(carries)` refuses the load instead). The
+                  per-file report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
                   code does not.

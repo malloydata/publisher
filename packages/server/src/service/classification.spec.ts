@@ -29,6 +29,7 @@ import {
 import { BadRequestError } from "../errors";
 import {
    CLASSIFICATION_COVERAGE,
+   CLASSIFICATION_DOWNGRADE,
    CLASSIFICATION_MALFORMED,
    isClassificationLine,
    readClassification,
@@ -500,5 +501,265 @@ source: orders is ${ROWS} include { internal: id, region, ssn, amount } extend {
 `,
       );
       expect(await warnings()).toEqual([]);
+   });
+
+   const PEOPLE = `##! experimental.access_modifiers
+source: people is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   #(classification) "pii.direct_identifier"
+   dimension: social is ssn
+   #(classification) "none"
+   dimension: area is region
+}
+`;
+
+   it("refuses a view that groups by, or filters on, a field class off the #(carries) list, and names the way out", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   view: by_social is { group_by: social }
+   view: filtered is {
+      group_by: area
+      where: social = 'x'
+   }
+   view: fine is { group_by: area }
+}
+
+export { research }
+`,
+      );
+      const message = await loadError();
+      expect(message).toContain(
+         "source research (index.malloy) carries [none] but its view by_social reads social, classified pii.direct_identifier",
+      );
+      expect(message).toContain("view filtered reads social");
+      expect(message).toContain("move the filter into a declared measure");
+      expect(message).not.toContain("view fine");
+   });
+
+   it("loads the same surface without the leaking views", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   view: fine is { group_by: area }
+}
+
+export { research }
+`,
+      );
+      expect(await warnings()).toEqual([]);
+   });
+
+   it("fails closed on a view that reads a field the source does not declare", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   view: sneaky is {
+      extend: { dimension: z is social }
+      group_by: z
+   }
+}
+
+export { research }
+`,
+      );
+      expect(await loadError()).toContain(
+         "its view sneaky reads z, which has no class or cannot be resolved against the source",
+      );
+   });
+
+   it("refuses a plain copy that declares a lower class than its input, and warns on a computed one", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   #(classification) "none"
+   dimension: copied is social
+   #(classification) "none"
+   dimension: casted is social::string
+}
+
+export { research }
+`,
+      );
+      const message = await loadError();
+      expect(message).toContain(
+         "exposes copied, declared none over a plain copy of social (pii.direct_identifier)",
+      );
+      expect(message).toContain(
+         "exposes casted, declared none over a plain copy",
+      );
+   });
+
+   it("warns classification-downgrade, once per field, when a computed field declares a lower class", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+source: research is people include { internal: social } extend {
+   #(classification) "none"
+   dimension: padded is concat(social, '')
+}
+
+export { research }
+`,
+      );
+      const found = (await warnings()).filter(
+         (w) => w.code === CLASSIFICATION_DOWNGRADE,
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject({
+         model: "index.malloy",
+         subject: "research",
+         severity: "warn",
+      });
+      expect(found[0].message).toContain("padded");
+      expect(found[0].message).toContain("pii.direct_identifier");
+   });
+
+   it("refuses a query source whose output declares a lower class over a plain copy, and warns on a computed one", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: copy_q is people -> {
+   group_by:
+      #(classification) "none"
+      x is social
+}
+
+export { copy_q }
+`,
+      );
+      expect(await loadError()).toContain(
+         "source copy_q (index.malloy) carries [none] but exposes x, declared none over a plain copy of social",
+      );
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: computed_q is people -> {
+   group_by:
+      #(classification) "none"
+      x is concat(social, '')
+}
+
+export { computed_q }
+`,
+      );
+      const found = await warnings();
+      expect(found.map((w) => [w.code, w.subject])).toEqual([
+         [CLASSIFICATION_DOWNGRADE, "computed_q"],
+      ]);
+   });
+
+   it("gives a query source's output the classes its stage reads, filters included", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: leaky_q is people -> {
+   group_by: area, shown is concat(social, '!')
+   where: social = 'x'
+}
+
+export { leaky_q }
+`,
+      );
+      const message = await loadError();
+      expect(message).toContain(
+         "exposes shown, classified pii.direct_identifier",
+      );
+      expect(message).toContain(
+         "exposes area, declared none over a plain copy of social (pii.direct_identifier)",
+      );
+   });
+
+   it("treats everything under a private join as hidden", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   #(classification) "none"
+   dimension: area is region
+   private join_one: owner is people on owner.id = id
+}
+
+export { research }
+`,
+      );
+      expect(await warnings()).toEqual([]);
+   });
+});
+
+describe("readSourceClassifications over a query source", () => {
+   it("reads each output's inputs and its stage's filters, and fails closed on what it cannot resolve", async () => {
+      const { modelDefs } = await compileModelFiles({
+         "m.malloy": `##! experimental.access_modifiers
+source: p is duckdb.sql("select 1 as id, '9' as ssn, 'a' as n") include { internal: ssn public: * } extend {
+   #(classification) "phi"
+   dimension: social is ssn
+}
+source: q is p -> {
+   group_by: social, shown is concat(social, '!'), n
+   where: social = 'x'
+}
+source: two_stage is p -> {
+   group_by: social
+} -> {
+   select: social
+}
+`,
+      });
+      const md = modelDefs["m.malloy"] as ModelDef;
+      const ir = (name: string) =>
+         md.contents[name] as unknown as {
+            fields: never;
+            query: never;
+         };
+      const q = readSourceClassifications(ir("q").fields, ir("q").query);
+      expect(q.get("shown")).toMatchObject({
+         inferred: ["phi"],
+         passthrough: false,
+      });
+      expect(q.get("social")?.passthrough).toBe(true);
+      expect(q.get("n")?.inferred).toEqual(["phi"]);
+      const two = readSourceClassifications(
+         ir("two_stage").fields,
+         ir("two_stage").query,
+      );
+      expect(two.get("social")?.unresolved).toEqual(["social"]);
    });
 });

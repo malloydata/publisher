@@ -602,10 +602,9 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          );
          // What each reachable field is, declared or by lineage. Absent for a
          // stand-in with no compiled model; fields then report their own note.
+         const ir = modelDef ? findIrSource(modelDef, sourceName) : undefined;
          const lineage = modelDef
-            ? readSourceClassifications(
-                 findIrSource(modelDef, sourceName)?.fields,
-              )
+            ? readSourceClassifications(ir?.fields, ir?.query)
             : undefined;
          // Keyed per (model path, source) like the card, so a card never shows
          // another file's givens or gates.
