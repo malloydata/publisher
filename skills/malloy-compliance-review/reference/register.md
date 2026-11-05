@@ -30,7 +30,7 @@ is a complete one for a HIPAA minimum-necessary policy.
 | --- | --- | --- |
 | `rows` | Admitted, with every row | The count probe answers, and the domain has no row filter |
 | `scoped` | Admitted, with only the rows its givens select | The count probe answers, and the model read shows a row filter in force |
-| `refused` | Not admitted | The count probe answers 403 |
+| `refused` | Not admitted | The count probe answers 403, or 404 with the query boundary's refusal |
 
 `scoped` is read from the model's row filter, never from a smaller count: a persona may be the only
 one admitted to a domain and still be scoped.
@@ -41,14 +41,15 @@ one admitted to a domain and still be scoped.
 "research": {
   "deidentified": true,
   "must_not_carry": ["phi.direct_identifier"],
-  "caps": [{ "field": "patient.age", "max": 90 }]
+  "caps": [{ "field": "patient.age", "max": 90 }, { "field": "patient.birth_year", "min": 1930 }]
 }
 ```
 
 - `deidentified`: the domain may serve no day-level date, no five-digit ZIP, and nothing that reads
   as free text.
 - `must_not_carry`: classes the domain's `#(carries)` may not list.
-- `caps`: a numeric field's maximum, as the values show it.
+- `caps`: a numeric field's `max`, `min` or both, as the values show it. A capped field that was not
+  profiled, or whose numeric query errored, needs review.
 
 ### Controls
 
