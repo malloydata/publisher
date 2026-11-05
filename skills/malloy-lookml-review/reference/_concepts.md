@@ -22,7 +22,7 @@ Reference table for translating LookML constructs to Malloy. Referenced by multi
 | `measure: { filters: [...] }` | `measure { where: condition }` | Filtered aggregate |
 | `primary_key: yes` | `primary_key: field_name` | Direct mapping |
 | `hidden: yes` | `# hidden` tag (cosmetic) | Classify reason first; see `curate-visibility.md` |
-| `fields` exclusion (explore/join) | `internal:` (with access modifiers) | Structurally excluded; `internal:` candidate |
+| `fields` exclusion (explore/join) | `internal:` or `private:` (with access modifiers) | Ask why: `internal:` for tidiness, `private:` to keep the data from users; see `curate-visibility.md` |
 | `required_access_grants` | `private:` (with access modifiers) | Security-restricted; `private:` candidate |
 | `description:` | `#(doc)` tag | Direct mapping |
 | `label:` (simple rename) | `internal:` old + `dimension: new_name is old_name` | Lighter than `rename:`, and keeps the raw column reachable |
