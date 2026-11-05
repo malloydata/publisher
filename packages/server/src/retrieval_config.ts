@@ -425,7 +425,7 @@ function parseEgress(raw: unknown): { preset: EgressPreset } | undefined {
    ) {
       throw new Error(
          `Invalid retrieval.egress.preset: expected one of ${EGRESS_PRESETS.join(", ")}, got ${describe(obj.preset)}. ` +
-            `Fix: "preset": "default" (names, #(doc) text and schema context) or "full" (also code and dimension values).`,
+            `Fix: "preset": "default" (names, doc text and schema context) or "full" (also code and dimension values).`,
       );
    }
    return { preset: obj.preset as EgressPreset };

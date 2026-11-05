@@ -132,7 +132,7 @@ function rawDoc(annotations?: AnnotationLines): string {
  * An entity's `doc`, `embedDoc` and `docSource`, read from `annotations`, with
  * the `#(dbmeta)` fallback read from `dbmetaFrom`.
  */
-function entityDocs(
+export function entityDocs(
    annotations?: AnnotationLines,
    dbmetaFrom: AnnotationLines | undefined = annotations,
 ): Pick<Entity, "doc" | "embedDoc" | "docSource"> {

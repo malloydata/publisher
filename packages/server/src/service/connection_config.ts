@@ -258,8 +258,23 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
    }
 }
 
+/**
+ * The connection as it is stored and returned by the API. `dbmeta` is stored
+ * as the boolean Malloy gets, not the string `${VAR}` substitution leaves.
+ */
 function cloneApiConnection(connection: ApiConnection): ApiConnection {
-   return { ...connection };
+   const clone = { ...connection };
+   const bigquery = connection.bigqueryConnection;
+   if (bigquery?.dbmeta !== undefined) {
+      clone.bigqueryConnection = {
+         ...bigquery,
+         dbmeta: configBoolean(
+            bigquery.dbmeta,
+            `dbmeta on BigQuery connection "${connection.name}"`,
+         ),
+      };
+   }
+   return clone;
 }
 
 export function getStaticConnectionAttributes(

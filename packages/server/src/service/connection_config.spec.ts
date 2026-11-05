@@ -11,6 +11,7 @@ import {
    validateStorageDestinations,
 } from "./connection_config";
 import { installSettings } from "../test_helpers/settings_env";
+import { toPublicConnection } from "./connection_public_view";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -1221,6 +1222,22 @@ describe("assembleEnvironmentConnections — bigquery dbmeta", () => {
       (raw, want) => {
          const { pojo } = assembleEnvironmentConnections([bigquery(raw)]);
          expect(pojo.connections["bq"].dbmeta).toBe(want);
+      },
+   );
+
+   it.each([
+      ["true", true],
+      ["false", false],
+   ])(
+      "stores the string %p as a boolean, and the API returns it so",
+      (raw, want) => {
+         const { apiConnections } = assembleEnvironmentConnections([
+            bigquery(raw),
+         ]);
+         expect(apiConnections[0].bigqueryConnection?.dbmeta).toBe(want);
+         expect(
+            toPublicConnection(apiConnections[0]).bigqueryConnection?.dbmeta,
+         ).toBe(want);
       },
    );
 

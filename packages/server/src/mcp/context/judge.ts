@@ -8,8 +8,10 @@
  *
  * The call sees the targets verbatim and in order, whether this cluster
  * covers each, and for each target the cluster's candidates (and the
- * structural extras) with their kind, type, source, route and full `#(doc)`,
- * rules included. Docs are model text, sent under every egress preset. A stored value is data: under any preset below `full` the
+ * structural extras) with their kind, type, source, route and full doc text
+ * (see docOnlyText), rules included. Doc text is sent under every egress
+ * preset; on a connection with `dbmeta` on it can be the database's
+ * description rather than the model's. A stored value is data: under any preset below `full` the
  * judge is told that a candidate matched the phrase's value and how, never
  * the stored string; authored expressions are not sent at all.
  *
