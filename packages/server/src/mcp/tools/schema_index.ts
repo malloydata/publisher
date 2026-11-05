@@ -11,6 +11,7 @@ import {
 } from "../../service/embedding_provider";
 // Shared with the package index so a query is humanized the same way
 // whichever index answers it.
+import { isRecordColumnType } from "../../service/record_column_type";
 import { humanizeName } from "./embedding_index";
 import {
    PROVIDER_FAILURE_COOLDOWN_MS,
@@ -102,17 +103,20 @@ export const MAX_CACHED_SCHEMAS = 8;
 
 /**
  * The names among `columns` that are record members (db_utils.ts
- * columnsOfSchema): a column whose dotted name extends another column's
- * (`delivery.city` after `delivery`). A top-level column whose own name holds
- * a dot is not one.
+ * columnsOfSchema): a column whose dotted name extends a record column's
+ * (`delivery.city` after `delivery`, a record). A top-level column whose own
+ * name holds a dot is not one, even when its prefix names another column
+ * (`a.zip_code` beside an integer `a`).
  */
 export function recordMembers(columns: readonly SchemaColumn[]): Set<string> {
-   const names = new Set(columns.map((c) => c.name));
+   const records = new Set(
+      columns.filter((c) => isRecordColumnType(c.type)).map((c) => c.name),
+   );
    const members = new Set<string>();
    for (const c of columns) {
       const parts = c.name.split(".");
       for (let i = parts.length - 1; i >= 1; i--) {
-         if (names.has(parts.slice(0, i).join("."))) {
+         if (records.has(parts.slice(0, i).join("."))) {
             members.add(c.name);
             break;
          }

@@ -843,7 +843,7 @@ async function listTablesTier(
    ).length;
    if (capped > 0) {
       warnings.push(
-         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; only the first ${MAX_COLUMNS_PER_TABLE} are shown. Pass tableName to see all columns of one table.`,
+         `${capped} table(s) have more than ${MAX_COLUMNS_PER_TABLE} columns; ${MAX_COLUMNS_PER_TABLE} are shown, the table's own columns before record members such as delivery.city. Pass tableName to see all columns of one table.`,
       );
    }
 

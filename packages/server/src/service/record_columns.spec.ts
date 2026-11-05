@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { capColumns, rankLexically } from "../mcp/tools/schema_index";
 import { columnsOfSchema, listTablesForSchema } from "./db_utils";
 import type { ApiConnection } from "./model";
@@ -94,6 +94,18 @@ describe("a DuckDB schema with STRUCT columns", () => {
    });
 
    it("follows the database when a table changes after a listing, never a cached schema", async () => {
+      // Every step in one millisecond: Malloy re-reads its cached schema only
+      // for a strictly newer refresh timestamp, so the listing must not take
+      // its timestamp from the clock alone.
+      const now = spyOn(Date, "now").mockReturnValue(Date.now());
+      try {
+         await changesAfterAListing();
+      } finally {
+         now.mockRestore();
+      }
+   });
+
+   async function changesAfterAListing() {
       await malloy.runSQL(
          "create table changing as select 1 as id, {'city': 'Denver'} as place",
       );
@@ -109,6 +121,39 @@ describe("a DuckDB schema with STRUCT columns", () => {
          "create table changing as select 1 as id, {'town': 'Boulder'} as place",
       );
       expect(await columnsOf()).toEqual(["id", "place", "place.town"]);
+      await malloy.runSQL("drop table changing");
+   }
+
+   it("reads a table's schema again only when a record column's type changed", async () => {
+      await malloy.runSQL(
+         "create table steady as select 1 as id, {'city': 'Denver'} as place",
+      );
+      const reads = spyOn(malloy, "fetchSchemaForTables");
+      try {
+         const list = () =>
+            listTablesForSchema(conn, "memory.main", malloy, ["steady"]);
+         await list();
+         expect(reads).toHaveBeenCalledTimes(1);
+         // A new plain column leaves `place`'s type as it was: no read.
+         await malloy.runSQL("alter table steady add column note varchar");
+         const again = await list();
+         expect(reads).toHaveBeenCalledTimes(1);
+         expect(again[0].columns?.map((c) => c.name)).toEqual([
+            "id",
+            "place",
+            "place.city",
+            "note",
+         ]);
+         await malloy.runSQL("alter table steady drop column place");
+         await malloy.runSQL(
+            "alter table steady add column place struct(town varchar)",
+         );
+         await list();
+         expect(reads).toHaveBeenCalledTimes(2);
+      } finally {
+         reads.mockRestore();
+         await malloy.runSQL("drop table steady");
+      }
    });
 
    it("ranks the table by a member's name, which matched nothing before", async () => {
@@ -136,19 +181,24 @@ describe("a DuckDB schema with STRUCT columns", () => {
 describe("capColumns", () => {
    it("keeps a table's own columns before record members, in listed order", () => {
       const columns = [
-         { name: "id" },
-         { name: "delivery" },
-         ...Array.from({ length: 5 }, (_, i) => ({ name: `delivery.m${i}` })),
-         { name: "zip_code" },
-         // A top-level column whose own name holds a dot is not a member.
-         { name: "a.b" },
+         { name: "id", type: "integer" },
+         { name: "delivery", type: "struct(m0 varchar, m1 varchar)" },
+         ...Array.from({ length: 5 }, (_, i) => ({
+            name: `delivery.m${i}`,
+            type: "string",
+         })),
+         { name: "a", type: "integer" },
+         // A top-level column whose own name holds a dot is not a member,
+         // even when its prefix is another column's name, as long as that
+         // column is not a record.
+         { name: "a.zip_code", type: "varchar" },
       ];
       expect(capColumns(columns, 5).map((c) => c.name)).toEqual([
          "id",
          "delivery",
          "delivery.m0",
-         "zip_code",
-         "a.b",
+         "a",
+         "a.zip_code",
       ]);
    });
 });
