@@ -128,7 +128,8 @@ function recordColumnsOf(table: ApiTable): ApiColumn[] {
  * table with a record column. The database's own list stays the authority:
  * its columns, their order and their types are kept as reported, and members
  * are spliced in after the record they belong to. A table whose members can
- * be neither read nor taken from the cache keeps its flat list.
+ * be neither read nor taken from the cache keeps its flat list, marked
+ * `membersUnread`.
  *
  * The members come from the Malloy schema, read fresh (Malloy caches a schema
  * for the life of the connection, and a cached one would list members of a
@@ -139,10 +140,11 @@ async function withRecordMembers(
    tables: ApiTable[],
    malloyConnection: Connection,
 ): Promise<ApiTable[]> {
-   const nested = tables
-      .filter((t) => t.resource && recordColumnsOf(t).length > 0)
-      .slice(0, MAX_TABLES_EXPANDED);
-   if (nested.length === 0) return tables;
+   const withRecords = tables.filter(
+      (t) => t.resource && recordColumnsOf(t).length > 0,
+   );
+   if (withRecords.length === 0) return tables;
+   const nested = withRecords.slice(0, MAX_TABLES_EXPANDED);
 
    let cache = memberCache.get(malloyConnection);
    if (!cache) {
@@ -253,9 +255,12 @@ async function withRecordMembers(
       }
    }
 
+   const unlisted = new Set(withRecords);
    return tables.map((t) => {
       const members = t.resource ? resolved.get(t.resource) : undefined;
-      if (!members) return t;
+      // A record whose members are not listed is flagged, so a reader can
+      // tell a member it was not given from one the table no longer has.
+      if (!members) return unlisted.has(t) ? { ...t, membersUnread: true } : t;
       const columns: ApiColumn[] = [];
       for (const column of t.columns ?? []) {
          columns.push(column);

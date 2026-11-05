@@ -91,6 +91,7 @@ describe("a DuckDB schema with STRUCT columns", () => {
          "shipment_id:integer",
          "warehouse_town:varchar",
       ]);
+      expect(tables.some((t) => t.membersUnread)).toBe(false);
    });
 
    it("follows the database when a table changes after a listing, never a cached schema", async () => {
@@ -153,6 +154,44 @@ describe("a DuckDB schema with STRUCT columns", () => {
       } finally {
          reads.mockRestore();
          await malloy.runSQL("drop table steady");
+      }
+   });
+
+   it("marks a table whose record members could not be read, and lists its own columns as reported", async () => {
+      await malloy.runSQL(
+         "create table unread as select 1 as id, {'city': 'Denver'} as place",
+      );
+      try {
+         const reads = spyOn(malloy, "fetchSchemaForTables").mockRejectedValue(
+            new Error("warehouse unavailable"),
+         );
+         try {
+            const [table] = await listTablesForSchema(
+               conn,
+               "memory.main",
+               malloy,
+               ["unread"],
+            );
+            expect(table.membersUnread).toBe(true);
+            expect(table.columns?.map((c) => c.name)).toEqual(["id", "place"]);
+         } finally {
+            reads.mockRestore();
+         }
+         // Read once it can be, and no longer marked.
+         const [table] = await listTablesForSchema(
+            conn,
+            "memory.main",
+            malloy,
+            ["unread"],
+         );
+         expect(table.membersUnread).toBeUndefined();
+         expect(table.columns?.map((c) => c.name)).toEqual([
+            "id",
+            "place",
+            "place.city",
+         ]);
+      } finally {
+         await malloy.runSQL("drop table unread");
       }
    });
 
