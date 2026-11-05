@@ -53,7 +53,11 @@ source: leaky is ${ROWS} extend {
             explores: ["index.malloy"],
          }),
       );
-      await write("index.malloy", `source: open is ${ROWS}\n`);
+      // Classifying anything is what makes a join bypass refuse rather than warn.
+      await write(
+         "index.malloy",
+         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
+      );
       await write("hidden.malloy", BYPASS);
       await write("clean.malloy", CLEAN);
       env = await Environment.create("testEnv", envPath, []);
@@ -87,6 +91,34 @@ source: leaky is ${ROWS} extend {
          await fs.readFile(path.join(envPath, "pkg", "publisher.json"), "utf8"),
       );
       expect(manifest.queryableSources).toBeUndefined();
+   });
+
+   it("accepts the same PATCH in a package of gates alone, reporting the bypass as a warning", async () => {
+      const dir = path.join(envPath, "gates");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({
+            name: "gates",
+            description: "gates only",
+            explores: ["index.malloy"],
+         }),
+      );
+      await fs.writeFile(
+         path.join(dir, "index.malloy"),
+         `source: open is ${ROWS}\n`,
+      );
+      await fs.writeFile(path.join(dir, "hidden.malloy"), BYPASS);
+      await env.addPackage("gates");
+      const updated = await env.updatePackage("gates", {
+         name: "gates",
+         queryableSources: "all",
+      });
+      expect(updated.queryableSources).toBe("all");
+      const warnings = (
+         await (await env.getPackage("gates", false)).getPackageMetadata()
+      ).warnings;
+      expect(warnings?.filter((w) => w.code === "join-bypass")).toHaveLength(1);
    });
 
    it("refuses adding a source with a join bypass to explores, and keeps the old metadata", async () => {

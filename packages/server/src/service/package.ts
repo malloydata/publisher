@@ -132,13 +132,14 @@ import {
 import {
    carriesCeilingLeaks,
    classificationLeaks,
+   packageUsesClassification,
    classificationWarnings,
 } from "./classification";
 import {
    classificationSummary,
    type ApiClassificationSummary,
 } from "./classification_summary";
-import { joinBypasses } from "./join_bypass";
+import { JOIN_BYPASS, joinBypasses } from "./join_bypass";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -252,6 +253,8 @@ interface ClassificationMemo {
    listing: string;
    summary?: { value: ApiClassificationSummary | undefined };
    warnings?: ApiPackageWarning[];
+   /** The join-bypass findings and whether the package opted in to refusing them. */
+   joinBypass?: { messages: string[]; strict: boolean };
 }
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -1572,6 +1575,7 @@ export class Package {
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
          ...this.classificationWarningsMemoized(),
+         ...this.joinBypassWarnings(),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2187,14 +2191,44 @@ export class Package {
       return (await carriesCeilingLeaks(this.models, isListed)).join("\n");
    }
 
+   /** {@link joinBypasses}, memoized: the load gate and the `/status` warnings both read it. */
+   private joinBypassFindings(): { messages: string[]; strict: boolean } {
+      const memo = this.currentClassificationMemo();
+      if (!memo.joinBypass) {
+         const { isListed, includeHidden } = this.gateScope();
+         const messages = joinBypasses(this.models, isListed, includeHidden);
+         memo.joinBypass = {
+            messages,
+            strict:
+               messages.length > 0 && packageUsesClassification(this.models),
+         };
+      }
+      return memo.joinBypass;
+   }
+
    /**
     * REJECTION messages for every author join from a published source that
     * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
-    * when there are none. Strict at load, like a `#(carries)` leak.
+    * when there are none. Strict at load, like a `#(carries)` leak, but only
+    * in a package that declares `#(carries)` or `#(classification)`: a package
+    * of gates alone loads as it always has, and
+    * {@link joinBypassWarnings} reports them instead.
     */
    public formatJoinBypasses(): string {
-      const { isListed, includeHidden } = this.gateScope();
-      return joinBypasses(this.models, isListed, includeHidden).join("\n");
+      const { messages, strict } = this.joinBypassFindings();
+      return strict ? messages.join("\n") : "";
+   }
+
+   /** The join bypasses of a package that has not opted in to refusing them, as `join-bypass` warnings. */
+   public joinBypassWarnings(): ApiPackageWarning[] {
+      const { messages, strict } = this.joinBypassFindings();
+      return strict
+         ? []
+         : messages.map((message) => ({
+              code: JOIN_BYPASS,
+              severity: "warn" as const,
+              message,
+           }));
    }
 
    /**

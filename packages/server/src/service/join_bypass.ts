@@ -10,7 +10,9 @@
  * source; see docs/authorize.md.) The docs tell an author to handle this by
  * hand: carry the scoping key in the `on`, or reference the joined column in
  * the entry source's own `#(access_filter)`. This check is what says they
- * did not, and a bypass REFUSES the package load, as a `#(carries)` leak does.
+ * did not. A bypass REFUSES the package load, as a `#(carries)` leak does, in a
+ * package that declares `#(carries)` or `#(classification)`; in a package of
+ * gates alone it is a `join-bypass` warning (see `Package.formatJoinBypasses`).
  *
  * Three tests, all mechanical, over every join a published source declares
  * ({@link MAX_JOIN_RECURSION_DEPTH} deep, `->` pipeline joins included),
@@ -58,6 +60,9 @@ import {
    resolveQuerySourceBase,
 } from "./gate_registry_walk";
 import type { Model } from "./model";
+
+/** The warning code a join bypass carries in a package that has not opted in to refusing it. */
+export const JOIN_BYPASS = "join-bypass";
 
 /** The slice of a compiled join field the check reads. */
 interface IrJoin {

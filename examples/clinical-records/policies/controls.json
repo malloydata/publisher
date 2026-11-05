@@ -297,7 +297,7 @@
       "checks": [
         "refusals"
       ],
-      "why": "The load refuses a #(carries) leak, a gate on a caller-set given and a join bypass; this review, run in CI, refuses the rest."
+      "why": "The load refuses a #(carries) leak and, in a package that classifies anything, a join bypass; this review, run in CI, refuses the rest."
     }
   ]
 }

@@ -95,6 +95,41 @@ export function isClassificationLine(text: string): boolean {
    return CLASSIFICATION_LINE.test(t) || CARRIES_LINE.test(t);
 }
 
+/**
+ * Whether anything in the package declares a `#(carries)` or a
+ * `#(classification)`: the opt-in to the checks that refuse a load. Reads every
+ * compiled source, hidden ones too, and every field under it.
+ */
+export function packageUsesClassification(
+   models: ReadonlyMap<string, Model>,
+): boolean {
+   const seen = new Set<object>();
+   const declares = (node: IrField | undefined, depth: number): boolean => {
+      if (!node || seen.has(node) || depth > MAX_JOIN_RECURSION_DEPTH + 1) {
+         return false;
+      }
+      seen.add(node);
+      if (
+         (annotationTexts(node.annotations) ?? []).some(isClassificationLine)
+      ) {
+         return true;
+      }
+      return (node.fields ?? []).some((f) => declares(f, depth + 1));
+   };
+   for (const model of models.values()) {
+      let modelDef: ModelDef | undefined;
+      try {
+         modelDef = model.getModelDef();
+      } catch {
+         continue;
+      }
+      for (const def of Object.values(modelDef?.contents ?? {})) {
+         if (declares(def as IrField, 0)) return true;
+      }
+   }
+   return false;
+}
+
 /** Codepoint order, so two servers on identical bytes agree. */
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 

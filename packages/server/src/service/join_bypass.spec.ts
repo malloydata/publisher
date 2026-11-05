@@ -70,8 +70,24 @@ describe("join bypass refusal on package load", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
+   // A package that classifies anything opts in to refusing a bypass; `gateOnly` leaves that out.
+   let gateOnly = false;
+   beforeEach(() => {
+      gateOnly = false;
+   });
+   const MARKER = `
+source: classified_marker is duckdb.sql("select 1 as a") extend {
+   #(classification) "none"
+   dimension: b is a
+}
+`;
+
    function write(file: string, text: string): void {
-      fs.writeFileSync(path.join(tempDir, file), text);
+      const entry = file === "m.malloy" || file === "index.malloy";
+      fs.writeFileSync(
+         path.join(tempDir, file),
+         entry && !gateOnly ? text + MARKER : text,
+      );
    }
 
    async function load() {
@@ -93,6 +109,28 @@ describe("join bypass refusal on package load", () => {
          "expected the load to be refused, but the package loaded",
       );
    }
+
+   it("loads a package of gates alone with the bypass as a join-bypass warning, and refuses it once the package classifies anything", async () => {
+      const model = `${GIVENS}
+#(authorize) false
+source: people is ${PEOPLE}
+
+source: visits is ${VISITS} extend {
+   join_one: person is people on person.id = person_id
+}
+`;
+      gateOnly = true;
+      write("m.malloy", model);
+      const warnings = (await load()).getPackageMetadata().warnings ?? [];
+      const bypass = warnings.filter((w) => w.code === "join-bypass");
+      expect(bypass).toHaveLength(1);
+      expect(bypass[0].message).toContain(
+         "source visits (m.malloy) is open to every caller and joins person, which is locked",
+      );
+      gateOnly = false;
+      write("m.malloy", model);
+      expect(await refusal()).toContain("source visits (m.malloy)");
+   });
 
    it("refuses an open source that joins a locked base", async () => {
       write(

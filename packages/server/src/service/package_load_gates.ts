@@ -134,7 +134,8 @@ export async function applyLoadGates(pkg: Package): Promise<void> {
       throw new BadRequestError(ceiling);
    }
    // An author join that bypasses a gate is strict at load for the same
-   // reason: the joined rows would reach every admitted caller unscoped.
+   // reason (the joined rows reach every admitted caller unscoped), but only
+   // in a package that opted in to classification; otherwise it is a warning.
    const bypasses = pkg.formatJoinBypasses();
    if (bypasses) {
       logger.error(
