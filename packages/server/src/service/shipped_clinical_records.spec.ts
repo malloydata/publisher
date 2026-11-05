@@ -62,22 +62,27 @@ async function load(dir: string): Promise<{
    }
 }
 
-/** A copy of the package with one seeded violation in place of domains.malloy. */
+/** A copy of the package with one seeded violation in place of the file its variant names. */
 function withViolation(name: string): { dir: string; cleanup: () => void } {
+   const variant = fs
+      .readdirSync(path.join(EXAMPLE, "violations", name))
+      .find((f) => f.endsWith(".malloy.txt"))!;
+   const target = variant.replace(/\.txt$/, "");
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clinical-violation-"));
    for (const file of [
       "base.malloy",
       "core.malloy",
       "deidentify.malloy",
+      "domains.malloy",
       "index.malloy",
       "publisher.json",
-   ]) {
+   ].filter((f) => f !== target)) {
       fs.copyFileSync(path.join(EXAMPLE, file), path.join(dir, file));
    }
    fs.symlinkSync(path.join(EXAMPLE, "data"), path.join(dir, "data"));
    fs.copyFileSync(
-      path.join(EXAMPLE, "violations", name, "domains.malloy.txt"),
-      path.join(dir, "domains.malloy"),
+      path.join(EXAMPLE, "violations", name, variant),
+      path.join(dir, target),
    );
    return {
       dir,
@@ -224,6 +229,32 @@ describe("examples/clinical-records, seeded violations", () => {
          }
          expect(caught).toBeInstanceOf(BadRequestError);
          expect((caught as Error).message).toContain(reason);
+      } finally {
+         cleanup();
+      }
+   });
+
+   it("loads 06-birth-year-over-89, and a researcher reads a birth year below 1930", async () => {
+      const { dir, cleanup } = withViolation("06-birth-year-over-89");
+      try {
+         const { pkg, close } = await load(dir);
+         try {
+            expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
+            const r = await pkg
+               .getModel("index.malloy")!
+               .getQueryResults(
+                  unrecordedAudit(),
+                  undefined,
+                  undefined,
+                  "run: research -> { aggregate: earliest is min(patient.birth_year) }",
+                  {},
+                  true,
+                  { ROLES: ["researcher"] } as Record<string, GivenValue>,
+               );
+            expect(Number(r.compactResult[0].earliest)).toBeLessThan(1930);
+         } finally {
+            await close();
+         }
       } finally {
          cleanup();
       }
