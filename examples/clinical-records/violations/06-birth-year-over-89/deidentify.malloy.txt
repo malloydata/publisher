@@ -4,7 +4,7 @@
 // sources, so the derivation a control cites is this file, not a hand-made
 // copy on each domain:
 //
-//   - every date reduced to its year, and the year of birth withheld past age 89;
+//   - every date reduced to its year (the seeded fault below leaves the year of birth unwithheld past age 89);
 //   - age capped: 90 for every age over 89;
 //   - geography reduced to the state and a three-digit ZIP, with the
 //     small-population three-digit areas in data/ reported as '000'.

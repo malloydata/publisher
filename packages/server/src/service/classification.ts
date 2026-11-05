@@ -60,6 +60,7 @@ import { annotationTexts, type AnnotationsDef } from "./annotations";
 import {
    MAX_JOIN_PATHS,
    MAX_JOIN_RECURSION_DEPTH,
+   type RefSummaryLike,
 } from "./filter_binding_guard";
 import type { Model } from "./model";
 
@@ -255,12 +256,8 @@ interface IrField {
    accessModifier?: string;
    /** On a `->` query source: the query its fields are the output of. */
    query?: IrQuery;
-   refSummary?: IrRefSummary;
+   refSummary?: RefSummaryLike;
    pipeline?: IrStage[];
-}
-
-interface IrRefSummary {
-   fieldUsage?: Array<{ path?: string[] }>;
 }
 
 /** The slice of a pipeline stage the lineage reads. */
@@ -271,10 +268,14 @@ interface IrStage {
       as?: string;
       path?: string[];
       e?: unknown;
-      refSummary?: IrRefSummary;
+      refSummary?: RefSummaryLike;
+      /** On a `nest:` of an inline view: the stages of the view it nests. */
+      pipeline?: IrStage[];
    }>;
    filterList?: unknown;
-   refSummary?: IrRefSummary;
+   refSummary?: RefSummaryLike;
+   /** What the stage returns, by name. */
+   outputStruct?: { fields?: Array<{ name?: string; as?: string }> };
    /** Fields the segment's own `extend:` adds to the source it runs on. */
    extendSource?: IrField[];
 }
@@ -306,14 +307,16 @@ export interface FieldClassification {
    inputs: ClassifiedInput[];
    /** Why an annotation on the field is unusable, when one is. */
    malformed?: string;
-   /** True for a field under `private:` / `internal:`, which callers never reach. */
+   /** True for a field under `private:`, which callers never reach; an `internal:` one a caller's `extend:` still reads. */
    hidden: boolean;
    /** True for a dimension or measure; false for a view or a join. */
    isField: boolean;
    /** `measure` for an aggregate or analytic expression, else `dimension`. */
    kind: "dimension" | "measure";
-   /** Classes its inputs carry that its declared set leaves out. */
+   /** Classes the fields it copies or computes from carry that its declared set leaves out. */
    dropped: string[];
+   /** Classified fields only its query source's filters read, whose classes every returned row reveals. */
+   filtered: ClassifiedInput[];
    /** True for a plain copy of one field (a reference, optionally cast), which cannot de-identify anything. */
    passthrough: boolean;
    /** Paths it reads that resolve to nothing the lineage can see: an unclassified read. */
@@ -398,31 +401,44 @@ function fieldReferences(e: unknown): string[][] {
 }
 
 /**
- * What a compiled query's first stage reads from the struct it ran against:
- * the paths of its own references (`refSummary.fieldUsage`, filters included)
- * and the lineage of that struct, which is the named source (or the inline
- * one) plus the segment's `extend:`. Undefined when the query names no struct
- * the lineage can read, or its first stage has no reference summary.
+ * The struct a query's first stage reads: the named (or inline) source plus
+ * the segment's own `extend:`. Undefined when the query names no struct the
+ * lineage can read.
  */
-export function readQueryFieldReads(
+function queryInput(
    modelDef: ModelDef | undefined,
-   query: unknown,
-): { lineage: SourceLineage; paths: string[] } | undefined {
-   const q = query as { structRef?: unknown; pipeline?: IrStage[] } | undefined;
-   const stage = q?.pipeline?.[0];
-   const usage = stage?.refSummary?.fieldUsage;
-   if (!stage || !usage) return undefined;
-   const ref = q?.structRef;
+   query: IrQuery | undefined,
+): { fields: IrField[]; query?: IrQuery } | undefined {
+   const ref = query?.structRef;
    const base =
       typeof ref === "string"
          ? findIrSource(modelDef, ref)
          : (ref as IrField | undefined);
    if (!base?.fields) return undefined;
-   const fields = stage.extendSource?.length
-      ? [...base.fields, ...stage.extendSource]
-      : base.fields;
+   const extend = query?.pipeline?.[0]?.extendSource;
    return {
-      lineage: readSourceClassifications(fields, base.query),
+      fields: extend?.length ? [...base.fields, ...extend] : base.fields,
+      query: base.query,
+   };
+}
+
+/**
+ * What a compiled query's first stage reads from {@link queryInput}: the
+ * paths of its own references (`refSummary.fieldUsage`, filters included) and
+ * the lineage of that struct. Undefined when the query names no struct the
+ * lineage can read, or its first stage has no reference summary.
+ */
+export function readQueryFieldReads(
+   modelDef: ModelDef | undefined,
+   query: unknown,
+): { lineage: SourceLineage; paths: string[] } | undefined {
+   const q = query as IrQuery | undefined;
+   const usage = q?.pipeline?.[0]?.refSummary?.fieldUsage;
+   if (!usage) return undefined;
+   const input = queryInput(modelDef, q);
+   if (!input) return undefined;
+   return {
+      lineage: readSourceClassifications(input.fields, input.query),
       paths: Array.from(new Set(usage.map((u) => (u.path ?? []).join(".")))),
    };
 }
@@ -472,20 +488,49 @@ function walkSourceClassifications(
    let joinPaths = 0;
    const byPath = new Map<
       string,
-      { field: IrField; owner: string; hidden: boolean }
+      {
+         field: IrField;
+         owner: string;
+         hidden: boolean;
+         /** Set when the field is an output of a `->` query, not something declared over it. */
+         out?: OutputScope;
+      }
    >();
+   const outputsOf = (q: IrQuery): QueryOutputs => {
+      const outputs = readQueryOutputs(q);
+      if (outputs.base?.truncated) resolved.truncated = true;
+      return outputs;
+   };
    const collect = (
       list: IrField[],
       owner: string,
       joins: number,
       hidden: boolean,
+      scope: OutputScope | undefined,
    ): void => {
       for (const field of list) {
          const name = activeName(field);
          if (!name) continue;
          const path = owner ? `${owner}.${name}` : name;
-         const isHidden = hidden || field.accessModifier !== undefined;
-         byPath.set(path, { field, owner, hidden: isHidden });
+         // Only `private` hides: a caller's `extend:` still reads an `internal` field.
+         const isHidden = hidden || field.accessModifier === "private";
+         // A query source's own `extend:` fields are declared over its outputs, not outputs themselves.
+         const isOutput =
+            scope !== undefined &&
+            (scope.rel !== "" ||
+               (scope.outputs.names
+                  ? scope.outputs.names.has(name)
+                  : field.e === undefined &&
+                    field.type !== "turtle" &&
+                    !isJoinField(field)));
+         const out =
+            isOutput && scope
+               ? {
+                    outputs: scope.outputs,
+                    rel: scope.rel ? `${scope.rel}.${name}` : name,
+                 }
+               : undefined;
+         byPath.set(path, { field, owner, hidden: isHidden, out });
          if (!isJoinField(field)) continue;
          if (
             joins >= MAX_JOIN_RECURSION_DEPTH ||
@@ -494,13 +539,22 @@ function walkSourceClassifications(
             resolved.truncated = true;
             continue;
          }
-         collect(field.fields ?? [], path, joins + 1, isHidden);
+         const inner =
+            out ??
+            (field.query
+               ? { outputs: outputsOf(field.query), rel: "" }
+               : undefined);
+         collect(field.fields ?? [], path, joins + 1, isHidden, inner);
       }
    };
-   collect(fields ?? [], "", 0, false);
+   collect(
+      fields ?? [],
+      "",
+      0,
+      false,
+      query ? { outputs: outputsOf(query), rel: "" } : undefined,
+   );
 
-   const outputs = query ? readQueryOutputs(query) : undefined;
-   if (outputs?.base?.truncated) resolved.truncated = true;
    const visiting = new Set<string>();
    const resolve = (path: string): FieldClassification | undefined => {
       const done = resolved.get(path);
@@ -511,18 +565,16 @@ function walkSourceClassifications(
       // means "no lineage", not a hang.
       if (visiting.has(path)) return undefined;
       visiting.add(path);
-      const { field, owner, hidden } = entry;
+      const { field, owner, hidden, out } = entry;
       const texts = annotationTexts(field.annotations);
       const own = readClassification(texts);
-      // An output of the query itself reads from the query's source, not
-      // from its own siblings.
-      const fromQuery = outputs !== undefined && owner === "";
-      const reads: OutputReads = (fromQuery
-         ? outputs.reads.get(path)
+      // An output of a query reads from the query's source, not from its own siblings.
+      const reads: OutputReads = (out
+         ? out.outputs.reads.get(out.rel)
          : undefined) ?? {
-         value: fromQuery ? [] : fieldReferences(field.e),
+         value: out ? [] : fieldReferences(field.e),
          filter: [],
-         passthrough: fromQuery ? false : isPassthrough(field.e),
+         passthrough: out ? false : isPassthrough(field.e),
       };
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
@@ -530,14 +582,14 @@ function walkSourceClassifications(
       const unresolvedRead = (refPath: string): void => {
          if (!unresolved.includes(refPath)) unresolved.push(refPath);
       };
-      if (fromQuery && !outputs.reads.has(path)) unresolvedRead(path);
+      if (out && !out.outputs.reads.has(out.rel)) unresolvedRead(path);
       const read = (refs: string[][]): void => {
          for (const ref of refs) {
             const name = ref.join(".");
-            const refPath = owner && !fromQuery ? `${owner}.${name}` : name;
-            if (refPath === path && !fromQuery) continue;
-            const input = fromQuery
-               ? outputs.base?.get(refPath)
+            const refPath = owner && !out ? `${owner}.${name}` : name;
+            if (refPath === path && !out) continue;
+            const input = out
+               ? out.outputs.base?.get(refPath)
                : resolve(refPath);
             if (!input) {
                unresolvedRead(refPath);
@@ -571,9 +623,12 @@ function walkSourceClassifications(
          }
       };
       read(reads.value);
+      const valueInputs = inputs.length;
       read(reads.filter);
       visiting.delete(path);
-      const wouldBe = tokenSet(inputs.flatMap((i) => i.classifications));
+      const classesOf = (list: ClassifiedInput[]): string[] =>
+         tokenSet(list.flatMap((i) => i.classifications));
+      const wouldBe = classesOf(inputs);
       const result: FieldClassification = {
          declared: own.values,
          inferred: own.values.length > 0 ? [] : wouldBe,
@@ -583,10 +638,14 @@ function walkSourceClassifications(
          hidden,
          isField: isAtomicField(field),
          kind: fieldKind(field),
+         // A filter selects rows and copies no value, so only the value reads are "dropped".
          dropped:
             own.values.length > 0
-               ? wouldBe.filter((k) => !own.values.includes(k))
+               ? classesOf(inputs.slice(0, valueInputs)).filter(
+                    (k) => !own.values.includes(k),
+                 )
                : [],
+         filtered: inputs.slice(valueInputs),
          passthrough: reads.passthrough,
          unresolved,
       };
@@ -597,43 +656,74 @@ function walkSourceClassifications(
    return resolved;
 }
 
+/** What the outputs of one `->` query read, and the lineage they read it from. */
+interface QueryOutputs {
+   base: SourceLineage | undefined;
+   /** By output path: a nest's outputs are `nest.name`. */
+   reads: Map<string, OutputReads>;
+   /** The names its last stage returns; undefined when the compiled query does not say. */
+   names: Set<string> | undefined;
+}
+
 /**
  * What each output of a `->` query reads: its query field's references and
- * the first stage's filters, resolved against `base`, the lineage of the
- * source the query runs on. An output of a later stage reads nothing this can
- * see, so it is absent and the caller treats it as unresolved.
+ * the filters of the stage it sits in and of every stage around it, resolved
+ * against the lineage of {@link queryInput}. A nest's outputs are read the
+ * same way, one single-stage level at a time. An output of a later stage, or
+ * of a nest that cannot be read, is absent and the caller treats it as
+ * unresolved.
  */
-function readQueryOutputs(query: IrQuery): {
-   base: SourceLineage | undefined;
-   reads: Map<string, OutputReads>;
-} {
-   const structRef = query.structRef as
-      | { fields?: IrField[]; query?: IrQuery }
-      | string
-      | undefined;
-   const base =
-      structRef && typeof structRef === "object"
-         ? readSourceClassifications(structRef.fields, structRef.query)
-         : undefined;
+function readQueryOutputs(query: IrQuery, modelDef?: ModelDef): QueryOutputs {
+   const input = queryInput(modelDef, query);
+   const base = input
+      ? readSourceClassifications(input.fields, input.query)
+      : undefined;
    const reads = new Map<string, OutputReads>();
    const stages = query.pipeline ?? [];
-   if (stages.length !== 1) return { base, reads };
-   const filter = fieldReferences(stages[0].filterList);
-   for (const qf of stages[0].queryFields ?? []) {
-      const name = qf.as ?? qf.name ?? qf.path?.at(-1);
-      if (!name) continue;
-      reads.set(name, {
-         value:
-            qf.type === "fieldref"
-               ? [qf.path ?? []]
-               : qf.type === "turtle"
-                 ? (qf.refSummary?.fieldUsage ?? []).map((u) => u.path ?? [])
-                 : fieldReferences(qf.e),
-         filter,
-         passthrough: qf.type === "fieldref" || isPassthrough(qf.e),
-      });
-   }
-   return { base, reads };
+   const collectStage = (
+      stage: IrStage,
+      prefix: string,
+      inherited: string[][],
+      depth: number,
+   ): void => {
+      const filter = [...inherited, ...fieldReferences(stage.filterList)];
+      for (const qf of stage.queryFields ?? []) {
+         const name = qf.as ?? qf.name ?? qf.path?.at(-1);
+         if (!name) continue;
+         const path = prefix ? `${prefix}.${name}` : name;
+         reads.set(path, {
+            value:
+               qf.type === "fieldref"
+                  ? [qf.path ?? []]
+                  : qf.type === "turtle"
+                    ? (qf.refSummary?.fieldUsage ?? []).map((u) => [
+                         ...(u.path ?? []),
+                      ])
+                    : fieldReferences(qf.e),
+            filter,
+            passthrough: qf.type === "fieldref" || isPassthrough(qf.e),
+         });
+         const nested = qf.type === "turtle" ? qf.pipeline : undefined;
+         if (nested?.length === 1 && depth < MAX_JOIN_RECURSION_DEPTH) {
+            collectStage(nested[0], path, filter, depth + 1);
+         }
+      }
+   };
+   if (stages.length === 1) collectStage(stages[0], "", [], 0);
+   const returned = stages.at(-1)?.outputStruct?.fields;
+   return {
+      base,
+      reads,
+      names: returned
+         ? new Set(returned.flatMap((f) => activeName(f) ?? []))
+         : undefined,
+   };
+}
+
+/** Where in a query's outputs a field sits: the query, and its path among them. */
+interface OutputScope {
+   outputs: QueryOutputs;
+   rel: string;
 }
 
 /** What a view reads from its source. */
@@ -733,7 +823,7 @@ export interface PublishedSource {
    deniedToAll: boolean;
    /** Reachable dimensions and measures a caller can read, by path. */
    fields: Array<[string, FieldClassification]>;
-   /** Hidden dimensions and measures a view reads, by path. */
+   /** Hidden dimensions and measures a view or a reachable field reads, directly or through other fields, by path. */
    hiddenRead: Array<[string, FieldClassification]>;
    /** What each of its views reads from it. */
    views: ViewExposure[];
@@ -797,21 +887,27 @@ export function publishedSources(
          const apiSource = apiSources?.find((s) => s.name === sourceInfo.name);
          const lineage = readSourceClassifications(ir.fields, ir.query);
          const views = readViewExposures(ir.fields, lineage);
+         const fields = Array.from(lineage).filter(
+            ([, c]) => c.isField && !c.hidden,
+         );
          const hiddenRead: Array<[string, FieldClassification]> = [];
-         for (const path of new Set(
-            views.flatMap((v) => v.reads.map((r) => r.field)),
-         )) {
+         const visited = new Set<string>();
+         const visit = (path: string): void => {
+            if (visited.has(path)) return;
+            visited.add(path);
             const c = lineage.get(path);
-            if (c?.hidden && c.isField) hiddenRead.push([path, c]);
-         }
+            if (!c) return;
+            if (c.hidden && c.isField) hiddenRead.push([path, c]);
+            for (const input of c.inputs) visit(input.field);
+         };
+         for (const v of views) for (const r of v.reads) visit(r.field);
+         for (const [, c] of fields) for (const i of c.inputs) visit(i.field);
          out.push({
             modelPath,
             source: sourceInfo.name,
             ir,
             deniedToAll: apiSource ? isDeniedToAll(apiSource) : false,
-            fields: Array.from(lineage).filter(
-               ([, c]) => c.isField && !c.hidden,
-            ),
+            fields,
             hiddenRead,
             views,
             truncated: lineage.truncated,
@@ -1028,6 +1124,18 @@ export function classificationLeaks(
          if (copy) {
             messages.push(copy);
             continue;
+         }
+         // An undeclared field already carries its filter's classes in its own.
+         const filtered = c.filtered.filter((i) =>
+            i.classifications.some((k) => !carries.classes.has(k)),
+         );
+         if (c.declared.length > 0 && filtered.length > 0) {
+            const filters =
+               `${where} carries [${allowed}] but its query filters on ` +
+               `${filtered.map((i) => `${i.field} (${i.classifications.join(" ")})`).join(", ")}, ` +
+               `which every row it returns reveals. Remove the filter, or ` +
+               `add the class to #(carries) if the policy allows it.`;
+            if (!messages.includes(filters)) messages.push(filters);
          }
          const off = c.classifications.filter((k) => !carries.classes.has(k));
          if (c.classifications.length > 0 && off.length === 0) {

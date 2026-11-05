@@ -17,7 +17,9 @@
  * against the entry source's own gates:
  *
  * - the joined struct is locked outright (`#(authorize) false`): an entry
- *   that can be entered is never as locked as that, so this always refuses;
+ *   that can be entered is never as locked as that, so this refuses from an
+ *   ungated entry (a gated entry over a locked base is the curated-extension
+ *   pattern);
  * - the joined struct's `#(authorize)` lock has a term the entry's lock
  *   lacks, compared as parsed (given, operator, decoded literal), never as
  *   text;
