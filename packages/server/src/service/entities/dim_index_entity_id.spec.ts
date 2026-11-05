@@ -34,10 +34,16 @@ describe("computeSqlFingerprint", () => {
 });
 
 describe("buildFingerprintQuery", () => {
+   test("quotes a source name that needs it", () => {
+      expect(
+         buildFingerprintQuery("Order Items", "region", [], []),
+      ).toStartWith("run: `Order Items` -> { ");
+   });
+
    test("sorts required filters alphabetically and brackets the value field", () => {
       const q = buildFingerprintQuery("flights", "carrier", ["tier", "region"]);
       expect(q).toBe(
-         "run: flights -> { " +
+         "run: `flights` -> { " +
             "group_by: `region`, `tier`, value is `carrier` " +
             "aggregate: weight is count() " +
             "order_by: value " +
@@ -48,7 +54,7 @@ describe("buildFingerprintQuery", () => {
    test("omits the leading comma when there are no required filters", () => {
       const q = buildFingerprintQuery("flights", "carrier", []);
       expect(q).toBe(
-         "run: flights -> { " +
+         "run: `flights` -> { " +
             "group_by: value is `carrier` " +
             "aggregate: weight is count() " +
             "order_by: value " +
@@ -126,7 +132,7 @@ describe("buildFingerprintQuery", () => {
 
    test("a filters-only query is byte-stable", () => {
       expect(buildFingerprintQuery("flights", "carrier", ["tier"], [])).toBe(
-         "run: flights -> { group_by: `tier`, value is `carrier` aggregate: weight is count() order_by: value }",
+         "run: `flights` -> { group_by: `tier`, value is `carrier` aggregate: weight is count() order_by: value }",
       );
    });
 

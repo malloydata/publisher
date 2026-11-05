@@ -8,27 +8,28 @@
  * silently ignored.
  */
 
-import { tokenizeAnnotationBody } from "./filter_parsing";
+import { tokenize } from "../filter";
 
 const FORBIDDEN_KEYS = new Set(["sharing", "schedule"]);
 
-// The body between the `index`/`index_values` keyword and the closing paren:
-// `#( index <body> )`.
-const INDEX_TAG_BODY = /^#\s*\(\s*index(?:_values)?\b(.*)\)\s*$/;
+// An `#(index)` tagline's payload: inside the parens (`#( index <body> )`,
+// which Malloy warns is a malformed route) and after them (`#(index) <body>`).
+const INDEX_TAG = /^#\s*\(\s*index(?:_values)?\b([^)]*)\)(.*)$/;
 
 /**
  * Detects any no-longer-supported per-dimension policy keys (`sharing`,
  * `schedule`) declared on a field's `#(index ... )` annotation. Returns the set
- * of forbidden keys found (empty when none). The discovery layer turns a
- * non-empty result into a publish-time rejection so authors get a clear error
- * instead of a silently-ignored knob. Only the first matching `#(index)` tagline
+ * of forbidden keys found (empty when none). The discovery layer reports a
+ * non-empty result as a package warning instead of silently ignoring the knob. Only the first matching `#(index)` tagline
  * is inspected (a field carries at most one).
  */
 export function findForbiddenIndexPolicyKeys(taglines: string[]): string[] {
    for (const tagline of taglines) {
-      const match = INDEX_TAG_BODY.exec(tagline.trim());
+      const match = INDEX_TAG.exec(tagline.trim());
       if (!match) continue;
-      const tokens = tokenizeAnnotationBody((match[1] ?? "").trim());
+      const tokens = [match[1], match[2]].flatMap((part) =>
+         tokenize((part ?? "").trim()),
+      );
       const found: string[] = [];
       for (const token of tokens) {
          const eq = token.indexOf("=");

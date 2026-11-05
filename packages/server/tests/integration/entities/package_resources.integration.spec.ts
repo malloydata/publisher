@@ -11,8 +11,8 @@
  * - With `PUBLISHER_PACKAGE_INLINE_FIELDS=off` a package response carries only
  *   the package's own fields, and its `GET /status` entry only what a reconcile
  *   reads. With it on (the default) the moved fields are still inline.
- * - A package whose `#(index)` or required `#(filter)` an index cannot honor is
- *   refused with a 400.
+ * - A package whose `#(index)` or required `#(filter)` an index cannot honor
+ *   loads, with a coded warning the compile dry run reports too.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -113,8 +113,16 @@ describe("the package resource and its sub-resources", () => {
 
    afterAll(() => r.stop());
 
-   it("GET …/entities reports every model's entities, off-surface files included", async () => {
-      const { status, json } = await get(pkgUrl("shop", "/entities"));
+   it("GET …/entities reports the surface by default, and every model with includeHiddenFilesAndSources", async () => {
+      const surface = await get(pkgUrl("shop", "/entities"));
+      expect(surface.status).toBe(200);
+      expect(
+         (surface.json as unknown as ModelEntities[]).map((m) => m.modelPath),
+      ).toEqual(["orders.malloy"]);
+
+      const { status, json } = await get(
+         pkgUrl("shop", "/entities?includeHiddenFilesAndSources=true"),
+      );
       expect(status).toBe(200);
       const models = json as unknown as ModelEntities[];
       expect(models.map((m) => m.modelPath)).toEqual([
@@ -146,6 +154,35 @@ describe("the package resource and its sub-resources", () => {
       );
       // The whole response, as a load computes it from the rebuilt models.
       expect(models).toMatchSnapshot();
+   }, 60_000);
+
+   it("GET …/entities withholds a locked source unless includeHiddenFilesAndSources is set", async () => {
+      const location = writePackage("lockbox", {
+         "index.malloy": `#(authorize) false
+source: vault is ${ROWS}
+source: lobby is ${ROWS}
+`,
+      });
+      expect((await publish("lockbox", location)).status).toBe(200);
+      const sourcesOf = async (query: string) => {
+         const models = (await get(pkgUrl("lockbox", `/entities${query}`)))
+            .json as unknown as ModelEntities[];
+         return {
+            sources: models.flatMap((m) => m.sources ?? []).map((s) => s.name),
+            fieldSources: [
+               ...new Set(
+                  models.flatMap((m) => m.fields ?? []).map((f) => f.source),
+               ),
+            ],
+         };
+      };
+      expect(await sourcesOf("")).toEqual({
+         sources: ["lobby"],
+         fieldSources: ["lobby"],
+      });
+      expect(
+         (await sourcesOf("?includeHiddenFilesAndSources=true")).sources.sort(),
+      ).toEqual(["lobby", "vault"]);
    }, 60_000);
 
    it("GET …/build-plan and GET …/embedding-index read the loaded package", async () => {
@@ -281,23 +318,30 @@ describe("the package resource and its sub-resources", () => {
       );
    }, 60_000);
 
-   it("a package with an #(index) on a measure is refused with a 400 naming it, counted as a refusal and never as a success", async () => {
+   it("a package with an #(index) on a measure loads, with a coded warning the compile dry run reports too", async () => {
       const harness = await startMetricsHarness();
       resetPackageLoadMetricsForTesting();
       try {
-         const location = writePackage("bad_index", {
+         const location = writePackage("measure_index", {
             "bad.malloy": `source: bad is ${ROWS} extend {
   #(index)
   measure: n is count()
 }
 `,
          });
-         const created = await publish("bad_index", location);
-         expect(created.status).toBe(400);
-         expect(JSON.stringify(created.json)).toContain("is not a dimension");
+         expect((await publish("measure_index", location)).status).toBe(200);
+         const pkg = (await get(pkgUrl("measure_index"))).json as ApiPackage;
+         const warning = pkg.warnings?.find(
+            (w) => w.code === "entities-not-a-dimension",
+         );
+         expect(warning).toMatchObject({
+            model: "bad.malloy",
+            severity: "warn",
+         });
+         expect(warning?.message).toContain("is not a dimension");
          expect(
             await harness.collectCounter(
-               "publisher_package_entities_refusals_total",
+               "publisher_package_entities_findings_total",
                { reason: "not_a_dimension" },
             ),
          ).toBe(1);
@@ -305,25 +349,32 @@ describe("the package resource and its sub-resources", () => {
             harness.collectHistogram("malloy_package_load_compile_duration", {
                status,
             });
-         expect((await phases("policy_rejected")).count).toBe(1);
-         expect((await phases("success")).count).toBe(0);
+         expect((await phases("success")).count).toBe(1);
+
+         const dryRun = await r.post(
+            pkgUrl("measure_index", "/models/bad.malloy/compile"),
+            { scope: "package" },
+         );
+         expect(JSON.stringify(dryRun.json)).toContain(
+            "entities-not-a-dimension",
+         );
       } finally {
          resetPackageLoadMetricsForTesting();
          await harness.shutdown();
       }
    }, 120_000);
 
-   it("a package with two required filters on one dimension is refused with a 400", async () => {
-      const location = writePackage("bad_filter", {
-         "bad.malloy": `#(filter) name=a dimension=channel type=equal required
-#(filter) name=b dimension=channel type=equal required
-source: bad is ${ROWS}
+   it("a package with two required filters on one dimension (a range) loads with no warning", async () => {
+      const location = writePackage("range_filter", {
+         "range.malloy": `#(filter) name=min dimension=id type=greater_than required
+#(filter) name=max dimension=id type=less_than required
+source: ranged is ${ROWS}
 `,
       });
-      const created = await publish("bad_filter", location);
-      expect(created.status).toBe(400);
-      expect(JSON.stringify(created.json)).toContain(
-         "multiple required filters",
-      );
+      expect((await publish("range_filter", location)).status).toBe(200);
+      const pkg = (await get(pkgUrl("range_filter"))).json as ApiPackage;
+      expect(
+         (pkg.warnings ?? []).filter((w) => w.code?.startsWith("entities-")),
+      ).toEqual([]);
    }, 120_000);
 });

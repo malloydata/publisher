@@ -24,13 +24,12 @@ import {
    computeSqlFingerprint,
    type DimIndexFingerprintInputs,
 } from "./dim_index_entity_id";
-import { errorMessage } from "./errors";
+import { errMessage } from "../../utils";
 import { splitSourcePath } from "./explore_walk";
 import type { ModelCompileResult } from "./internal_types";
 import { FileURLReader } from "./field_helpers";
 import { withModelTextCache } from "./model_text";
 import {
-   DuplicateRequiredFilterError,
    sourceExtraction,
    RequiredFilterMissingDimensionError,
    RequiredFilterNonPublicDimensionError,
@@ -84,22 +83,38 @@ export interface ExtractPackageEntitiesInput {
  * surface is resolved from every compiled file first, then each file is
  * extracted against it.
  *
- * Throws an {@link EntitiesValidationError} when an annotation the extraction
- * reads is invalid (a required `#(filter)` on a dimension that does not exist
- * or is not public, two required filters on one dimension, an `#(index)` the
- * index cannot honor). The load refuses the package with every such message.
+ * An annotation an index cannot honor (a required `#(filter)` on a dimension
+ * that does not exist or is not public, an `#(index)` the index cannot use) is
+ * reported as a finding and left out of the entities; the load warns with it.
  * Any other failure is reported on that file's result, so one file never hides
  * the rest.
  */
 export function extractPackageEntities(
    input: ExtractPackageEntitiesInput,
-): Promise<ModelCompileResult[]> {
-   return withModelTextCache(() => extractAll(input));
+): Promise<PackageEntitiesExtraction> {
+   const texts = new Map<string, string>();
+   for (const file of input.modelFiles) {
+      if ("text" in file) texts.set(file.absolutePath, file.text);
+   }
+   return withModelTextCache(() => extractAll(input), texts);
+}
+
+/** An annotation the extraction left out because an index cannot honor it. */
+export interface EntitiesFinding {
+   modelPath: string;
+   message: string;
+   /** A short code for the kind of annotation, for the load's warning and metric. */
+   reason: string;
+}
+
+export interface PackageEntitiesExtraction {
+   results: ModelCompileResult[];
+   findings: EntitiesFinding[];
 }
 
 async function extractAll(
    input: ExtractPackageEntitiesInput,
-): Promise<ModelCompileResult[]> {
+): Promise<PackageEntitiesExtraction> {
    const compiled = input.modelFiles.filter(
       (f): f is Extract<EntitiesModelFile, { model: Model }> => "model" in f,
    );
@@ -110,7 +125,7 @@ async function extractAll(
       input.manifest,
       compiled as SurfaceModelFile[],
       (file, error) => {
-         const detail = errorMessage(error);
+         const detail = errMessage(error);
          logger.warn("Could not read a model's part of the query surface", {
             packageName: input.packageName,
             modelPath: file.relativePath,
@@ -124,7 +139,7 @@ async function extractAll(
       },
    );
    const results: ModelCompileResult[] = [];
-   const rejections: { message: string; reason: string }[] = [];
+   const findings: EntitiesFinding[] = [];
    for (const file of input.modelFiles) {
       if (!("model" in file)) {
          results.push(errorResult(file.relativePath, file.error));
@@ -132,80 +147,68 @@ async function extractAll(
       }
       const surfaceError = surfaceErrors.get(file.relativePath);
       if (surfaceError !== undefined) {
-         results.push(errorResult(file.relativePath, surfaceError));
+         results.push(
+            errorResult(file.relativePath, surfaceError, "extraction"),
+         );
          continue;
       }
       try {
-         results.push(
-            await extractModelFile(
-               file,
-               input.packageRoot,
-               surface,
-               input.connections,
-               input.packageName,
-            ),
+         const extracted = await extractModelFile(
+            file,
+            input.packageRoot,
+            surface,
+            input.connections,
+            input.packageName,
          );
+         results.push(extracted.result);
+         findings.push(...extracted.findings);
       } catch (error) {
-         if (error instanceof EntitiesValidationError) {
-            error.messages.forEach((message, i) =>
-               rejections.push({ message, reason: error.reasons[i]! }),
-            );
-            continue;
-         }
-         const message = errorMessage(error);
+         const message = errMessage(error);
          logger.warn("Could not extract a model's entities", {
             packageName: input.packageName,
             modelPath: file.relativePath,
             error: message,
          });
          recordEntitiesDegraded("file_extract_failed");
-         results.push(errorResult(file.relativePath, message));
+         results.push(errorResult(file.relativePath, message, "extraction"));
       }
    }
-   if (rejections.length > 0) {
-      throw new EntitiesValidationError(
-         rejections.map((r) => r.message),
-         rejections.map((r) => r.reason),
-      );
-   }
-   return results;
+   return { results, findings };
 }
 
 /**
- * One or more model files declare an annotation the index cannot honor.
- * `reasons` holds one short code per refusal, parallel to `messages`.
+ * The package warning code for a finding's reason: one stable code per kind of
+ * annotation, which a host that indexes can refuse a publish on.
  */
-export class EntitiesValidationError extends Error {
-   constructor(
-      readonly messages: string[],
-      readonly reasons: string[],
-   ) {
-      super(messages.join("\n"));
-      this.name = "EntitiesValidationError";
-   }
+export function entitiesFindingCode(reason: string): string {
+   return `entities-${reason.replaceAll("_", "-")}`;
 }
 
-/** The reason code of an annotation the index refuses, or undefined for any other error. */
-function refusalReason(error: unknown): string | undefined {
+/** The reason code of an annotation an index cannot honor. */
+function findingReason(error: Error): string {
    if (error instanceof DimIndexRejectionError) return error.reason;
    if (error instanceof RequiredFilterMissingDimensionError)
       return "required_filter_missing_dimension";
    if (error instanceof RequiredFilterNonPublicDimensionError)
       return "required_filter_non_public_dimension";
-   if (error instanceof DuplicateRequiredFilterError)
-      return "duplicate_required_filter";
-   return undefined;
+   return "unknown";
 }
 
+/**
+ * A file with no entities: it did not compile (`compile`, the author's to
+ * fix), or the server could not extract it (`extraction`, the server's).
+ */
 function errorResult(
    relativePath: string,
    message?: string,
+   errorKind: "compile" | "extraction" = "compile",
 ): ModelCompileResult {
    return {
       modelFilePath: relativePath,
       entities: [],
       sourceMetadataEntries: [],
       compileStatus: "ERROR",
+      errorKind,
       ...(message !== undefined && { errorMessage: message }),
    };
 }
@@ -217,7 +220,7 @@ async function extractModelFile(
    surface: PackageQuerySurface,
    connections: LookupConnection<InfoConnection>,
    packageName: string | undefined,
-): Promise<ModelCompileResult> {
+): Promise<{ result: ModelCompileResult; findings: EntitiesFinding[] }> {
    const result = errorResult(file.relativePath);
    const compiledModel = file.model;
    const explores = compiledModel.explores;
@@ -264,6 +267,13 @@ async function extractModelFile(
       file.relativePath,
       givenTypeMap(modelGivens),
       refuse,
+      sourceExtraction.joinDescent(
+         explores,
+         file.relativePath,
+         packageRoot,
+         source,
+         nonQueryableSourceNames,
+      ),
    );
    const dimIndexFingerprints = await buildDimIndexFingerprintLookup({
       compiledModel,
@@ -273,12 +283,6 @@ async function extractModelFile(
       packageName,
       refuse,
    });
-   if (refusals.length > 0) {
-      throw new EntitiesValidationError(
-         refusals.map(errorMessage),
-         refusals.map((error) => refusalReason(error) ?? "unknown"),
-      );
-   }
 
    const entities = sourceExtraction.extractEntitiesFromExplores(
       explores,
@@ -289,12 +293,21 @@ async function extractModelFile(
       nonQueryableSourceNames,
    );
    result.entities = entities;
+   result.givens = modelGivens;
    result.sourceMetadataEntries = sourceMetadataEntries;
    result.sourceInfos = explores.map((explore) =>
       serializeExploreToSourceInfo(explore, source),
    );
    result.compileStatus = "SUCCESS";
-   return result;
+   delete result.errorKind;
+   return {
+      result,
+      findings: refusals.map((error) => ({
+         modelPath: file.relativePath,
+         message: errMessage(error),
+         reason: findingReason(error),
+      })),
+   };
 }
 
 /**
@@ -376,7 +389,7 @@ async function buildDimIndexFingerprintLookup(args: {
                modelPath: args.modelFilePath,
                sourceName: candidate.sourceName,
                fieldName: candidate.fieldName,
-               error: errorMessage(err),
+               error: errMessage(err),
             },
          );
          recordEntitiesDegraded("fingerprint_failed");

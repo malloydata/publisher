@@ -295,7 +295,7 @@ const MAX_RECORDED_ADD_FAILURES = 100;
  * How a package listing is built. `includeLoading` lists a first-time load as
  * a bare entry; `operational` builds the `/status` entries: what a reconcile
  * reads (`PackageStatusEntry`). While PUBLISHER_PACKAGE_INLINE_FIELDS is on an
- * entry is still the package's full response plus its serving state, as before.
+ * entry is the package's full response plus its serving state.
  */
 export type PackageListingOptions = {
    includeLoading?: boolean;

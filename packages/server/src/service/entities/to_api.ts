@@ -33,9 +33,10 @@ function toApiModelEntities(result: ModelCompileResult): ApiModelEntities {
       return {
          modelPath: result.modelFilePath,
          error: result.errorMessage ?? "The model did not compile.",
+         errorKind: result.errorKind ?? "compile",
       };
    }
-   const givens = modelGivensOf(result.sourceMetadataEntries);
+   const givens = result.givens ?? modelGivensOf(result.sourceMetadataEntries);
    return {
       modelPath: result.modelFilePath,
       fields: result.entities.map(toApiField),
@@ -118,15 +119,7 @@ function toApiSchemaField(field: SourceInfoField): ApiSourceSchemaField {
 }
 
 function toApiGiven(given: Given): ApiGiven {
-   return {
-      name: given.name,
-      type: given.type,
-      ...(given.annotations !== undefined && {
-         annotations: given.annotations,
-      }),
-      ...(given.secure !== undefined && { secure: given.secure }),
-      ...(given.default !== undefined && { default: given.default }),
-   } as ApiGiven;
+   return given as ApiGiven;
 }
 
 /**

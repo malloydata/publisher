@@ -139,14 +139,14 @@ export function recordPackageLoadPhaseDurations(
    }
 }
 
-const entitiesRefusals = lazyCounter(
-   "publisher_package_entities_refusals_total",
-   "Annotations a package load refused because an index cannot honor them, one per refused declaration. Label: reason (multiple_required_filters, parameterized_source, not_a_dimension, schedule_not_allowed_on_dimension, sharing_not_allowed_on_dimension, required_filter_missing_dimension, required_filter_non_public_dimension, duplicate_required_filter).",
+const entitiesFindings = lazyCounter(
+   "publisher_package_entities_findings_total",
+   "Annotations a package load warned about and left out of its entities because an index cannot honor them, one per declaration. Label: reason (multiple_required_filters, parameterized_source, not_a_dimension, schedule_not_allowed_on_dimension, sharing_not_allowed_on_dimension, required_filter_missing_dimension, required_filter_non_public_dimension).",
 );
 
-/** Count a load's refused annotations, one per reason code. */
-export function recordEntitiesRefusals(reasons: readonly string[]): void {
-   for (const reason of reasons) entitiesRefusals().add(1, { reason });
+/** Count a load's annotations an index cannot honor, one per reason code. */
+export function recordEntitiesFindings(reasons: readonly string[]): void {
+   for (const reason of reasons) entitiesFindings().add(1, { reason });
 }
 
 /**

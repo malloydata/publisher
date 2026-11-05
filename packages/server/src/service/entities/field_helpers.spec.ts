@@ -15,6 +15,7 @@ import {
    getAccessModifier,
    getDescriptionFromTags,
    inferType,
+   isFilePath,
    isMalloyDefined,
    parseDocAnnotation,
 } from "./field_helpers";
@@ -389,5 +390,21 @@ source: nums is duckdb.table('t') extend {
          await describeField(model, "pub_label"),
          "Line one.\nLine two.\nLine three.",
       );
+   });
+});
+
+describe("isFilePath", () => {
+   test("a file, URL or glob is a file; a dotted name is not", () => {
+      for (const path of [
+         "orders.csv",
+         "data/orders.parquet",
+         "s3://bucket/orders.json",
+         "logs/*.jsonl",
+      ]) {
+         assert.strictEqual(isFilePath(path), true, path);
+      }
+      for (const path of ["orders", "sales.orders", "proj.sales.orders"]) {
+         assert.strictEqual(isFilePath(path), false, path);
+      }
    });
 });

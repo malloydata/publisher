@@ -22,10 +22,9 @@ import {
 import { publisherMeter } from "../telemetry";
 import {
    type EntitiesModelFile,
-   EntitiesValidationError,
+   entitiesFindingCode,
    extractPackageEntities,
 } from "./entities/extract";
-import type { ModelCompileResult } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
 import recursive from "recursive-readdir";
 import { components } from "../api";
@@ -73,7 +72,7 @@ import {
 } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
-   recordEntitiesRefusals,
+   recordEntitiesFindings,
    recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
@@ -395,6 +394,8 @@ export class Package {
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /** The annotations the entities extraction left out, as warnings. */
+   private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
    /** Linear reports whose cells the reader refused; set with the reports. */
    private readerWarnings: ApiPackageWarning[] = [];
@@ -1135,9 +1136,18 @@ export class Package {
             ],
          };
       }
+      // The dry run reports what the reload warns about the entities too.
+      try {
+         await pkg.computeEntities();
+      } catch (err) {
+         logger.warn("Entities lint failed during compile", {
+            packageName,
+            error: errMessage(err),
+         });
+      }
       return {
          renderTagWarnings: pkg.surfacedRenderTagWarnings(renderTagWarnings),
-         reportWarnings: pkg.reportWarnings,
+         reportWarnings: [...pkg.reportWarnings, ...pkg.entitiesWarnings],
       };
    }
 
@@ -1520,9 +1530,49 @@ export class Package {
    }
 
    /**
-    * Compute {@link entities} from the models now installed. Throws a
-    * `BadRequestError` naming every annotation the extraction cannot honor,
-    * which fails the load as a gate does.
+    * {@link entities} under the rules `GET …/models/{path}` applies: only the
+    * files on the package's surface, and no source locked with
+    * `#(authorize) false` (its fields and schema go with it). The whole set is
+    * for a host that indexes, and asks for it.
+    */
+   public getSurfaceEntities(): ApiModelEntities[] {
+      return (this.entities ?? []).flatMap((model) => {
+         const file = this.models.get(model.modelPath);
+         try {
+            file?.assertFileOnSurface();
+         } catch {
+            return [];
+         }
+         const locked = new Set(
+            (model.sources ?? [])
+               .filter((s) =>
+                  (s.authorize ?? []).some(
+                     (g) =>
+                        g.route === "authorize" &&
+                        g.expression.trim() === "false",
+                  ),
+               )
+               .map((s) => s.name),
+         );
+         if (locked.size === 0) return [model];
+         return [
+            {
+               ...model,
+               fields: model.fields?.filter((f) => !locked.has(f.source)),
+               sources: model.sources?.filter((s) => !locked.has(s.name)),
+               sourceSchemas: model.sourceSchemas?.filter(
+                  (s) => !locked.has(s.name),
+               ),
+            },
+         ];
+      });
+   }
+
+   /**
+    * Compute {@link entities} from the models now installed. An annotation an
+    * index cannot honor is left out of them and reported as a package warning
+    * with a stable code, so the package still loads and a host that indexes can
+    * refuse it at its own publish.
     */
    private async computeEntities(): Promise<void> {
       const modelFiles: EntitiesModelFile[] = [];
@@ -1543,37 +1593,35 @@ export class Package {
             relativePath: modelPath,
             absolutePath,
             model: new MalloyModel(modelDef, [], []),
-            text: await fs.readFile(absolutePath, "utf-8"),
+            // The text the model compiled from, so a field's code is sliced
+            // from the revision its range describes.
+            text:
+               model.getCompiledSourceText() ??
+               (await fs.readFile(absolutePath, "utf-8")),
          });
       }
-      let results: ModelCompileResult[];
-      try {
-         results = await extractPackageEntities({
-            packageRoot: this.packagePath,
+      const { results, findings } = await extractPackageEntities({
+         packageRoot: this.packagePath,
+         packageName: this.packageName,
+         modelFiles,
+         manifest: {
+            explores: this.packageMetadata.explores,
+            queryableSources: this.packageMetadata.queryableSources,
+         },
+         connections: this.malloyConfig.connections,
+      });
+      this.entitiesWarnings = findings.map((finding) => ({
+         model: finding.modelPath,
+         message: finding.message,
+         severity: "warn" as const,
+         code: entitiesFindingCode(finding.reason),
+      }));
+      if (findings.length > 0) {
+         logger.warn("Package declares annotations an index cannot honor", {
             packageName: this.packageName,
-            modelFiles,
-            manifest: {
-               explores: this.packageMetadata.explores,
-               queryableSources: this.packageMetadata.queryableSources,
-            },
-            connections: this.malloyConfig.connections,
+            reasons: findings.map((f) => f.reason),
          });
-      } catch (error) {
-         if (error instanceof EntitiesValidationError) {
-            // The author's problem, not the server's: the 400 carries every
-            // refused declaration to them.
-            logger.warn(
-               "Refused a package whose annotations an index cannot honor",
-               {
-                  packageName: this.packageName,
-                  reasons: error.reasons,
-                  detail: error.message,
-               },
-            );
-            recordEntitiesRefusals(error.reasons);
-            throw new BadRequestError(error.message);
-         }
-         throw error;
+         recordEntitiesFindings(findings.map((f) => f.reason));
       }
       this.entities = Object.freeze(toApiEntities(results));
       logger.info("Package entities computed", {
@@ -1630,10 +1678,10 @@ export class Package {
          name: this.packageName,
       };
       if (isPackageInlineFieldsEnabled()) {
-         // The fields that moved off Package, inline as before they moved
-         // (PUBLISHER_PACKAGE_INLINE_FIELDS). Each now lives elsewhere: the
-         // serving and binding fields on the package's `/status` entry
-         // (getOperationalFields), the rest at their own route.
+         // The deprecated inline fields, added while
+         // PUBLISHER_PACKAGE_INLINE_FIELDS is on: the serving and binding
+         // fields (getOperationalFields, also at `GET …/packages/{pkg}/status`)
+         // and the build plan and agents (also at their own routes).
          Object.assign(metadata, this.getOperationalFields(), {
             buildPlan: this.buildPlan,
             // Overlaid so a metadata PATCH body can neither set nor wipe it.
@@ -1656,6 +1704,7 @@ export class Package {
       // API because the load tolerates it, so otherwise only the log says so.
       const allWarnings = [
          ...this.renderTagWarnings,
+         ...this.entitiesWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
          ...this.packageSkillWarnings.map((message) => ({
@@ -1701,7 +1750,7 @@ export class Package {
    /**
     * What this server is serving for the package right now: the load's
     * identity, its manifest binding and the sources it serves from storage.
-    * Carried on the package's `/status` entry, which is where an orchestrator
+    * Served at `GET …/packages/{pkg}/status`, which is where an orchestrator
     * reads them, and on a package response only while
     * PUBLISHER_PACKAGE_INLINE_FIELDS is on. Cheap: every field is a value the
     * load or the last bind recorded.

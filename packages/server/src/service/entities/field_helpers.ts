@@ -55,6 +55,15 @@ export function getAccessModifier(field: Field): AccessModifierEnum {
    return AccessModifierEnum.Public;
 }
 
+// A path, URL or glob, or a name ending in a file extension DuckDB reads.
+const FILE_TABLE_PATH =
+   /[/\\*?]|:\/\/|\.(?:csv|tsv|txt|json|jsonl|ndjson|parquet|arrow|xlsx|gz|zst)$/i;
+
+/** Whether a table path names a file rather than a dotted `catalog.schema.table`. */
+export function isFilePath(tablePath: string): boolean {
+   return FILE_TABLE_PATH.test(tablePath);
+}
+
 /**
  * Returns the Entity to be indexed in the Malloy index.
  */
@@ -82,7 +91,11 @@ export function getEntityFromMalloyField(
    let catalog_name: string | null = null;
    let schema_name: string | null = null;
    let table_name: string | null = null;
-   if (tablePath) {
+   if (tablePath && isFilePath(tablePath)) {
+      // A file DuckDB reads (`duckdb.table('orders.csv')`) is not a dotted
+      // catalog.schema.table name: report it whole.
+      table_name = tablePath;
+   } else if (tablePath) {
       const parts = tablePath.split(".");
       table_name = parts[parts.length - 1]!;
       if (parts.length > 1) {

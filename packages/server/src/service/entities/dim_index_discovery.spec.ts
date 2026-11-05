@@ -101,10 +101,10 @@ describe("assertAtMostOneRequiredFilterPerIndexedDimension", () => {
 
 describe("assertNoRequiredParametersOnIndexedDimension", () => {
    test("throws when an indexed dimension's source has a required parameter", () => {
-      // A source like `source: campaign_attribution(report_id::number)`.
+      // A source like `source: report(report_id::number)`.
       const candidates = [
          candidate({
-            sourceName: "campaign_attribution",
+            sourceName: "report",
             fieldName: "platform",
             requiredParameterNames: ["report_id"],
          }),
@@ -114,19 +114,19 @@ describe("assertNoRequiredParametersOnIndexedDimension", () => {
          () =>
             assertNoRequiredParametersOnIndexedDimension(
                candidates,
-               "campaign_attribution.malloy",
+               "report.malloy",
             ),
          /required parameter.*report_id|#\(index\) dimension may not be declared on a parameterized source/i,
       );
    });
 
    test("names every required parameter when the source declares several", () => {
-      // Mirrors fortivis/income-statement: income_statement_report(p_tenant, p_period_mode, ...)
+      // A source with several required parameters: `period_report(p_region, p_period, p_end)`.
       const candidates = [
          candidate({
-            sourceName: "income_statement_report",
+            sourceName: "period_report",
             fieldName: "period_mode",
-            requiredParameterNames: ["p_tenant", "p_period_mode", "p_end_date"],
+            requiredParameterNames: ["p_region", "p_period", "p_end"],
          }),
       ];
 
@@ -136,7 +136,7 @@ describe("assertNoRequiredParametersOnIndexedDimension", () => {
                candidates,
                "is_report.malloy",
             ),
-         /p_tenant, p_period_mode, p_end_date/,
+         /p_region, p_period, p_end/,
       );
    });
 

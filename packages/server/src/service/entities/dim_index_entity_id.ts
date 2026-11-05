@@ -109,7 +109,7 @@ export function buildFingerprintQuery(
       `value is ${quoteMalloyPath(dimensionPath)}`,
    ];
    return (
-      `run: ${sourceName} -> { ` +
+      `run: ${quoteMalloyPath(sourceName)} -> { ` +
       `group_by: ${groupByColumns.join(", ")} ` +
       `aggregate: weight is count() ` +
       `order_by: value ` +

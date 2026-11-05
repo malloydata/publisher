@@ -53,18 +53,18 @@ export function splitSourcePath(sourcePath: string): {
 }
 
 /**
- * Yield every explore reachable from ``explores`` — including nested
- * sub-explores — along with its composed source-name path. Recurses
- * unconditionally into ``isExploreField()`` fields so any nested
- * source the extraction might walk via ``parseJoinCode.is_nested_index``
- * is visited too. Spurious entries (sub-explores that the extraction
- * does NOT recurse into) cost nothing for the dim-index candidate
- * collector because the resolver only fires on
- * ``${sourceName}::${fieldName}`` keys that the extraction separately
- * emits.
+ * Yield every explore reachable from ``explores`` through public joins that
+ * ``descend`` admits, along with its composed source-name path.
  */
+/** Whether a walk descends into a public `join` of the source at `parentSourceName`. */
+export type JoinDescentRule = (
+   join: MalloyExplore,
+   parentSourceName: string,
+) => boolean;
+
 export function* walkExploreTree(
    explores: MalloyExplore[],
+   descend: JoinDescentRule = () => true,
 ): Generator<{ explore: MalloyExplore; sourceName: string }> {
    const recurse = function* (
       explore: MalloyExplore,
@@ -78,7 +78,9 @@ export function* walkExploreTree(
             // aren't usable outside the declaring source.
             if (getAccessModifier(field) !== AccessModifierEnum.Public)
                continue;
-            yield* recurse(field as unknown as MalloyExplore, sourceName);
+            const join = field as unknown as MalloyExplore;
+            if (!descend(join, sourceName)) continue;
+            yield* recurse(join, sourceName);
          }
       }
    };

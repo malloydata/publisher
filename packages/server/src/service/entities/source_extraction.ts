@@ -23,20 +23,13 @@ import type {
    SourceMetadata,
 } from "./internal_types";
 
-/** Routes the `Given.annotations` contract excludes.
- *  Must agree with `isReservedRoute` in ../annotations.ts — empty or non-alphanumeric
- *  routes are Malloy's reserved channels (plain `#` tags, `#"` doc strings,
- *  `##!` pragmas) and aren't part of the caller-facing annotation surface. */
-const isReservedRoute = (route: string): boolean =>
-   route === "" || !/[\p{L}\p{N}]/u.test(route);
-
 import type {
    Explore as MalloyExplore,
    Model as MalloyModel,
 } from "@malloydata/malloy";
 
 import { type Refuse, throwRefusal } from "./dim_index_discovery";
-import { errorMessage } from "./errors";
+import { errMessage } from "../../utils";
 import { extractCodeFromEntity } from "./model_text";
 import {
    parseGateAnnotation,
@@ -50,8 +43,14 @@ import {
    makeDimIndexLookupKey,
 } from "./dim_index_discovery";
 import type { DimIndexFingerprintInputs } from "./dim_index_entity_id";
-import { composeSourceName, splitSourcePath } from "./explore_walk";
-import { parseFilterAnnotation, type Filter } from "./filter_parsing";
+import {
+   composeSourceName,
+   type JoinDescentRule,
+   splitSourcePath,
+} from "./explore_walk";
+import { sourceFilters } from "./filters";
+import type { Filter } from "./internal_types";
+import { type MalloyGiven, malloyGivenToApi } from "../given";
 
 /**
  * Builds a map of source names to their relative model file paths.
@@ -155,6 +154,75 @@ export function parseJoinCode(
 }
 
 /**
+ * Whether the extraction reports a public join's fields under the join's dotted
+ * path, rather than only under the joined source's own top-level walk. The
+ * `#(index)` candidate walk asks the same question ({@link joinDescent}), so it
+ * never fingerprints a dimension the extraction does not emit.
+ */
+function descendsIntoJoin(
+   joinMetadata: JoinSourceMetadata,
+   rootIsQueryable: boolean,
+   topLevelExploreNames: ReadonlySet<string>,
+   nonQueryableSourceNames: ReadonlySet<string>,
+): boolean {
+   const targetName = joinMetadata.original_source_name;
+   const targetIsAtTopLevel =
+      targetName != null && topLevelExploreNames.has(targetName);
+
+   //   - The third check (``targetIsNonQueryable`` under a queryable
+   //     root) re-roots dimensions of a source outside the package's
+   //     declared query surface. Such a source is normally indexed via
+   //     its own top-level walk, so we'd skip the join — but an indexer
+   //     cannot sample its dimensions (a direct ``run: <source> -> …``
+   //     404s), so the ONLY path to a dimension index is through a
+   //     declared source that joins it.
+   //     Recurse so its ``#(index)`` dims get a copy rooted at the
+   //     queryable parent (``order_items.inventory_items.product_category``
+   //     → source=``order_items``). Gated on ``rootIsQueryable`` so a
+   //     non-queryable head doesn't spawn entities that would only be
+   //     dropped again — and so the bridge/deep-import fan-out doesn't
+   //     re-walk every non-queryable subtree once per non-queryable head.
+   const targetIsNonQueryable =
+      targetName != null && nonQueryableSourceNames.has(targetName);
+
+   return (
+      joinMetadata.is_nested_index ||
+      !targetIsAtTopLevel ||
+      (targetIsNonQueryable && rootIsQueryable)
+   );
+}
+
+/**
+ * The rule {@link getEntitiesFromExplore} descends into a public join by, for a
+ * walk over the same file that must visit exactly the joins it reports.
+ */
+export function joinDescent(
+   explores: MalloyExplore[],
+   relativePath: string,
+   packageRoot: string,
+   docString: string,
+   nonQueryableSourceNames: ReadonlySet<string>,
+): JoinDescentRule {
+   const sourceToModelPath = buildSourceToModelPathMap(
+      explores,
+      relativePath,
+      packageRoot,
+   );
+   const topLevelExploreNames = new Set(explores.map((e) => e.name));
+   return (join, parentSourceName) =>
+      descendsIntoJoin(
+         parseJoinCode(
+            extractCodeFromEntity(join, docString),
+            join.name,
+            sourceToModelPath,
+         ),
+         !nonQueryableSourceNames.has(parentSourceName.split(".")[0]!),
+         topLevelExploreNames,
+         nonQueryableSourceNames,
+      );
+}
+
+/**
  * Returns entities for a single explore's fields.
  * @param parentPath - The dot-separated path of parent explores (e.g., "flights.origin")
  * @param sourceToModelPath - Map from source name to relative model file path
@@ -220,30 +288,13 @@ function getEntitiesFromExplore(
          //     If it's not at top level, the join is the only path —
          //     recurse so its fields land in the index under a dotted
          //     source path (``bridge_model.order_items.Created_at``).
-         const targetName = joinMetadata.original_source_name;
-         const targetIsAtTopLevel =
-            targetName != null && topLevelExploreNames.has(targetName);
-
-         //   - The third check (``targetIsNonQueryable`` under a queryable
-         //     root) re-roots dimensions of a source outside the package's
-         //     declared query surface. Such a source is normally indexed via
-         //     its own top-level walk, so we'd skip the join — but an indexer
-         //     cannot sample its dimensions (a direct ``run: <source> -> …``
-         //     404s), so the ONLY path to a dimension index is through a
-         //     declared source that joins it.
-         //     Recurse so its ``#(index)`` dims get a copy rooted at the
-         //     queryable parent (``order_items.inventory_items.product_category``
-         //     → source=``order_items``). Gated on ``rootIsQueryable`` so a
-         //     non-queryable head doesn't spawn entities that would only be
-         //     dropped again — and so the bridge/deep-import fan-out doesn't
-         //     re-walk every non-queryable subtree once per non-queryable head.
-         const targetIsNonQueryable =
-            targetName != null && nonQueryableSourceNames.has(targetName);
-
          if (
-            joinMetadata.is_nested_index ||
-            !targetIsAtTopLevel ||
-            (targetIsNonQueryable && rootIsQueryable)
+            descendsIntoJoin(
+               joinMetadata,
+               rootIsQueryable,
+               topLevelExploreNames,
+               nonQueryableSourceNames,
+            )
          ) {
             const nestedEntities = getEntitiesFromExplore(
                field as unknown as MalloyExplore,
@@ -339,8 +390,8 @@ const extractDocsFromExplore = (explore: MalloyExplore): string | null => {
  * @returns The list of source metadata entries from the explores
  */
 /**
- * Parses `#(filter)` annotations on a source. Filters whose `dimension`
- * doesn't exist on the source are dropped with a warning.
+ * A source's `#(filter)`s whose dimension is a public field of it. An optional
+ * one that is not is dropped with a warning; a required one is flagged.
  */
 const extractFiltersFromExplore = (
    explore: MalloyExplore,
@@ -350,30 +401,24 @@ const extractFiltersFromExplore = (
    const fieldsByName = new Map(
       (explore.allFields ?? []).map((f) => [f.name, f] as const),
    );
+   let declared: Filter[];
+   try {
+      declared = sourceFilters(explore);
+   } catch (err) {
+      // The query path refuses the same annotation, so the source has no filters.
+      logger.warn(
+         `[filters] Failed to parse a filter annotation on source '${explore.name}' in ${relativePath}: ${errMessage(err)}`,
+      );
+      return [];
+   }
    const filters: Filter[] = [];
-   // Required filters map 1:1 to dim-index partition keys, which feed a
-   // `group_by`. Two `#(filter ... required)` annotations on the same
-   // dimension would emit `group_by: tier, tier` and break the compile with a
-   // cryptic Malloy error; reject the duplicate here with a clear message
-   // instead. Enforced per source (one explore).
-   const requiredDimensionNames = new Set<string>();
-   for (const tagline of explore.getTaglines()) {
-      let parsed: Filter | null;
-      try {
-         parsed = parseFilterAnnotation(tagline.trim());
-      } catch (err) {
-         logger.warn(
-            `[filters] Failed to parse filter annotation on source '${explore.name}' in ${relativePath}: ${errorMessage(err)} — annotation: ${tagline.trim()}`,
-         );
-         continue;
-      }
-      if (!parsed) continue;
+   for (const parsed of declared) {
       const dimensionField = fieldsByName.get(parsed.dimension!);
       if (!dimensionField) {
          if (parsed.required) {
             refuse(
                new RequiredFilterMissingDimensionError(
-                  `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references unknown dimension '${parsed.dimension}'.`,
+                  `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references unknown dimension '${parsed.dimension}'. Fix: point the filter's dimension at a public dimension of '${explore.name}', or drop 'required'.`,
                ),
             );
             continue;
@@ -383,17 +428,14 @@ const extractFiltersFromExplore = (
          );
          continue;
       }
-      // A filter's dimension must be publicly accessible. Required filters
-      // become dim-index partition keys (a `group_by` in the fingerprint
-      // query) and every filter is applied in queries issued against the
-      // source's public surface, so an internal/private dimension fails at
-      // index and/or query time. Reject a required one up front; drop an
-      // optional one with a warning (mirrors the unknown-dimension handling).
+      // A filter's dimension must be public: every filter is applied in queries
+      // against the source's public surface, and a required one is a dim-index
+      // partition key. Flag a required one; drop an optional one with a warning.
       if (getAccessModifier(dimensionField) !== AccessModifierEnum.Public) {
          if (parsed.required) {
             refuse(
                new RequiredFilterNonPublicDimensionError(
-                  `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references non-public dimension '${parsed.dimension}'. A required filter must reference a public dimension.`,
+                  `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references non-public dimension '${parsed.dimension}'. Fix: make '${parsed.dimension}' public, or point the filter at a public dimension.`,
                ),
             );
             continue;
@@ -402,17 +444,6 @@ const extractFiltersFromExplore = (
             `[filters] Filter '${parsed.name}' on source '${explore.name}' in ${relativePath} references non-public dimension '${parsed.dimension}' — skipping.`,
          );
          continue;
-      }
-      if (parsed.required) {
-         if (requiredDimensionNames.has(parsed.dimension!)) {
-            refuse(
-               new DuplicateRequiredFilterError(
-                  `${relativePath}: source '${explore.name}' declares multiple required filters on dimension '${parsed.dimension}'. A dimension may have at most one required filter.`,
-               ),
-            );
-            continue;
-         }
-         requiredDimensionNames.add(parsed.dimension!);
       }
       filters.push(parsed);
    }
@@ -481,7 +512,7 @@ const extractAuthorizeFromModel = (
          // every source in the file from the index (the model compiled
          // fine). Same best-effort contract as filter parsing.
          logger.warn(
-            `[authorize] Failed to parse file-level annotation in ${relativePath}: ${errorMessage(err)} — annotation: ${tagline.trim()}`,
+            `[authorize] Failed to parse file-level annotation in ${relativePath}: ${errMessage(err)} — annotation: ${tagline.trim()}`,
          );
       }
    }
@@ -528,7 +559,7 @@ const buildAuthorizeForExplore = (
       } catch (err) {
          sawMalformedOwnTagline = true;
          logger.warn(
-            `[authorize] Failed to parse annotation on source '${explore.name}' in ${relativePath}: ${errorMessage(err)} — annotation: ${tagline.trim()}`,
+            `[authorize] Failed to parse annotation on source '${explore.name}' in ${relativePath}: ${errMessage(err)} — annotation: ${tagline.trim()}`,
          );
       }
    }
@@ -547,7 +578,7 @@ const buildAuthorizeForExplore = (
          // A resolution we could not complete is not "no gate": deny, and drop
          // the file-level prefix.
          logger.warn(
-            `[authorize] Failed to resolve the access gates for source '${explore.name}' in ${relativePath}: ${errorMessage(err)} — failing closed (deny)`,
+            `[authorize] Failed to resolve the access gates for source '${explore.name}' in ${relativePath}: ${errMessage(err)} — failing closed (deny)`,
          );
          deny();
       }
@@ -642,62 +673,11 @@ const checkAuthorizeJoinBypass = (
  *  (e.g. `'WN'`, `2003`, `@2024-01-01`, `f'WN'`), reached via a localised
  *  cast — widening the duck type would collide with the class's own private
  *  `_internal`. */
-const extractGivensFromModel = (model: MalloyModel): ApiGiven[] => {
-   const out: ApiGiven[] = [];
-   for (const given of model.givens.values()) {
-      const t = given.type;
-      // Render an array given as `<elem>[]` (e.g. `string[]`) — the multi-value
-      // convention the trusted-attribute system keys on (Malloy's raw type is
-      // just `"array"`, which would be mis-read as scalar). Mirrors the `::`
-      // authoring syntax.
-      const renderedType =
-         t.type === "filter expression"
-            ? `filter<${t.filterType}>`
-            : t.type === "array"
-              ? `${t.elementTypeDef.type}[]`
-              : t.type;
-      const annotations = given.annotations
-         .forRoute(undefined)
-         .filter((note) => !isReservedRoute(note.route))
-         .map((note) => note.text);
-      // Secure-given marker: `#(secure)` on the declaration — its own route,
-      // empty content. This is the trust marker — middleware that resolves
-      // secure givens treats it as server-resolved and strips it from callers. Presence on the
-      // route is the signal; no content to match.
-      const secure = given.annotations.forRoute("secure").length > 0;
-      // The `Given` class declares `_internal` as private, so we cast through
-      // `unknown` to read the IR's pre-rendered default text — the source
-      // literal (`'WN'`, `2003`, `@2024-01-01`, `f'WN'`). Mirrors the
-      // publisher SDK's accessor exactly.
-      const defaultText = (
-         given as unknown as {
-            _internal?: { defaultText?: string };
-         }
-      )._internal?.defaultText;
-      const entry: ApiGiven = {
-         name: given.name,
-         type: renderedType,
-      };
-      if (annotations.length > 0) entry.annotations = annotations;
-      if (secure) entry.secure = true;
-      if (defaultText !== undefined) entry.default = defaultText;
-      out.push(entry);
-   }
-   return out;
-};
-
-/**
- * Thrown when a single source declares more than one `#(filter ... required)`
- * annotation on the same dimension. Such a duplicate would produce a
- * `group_by: dim, dim` in the dim-index fingerprint query and fail the compile;
- * we reject it up front with an actionable message.
- */
-export class DuplicateRequiredFilterError extends Error {
-   constructor(message: string) {
-      super(message);
-      this.name = "DuplicateRequiredFilterError";
-   }
-}
+/** The model's givens, serialized as every other server route serializes them. */
+const extractGivensFromModel = (model: MalloyModel): ApiGiven[] =>
+   [...model.givens.values()].map((given) =>
+      malloyGivenToApi(given as unknown as MalloyGiven),
+   );
 
 /**
  * Recurses into join fields the top-level metadata walk (below) never sees —
@@ -1175,6 +1155,7 @@ export const sourceExtraction = {
    extractMetadataFromExplores,
    extractEntitiesFromExplores,
    extractGivensFromModel,
+   joinDescent,
    extractAuthorizeFromModel,
    checkAuthorizeJoinBypass,
 };

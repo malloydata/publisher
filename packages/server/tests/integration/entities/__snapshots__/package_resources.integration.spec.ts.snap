@@ -1,6 +1,6 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`the package resource and its sub-resources GET …/entities reports every model's entities, off-surface files included 1`] = `
+exports[`the package resource and its sub-resources GET …/entities reports the surface by default, and every model with includeHiddenFilesAndSources 1`] = `
 [
   {
     "fields": [
@@ -148,6 +148,7 @@ exports[`the package resource and its sub-resources GET …/entities reports eve
 ,
         ],
         "name": "ROLES",
+        "required": true,
         "secure": true,
         "type": "string[]",
       },

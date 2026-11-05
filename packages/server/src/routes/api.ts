@@ -672,7 +672,6 @@ function registerPackageRoutes(
          "status",
          (e, p, v) => packageController.getPackageServingState(e, p, v),
       ],
-      ["entities", (e, p, v) => packageController.getPackageEntities(e, p, v)],
       [
          "build-plan",
          (e, p, v) => packageController.getPackageBuildPlan(e, p, v),
@@ -686,6 +685,23 @@ function registerPackageRoutes(
          (e, p, v) => packageController.getPackageEmbeddingIndex(e, p, v),
       ],
    ];
+   app.get(
+      `${pkg}/entities`,
+      jsonRoute((req, res) => {
+         const includeHiddenFilesAndSources = booleanParamOr400(
+            req,
+            res,
+            "includeHiddenFilesAndSources",
+         );
+         if (includeHiddenFilesAndSources === undefined) return;
+         return packageController.getPackageEntities(
+            req.params.environmentName,
+            req.params.packageName,
+            req.query.versionId,
+            includeHiddenFilesAndSources,
+         );
+      }),
+   );
    for (const [resource, read] of packageReads) {
       app.get(
          `${pkg}/${resource}`,

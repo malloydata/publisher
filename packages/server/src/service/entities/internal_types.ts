@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { MalloyGivenApi } from "../given";
+
 /**
  * The shapes the entities extraction builds internally, one model file at a
  * time. `to_api.ts` turns a package's worth of them into the public
@@ -65,13 +67,8 @@ export interface Filter {
    implicit?: boolean;
 }
 
-export interface Given {
-   name: string;
-   type: string;
-   annotations?: string[];
-   secure?: boolean;
-   default?: string;
-}
+/** A given as the server serializes it everywhere ({@link malloyGivenToApi}). */
+export type Given = MalloyGivenApi;
 
 export interface AuthorizeTerm {
    field_path: string;
@@ -137,6 +134,10 @@ export interface ModelCompileResult {
    entities: Entity[];
    sourceMetadataEntries: SourceMetadata[];
    compileStatus: "SUCCESS" | "ERROR";
+   /** The model's own givens, whether or not any source carries them. */
+   givens?: Given[];
+   /** On an ERROR: the author's compile error, or the server's failure to extract. */
+   errorKind?: "compile" | "extraction";
    errorMessage?: string;
    sourceInfos?: SourceInfo[];
 }

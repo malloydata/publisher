@@ -6,11 +6,7 @@ import fs from "fs";
 import { Malloy, Model } from "@malloydata/malloy";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import {
-   type EntitiesModelFile,
-   EntitiesValidationError,
-   extractPackageEntities,
-} from "./extract";
+import { type EntitiesModelFile, extractPackageEntities } from "./extract";
 import { FileURLReader } from "./field_helpers";
 import {
    ConnectionLookup,
@@ -121,9 +117,9 @@ describe("extractPackageEntities", () => {
          connections: lookup,
       });
 
-      expect(fromDefinition).toEqual(compiled);
+      expect(fromDefinition.results).toEqual(compiled);
       // The comparison means something only if the fingerprints are there.
-      const fingerprinted = fromDefinition[0].entities.filter(
+      const fingerprinted = fromDefinition.results[0]!.entities.filter(
          (e) => e.dim_index_fingerprint,
       );
       expect(fingerprinted.map((e) => e.name).sort()).toEqual([
@@ -142,11 +138,10 @@ describe("extractPackageEntities", () => {
       }
    }, 60_000);
 
-   test("refuses every file's invalid annotation at once", async () => {
+   test("reports every annotation an index cannot honor, across files, as findings, and keeps the entities", async () => {
       const { files, lookup } = await workspace({
          "a.malloy": `
-#(filter) name=c1 dimension=channel_name type=equal required
-#(filter) name=c2 dimension=channel_name type=equal required
+#(filter) name=c1 dimension=nope type=equal required
 source: a is duckdb.table('orders.csv')
 `,
          "b.malloy": `
@@ -156,24 +151,26 @@ source: b is duckdb.table('orders.csv') extend {
 }
 `,
       });
-      const error = await packageCompilationService
-         .compilePackageModelFiles({ modelFiles: files }, lookup)
-         .then(
-            () => undefined,
-            (e: unknown) => e,
+      const { results, findings } =
+         await packageCompilationService.extractPackage(
+            { modelFiles: files },
+            lookup,
          );
-      expect(error).toBeInstanceOf(EntitiesValidationError);
-      const messages = (error as EntitiesValidationError).messages;
-      expect(messages).toHaveLength(2);
-      expect(messages[0]).toContain("multiple required filters");
-      expect(messages[1]).toContain("is not a dimension");
-      expect((error as EntitiesValidationError).reasons).toEqual([
-         "duplicate_required_filter",
-         "not_a_dimension",
+      expect(findings.map((f) => [f.modelPath, f.reason])).toEqual([
+         ["a.malloy", "required_filter_missing_dimension"],
+         ["b.malloy", "not_a_dimension"],
       ]);
+      expect(findings[0]!.message).toContain("Fix:");
+      expect(results.map((r) => r.compileStatus)).toEqual([
+         "SUCCESS",
+         "SUCCESS",
+      ]);
+      // The measure is still an entity; it only gets no fingerprint.
+      const n = results[1]!.entities.find((e) => e.name === "n");
+      expect(n?.dim_index_fingerprint).toBeUndefined();
    }, 60_000);
 
-   test("refuses every invalid annotation within one file, not only the first", async () => {
+   test("reports every finding within one file, not only the first", async () => {
       const { files, lookup } = await workspace({
          "a.malloy": `
 source: a is duckdb.table('orders.csv') extend {
@@ -181,26 +178,88 @@ source: a is duckdb.table('orders.csv') extend {
   measure: n is count()
   #(index)
   measure: m is count(region)
-  #(index sharing=all)
+  #(index) sharing=all
   dimension: r is region
 }
 `,
       });
-      const error = await packageCompilationService
-         .compilePackageModelFiles({ modelFiles: files }, lookup)
-         .then(
-            () => undefined,
-            (e: unknown) => e,
-         );
-      expect(error).toBeInstanceOf(EntitiesValidationError);
-      expect((error as EntitiesValidationError).reasons).toEqual([
+      const { findings } = await packageCompilationService.extractPackage(
+         { modelFiles: files },
+         lookup,
+      );
+      expect(findings.map((f) => f.reason)).toEqual([
          "not_a_dimension",
          "not_a_dimension",
          "sharing_not_allowed_on_dimension",
       ]);
    }, 60_000);
 
-   test("reads each model file at most once per extraction", async () => {
+   test("a required range, and a child overriding its base's required filter, load as the query path reads them", async () => {
+      const { files, lookup } = await workspace({
+         "a.malloy": `
+#(filter) name=min dimension=rep_id type=greater_than required
+#(filter) name=max dimension=rep_id type=less_than required
+source: base is duckdb.table('orders.csv') extend {
+  #(index)
+  dimension: region_label is concat('r-', region)
+}
+#(filter) name=min dimension=rep_id type=greater_than
+source: child is base extend {}
+`,
+      });
+      const { results, findings } =
+         await packageCompilationService.extractPackage(
+            { modelFiles: files },
+            lookup,
+         );
+      expect(findings).toEqual([]);
+      const required = (source: string) =>
+         results[0]!.sourceMetadataEntries
+            .filter(
+               (m) => m.sourceName === source && m.metadataType === "FILTERS",
+            )
+            .flatMap((m) => m.filters ?? [])
+            .filter((f) => f.required)
+            .map((f) => f.name);
+      expect(required("base").sort()).toEqual(["max", "min"]);
+      expect(required("child")).toEqual(["max"]);
+      // One partition key for the range, not two.
+      const label = results[0]!.entities.find(
+         (e) => e.source === "base" && e.name === "region_label",
+      );
+      expect(label?.dim_index_fingerprint?.required_filter_dimensions).toEqual([
+         "rep_id",
+      ]);
+   }, 60_000);
+
+   test("a parameterized source joining an indexed source does not inherit its own required parameter onto the join", async () => {
+      const { files, lookup } = await workspace({
+         "a.malloy": `##! experimental.parameters
+source: reps is duckdb.table('reps.csv') extend {
+  #(index)
+  dimension: rep_label is concat('r-', rep_name)
+}
+source: report(start::number) is duckdb.table('orders.csv') extend {
+  where: rep_id > start
+  join_one: reps on rep_id = reps.rep_id
+}
+`,
+      });
+      const { results, findings } =
+         await packageCompilationService.extractPackage(
+            { modelFiles: files },
+            lookup,
+         );
+      expect(findings).toEqual([]);
+      const label = results[0]!.entities.find(
+         (e) => e.source === "reps" && e.name === "rep_label",
+      );
+      expect(label?.dim_index_fingerprint?.sql_fingerprint).toMatch(
+         /^[0-9a-f]{64}$/,
+      );
+   }, 60_000);
+
+   test("reads no model file from disk when it has each model's compiled text", async () => {
       const { files, lookup } = await workspace({
          "base.malloy": `source: base is duckdb.table('orders.csv') extend {
   dimension: channel_upper is upper(channel_name)
@@ -222,8 +281,7 @@ source: served is base extend {
          const modelReads = read.mock.calls
             .map(([file]) => String(file))
             .filter((file) => file.endsWith(".malloy"));
-         expect(modelReads.length).toBeGreaterThan(0);
-         expect(new Set(modelReads).size).toBe(modelReads.length);
+         expect(modelReads).toEqual([]);
       } finally {
          read.mockRestore();
       }

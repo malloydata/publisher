@@ -15,11 +15,16 @@ import type { GateExpr } from "./access_gates";
 import type { DimIndexFingerprintInputs } from "./dim_index_entity_id";
 import type { Given as ApiGiven } from "./internal_types";
 import {
-   DuplicateRequiredFilterError,
    RequiredFilterNonPublicDimensionError,
    sourceExtraction,
    parseJoinCode,
 } from "./source_extraction";
+
+/** A structDef carrying `lines` as block notes, where the query path reads `#(filter)`s. */
+const filterStruct = (lines: string[]) => ({
+   parameters: {},
+   annotations: { blockNotes: lines.map((text) => ({ text })) },
+});
 
 describe("sourceExtraction.extractMetadataFromExplores", () => {
    const noTaglines = (): string[] => [];
@@ -508,7 +513,11 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             { name: "created_at" },
             { name: "tenant_id" },
          ],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Region dimension=region type=in",
+            '#(filter) name="Created After" dimension=created_at type=greater_than required',
+            "#(filter) dimension=tenant_id type=equal implicit",
+         ]),
       } as unknown as Explore;
 
       const metadata = sourceExtraction.extractMetadataFromExplores(
@@ -543,32 +552,6 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       ]);
    });
 
-   test("throws on two required filters targeting the same dimension", () => {
-      const explore = {
-         name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
-         getTaglines: () => [
-            "#(filter) name=First dimension=tier type=equal required",
-            "#(filter) name=Second dimension=tier type=in required",
-         ],
-         allFields: [{ name: "tier" }],
-         structDef: { parameters: {} },
-      } as unknown as Explore;
-
-      assert.throws(
-         () =>
-            sourceExtraction.extractMetadataFromExplores(
-               [explore],
-               "orders.malloy",
-            ),
-         (err: unknown) =>
-            err instanceof DuplicateRequiredFilterError &&
-            /multiple required filters on dimension 'tier'/.test(
-               (err as Error).message,
-            ),
-      );
-   });
-
    test("allows two required filters on distinct dimensions", () => {
       const explore = {
          name: "orders",
@@ -578,7 +561,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             "#(filter) name=Region dimension=region type=equal required",
          ],
          allFields: [{ name: "tier" }, { name: "region" }],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Tier dimension=tier type=equal required",
+            "#(filter) name=Region dimension=region type=equal required",
+         ]),
       } as unknown as Explore;
 
       assert.doesNotThrow(() =>
@@ -598,7 +584,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             "#(filter) name=Optional dimension=tier type=in",
          ],
          allFields: [{ name: "tier" }],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Required dimension=tier type=equal required",
+            "#(filter) name=Optional dimension=tier type=in",
+         ]),
       } as unknown as Explore;
 
       assert.doesNotThrow(() =>
@@ -620,7 +609,12 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             "#(filter) name=Both dimension=d type=equal required implicit",
          ],
          allFields: [{ name: "d" }],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Eq dimension=d type=equal",
+            "#(filter) name=Like_F dimension=d type=like",
+            "#(filter) name=Less_F dimension=d type=less_than",
+            "#(filter) name=Both dimension=d type=equal required implicit",
+         ]),
       } as unknown as Explore;
 
       const metadata = sourceExtraction.extractMetadataFromExplores(
@@ -652,7 +646,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             "#(filter) name=Bogus dimension=does_not_exist type=equal",
          ],
          allFields: [{ name: "region" }],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Region dimension=region type=in",
+            "#(filter) name=Bogus dimension=does_not_exist type=equal",
+         ]),
       } as unknown as Explore;
 
       const metadata = sourceExtraction.extractMetadataFromExplores(
@@ -674,7 +671,9 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             "#(filter) name=Tenant dimension=missing_dim type=equal required",
          ],
          allFields: [{ name: "region" }],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Tenant dimension=missing_dim type=equal required",
+         ]),
       } as unknown as Explore;
 
       assert.throws(
@@ -699,7 +698,9 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          allFields: [
             { name: "tier", fieldTypeDef: { accessModifier: "private" } },
          ],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Tier dimension=tier type=equal required",
+         ]),
       } as unknown as Explore;
 
       assert.throws(
@@ -726,7 +727,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             { name: "region" },
             { name: "secret", fieldTypeDef: { accessModifier: "internal" } },
          ],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Region dimension=region type=in",
+            "#(filter) name=Internal dimension=secret type=equal",
+         ]),
       } as unknown as Explore;
 
       const metadata = sourceExtraction.extractMetadataFromExplores(
@@ -740,7 +744,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       assert.strictEqual(filtersEntry.filters![0].name, "Region");
    });
 
-   test("drops malformed filter annotation but keeps valid ones", () => {
+   test("a malformed filter annotation leaves the source with no filters, as the query path reads it", () => {
       const explore = {
          name: "orders",
          location: { url: "file:///tmp/orders.malloy" },
@@ -749,7 +753,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             "#(filter) name=Bad dimension=region type=not_a_real_type",
          ],
          allFields: [{ name: "region" }],
-         structDef: { parameters: {} },
+         structDef: filterStruct([
+            "#(filter) name=Region dimension=region type=in",
+            "#(filter) name=Bad dimension=region type=not_a_real_type",
+         ]),
       } as unknown as Explore;
 
       const metadata = sourceExtraction.extractMetadataFromExplores(
@@ -757,10 +764,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          "orders.malloy",
       );
 
-      const filtersEntry = metadata.find((m) => m.metadataType === "FILTERS");
-      assert.ok(filtersEntry);
-      assert.strictEqual(filtersEntry.filters!.length, 1);
-      assert.strictEqual(filtersEntry.filters![0].name, "Region");
+      assert.strictEqual(
+         metadata.find((m) => m.metadataType === "FILTERS"),
+         undefined,
+      );
    });
 
    test("model-level agent-hidden applies only to sources defined in this model file", () => {
@@ -866,7 +873,10 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          }),
       ]);
 
-      const out = sourceExtraction.extractGivensFromModel(model);
+      // As the wire carries it: the server's own given serializer.
+      const out = JSON.parse(
+         JSON.stringify(sourceExtraction.extractGivensFromModel(model)),
+      );
 
       assert.deepStrictEqual(out, [
          {
@@ -878,15 +888,17 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          {
             name: "after",
             type: "timestamp",
+            annotations: [],
             default: "@2003-01-01 00:00:00",
          },
-         { name: "limit_n", type: "number" },
+         { name: "limit_n", type: "number", annotations: [], required: true },
          {
             name: "tags",
             type: "filter<string>",
+            annotations: [],
             default: "f'WN'",
          },
-         { name: "regions", type: "string[]" },
+         { name: "regions", type: "string[]", annotations: [], required: true },
       ]);
    });
 
@@ -920,16 +932,20 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          mockGiven({ name: "report_date", type: { type: "date" } }),
       ]);
 
-      const out = sourceExtraction.extractGivensFromModel(model);
+      const out = JSON.parse(
+         JSON.stringify(sourceExtraction.extractGivensFromModel(model)),
+      );
 
+      // Required too: a host must supply a secure given that has no default.
       assert.deepStrictEqual(out, [
          {
             name: "tenant_id",
             type: "number",
             annotations: ["#(secure)"],
             secure: true,
+            required: true,
          },
-         { name: "report_date", type: "date" },
+         { name: "report_date", type: "date", annotations: [], required: true },
       ]);
    });
 

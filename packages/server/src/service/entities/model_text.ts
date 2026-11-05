@@ -15,24 +15,30 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "url";
 import { logger } from "../../logger";
 
-const modelTexts = new AsyncLocalStorage<Map<string, string>>();
+const modelLines = new AsyncLocalStorage<Map<string, string[]>>();
 
 /**
- * Runs `fn` with each model file read from disk at most once. The extraction
- * reads a field's declaring file for its code several times per field; the
- * cache is scoped to one run, so concurrent loads never share it.
+ * Runs `fn` with each model file's lines split at most once. `texts` (by
+ * absolute path) are the texts the models compiled from, so a field's code is
+ * sliced from the revision its range describes; any other file is read from
+ * disk once. The cache is scoped to one run, so concurrent loads never share it.
  */
-export function withModelTextCache<T>(fn: () => T): T {
-   return modelTexts.run(new Map(), fn);
+export function withModelTextCache<T>(
+   fn: () => T,
+   texts: ReadonlyMap<string, string> = new Map(),
+): T {
+   const cache = new Map<string, string[]>();
+   for (const [filePath, text] of texts) cache.set(filePath, text.split("\n"));
+   return modelLines.run(cache, fn);
 }
 
-function readModelText(filePath: string): string {
-   const cache = modelTexts.getStore();
+function readModelLines(filePath: string): string[] {
+   const cache = modelLines.getStore();
    const cached = cache?.get(filePath);
    if (cached !== undefined) return cached;
-   const text = fs.readFileSync(filePath, "utf8");
-   cache?.set(filePath, text);
-   return text;
+   const lines = fs.readFileSync(filePath, "utf8").split("\n");
+   cache?.set(filePath, lines);
+   return lines;
 }
 
 /**
@@ -47,11 +53,12 @@ export function extractCodeFromEntity(
       return "";
    }
    // If the code comes from another file, we need to load that file
+   let lines: string[];
    const locationUrl = entity.location?.url;
    if (locationUrl && !locationUrl.endsWith("internal.malloy")) {
       const filePath = fileURLToPath(locationUrl);
       try {
-         docString = readModelText(filePath);
+         lines = readModelLines(filePath);
       } catch (error) {
          logger.warn(
             `Failed to read file for entity ${entity.name}: ${filePath}`,
@@ -59,8 +66,9 @@ export function extractCodeFromEntity(
          );
          return "";
       }
+   } else {
+      lines = docString.split("\n");
    }
-   const lines = docString.split("\n");
    const keep: string[] = [];
    for (let i = codeRange.start.line; i <= codeRange.end.line; i++) {
       const line = lines[i];

@@ -5,6 +5,10 @@ import { describe, test } from "bun:test";
 import assert from "node:assert";
 import vectors from "./__fixtures__/access-filter-grammar-vectors.json";
 import {
+   AuthorizeGrammarError,
+   parseAuthorizeGrammarBody,
+} from "../authorize_grammar";
+import {
    parseAccessFilterBody,
    parseGateAnnotation,
    resolveGates,
@@ -39,6 +43,51 @@ describe("parseAccessFilterBody conformance with the authorize grammar", () => {
       assert.ok(vectors.vectors.filter((v) => v.expect.ok).length >= 10);
       assert.ok(vectors.vectors.filter((v) => !v.expect.ok).length >= 20);
    });
+});
+
+describe("the recorded vectors still describe the server's live grammar", () => {
+   // The vectors were recorded from `parseAuthorizeGrammarBody`; re-deriving
+   // each one live means a grammar change fails here instead of drifting.
+   for (const v of vectors.vectors) {
+      test(`\`${v.body}\``, () => {
+         let live:
+            | {
+                 ok: true;
+                 terms: { field_path: string; given: string; op: string }[];
+              }
+            | { ok: false; cause: string };
+         try {
+            const terms = parseAuthorizeGrammarBody(
+               "s",
+               v.body,
+               new Map(Object.entries(v.givens)),
+               "access_filter",
+            );
+            live = {
+               ok: true,
+               terms: terms.flatMap((t) =>
+                  t.scope === "row_level"
+                     ? [
+                          {
+                             field_path: t.fieldPathSegments.join("."),
+                             given: t.given,
+                             op: t.operator,
+                          },
+                       ]
+                     : [],
+               ),
+            };
+         } catch (error) {
+            if (!(error instanceof AuthorizeGrammarError)) throw error;
+            live = { ok: false, cause: error.rejectionCause };
+         }
+         if (v.expect.ok) {
+            assert.deepStrictEqual(live, { ok: true, terms: v.expect.terms });
+         } else {
+            assert.deepStrictEqual(live, { ok: false, cause: v.expect.cause });
+         }
+      });
+   }
 });
 
 describe("parseGateAnnotation", () => {

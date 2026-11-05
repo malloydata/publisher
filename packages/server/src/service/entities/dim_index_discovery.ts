@@ -24,9 +24,9 @@ import {
    type GateExpr,
    type GateStructDef,
 } from "./access_gates";
-import { parseFilterAnnotation, type Filter } from "./filter_parsing";
+import { sourceFilters } from "./filters";
 import { findForbiddenIndexPolicyKeys } from "./index_annotation_parsing";
-import { walkExploreTree } from "./explore_walk";
+import { walkExploreTree, type JoinDescentRule } from "./explore_walk";
 import { getAccessModifier } from "./field_helpers";
 import { AccessModifierEnum } from "./internal_types";
 import type {
@@ -78,7 +78,7 @@ export interface DimIndexCandidate {
    gateDimensions: string[];
    /**
     * Names of the source's *required* parameters — declared parameters with no
-    * default value (e.g. ``report_id::number``, ``p_tenant::string``). An
+    * default value (e.g. ``report_id::number``, ``p_period::string``). An
     * indexer issues its value query with no parameter bindings, so an indexed
     * dimension on a source carrying any required parameter can never be
     * queried. Drives {@link assertNoRequiredParametersOnIndexedDimension}.
@@ -160,8 +160,8 @@ export function assertAtMostOneRequiredFilterPerIndexedDimension(
 /**
  * Thrown when an ``#(index)``-tagged dimension belongs to a source that
  * declares one or more *required* parameters (parameters with no default
- * value, e.g. ``source: campaign_attribution(report_id::number) ...`` or
- * ``source: income_statement_report(p_tenant::string, ...)``).
+ * value, e.g. ``source: report(report_id::number) ...`` or
+ * ``source: period_report(p_period::string, ...)``).
  *
  * An indexer discovers a source's indexed dimensions and issues a ``count()``
  * query to enumerate their distinct values — but it has no parameter values to
@@ -301,8 +301,8 @@ export function assertNoForbiddenIndexPolicyKeys(
    if (forbidden.includes("sharing")) {
       throw new IndexSharingNotAllowedError(
          `${modelFilePath}: indexed dimension '${candidate.sourceName}.${candidate.fieldName}' ` +
-            `declares sharing= on its #(index) annotation; scope is a package-level mode now ` +
-            `(set "scope": "version"|"package" in publisher.json). Remove sharing= from #(index).`,
+            `declares sharing= on its #(index) annotation, but scope is package-level. Fix: remove ` +
+            `sharing= from #(index) and set materialization.scope in publisher.json.`,
       );
    }
    if (forbidden.includes("schedule")) {
@@ -350,22 +350,21 @@ function hasIndexTag(tags: string[]): boolean {
  * Returns an empty array for explores with no required filters.
  */
 function requiredFilterDimensionsForExplore(explore: MalloyExplore): string[] {
-   const taglines = explore.getTaglines?.() ?? [];
-   const out: string[] = [];
-   for (const tagline of taglines) {
-      let parsed: Filter | null = null;
-      try {
-         parsed = parseFilterAnnotation(tagline.trim());
-      } catch {
-         // Malformed annotations are caught + logged elsewhere; don't
-         // crash dim-index id derivation over a bad filter line.
-         continue;
-      }
-      if (parsed?.required && parsed.dimension) {
-         out.push(parsed.dimension);
-      }
+   try {
+      // A dimension appears once even when two filters require it (a range):
+      // each is one partition key, and one group_by term.
+      return [
+         ...new Set(
+            sourceFilters(explore)
+               .filter((f) => f.required && f.dimension)
+               .map((f) => f.dimension!),
+         ),
+      ];
+   } catch {
+      // A malformed annotation is logged by the extraction; the query path
+      // reads no filters for the source either.
+      return [];
    }
-   return out;
 }
 
 /**
@@ -582,6 +581,7 @@ export function collectDimIndexCandidates(
    modelFilePath: string,
    givenTypes: ReadonlyMap<string, string> = new Map(),
    refuse: Refuse = throwRefusal,
+   descend?: JoinDescentRule,
 ): DimIndexCandidate[] {
    const candidates: DimIndexCandidate[] = [];
    // The lookup a string query_source base resolves against, as in extractMetadataFromExplores.
@@ -620,7 +620,10 @@ export function collectDimIndexCandidates(
       ];
       const requiredParameterNames =
          requiredParameterNamesForExplore(rootExplore);
-      for (const { explore, sourceName } of walkExploreTree([rootExplore])) {
+      for (const { explore, sourceName } of walkExploreTree(
+         [rootExplore],
+         descend,
+      )) {
          for (const field of explore.allFields) {
             const tags = field.getTaglines?.() ?? [];
             // A field is only our concern once it opts into the dimension

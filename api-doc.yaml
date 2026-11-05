@@ -2768,16 +2768,21 @@ paths:
         annotations, `#(doc)`, table, join target, and an `#(index)`
         dimension's fingerprint), the facts the model states about each
         source (doc, visibility, queryability, filters, access gates), the
-        model's givens and each source's schema. One entry
-        per `.malloy` file, files outside `explores` included, sorted by
-        `modelPath`.
+        model's givens and each source's schema. One entry per `.malloy`
+        file, sorted by `modelPath`.
+
+        Shown under the rules of `GET …/models/{path}`: only the files on the
+        package's discovery surface, and no source locked with
+        `#(authorize) false`. With `includeHiddenFilesAndSources`, every
+        `.malloy` file and every source, for a host that indexes them; as with
+        the model routes, a gateway admits that flag only for such a host.
 
         Computed once, when the package loads, from the models as they
         compiled before any materialization manifest is bound, so a later
-        bind does not change it. A model that failed to compile has an entry
-        with `error` and nothing else. The load refuses a package whose
-        `#(index)` or required `#(filter)` an index cannot honor, so a served
-        package never reports one.
+        bind does not change it. A model that failed has an entry with `error`
+        and `errorKind` and nothing else. An `#(index)` or required `#(filter)`
+        an index cannot honor is left out (no fingerprint, no filter) and
+        reported as a package warning whose `code` starts with `entities-`.
       parameters:
         - name: environmentName
           in: path
@@ -2792,6 +2797,7 @@ paths:
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
         - $ref: "#/components/parameters/versionId"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: The package's entities
@@ -2828,8 +2834,9 @@ paths:
         identity per source from it and issues one build call (see
         `CreateMaterializationRequest.buildInstructions`). A package that
         declares no persist source has an empty plan. When the plan could not
-        be derived at load, the read answers 503; reloading the package derives
-        it again.
+        be derived at load, the read answers 409 with `reason`
+        BUILD_PLAN_UNAVAILABLE; reloading the package derives it again, and
+        retrying the read does not.
       parameters:
         - name: environmentName
           in: path
@@ -2861,6 +2868,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -4197,6 +4206,9 @@ components:
           * VERSION_BUILDING: a materialization of the version is running, and
             archiving or deleting it would drop the tables it is writing. Wait for
             it, or stop it.
+          * BUILD_PLAN_UNAVAILABLE: the package's build plan could not be
+            derived when it loaded. Reload the package; retrying the read does
+            not help.
       content:
         application/json:
           schema:
@@ -5184,7 +5196,6 @@ components:
             $ref: "#/components/schemas/StorageServeBinding"
 
     PackageStatusEntry:
-      type: object
       description: |
         A package's entry in `GET /status`, carrying what an orchestrator reconciles
         a server from: which package or version it is, whether it is serving or
@@ -5192,9 +5203,16 @@ components:
         state is at `GET …/packages/{packageName}/status`.
 
         While `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this
-        release, an entry also carries the fields of the package's own response
-        and the rest of its serving state, as before; a later release removes
-        them, and they are not described here.
+        release, an entry is the package's whole response, so it is declared as a
+        `Package`: every field beyond the ones below is deprecated on this entry
+        and absent once the setting is off; a later release removes them.
+      allOf:
+        - $ref: "#/components/schemas/Package"
+        - $ref: "#/components/schemas/PackageStatusEntryFields"
+
+    PackageStatusEntryFields:
+      type: object
+      description: What a `GET /status` entry carries with `PUBLISHER_PACKAGE_INLINE_FIELDS` off.
       required: [name]
       properties:
         resource:
@@ -5618,7 +5636,15 @@ components:
                   `warn`; see docs/classification.md).
                   `classification-malformed`: a `#(classification)` annotation
                   that names no single class (one per field, `subject` the
-                  source; `warn`). The per-file
+                  source; `warn`). `entities-…` (`entities-not-a-dimension`,
+                  `entities-parameterized-source`,
+                  `entities-multiple-required-filters`,
+                  `entities-sharing-not-allowed-on-dimension`,
+                  `entities-schedule-not-allowed-on-dimension`,
+                  `entities-required-filter-missing-dimension`,
+                  `entities-required-filter-non-public-dimension`): an
+                  `#(index)` or required `#(filter)` an index cannot honor, left
+                  out of `GET …/entities` (`model` its file; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
@@ -5824,13 +5850,13 @@ components:
           type: string
           readOnly: true
           description: >-
-            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.servedRevision`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.servedRevision`). Always present on a `?reload=true` response, as that reload's receipt. Otherwise present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it from all but the reload response.
         sourceContentSha:
           deprecated: true
           type: string
           readOnly: true
           description: >-
-            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.sourceContentSha`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.sourceContentSha`). Always present on a `?reload=true` response, as that reload's receipt. Otherwise present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it from all but the reload response.
         agents:
           deprecated: true
           type: array
@@ -7219,8 +7245,19 @@ components:
         error:
           type: string
           description: >-
-            Why the model has no entities: its compile error. When present,
-            every other list is empty.
+            Why the model has no entities: its compile error, or the server's
+            failure to extract it (see `errorKind`). When present, every other
+            list is empty.
+        errorKind:
+          type: string
+          enum:
+            - compile
+            - extraction
+          description: >-
+            Present with `error`. `compile`: the model did not compile, which
+            its author fixes. `extraction`: it compiled but the server could
+            not extract its entities, a server fault an indexer should not
+            read as the model having none.
         fields:
           type: array
           description: >-

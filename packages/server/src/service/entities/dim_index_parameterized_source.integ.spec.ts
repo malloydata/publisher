@@ -10,8 +10,7 @@
  * assert over synthetic candidates, this pins the part that can only be proven
  * against the real compiler: that a source's required (no-default) parameter
  * lands in ``structDef.parameters[name].value`` as null/undefined, so
- * ``collectDimIndexCandidates`` flags it and extraction refuses the package
- * with our message (an ``EntitiesValidationError``) — and that a *defaulted* parameter
+ * ``collectDimIndexCandidates`` flags it and extraction reports it as a finding — and that a *defaulted* parameter
  * (``value`` present) does NOT trip the guard, so the supported indexable-
  * parameterized-source pattern still compiles.
  *
@@ -20,12 +19,10 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert";
-import { compileFixture } from "./test_support";
-import { EntitiesValidationError } from "./extract";
+import { compileFixture, extractFixture } from "./test_support";
 
 // `report_id::number` is the required (no-default) parameter; `channel` is an
-// #(index) dimension on that parameterized source (as in
-// `source: campaign_attribution(report_id::number)`).
+// #(index) dimension on that parameterized source.
 const REQUIRED_PARAM_MODEL = `##! experimental.parameters
 source: orders(report_id::number) is duckdb.table('orders.csv') extend {
   where: rep_id = report_id
@@ -64,13 +61,18 @@ describe("dim-index publish-time placement guards (integration)", () => {
          })
       )[0];
 
-   test("refuses an #(index) dimension on a source with a REQUIRED parameter", async () => {
-      await assert.rejects(
-         compile(REQUIRED_PARAM_MODEL),
-         (err: unknown) =>
-            err instanceof EntitiesValidationError &&
-            /required parameter\(s\) \(report_id\)/.test(err.message),
-      );
+   const findings = async (model: string) =>
+      (
+         await extractFixture({
+            "orders.csv": "rep_id,channel_name\n1,web\n2,store\n",
+            "model.malloy": model,
+         })
+      ).findings;
+
+   test("reports an #(index) dimension on a source with a REQUIRED parameter", async () => {
+      const [finding] = await findings(REQUIRED_PARAM_MODEL);
+      assert.strictEqual(finding?.reason, "parameterized_source");
+      assert.match(finding!.message, /required parameter\(s\) \(report_id\)/);
    }, 30_000);
 
    test("allows an #(index) dimension when the parameter is DEFAULTED", async () => {
@@ -83,12 +85,9 @@ describe("dim-index publish-time placement guards (integration)", () => {
       );
    }, 30_000);
 
-   test("refuses an #(index) tag on a measure (non-dimension)", async () => {
-      await assert.rejects(
-         compile(INDEX_ON_MEASURE_MODEL),
-         (err: unknown) =>
-            err instanceof EntitiesValidationError &&
-            /is not a dimension/.test(err.message),
-      );
+   test("reports an #(index) tag on a measure (non-dimension)", async () => {
+      const [finding] = await findings(INDEX_ON_MEASURE_MODEL);
+      assert.strictEqual(finding?.reason, "not_a_dimension");
+      assert.match(finding!.message, /is not a dimension/);
    }, 30_000);
 });

@@ -107,6 +107,9 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
+   // 409: the package's build plan could not be derived at load; a reload
+   // derives it again, a retry does not.
+   | "BUILD_PLAN_UNAVAILABLE"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -423,6 +426,8 @@ export function internalErrorToHttpError(
       return httpError(400, error.message);
    } else if (error instanceof TableNotFoundError) {
       return httpError(404, error.message, "TABLE_NOT_FOUND");
+   } else if (error instanceof BuildPlanUnavailableError) {
+      return httpError(409, error.message, "BUILD_PLAN_UNAVAILABLE");
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof StorageDestinationNotFoundError) {
@@ -505,6 +510,14 @@ function httpError(code: number, message: string, reason?: ErrorReason) {
          ...(reason ? { reason } : {}),
       },
    };
+}
+
+/** A loaded package whose build plan could not be derived at load. */
+export class BuildPlanUnavailableError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "BuildPlanUnavailableError";
+   }
 }
 
 export class NotImplementedError extends Error {

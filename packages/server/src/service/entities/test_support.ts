@@ -22,8 +22,12 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { errorMessage } from "./errors";
-import { type EntitiesModelFile, extractPackageEntities } from "./extract";
+import { errMessage } from "../../utils";
+import {
+   type EntitiesModelFile,
+   extractPackageEntities,
+   type PackageEntitiesExtraction,
+} from "./extract";
 import type { ModelCompileResult } from "./internal_types";
 import { FileURLReader } from "./field_helpers";
 import type { PackageManifest } from "./query_surface";
@@ -139,16 +143,16 @@ async function compileModelFile(
       return {
          relativePath: file.relativePath,
          absolutePath: file.absolutePath,
-         error: errorMessage(error),
+         error: errMessage(error),
       };
    }
 }
 
-/** Compile every file of the task, then extract the package's entities. */
-async function compilePackageModelFiles(
+/** Compile every file of the task, then extract the package's entities and findings. */
+async function extractPackage(
    task: CompilePackageTask,
    connections: LookupConnection<InfoConnection>,
-): Promise<ModelCompileResult[]> {
+): Promise<PackageEntitiesExtraction> {
    const modelFiles = await Promise.all(
       task.modelFiles.map((file) => compileModelFile(file, connections)),
    );
@@ -161,7 +165,18 @@ async function compilePackageModelFiles(
    });
 }
 
-export const packageCompilationService = { compilePackageModelFiles };
+/** {@link extractPackage}'s per-model results. */
+async function compilePackageModelFiles(
+   task: CompilePackageTask,
+   connections: LookupConnection<InfoConnection>,
+): Promise<ModelCompileResult[]> {
+   return (await extractPackage(task, connections)).results;
+}
+
+export const packageCompilationService = {
+   compilePackageModelFiles,
+   extractPackage,
+};
 
 /**
  * Write `files` (models and the data they read) to a temp package, compile
@@ -172,6 +187,14 @@ export async function compileFixture(
    files: Record<string, string>,
    manifest?: PackageManifest,
 ): Promise<ModelCompileResult[]> {
+   return (await extractFixture(files, manifest)).results;
+}
+
+/** {@link compileFixture}, with the findings the extraction reported. */
+export async function extractFixture(
+   files: Record<string, string>,
+   manifest?: PackageManifest,
+): Promise<PackageEntitiesExtraction> {
    const ws = await writeWorkspace(
       Object.entries(files).map(([relpath, contents]) => ({
          relpath,
@@ -188,7 +211,7 @@ export async function compileFixture(
             absolutePath: path.join(ws.dir, relpath),
             relativePath: relpath,
          }));
-      return await compilePackageModelFiles({ modelFiles, manifest }, lookup);
+      return await extractPackage({ modelFiles, manifest }, lookup);
    } finally {
       await lookup.dispose();
       await ws.cleanup();

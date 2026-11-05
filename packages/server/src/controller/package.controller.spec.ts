@@ -10,6 +10,8 @@ import {
    BadRequestError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   BuildPlanUnavailableError,
+   internalErrorToHttpError,
    ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
@@ -1365,13 +1367,19 @@ describe("PackageController.getPackageBuildPlan", () => {
       });
    });
 
-   it("is a 503 when the plan could not be derived at load", async () => {
+   it("is a 409 BUILD_PLAN_UNAVAILABLE when the plan could not be derived at load", async () => {
       const controller = controllerServing({
          getBuildPlan: () => null,
          isBuildPlanUnavailable: () => true,
       });
-      await expect(
-         controller.getPackageBuildPlan("env", "pkg"),
-      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      const error = await controller.getPackageBuildPlan("env", "pkg").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BuildPlanUnavailableError);
+      expect(internalErrorToHttpError(error as Error)).toMatchObject({
+         status: 409,
+         json: { reason: "BUILD_PLAN_UNAVAILABLE" },
+      });
    });
 });

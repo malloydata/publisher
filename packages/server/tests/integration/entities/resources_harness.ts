@@ -27,6 +27,8 @@ export type ResourcesEnv = {
    publish(name: string, location: string): Promise<Reply>;
    /** `GET /api/v0{rel}`. */
    get(rel: string): Promise<Reply>;
+   /** `POST /api/v0{rel}` with a JSON body. */
+   post(rel: string, body: unknown): Promise<Reply>;
    /** `/environments/{env}/packages/{name}{sub}`. */
    pkgUrl(name: string, sub?: string): string;
    /** The package's entries in `GET /status`: one per version it holds. */
@@ -77,6 +79,15 @@ export async function startResourcesEnv(
          );
       },
       get,
+      async post(rel, body) {
+         return reply(
+            await fetch(`${api}${rel}`, {
+               method: "POST",
+               headers: { "content-type": "application/json" },
+               body: JSON.stringify(body),
+            }),
+         );
+      },
       pkgUrl: (name, sub = "") =>
          `/environments/${envName}/packages/${name}${sub}`,
       async statusEntries(name) {
