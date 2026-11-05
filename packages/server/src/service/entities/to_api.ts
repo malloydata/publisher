@@ -46,8 +46,6 @@ function toApiModelEntities(result: ModelCompileResult): ApiModelEntities {
          annotations: info.annotations.map((a) => a.value),
          fields: info.schema.fields.map(toApiSchemaField),
       })),
-      indexSkips: result.dimIndexNonPublicSkips ?? [],
-      indexGateWithholds: result.dimIndexGateWithholds ?? [],
    };
 }
 
@@ -87,25 +85,6 @@ function toApiField(entity: Entity): ApiEntityField {
          sqlHash: entity.dim_index_fingerprint.sql_fingerprint,
          requiredFilterDimensions:
             entity.dim_index_fingerprint.required_filter_dimensions,
-      };
-   }
-   if (entity.index_policy) {
-      const policy = entity.index_policy;
-      field.indexPolicy = {
-         ...(policy.refresh != null && { refresh: policy.refresh }),
-         ...(policy.freshness != null && {
-            freshness: {
-               ...(policy.freshness.window != null && {
-                  window: policy.freshness.window,
-               }),
-               ...(policy.freshness.fallback != null && {
-                  fallback: policy.freshness.fallback,
-               }),
-            },
-         }),
-         ...(policy.queryMetadata != null && {
-            queryMetadata: policy.queryMetadata,
-         }),
       };
    }
    return field;
@@ -193,15 +172,12 @@ function toApiSources(result: ModelCompileResult): ApiSourceEntities[] {
       switch (row.metadataType) {
          case "DOCS":
             if (row.metadata !== "") entry.doc = row.metadata;
-            setParameters(entry, row);
             break;
          case "AGENT_HIDDEN":
             entry.agentHidden = true;
-            setParameters(entry, row);
             break;
          case "NOT_QUERYABLE":
             entry.queryable = false;
-            setParameters(entry, row);
             if (row.servedFrom) {
                entry.servedFrom = {
                   modelPath: row.servedFrom.modelFilePath,
@@ -244,14 +220,4 @@ function toApiSources(result: ModelCompileResult): ApiSourceEntities[] {
       }
    }
    return [...bySource.values()];
-}
-
-function setParameters(entry: ApiSourceEntities, row: SourceMetadata): void {
-   if (row.parameters && row.parameters.length > 0) {
-      entry.parameters = row.parameters.map((p) => ({
-         name: p.name,
-         ...(p.type != null && { type: p.type }),
-         ...(p.defaultValue != null && { default: p.defaultValue }),
-      }));
-   }
 }

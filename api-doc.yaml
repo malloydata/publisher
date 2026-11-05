@@ -7098,21 +7098,6 @@ components:
             nested under it.
           items:
             $ref: "#/components/schemas/SourceSchema"
-        indexSkips:
-          type: array
-          description: >-
-            `#(index)`-tagged fields that are not public, so are not indexed.
-          items:
-            $ref: "#/components/schemas/IndexFieldRef"
-        indexGateWithholds:
-          type: array
-          description: >-
-            Sources whose `#(access_filter)` cannot be expressed as filter
-            terms on an index, so their `#(index)` dimensions carry no gate
-            columns.
-          items:
-            $ref: "#/components/schemas/IndexGateWithhold"
-
     EntityField:
       type: object
       readOnly: true
@@ -7164,9 +7149,6 @@ components:
           $ref: "#/components/schemas/EntityJoin"
         indexFingerprint:
           $ref: "#/components/schemas/IndexFingerprint"
-        indexPolicy:
-          $ref: "#/components/schemas/IndexPolicy"
-
     EntityTable:
       type: object
       readOnly: true
@@ -7229,23 +7211,6 @@ components:
             filters, in declaration order, then its `#(access_filter)` term
             columns.
 
-    IndexPolicy:
-      type: object
-      readOnly: true
-      description: >-
-        The persistence policy an `#(index ...)` annotation declares. An unset
-        or invalid key is absent, never defaulted.
-      properties:
-        refresh:
-          type: string
-          description: "`full` or `incremental`."
-        freshness:
-          $ref: "#/components/schemas/Freshness"
-        queryMetadata:
-          type: object
-          additionalProperties:
-            type: string
-
     SourceEntities:
       type: object
       readOnly: true
@@ -7275,10 +7240,6 @@ components:
         doc:
           type: string
           description: The source's own `#(doc)` text, when it has any.
-        parameters:
-          type: array
-          items:
-            $ref: "#/components/schemas/EntitySourceParameter"
         agentHidden:
           type: boolean
           description: >-
@@ -7302,20 +7263,6 @@ components:
             its own, `authorize` before `access_filter`.
           items:
             $ref: "#/components/schemas/EntityGate"
-
-    EntitySourceParameter:
-      type: object
-      readOnly: true
-      required:
-        - name
-      properties:
-        name:
-          type: string
-        type:
-          type: string
-        default:
-          type: string
-          description: The parameter's default, rendered as text.
 
     EntitySourceAddress:
       type: object
@@ -7419,34 +7366,6 @@ components:
           description: A join's or a view's own fields.
           items:
             $ref: "#/components/schemas/SourceSchemaField"
-
-    IndexFieldRef:
-      type: object
-      readOnly: true
-      required:
-        - sourceName
-        - fieldName
-      properties:
-        sourceName:
-          type: string
-        fieldName:
-          type: string
-
-    IndexGateWithhold:
-      type: object
-      readOnly: true
-      required:
-        - sourceName
-        - reason
-      properties:
-        sourceName:
-          type: string
-        reason:
-          type: string
-          description: >-
-            `composite` (the source is a composite), `unparsed_gate` (a gate
-            did not parse) or `gate_column_unqueryable` (a gate reads a field
-            an index cannot group by); a later release may add one.
 
     Given:
       type: object
