@@ -379,13 +379,26 @@ describe("respond", () => {
                   entityName: "city",
                   givens: { TENANT: "a" },
                },
+               identity: { caller: "alice", traceId: "trace-1" },
                valueFetcher: async (req) => {
-                  asked.push([req.source, req.dimension, req.givens]);
+                  asked.push([
+                     req.source,
+                     req.dimension,
+                     req.givens,
+                     req.identity,
+                  ]);
                   return { values: ["Denver", "Boulder"], truncated: false };
                },
             },
          );
-         expect(asked).toEqual([["cities", "city", { TENANT: "a" }]]);
+         expect(asked).toEqual([
+            [
+               "cities",
+               "city",
+               { TENANT: "a" },
+               { caller: "alice", traceId: "trace-1" },
+            ],
+         ]);
          const city = (out.sources as Card[])[0].entities![0];
          expect(city.values).toEqual([
             { value: "Denver", relevance: 0.98, search_text: "denver" },

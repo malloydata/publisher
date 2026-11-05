@@ -16,6 +16,7 @@ import { LegacyReportController } from "../controller/legacy_report.controller";
 import { QueryController } from "../controller/query.controller";
 import { AccessDeniedError, PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
+import { accessIdentityOf } from "../mcp/request_extra";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
 import { queryDistinctValues } from "../mcp/tools/get_context_values";
 import { tryAcquireQuerySlot } from "../query_concurrency";
@@ -290,6 +291,30 @@ describe("value search writes exactly one record per lookup", () => {
          await lookup(storeOf(model), "open_src");
          expect(records()).toMatchObject([
             { outcome: "ok", requestedSource: "open_src", adHoc: true },
+         ]);
+      });
+   });
+
+   it("carrying the caller and trace the request named", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         await queryDistinctValues({
+            environmentStore: storeOf(model),
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            source: "open_src",
+            dimension: "label",
+            limit: 5,
+            timeoutMs: 5000,
+            counted: false,
+            routeLabel: "mcp:getContext:values",
+            identity: accessIdentityOf(EXTRA),
+         });
+         expect(records()).toMatchObject([
+            {
+               caller: "agent@example.com",
+               traceId: "0af7651916cd43dd8448eb211c80319c",
+            },
          ]);
       });
    });

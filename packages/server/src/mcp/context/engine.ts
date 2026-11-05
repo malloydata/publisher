@@ -53,6 +53,7 @@ import {
    type FindResult,
    type FindTarget,
 } from "./find";
+import type { ValueFetchRequest } from "../tools/get_context_values";
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
@@ -258,6 +259,8 @@ type FcjQueryArgs = {
    uri: string;
    warnings: string[];
    traceMode: TraceMode;
+   /** Who asked, for the access record of each gated value lookup. */
+   identity?: ValueFetchRequest["identity"];
 };
 
 /**
@@ -596,6 +599,7 @@ async function runFcjSearch(
       environmentStore,
       alsoLikely: [...alsoLikely, ...dateRange],
       ...(args.signal ? { signal: args.signal } : {}),
+      ...(args.identity ? { identity: args.identity } : {}),
    });
    stages.push({
       name: "respond",
