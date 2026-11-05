@@ -510,6 +510,73 @@ export { s0 }
       expect(await refusal()).toContain("join paths");
    });
 
+   const SHAPES: Array<[string, () => string, string]> = [
+      [
+         "an open entry over a locked source",
+         () => `${GIVENS}
+#(authorize) false
+source: people is ${PEOPLE}
+source: visits is ${VISITS} extend {
+   join_one: person is people on person.id = person_id
+}
+`,
+         "is open to every caller and joins person, which is locked",
+      ],
+      [
+         "an entry that does not read the joined row filter's given",
+         () => `${GIVENS}
+#(access_filter) org in $ORGS
+source: people is ${PEOPLE}
+#(authorize) 'clinician' in $ROLES
+source: visits is ${VISITS} extend {
+   join_one: person is people on person.id = person_id
+}
+`,
+         "whose gate reads $ORGS, which no gate on visits reads",
+      ],
+      [
+         "a lock term the entry's lock lacks",
+         () => `${GIVENS}${CHART}
+#(authorize) 'billing' in $ROLES
+source: invoices is ${VISITS} extend {
+   join_one: c is chart on c.id = person_id
+}
+`,
+         "which is locked to 'clinician' in $ROLES",
+      ],
+      [
+         "an entry row filter over a locked source",
+         () => `${GIVENS}${CHART}
+#(access_filter) org in $ORGS
+source: invoices is ${VISITS} extend {
+   join_one: c is chart on c.id = person_id
+}
+`,
+         "which is locked to 'clinician' in $ROLES",
+      ],
+      [
+         "a walk past the join bound",
+         () => chain(18, true),
+         "joins more than 16 deep",
+      ],
+   ];
+
+   for (const [name, model, fragment] of SHAPES) {
+      it(`${name}: a package of gates alone loads with a join-bypass warning, and one that classifies anything refuses`, async () => {
+         gateOnly = true;
+         write("m.malloy", model());
+         const warnings = (await load()).getPackageMetadata().warnings ?? [];
+         expect(
+            warnings.filter(
+               (w) => w.code === "join-bypass" && w.message.includes(fragment),
+            ),
+         ).not.toHaveLength(0);
+         gateOnly = false;
+         write("m.malloy", model());
+         expect(await refusal()).toContain(fragment);
+      });
+   }
+
    it("loads a source past the bound when no source in the package has a gate", async () => {
       write("m.malloy", chain(17, false));
       expect((await load()).getPackageMetadata().name).toBe("pkg");

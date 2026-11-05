@@ -10,8 +10,8 @@
 // at all — that a rollup reaches the wire plan under the author's model path, and
 // that routing a live query through the synthesized model does not change the
 // answer.
-import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "./access_record";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -686,7 +686,6 @@ function bindMissingRollupTables(pkg: Package) {
 describe("pre-aggregation and a row-level gate", () => {
    const GATED = `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   GROUPS :: number[]
 
@@ -830,7 +829,6 @@ source: orders is duckdb.sql("""
 describe("pre-aggregation and a authorize gate", () => {
    const SOURCE_AUTHORIZE_GATED = `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   ROLE :: string[]
 
@@ -922,7 +920,6 @@ describe("a gate reached only through a derivation hop", () => {
    const LAYERED = {
       "base.malloy": `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   GROUPS :: number[]
 
@@ -997,7 +994,6 @@ source: ungated is duckdb.sql("""
 describe("pre-aggregation and a caller join to a row-gated source", () => {
    const CALLER_JOIN_MODEL = `##! experimental { persistence composite_sources givens }
 
-#(secure)
 given:
   GROUPS :: number[]
 
@@ -1013,6 +1009,7 @@ source: orders is duckdb.sql("""
     (30, 'B', 1)
   ) AS t(amount, category, org_id)
 """) extend {
+  join_one: author_org is orgs on org_id = author_org.org_id
   #@ preaggregate grain="category"
   measure: total is amount.sum()
 }
@@ -1030,26 +1027,25 @@ source: orders is duckdb.sql("""
    });
 
    it(
-      "loads a gate-only package whose author join reads a row-gated source the entry does not scope, with a join-bypass warning",
+      "does not block routing for an author join into the row-gated source",
       async () => {
-         // The author join hands org two's rows to a caller scoped to org one.
-         // A package of gates alone loads it as 0.11 did; classifying anything
-         // in the package makes it a refusal (join_bypass.ts).
-         const withAuthorJoin = CALLER_JOIN_MODEL.replace(
-            '#@ preaggregate grain="category"',
-            'join_one: author_org is orgs on org_id = author_org.org_id\n  #@ preaggregate grain="category"',
-         );
-         const pkg = await loadPackage(withAuthorJoin);
-         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         const pkg = await loadPackage(CALLER_JOIN_MODEL);
          expect(
-            warnings.some(
-               (w) =>
-                  w.code === "join-bypass" &&
-                  w.message.includes(
-                     "joins author_org, whose gate reads $GROUPS",
-                  ),
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: author_org.org_name; aggregate: total; order_by: org_name }",
+               { GROUPS: [1] },
             ),
-         ).toBe(true);
+         ).toEqual([
+            { org_name: "one", total: 40 },
+            { org_name: "two", total: 20 },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(0);
       },
       { timeout: 60000 },
    );

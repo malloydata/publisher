@@ -34,9 +34,8 @@ function gateModel(
    gate: string,
    source = "source: X is duckdb.table('accounts') extend {}",
 ): string {
-   // A block-level #(secure) note marks every given.
    const givenBlock = givens
-      ? `#(secure)\ngiven:\n${givens
+      ? `given:\n${givens
            .split("\n")
            .map((l) => `  ${l}`)
            .join("\n")}\n\n`
@@ -476,7 +475,6 @@ describe("gate content that is not a grammar question", () => {
          "a query-source base gate and its composite member's gate on the same given (two groups, never flattened)",
          `##! experimental { givens composite_sources }
 
-#(secure)
 given:
   GROUPS :: string[]
 
@@ -502,9 +500,6 @@ source: qs is combo -> { group_by: id, region }
             "#(access_filter) id = $ID",
             `source: salaries is duckdb.table('parent') extend {}
 
-// Scoped on the joined gate's given, or the load refuses the join as a
-// bypass (join_bypass.ts); the join itself is still unannotated.
-#(access_filter) salaries.id = $ID
 source: headcount_by_dept is duckdb.table('childtable') extend {
    join_one: salaries on id = salaries.id
 }`,
@@ -578,7 +573,6 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          `#(access_filter) id = $GROUPS
 source: salaries is duckdb.sql("select 1 as id") extend {}
 
-#(access_filter) salaries.id = $GROUPS
 source: headcount_by_dept is duckdb.sql("select 1 as id") extend {
    join_one: salaries on id = salaries.id
 }`,
@@ -590,7 +584,7 @@ source: headcount_by_dept is duckdb.sql("select 1 as id") extend {
             ? "GROUPS :: number[]"
             : "GROUPS :: number";
          const { pkg, cleanup } = await loadTempPackage({
-            "m.malloy": `##! experimental.givens\n\n#(secure)\ngiven:\n  ${given}\n\n${body}\n`,
+            "m.malloy": `##! experimental.givens\n\ngiven:\n  ${given}\n\n${body}\n`,
          });
          try {
             expect(pkg).toBeDefined();
