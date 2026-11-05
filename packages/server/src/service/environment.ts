@@ -3144,7 +3144,7 @@ export class Environment {
       let gateMsg = "";
       if (listingChanged) {
          try {
-            applyLoadGates(_package);
+            await applyLoadGates(_package);
          } catch (error) {
             if (!(error instanceof BadRequestError)) {
                _package.setPackageMetadata(existing);

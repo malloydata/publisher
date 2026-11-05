@@ -138,11 +138,16 @@ export async function summarizeQueryAccess(args: {
    try {
       const prepared = (await args.runnable.getPreparedQuery()) as {
          _query?: unknown;
+         _modelDef?: ModelDef;
       };
-      const reads = readQueryFieldReads(args.modelDef, prepared._query);
+      // The compiled model, which holds a source the caller declared in the query.
+      const reads = readQueryFieldReads(
+         prepared._modelDef ?? args.modelDef,
+         prepared._query,
+      );
       if (reads) {
          const { lineage, paths } = reads;
-         fieldsReadComplete = !lineage.truncated;
+         fieldsReadComplete = reads.complete && !lineage.truncated;
          const found = new Map<string, FieldRead>();
          const add = (path: string, classifications: string[]): void => {
             if (found.has(path)) return;
@@ -336,6 +341,8 @@ export async function withAccessRecord<T>(
          event: "access",
          ...base,
          ...(audit.version ? { version: audit.version } : {}),
+         // Set by a refusal that read the query first (the ceiling), so the record says what was read.
+         ...audit.summary,
          ...(signal?.aborted
             ? { outcome: "cancelled" as const, status: 499 }
             : { outcome: outcomeOf(error, status), status }),

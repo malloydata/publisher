@@ -203,6 +203,111 @@ describe("examples/clinical-records, clean", () => {
    });
 });
 
+describe("examples/clinical-records, the data app's queries", () => {
+   let pkg: Package;
+   let close: () => Promise<void>;
+   // The app's own constants, so a query it gains is covered without editing this spec.
+   let app: {
+      SURFACES: Array<{ name: string }>;
+      PERSONAS: Array<{
+         id: string;
+         givens: Record<string, unknown>;
+         expect: Record<string, string>;
+      }>;
+      SAMPLES: Record<string, unknown>;
+      DEID: Record<string, { persona: string; ages: string; precision: string }>;
+      ATTEMPTS: Array<{
+         id: string;
+         query: (on: string) => string;
+         local?: boolean;
+      }>;
+      probeQuery: (surface: string) => string;
+      sampleQuery: (surface: string) => string;
+   };
+   beforeAll(async () => {
+      ({ pkg, close } = await load(EXAMPLE));
+      app = await import(path.join(EXAMPLE, "public/app/tiles.js"));
+   });
+   afterAll(async () => close());
+
+   const run = (query: string, givens: Record<string, unknown>) =>
+      pkg
+         .getModel("index.malloy")!
+         .getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            query,
+            {},
+            true,
+            givens as Record<string, GivenValue>,
+         );
+
+   it("serves each persona's count and sample on the domain the policy admits it to, and refuses the rest", async () => {
+      for (const persona of app.PERSONAS) {
+         for (const { name } of app.SURFACES) {
+            const probe = run(app.probeQuery(name), persona.givens);
+            if (persona.expect[name] === undefined) {
+               await expect(probe).rejects.toBeInstanceOf(AccessDeniedError);
+               continue;
+            }
+            await probe;
+            if (app.SAMPLES[name]) {
+               await run(app.sampleQuery(name), persona.givens);
+            }
+         }
+      }
+   });
+
+   it("serves the de-identification comparison as the personas that run it", async () => {
+      for (const { persona, ages, precision } of Object.values(app.DEID)) {
+         const givens = app.PERSONAS.find((p) => p.id === persona)!.givens;
+         await run(ages, givens);
+         await run(precision, givens);
+      }
+   });
+
+   it("serves a count and a patient-count query on the research and population surfaces", async () => {
+      for (const [surface, role] of [
+         ["research", "researcher"],
+         ["population_health", "quality"],
+         ["partner_lds", "partner"],
+      ]) {
+         await run(`run: ${surface} -> { aggregate: n is count() }`, {
+            ROLES: [role],
+            ATTRIBUTES: ["dua-signed"],
+         });
+      }
+      await run("run: research -> { group_by: conditions.condition; aggregate: conditions.diagnosis_count }", {
+         ROLES: ["researcher"],
+      });
+      await run("run: population_health extend { dimension: d is started_at.month } -> { group_by: d }", {
+         ROLES: ["quality"],
+      });
+   });
+
+   it("refuses each attempt the app shows, and a researcher's own extend, relabel and self-join", async () => {
+      const researcher = { ROLES: ["researcher"] };
+      for (const attempt of app.ATTEMPTS.filter((a) => !a.local)) {
+         await expect(
+            run(attempt.query("research"), researcher),
+         ).rejects.toBeDefined();
+      }
+      for (const query of [
+         "run: research extend { dimension: x is patient.SSN } -> { group_by: x }",
+         "run: research extend { dimension: k is PATIENT } -> { group_by: k }",
+         'run: research extend { join_many: r2 is research on Id = r2.Id and patient.SSN = "x" } -> { aggregate: n is r2.encounter_count }',
+         "source: mine is research extend { dimension: y is patient.SSN }\nrun: mine -> { group_by: y }",
+         'run: research extend {\n#(classification) "none"\n dimension: y is concat(patient.SSN, \'\') } -> { group_by: y }',
+         'run: research extend {\n#(carries) ["phi.direct_identifier"]\n dimension: y is patient.SSN } -> { group_by: y }',
+      ]) {
+         await expect(run(query, researcher)).rejects.toBeInstanceOf(
+            BadRequestError,
+         );
+      }
+   });
+});
+
 describe("examples/clinical-records, seeded violations", () => {
    it.each([
       [

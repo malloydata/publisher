@@ -47,7 +47,10 @@ which count decisions with no identity attached.
 | `error`                                                   | The message on a non-ok outcome, with credentials a driver quotes back in it (connection strings, passwords) redacted and the text cut at 2000 characters. A gate's own detail is already redacted there.                                                                                                                                                                                                         |
 
 A refused query has no `source`, `gates` or `fieldsRead`, because nothing was compiled for the
-caller; it has what the request named and the outcome.
+caller; it has what the request named and the outcome. The exception is a query refused for reading
+past its source's [`#(carries)`](classification.md#the-ceiling-is-checked-per-query): it compiled,
+so its record is `bad_request` with the `source`, the `fieldsRead` that crossed the ceiling and
+`fieldsReadComplete`, and `error` names the field.
 
 ## What it can leave out
 

@@ -60,6 +60,11 @@ import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
 import { summarizeQueryAccess, type QueryAudit } from "./access_record";
 import {
+   ceilingRefusal,
+   modelDeclaresCarries,
+   queryCarries,
+} from "./classification";
+import {
    type ServeBinding,
    serveShapeDiagnostics,
 } from "./materialization_serve_transform";
@@ -78,6 +83,7 @@ import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
+   assertNoCallerClassificationAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
@@ -1930,6 +1936,64 @@ export class Model {
             (name) => (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0,
          ),
       };
+   }
+
+   /**
+    * Refuse a query whose entry carries a `#(carries)` ceiling when it reads a
+    * field past it, so a source's list holds for what a caller reads and not
+    * only for what the author declared. The entry's ceiling is read off the
+    * compiled struct, so a source a caller declares over a carried one keeps
+    * it. A `bad_request` record names the reads.
+    */
+   private async assertWithinCarriesCeiling(
+      audit: QueryAudit,
+      live: QueryMaterializer,
+      bound: QueryMaterializer,
+      source: string | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      region: CallerRegion | undefined,
+   ): Promise<void> {
+      // Only a model that declares a ceiling pays for reading the query.
+      if (!modelDeclaresCarries(this.modelDef)) return;
+      const prepared = (await live.getPreparedQuery()) as {
+         _query?: unknown;
+         _modelDef?: ModelDef;
+      };
+      const modelDef = prepared._modelDef ?? this.modelDef;
+      const carries = queryCarries(modelDef, prepared._query);
+      if (!carries) return;
+      let refusal: string | undefined;
+      try {
+         const joins = region
+            ? ((await this.resolvedCallerJoins(live, region)) ?? []).map(
+                 (r) => r.callerJoin.join,
+              )
+            : [];
+         refusal = ceilingRefusal(modelDef, prepared._query, carries, joins);
+      } catch (err) {
+         if (!(err instanceof CallerJoinWalkError)) throw err;
+         refusal = `source ${carries.source} carries [${carries.classes.join(", ")}]; this query's joins cannot be read completely`;
+      }
+      if (!refusal) return;
+      try {
+         audit.summary = await summarizeQueryAccess({
+            runnable: live,
+            modelDef: this.modelDef,
+            apiSources: this.sources,
+            modelGivens: this.givens,
+            source,
+            givens,
+            bypassAuthorize: false,
+            grafts: this.rowLevelFilteredRunnables.get(bound) ?? [],
+            rowCount: 0,
+         });
+      } catch (err) {
+         logger.debug("Access summary unavailable", {
+            modelPath: this.modelPath,
+            error: (err as Error).message,
+         });
+      }
+      throw new BadRequestError(refusal);
    }
 
    private modelQuerySource(name: string): string | undefined {
@@ -4115,6 +4179,29 @@ export class Model {
       return this.modelDef;
    }
 
+   /** The compiled query of each notebook cell that runs one, with the model state its query compiled in. */
+   public async preparedCellQueries(): Promise<
+      Array<{ query: unknown; modelDef: ModelDef | undefined }>
+   > {
+      const out: Array<{ query: unknown; modelDef: ModelDef | undefined }> = [];
+      for (const cell of this.runnableNotebookCells ?? []) {
+         if (!cell.runnable) continue;
+         let prepared: { _query?: unknown; _modelDef?: ModelDef };
+         try {
+            prepared =
+               (await cell.runnable.getPreparedQuery()) as typeof prepared;
+         } catch {
+            // A cell that does not compile fails when it runs, not here.
+            continue;
+         }
+         out.push({
+            query: prepared._query,
+            modelDef: prepared._modelDef ?? cell.modelDef,
+         });
+      }
+      return out;
+   }
+
    /**
     * The model file's text as this model's compile read it, or undefined when there is
     * none (a `.malloynb`, a compile failure, or an unreadable file). A compile
@@ -5645,6 +5732,7 @@ export class Model {
                throw err;
             }
          }
+         if (query) assertNoCallerClassificationAnnotation(query);
          if (!sourceName && !queryName && query) {
             queryString = "\n" + query;
          } else if (queryName && !query) {
@@ -6012,6 +6100,16 @@ export class Model {
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
       });
+      if (!bypassAuthorize) {
+         await this.assertWithinCarriesCeiling(
+            audit,
+            liveRunnable ?? runnable,
+            runnable,
+            compiledSource ?? sourceName,
+            givens,
+            callerRegion,
+         );
+      }
       if (runCount !== undefined && runCount > 1) {
          queryExecutionHistogram().record(
             performance.now() - startTime,
@@ -7042,6 +7140,16 @@ export class Model {
                   givens ?? {},
                );
             }
+            await this.assertWithinCarriesCeiling(
+               audit,
+               runnableToExecute,
+               runnableToExecute,
+               (await this.resolveAuthorizeSourceFromRunnable(
+                  runnableToExecute,
+               )) ?? extractRunTargetSourceName(cell.text),
+               givens,
+               undefined,
+            );
             // After the gate, as on the query path; before prepare.
             this.assertFilterGivens(givens);
 

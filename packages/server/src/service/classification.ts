@@ -262,6 +262,7 @@ interface IrField {
 
 /** The slice of a pipeline stage the lineage reads. */
 interface IrStage {
+   type?: string;
    queryFields?: Array<{
       type?: string;
       name?: string;
@@ -425,22 +426,126 @@ function queryInput(
 /**
  * What a compiled query's first stage reads from {@link queryInput}: the
  * paths of its own references (`refSummary.fieldUsage`, filters included) and
- * the lineage of that struct. Undefined when the query names no struct the
- * lineage can read, or its first stage has no reference summary.
+ * the lineage of that struct. A stage Malloy gave no summary (one that reads
+ * no field) is read from its query fields and filters instead; `complete` is
+ * false when it nests, which that read cannot follow. Undefined when the
+ * query names no struct the lineage can read.
  */
 export function readQueryFieldReads(
    modelDef: ModelDef | undefined,
    query: unknown,
-): { lineage: SourceLineage; paths: string[] } | undefined {
+): { lineage: SourceLineage; paths: string[]; complete: boolean } | undefined {
    const q = query as IrQuery | undefined;
-   const usage = q?.pipeline?.[0]?.refSummary?.fieldUsage;
-   if (!usage) return undefined;
+   const stage = q?.pipeline?.[0];
+   if (!stage) return undefined;
    const input = queryInput(modelDef, q);
    if (!input) return undefined;
+   // An `index:` reads every field its wildcard names, which no reference lists.
+   let complete = stage.type !== "index";
+   let refs: ReadonlyArray<ReadonlyArray<string>>;
+   const usage = stage.refSummary?.fieldUsage;
+   if (usage) {
+      refs = usage.map((u) => u.path ?? []);
+   } else {
+      const read = fieldReferences(stage.filterList);
+      for (const qf of stage.queryFields ?? []) {
+         if (qf.type === "turtle") complete = false;
+         else
+            read.push(
+               ...(qf.type === "fieldref"
+                  ? [qf.path ?? []]
+                  : fieldReferences(qf.e)),
+            );
+      }
+      refs = read;
+   }
    return {
       lineage: readSourceClassifications(input.fields, input.query),
-      paths: Array.from(new Set(usage.map((u) => (u.path ?? []).join(".")))),
+      // An empty path is the source itself (a `count()`), not a field.
+      paths: Array.from(
+         new Set(refs.filter((r) => r.length > 0).map((r) => r.join("."))),
+      ),
+      complete,
    };
+}
+
+/** Whether any source in the compiled model declares a `#(carries)`; a caller cannot add one. */
+export function modelDeclaresCarries(modelDef: ModelDef | undefined): boolean {
+   return Object.values(modelDef?.contents ?? {}).some(
+      (def) => readCarries((def as IrField).annotations).declared,
+   );
+}
+
+/**
+ * The `#(carries)` ceiling of the struct a query enters, read along that
+ * struct's own annotation chain so a source a caller declares over a carried
+ * one still has it. Undefined when the entry declares none.
+ */
+export function queryCarries(
+   modelDef: ModelDef | undefined,
+   query: unknown,
+): { source: string; classes: string[] } | undefined {
+   const ref = (query as IrQuery | undefined)?.structRef;
+   const entry =
+      typeof ref === "string"
+         ? findIrSource(modelDef, ref)
+         : (ref as IrField | undefined);
+   const carries = readCarries(entry?.annotations);
+   if (!carries.declared) return undefined;
+   return {
+      source: typeof ref === "string" ? ref : (entry?.as ?? entry?.name ?? ""),
+      classes: Array.from(carries.classes).sort(byCodepoint),
+   };
+}
+
+/**
+ * Why a query reads past the ceiling its entry carries, or undefined when
+ * every field it reads is classified on the list. The `on` of each caller
+ * join counts as a read, which the compiled query does not list. A read Publisher
+ * cannot place or follow refuses, as does a walk cut short.
+ */
+export function ceilingRefusal(
+   modelDef: ModelDef | undefined,
+   query: unknown,
+   carries: { source: string; classes: string[] },
+   callerJoins: readonly unknown[] = [],
+): string | undefined {
+   const head = `source ${carries.source} carries [${carries.classes.join(", ")}]; this query reads`;
+   const reads = readQueryFieldReads(modelDef, query);
+   if (!reads) return `${head} a struct which Publisher cannot see completely`;
+   const allowed = new Set(carries.classes);
+   const paths = Array.from(
+      new Set([
+         ...reads.paths,
+         ...callerJoins.flatMap((j) =>
+            fieldReferences((j as { onExpression?: unknown }).onExpression)
+               .filter((r) => r.length > 0)
+               .map((r) => r.join(".")),
+         ),
+      ]),
+   ).sort(byCodepoint);
+   if (!reads.complete || reads.lineage.truncated) {
+      return `${head} ${paths[0] ?? carries.source}, which Publisher cannot see completely`;
+   }
+   for (const path of paths) {
+      const known = reads.lineage.get(path);
+      if (!known) {
+         return `${head} ${path}, which Publisher cannot see completely`;
+      }
+      // A view or a join is not a field; what it reads is listed on its own.
+      if (!known.isField) continue;
+      if (known.unresolved.length > 0 && known.declared.length === 0) {
+         return `${head} ${path}, which Publisher cannot see completely`;
+      }
+      if (known.classifications.length === 0) {
+         return `${head} ${path}, which has no #(classification) on the list`;
+      }
+      const off = known.classifications.filter((k) => !allowed.has(k));
+      if (off.length > 0) {
+         return `${head} ${path}, which is classified ${off.join(" ")}, not on the list`;
+      }
+   }
+   return undefined;
 }
 
 /** What one output field of a `->` query source reads. */
@@ -1049,6 +1154,43 @@ export function classificationWarnings(
 }
 
 /**
+ * Rejections for every author-declared query (a named query, a notebook cell)
+ * that reads past the `#(carries)` of the source it enters, so it refuses at
+ * load rather than on its first run. A caller's own queries are checked per
+ * request ({@link ceilingRefusal}).
+ */
+export async function carriesCeilingLeaks(
+   models: ReadonlyMap<string, Model>,
+   isListed: (modelPath: string) => boolean,
+): Promise<string[]> {
+   const messages: string[] = [];
+   for (const [modelPath, model] of models) {
+      const modelDef = model.getModelDef();
+      // A notebook is served whether or not the package lists it, so its cells are always read.
+      const queries: Array<{
+         label: string;
+         query: unknown;
+         modelDef: ModelDef | undefined;
+      }> = Object.entries(isListed(modelPath) ? (modelDef?.contents ?? {}) : {})
+         .filter(([, def]) => (def as { type?: string }).type === "query")
+         .map(([name, query]) => ({
+            label: `query ${name}`,
+            query,
+            modelDef,
+         }));
+      (await model.preparedCellQueries()).forEach((cell, i) =>
+         queries.push({ label: `notebook cell ${i + 1}`, ...cell }),
+      );
+      for (const { label, query, modelDef: def } of queries) {
+         const carries = queryCarries(def, query);
+         const refusal = carries && ceilingRefusal(def, query, carries);
+         if (refusal) messages.push(`${modelPath}: ${label}: ${refusal}.`);
+      }
+   }
+   return messages;
+}
+
+/**
  * Every leak in the package: a field reachable from a source with a
  * `#(carries)` ceiling with a class not on the list, or with no class at
  * all, plus a `#(carries)` that names nothing. One message per finding, in
@@ -1114,17 +1256,8 @@ export function classificationLeaks(
             );
          }
       }
-      for (const [path, c] of s.hiddenRead) {
-         const copy = copyLeak(where, allowed, path, c);
-         if (copy) messages.push(copy);
-      }
-      for (const [path, c] of s.fields) {
-         const copy = copyLeak(where, allowed, path, c);
-         if (copy) {
-            messages.push(copy);
-            continue;
-         }
-         // An undeclared field already carries its filter's classes in its own.
+      // An undeclared field already carries its filter's classes in its own.
+      const filterLeak = (c: FieldClassification): void => {
          const filtered = c.filtered.filter((i) =>
             i.classifications.some((k) => !carries.classes.has(k)),
          );
@@ -1136,6 +1269,18 @@ export function classificationLeaks(
                `add the class to #(carries) if the policy allows it.`;
             if (!messages.includes(filters)) messages.push(filters);
          }
+      };
+      for (const [path, c] of s.hiddenRead) {
+         const copy = copyLeak(where, allowed, path, c);
+         if (copy) messages.push(copy);
+      }
+      for (const [path, c] of s.fields) {
+         const copy = copyLeak(where, allowed, path, c);
+         if (copy) {
+            messages.push(copy);
+            continue;
+         }
+         filterLeak(c);
          const off = c.classifications.filter((k) => !carries.classes.has(k));
          if (c.classifications.length > 0 && off.length === 0) {
             if (c.unresolved.length > 0 && c.declared.length === 0) {

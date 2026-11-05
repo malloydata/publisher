@@ -129,7 +129,11 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
-import { classificationLeaks, classificationWarnings } from "./classification";
+import {
+   carriesCeilingLeaks,
+   classificationLeaks,
+   classificationWarnings,
+} from "./classification";
 import {
    classificationSummary,
    type ApiClassificationSummary,
@@ -1248,7 +1252,7 @@ export class Package {
 
       const buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
 
-      applyLoadGates(pkg);
+      await applyLoadGates(pkg);
       // After the gates, so a bad declaration is rejected before a companion is
       // compiled. Unbound, the companion recomputes from the base until a bind.
       await pkg.pushPreaggregateServeModels();
@@ -2175,6 +2179,12 @@ export class Package {
       return classificationLeaks(this.models, isListed, includeHidden).join(
          "\n",
       );
+   }
+
+   /** REJECTION messages for every author query that reads past the `#(carries)` of its source, one per line. */
+   public async formatCarriesCeilingLeaks(): Promise<string> {
+      const { isListed } = this.gateScope();
+      return (await carriesCeilingLeaks(this.models, isListed)).join("\n");
    }
 
    /**

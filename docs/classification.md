@@ -197,6 +197,35 @@ in the review's control register, where a check proves it.
   not parse warns `classification-malformed` naming the field or
   source and the fix, whether or not coverage is in force; the usable lines beside it still count.
 
+## The ceiling is checked per query
+
+The load check above judges what a model exposes. A caller's own query can reach past it: it can
+`extend` a source with a field of its own (`run: s extend { dimension: x is ssn } -> { group_by: x }`),
+join the source to itself, or declare a source over it, and an `internal:` column is readable
+through that. So a query that enters a `#(carries)` source is checked against the list too, on the
+fields the compiled query reads, and refused with a 400 before it runs when a read has no
+`#(classification)`, carries a class off the list, or cannot be read completely. The message names
+the field:
+
+```
+source research carries [none, phi.clinical]; this query reads x, which is classified phi.direct_identifier, not on the list
+```
+
+- The ceiling is the one the entry struct carries, read down its own chain, so a source a caller
+  declares over a carried one (`source: mine is research extend { … }`) has it.
+- What counts as a read: every field the query selects, aggregates, groups, filters, nests or
+  indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
+  reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
+  is exempt only from the load check. A `count()` that reads no field is served.
+- A caller cannot write a `#(classification)` or a `#(carries)` in query text: either would let the
+  query decide its own check. The query is refused with a 400.
+- Named queries and notebook cells an author declares on a `#(carries)` source are held to the same
+  check at load, so one that reads past the list refuses the package rather than the first request.
+- A source with no `#(carries)` is not checked, and neither is a request carrying the
+  data-management bypass.
+
+This is breaking for a query that reads past a `#(carries)` source's list, which 0.12.0 served.
+
 ## What coverage and the ceiling read
 
 Both follow what a caller can reach, not what a file declares:
@@ -212,9 +241,10 @@ Both follow what a caller can reach, not what a file declares:
   **there**, which is where a caller reads it. Classify the field where it is declared; the class
   rides every join to it.
 - Fields with an access modifier (`private:`, `internal:`) are not demanded a class at load.
-  They still feed lineage, so a public field derived from one carries its class. A caller's own
-  query can re-expose an `internal:` field, so `#(carries)` is enforced again per query, on what
-  the query reads (see [The ceiling is checked per query](#the-ceiling-is-checked-per-query)).
+  They still feed lineage, so a public field derived from one carries its class. A `private:` field
+  is never reachable. A caller's own query can re-expose an `internal:` field through `extend`, so
+  `#(carries)` is enforced again per query, on what the query reads: classify any `internal:` field a
+  caller could read (see [The ceiling is checked per query](#the-ceiling-is-checked-per-query)).
 - A source locked with `#(authorize) false` publishes nothing a caller can read, so coverage does
   not report its own fields (its fields reached through a join from an open source are). A
   `#(carries)` on it is still enforced.
