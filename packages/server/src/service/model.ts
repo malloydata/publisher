@@ -4084,12 +4084,19 @@ export class Model {
          : undefined;
    }
 
-   public getSources(): ApiSource[] | undefined {
-      return this.curateForDiscovery(this.sources);
+   /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
+   public getSources(includeHidden = false): ApiSource[] | undefined {
+      return includeHidden
+         ? this.sources
+         : this.curateForDiscovery(this.sources);
    }
 
-   public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.curateForDiscovery(this.sourceInfos);
+   public getSourceInfos(
+      includeHidden = false,
+   ): Malloy.SourceInfo[] | undefined {
+      return includeHidden
+         ? this.sourceInfos
+         : this.curateForDiscovery(this.sourceInfos);
    }
 
    public getQueries(): ApiQuery[] | undefined {

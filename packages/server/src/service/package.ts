@@ -2145,15 +2145,37 @@ export class Package {
    }
 
    /**
+    * Which sources the load gates judge: the published surface, or every
+    * top-level source of every model under `queryableSources: "all"`, where a
+    * hidden source answers a query by name.
+    */
+   private gateScope(): {
+      isListed: (modelPath: string) => boolean;
+      includeHidden: boolean;
+   } {
+      if (this.packageMetadata.queryableSources === "all") {
+         return {
+            isListed: (modelPath) => modelPath.endsWith(MODEL_FILE_SUFFIX),
+            includeHidden: true,
+         };
+      }
+      return {
+         isListed: (modelPath) => this.isListedModelPath(modelPath),
+         includeHidden: false,
+      };
+   }
+
+   /**
     * REJECTION messages for every field a `#(carries)` surface exposes outside
     * its list (docs/classification.md), one per line, empty when there are
     * none. Strict at load, like an invalid incremental policy: a surface that
     * says what it carries must not serve what it does not.
     */
    public formatClassificationLeaks(): string {
-      return classificationLeaks(this.models, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      ).join("\n");
+      const { isListed, includeHidden } = this.gateScope();
+      return classificationLeaks(this.models, isListed, includeHidden).join(
+         "\n",
+      );
    }
 
    /**
@@ -2162,9 +2184,8 @@ export class Package {
     * when there are none. Strict at load, like a `#(carries)` leak.
     */
    public formatJoinBypasses(): string {
-      return joinBypasses(this.models, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      ).join("\n");
+      const { isListed, includeHidden } = this.gateScope();
+      return joinBypasses(this.models, isListed, includeHidden).join("\n");
    }
 
    /**
@@ -2174,9 +2195,10 @@ export class Package {
     * value is a filter, not a control.
     */
    public formatInsecureGateGivens(): string {
-      return insecureGateGivens(this.models, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      ).join("\n");
+      const { isListed, includeHidden } = this.gateScope();
+      return insecureGateGivens(this.models, isListed, includeHidden).join(
+         "\n",
+      );
    }
 
    /**

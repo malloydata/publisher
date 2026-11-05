@@ -19,6 +19,7 @@
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { referencedGivenNames } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
+import { alreadySeen } from "./classification";
 import { gateExprsForRoute } from "./gate_registry_walk";
 import type { Model } from "./model";
 
@@ -94,18 +95,27 @@ function insecureGivenNames(
 export function insecureGateGivens(
    models: ReadonlyMap<string, Model>,
    isListed: (modelPath: string) => boolean,
+   includeHidden = false,
 ): string[] {
    const messages: string[] = [];
+   const seen = new Set<string>();
    for (const [modelPath, model] of models) {
       if (!isListed(modelPath)) continue;
       let apiSources: ReturnType<Model["getSources"]>;
       try {
-         apiSources = model.getSources();
+         apiSources = model.getSources(includeHidden);
       } catch {
          continue;
       }
       const modelDef = model.getModelDef();
       for (const source of apiSources ?? []) {
+         if (
+            includeHidden &&
+            source.name &&
+            alreadySeen(seen, model, modelPath, source.name)
+         ) {
+            continue;
+         }
          const contents = source.name
             ? modelDef?.contents[source.name]
             : undefined;
