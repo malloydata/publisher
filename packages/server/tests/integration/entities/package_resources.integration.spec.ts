@@ -213,6 +213,8 @@ describe("the package resource and its sub-resources", () => {
       expect(helper.sources!.find((s) => s.name === "helper")!.queryable).toBe(
          false,
       );
+      // The whole response, as a load computes it from the rebuilt models.
+      expect(body.models).toMatchSnapshot();
    }, 60_000);
 
    it("GET …/build-plan and GET …/embedding-index read the loaded package", async () => {

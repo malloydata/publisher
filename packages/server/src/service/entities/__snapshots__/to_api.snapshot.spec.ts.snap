@@ -1,0 +1,1660 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the rich package's entities 1`] = `
+[
+  {
+    "fields": [
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [
+          "#(index)",
+        ],
+        "code": "channel_upper is upper(channel_name)",
+        "dataType": "string",
+        "indexFingerprint": {
+          "requiredFilterDimensions": [
+            "channel_name",
+            "region",
+          ],
+          "sqlHash": "1453f39c88a6b5c983b92efc53393d35d2c858e512288f6e56301ebc0427283c",
+        },
+        "kind": "dimension",
+        "name": "channel_upper",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [
+          "#(index)",
+          "#(doc) The région, labelled.",
+        ],
+        "code": "region_label is concat('r-', region)",
+        "dataType": "string",
+        "doc": "The région, labelled.",
+        "indexFingerprint": {
+          "requiredFilterDimensions": [
+            "channel_name",
+            "region",
+          ],
+          "sqlHash": "a709202a4bd666be894ba414cee171d2a55241162b97eb4f3bd4010dfa4941c7",
+        },
+        "kind": "dimension",
+        "name": "region_label",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [
+          "# hidden",
+        ],
+        "code": "secret is order_id * 2",
+        "dataType": "number",
+        "kind": "dimension",
+        "name": "secret",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "order_count is count()",
+        "dataType": "number",
+        "kind": "measure",
+        "name": "order_count",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "total is amount.sum()",
+        "dataType": "number",
+        "kind": "measure",
+        "name": "total",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "reps.rep_id",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "reps.rep_name",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "reps is duckdb.table('reps.csv') on rep_id = reps.rep_id",
+        "join": {
+          "nested": true,
+        },
+        "kind": "join",
+        "name": "reps",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_names.rep_id",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "rep_names.rep_name",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "shout is upper(rep_name)",
+        "dataType": "string",
+        "kind": "dimension",
+        "name": "rep_names.shout",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": 
+"rep_names is duckdb.table('reps.csv') extend {
+    dimension: shout is upper(rep_name)
+  } on rep_id = rep_names.rep_id"
+,
+        "join": {
+          "nested": true,
+        },
+        "kind": "join",
+        "name": "rep_names",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "by_channel is { group_by: channel_name; aggregate: order_count }",
+        "kind": "view",
+        "name": "by_channel",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "params",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "params",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "params",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "params",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "params",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "params",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+    ],
+    "givens": [
+      {
+        "annotations": [
+          
+"#(secure)
+"
+,
+        ],
+        "name": "TENANT",
+        "secure": true,
+        "type": "string[]",
+      },
+      {
+        "default": "'us'",
+        "name": "REGION_PICK",
+        "type": "string",
+      },
+    ],
+    "modelPath": "orders.malloy",
+    "sourceSchemas": [
+      {
+        "annotations": [
+          "#(doc) Orders placed in "any" channel, <b>tagged</b> & quoted \\ back.",
+          "#(filter) name=channel dimension=channel_name type=equal required",
+          "#(filter) name=region dimension=region type=in",
+          "#(access_filter) region = $REGION_PICK",
+        ],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+          {
+            "annotations": [
+              "#(index)",
+            ],
+            "kind": "dimension",
+            "name": "channel_upper",
+            "type": "string",
+          },
+          {
+            "annotations": [
+              "#(index)",
+              "#(doc) The région, labelled.",
+            ],
+            "kind": "dimension",
+            "name": "region_label",
+            "type": "string",
+          },
+          {
+            "annotations": [
+              "# hidden",
+            ],
+            "kind": "dimension",
+            "name": "secret",
+            "type": "number",
+          },
+          {
+            "kind": "measure",
+            "name": "order_count",
+            "type": "number",
+          },
+          {
+            "kind": "measure",
+            "name": "total",
+            "type": "number",
+          },
+          {
+            "fields": [
+              {
+                "kind": "column",
+                "name": "rep_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "rep_name",
+                "type": "string",
+              },
+            ],
+            "kind": "join",
+            "name": "reps",
+          },
+          {
+            "fields": [
+              {
+                "kind": "column",
+                "name": "rep_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "rep_name",
+                "type": "string",
+              },
+              {
+                "kind": "dimension",
+                "name": "shout",
+                "type": "string",
+              },
+            ],
+            "kind": "join",
+            "name": "rep_names",
+          },
+          {
+            "kind": "view",
+            "name": "by_channel",
+          },
+        ],
+        "name": "orders",
+      },
+      {
+        "annotations": [],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+        ],
+        "name": "params",
+      },
+    ],
+    "sources": [
+      {
+        "agentHidden": false,
+        "authorize": [
+          {
+            "expression": "region = $REGION_PICK",
+            "givenNames": [
+              "REGION_PICK",
+            ],
+            "route": "access_filter",
+            "terms": [
+              {
+                "fieldPath": "region",
+                "given": "REGION_PICK",
+                "op": "=",
+              },
+            ],
+          },
+        ],
+        "doc": "Orders placed in "any" channel, <b>tagged</b> & quoted \\ back.",
+        "filters": [
+          {
+            "dimension": "channel_name",
+            "implicit": false,
+            "name": "channel",
+            "required": true,
+            "type": "equal",
+          },
+          {
+            "dimension": "region",
+            "implicit": false,
+            "name": "region",
+            "required": false,
+            "type": "in",
+          },
+        ],
+        "joinOnly": false,
+        "modelPath": "orders.malloy",
+        "name": "orders",
+        "queryable": true,
+      },
+      {
+        "agentHidden": false,
+        "joinOnly": true,
+        "modelPath": "orders.malloy",
+        "name": "orders.reps",
+        "queryable": true,
+      },
+      {
+        "agentHidden": false,
+        "joinOnly": true,
+        "modelPath": "orders.malloy",
+        "name": "orders.rep_names",
+        "queryable": true,
+      },
+      {
+        "agentHidden": false,
+        "joinOnly": false,
+        "modelPath": "orders.malloy",
+        "name": "params",
+        "queryable": true,
+      },
+    ],
+  },
+]
+`;
+
+exports[`the surface package's entities 1`] = `
+[
+  {
+    "fields": [
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [
+          "#(authorize) false",
+        ],
+        "code": "gated is locked on order_id = gated.order_id",
+        "join": {
+          "nested": false,
+          "sourceName": "locked",
+          "sourcePath": "base.malloy",
+        },
+        "kind": "join",
+        "name": "gated",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+    ],
+    "givens": [],
+    "modelPath": "base.malloy",
+    "sourceSchemas": [
+      {
+        "annotations": [
+          "#(authorize) false",
+        ],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+        ],
+        "name": "locked",
+      },
+      {
+        "annotations": [],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+          {
+            "annotations": [
+              "#(authorize) false",
+            ],
+            "fields": [
+              {
+                "kind": "column",
+                "name": "order_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "channel_name",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "region",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "rep_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "tenant_id",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "amount",
+                "type": "number",
+              },
+            ],
+            "kind": "join",
+            "name": "gated",
+          },
+        ],
+        "name": "open_orders",
+      },
+    ],
+    "sources": [
+      {
+        "agentHidden": true,
+        "authorize": [
+          {
+            "expression": "false",
+            "givenNames": [],
+            "route": "authorize",
+          },
+        ],
+        "joinOnly": false,
+        "modelPath": "base.malloy",
+        "name": "locked",
+        "queryable": false,
+      },
+      {
+        "agentHidden": true,
+        "joinOnly": false,
+        "modelPath": "base.malloy",
+        "name": "open_orders",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "error": "<compile error>",
+    "modelPath": "broken.malloy",
+  },
+  {
+    "fields": [
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "locked",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [
+          "#(authorize) false",
+        ],
+        "code": "gated is locked on order_id = gated.order_id",
+        "join": {
+          "nested": false,
+          "sourceName": "locked",
+          "sourcePath": "base.malloy",
+        },
+        "kind": "join",
+        "name": "gated",
+        "source": "open_orders",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "order_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel_name",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "tenant_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "amount",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "gated.order_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "gated.channel_name",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "gated.region",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "gated.rep_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "gated.tenant_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('orders.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "gated.amount",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [
+          "#(authorize) false",
+        ],
+        "code": "gated is locked on order_id = gated.order_id",
+        "join": {
+          "nested": false,
+          "sourceName": "locked",
+          "sourcePath": "base.malloy",
+        },
+        "kind": "join",
+        "name": "gated",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "inner_gate.rep_id",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "inner_gate.rep_name",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "rn is rep_name",
+        "dataType": "string",
+        "kind": "dimension",
+        "name": "inner_gate.rn",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": 
+"inner_gate is duckdb.table('reps.csv') extend {
+    dimension: rn is rep_name
+  } on rep_id = inner_gate.rep_id"
+,
+        "join": {
+          "nested": true,
+        },
+        "kind": "join",
+        "name": "inner_gate",
+        "source": "served",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "orders",
+        },
+      },
+    ],
+    "givens": [],
+    "modelPath": "index.malloy",
+    "sourceSchemas": [
+      {
+        "annotations": [
+          "#(authorize) false",
+        ],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+        ],
+        "name": "locked",
+      },
+      {
+        "annotations": [],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+          {
+            "annotations": [
+              "#(authorize) false",
+            ],
+            "fields": [
+              {
+                "kind": "column",
+                "name": "order_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "channel_name",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "region",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "rep_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "tenant_id",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "amount",
+                "type": "number",
+              },
+            ],
+            "kind": "join",
+            "name": "gated",
+          },
+        ],
+        "name": "open_orders",
+      },
+      {
+        "annotations": [
+          "#(doc) The served orders.",
+        ],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "order_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel_name",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "tenant_id",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "amount",
+            "type": "number",
+          },
+          {
+            "annotations": [
+              "#(authorize) false",
+            ],
+            "fields": [
+              {
+                "kind": "column",
+                "name": "order_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "channel_name",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "region",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "rep_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "tenant_id",
+                "type": "string",
+              },
+              {
+                "kind": "column",
+                "name": "amount",
+                "type": "number",
+              },
+            ],
+            "kind": "join",
+            "name": "gated",
+          },
+          {
+            "fields": [
+              {
+                "kind": "column",
+                "name": "rep_id",
+                "type": "number",
+              },
+              {
+                "kind": "column",
+                "name": "rep_name",
+                "type": "string",
+              },
+              {
+                "kind": "dimension",
+                "name": "rn",
+                "type": "string",
+              },
+            ],
+            "kind": "join",
+            "name": "inner_gate",
+          },
+        ],
+        "name": "served",
+      },
+    ],
+    "sources": [
+      {
+        "agentHidden": false,
+        "authorize": [
+          {
+            "expression": "false",
+            "givenNames": [],
+            "route": "authorize",
+          },
+        ],
+        "joinOnly": false,
+        "modelPath": "index.malloy",
+        "name": "locked",
+        "queryable": false,
+      },
+      {
+        "agentHidden": false,
+        "joinOnly": false,
+        "modelPath": "index.malloy",
+        "name": "open_orders",
+        "queryable": false,
+      },
+      {
+        "agentHidden": false,
+        "doc": "The served orders.",
+        "joinOnly": false,
+        "modelPath": "index.malloy",
+        "name": "served",
+        "queryable": true,
+      },
+      {
+        "agentHidden": false,
+        "authorize": [
+          {
+            "expression": "false",
+            "givenNames": [],
+            "route": "authorize",
+          },
+        ],
+        "joinOnly": true,
+        "modelPath": "base.malloy",
+        "name": "locked",
+        "queryable": true,
+      },
+    ],
+  },
+  {
+    "fields": [
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "number",
+        "kind": "column",
+        "name": "rep_id",
+        "source": "off_surface",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.table('reps.csv')",
+        "dataType": "string",
+        "kind": "column",
+        "name": "rep_name",
+        "source": "off_surface",
+        "table": {
+          "connection": "duckdb",
+          "name": "csv",
+          "schema": "reps",
+        },
+      },
+    ],
+    "givens": [],
+    "modelPath": "other.malloy",
+    "sourceSchemas": [
+      {
+        "annotations": [],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "rep_id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "rep_name",
+            "type": "string",
+          },
+        ],
+        "name": "off_surface",
+      },
+    ],
+    "sources": [
+      {
+        "agentHidden": false,
+        "joinOnly": false,
+        "modelPath": "other.malloy",
+        "name": "off_surface",
+        "queryable": false,
+      },
+    ],
+  },
+]
+`;
