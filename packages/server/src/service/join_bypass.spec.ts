@@ -568,7 +568,7 @@ source: invoices is ${VISITS} extend {
          const warnings = (await load()).getPackageMetadata().warnings ?? [];
          expect(
             warnings.filter(
-               (w) => w.code === "join-bypass" && w.message.includes(fragment),
+               (w) => w.code === "join-bypass" && w.message?.includes(fragment),
             ),
          ).not.toHaveLength(0);
          gateOnly = false;
