@@ -101,6 +101,7 @@ class FakeServer(c.Server):
             out.append({**s, "classCounts": counts, "fieldCount": len(s["fields"]),
                         "unclassified": sum(1 for f in s["fields"] if not f["classifications"])})
         return {"sources": out, "secureGivens": self._gov.get("secureGivens", []),
+                "fieldsError": self._gov.get("fieldsError"),
                 "downgrades": self._gov.get("downgrades", [])}
 
     def status(self):
@@ -423,6 +424,29 @@ class UncheckedIsNotPassedTest(unittest.TestCase):
         self.assertEqual([f["status"] for f in r["controls"][0]["findings"]], ["review"])
         self.assertIn("401", r["controls"][0]["findings"][0]["evidence"])
 
+    def test_a_missing_model_404_is_review_not_a_refusal(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900},
+                            statuses={("research", "clinical"): (404, 'No queryable model "index.malloy".')})
+        r = run(server, [{"id": "MN-01", "checks": ["access"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+        self.assertIn("404", r["controls"][0]["findings"][0]["evidence"])
+
+    def test_a_scoped_values_check_is_review_when_nothing_could_be_profiled(self):
+        gov = fixture()
+        gov["fieldsError"] = "get_context failed: connection refused"
+        server = FakeServer(gov, access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        r = run(server, [{"id": "DI-01", "checks": ["values:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+        self.assertIn("get_context", r["controls"][0]["findings"][0]["evidence"])
+
+    def test_a_scoped_values_check_still_takes_only_its_domains_findings(self):
+        gov = fixture()
+        gov["sources"][0]["fields"] = [field("ssn", [])]
+        server = FakeServer(gov, access={("chart", "clinical"): 1, ("research", "researcher"): 1},
+                            profiles={("chart", "ssn"): {"ssn": 1000}, ("research", "age"): {"max_value": 80}})
+        r = run(server, [{"id": "DI-01", "checks": ["values:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "pass")
+
     def test_a_gated_domain_answering_with_no_identity_fails(self):
         server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900,
                                                ("chart", ""): 40})
@@ -552,6 +576,32 @@ class ExitCodeTest(unittest.TestCase):
         code, err = self.main(FakeServer(fixture()), controls=[{"id": "X", "checks": ["telepathy"]}])
         self.assertEqual(code, 2)
         self.assertIn("telepathy", err)
+
+
+class RegisterLoadTest(unittest.TestCase):
+    """A register that cannot be read is a usage error (2), not an internal one (4)."""
+
+    def code(self, text):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reg = pathlib.Path(tmp.name) / "controls.json"
+        if text is not None:
+            reg.write_text(text)
+        argv = ["check", "--environment", "env", "--package", "pkg", "--register", str(reg),
+                "--out-dir", str(pathlib.Path(tmp.name) / "out")]
+        real, c._server = c._server, (lambda a: FakeServer(fixture()))
+        self.addCleanup(setattr, c, "_server", real)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return c.main(argv)
+
+    def test_a_missing_file_is_2(self):
+        self.assertEqual(self.code(None), 2)
+
+    def test_bad_json_is_2(self):
+        self.assertEqual(self.code("{not json"), 2)
+
+    def test_a_register_with_no_controls_is_2(self):
+        self.assertEqual(self.code(json.dumps({"personas": {}})), 2)
 
 
 class OutputTest(unittest.TestCase):

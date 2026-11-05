@@ -58,10 +58,12 @@ from typing import Any
 
 GIVEN_REF = re.compile(r"\$([A-Za-z_]\w*)")
 
+LOCAL_MCP = "http://127.0.0.1:4040/mcp"
+
 
 class Server:
     def __init__(self, base: str, environment: str, package: str, model: str,
-                 mcp: str = "http://127.0.0.1:4040/mcp", package_dir: str = "."):
+                 mcp: str = LOCAL_MCP, package_dir: str = "."):
         self.base = base.rstrip("/")
         self.environment = environment
         self.package = package
@@ -276,8 +278,12 @@ def signals_of(p: dict[str, Any], own_grain: bool, numeric: bool = False) -> lis
 SURFACE_REFUSAL = re.compile(r"^(Query target is not queryable\.|No queryable (model|source|query) )")
 
 
-def refused(status: int | None, msg: str | None) -> bool:
-    """A refusal before any data: a gate's 403, or the surface's 404."""
+def refused(status: int | None, msg: str | None, served_model: str | None = None) -> bool:
+    """A refusal before any data: a gate's 403, or the surface's 404. The server words a
+    missing model like a hidden one on purpose, so a 404 for the model the register says
+    serves the domains (`served_model`) is a wrong model path, not a refusal."""
+    if status == 404 and served_model and (msg or "") == f'No queryable model "{served_model}".':
+        return False
     return status == 403 or (status == 404 and bool(SURFACE_REFUSAL.match(msg or "")))
 
 
@@ -459,7 +465,7 @@ def check_access(gov, register, ctx):
             rows, status, msg = server.query(f"run: {d} -> {{ {count} }}", p["givens"])
             if rows is not None:
                 results[(d, pid)] = int(rows[0]["n"])
-            elif refused(status, msg):
+            elif refused(status, msg, server.model):
                 results[(d, pid)] = None
             else:
                 errors.append(f"{d} as {pid}: {status} {msg}")
@@ -489,7 +495,7 @@ def check_access(gov, register, ctx):
         if rows is not None:
             out.append(finding("", "fail", f"{d} answered a caller with no identity",
                                f"{rows[0].get('n')} rows with no givens; a gate should refuse them", d))
-        elif not refused(status, msg):
+        elif not refused(status, msg, server.model):
             errors.append(f"{d} as no identity: {status} {msg}")
     for e in errors:
         out.append(finding("", "review", "a probe could not run", e, e.split(" ")[0]))
@@ -716,8 +722,10 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
             before = len(fs)
             for f in by_check[kind]:
                 # A scoped check (`access:billing`, `values:research`) takes only its domain's findings.
-                # A scope names a domain or, for `loads`, a kind of refusal.
+                # A scope names a domain or, for `loads`, a kind of refusal. A finding that names
+                # neither (the profile could not run at all) is about every scope.
                 if (scope and f["status"] != "pass" and not f.get("unscoped")
+                        and (f.get("domain") or f.get("kind"))
                         and scope not in (f.get("domain"), f.get("kind"))):
                     continue
                 fs.append({**f, "control": c["id"], "check": name})
@@ -930,12 +938,19 @@ def attestation_md(r: dict[str, Any]) -> str:
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+def read_json(path: str, what: str) -> Any:
+    """A file the caller named; one that is missing or not JSON is a usage error."""
+    try:
+        return json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cannot read {what} {path}: {e}")
+
+
 def _server(a) -> Server:
     return Server(a.server, a.environment, a.package, a.model,
                   mcp=a.mcp, package_dir=a.package_dir)
 
 
-LOCAL_MCP = "http://127.0.0.1:4040/mcp"
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
@@ -987,7 +1002,7 @@ def _main(argv: list[str] | None) -> int:
         a.mcp = LOCAL_MCP
 
     if a.cmd == "attest":
-        r = json.loads(pathlib.Path(a.report).read_text())
+        r = read_json(a.report, "report")
         text = attestation_md(r)
         if a.out:
             pathlib.Path(a.out).write_text(text)
@@ -995,9 +1010,11 @@ def _main(argv: list[str] | None) -> int:
             sys.stdout.write(text)
         return 0
 
-    register = json.loads(pathlib.Path(a.register).read_text())
+    register = read_json(a.register, "register")
+    if a.cmd == "check" and not isinstance(register.get("controls"), list):
+        raise SystemExit(f"register {a.register} has no `controls` list")
     if a.cmd == "propose":
-        rows = propose(json.loads(pathlib.Path(a.profile).read_text()), register)
+        rows = propose(read_json(a.profile, "profile"), register)
         if a.out:
             pathlib.Path(a.out).write_text(proposals_md(rows))
             pathlib.Path(a.out).with_suffix(".json").write_text(json.dumps(rows, indent=1))

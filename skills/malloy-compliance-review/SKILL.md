@@ -21,7 +21,7 @@ The review has two halves, and they are kept apart on purpose:
 - **The register** (`policies/controls.json`) is the policy as checks. You draft it from the prose;
   the policy owner approves it. It changes when the policy changes.
 - **The check** (`scripts/compliance.py check`) runs the register against the package as it is
-  served. It changes nothing, reads only aggregates, and exits 1 when a control fails, so the same
+  served. It changes nothing, reads only aggregates, and exits 1 when a control fails (3 when nothing failed but something could not be checked), so the same
   command gates every change in CI.
 
 What Publisher already refuses at load (a domain exposing a class its `#(carries)` omits, a gate
@@ -77,10 +77,10 @@ refuses, and profiles every published dimension with aggregates (seconds to a mi
 fields). It writes `review/report.json` and `review/report.md`. Against a server that is not on
 localhost, `--mcp` is required (a usage error otherwise).
 
-Exit codes: **0** every control holds, **1** a control fails, **2** usage (a bad flag or register),
+Exit codes: **0** every control holds, **1** a control fails, **2** usage (a bad flag, or a register that is missing, not JSON or has no `controls`),
 **3** nothing failed but something could not be checked, **4** an internal error (traceback on
 stderr). A probe the server neither answered nor refused (a 400, a 401, a 404 that is not the query
-boundary's refusal) is never a pass: it needs review, so a typo cannot make a control hold.
+boundary's refusal, or that names the `--model` itself as missing) is never a pass: it needs review, so a typo cannot make a control hold.
 `--allow-review` turns 3 into 0 for a pipeline that triages review items by hand.
 
 ### 3. Judge what needs a person
