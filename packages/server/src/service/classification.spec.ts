@@ -18,6 +18,7 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -32,9 +33,12 @@ import {
    CLASSIFICATION_DOWNGRADE,
    CLASSIFICATION_MALFORMED,
    isClassificationLine,
+   readCarries,
    readClassification,
    readSourceClassifications,
 } from "./classification";
+import * as classificationModule from "./classification";
+import type { AnnotationsDef } from "./annotations";
 import { compileModelFiles } from "../test_helpers/get_context_join_fixture";
 import type { ModelDef } from "@malloydata/malloy";
 import { Package } from "./package";
@@ -721,6 +725,166 @@ export { research }
 `,
       );
       expect(await warnings()).toEqual([]);
+   });
+
+   it("refuses a #(carries) source whose PHI sits four joins deep, and loads its twin declared none", async () => {
+      const entry = (leafClass: string) =>
+         `##! experimental.access_modifiers
+${joinChain(4, leafClass)}
+export { s0 }
+`.replace("source: s0", '#(carries) ["none"]\nsource: s0');
+      write("m.malloy", entry("phi.direct_identifier"));
+      expect(await loadError()).toContain(
+         "source s0 (m.malloy) carries [none] but exposes n.n.n.n.ssn, classified phi.direct_identifier",
+      );
+      write("m.malloy", entry("none"));
+      expect(await warnings()).toEqual([]);
+   });
+
+   it("refuses a #(carries) source past 16 joins or past the join-path budget, and loads one inside them", async () => {
+      const carries = (model: string, name: string) =>
+         `##! experimental.access_modifiers
+${model}
+export { ${name} }
+`.replace(`source: ${name}`, `#(carries) ["none"]\nsource: ${name}`);
+      write("m.malloy", carries(joinChain(16, "none"), "s0"));
+      expect(await warnings()).toEqual([]);
+      write("m.malloy", carries(joinChain(17, "none"), "s0"));
+      expect(await loadError()).toContain(
+         "source s0 (m.malloy) carries [none]",
+      );
+      write("m.malloy", carries(joinFanOut(10), "f0"));
+      expect(await loadError()).toContain("join paths");
+   });
+
+   it("says nothing about a truncated source that declares no #(carries)", async () => {
+      write(
+         "m.malloy",
+         `##! experimental.access_modifiers
+${joinChain(17, "phi.direct_identifier")}
+export { s0 }
+`,
+      );
+      expect(
+         (await warnings()).filter((w) => w.code === CLASSIFICATION_MALFORMED),
+      ).toEqual([]);
+   });
+
+   it("walks the classification warnings once per models map, however often /status reads them", async () => {
+      write(
+         "m.malloy",
+         `##! experimental.access_modifiers
+${joinChain(1, "none")}
+export { s0 }
+`,
+      );
+      const config = new MalloyConfig({ connections: {} });
+      config.wrapConnections(
+         () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
+      );
+      const pkg = await Package.create("env", "pkg", tempDir, config);
+      pkg.getPackageMetadata();
+      const walk = spyOn(classificationModule, "classificationWarnings");
+      try {
+         pkg.getPackageMetadata();
+         pkg.getPackageMetadata();
+         expect(walk).toHaveBeenCalledTimes(0);
+         pkg.setPackageMetadata({
+            ...pkg.getPackageMetadata(),
+            explores: ["m.malloy"],
+         });
+         pkg.getPackageMetadata();
+         pkg.getPackageMetadata();
+         expect(walk).toHaveBeenCalledTimes(1);
+      } finally {
+         walk.mockRestore();
+      }
+   });
+});
+
+/** `s0 -> s1 -> ... -> s<joins>`, each hop one join; the leaf's `ssn` carries `leafClass`. */
+function joinChain(joins: number, leafClass: string): string {
+   const base = `duckdb.sql("select 1 as id") include { internal: id } extend {
+   #(classification) "none"
+   dimension: k is id`;
+   let out = `source: s${joins} is ${base}
+   #(classification) "${leafClass}"
+   dimension: ssn is '999'
+}
+`;
+   for (let i = joins - 1; i >= 0; i--) {
+      out += `source: s${i} is ${base}
+   join_one: n is s${i + 1} on n.k = k
+}
+`;
+   }
+   return out;
+}
+
+/** A tree `levels` joins deep where every source joins the next level twice. */
+function joinFanOut(levels: number): string {
+   const base = `duckdb.sql("select 1 as id") include { internal: id } extend {
+   #(classification) "none"
+   dimension: k is id`;
+   let out = `source: f${levels} is ${base}
+}
+`;
+   for (let i = levels - 1; i >= 0; i--) {
+      out += `source: f${i} is ${base}
+   join_one: a is f${i + 1} on a.k = k
+   join_one: b is f${i + 1} on b.k = k
+}
+`;
+   }
+   return out;
+}
+
+describe("the join walk's bounds", () => {
+   const fieldsOf = async (model: string, name: string) => {
+      const { modelDefs } = await compileModelFiles({
+         "m.malloy": `##! experimental.access_modifiers\n${model}`,
+      });
+      const md = modelDefs["m.malloy"] as ModelDef;
+      return (md.contents[name] as { fields?: unknown[] }).fields as never;
+   };
+
+   it("counts joins from the entry source: 16 are read, a 17th is a truncation", async () => {
+      const sixteen = readSourceClassifications(
+         await fieldsOf(joinChain(16, "phi.direct_identifier"), "s0"),
+      );
+      expect(sixteen.truncated).toBe(false);
+      expect(sixteen.get(`${"n.".repeat(16)}ssn`)?.classifications).toEqual([
+         "phi.direct_identifier",
+      ]);
+      const seventeen = readSourceClassifications(
+         await fieldsOf(joinChain(17, "phi.direct_identifier"), "s0"),
+      );
+      expect(seventeen.truncated).toBe(true);
+   });
+
+   it("is truncated by a fan-out of join paths, not by depth", async () => {
+      const fields = await fieldsOf(joinFanOut(10), "f0");
+      expect(readSourceClassifications(fields).truncated).toBe(true);
+      const small = await fieldsOf(joinFanOut(6), "f0");
+      expect(readSourceClassifications(small).truncated).toBe(false);
+   });
+
+   it("reads a compiled source once: the same fields give the same lineage", async () => {
+      const fields = await fieldsOf(joinChain(2, "none"), "s0");
+      expect(readSourceClassifications(fields)).toBe(
+         readSourceClassifications(fields),
+      );
+   });
+
+   it("refuses an annotation chain past the hop bound instead of reading none", () => {
+      let node = {
+         notes: [{ text: '#(carries) ["none"]' }],
+      } as unknown as AnnotationsDef;
+      for (let i = 0; i < 70; i++) node = { inherits: node };
+      expect(readCarries(node)).toMatchObject({
+         declared: true,
+         malformed: expect.stringContaining("deeper than"),
+      });
    });
 });
 

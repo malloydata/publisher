@@ -57,6 +57,10 @@ import type { ModelDef } from "@malloydata/malloy";
 import { parseAnnotation } from "@malloydata/malloy-tag";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
+import {
+   MAX_JOIN_PATHS,
+   MAX_JOIN_RECURSION_DEPTH,
+} from "./filter_binding_guard";
 import type { Model } from "./model";
 
 type ApiPackageWarning = NonNullable<
@@ -186,6 +190,8 @@ export function readClassification(
    return readTagList("classification", contents[0], { list: "optional" });
 }
 
+const MAX_CARRIES_HOPS = 64;
+
 /**
  * The classes a source's `#(carries)` lists, read from the nearest
  * declaration: the source's own notes, else the base it extends, and so on,
@@ -200,7 +206,14 @@ export function readCarries(annotations: AnnotationsDef | undefined): {
 } {
    let node: AnnotationsDef | undefined = annotations;
    // Bounded: an `inherits` chain is finite, but a malformed IR must not hang.
-   for (let hops = 0; node && hops < 64; hops++) {
+   for (let hops = 0; node; hops++) {
+      if (hops >= MAX_CARRIES_HOPS) {
+         return {
+            declared: true,
+            classes: new Set(),
+            malformed: `has an annotation chain deeper than ${MAX_CARRIES_HOPS} levels, past which its #(carries) cannot be read`,
+         };
+      }
       const contents = routeContents(ownTexts(node), CARRIES_LINE);
       if (contents.length > 0) {
          const classes = new Set<string>();
@@ -305,8 +318,18 @@ export interface FieldClassification {
    unresolved: string[];
 }
 
-/** How many joins deep a source's reachable fields are followed. */
-export const MAX_JOIN_DEPTH = 3;
+/**
+ * What {@link readSourceClassifications} read, by path. `truncated` is true
+ * when a join walk stopped at {@link MAX_JOIN_RECURSION_DEPTH} joins or
+ * {@link MAX_JOIN_PATHS} join paths: fields past it are absent, not
+ * unclassified.
+ */
+export class SourceLineage extends Map<string, FieldClassification> {
+   truncated = false;
+}
+
+/** The lineage of a compiled source, read once: its `fields` array is the key. */
+const lineageMemo = new WeakMap<object, SourceLineage>();
 
 /** How many unclassified field paths one warning names before counting the rest. */
 const MAX_NAMED_FIELDS = 12;
@@ -388,7 +411,8 @@ interface OutputReads {
 /**
  * The classification of every field reachable from a source, keyed by its
  * path from the source (`ssn`, `patient.ssn`), joins followed
- * {@link MAX_JOIN_DEPTH} deep. Hidden fields are in the map, because a
+ * {@link MAX_JOIN_RECURSION_DEPTH} deep and {@link MAX_JOIN_PATHS} wide, and
+ * memoized on the compiled source's `fields`. Hidden fields are in the map, because a
  * public field may be derived from one; `hidden` says so, and a field under a
  * hidden join is hidden. A reference an expression makes is resolved relative
  * to the struct the field lives in, so `patient.full_name is concat(first,
@@ -402,7 +426,20 @@ interface OutputReads {
 export function readSourceClassifications(
    fields: IrField[] | undefined,
    query?: IrQuery,
-): Map<string, FieldClassification> {
+): SourceLineage {
+   const memoized = fields ? lineageMemo.get(fields) : undefined;
+   if (memoized) return memoized;
+   const lineage = walkSourceClassifications(fields, query);
+   if (fields) lineageMemo.set(fields, lineage);
+   return lineage;
+}
+
+function walkSourceClassifications(
+   fields: IrField[] | undefined,
+   query: IrQuery | undefined,
+): SourceLineage {
+   const resolved = new SourceLineage();
+   let joinPaths = 0;
    const byPath = new Map<
       string,
       { field: IrField; owner: string; hidden: boolean }
@@ -410,7 +447,7 @@ export function readSourceClassifications(
    const collect = (
       list: IrField[],
       owner: string,
-      depth: number,
+      joins: number,
       hidden: boolean,
    ): void => {
       for (const field of list) {
@@ -419,15 +456,21 @@ export function readSourceClassifications(
          const path = owner ? `${owner}.${name}` : name;
          const isHidden = hidden || field.accessModifier !== undefined;
          byPath.set(path, { field, owner, hidden: isHidden });
-         if (isJoinField(field) && depth < MAX_JOIN_DEPTH) {
-            collect(field.fields ?? [], path, depth + 1, isHidden);
+         if (!isJoinField(field)) continue;
+         if (
+            joins >= MAX_JOIN_RECURSION_DEPTH ||
+            ++joinPaths > MAX_JOIN_PATHS
+         ) {
+            resolved.truncated = true;
+            continue;
          }
+         collect(field.fields ?? [], path, joins + 1, isHidden);
       }
    };
    collect(fields ?? [], "", 0, false);
 
    const outputs = query ? readQueryOutputs(query) : undefined;
-   const resolved = new Map<string, FieldClassification>();
+   if (outputs?.base?.truncated) resolved.truncated = true;
    const visiting = new Set<string>();
    const resolve = (path: string): FieldClassification | undefined => {
       const done = resolved.get(path);
@@ -520,7 +563,7 @@ export function readSourceClassifications(
  * see, so it is absent and the caller treats it as unresolved.
  */
 function readQueryOutputs(query: IrQuery): {
-   base: Map<string, FieldClassification> | undefined;
+   base: SourceLineage | undefined;
    reads: Map<string, OutputReads>;
 } {
    const structRef = query.structRef as
@@ -642,6 +685,8 @@ export interface PublishedSource {
    fields: Array<[string, FieldClassification]>;
    /** What each of its views reads from it. */
    views: ViewExposure[];
+   /** True when its join walk hit a bound, so fields past it were not read. */
+   truncated: boolean;
 }
 
 /**
@@ -681,6 +726,7 @@ export function publishedSources(
                ([, c]) => c.isField && !c.hidden,
             ),
             views: readViewExposures(ir.fields, lineage),
+            truncated: lineage.truncated,
          });
       }
    }
@@ -791,6 +837,14 @@ export function classificationLeaks(
          continue;
       }
       const allowed = Array.from(carries.classes).sort(byCodepoint).join(", ");
+      if (s.truncated) {
+         messages.push(
+            `${where} carries [${allowed}] but joins more than ` +
+               `${MAX_JOIN_RECURSION_DEPTH} deep or past ${MAX_JOIN_PATHS} ` +
+               `join paths, beyond which Publisher cannot read what its ` +
+               `fields carry. Drop the joins past that, or split the source.`,
+         );
+      }
       for (const view of s.views) {
          const off = view.reads.filter((r) =>
             r.classifications.some((k) => !carries.classes.has(k)),
