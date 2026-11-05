@@ -11,9 +11,10 @@
  * structural extras) with their kind, type, source, route and full doc text
  * (see docOnlyText), rules included. Doc text is sent under every egress
  * preset; on a connection with `dbmeta` on it can be the database's
- * description rather than the model's. A stored value is data: under any preset below `full` the
- * judge is told that a candidate matched the phrase's value and how, never
- * the stored string; authored expressions are not sent at all.
+ * description rather than the model's. A stored value is data: under any
+ * preset below `full` the judge is told that a candidate matched the
+ * phrase's value and how, never the stored string; authored expressions are
+ * not sent at all.
  *
  * In a list with `listRoutes` above 0, each candidate field is followed by up
  * to that many routes to it from the other listed sources, shortest first,

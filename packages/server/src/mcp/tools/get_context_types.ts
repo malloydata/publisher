@@ -87,7 +87,6 @@ export interface ResultEntity {
     * lines. Never serialized.
     */
    embedDoc?: string;
-   /** See Entity.docSource. */
    docSource?: "dbmeta";
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
@@ -162,7 +161,6 @@ export interface SourceContextEntry {
    modelPath: string;
    /** Truncated to SOURCE_DOC_MAX_CHARS; the model file has the full text. */
    doc: string;
-   /** See Entity.docSource. */
    docSource?: "dbmeta";
    /**
     * Every join the source declares, not just retrieved ones, so an empty

@@ -74,7 +74,6 @@ source: inv is duckdb.sql("select 1 as id, 1 as cust_id, 'i' as rf") extend {
 }
 `;
 
-/** A table's and its columns' database descriptions, as `dbmeta` reads them. */
 export interface DbmetaStub {
    table?: string;
    columns?: Record<string, string>;

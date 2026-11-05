@@ -473,7 +473,6 @@ function noteKey(note: { text?: string; at?: CompiledLocation }): string {
    return `${locationKey(note.at) ?? ""}\u0000${note.text ?? ""}`;
 }
 
-/** A source's flattened SourceInfo annotations, as get_context reads them. */
 function sourceInfoAnnotations(
    model: CatalogModel | undefined,
    name: string,

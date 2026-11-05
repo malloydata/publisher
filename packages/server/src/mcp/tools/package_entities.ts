@@ -607,8 +607,6 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    const droppedSources = new Set<string>();
    // Which sources each source reaches by joins; see buildJoinReaches.
    const topology = new Map<string, JoinReach[]>();
-   // Each source's flattened annotation lines, and each join entity's, so a
-   // join to a locked source can be cut back to the notes it wrote itself.
    const sourceLines = new Map<string, string[]>();
    const joinLines = new Map<Entity, string[]>();
    // One reader for the whole walk: several sources share a model file.

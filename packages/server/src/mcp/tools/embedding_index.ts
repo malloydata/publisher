@@ -20,10 +20,9 @@ export interface EmbeddableEntity {
    name: string;
    source: string | undefined;
    modelPath: string;
-   // Doc text only (see package_entities docOnlyText).
-   // Deliberately NOT the response `doc`, which can fall back to raw
-   // annotation lines and would leak #(authorize) predicates to the
-   // embedding provider.
+   // Doc text only (see package_entities docOnlyText). Deliberately NOT
+   // the response `doc`, which can fall back to raw annotation lines and
+   // would leak #(authorize) predicates to the embedding provider.
    embedDoc: string;
    /** Malloy type of a dimension or measure; absent on other kinds. */
    dataType?: string;

@@ -3,7 +3,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { generateKeyPairSync } from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { components } from "../api";
+import { getProcessedPublisherConfig } from "../config";
+import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
@@ -1240,6 +1245,47 @@ describe("assembleEnvironmentConnections — bigquery dbmeta", () => {
          ).toBe(want);
       },
    );
+
+   it("returns a ${VAR} value from publisher.config.json as a boolean", () => {
+      const serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dbmeta-"));
+      process.env.BQ_DBMETA = "true";
+      try {
+         fs.writeFileSync(
+            path.join(serverRoot, PUBLISHER_CONFIG_NAME),
+            JSON.stringify({
+               frozenConfig: true,
+               environments: [
+                  {
+                     name: "env",
+                     packages: [{ name: "pkg", location: "./pkg" }],
+                     connections: [
+                        {
+                           name: "bq",
+                           type: "bigquery",
+                           bigqueryConnection: {
+                              defaultProjectId: "data-project",
+                              dbmeta: "${BQ_DBMETA}",
+                           },
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+         const [environment] =
+            getProcessedPublisherConfig(serverRoot).environments;
+         const { apiConnections, pojo } = assembleEnvironmentConnections(
+            environment.connections,
+         );
+         expect(pojo.connections["bq"].dbmeta).toBe(true);
+         expect(
+            toPublicConnection(apiConnections[0]).bigqueryConnection?.dbmeta,
+         ).toBe(true);
+      } finally {
+         delete process.env.BQ_DBMETA;
+         fs.rmSync(serverRoot, { recursive: true, force: true });
+      }
+   });
 
    it.each(["ture", 1])("refuses %p", (raw) => {
       expect(() => assembleEnvironmentConnections([bigquery(raw)])).toThrow(
