@@ -151,7 +151,7 @@ export function assertAtMostOneRequiredFilterPerIndexedDimension(
          throw new MultipleRequiredFiltersOnIndexedDimensionError(
             `${modelFilePath}: indexed dimension '${candidate.sourceName}.${candidate.fieldName}' has ` +
                `${filters.length} required filters ` +
-               `(${filters.join(", ")}); a #(index) dimension may declare at most one required filter.`,
+               `(${filters.join(", ")}); a #(index) dimension may declare at most one required filter. Fix: drop 'required' from all but one of them, or move the #(index) to a source that declares one.`,
          );
       }
    }
