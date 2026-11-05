@@ -678,7 +678,7 @@ async function valuesFor(
       }));
    } catch (error) {
       warnings.push(
-         `The values of ${node.source}.${node.name} were not searched: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}. The source has an access gate; send the givens it needs, or read its values with execute_query.`,
+         `The values of ${node.source}.${node.name} were not searched: ${(error instanceof Error ? error.message.slice(0, 200) : String(error)).replace(/\.+$/, "")}. The source has an access gate; send the givens it needs, or read its values with execute_query.`,
       );
       return [];
    }

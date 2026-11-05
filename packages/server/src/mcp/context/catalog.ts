@@ -115,7 +115,14 @@ export interface CatalogSource {
    node: CatalogNode;
    /** The source it extends, when the compiled model says so and it is in the catalog. */
    extendsKey?: string;
-   /** An access gate (`#(authorize)`, `#(access_filter)`) or a secure given is in force. */
+   /**
+    * An access gate (`#(authorize)`, `#(access_filter)`) or a secure given is
+    * in force. Read from the file that defines the source: a gate is declared
+    * with the source, and a source reads only givens its own file declares,
+    * so a file that imports it and declares secure givens of its own does not
+    * gate it. Only when the defining file is not served is every file's
+    * answer combined, the safe side.
+    */
    gated: boolean;
    /** Keys of every node the source owns, sources excluded, in walk order. */
    fields: string[];
@@ -1019,6 +1026,8 @@ export function buildCatalog(input: CatalogInput): Catalog {
    const hiddenFiles = agentHiddenFiles(input.models, modelPaths);
    const hidden = new Set<string>();
    const served = new Set<string>();
+   /** Sources whose `gated` came from the file that defines them. */
+   const gatedByDefinition = new Set<string>();
    for (const e of input.entities) {
       if (e.kind !== "source") continue;
       if (
@@ -1044,9 +1053,15 @@ export function buildCatalog(input: CatalogInput): Catalog {
          existing.modelPaths.push(e.modelPath);
          existing.node.modelPaths.push(e.modelPath);
          existing.node.entities.push(e);
-         existing.gated ||= gated;
+         if (e.modelPath === definedIn) {
+            existing.gated = gated;
+            gatedByDefinition.add(key);
+         } else if (!gatedByDefinition.has(key)) {
+            existing.gated ||= gated;
+         }
          continue;
       }
+      if (e.modelPath === definedIn) gatedByDefinition.add(key);
       if (extendsKey) extendsOf.set(key, extendsKey);
       // An extension's doc is the notes it writes, never its parent's.
       const own = ownNotesOf(modelByPath.get(e.modelPath)?.modelDef, e.name);

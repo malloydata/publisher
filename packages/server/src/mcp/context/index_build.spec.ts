@@ -597,8 +597,13 @@ source: open is duckdb.sql("select 'o' as label") extend {
 }
 `,
       // A #(secure) given is in scope for every source of its file, so each
-      // of them counts as gated: the safe side, and why it has a file of its own.
+      // source it defines counts as gated: the safe side. It also imports
+      // gates.malloy, so \`open\` is served here too, beside a secure given it
+      // cannot read: \`open\` must stay ungated, decided by the file that
+      // defines it.
       "secure.malloy": `##! experimental.givens
+import "gates.malloy"
+
 #(secure)
 given: TENANT :: string is 'w'
 
