@@ -2839,7 +2839,11 @@ paths:
         `relative_filepath` from `GET .../agents/{agentName}?skills=summary`
         (for example `analyst-conventions/SKILL.md`), with the same `source`
         pin as the full definition. The path is looked up in the resolved set,
-        never joined onto the filesystem.
+        never joined onto the filesystem. A `relative_filepath` from the
+        agent's `assets` listing (`<skill>/assets/...`, full view only) is
+        matched exactly against the listing, then read from disk as UTF-8 text
+        and served only if it still hashes to its listed `sha256`; one that
+        changed, or became a link, since the load is a 404.
 
         404 when the agent or the file is not served.
       parameters:
@@ -5527,10 +5531,30 @@ components:
           type: integer
           description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
 
+    AgentAsset:
+      type: object
+      readOnly: true
+      description: >-
+        A text file a skill ships under `<skill>/assets/` for an agent to copy
+        into an app it builds and not read. Listed without its contents; fetch
+        one with `GET .../agents/{agentName}/skills/{relative_filepath}`.
+      properties:
+        relative_filepath:
+          type: string
+          description: "`<skill>/assets/...`, relative to the agent's skill roots."
+        bytes:
+          type: integer
+          description: Size in UTF-8 bytes, under 1 MiB.
+        sha256:
+          type: string
+          description: SHA-256 of the file's bytes.
+
     AgentSkillRead:
       type: object
       readOnly: true
-      description: One agent skill file, with the pin of the definition it belongs to.
+      description: >-
+        One agent skill file or asset, with the pin of the definition it
+        belongs to.
       properties:
         relative_filepath:
           type: string
@@ -5589,6 +5613,29 @@ components:
           description: The agent's own skill files, sorted by `relative_filepath`.
           items:
             $ref: "#/components/schemas/AgentSkillFile"
+        asset_roots:
+          type: object
+          description: >-
+            For each skill that ships assets, the package-relative directory
+            holding it. Absent when no skill does. Not in the
+            `skills=summary` view.
+          additionalProperties:
+            type: string
+        assets:
+          type: array
+          description: >-
+            Every asset the agent's skills ship, listed without contents and
+            sorted by `relative_filepath`. Absent when there are none and in
+            the `skills=summary` view.
+          items:
+            $ref: "#/components/schemas/AgentAsset"
+        asset_counts:
+          type: object
+          description: >-
+            Only in the `skills=summary` view, and only when there are assets:
+            how many assets each skill ships.
+          additionalProperties:
+            type: integer
         schedules:
           type: array
           items:
