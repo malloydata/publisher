@@ -44,8 +44,3 @@ export async function pollFor<T>(
    }
    return last;
 }
-
-/** A semantic-search result that is not the cold-start "indexing" answer. */
-export const notIndexing = (result: object): boolean =>
-   !("unavailable" in result) ||
-   (result as { unavailable: unknown }).unavailable !== "indexing";
