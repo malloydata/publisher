@@ -274,6 +274,28 @@ describe("the package resource and its sub-resources", () => {
       expect((await get(pkgUrl("nope", "/status"))).status).toBe(404);
    }, 60_000);
 
+   it("each response's field set, with inline fields off and on", async () => {
+      const shapes: Record<string, string[]> = {};
+      for (const mode of ["off", "on"] as const) {
+         process.env[INLINE] = mode;
+         const pkg = (await get(pkgUrl("shop"))).json;
+         const listed = (
+            (await get(`/environments/${ENV_NAME}/packages`))
+               .json as unknown as Record<string, unknown>[]
+         ).find((p) => p.name === "shop")!;
+         shapes[`${mode}: package`] = Object.keys(pkg).sort();
+         shapes[`${mode}: listing`] = Object.keys(listed).sort();
+         shapes[`${mode}: /status entry`] = Object.keys(
+            await statusEntry("shop"),
+         ).sort();
+         shapes[`${mode}: …/status`] = Object.keys(
+            (await get(pkgUrl("shop", "/status"))).json,
+         ).sort();
+      }
+      delete process.env[INLINE];
+      expect(shapes).toMatchSnapshot();
+   }, 60_000);
+
    it("with inline fields off, the package carries only its own fields and the /status entry only what a reconcile reads", async () => {
       process.env[INLINE] = "off";
       const { status, json } = await get(pkgUrl("shop"));
