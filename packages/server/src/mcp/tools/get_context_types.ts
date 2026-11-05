@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { PackageInfo } from "./get_context_levels";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { GivenValue } from "@malloydata/malloy";
 import type { Package } from "../../service/package";
@@ -278,6 +279,11 @@ export interface ListingContext {
    request: ResolvedRequest;
    pkgIndex: PackageIndex;
    warnings: string[];
+   /**
+    * The package's own description, on a listing of one whole package that
+    * the caller sent no targets for (get_context_levels.ts).
+    */
+   packageInfo?: PackageInfo;
 }
 
 /** One source reachable from a root source by joins. */

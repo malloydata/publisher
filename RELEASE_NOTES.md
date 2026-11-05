@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — get_context lists environments and packages, so an agent can find data with it alone
+
+`get_context` no longer requires `search_targets` or `scopes`. A call without targets lists, one level at a time, in the shapes the hosted retrieval API uses:
+
+- No arguments: `listing: "environments"`, each with how many packages it serves.
+- `environment`: `listing: "packages"`, each with the first line of its description as `one_line_summary`.
+- A package in `scopes`: its sources, plus `package_info` with the package's full description.
+- A source in `scopes`: its fields.
+
+A level with only one choice is entered rather than listed, and a warning says so. So on a server serving one package, a call with no arguments returns that package's sources, and a search with no `scopes` searches it. A search still needs one package: with several, it is refused with a `Fix:` naming them, because each package is indexed on its own. A package that failed to load is named in a warning rather than listed; `list_packages` still reports every package with its load error.
+
 ## [Unreleased] — get_context has one search engine (BREAKING)
 
 Every ranked `get_context` request is now answered by the find, list, judge engine, for every package: it ranks each target against the whole package (embedding closeness, keyword match and stored values, fused by rank), shows a model the best candidates grouped by source with the join routes between them, and returns what the model picks. A request with no `search_text` is still a listing and is unchanged. The engine's settings are under `retrieval.fcj` in `publisher.json`; the defaults now put it in list mode (`connect: "list"`) with `listTopK: 30`, `listUnion: 30`, `dropRoutesAt: 4` and `readingsRule: true`, and `docs/configuration.md` describes them.
