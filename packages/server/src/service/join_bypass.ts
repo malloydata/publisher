@@ -13,7 +13,7 @@
  * did not, and a bypass REFUSES the package load, as a `#(carries)` leak does.
  *
  * Two tests, both mechanical, over every join a published source declares,
- * {@link MAX_JOIN_DEPTH} deep, against the entry source's own gates:
+ * {@link MAX_JOIN_RECURSION_DEPTH} deep, against the entry source's own gates:
  *
  * - the joined struct is locked outright (`#(authorize) false`) and the entry
  *   source has no gate at all: the "open source over a locked base" leak;
@@ -32,7 +32,11 @@ import {
 } from "./authorize";
 import { ownLevelNoteTexts, type AnnotationsDef } from "./annotations";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { findIrSource, isDeniedToAll, MAX_JOIN_DEPTH } from "./classification";
+import { findIrSource, isDeniedToAll } from "./classification";
+import {
+   MAX_JOIN_PATHS,
+   MAX_JOIN_RECURSION_DEPTH,
+} from "./filter_binding_guard";
 import { effectiveAncestorGateExprs } from "./gate_registry_walk";
 import type { Model } from "./model";
 
@@ -77,6 +81,17 @@ function chainGateExprs(
  * as a lock, since the query route would deny on it.
  */
 function gatesOn(struct: IrJoin, modelDef: ModelDef | undefined): string[] {
+   const known = gatesMemo.get(struct);
+   if (known) return known;
+   const gates = readGatesOn(struct, modelDef);
+   gatesMemo.set(struct, gates);
+   return gates;
+}
+
+/** A joined struct's gates, read once: the registry walk behind them is the cost. */
+const gatesMemo = new WeakMap<IrJoin, string[]>();
+
+function readGatesOn(struct: IrJoin, modelDef: ModelDef | undefined): string[] {
    const exprs: string[] = [];
    for (const route of [AUTHORIZE_ROUTE, ACCESS_FILTER_ROUTE]) {
       try {
@@ -104,6 +119,24 @@ function givensOf(exprs: readonly string[]): Set<string> {
    return out;
 }
 
+/** Whether any source in the package, listed or not, carries a gate. */
+function packageHasGate(models: ReadonlyMap<string, Model>): boolean {
+   for (const model of models.values()) {
+      try {
+         for (const source of model.getSources() ?? []) {
+            const gated = [
+               ...(source.authorize ?? []),
+               ...(source.accessFilter ?? []),
+            ].some((expr) => !isAdmitAll(expr));
+            if (gated) return true;
+         }
+      } catch {
+         continue;
+      }
+   }
+   return false;
+}
+
 /**
  * Every author join in the package that bypasses a gate, one message each,
  * in the words the author fixes it by. Empty when there are none.
@@ -113,6 +146,7 @@ export function joinBypasses(
    isListed: (modelPath: string) => boolean,
 ): string[] {
    const messages: string[] = [];
+   const truncated: string[] = [];
    for (const [modelPath, model] of models) {
       if (!isListed(modelPath)) continue;
       let sourceInfos: ReturnType<Model["getSourceInfos"]>;
@@ -139,13 +173,22 @@ export function joinBypasses(
          const entryGivens = givensOf(entryGates);
          const where = `source ${sourceInfo.name} (${modelPath})`;
 
-         const walk = (fields: IrJoin[], prefix: string, depth: number) => {
+         let joinPaths = 0;
+         let cut = false;
+         const walk = (fields: IrJoin[], prefix: string, joins: number) => {
             for (const field of fields) {
                if (
                   typeof field.join !== "string" ||
                   !Array.isArray(field.fields)
                )
                   continue;
+               if (
+                  joins >= MAX_JOIN_RECURSION_DEPTH ||
+                  ++joinPaths > MAX_JOIN_PATHS
+               ) {
+                  cut = true;
+                  continue;
+               }
                const name = field.as ?? field.name ?? "?";
                const path = prefix ? `${prefix}.${name}` : name;
                const gates = gatesOn(field, modelDef);
@@ -178,12 +221,22 @@ export function joinBypasses(
                      );
                   }
                }
-               if (depth < MAX_JOIN_DEPTH) {
-                  walk(field.fields, path, depth + 1);
-               }
+               walk(field.fields, path, joins + 1);
             }
          };
-         walk(entry.fields ?? [], "", 1);
+         walk(entry.fields ?? [], "", 0);
+         if (cut) truncated.push(where);
+      }
+   }
+   // Past a bound a gate may sit unread; with no gate anywhere there is nothing to bypass.
+   if (truncated.length > 0 && packageHasGate(models)) {
+      for (const where of truncated) {
+         messages.push(
+            `${where} joins more than ${MAX_JOIN_RECURSION_DEPTH} deep or ` +
+               `past ${MAX_JOIN_PATHS} join paths, beyond which Publisher ` +
+               `cannot read the gates on what it joins, and this package ` +
+               `gates sources. Drop the joins past that, or split the source.`,
+         );
       }
    }
    return messages;

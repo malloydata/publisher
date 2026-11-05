@@ -210,4 +210,46 @@ export { audit }
       );
       expect(message).not.toContain("source visits");
    });
+
+   /** `s0 -> s1 -> ... -> s<joins>`, s0 gated unless `gated` is false. */
+   function chain(joins: number, gated: boolean): string {
+      let out = `${GIVENS}source: s${joins} is ${PEOPLE}\n`;
+      for (let i = joins - 1; i >= 0; i--) {
+         const gate =
+            i === 0 && gated ? "#(authorize) 'auditor' in $ROLES\n" : "";
+         out += `${gate}source: s${i} is ${PEOPLE} extend {
+   join_one: n is s${i + 1} on n.id = id
+}
+`;
+      }
+      return `${out}\nexport { s0 }\n`;
+   }
+
+   it("reads 16 joins from the entry and refuses a 17th in a package that has a gate", async () => {
+      write("m.malloy", chain(16, true));
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      write("m.malloy", chain(17, true));
+      const message = await refusal();
+      expect(message).toContain("source s0 (m.malloy)");
+      expect(message).toContain("joins more than 16 deep");
+   });
+
+   it("refuses a fan-out past the join-path budget in a package that has a gate", async () => {
+      let out = `${GIVENS}source: f10 is ${PEOPLE}\n`;
+      for (let i = 9; i >= 0; i--) {
+         const gate = i === 0 ? "#(authorize) 'auditor' in $ROLES\n" : "";
+         out += `${gate}source: f${i} is ${PEOPLE} extend {
+   join_one: a is f${i + 1} on a.id = id
+   join_one: b is f${i + 1} on b.id = id
+}
+`;
+      }
+      write("m.malloy", `${out}\nexport { f0 }\n`);
+      expect(await refusal()).toContain("join paths");
+   });
+
+   it("loads a source past the bound when no source in the package has a gate", async () => {
+      write("m.malloy", chain(17, false));
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
 });
