@@ -16,6 +16,47 @@ interface AnthropicReply {
    usage?: { input_tokens?: unknown; output_tokens?: unknown };
 }
 
+/**
+ * The model's version, from an id like `claude-haiku-5-5` or
+ * `claude-opus-4-8`; null for an id in another shape (`claude-3-5-haiku-...`,
+ * a gateway alias), which is treated as an older model.
+ */
+function claudeVersion(
+   model: string,
+): { line: string; major: number; minor: number } | null {
+   const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:$|[-@])/.exec(
+      model.toLowerCase().replace(/^.*\//, ""),
+   );
+   if (!m) return null;
+   return { line: m[1], major: Number(m[2]), minor: Number(m[3] ?? 0) };
+}
+
+/**
+ * The sampling fields a Messages request carries for this model. Temperature
+ * 0 keeps ranking stable where the model allows it; Claude 4.7 and later
+ * (every 5.x model, Fable, Mythos) answer 400 "`temperature` is deprecated
+ * for this model", so it is left out there. Haiku 5 and later think by
+ * default, and the thinking counts against `max_tokens`: a caller that sizes
+ * its cap for the reply alone (the judge) gets a reply cut off mid-JSON, so
+ * thinking is turned off for them. Other current lines either take no
+ * "disabled" (Opus 5.5, Sonnet 5.5) or think only when asked, and keep the
+ * vendor default.
+ */
+export function anthropicSampling(model: string): Record<string, unknown> {
+   const v = claudeVersion(model);
+   if (!v) return { temperature: 0 };
+   const modern =
+      v.line === "fable" ||
+      v.line === "mythos" ||
+      v.major >= 5 ||
+      (v.major === 4 && v.minor >= 7);
+   if (!modern) return { temperature: 0 };
+   if (v.line === "haiku" && v.major >= 5) {
+      return { thinking: { type: "disabled" } };
+   }
+   return {};
+}
+
 function count(value: unknown): number | undefined {
    return typeof value === "number" && Number.isFinite(value)
       ? value
@@ -40,7 +81,7 @@ export class AnthropicChat implements RawChat {
       const body: Record<string, unknown> = {
          model: this.model,
          max_tokens: req.maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
-         temperature: 0,
+         ...anthropicSampling(this.model),
          messages: [{ role: "user", content: req.prompt }],
       };
       if (req.system) body.system = req.system;
