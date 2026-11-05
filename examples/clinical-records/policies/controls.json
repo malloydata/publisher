@@ -115,6 +115,10 @@
         {
           "field": "patient.age",
           "max": 90
+        },
+        {
+          "field": "patient.birth_year",
+          "min": 1930
         }
       ]
     },

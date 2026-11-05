@@ -16,13 +16,15 @@ Everything below implements one of them.
 
 ## Layers
 
-| File                | Layer   | What it does                                                                                                                                                                         |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `base.malloy`       | Base    | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                     |
-| `core.malloy`       | Core    | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some domains may serve are left out. |
-| `deidentify.malloy` | Core    | The Safe Harbor derivations, declared once: years for dates, ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02).                   |
-| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, and declaring what it `#(carries)`.                                         |
-| `index.malloy`      | Surface | The package's published surface: exports the five domains and nothing else.                                                                                                          |
+| File                | Layer   | What it does                                                                                                                                                                                            |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base.malloy`       | Base    | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                                        |
+| `core.malloy`       | Core    | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some domains may serve are left out.                    |
+| `deidentify.malloy` | Core    | The Safe Harbor derivations, declared once: years for dates (the year of birth withheld past 89), ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02). |
+| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, and declaring what it `#(carries)`.                                                                                              |
+| `index.malloy`      | Surface | The package's published surface: exports the five domains and nothing else.                                                                                                                             |
+
+Not yet capped: `encounter_year` and `onset_year` for a patient over 89 are still published as the year they happened, which can place the patient's age above 89 (DI-01).
 
 ## Analytical domains
 

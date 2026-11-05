@@ -188,6 +188,14 @@ describe("examples/clinical-records, clean", () => {
       );
       expect(r.compactResult).toEqual([{ oldest: 90 }]);
    });
+
+   it("withholds the year of birth past age 89 on the research surface", async () => {
+      const r = await run(
+         "run: research -> { aggregate: earliest is min(patient.birth_year) }",
+         { ROLES: ["researcher"] },
+      );
+      expect(Number(r.compactResult[0].earliest)).toBeGreaterThanOrEqual(1930);
+   });
 });
 
 describe("examples/clinical-records, seeded violations", () => {

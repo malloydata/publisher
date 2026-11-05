@@ -3,7 +3,7 @@
 // sources, so the derivation a control cites is this file, not a hand-made
 // copy on each domain:
 //
-//   - every date reduced to its year;
+//   - every date reduced to its year, and the year of birth withheld past age 89;
 //   - age capped: 90 for every age over 89;
 //   - geography reduced to the state and a three-digit ZIP, with the
 //     small-population three-digit areas in data/ reported as '000'.
@@ -17,9 +17,9 @@ source: patients_deid is patients_base include { internal: * } extend {
   primary_key: Id
   join_one: small_zip3 is zip3_small on substr(ZIP, 1, 3)::number = small_zip3.zip3
 
-  #(doc) Year of birth.
+  #(doc) Year of birth, null for every age over 89.
   #(classification) "phi.quasi_identifier"
-  dimension: birth_year is year(BIRTHDATE)
+  dimension: birth_year is pick year(BIRTHDATE) when age < 90 else null
   #(doc) Age in whole years on 2020-04-30, reported as 90 for every age over 89.
   #(classification) "phi.quasi_identifier"
   dimension: age is pick 90 when floor(days(BIRTHDATE to @2020-04-30) / 365.25) > 89
