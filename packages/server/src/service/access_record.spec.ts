@@ -123,7 +123,6 @@ describe("summarizeQueryAccess on an answered query", () => {
 });
 
 const PATIENTS = `
-#(carries) ["phi.direct_identifier"]
 source: patients is duckdb.table('child') extend {
    #(classification) "phi.direct_identifier"
    dimension: ssn is name

@@ -937,6 +937,40 @@ export { research }
       expect(await warnings()).toEqual([]);
    });
 
+   it("refuses at load a named query or notebook cell that reads past its source's ceiling, and loads one that stays within it", async () => {
+      write("base.malloy", PEOPLE);
+      const model = (queries: string) =>
+         write(
+            "index.malloy",
+            `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social public: area }
+${queries}
+export { research }
+`,
+         );
+      model(`query: fine is research -> { group_by: area }`);
+      expect(await warnings()).toEqual([]);
+      model(
+         `query: leaky is research extend { dimension: x is social } -> { group_by: x }`,
+      );
+      const named = await loadError();
+      expect(named).toContain("index.malloy: query leaky");
+      expect(named).toContain("x, which is classified pii.direct_identifier");
+      model(`query: fine is research -> { group_by: area }`);
+      write(
+         "tour.malloynb",
+         `>>>malloy
+import "index.malloy"
+>>>malloy
+run: research extend { dimension: x is social } -> { group_by: x }
+`,
+      );
+      expect(await loadError()).toContain("tour.malloynb: notebook cell");
+   });
+
    const leaksOf = async (source: string, carries = '["none"]') => {
       write("base.malloy", PEOPLE);
       write(

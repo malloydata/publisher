@@ -85,7 +85,7 @@ export function warnInvalidExplores(pkg: Package): void {
  * before it serves. Most warn; an invalid incremental refresh or
  * pre-aggregation declaration fails the load.
  */
-export function applyLoadGates(pkg: Package): void {
+export async function applyLoadGates(pkg: Package): Promise<void> {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
    // Same fail-safe split: warn at load, reject at publish.
@@ -124,6 +124,14 @@ export function applyLoadGates(pkg: Package): void {
          { packageName, detail: leaks },
       );
       throw new BadRequestError(leaks);
+   }
+   const ceiling = await pkg.formatCarriesCeilingLeaks();
+   if (ceiling) {
+      logger.error(
+         `Package ${packageName} has a query that reads past a source's #(carries)`,
+         { packageName, detail: ceiling },
+      );
+      throw new BadRequestError(ceiling);
    }
    // An author join that bypasses a gate is strict at load for the same
    // reason: the joined rows would reach every admitted caller unscoped.
