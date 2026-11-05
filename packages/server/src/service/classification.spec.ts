@@ -759,6 +759,74 @@ export { research }
       ]);
    });
 
+   it("passes a relabel's input classes on to a field that reads it, so a copy of the relabel cannot launder them", async () => {
+      write("base.malloy", PEOPLE);
+      const source = (body: string) =>
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+${body}
+}
+
+export { research }
+`;
+      write(
+         "index.malloy",
+         source(`   #(classification) "none"
+   internal dimension: s2 is social
+   dimension: s3 is s2`),
+      );
+      expect(await loadError()).toContain(
+         "exposes s3, classified none pii.direct_identifier",
+      );
+      write(
+         "index.malloy",
+         source(`   #(classification) "none"
+   internal dimension: s2 is social
+   internal dimension: s3 is s2
+   view: v is { group_by: s3 }`),
+      );
+      expect(await loadError()).toContain(
+         "its view v reads s3, classified none pii.direct_identifier",
+      );
+      write(
+         "index.malloy",
+         source(`   #(classification) "none"
+   internal dimension: s2 is social
+   internal dimension: s3 is s2
+   internal dimension: s4 is s3
+   dimension: s5 is s4`),
+      );
+      expect(await loadError()).toContain(
+         "exposes s5, classified none pii.direct_identifier",
+      );
+   });
+
+   it("loads a copy of a relabel declared over a computed expression, warning on the relabel only", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   #(classification) "none"
+   dimension: s2 is concat(social, '')
+   dimension: s3 is s2
+}
+
+export { research }
+`,
+      );
+      const found = await warnings();
+      expect(found.map((w) => [w.code, w.message?.includes("s2")])).toEqual([
+         [CLASSIFICATION_DOWNGRADE, true],
+      ]);
+   });
+
    it("refuses a declared plain copy of a read it cannot resolve, and warns on a declared computed field over one", async () => {
       write("base.malloy", PEOPLE);
       write(

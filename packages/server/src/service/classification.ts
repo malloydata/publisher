@@ -527,7 +527,18 @@ function walkSourceClassifications(
             // the inputs IT was read from, so lineage crosses an intermediate.
             const carried =
                input.classifications.length > 0
-                  ? [{ field: refPath, classifications: input.classifications }]
+                  ? [
+                       {
+                          field: refPath,
+                          // A relabel declared below its input still passes the input's classes on.
+                          classifications: input.passthrough
+                             ? tokenSet([
+                                  ...input.classifications,
+                                  ...input.dropped,
+                               ])
+                             : input.classifications,
+                       },
+                    ]
                   : input.inputs;
             for (const c of carried) {
                if (seenInput.has(c.field)) continue;
