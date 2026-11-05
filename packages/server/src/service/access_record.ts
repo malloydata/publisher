@@ -130,10 +130,11 @@ export async function summarizeQueryAccess(args: {
       const prepared = (await args.runnable.getPreparedQuery()) as {
          _query?: unknown;
       };
+      const ir = args.source
+         ? findIrSource(args.modelDef, args.source)
+         : undefined;
       const lineage = args.source
-         ? readSourceClassifications(
-              findIrSource(args.modelDef, args.source)?.fields,
-           )
+         ? readSourceClassifications(ir?.fields, ir?.query)
          : undefined;
       const paths = new Set(
          fieldPathsIn(prepared._query).map((p) => p.join(".")),
