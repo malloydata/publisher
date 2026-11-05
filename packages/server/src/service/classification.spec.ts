@@ -32,6 +32,7 @@ import {
    CLASSIFICATION_COVERAGE,
    CLASSIFICATION_DOWNGRADE,
    CLASSIFICATION_MALFORMED,
+   classificationLeaks,
    isClassificationLine,
    readCarries,
    readClassification,
@@ -707,6 +708,142 @@ export { leaky_q }
       );
    });
 
+   it("charges a view that reads a hidden relabel of a classified field the class the relabel hides", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   #(classification) "none"
+   internal dimension: s2 is social
+   view: v is { group_by: s2 }
+}
+
+export { research }
+`,
+      );
+      const message = await loadError();
+      expect(message).toContain(
+         "its view v reads s2, classified none pii.direct_identifier",
+      );
+      expect(message).toContain(
+         "exposes s2, declared none over a plain copy of social (pii.direct_identifier)",
+      );
+   });
+
+   it("loads a hidden relabel no view reads, and warns on a hidden computed field a view reads", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   #(classification) "none"
+   internal dimension: s2 is social
+   #(classification) "none"
+   internal dimension: s3 is concat(social, '')
+   view: v is { group_by: s3 }
+}
+
+export { research }
+`,
+      );
+      const found = await warnings();
+      expect(found.map((w) => [w.code, w.message?.includes("s3")])).toEqual([
+         [CLASSIFICATION_DOWNGRADE, true],
+      ]);
+   });
+
+   it("refuses a declared plain copy of a read it cannot resolve, and warns on a declared computed field over one", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: copy_q is people -> {
+   extend: { dimension: z is social }
+   group_by:
+      #(classification) "none"
+      x is z
+}
+
+export { copy_q }
+`,
+      );
+      expect(await loadError()).toContain(
+         "exposes x, declared none over a plain copy of z, which cannot be resolved",
+      );
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: computed_q is people -> {
+   extend: { dimension: z is social }
+   group_by:
+      #(classification) "none"
+      x is concat(z, '')
+}
+
+export { computed_q }
+`,
+      );
+      const found = await warnings();
+      expect(found.map((w) => [w.code, w.subject])).toEqual([
+         [CLASSIFICATION_DOWNGRADE, "computed_q"],
+      ]);
+      expect(found[0].message).toContain("cannot be resolved: z");
+   });
+
+   it("says nothing about a declared computed field whose reads all resolve", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+source: ok_q is people -> {
+   group_by:
+      #(classification) "pii.direct_identifier"
+      x is concat(social, '')
+}
+
+export { ok_q }
+`,
+      );
+      expect(await warnings()).toEqual([]);
+   });
+
+   it("charges a view that nests another view the leaf fields the nested view reads", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: research is people include { internal: social } extend {
+   view: leaf is { group_by: social }
+   view: outer is { nest: leaf }
+   view: inline is { nest: deep is { group_by: social } }
+}
+
+export { research }
+`,
+      );
+      const message = await loadError();
+      expect(message).toContain("its view outer reads social");
+      expect(message).toContain("its view inline reads social");
+   });
+
    it("treats everything under a private join as hidden", async () => {
       write("base.malloy", PEOPLE);
       write(
@@ -925,5 +1062,81 @@ source: two_stage is p -> {
          ir("two_stage").query,
       );
       expect(two.get("social")?.unresolved).toEqual(["social"]);
+   });
+
+   it("keys its memo on the query as well as the fields", async () => {
+      const { modelDefs } = await compileModelFiles({
+         "m.malloy": `##! experimental.access_modifiers
+source: p is duckdb.sql("select 1 as id, '9' as ssn") include { internal: ssn public: * } extend {
+   #(classification) "phi"
+   dimension: social is ssn
+}
+source: q is p -> {
+   group_by:
+      #(classification) "none"
+      x is social
+}
+`,
+      });
+      const q = (modelDefs["m.malloy"] as ModelDef).contents[
+         "q"
+      ] as unknown as {
+         fields: never;
+         query: never;
+      };
+      readSourceClassifications(q.fields);
+      const withQuery = readSourceClassifications(q.fields, q.query);
+      expect(withQuery.get("x")).toMatchObject({
+         passthrough: true,
+         dropped: ["phi"],
+      });
+      expect(readSourceClassifications(q.fields, q.query)).toBe(withQuery);
+      expect(readSourceClassifications(q.fields).get("x")?.passthrough).toBe(
+         false,
+      );
+   });
+});
+
+describe("classificationLeaks over a view with no reference summary", () => {
+   const sourceWith = (views: unknown[]) =>
+      ({
+         getSourceInfos: () => [{ name: "s" }],
+         getSources: () => [{ name: "s" }],
+         getModelDef: () => ({
+            contents: {
+               s: {
+                  name: "s",
+                  annotations: { notes: [{ text: '#(carries) ["none"]' }] },
+                  fields: [
+                     {
+                        name: "a",
+                        type: "string",
+                        annotations: {
+                           notes: [{ text: '#(classification) "none"' }],
+                        },
+                     },
+                     ...views,
+                  ],
+               },
+            },
+         }),
+      }) as never;
+
+   it("refuses a view neither its turtle nor its first stage summarises, and loads one that does", () => {
+      const leaks = (view: unknown) =>
+         classificationLeaks(
+            new Map([["m.malloy", sourceWith([view])]]),
+            () => true,
+         );
+      expect(leaks({ name: "bare", type: "turtle", pipeline: [{}] })).toEqual([
+         expect.stringContaining("its view bare has no reference summary"),
+      ]);
+      expect(
+         leaks({
+            name: "fine",
+            type: "turtle",
+            pipeline: [{ refSummary: { fieldUsage: [{ path: ["a"] }] } }],
+         }),
+      ).toEqual([]);
    });
 });

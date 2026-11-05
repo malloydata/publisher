@@ -328,8 +328,11 @@ export class SourceLineage extends Map<string, FieldClassification> {
    truncated = false;
 }
 
-/** The lineage of a compiled source, read once: its `fields` array is the key. */
-const lineageMemo = new WeakMap<object, SourceLineage>();
+/** The lineage of a compiled source, read once per `fields` array and query: a query source reads differently without its query. */
+const lineageMemo = new WeakMap<
+   object,
+   Map<IrQuery | undefined, SourceLineage>
+>();
 
 /** How many unclassified field paths one warning names before counting the rest. */
 const MAX_NAMED_FIELDS = 12;
@@ -427,10 +430,14 @@ export function readSourceClassifications(
    fields: IrField[] | undefined,
    query?: IrQuery,
 ): SourceLineage {
-   const memoized = fields ? lineageMemo.get(fields) : undefined;
+   const byQuery = fields ? lineageMemo.get(fields) : undefined;
+   const memoized = byQuery?.get(query);
    if (memoized) return memoized;
    const lineage = walkSourceClassifications(fields, query);
-   if (fields) lineageMemo.set(fields, lineage);
+   if (fields) {
+      if (byQuery) byQuery.set(query, lineage);
+      else lineageMemo.set(fields, new Map([[query, lineage]]));
+   }
    return lineage;
 }
 
@@ -603,6 +610,8 @@ export interface ViewExposure {
    reads: ClassifiedInput[];
    /** Paths it reads that carry no class, or resolve to nothing on the source. */
    unclassified: string[];
+   /** True when the compiled view has no reference summary, so what it reads is unknown. */
+   unread: boolean;
 }
 
 /**
@@ -637,7 +646,13 @@ export function readViewExposures(
          }
          if (c && c.classifications.length > 0) {
             if (!reads.some((r) => r.field === path)) {
-               reads.push({ field: path, classifications: c.classifications });
+               // A copy declared below its input is still its input.
+               reads.push({
+                  field: path,
+                  classifications: c.passthrough
+                     ? tokenSet([...c.classifications, ...c.dropped])
+                     : c.classifications,
+               });
             }
          }
       }
@@ -646,6 +661,7 @@ export function readViewExposures(
          classifications: tokenSet(reads.flatMap((r) => r.classifications)),
          reads,
          unclassified,
+         unread: summary === undefined,
       });
    }
    return out;
@@ -683,6 +699,8 @@ export interface PublishedSource {
    deniedToAll: boolean;
    /** Reachable dimensions and measures a caller can read, by path. */
    fields: Array<[string, FieldClassification]>;
+   /** Hidden dimensions and measures a view reads, by path. */
+   hiddenRead: Array<[string, FieldClassification]>;
    /** What each of its views reads from it. */
    views: ViewExposure[];
    /** True when its join walk hit a bound, so fields past it were not read. */
@@ -717,6 +735,14 @@ export function publishedSources(
          if (!ir) continue;
          const apiSource = apiSources?.find((s) => s.name === sourceInfo.name);
          const lineage = readSourceClassifications(ir.fields, ir.query);
+         const views = readViewExposures(ir.fields, lineage);
+         const hiddenRead: Array<[string, FieldClassification]> = [];
+         for (const path of new Set(
+            views.flatMap((v) => v.reads.map((r) => r.field)),
+         )) {
+            const c = lineage.get(path);
+            if (c?.hidden && c.isField) hiddenRead.push([path, c]);
+         }
          out.push({
             modelPath,
             source: sourceInfo.name,
@@ -725,12 +751,52 @@ export function publishedSources(
             fields: Array.from(lineage).filter(
                ([, c]) => c.isField && !c.hidden,
             ),
-            views: readViewExposures(ir.fields, lineage),
+            hiddenRead,
+            views,
             truncated: lineage.truncated,
          });
       }
    }
    return out;
+}
+
+/** The unresolved reads of a field that declares its own class, which the declaration cannot vouch for. */
+function declaredUnknownReads(c: FieldClassification): string[] {
+   return c.declared.length > 0 ? c.unresolved : [];
+}
+
+/** The refusal for a plain copy declared below, or over, what it copies; undefined for any other field. */
+function copyLeak(
+   where: string,
+   allowed: string,
+   path: string,
+   c: FieldClassification,
+): string | undefined {
+   if (!c.passthrough) return undefined;
+   const unknown = declaredUnknownReads(c);
+   if (c.dropped.length === 0 && unknown.length === 0) return undefined;
+   const copied = [
+      ...(c.dropped.length > 0
+         ? [
+              c.inputs
+                 .filter((i) =>
+                    i.classifications.some((k) => c.dropped.includes(k)),
+                 )
+                 .map((i) => `${i.field} (${i.classifications.join(" ")})`)
+                 .join(", "),
+           ]
+         : []),
+      ...(unknown.length > 0
+         ? [`${unknown.join(", ")}, which cannot be resolved`]
+         : []),
+   ].join(" and ");
+   return (
+      `${where} carries [${allowed}] but exposes ${path}, declared ` +
+      `${c.declared.join(" ")} over a plain copy of ${copied}. A ` +
+      `copy does not de-identify anything: remove the declaration ` +
+      `so it keeps its input's class, or derive a new field with a ` +
+      `function that does.`
+   );
 }
 
 /**
@@ -767,10 +833,21 @@ export function classificationWarnings(
    }
    for (const s of sources) {
       const carries = readCarries(s.ir.annotations);
-      for (const [path, c] of s.fields) {
-         if (c.dropped.length === 0) continue;
+      for (const [path, c] of [...s.fields, ...s.hiddenRead]) {
+         const unknown = declaredUnknownReads(c);
+         if (c.dropped.length === 0 && unknown.length === 0) continue;
          // A plain copy under #(carries) is refused at load, not warned.
          if (carries.declared && c.passthrough) continue;
+         const reads = [
+            ...(c.dropped.length > 0
+               ? [`reads fields classified ${c.dropped.join(" ")}`]
+               : []),
+            ...(unknown.length > 0
+               ? [
+                    `reads fields whose class cannot be resolved: ${unknown.join(", ")}`,
+                 ]
+               : []),
+         ].join(" and ");
          warnings.push({
             model: s.modelPath,
             subject: s.source,
@@ -778,10 +855,10 @@ export function classificationWarnings(
             severity: "warn",
             message:
                `Field ${path} of source ${s.source} declares ` +
-               `${c.declared.join(" ")} but reads fields classified ` +
-               `${c.dropped.join(" ")}. Publisher cannot tell whether this ` +
-               `derivation de-identifies them, so a review has to: check ` +
-               `that what it returns is no longer ${c.dropped.join(" or ")}.`,
+               `${c.declared.join(" ")} but ${reads}. Publisher cannot tell ` +
+               `whether this derivation de-identifies them, so a review has ` +
+               `to: check that what it returns is no longer ` +
+               `${c.dropped.length > 0 ? c.dropped.join(" or ") : "what those reads carry"}.`,
          });
       }
    }
@@ -863,6 +940,13 @@ export function classificationLeaks(
                   `filter into a declared measure of a class the source carries.`,
             );
          }
+         if (view.unread) {
+            messages.push(
+               `${where} carries [${allowed}] but its view ${view.name} has no ` +
+                  `reference summary, so what it reads cannot be known. ` +
+                  `Remove the view from the source.`,
+            );
+         }
          if (view.unclassified.length > 0) {
             messages.push(
                `${where} carries [${allowed}] but its view ${view.name} reads ` +
@@ -873,21 +957,14 @@ export function classificationLeaks(
             );
          }
       }
+      for (const [path, c] of s.hiddenRead) {
+         const copy = copyLeak(where, allowed, path, c);
+         if (copy) messages.push(copy);
+      }
       for (const [path, c] of s.fields) {
-         if (c.passthrough && c.dropped.length > 0) {
-            const copied = c.inputs
-               .filter((i) =>
-                  i.classifications.some((k) => c.dropped.includes(k)),
-               )
-               .map((i) => `${i.field} (${i.classifications.join(" ")})`)
-               .join(", ");
-            messages.push(
-               `${where} carries [${allowed}] but exposes ${path}, declared ` +
-                  `${c.declared.join(" ")} over a plain copy of ${copied}. A ` +
-                  `copy does not de-identify anything: remove the declaration ` +
-                  `so it keeps its input's class, or derive a new field with a ` +
-                  `function that does.`,
-            );
+         const copy = copyLeak(where, allowed, path, c);
+         if (copy) {
+            messages.push(copy);
             continue;
          }
          const off = c.classifications.filter((k) => !carries.classes.has(k));
