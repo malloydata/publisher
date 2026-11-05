@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -20,6 +21,11 @@ import {
    parseJoinCode,
 } from "./source_extraction";
 
+// A `file:` URL under an absolute temp root, so `fileURLToPath` accepts it on
+// Windows too (where `file:///tmp/x` has no drive and is refused).
+const TMP_URL = `${pathToFileURL(path.resolve("/tmp")).href}/`;
+const tmpUrl = (name: string) => `${TMP_URL}${name}`;
+
 /** A structDef carrying `lines` as block notes, where the query path reads `#(filter)`s. */
 const filterStruct = (lines: string[]) => ({
    parameters: {},
@@ -33,7 +39,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       const explore = {
          name: "orders",
          location: {
-            url: "file:///tmp/orders.malloy",
+            url: tmpUrl("orders.malloy"),
          },
          getTaglines: noTaglines,
          structDef: {
@@ -68,7 +74,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // hidden when its model file is processed by a different consumer.
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/imported.malloy" },
+         location: { url: tmpUrl("imported.malloy") },
          // Real Malloy explores have getTaglines() that may include
          // inherited tags; we stub it as a no-op here to make sure the
          // source-level check is reading from structDef.annotation, not
@@ -87,7 +93,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "consumer.malloy",
          false,
-         "file:///tmp/consumer.malloy",
+         tmpUrl("consumer.malloy"),
       );
 
       assert.strictEqual(metadata.length, 1);
@@ -100,7 +106,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // than of a list: a source hidden with `#[agent-hidden]` must not come
       // back visible because the matcher only knew about `(`.
       const at = {
-         url: "file:///tmp/m.malloy",
+         url: tmpUrl("m.malloy"),
          range: {
             start: { line: 0, character: 0 },
             end: { line: 0, character: 0 },
@@ -127,7 +133,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
             routed++;
             const explore = {
                name: "orders",
-               location: { url: "file:///tmp/m.malloy" },
+               location: { url: tmpUrl("m.malloy") },
                getTaglines: noTaglines,
                structDef: {
                   type: "table",
@@ -140,7 +146,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
                [explore],
                "m.malloy",
                false,
-               "file:///tmp/m.malloy",
+               tmpUrl("m.malloy"),
             );
             assert.strictEqual(
                metadata[0]?.agentHidden,
@@ -171,7 +177,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       };
       const base = {
          name: "source_a_base",
-         location: { url: "file:///tmp/model1.malloy" },
+         location: { url: tmpUrl("model1.malloy") },
          // getTaglines() walks `inherits`, but that's not relevant for
          // the base since the tag is direct. Returning the tag mirrors
          // what real Malloy would return.
@@ -183,7 +189,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       } as unknown as Explore;
       const extending = {
          name: "source_a",
-         location: { url: "file:///tmp/model2.malloy" },
+         location: { url: tmpUrl("model2.malloy") },
          // Real Malloy.getTaglines() would walk `inherits` and return
          // the base's #(agent-hidden) here. The fix is that we should
          // ignore that and only consider direct annotations.
@@ -201,7 +207,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [base, extending],
          "model2.malloy",
          false,
-         "file:///tmp/model2.malloy",
+         tmpUrl("model2.malloy"),
       );
 
       const baseHidden = metadata.find(
@@ -461,7 +467,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // marked hidden when viewed via model2.
       const base = {
          name: "source_a_base",
-         location: { url: "file:///tmp/model1.malloy" },
+         location: { url: tmpUrl("model1.malloy") },
          getTaglines: noTaglines,
          structDef: {
             parameters: {},
@@ -474,7 +480,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       } as unknown as Explore;
       const extending = {
          name: "source_a",
-         location: { url: "file:///tmp/model2.malloy" },
+         location: { url: tmpUrl("model2.malloy") },
          getTaglines: noTaglines,
          structDef: {
             parameters: {},
@@ -486,7 +492,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [base, extending],
          "model2.malloy",
          false, // isModelFileAgentHidden = false (model2 has no ##(agent-hidden))
-         "file:///tmp/model2.malloy",
+         tmpUrl("model2.malloy"),
       );
 
       const anyAgentHidden = metadata.find(
@@ -502,7 +508,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("emits FILTERS metadata for valid #(filter) annotations", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Region dimension=region type=in",
             '#(filter) name="Created After" dimension=created_at type=greater_than required',
@@ -555,7 +561,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("allows two required filters on distinct dimensions", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Tier dimension=tier type=equal required",
             "#(filter) name=Region dimension=region type=equal required",
@@ -578,7 +584,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("allows a duplicate dimension when only one filter is required", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Required dimension=tier type=equal required",
             "#(filter) name=Optional dimension=tier type=in",
@@ -601,7 +607,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("parses every filter type and flag combination", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Eq dimension=d type=equal",
             "#(filter) name=Like_F dimension=d type=like",
@@ -640,7 +646,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("drops filter referencing unknown dimension", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Region dimension=region type=in",
             "#(filter) name=Bogus dimension=does_not_exist type=equal",
@@ -666,7 +672,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("throws RequiredFilterMissingDimensionError when required filter has unknown dimension", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Tenant dimension=missing_dim type=equal required",
          ],
@@ -689,7 +695,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("throws RequiredFilterNonPublicDimensionError when required filter references a private dimension", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Tier dimension=tier type=equal required",
          ],
@@ -718,7 +724,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("drops optional filter referencing a non-public dimension but keeps valid ones", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Region dimension=region type=in",
             "#(filter) name=Internal dimension=secret type=equal",
@@ -747,7 +753,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("a malformed filter annotation leaves the source with no filters, as the query path reads it", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: () => [
             "#(filter) name=Region dimension=region type=in",
             "#(filter) name=Bad dimension=region type=not_a_real_type",
@@ -773,13 +779,13 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("model-level agent-hidden applies only to sources defined in this model file", () => {
       const local = {
          name: "local_source",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
       const imported = {
          name: "imported_source",
-         location: { url: "file:///tmp/other.malloy" },
+         location: { url: tmpUrl("other.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
@@ -788,7 +794,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [local, imported],
          "model.malloy",
          true,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
       );
 
       assert.strictEqual(metadata.length, 1);
@@ -956,13 +962,13 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // (model file, source) lookup finds it.
       const local = {
          name: "spotlight_flights",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: { parameters: {} },
       } as unknown as Explore;
       const imported = {
          name: "carriers",
-         location: { url: "file:///tmp/other.malloy" },
+         location: { url: tmpUrl("other.malloy") },
          getTaglines: noTaglines,
          structDef: { parameters: {} },
       } as unknown as Explore;
@@ -975,7 +981,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [local, imported],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          givens,
       );
 
@@ -993,7 +999,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("emits no GIVENS rows when the model declares no givens", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: { parameters: {} },
       } as unknown as Explore;
@@ -1002,7 +1008,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
       );
 
@@ -1176,7 +1182,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // served); reading LESS means publisher enforces a gate this file reports
       // as absent, and the source's dimension values go back into value search.
       const at = {
-         url: "file:///tmp/m.malloy",
+         url: tmpUrl("m.malloy"),
          range: {
             start: { line: 0, character: 0 },
             end: { line: 0, character: 0 },
@@ -1258,7 +1264,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // scoping.
       const local = {
          name: "orders",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: {
             type: "table",
@@ -1275,7 +1281,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       } as unknown as Explore;
       const imported = {
          name: "carriers",
-         location: { url: "file:///tmp/other.malloy" },
+         location: { url: tmpUrl("other.malloy") },
          getTaglines: noTaglines,
          structDef: {
             type: "table",
@@ -1290,7 +1296,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [local, imported],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          [],
          [{ route: "authorize", expr: "$ROLE = 'admin'" }],
       );
@@ -1339,13 +1345,13 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // imported-source scoping.
       const local = {
          name: "orders",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
       const importedUngated = {
          name: "carriers",
-         location: { url: "file:///tmp/other.malloy" },
+         location: { url: tmpUrl("other.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
@@ -1354,7 +1360,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [local, importedUngated],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          [],
          [{ route: "authorize", expr: "$ROLE = 'admin'" }],
       );
@@ -1378,7 +1384,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // commonly lower/mixed-case; the registry must support them alongside ALL_CAPS.
       const orders = {
          name: "orders",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
@@ -1387,7 +1393,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [orders],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          [],
          [
             {
@@ -1413,7 +1419,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("emits no AUTHORIZE rows when no gate is in scope", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
@@ -1422,7 +1428,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
          [],
       );
@@ -1436,7 +1442,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("a bare source-line #(authorize) expression is read verbatim, quotes and all", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: {
             type: "table",
@@ -1451,7 +1457,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
          [],
       );
@@ -1472,7 +1478,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("a bare #(authorize) with no payload still fails closed", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: {
             parameters: {},
@@ -1484,7 +1490,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
          [],
       );
@@ -1504,7 +1510,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
    test("a malformed #(authorize) on a source's own notes fails closed (deny), not skip", () => {
       const explore = {
          name: "orders",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: {
             parameters: {},
@@ -1518,7 +1524,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
          [{ route: "authorize", expr: "$REGION = 'us'" }],
       );
@@ -1544,7 +1550,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // as [] (ungated) would silently drop a gate this walk can't see.
       const explore = {
          name: "nested_source",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: { type: "nest_source", parameters: {} },
       } as unknown as Explore;
@@ -1553,7 +1559,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
          [],
       );
@@ -1579,7 +1585,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       // deny rather than report [] (ungated).
       const explore = {
          name: "raw_sql_source",
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          getTaglines: noTaglines,
          structDef: {
             type: "sql_select",
@@ -1592,7 +1598,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "orders.malloy",
          false,
-         "file:///tmp/orders.malloy",
+         tmpUrl("orders.malloy"),
          [],
          [],
       );
@@ -1627,7 +1633,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       }
       const explore = {
          name: "child_src",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: {
             parameters: {},
@@ -1639,7 +1645,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          [],
          [{ route: "authorize", expr: "$REGION = 'us'" }],
       );
@@ -1672,7 +1678,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
       }
       const explore = {
          name: "child_src",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: noTaglines,
          structDef: {
             type: "table",
@@ -1685,7 +1691,7 @@ describe("sourceExtraction.extractMetadataFromExplores", () => {
          [explore],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          [],
          [{ route: "authorize", expr: "$REGION = 'us'" }],
       );
@@ -2639,7 +2645,7 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
       // absent from the model's own top-level sources.
       const explore = {
          name: "laundered",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: () => [],
          structDef: {
             type: "query_source",
@@ -2653,7 +2659,7 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
          [explore],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
       );
 
       const row = metadata.find(
@@ -2671,7 +2677,7 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
    test("an own-gated query_source over a base absent from the model's sources is denied, not served on its own gate", () => {
       const explore = {
          name: "laundered",
-         location: { url: "file:///tmp/model.malloy" },
+         location: { url: tmpUrl("model.malloy") },
          getTaglines: () => [],
          structDef: {
             type: "query_source",
@@ -2691,7 +2697,7 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
          [explore],
          "model.malloy",
          false,
-         "file:///tmp/model.malloy",
+         tmpUrl("model.malloy"),
          [{ name: "REGION", type: "string" }],
       );
 
@@ -2989,7 +2995,7 @@ describe("sourceExtraction.extractEntitiesFromExplores", () => {
             fakeDimensionField("region"),
          ],
          sourceStructDef: { connection: "duckdb", dialect: "duckdb" },
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          structDef: { parameters: {} },
       } as unknown as Explore;
 
@@ -3029,7 +3035,7 @@ describe("sourceExtraction.extractEntitiesFromExplores", () => {
          name: "orders",
          allFields: [fakeDimensionField("country")],
          sourceStructDef: { connection: "duckdb", dialect: "duckdb" },
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          structDef: { parameters: {} },
       } as unknown as Explore;
 
@@ -3063,7 +3069,7 @@ describe("sourceExtraction.extractEntitiesFromExplores", () => {
             fakeDimensionField("city"), // simulated compile failure → not in map
          ],
          sourceStructDef: { connection: "duckdb", dialect: "duckdb" },
-         location: { url: "file:///tmp/orders.malloy" },
+         location: { url: tmpUrl("orders.malloy") },
          structDef: { parameters: {} },
       } as unknown as Explore;
 
