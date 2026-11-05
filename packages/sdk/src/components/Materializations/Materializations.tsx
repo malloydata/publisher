@@ -85,12 +85,23 @@ export default function Materializations({
       },
    });
 
-   // The build plan is a property of the compiled package (Package.buildPlan),
-   // not of a historical run, so fetch it from the package for the detail view.
+   // The package's materialization settings (schedule, freshness, scope).
    const packageQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.packages.getPackage(
+            environmentName,
+            packageName,
+            versionId,
+         ),
+   });
+
+   // The build plan of the package as loaded, from its own route, for the
+   // detail view.
+   const buildPlanQuery = useQueryWithApiError({
+      queryKey: ["package-build-plan", environmentName, packageName, versionId],
+      queryFn: () =>
+         apiClients.packages.getPackageBuildPlan(
             environmentName,
             packageName,
             versionId,
@@ -357,7 +368,7 @@ export default function Materializations({
 
          <MaterializationDetailDialog
             materialization={selected}
-            buildPlan={packageQuery.data?.data?.buildPlan ?? null}
+            buildPlan={buildPlanQuery.data?.data?.buildPlan ?? null}
             onClose={() => setSelectedId(null)}
          />
 

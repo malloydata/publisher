@@ -526,7 +526,10 @@ describe("PackageController.getPackage embeddingIndex", () => {
     */
    const controllerWithIndex = (embeddingIndex: EmbeddingIndex) => {
       const metadata = { name: "pkg", resource: "/pkg" };
-      const _package = { getPackageMetadata: () => metadata };
+      const _package = {
+         getPackageMetadata: () => metadata,
+         getOperationalFields: () => ({}),
+      };
       const getPackage = sinon.stub().resolves(_package);
       const environment = {
          getVersionService: () => null,
@@ -824,6 +827,7 @@ describe("PackageController.reloadPackage", () => {
       };
       const reinstalled = {
          getPackageMetadata: () => ({ name: "pkg", location }),
+         getOperationalFields: () => ({}),
       };
       const getPackage = sinon.stub().resolves(cached);
       const installPackage = sinon.stub().resolves(reinstalled);

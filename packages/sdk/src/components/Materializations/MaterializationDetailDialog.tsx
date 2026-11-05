@@ -35,7 +35,7 @@ import {
 
 type MaterializationDetailDialogProps = {
    materialization: Materialization | null;
-   // The compiled package's current build plan (Package.buildPlan), shown for
+   // The package's current build plan (GET …/build-plan), shown for
    // context. It is a property of the package version, not the historical run,
    // and it is null for a package with no persist sources — which is why the
    // section renders an empty state rather than disappearing.

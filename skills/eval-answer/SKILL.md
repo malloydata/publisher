@@ -18,8 +18,9 @@ revision.
 
 Take the question from the stored case (`evals/<set>/cases.jsonl`), never from
 memory or a truncated console line. Record `question_sha` of the exact text
-the answerer saw. Record `servedRevision` from `get_context` or reload, not
-the package name: a same-named decoy has been measured for hours.
+the answerer saw. Record `servedRevision` from the package's entry in
+`GET /api/v0/status` or the `reload_package` result, not the package name: a
+same-named decoy has been measured for hours.
 
 ## Step 1: Contamination check, before any score
 

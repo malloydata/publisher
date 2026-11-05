@@ -55,6 +55,7 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
+   isPackageInlineFieldsEnabled,
    embeddingStartupNotices,
    getRetrievalConfig,
 } from "./config";
@@ -113,6 +114,7 @@ import { acceptBundledExperimentalDialects } from "./service/experimental_dialec
 getPersistStorageMode();
 getPersistCollisionEnforce();
 getQueryMetadataMode();
+isPackageInlineFieldsEnabled();
 
 // Before any compile on this thread: a connection-test, an MCP compile or a
 // package load on the main thread would otherwise refuse a SQL Server model.

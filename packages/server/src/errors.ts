@@ -107,6 +107,9 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
+   // 409: a read pinned to a load (`servedRevision`) reached a server that has
+   // reloaded the package since. Re-read the package and retry.
+   | "REVISION_CHANGED"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -406,6 +409,8 @@ export function internalErrorToHttpError(
       error instanceof AgentNotFoundError
    ) {
       return httpError(404, error.message);
+   } else if (error instanceof RevisionChangedError) {
+      return httpError(409, error.message, "REVISION_CHANGED");
    } else if (error instanceof ConflictError) {
       return httpError(409, error.message);
    } else if (error instanceof NotQueryableError) {
@@ -620,6 +625,17 @@ export class ConflictError extends Error {
    constructor(message: string) {
       super(message);
       this.name = "ConflictError";
+   }
+}
+
+/**
+ * A read pinned to one load of a package (`?servedRevision=`) reached a server
+ * serving a different load. 409 with `reason` `REVISION_CHANGED`.
+ */
+export class RevisionChangedError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "RevisionChangedError";
    }
 }
 

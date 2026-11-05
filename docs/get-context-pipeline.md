@@ -43,7 +43,7 @@ What already works and must not be rebuilt:
   Vectors persist in `publisher.db` across restart and reload. One changed entity costs one small call.
 - **Readiness and fallback reasons** (`indexing`, `cooldown`, `too-many-entities`, `provider-error`,
   `unavailable`) and a per-package 60-second cooldown after a provider failure.
-- **Status** is on the REST package resource (`embeddingIndex`).
+- **Status** is at `GET …/packages/{pkg}/embedding-index` (older servers carry it as `embeddingIndex` on the package resource).
 
 What is missing for fast local iteration:
 

@@ -47,6 +47,7 @@ import {
 } from "../constants";
 import {
    BadRequestError,
+   RevisionChangedError,
    ModelCompilationError,
    PackageManifestError,
    PackageNotFoundError,
@@ -99,7 +100,11 @@ import {
    ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
-import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
+import {
+   getPersistCollisionEnforce,
+   getPersistStorageMode,
+   isPackageInlineFieldsEnabled,
+} from "../config";
 import {
    deriveServeBindings,
    groupAliasesByName,
@@ -1464,6 +1469,24 @@ export class Package {
    }
 
    /**
+    * For each published entry point, its `#(carries)` and its field count by
+    * class, or `undefined` when nothing published is classified. Walks every
+    * published field, so it is memoized per models map and served only by
+    * `GET …/classification`, never on a package response or the `/status`
+    * poll path.
+    */
+   public getClassificationSummary(): ApiClassificationSummary | undefined {
+      const memo = this.classificationSummaryMemo;
+      if (memo?.forModels === this.models) return memo.value;
+      const forModels = this.models;
+      const value = classificationSummary(forModels, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      this.classificationSummaryMemo = { forModels, value };
+      return value;
+   }
+
+   /**
     * {@link entities}, or undefined before the package has loaded. Frozen, so
     * callers share it.
     */
@@ -1550,24 +1573,6 @@ export class Package {
    }
 
    /**
-    * For each published entry point, its `#(carries)` and its field count by
-    * class, or `undefined` when nothing published is classified. Walks every
-    * published field, so it is memoized per models map and kept OFF
-    * {@link getPackageMetadata} (the `/status` poll path): only the
-    * single-package read attaches it.
-    */
-   public getClassificationSummary(): ApiClassificationSummary | undefined {
-      const memo = this.classificationSummaryMemo;
-      if (memo?.forModels === this.models) return memo.value;
-      const forModels = this.models;
-      const value = classificationSummary(forModels, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      );
-      this.classificationSummaryMemo = { forModels, value };
-      return value;
-   }
-
-   /**
     * ON THE `/status` POLL PATH: runs for every package every few seconds.
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
@@ -1578,21 +1583,25 @@ export class Package {
       const metadata: ApiPackage = {
          ...this.packageMetadata,
          name: this.packageName,
-         manifestBindingStatus: this.manifestBindingStatus,
-         manifestEntryCount: this.manifestEntryCount,
-         boundManifestUri: this.boundManifestUri,
-         buildPlan: this.buildPlan,
-         servedRevision: this.servedRevision,
-         sourceContentSha: this.sourceContentSha,
-         // Overlaid so a metadata PATCH body can neither set nor wipe it.
-         agents: this.rawAgents === undefined ? undefined : this.listAgents(),
       };
-      // Never stored in `packageMetadata` (see storableMetadata): memoized per
-      // models map and frozen, so it is returned by reference. Left off, not
-      // `[]`, when it is unknown.
-      const secureGivens = this.currentSecureGivens();
-      if (secureGivens !== undefined) {
-         metadata.secureGivens = secureGivens;
+      if (isPackageInlineFieldsEnabled()) {
+         // The fields that moved off Package, inline as before they moved
+         // (PUBLISHER_PACKAGE_INLINE_FIELDS). Each now lives elsewhere: the
+         // serving and binding fields on the package's `/status` entry
+         // (getOperationalFields), the rest at their own route.
+         Object.assign(metadata, this.getOperationalFields(), {
+            buildPlan: this.buildPlan,
+            // Overlaid so a metadata PATCH body can neither set nor wipe it.
+            agents:
+               this.rawAgents === undefined ? undefined : this.listAgents(),
+         });
+         // Never stored in `packageMetadata` (see storableMetadata): memoized
+         // per models map and frozen, so it is returned by reference. Left
+         // off, not `[]`, when it is unknown.
+         const secureGivens = this.currentSecureGivens();
+         if (secureGivens !== undefined) {
+            metadata.secureGivens = secureGivens;
+         }
       }
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -1641,16 +1650,58 @@ export class Package {
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
       }
-      if (this.storageServeBindings.length > 0) {
-         // `origin` marks rows (rollups) whose `sourceName` is in no model file.
-         metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
-            origin: b.origin ?? "persist",
-            sourceName: b.sourceName,
-            storageDestinationName: b.destinationName,
-            tablePath: b.tablePath,
-         }));
-      }
       return metadata;
+   }
+
+   /**
+    * What this server is serving for the package right now: the load's
+    * identity, its manifest binding and the sources it serves from storage.
+    * Carried on the package's `/status` entry, which is where an orchestrator
+    * reads them, and on a package response only while
+    * PUBLISHER_PACKAGE_INLINE_FIELDS is on. Cheap: every field is a value the
+    * load or the last bind recorded.
+    */
+   public getOperationalFields(): Pick<
+      ApiPackage,
+      | "manifestBindingStatus"
+      | "manifestEntryCount"
+      | "boundManifestUri"
+      | "servedRevision"
+      | "sourceContentSha"
+      | "storageServeBindings"
+   > {
+      return {
+         manifestBindingStatus: this.manifestBindingStatus,
+         manifestEntryCount: this.manifestEntryCount,
+         boundManifestUri: this.boundManifestUri,
+         servedRevision: this.servedRevision,
+         sourceContentSha: this.sourceContentSha,
+         // `origin` marks rows (rollups) whose `sourceName` is in no model file.
+         ...(this.storageServeBindings.length > 0 && {
+            storageServeBindings: this.storageServeBindings.map((b) => ({
+               origin: b.origin ?? "persist",
+               sourceName: b.sourceName,
+               storageDestinationName: b.destinationName,
+               tablePath: b.tablePath,
+            })),
+         }),
+      };
+   }
+
+   /**
+    * Throws {@link RevisionChangedError} unless `expected` is absent or names
+    * the load this package is serving. A caller that read the package after a
+    * load passes the load's `servedRevision` to every follow-up read, so it
+    * never mixes facts from two loads.
+    */
+   public assertServedRevision(expected: unknown): void {
+      if (expected === undefined || expected === "") return;
+      if (expected !== this.servedRevision) {
+         throw new RevisionChangedError(
+            `Package ${this.packageName} has reloaded: it is serving revision ` +
+               `${this.servedRevision}, not ${String(expected)}. Read the package again.`,
+         );
+      }
    }
 
    /** The bound manifest entries, or undefined when serving live; reused by /compile. */
@@ -3667,19 +3718,10 @@ export class Package {
     * cannot store a snapshot that outlives the models it describes.
     */
    private static storableMetadata(packageMetadata: ApiPackage): ApiPackage {
-      if (
-         !("secureGivens" in packageMetadata) &&
-         !("classification" in packageMetadata) &&
-         !("entities" in packageMetadata)
-      ) {
+      if (!("secureGivens" in packageMetadata)) {
          return packageMetadata;
       }
-      const {
-         secureGivens: _computed,
-         classification: _summary,
-         entities: _entities,
-         ...stored
-      } = packageMetadata;
+      const { secureGivens: _computed, ...stored } = packageMetadata;
       return stored;
    }
 

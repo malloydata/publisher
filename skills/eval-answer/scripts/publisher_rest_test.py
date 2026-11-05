@@ -149,6 +149,45 @@ class CompactJson(unittest.TestCase):
         self.assertEqual(rows, [{"n": 7}])
 
 
+
+class PackageIdentityTests(unittest.TestCase):
+    """The served identity comes from the package's `/status` entry, and from
+    the package resource on a server from before that entry carried it."""
+
+    def identity(self, responses):
+        def get_json(base, path):
+            if path in responses:
+                return responses[path]
+            raise OSError("HTTP Error 404")
+        with unittest.mock.patch.object(publisher_rest, "get_json", get_json):
+            return publisher_rest.package_identity("http://x", "env", "pkg")
+
+    def test_the_status_entry_answers(self):
+        status = {"environments": [{"name": "env", "packages": [
+            {"name": "other", "sourceContentSha": "zzz"},
+            {"name": "pkg", "sourceContentSha": "abc", "servedRevision": "r1"},
+        ]}]}
+        self.assertEqual(self.identity({"api/v0/status": status}),
+                         {"sourceContentSha": "abc", "servedRevision": "r1"})
+
+    def test_a_versioned_package_answers_from_its_latest_version(self):
+        status = {"environments": [{"name": "env", "packages": [
+            {"name": "pkg", "versionId": "1.0.0", "latestVersion": "1.1.0",
+             "sourceContentSha": "old"},
+            {"name": "pkg", "versionId": "1.1.0", "latestVersion": "1.1.0",
+             "sourceContentSha": "new"},
+        ]}]}
+        self.assertEqual(self.identity({"api/v0/status": status}),
+                         {"sourceContentSha": "new"})
+
+    def test_an_older_server_answers_from_the_package_resource(self):
+        status = {"environments": [{"name": "env", "packages": [{"name": "pkg"}]}]}
+        pkg = {"sourceContentSha": "abc", "servedRevision": "r1"}
+        self.assertEqual(
+            self.identity({"api/v0/status": status,
+                           "api/v0/environments/env/packages/pkg": pkg}),
+            {"sourceContentSha": "abc", "servedRevision": "r1"})
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(__file__))
     unittest.main()

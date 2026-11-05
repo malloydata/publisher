@@ -31,7 +31,7 @@ import {
    WriteVerifyError,
    PackageAdmissionRefusedError,
 } from "../errors";
-import { getPersistStorageMode } from "../config";
+import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -288,6 +288,16 @@ function mergePackageManifest(
 
 /** Cap on runtime add failures kept per environment for /status. */
 const MAX_RECORDED_ADD_FAILURES = 100;
+
+/**
+ * How a package listing is built. `includeLoading` lists a first-time load as
+ * a bare entry; `operational` (the `/status` entries) adds each package's
+ * serving state: `status`, the load's revision and its manifest binding.
+ */
+export type PackageListingOptions = {
+   includeLoading?: boolean;
+   operational?: boolean;
+};
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
@@ -944,7 +954,7 @@ export class Environment {
     * a listed package always means one that can serve here.
     */
    public async listPackages(
-      options: { includeLoading?: boolean } = {},
+      options: PackageListingOptions = {},
    ): Promise<ApiPackage[]> {
       logger.debug("Listing packages", {
          environmentPath: this.environmentPath,
@@ -971,7 +981,9 @@ export class Environment {
                      return await this.listedVersionedPackage(packageName);
                   }
                   let metadata: ApiPackage | undefined;
+                  let loaded: Package | undefined;
                   if (resident !== undefined) {
+                     loaded = resident;
                      metadata = resident.getPackageMetadata();
                   } else if (this.loadsInFlight.has(packageName)) {
                      if (!options.includeLoading) {
@@ -988,12 +1000,16 @@ export class Environment {
                      // caller has the error, and a read never loads it.
                      return undefined;
                   } else {
-                     metadata = (
-                        await this.getPackage(packageName, false)
-                     ).getPackageMetadata();
+                     loaded = await this.getPackage(packageName, false);
+                     metadata = loaded.getPackageMetadata();
                   }
                   metadata.name = packageName;
-                  metadata.status = this.describePackageStatus(packageName);
+                  if (options.operational) {
+                     Object.assign(metadata, loaded?.getOperationalFields());
+                  }
+                  if (options.operational || isPackageInlineFieldsEnabled()) {
+                     metadata.status = this.describePackageStatus(packageName);
+                  }
                   return metadata;
                } catch (error) {
                   logger.error(
@@ -1781,7 +1797,11 @@ export class Environment {
          ...metadata,
          ...(description !== null ? { description } : {}),
          latestVersion: await this.versionService.latestOf(packageName),
-         status: this.describePackageStatus(packageName, versionId),
+         // Serving state moved to the `/status` entry; inline while
+         // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
+         ...(isPackageInlineFieldsEnabled() && {
+            status: this.describePackageStatus(packageName, versionId),
+         }),
       };
    }
 
@@ -1800,7 +1820,9 @@ export class Environment {
             resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
             versionId: null,
             latestVersion: null,
-            status: this.describePackageStatus(packageName),
+            ...(isPackageInlineFieldsEnabled() && {
+               status: this.describePackageStatus(packageName),
+            }),
          };
       }
       const loaded = await this.getPackage(packageName, false, {
@@ -1837,7 +1859,10 @@ export class Environment {
       for (const row of rows) {
          const loaded = versions.cache.peek(row.packageName, row.versionId);
          const base: ApiPackage = loaded
-            ? loaded.getPackageMetadata()
+            ? {
+                 ...loaded.getPackageMetadata(),
+                 ...loaded.getOperationalFields(),
+              }
             : {
                  name: row.packageName,
                  resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${row.packageName}`,
@@ -3536,7 +3561,7 @@ export class Environment {
    }
 
    public async serialize(
-      options: { includeLoading?: boolean } = {},
+      options: PackageListingOptions = {},
    ): Promise<ApiEnvironment> {
       return {
          ...this.metadata,

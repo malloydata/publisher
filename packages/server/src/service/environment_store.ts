@@ -55,7 +55,11 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import { Environment, PackageStatus } from "./environment";
+import {
+   Environment,
+   type PackageListingOptions,
+   PackageStatus,
+} from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
@@ -1642,7 +1646,7 @@ export class EnvironmentStore {
 
    public async listEnvironments(
       skipInitializationCheck: boolean = false,
-      options: { includeLoading?: boolean } = {},
+      options: PackageListingOptions = {},
    ) {
       if (!skipInitializationCheck) {
          await this.finishedInitialization;
@@ -1696,7 +1700,11 @@ export class EnvironmentStore {
          // Left absent.
       }
 
-      const environments = await this.listEnvironments(true, options);
+      // `/status` entries carry each package's serving state; a listing does not.
+      const environments = await this.listEnvironments(true, {
+         ...options,
+         operational: true,
+      });
 
       await Promise.all(
          environments.map(async (environment) => {

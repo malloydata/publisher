@@ -555,13 +555,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             false,
          );
-         // The load response carries what the package declares for an
-         // indexer; a listing never does (see Package.getEntities).
-         const entities = added.getEntities();
-         return {
-            ...(await environment.describePackage(added)),
-            ...(entities ? { entities } : {}),
-         };
+         return environment.describePackage(added);
       }),
    );
    // A package's published versions, their lifecycle and its `latest`.
@@ -661,6 +655,50 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req) ?? "",
+            req.query.versionId,
+         ),
+      ),
+   );
+   // What moved off Package: each a read of the loaded package, never part
+   // of a listing or the `/status` poll.
+   app.get(
+      `${pkg}/entities`,
+      apiRoute((req) =>
+         packageController.getPackageEntities(
+            req.params.environmentName,
+            req.params.packageName,
+            req.query.versionId,
+            req.query.servedRevision,
+         ),
+      ),
+   );
+   app.get(
+      `${pkg}/build-plan`,
+      apiRoute((req) =>
+         packageController.getPackageBuildPlan(
+            req.params.environmentName,
+            req.params.packageName,
+            req.query.versionId,
+            req.query.servedRevision,
+         ),
+      ),
+   );
+   app.get(
+      `${pkg}/classification`,
+      apiRoute((req) =>
+         packageController.getPackageClassification(
+            req.params.environmentName,
+            req.params.packageName,
+            req.query.versionId,
+         ),
+      ),
+   );
+   app.get(
+      `${pkg}/embedding-index`,
+      apiRoute((req) =>
+         packageController.getPackageEmbeddingIndex(
+            req.params.environmentName,
+            req.params.packageName,
             req.query.versionId,
          ),
       ),

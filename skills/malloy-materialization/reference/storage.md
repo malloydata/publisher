@@ -58,7 +58,7 @@ Routing is decided per query, not per source, so one source can serve some queri
 What the server reports:
 
 - `QueryResult.servedFrom`: `storage` when the tier answered, `live_fallback` when the tier was bound but a run-time store failure degraded the query to a live recompute, and empty for everything else (a colocated hit, no binding, or an ineligible query - three different things).
-- The package's `storageServeBindings` lists the stored tables the package is currently bound to, with each entry's origin (`persist` or `preaggregate`). `manifestEntryCount` does not count them.
+- The package's `storageServeBindings`, on its entry in `GET /api/v0/status` (an older server: on the package read), lists the stored tables the package is currently bound to, with each entry's origin (`persist` or `preaggregate`). `manifestEntryCount` does not count them.
 - `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback|blocked_by_row_level_gate, origin}` counts routed queries; `publisher_storage_serve_shape_tier_drop_total{tier}` counts refinements the serve shape had to thin.
 - A query's full result carries the SQL it ran; served from the store, its `FROM` names the destination and the physical table.
 

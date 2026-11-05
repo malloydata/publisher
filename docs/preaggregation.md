@@ -147,9 +147,11 @@ Four limits are worth knowing before you decide pre-aggregation will help your w
 Rollups appear in the package's build plan before anything is built. Each has `origin: "preaggregate"` and a `preaggregate` object naming the base source, the grain's dimensions, and the measures served at it:
 
 ```bash
-curl -s localhost:4000/api/v0/environments/examples/packages/storefront \
+curl -s localhost:4000/api/v0/environments/examples/packages/storefront/build-plan \
   | jq '.buildPlan.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
 ```
+
+An older server has no `build-plan` route; read `.buildPlan` off `GET …/packages/storefront` there.
 
 A rollup is declared by no file, so it reports the `modelPath` of the model whose annotations produced it — where you would go to change it.
 

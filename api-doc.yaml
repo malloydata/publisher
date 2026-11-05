@@ -2706,6 +2706,228 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/entities:
+    get:
+      tags:
+        - packages
+      operationId: get-package-entities
+      summary: Read what every model of a loaded package declares, for an indexer
+      description: |
+        What every `.malloy` model of the package declares, in the form an
+        indexer reads: each source's public fields (kind, type, declaring code,
+        annotations, `#(doc)`, table, join target, and an `#(index)`
+        dimension's fingerprint and policy), the facts the model states about
+        each source (doc, parameters, visibility, queryability, filters,
+        access gates), the model's givens and each source's schema. One entry
+        per `.malloy` file, files outside `explores` included, sorted by
+        `modelPath`.
+
+        Computed once, when the package loads, from the models as they
+        compiled before any materialization manifest is bound, so a later
+        bind does not change it. A model that failed to compile has an entry
+        with `error` and nothing else. The load refuses a package whose
+        `#(index)` or required `#(filter)` an index cannot honor, so a served
+        package never reports one.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+        - name: servedRevision
+          in: query
+          required: false
+          description: >-
+            The `servedRevision` of the load the caller read, from the
+            `/status` entry, a package response or an earlier read. When given,
+            the request is refused with a 409 (`reason` `REVISION_CHANGED`)
+            unless this server still serves that load, so a caller reading
+            several resources after a load never mixes facts from two loads.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The package's entities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageEntities"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/build-plan:
+    get:
+      tags:
+        - packages
+      operationId: get-package-build-plan
+      summary: Read the persist build plan of a loaded package
+      description: |
+        The persist build plan of the load: per persist source its
+        `sourceEntityId`, output columns and build SQL, the dependency graphs,
+        and the sources refused a build. A caller assigns physical names and
+        identity per source from it and issues one build call (see
+        `CreateMaterializationRequest.buildInstructions`). `buildPlan` is null
+        when the package declares no persist source, or when the plan could
+        not be derived at load (the load's `warnings` say why).
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+        - name: servedRevision
+          in: query
+          required: false
+          description: >-
+            The `servedRevision` of the load the caller read, from the
+            `/status` entry, a package response or an earlier read. When given,
+            the request is refused with a 409 (`reason` `REVISION_CHANGED`)
+            unless this server still serves that load, so a caller reading
+            several resources after a load never mixes facts from two loads.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The package's build plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageBuildPlan"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/embedding-index:
+    get:
+      tags:
+        - packages
+      operationId: get-package-embedding-index
+      summary: Read the state of a package's semantic discovery index
+      description: |
+        The state of the package's semantic discovery index, which is what
+        `get_context` ranks against when an embedding provider is configured.
+        `status: lexical` when the server has no provider, because there is no
+        index to describe. Poll it after a load or reload until `status` is
+        terminal (`ready`, `lexical` or `error`).
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The package's semantic index state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageEmbeddingIndex"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/classification:
+    get:
+      tags:
+        - packages
+      operationId: get-package-classification
+      summary: Read a package's classification summary
+      description: |
+        For each published entry point of the package, the classes its
+        `#(carries)` declares and how many of its fields carry each class,
+        inherited classes included, with the count left unclassified. It
+        covers only what discovery shows. `sources` is empty when nothing
+        published is classified.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The package's classification summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassificationSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/agents:
     get:
       tags:
@@ -4707,9 +4929,12 @@ components:
             published versions, and null while none of its versions is `latest`.
             Equal to `versionId` unless the request named another one.
         loaded:
+          deprecated: true
           type: boolean
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Set only on a version's entry in `GET /status`: whether this server
             holds the version in memory. A published version that is not loaded
             (an archived one, or one not loaded since the server started) is still
@@ -4719,10 +4944,13 @@ components:
             being published is listed only under `includeLoading`, with
             `loaded: false`, no `archiveStatus`, and `status.loading`.
         archiveStatus:
+          deprecated: true
           type: string
           enum: [archive, unarchive]
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Set only on a version's entry in `GET /status`, except one still
             being published: whether the version is archived.
         description:
@@ -5135,6 +5363,7 @@ components:
             metadata is unavailable for this request (not loaded), which the
             caller must treat as "unknown", not as a removal.
         manifestBindingStatus:
+          deprecated: true
           type: string
           readOnly: true
           enum:
@@ -5142,6 +5371,8 @@ components:
             - bound
             - live_fallback
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: whether the CONFIGURED build manifest is
             currently bound to this package's served models. `unbound` = no
             manifest configured, so the package serves live. `bound` = the
@@ -5191,9 +5422,12 @@ components:
             This one is about the package's binding, and as above does not imply
             any query ran live.
         manifestEntryCount:
+          deprecated: true
           type: integer
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: number of sourceEntityId -> physical-table
             entries currently bound for the COLOCATED (same-connection tableName
             substitution) tier only. 0 when unbound, or when the bound manifest
@@ -5206,9 +5440,12 @@ components:
             `boundManifestUri` keeps its URI), because those entries really are
             still bound.
         boundManifestUri:
+          deprecated: true
           type: ["string", "null"]
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: the manifest URI actually bound to the
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
@@ -5221,9 +5458,12 @@ components:
             field for the invariant a caller reclaiming superseded physical
             tables has to hold.
         status:
+          deprecated: true
           type: object
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: how this server holds the package right
             now. `serving` is whether a compiled copy answers queries here;
             `loading` is whether a load, reinstall or recompile of the package
@@ -5262,9 +5502,12 @@ components:
               format: date-time
               description: When the in-progress load began. Present only while `loading` is true.
         storageServeBindings:
+          deprecated: true
           type: array
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: sources currently bound to serve from a
             `storage=` destination via the virtual-source transform (distinct
             from the same-connection manifest binding above — a storage source is
@@ -5318,11 +5561,14 @@ components:
                 type: string
                 description: The physical table the source is served from.
         buildPlan:
+          deprecated: true
           oneOf:
             - $ref: "#/components/schemas/BuildPlan"
             - type: "null"
           readOnly: true
           description: >-
+            **Moved** to `GET …/packages/{packageName}/build-plan`. Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+
             Server-computed, read-only: the persist build plan for this package
             version (per-source sourceEntityId, output columns, build SQL,
             dependency graphs), exposed as a deterministic property of the
@@ -5336,28 +5582,37 @@ components:
             package is compiled; null only when the package declares no persist
             source.
         embeddingIndex:
+          deprecated: true
           oneOf:
             - $ref: "#/components/schemas/PackageEmbeddingIndex"
             - type: "null"
           readOnly: true
           description: >-
+            **Moved** to `GET …/packages/{packageName}/embedding-index`. Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+
             Server-computed, read-only: the state of this package's semantic
             discovery index, which is what `get_context` ranks against
             when an embedding provider is configured. `status: lexical` when
             the server has no provider, because there is no index to describe.
         servedRevision:
+          deprecated: true
           type: string
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it, and the `GET …/entities` and `GET …/build-plan` responses. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: an identifier for the load that produced
             what this package is currently serving. Minted fresh per load, so
             two loads of byte-identical files carry different revisions. Use it
             to tell one load from another, NOT to tell whether content changed:
             it moves on every reload regardless. `sourceContentSha` answers that.
         sourceContentSha:
+          deprecated: true
           type: string
           readOnly: true
           description: >-
+            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+
             Server-computed, read-only: SHA-256 over the package-relative path
             and bytes of every file the package is serving: each model file,
             each package skill file under `skills/`, and, when the manifest
@@ -5381,9 +5636,12 @@ components:
             therefore proves an edit to a hashed file did not reach the served
             copy, and says nothing about an edit to anything else.
         agents:
+          deprecated: true
           type: array
           readOnly: true
           description: >-
+            **Moved** to `GET …/packages/{packageName}/agents`. Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+
             Server-computed, read-only: the agents this package's
             `publisher.json` declares and the server accepted, without their
             instructions. Absent when the manifest declares no `agents`. An
@@ -5392,9 +5650,12 @@ components:
           items:
             $ref: "#/components/schemas/AgentSummary"
         secureGivens:
+          deprecated: true
           type: array
           readOnly: true
           description: >-
+            **Moved** to `GET …/packages/{packageName}/entities`, where each model's `givens` carries `secure` (`.malloy` models only). Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+
             Server-computed, read-only: every `#(secure)` given the package's
             compiled models surface, so a host that sets those values learns
             which ones to set from the load response without compiling the
@@ -5422,41 +5683,6 @@ components:
             body carrying it is ignored.
           items:
             $ref: "#/components/schemas/SecureGivenSummary"
-        entities:
-          type: array
-          readOnly: true
-          description: >-
-            Server-computed, read-only: what every `.malloy` model of the
-            package declares, in the form an indexer reads, so a host that
-            indexes the package learns its fields, sources and access rules
-            from the load response without compiling the package itself. One
-            entry per `.malloy` file, files outside `explores` included, sorted
-            by `modelPath`.
-
-
-            Computed once, when the package loads, from the models as they
-            compiled before any materialization manifest is bound, so a later
-            bind does not change it.
-
-
-            A model that failed to compile has an entry with `error` and
-            nothing else. Loading refuses a package whose annotations the
-            extraction cannot honor (a required `#(filter)` on a missing or
-            non-public dimension, two required filters on one dimension, an
-            `#(index)` on a field that is not a dimension, on a source with
-            required parameters, with more than one required filter, or with a
-            `sharing=` or `schedule=` key), so a served package never reports
-            one.
-
-
-            Absent when the server does not report it, as on a listing entry
-            or for a package that is not loaded. It cannot be set: a PATCH
-            body carrying it is ignored.
-          items:
-            $ref: "#/components/schemas/ModelEntities"
-        classification:
-          $ref: "#/components/schemas/ClassificationSummary"
-
     AgentSchedule:
       type: object
       readOnly: true
@@ -5668,57 +5894,6 @@ components:
             type: string
         source:
           $ref: "#/components/schemas/AgentSource"
-
-    ClassificationSummary:
-      type: object
-      readOnly: true
-      required: [sources]
-      description: >-
-        Server-computed, read-only, on a single package read
-        (`GET …/packages/{packageName}`) only, never on a listing: for each
-        published entry point, the classes its `#(carries)` declares and how
-        many of its fields carry each class (`#(classification)`, declared or
-        inherited). Covers only the sources discovery shows, so it reveals
-        nothing curation hides; a source locked to every caller is left out.
-        A field's own classes, and what they were inherited from, are on its
-        `get_context` card. Absent when no published field carries a class.
-        It cannot be set: a PATCH body carrying it is ignored.
-      properties:
-        sources:
-          type: array
-          description: Sorted by model path, then name.
-          items:
-            $ref: "#/components/schemas/ClassificationSummarySource"
-
-    ClassificationSummarySource:
-      type: object
-      readOnly: true
-      required: [modelPath, name, fields, unclassified, classCounts]
-      properties:
-        modelPath:
-          type: string
-        name:
-          type: string
-        carries:
-          type: array
-          description: >-
-            The classes the source's `#(carries)` lists, sorted, inherited
-            through `extend` like a gate. Absent when it declares none.
-          items:
-            type: string
-        fields:
-          type: integer
-          description: The dimensions and measures a caller can reach from the source, through joins included.
-        unclassified:
-          type: integer
-          description: How many of those carry no class.
-        classCounts:
-          type: object
-          description: >-
-            How many of those fields carry each class, keyed by class. A field
-            under several classes counts under each.
-          additionalProperties:
-            type: integer
 
     SkillSummary:
       type: object
@@ -6783,12 +6958,101 @@ components:
             file and every file that imports it alike. Sorted, no duplicates.
           items:
             type: string
+    ClassificationSummary:
+      type: object
+      readOnly: true
+      required: [sources]
+      description: >-
+        Server-computed, read-only, as `GET …/packages/{packageName}/classification`
+        returns it: for each published entry point, the classes its
+        `#(carries)` declares and how many of its fields carry each class
+        (`#(classification)`, declared or inherited). Covers only the sources
+        discovery shows, so it reveals nothing curation hides; a source locked
+        to every caller is left out. A field's own classes, and what they were
+        inherited from, are on its `get_context` card. `sources` is empty when
+        no published field carries a class.
+      properties:
+        sources:
+          type: array
+          description: Sorted by model path, then name.
+          items:
+            $ref: "#/components/schemas/ClassificationSummarySource"
+
+    ClassificationSummarySource:
+      type: object
+      readOnly: true
+      required: [modelPath, name, fields, unclassified, classCounts]
+      properties:
+        modelPath:
+          type: string
+        name:
+          type: string
+        carries:
+          type: array
+          description: >-
+            The classes the source's `#(carries)` lists, sorted, inherited
+            through `extend` like a gate. Absent when it declares none.
+          items:
+            type: string
+        fields:
+          type: integer
+          description: The dimensions and measures a caller can reach from the source, through joins included.
+        unclassified:
+          type: integer
+          description: How many of those carry no class.
+        classCounts:
+          type: object
+          description: >-
+            How many of those fields carry each class, keyed by class. A field
+            under several classes counts under each.
+          additionalProperties:
+            type: integer
+
+    PackageEntities:
+      type: object
+      readOnly: true
+      description: >-
+        What every `.malloy` model of a loaded package declares, as
+        `GET …/entities` returns it.
+      required:
+        - servedRevision
+        - models
+      properties:
+        servedRevision:
+          type: string
+          description: The load these entities were computed from.
+        models:
+          type: array
+          description: One entry per `.malloy` file, sorted by `modelPath`.
+          items:
+            $ref: "#/components/schemas/ModelEntities"
+
+    PackageBuildPlan:
+      type: object
+      readOnly: true
+      description: The persist build plan of a loaded package, as `GET …/build-plan` returns it.
+      required:
+        - servedRevision
+        - buildPlan
+      properties:
+        servedRevision:
+          type: string
+          description: The load this plan was derived from.
+        buildPlan:
+          oneOf:
+            - $ref: "#/components/schemas/BuildPlan"
+            - type: "null"
+          description: >-
+            The plan (per-source `sourceEntityId`, output columns, build SQL,
+            dependency graphs, refused sources). Null when the package declares
+            no persist source or the plan could not be derived at load.
+
     ModelEntities:
       type: object
       readOnly: true
       description: >-
         What one `.malloy` model file declares, in the form an indexer reads.
-        See `Package.entities`.
+        See `GET …/entities`.
       required:
         - modelPath
       properties:

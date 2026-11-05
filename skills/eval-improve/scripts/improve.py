@@ -77,9 +77,17 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
-# REST, not MCP: an MCP reply escapes its inner JSON, so grepping it for the sha matches nothing.
-RELOAD = """curl -s -m 60 "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" \\
-  | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
+# REST, not MCP: an MCP reply escapes its inner JSON. The sha is read from the
+# package's `/status` entry after the reload (the reload response itself
+# carries it only while the server inlines the serving fields).
+RELOAD = """curl -s -m 60 -o /dev/null "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true"
+curl -s -m 30 "{rest_url}/api/v0/status" | python3 -c '
+import json, sys
+for e in json.load(sys.stdin).get("environments") or []:
+    for p in (e.get("packages") or []) if e.get("name") == "{environment}" else []:
+        if p.get("name") == "{package}" and p.get("sourceContentSha"):
+            print("\\"sourceContentSha\\":\\"%s\\"" % p["sourceContentSha"]); sys.exit()
+'"""
 
 SYNC_SCRIPT = """#!/bin/bash
 set -euo pipefail

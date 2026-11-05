@@ -205,7 +205,8 @@ def served_model_path(base: str, environment: str, package: str,
 
 
 def package_identity(base: str, environment: str, package: str) -> dict[str, str]:
-    """What the server says it is serving: `sourceContentSha`, `servedRevision`.
+    """What the server says it is serving: `sourceContentSha`, `servedRevision`,
+    read from the package's `/status` entry.
 
     Take these rather than computing your own. `sourceContentSha` is a content
     hash over EVERY model path in the package, so it moves when an imported file
@@ -218,10 +219,28 @@ def package_identity(base: str, environment: str, package: str) -> dict[str, str
     directory. So `publisher.json` version pins nothing (nothing reads it) and a
     set of goldens living inside the package needs its own hash.
     """
+    keys = ("sourceContentSha", "servedRevision")
+    # The package's `/status` entry carries them; a versioned package has one
+    # entry per version held, and the one serving `latest` is the answer.
+    try:
+        status = get_json(base, "api/v0/status")
+        for env in status.get("environments") or []:
+            if env.get("name") != environment:
+                continue
+            entries = [p for p in env.get("packages") or []
+                       if p.get("name") == package]
+            entry = next((p for p in entries
+                          if p.get("versionId") in (None, p.get("latestVersion"))),
+                         entries[0] if entries else None)
+            if entry and any(isinstance(entry.get(k), str) for k in keys):
+                return {k: entry[k] for k in keys if isinstance(entry.get(k), str)}
+    except Exception:                                   # noqa: BLE001
+        pass
+    # A server from before the `/status` entry carried them has them on the
+    # package resource.
     try:
         d = get_json(base, f"api/v0/environments/{urllib.parse.quote(environment)}"
                            f"/packages/{urllib.parse.quote(package)}")
     except Exception:                                   # noqa: BLE001
         return {}
-    return {k: d[k] for k in ("sourceContentSha", "servedRevision")
-            if isinstance(d.get(k), str)}
+    return {k: d[k] for k in keys if isinstance(d.get(k), str)}
