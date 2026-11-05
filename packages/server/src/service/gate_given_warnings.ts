@@ -16,35 +16,78 @@
  * The message names the source and the givens to mark, once per source.
  */
 
+import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { referencedGivenNames } from "./authorize";
+import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
+import { gateExprsForRoute } from "./gate_registry_walk";
 import type { Model } from "./model";
 
 const isSentinel = (expr: string) =>
    ["false", "true"].includes(expr.trim().toLowerCase());
 
 /**
- * Every given name the package declares `#(secure)`, in any model, listed or
- * not. Secure-ness is package-wide because the trusted tier reads it that way
- * (`Package.secureGivens`): it sets a name for the caller wherever the name is
- * read, so a gate that reads a secure given through an import, where the
- * given is off the entry model's own surface, is still keyed on a secure one.
+ * The package model a gate note's document URL names: the longest model path
+ * the URL ends with, since the package directory is not known here.
  */
-function secureGivenNames(models: ReadonlyMap<string, Model>): Set<string> {
-   const names = new Set<string>();
-   for (const model of models.values()) {
-      let sources: ReturnType<Model["getSources"]>;
-      try {
-         sources = model.getSources();
-      } catch {
-         continue;
-      }
-      for (const source of sources ?? []) {
-         for (const g of source.givens ?? []) {
-            if (g.secure === true && g.name) names.add(g.name);
-         }
+function modelWrittenAt(
+   url: string,
+   models: ReadonlyMap<string, Model>,
+): Model | undefined {
+   let path: string;
+   try {
+      path = decodeURIComponent(new URL(url).pathname);
+   } catch {
+      return undefined;
+   }
+   let best: string | undefined;
+   for (const modelPath of models.keys()) {
+      if (
+         path.endsWith(`/${modelPath}`) &&
+         (best === undefined || modelPath.length > best.length)
+      ) {
+         best = modelPath;
       }
    }
-   return names;
+   return best === undefined ? undefined : models.get(best);
+}
+
+/**
+ * The given names a source's gate on one route reads that are not `#(secure)`
+ * in the model the gate note is written in, which is where its `$GIVEN`
+ * binds, not the model the source is published through. A gate whose model
+ * cannot be identified judges nothing secure, so the load refuses.
+ */
+function insecureGivenNames(
+   source: SourceDef | undefined,
+   modelDef: ModelDef | undefined,
+   route: string,
+   models: ReadonlyMap<string, Model>,
+): string[] {
+   const declaredAt = new Set<string>();
+   const groups = source
+      ? gateExprsForRoute(source, modelDef, route, declaredAt)
+      : [];
+   const read = new Set<string>();
+   for (const expr of groups.flat()) {
+      if (isSentinel(expr)) continue;
+      for (const name of referencedGivenNames(expr)) read.add(name);
+   }
+   if (read.size === 0) return [];
+   const secureIn = Array.from(declaredAt, (url) => {
+      const declaring = modelWrittenAt(url, models);
+      return new Set(
+         (declaring?.getGivens() ?? [])
+            .filter((g) => g.secure === true && g.name)
+            .map((g) => g.name as string),
+      );
+   });
+   return Array.from(read)
+      .filter(
+         (name) =>
+            secureIn.length === 0 ||
+            !secureIn.every((names) => names.has(name)),
+      )
+      .sort();
 }
 
 /** One rejection message per published source gated on a plain given; empty when none. */
@@ -53,7 +96,6 @@ export function insecureGateGivens(
    isListed: (modelPath: string) => boolean,
 ): string[] {
    const messages: string[] = [];
-   const secure = secureGivenNames(models);
    for (const [modelPath, model] of models) {
       if (!isListed(modelPath)) continue;
       let apiSources: ReturnType<Model["getSources"]>;
@@ -62,18 +104,20 @@ export function insecureGateGivens(
       } catch {
          continue;
       }
+      const modelDef = model.getModelDef();
       for (const source of apiSources ?? []) {
-         const read = new Set<string>();
-         for (const expr of [
-            ...(source.authorize ?? []),
-            ...(source.accessFilter ?? []),
-         ]) {
-            if (isSentinel(expr)) continue;
-            for (const name of referencedGivenNames(expr)) read.add(name);
-         }
-         const insecure = Array.from(read)
-            .filter((name) => !secure.has(name))
-            .sort();
+         const contents = source.name
+            ? modelDef?.contents[source.name]
+            : undefined;
+         const struct =
+            contents && isSourceDef(contents) ? contents : undefined;
+         const insecure = Array.from(
+            new Set(
+               [AUTHORIZE_ROUTE, ACCESS_FILTER_ROUTE].flatMap((route) =>
+                  insecureGivenNames(struct, modelDef, route, models),
+               ),
+            ),
+         ).sort();
          if (insecure.length === 0) continue;
          messages.push(
             `source ${source.name} (${modelPath}) is gated on $${insecure.join(", $")}, ` +

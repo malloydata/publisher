@@ -26,6 +26,8 @@ import {
 } from "../package_load/package_load_pool";
 import { BadRequestError } from "../errors";
 import { Package } from "./package";
+import type { Model } from "./model";
+import { insecureGateGivens } from "./gate_given_warnings";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b')) as t(id, org)")`;
@@ -151,5 +153,111 @@ export { open }
       );
       const pkg = await load();
       expect(pkg.getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("refuses a gate on a plain given when another model declares the same name #(secure)", async () => {
+      write(
+         "a.malloy",
+         `##! experimental.givens
+#(secure)
+given: ROLES :: string[]
+source: a is ${ROWS}
+`,
+      );
+      write(
+         "b.malloy",
+         `##! experimental.givens
+given: ROLES :: string[]
+#(authorize) 'admin' in $ROLES
+source: b is ${ROWS}
+`,
+      );
+      const message = await refusal();
+      expect(message).toContain("source b (b.malloy) is gated on $ROLES");
+   });
+
+   it("loads a gate on a #(secure) given its model imports from another", async () => {
+      write(
+         "a.malloy",
+         `##! experimental.givens
+#(secure)
+given: ROLES :: string[]
+source: a is ${ROWS}
+`,
+      );
+      write(
+         "b.malloy",
+         `##! experimental.givens
+import "a.malloy"
+#(authorize) 'admin' in $ROLES
+source: b is ${ROWS}
+`,
+      );
+      const pkg = await load();
+      expect(pkg.getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("loads a gate on a #(secure) given declared where the gate is written, when the entry model does not surface it", async () => {
+      write(
+         "a.malloy",
+         `##! experimental.givens
+#(secure)
+given: ROLES :: string[]
+
+#(authorize) 'admin' in $ROLES
+source: g is ${ROWS}
+`,
+      );
+      write(
+         "hub.malloy",
+         `import "a.malloy"
+source: mid is g extend {}
+`,
+      );
+      write("entry.malloy", `import "hub.malloy"\n`);
+      const pkg = await load();
+      expect(pkg.getPackageMetadata().name).toBe("pkg");
+   });
+});
+
+describe("insecureGateGivens fails closed", () => {
+   const stubModel = (note: { text: string; at?: { url: string } }) =>
+      ({
+         getSources: () => [{ name: "s" }],
+         getGivens: () => [{ name: "ORGS", secure: true }],
+         getModelDef: () => ({
+            contents: {
+               s: { type: "table", annotations: { notes: [note] } },
+            },
+         }),
+      }) as unknown as Model;
+   const gate = "#(access_filter) org in $ORGS\n";
+
+   it("refuses when the gate note has no position", () => {
+      const models = new Map([["m.malloy", stubModel({ text: gate })]]);
+      expect(insecureGateGivens(models, () => true)).toHaveLength(1);
+   });
+
+   it("refuses when the gate is written in a file that is not a package model", () => {
+      const models = new Map([
+         [
+            "m.malloy",
+            stubModel({
+               text: gate,
+               at: { url: "file:///elsewhere/x.malloy" },
+            }),
+         ],
+      ]);
+      expect(insecureGateGivens(models, () => true)).toHaveLength(1);
+   });
+
+   it("admits it when the declaring model is in the package and the given is secure there", () => {
+      const models = new Map([
+         [
+            "m.malloy",
+            stubModel({ text: gate, at: { url: "file:///pkg/m.malloy" } }),
+         ],
+      ]);
+      expect(insecureGateGivens(models, () => true)).toEqual([]);
    });
 });
