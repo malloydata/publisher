@@ -1567,7 +1567,7 @@ export class Package {
          throw error;
       }
       this.entities = Object.freeze(toApiEntities(results));
-      logger.info("Extracted package entities", {
+      logger.info("Package entities computed", {
          packageName: this.packageName,
          models: this.entities.length,
          failedModels: this.entities.filter((m) => m.error !== undefined)
