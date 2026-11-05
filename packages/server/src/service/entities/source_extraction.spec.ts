@@ -1751,7 +1751,7 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
          compiled.explores as unknown as Explore[],
          entryRelativePath,
          false,
-         "file://" + entryAbs,
+         new URL("file://" + entryAbs).href,
          modelGivens,
          modelAuthorize,
          nonQueryableSourceNames,
@@ -2324,7 +2324,7 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
          compiled.explores as unknown as Explore[],
          entryRelativePath,
          false,
-         "file://" + entryAbs,
+         new URL("file://" + entryAbs).href,
          [],
          modelAuthorize,
       );
@@ -2737,7 +2737,7 @@ describe("sourceExtraction.extractMetadataFromExplores — composite-source #(au
          compiled.explores as unknown as Explore[],
          entryRelativePath,
          false,
-         "file://" + entryAbs,
+         new URL("file://" + entryAbs).href,
       );
    }
 
