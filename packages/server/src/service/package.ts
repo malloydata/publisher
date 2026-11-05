@@ -1495,9 +1495,10 @@ export class Package {
    /**
     * For each published entry point, its `#(carries)` and its field count by
     * class, or `undefined` when nothing published is classified. Walks every
-    * published field, so it is memoized per models map and served only by
-    * `GET …/classification`, never on a package response or the `/status`
-    * poll path.
+    * published field, so it is memoized per models map and served by
+    * `GET …/classification` (and, deprecated, inline on the single-package
+    * read while PUBLISHER_PACKAGE_INLINE_FIELDS is on), never on a listing or
+    * the `/status` poll path.
     */
    public getClassificationSummary(): ApiClassificationSummary | undefined {
       const memo = this.classificationSummaryMemo;

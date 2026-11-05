@@ -5807,6 +5807,13 @@ components:
           readOnly: true
           description: >-
             **Moved** to `GET …/packages/{packageName}/embedding-index`. Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+        classification:
+          deprecated: true
+          allOf:
+            - $ref: "#/components/schemas/ClassificationSummary"
+          readOnly: true
+          description: >-
+            **Moved** to `GET …/packages/{packageName}/classification`. On the single-package read only (never a listing or `GET /status`), absent when nothing published is classified, and only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
 
             Server-computed, read-only: the state of this package's semantic
             discovery index, which is what `get_context` ranks against

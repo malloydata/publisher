@@ -203,7 +203,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
 
 # The persist plan the load derived.
 curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/build-plan \
-  | jq '{sources: (.buildPlan.sources|keys|map(split("@")[0]))}'
+  | jq '{sources: (.sources|keys|map(split("@")[0]))}'
 ```
 
 Because the server is in `off` mode, the persist plan compiles but the

@@ -148,7 +148,7 @@ Rollups appear in the package's build plan before anything is built. Each has `o
 
 ```bash
 curl -s localhost:4000/api/v0/environments/examples/packages/storefront/build-plan \
-  | jq '.buildPlan.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
+  | jq '.sources[] | select(.origin == "preaggregate") | {name, preaggregate}'
 ```
 
 An older server has no `build-plan` route; read `.buildPlan` off `GET …/packages/storefront` there.

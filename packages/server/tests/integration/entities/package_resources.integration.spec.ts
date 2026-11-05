@@ -53,6 +53,7 @@ const MOVED = [
    "agents",
    "secureGivens",
    "embeddingIndex",
+   "classification",
    "status",
    "loaded",
    "archiveStatus",
@@ -214,7 +215,6 @@ describe("the package resource and its sub-resources", () => {
       expect(pkg.name).toBe("shop");
       for (const field of MOVED) expect(field in pkg).toBe(false);
       expect("entities" in pkg).toBe(false);
-      expect("classification" in pkg).toBe(false);
 
       const listed = (await get(`/environments/${ENV_NAME}/packages`))
          .json as unknown as ApiPackage[];
@@ -245,9 +245,40 @@ describe("the package resource and its sub-resources", () => {
       expect("buildPlan" in pkg).toBe(true);
       expect(pkg.secureGivens?.map((g) => g.name)).toEqual(["ROLES"]);
       expect(pkg.embeddingIndex?.status).toBeString();
-      // Never inline: these have only their own routes.
+      // Never inline: entities has only its own route.
       expect("entities" in pkg).toBe(false);
+      // Absent when nothing published is classified, as in 0.12.0.
       expect("classification" in pkg).toBe(false);
+   }, 60_000);
+
+   it("a classified package's summary is at GET …/classification, and inline on the package read only while inline fields are on", async () => {
+      const location = writePackage("labeled", {
+         "index.malloy": `source: people is ${ROWS} extend {
+  #(classification) "pii"
+  dimension: channel_label is concat('c-', channel)
+  #(classification) "none"
+  measure: people_count is count()
+}
+`,
+      });
+      expect((await publish("labeled", location)).status).toBe(200);
+      const summary = (await get(pkgUrl("labeled", "/classification"))).json;
+      expect((summary.sources as unknown[]).length).toBeGreaterThan(0);
+
+      delete process.env[INLINE];
+      expect((await get(pkgUrl("labeled"))).json.classification).toEqual(
+         summary,
+      );
+      const listed = (
+         (await get(`/environments/${ENV_NAME}/packages`))
+            .json as unknown as Record<string, unknown>[]
+      ).find((p) => p.name === "labeled")!;
+      expect("classification" in listed).toBe(false);
+
+      process.env[INLINE] = "off";
+      expect("classification" in (await get(pkgUrl("labeled"))).json).toBe(
+         false,
+      );
    }, 60_000);
 
    it("a package with an #(index) on a measure is refused with a 400 naming it, counted as a refusal and never as a success", async () => {

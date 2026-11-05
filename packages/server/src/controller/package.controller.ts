@@ -156,16 +156,53 @@ export class PackageController {
          }
       }
 
-      // `GET …/embedding-index`, on a package response only while
-      // PUBLISHER_PACKAGE_INLINE_FIELDS is on, on both paths, so `?reload=true`
-      // (the request that invalidates the index) carries it too.
-      const embeddingIndex = isPackageInlineFieldsEnabled()
+      // `GET …/embedding-index` and `GET …/classification`, on a package
+      // response only while PUBLISHER_PACKAGE_INLINE_FIELDS is on, on both
+      // paths, so `?reload=true` (the request that invalidates the index)
+      // carries them too. Classification only on this single-package read, as
+      // 0.12.0 served it: a listing and the `/status` poll never walk fields.
+      const inline = isPackageInlineFieldsEnabled();
+      const embeddingIndex = inline
          ? await this.embeddingIndexStatus(environmentName, packageName)
+         : undefined;
+      const classification = inline
+         ? await this.inlineClassification(
+              environmentName,
+              packageName,
+              versionId,
+           )
          : undefined;
       return {
          ...metadata,
          ...(embeddingIndex ? { embeddingIndex } : {}),
+         ...(classification ? { classification } : {}),
       };
+   }
+
+   /**
+    * The deprecated inline `classification`: absent when nothing published
+    * is classified or the package cannot be read, never a failed request.
+    */
+   private async inlineClassification(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiClassificationSummary | undefined> {
+      try {
+         const pkg = await this.loadedPackage(
+            environmentName,
+            packageName,
+            versionId,
+         );
+         return pkg.getClassificationSummary();
+      } catch (error) {
+         logger.debug("Could not read the package's classification summary", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
    }
 
    private environment(environmentName: string) {
