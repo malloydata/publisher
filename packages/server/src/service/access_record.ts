@@ -37,7 +37,10 @@ import {
    ModelNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { redactConnectionSecretShapes } from "../pg_helpers";
 import { readQueryFieldReads } from "./classification";
+
+const MAX_RECORDED_ERROR_CHARS = 2000;
 
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
@@ -337,7 +340,10 @@ export async function withAccessRecord<T>(
             ? { outcome: "cancelled" as const, status: 499 }
             : { outcome: outcomeOf(error, status), status }),
          durationMs: durationMs(),
-         error: (error as Error).message,
+         // Driver errors quote connection config and SQL back; the record is a log line.
+         error: redactConnectionSecretShapes(
+            String((error as Error)?.message ?? error),
+         ).slice(0, MAX_RECORDED_ERROR_CHARS),
       });
       throw error;
    }
