@@ -118,7 +118,7 @@ dimension: member_ssn is SSN
 - Classify a field where it is declared; the classes ride every join to it, survive `extend` and `rename:`, and a field derived from it (`dimension: x is y`, `concat(y, …)`, `count(y)`) inherits them, as the union over everything it reads. Declare classes on a derived field only to override the inherited set (a year derived from a birth date is a quasi-identifier, not a direct one).
 - `#(carries) ["<class>", …]` on a source line lists every class a caller may reach from that source. A field with any class off the list, or no class, is a leak, and a leak refuses the package load, so write it on each entry point next to its `#(authorize)` and classify everything it exposes.
 - The single-package read (`GET …/packages/{pkg}`) carries `classification`: each published entry point's `#(carries)` and its field count by class, for a scorecard or a CI check.
-- Once any field in a package is classified, Publisher warns (`classification-coverage`) about every published field that is not, so classify a package all at once rather than one source at a time. A field under `private:` or `internal:` is not demanded one.
+- Once any field in a package is classified, Publisher warns (`classification-coverage`) about every published field that is not, so classify a package all at once rather than one source at a time. A field under `private:` is not demanded one; an `internal:` field is, because a caller's `extend` can read it.
 - It changes nothing about what a query returns. Pair it with `private:` to hide a column and with `#(authorize)` / `#(access_filter)` (see `skill:malloy-model`) to control who reads a source.
 
 ### Example

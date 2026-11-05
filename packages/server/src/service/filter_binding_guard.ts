@@ -92,7 +92,7 @@ interface FieldUsageEntryLike {
    path: readonly string[];
    at?: DocumentLocationLike;
 }
-interface RefSummaryLike {
+export interface RefSummaryLike {
    fieldUsage?: readonly FieldUsageEntryLike[];
 }
 

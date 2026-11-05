@@ -67,8 +67,9 @@ class and reports `copied` as its input.
 - **A field that reads nothing classified stays unclassified.** `upper(state)` over an
   unclassified `state` is unclassified; `count()` reads nothing and is unclassified. Classify
   the column, or the measure, and the lineage does the rest.
-- A hidden field (`private:`, `internal:`) is still an input: a public field derived from a
-  private identifier carries the identifier's class.
+- A `private:` field is still an input: a public field derived from a private identifier carries
+  the identifier's class. An `internal:` field is not hidden at all (see
+  [What coverage and the ceiling read](#what-coverage-and-the-ceiling-read)).
 - A relabelled copy passes its input's classes on. A field that is a plain reference to
   another (`dimension: yr is birth_year`, with or without a cast) and declares a lower class does
   not drop the input's classes for whatever reads the copy: a field or view that reads `yr` carries
@@ -115,7 +116,11 @@ parse refuses it. The walk covers:
   field it references count. A view that reads a field with no class, or one it declares itself
   with `extend:`, refuses; declare the field on the source and read it from there. A view whose
   references cannot be read refuses too.
-- `->` query sources: the fields of `source: s is base -> { ... }` read what the query reads.
+- `->` query sources: the fields of `source: s is base -> { ... }` read what the query reads, and the
+  stage's filters count, since every returned row reveals what they select on. That holds for a
+  field the query declares with `extend:` (read against the query's outputs), for the outputs of a
+  `nest:`, and for a query source that is joined from another source. A filter's class is charged on
+  its own, so an output declared below it is not called a copy of it.
 - joins hidden from discovery: a field reached through a join carries the class declared where it
   lives, whether or not the joined source is published.
 - fields a source declares as copies of others, as described above.
@@ -199,17 +204,20 @@ Both follow what a caller can reach, not what a file declares:
 
 - Only models on the package's [surface](discovery-and-access.md) are read, and only the sources
   their `export { … }` publishes. A hidden base is not asked to classify its fields for its own
-  sake.
+  sake. Under `queryableSources: "all"` a hidden source answers a query by name, so every
+  top-level source of every model is read instead.
 - A published source's joined fields count, under their dotted path (`person.ssn`), up to 16
   joins deep and 1024 join paths per source. Past either bound Publisher cannot read what the
   source's fields carry, so a `#(carries)` source refuses rather than assume the rest is clean:
   drop the joins past the bound, or split the source. A hidden base reached through a join from a published source is therefore reported
   **there**, which is where a caller reads it. Classify the field where it is declared; the class
   rides every join to it.
-- Fields with an access modifier (`private:`, `internal:`) are not demanded a class. They still
-  feed lineage, so a public field derived from one carries its class. A caller's own query can
-  re-expose an `internal:` field, so `internal:` is not a barrier; use `private:` to keep a column
-  off a source's surface.
+- Only a `private:` field or join is exempt: it is not demanded a class, and nothing under a
+  `private:` join is. It still feeds lineage, so a public field derived from it carries its class.
+  An `internal:` field or join is checked like a public one, because a caller's own query can
+  `extend` the source and read it (`run: s extend { dimension: x is ssn } -> { group_by: x }`).
+  An `internal:` field under `#(carries)` needs a class on the list, and one under an `internal:`
+  join is read by its dotted path. To make a column unreachable, declare it `private:`.
 - A source locked with `#(authorize) false` publishes nothing a caller can read, so coverage does
   not report its own fields (its fields reached through a join from an open source are). A
   `#(carries)` on it is still enforced.
@@ -227,7 +235,7 @@ are the right ones:
 | --------------------------------------------------- | ----------------------------------------- |
 | say what a field is                                 | `#(classification)` (this page)           |
 | say what an entry point may expose, and refuse more | `#(carries)` (this page)                  |
-| keep a column off a source's API                    | `include { private: ssn }` / `internal:`  |
+| keep a column off a source's API                    | `include { private: ssn }`                |
 | decide who may query a source                       | [`#(authorize)`](authorize.md)            |
 | decide which rows a caller sees                     | [`#(access_filter)`](row-level-access.md) |
 | decide what is listed and queryable                 | [`index.malloy`](discovery-and-access.md) |
