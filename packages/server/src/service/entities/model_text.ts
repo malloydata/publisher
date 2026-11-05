@@ -64,7 +64,8 @@ export function extractCodeFromEntity(
    const keep: string[] = [];
    for (let i = codeRange.start.line; i <= codeRange.end.line; i++) {
       const line = lines[i];
-      if (i < 0 || i >= lines.length || !line) {
+      // A blank line inside the declaration is `""`, not out of bounds.
+      if (i < 0 || i >= lines.length || line === undefined) {
          logger.warn("Trying to get code out of bounds");
          break;
       }
