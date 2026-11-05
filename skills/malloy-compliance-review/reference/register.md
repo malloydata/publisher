@@ -60,7 +60,7 @@ one admitted to a domain and still be scoped.
 
 - `id` and `text` are the policy's, verbatim.
 - `checks` name what proves the control. A check scoped with `:domain` takes only that domain's
-  findings; `loads:` also takes a refusal kind (`ceiling`, `secure`, `join`).
+  findings; `loads:` also takes a refusal kind (`ceiling`, `join`).
 - A control nothing in the model can prove takes `"status": "not_provable_here"` and a `why`.
 - `why` on any control is printed in the report beside it.
 

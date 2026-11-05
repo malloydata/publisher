@@ -167,8 +167,7 @@
       "id": "AC-03",
       "text": "A gate reads only attributes the identity provider sets.",
       "checks": [
-        "secure_gates",
-        "loads:secure"
+        "secure_gates"
       ]
     },
     {

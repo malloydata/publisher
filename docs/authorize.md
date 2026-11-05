@@ -38,7 +38,7 @@ A **403 also covers the case where a lock or a filter cannot be applied at all**
 point renamed or dropped the field the gate reads, or a given it names was not supplied. That is
 the fail-closed path rather than a verdict, and it is the one denial shape both routes share.
 
-> ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** A plain given is **caller-asserted**: anyone who can reach the query API can claim a favorable value. A given declared `#(secure)` is the host's to set: the trusted tier in front of Publisher resolves it from the caller's verified identity and replaces whatever the request carried, so a gate keyed on secure givens is a real boundary in that deployment, and **the load refuses a package with a gate on a published source that reads a plain given**, naming the source and the givens to mark. Neither is, on its own, end-user authentication.
+> ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** A plain given is **caller-asserted**: anyone who can reach the query API can claim a favorable value. A given declared `#(secure)` is the host's to set: the trusted tier in front of Publisher resolves it from the caller's verified identity and replaces whatever the request carried, so a gate keyed on secure givens is a real boundary in that deployment. A gate on a plain given is exactly as trustworthy as whatever sets it: an API customer that sets its givens from its own authenticated tier has a real control, and a caller that sets its own has a filter. Neither is, on its own, end-user authentication.
 
 For the gate's own grammar, see [Expression Language](#expression-language) below — it is not the full Malloy expression language. For givens, see [givens.md](givens.md).
 
@@ -431,8 +431,6 @@ $ORGS, or carry the key in the join's on), or drop the join.
 ```
 
 Row-level terms are compared by given name only, not by the column they filter. An entry gated `#(access_filter) region in $ORGS` that joins a source gated `#(access_filter) org_id in $ORGS` passes, because both read `$ORGS`, even when the join's `on` does not tie `region` to the joined `org_id`. The joined rows are then scoped by something unrelated to the join, and the check cannot see it. This is a known gap: write the entry's filter over the joined column (`#(access_filter) person.org_id in $ORGS`), or carry the key in the join's `on`.
-
-A gate's given is judged in the model where the gate is written. A source is published through one model while its gate note may be written in a base model that declares its own `$GIVEN`; `#(secure)` is read on the declaration the gate binds to. A given that is `#(secure)` in the publishing model but plain in the model that declares the gate refuses the load. Declare it `#(secure)` where the gate is written.
 
 ### Worked example
 
