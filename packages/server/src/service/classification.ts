@@ -590,8 +590,15 @@ export function readQueryFieldReads(
                (qf) => qf.as ?? qf.name ?? qf.path?.at(-1) ?? [],
             ),
          );
-         // A name the stage itself returns (`order_by: n`) is not a field of the source.
-         keep(refs.filter((r) => first.has(r.join(".")) || !outputs.has(r[0])));
+         // A bare name the stage itself returns (`order_by: n`) is not a field of the
+         // source; a dotted path is, even when its head shadows an output name.
+         keep(
+            refs.filter(
+               (r) =>
+                  first.has(r.join(".")) ||
+                  !(r.length === 1 && outputs.has(r[0])),
+            ),
+         );
       } else {
          // A later stage reads the one before it, already held to account, so
          // only what its own `extend:` brings in is a read of the source.
