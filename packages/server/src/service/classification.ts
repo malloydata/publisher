@@ -540,7 +540,10 @@ export function ceilingRefusal(
       if (known.classifications.length === 0) {
          return `${head} ${path}, which has no #(classification) on the list`;
       }
-      const off = known.classifications.filter((k) => !allowed.has(k));
+      const off = [
+         ...known.classifications,
+         ...known.filtered.flatMap((i) => i.classifications),
+      ].filter((k) => !allowed.has(k));
       if (off.length > 0) {
          return `${head} ${path}, which is classified ${off.join(" ")}, not on the list`;
       }
@@ -717,6 +720,8 @@ function walkSourceClassifications(
                                ])
                              : input.classifications,
                        },
+                       // Every row of a filtered output reveals what its filter selects on.
+                       ...input.filtered,
                     ]
                   : input.inputs;
             for (const c of carried) {
@@ -881,6 +886,9 @@ export function readViewExposures(
                      ? tokenSet([...c.classifications, ...c.dropped])
                      : c.classifications,
                });
+            }
+            for (const f of c.filtered) {
+               if (!reads.some((r) => r.field === f.field)) reads.push(f);
             }
          }
       }
@@ -1273,6 +1281,7 @@ export function classificationLeaks(
       for (const [path, c] of s.hiddenRead) {
          const copy = copyLeak(where, allowed, path, c);
          if (copy) messages.push(copy);
+         else filterLeak(c);
       }
       for (const [path, c] of s.fields) {
          const copy = copyLeak(where, allowed, path, c);

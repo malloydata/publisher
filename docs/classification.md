@@ -119,7 +119,8 @@ parse refuses it. The walk covers:
   stage's filters count, since every returned row reveals what they select on. That holds for a
   field the query declares with `extend:` (read against the query's outputs), for the outputs of a
   `nest:`, and for a query source that is joined from another source. A filter's class is charged on
-  its own, so an output declared below it is not called a copy of it.
+  its own, so an output declared below it is not called a copy of it, and it reaches every field
+  and view that reads the output, hidden or not.
 - joins hidden from discovery: a field reached through a join carries the class declared where it
   lives, whether or not the joined source is published.
 - fields a source declares as copies of others, as described above.
