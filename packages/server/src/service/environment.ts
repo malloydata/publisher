@@ -983,6 +983,9 @@ export class Environment {
                         resident === undefined &&
                         (await this.versionService?.isVersioned(packageName))
                      ) {
+                        // `/status` lists each version instead (see
+                        // listVersionEntries), so it skips loading the latest.
+                        if (options.operational) return undefined;
                         return await this.listedVersionedPackage(packageName);
                      }
                      // A slim `/status` entry reads only the binding, so it skips
