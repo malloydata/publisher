@@ -1054,15 +1054,18 @@ export function findIrSource(
    ) as IrField | undefined;
 }
 
+/** Whether one gate expression denies every caller. */
+export const isDenyAll = (expr: string) =>
+   expr.trim().toLowerCase() === "false";
+
 /** Whether a compiled source is denied to every caller, so nothing it publishes is reachable. */
 export function isDeniedToAll(apiSource: {
    accessFilter?: string[];
    authorize?: string[];
 }): boolean {
-   const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
    return (
-      (apiSource.accessFilter ?? []).some(isDeny) ||
-      (apiSource.authorize ?? []).some(isDeny)
+      (apiSource.accessFilter ?? []).some(isDenyAll) ||
+      (apiSource.authorize ?? []).some(isDenyAll)
    );
 }
 

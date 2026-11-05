@@ -315,6 +315,83 @@ source: sneaky is open_visits -> {
       expect(message).toContain("'clinician' in $ROLES");
    });
 
+   const SECRETS = `#(authorize) false
+source: secrets is duckdb.sql("select 1 as id, 'x' as secret")
+`;
+   const STAGING = `source: staging is ${VISITS} extend {
+   join_one: secrets on secrets.id = person_id
+}
+`;
+
+   it("refuses an open entry derived with -> from a hidden source that joins a locked one", async () => {
+      write("base.malloy", `${GIVENS}${SECRETS}${STAGING}`);
+      write(
+         "index.malloy",
+         `##! experimental.givens
+import "base.malloy"
+
+source: pub is staging -> { group_by: id, leak is secrets.secret }
+
+export { pub }
+`,
+      );
+      expect(await refusal()).toContain(
+         "source pub (index.malloy) is open to every caller and joins secrets, which is locked",
+      );
+   });
+
+   it("loads an entry derived with -> from a hidden source whose joins are not gated", async () => {
+      write(
+         "base.malloy",
+         `${GIVENS}
+source: lookup is duckdb.sql("select 1 as id, 'x' as label")
+source: staging is ${VISITS} extend {
+   join_one: lookup on lookup.id = person_id
+}
+`,
+      );
+      write(
+         "index.malloy",
+         `##! experimental.givens
+import "base.malloy"
+
+source: pub is staging -> { group_by: id, label is lookup.label }
+
+export { pub }
+`,
+      );
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("refuses an open compose entry whose member joins a locked source, and loads one over open sources", async () => {
+      const composed = (
+         join: string,
+      ) => `##! experimental { composite_sources givens }
+${GIVENS.split("\n").slice(1).join("\n")}
+${SECRETS}
+source: a is ${VISITS} extend {
+   ${join}
+   dimension: k is id
+}
+source: b is ${VISITS} extend { dimension: k is id }
+source: pub is compose(a, b) -> { group_by: k }
+`;
+      write(
+         "m.malloy",
+         composed("join_one: secrets on secrets.id = person_id"),
+      );
+      expect(await refusal()).toContain(
+         "source pub (m.malloy) is open to every caller and joins secrets, which is locked",
+      );
+      write(
+         "m.malloy",
+         composed(
+            'join_one: lookup is duckdb.sql("select 1 as id") on lookup.id = person_id',
+         ).replace(SECRETS, ""),
+      );
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+
    it("compares row-level terms by given name only: a filter on the same given over a column the join does not tie still loads", async () => {
       write(
          "m.malloy",

@@ -41,13 +41,22 @@ import {
    type AuthorizeGrammarParsedTerm,
 } from "./authorize_grammar";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { alreadySeen, findIrSource, isDeniedToAll } from "./classification";
+import {
+   alreadySeen,
+   findIrSource,
+   isDeniedToAll,
+   isDenyAll,
+} from "./classification";
 import {
    MAX_JOIN_PATHS,
    MAX_JOIN_RECURSION_DEPTH,
    stageJoins,
 } from "./filter_binding_guard";
-import { gateExprsForRoute } from "./gate_registry_walk";
+import {
+   gateExprsForRoute,
+   resolveCompositeResolvedBase,
+   resolveQuerySourceBase,
+} from "./gate_registry_walk";
 import type { Model } from "./model";
 
 /** The slice of a compiled join field the check reads. */
@@ -61,7 +70,6 @@ interface IrJoin {
    query?: { pipeline?: Parameters<typeof stageJoins>[0] };
 }
 
-const isDenyAll = (expr: string) => expr.trim().toLowerCase() === "false";
 const isAdmitAll = (expr: string) => expr.trim().toLowerCase() === "true";
 
 /** A joined struct's gates by route, flattened across declaring sources. */
@@ -248,15 +256,29 @@ export function joinBypasses(
 
          let joinPaths = 0;
          let cut = false;
-         const joinsOf = (struct: IrJoin): IrJoin[] => {
+         // A `->` source's base is a source the entry derives from: its joins are the entry's.
+         const joinsOf = (struct: IrJoin, hops = 0): IrJoin[] => {
             const joins = (struct.fields ?? []).filter(
                (f) => typeof f.join === "string" && Array.isArray(f.fields),
             );
             if (struct.type !== "query_source") return joins;
+            // The compiler reads a composite's resolved member before structRef.
+            const base = (resolveCompositeResolvedBase(
+               struct as unknown as SourceDef,
+            ) ??
+               resolveQuerySourceBase(
+                  struct as unknown as SourceDef,
+                  modelDef,
+               )) as IrJoin | undefined;
+            if (hops >= MAX_JOIN_RECURSION_DEPTH) {
+               cut = true;
+               return joins;
+            }
             try {
                return [
                   ...joins,
                   ...(stageJoins(struct.query?.pipeline) as IrJoin[]),
+                  ...(base ? joinsOf(base, hops + 1) : []),
                ];
             } catch {
                cut = true;
