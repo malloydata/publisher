@@ -284,7 +284,10 @@ class Grants(unittest.TestCase):
 
 class ReloadReceipt(unittest.TestCase):
     """The reload helper prints the served sha: from the package's serving
-    state, or from its `/status` entry on a server from before that route."""
+    state, or from its `/status` entry on a server from before that route.
+    A reload that fails prints its error instead, never the old sha."""
+
+    PKG = "/api/v0/environments/env/packages/pkg"
 
     def run_reload(self, routes):
         import http.server
@@ -295,7 +298,9 @@ class ReloadReceipt(unittest.TestCase):
             def do_GET(self):
                 path = self.path.split("?")[0]
                 body = routes.get(path)
-                self.send_response(200 if body is not None else 404)
+                code, body = body if isinstance(body, tuple) else (
+                    200 if body is not None else 404, body)
+                self.send_response(code)
                 self.end_headers()
                 self.wfile.write(json.dumps(body or {}).encode())
 
@@ -315,6 +320,7 @@ class ReloadReceipt(unittest.TestCase):
 
     def test_reads_the_serving_state(self):
         out = self.run_reload({
+            self.PKG: {"name": "pkg"},
             "/api/v0/environments/env/packages/pkg/status":
                 {"sourceContentSha": "abc"},
         })
@@ -322,10 +328,21 @@ class ReloadReceipt(unittest.TestCase):
 
     def test_falls_back_to_the_status_entry_on_an_older_server(self):
         out = self.run_reload({
+            self.PKG: {"name": "pkg"},
             "/api/v0/status": {"environments": [{"name": "env", "packages": [
                 {"name": "pkg", "sourceContentSha": "old"}]}]},
         })
         self.assertEqual(out, '"sourceContentSha":"old"')
+
+    def test_a_failed_reload_prints_its_error_and_no_sha(self):
+        out = self.run_reload({
+            self.PKG: (400, {"message": "bad.malloy: refused"}),
+            "/api/v0/environments/env/packages/pkg/status":
+                {"sourceContentSha": "stale"},
+        })
+        self.assertIn("reload failed (HTTP 400)", out)
+        self.assertIn("bad.malloy: refused", out)
+        self.assertNotIn("stale", out)
 
 
 if __name__ == "__main__":

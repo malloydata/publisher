@@ -79,8 +79,14 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
 
 # REST, not MCP: an MCP reply escapes its inner JSON. The sha is read from the
 # package's serving state after the reload (the reload response itself carries
-# it only while the server inlines the serving fields).
-RELOAD = """curl -s -m 60 -o /dev/null "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true"
+# it only while the server inlines the serving fields). A failed reload prints
+# its error and stops, so the previous load's sha is never shown for it.
+RELOAD = """reload_body=$(mktemp)
+reload_code=$(curl -s -m 60 -o "$reload_body" -w "%{{http_code}}" "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" || echo 000)
+if [ "$reload_code" != "200" ]; then
+  echo "reload failed (HTTP $reload_code):"; cat "$reload_body"; echo; rm -f "$reload_body"; exit 1
+fi
+rm -f "$reload_body"
 python3 -c '
 import json, urllib.request
 base = "{rest_url}/api/v0"
