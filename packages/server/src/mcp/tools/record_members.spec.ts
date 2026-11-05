@@ -10,12 +10,15 @@ import {
    type FcjIndexFixture,
 } from "../../test_helpers/fcj_index_fixture";
 import { find, KINDS_BY_FIND_TARGET } from "../context/find";
+import { routeList } from "../context/routes";
+import { MAX_RECORD_MEMBERS_PER_SOURCE } from "./package_entities";
 
 // A DuckDB STRUCT compiles to the same Malloy record type as a BigQuery
 // RECORD, and a STRUCT[] to the same repeated record, so this stands in for
 // both (issue #1526).
 const SQL = `select 1 as order_id,
   {'city': 'Denver', 'region': 'West', 'address': {'zip': '80202'}} as delivery,
+  {'city': 'Boulder', 'card': '4111'} as billing,
   [{'sku': 'a', 'qty': 2}, {'sku': 'b', 'qty': 1}] as lines,
   ['gift', 'rush'] as tags,
   7 as customer_id`;
@@ -26,6 +29,11 @@ source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile""
 source: orders is duckdb.sql("""${SQL}""") extend {
   measure: order_count is count()
   join_one: customer is customers on customer_id = customer.id
+  #(doc) The city the order was delivered to.
+  dimension: delivery_city is delivery.city
+  #(classification) "pci"
+  dimension: billing_details is billing
+  dimension: ship_to is delivery
 }
 `;
 
@@ -37,65 +45,114 @@ beforeAll(async () => {
 });
 afterAll(async () => fixture.close());
 
-type Row = [string, string | undefined, string | undefined, string | undefined];
-const membersOf = (): Row[] =>
-   fixture.pkgIndex.directEntities
-      .filter((e) => e.source === "orders" && e.kind === "dimension")
-      .map((e) => [e.name, e.dataType, e.joinPath, e.relationship] as Row);
+const entity = (source: string, name: string) =>
+   fixture.pkgIndex.directEntities.find(
+      (e) => e.source === source && e.name === name,
+   );
+const shape = (source: string, name: string) => {
+   const e = entity(source, name);
+   return e
+      ? {
+           dataType: e.dataType,
+           joinPath: e.joinPath,
+           recordPath: e.recordPath,
+           relationship: e.relationship,
+        }
+      : undefined;
+};
 
 describe("record members (#1526)", () => {
-   it("indexes a record's members, nested records included, under dotted names", () => {
-      expect(membersOf()).toEqual(
-         expect.arrayContaining([
-            ["delivery", "record", undefined, undefined],
-            ["delivery.city", "string", "delivery", "one"],
-            ["delivery.region", "string", "delivery", "one"],
-            ["delivery.address", "record", "delivery", "one"],
-            ["delivery.address.zip", "string", "delivery.address", "one"],
-         ] as Row[]),
-      );
-   });
-
-   it("marks a repeated record's members many, as a fan-out join's are, and leaves an array of scalars alone", () => {
-      const rows = membersOf();
-      expect(rows).toEqual(
-         expect.arrayContaining([
-            ["lines", "array", undefined, undefined],
-            ["lines.sku", "string", "lines", "many"],
-            ["lines.qty", "number", "lines", "many"],
-         ] as Row[]),
-      );
-      expect(rows.filter(([name]) => name.startsWith("tags."))).toEqual([]);
-   });
-
-   it("indexes a joined source's record members on that source, and reaches them through the join like its other fields", () => {
-      const nodes = [...fixture.index.catalog.nodes.keys()];
-      // On the source that holds the record.
-      expect(nodes).toContain("dimension:customers@shop.malloy:profile.tier");
-      // Not copied onto the joining source: like customer.id, the engine
-      // reaches it from orders through the customer join.
-      expect(nodes).not.toContain(
-         "dimension:orders@shop.malloy:customer.profile.tier",
-      );
-      expect(nodes).not.toContain("dimension:orders@shop.malloy:customer.id");
-      // The entity index still has the joined copy, for listings.
+   it("indexes a record's members, nested records included, as the source's own fields", () => {
+      expect(shape("orders", "delivery.region")).toEqual({
+         dataType: "string",
+         joinPath: undefined,
+         recordPath: "delivery",
+         relationship: undefined,
+      });
+      expect(shape("orders", "delivery.address.zip")).toEqual({
+         dataType: "string",
+         joinPath: undefined,
+         recordPath: "delivery.address",
+         relationship: undefined,
+      });
+      // Not described as reached through a join: the catalog node has no
+      // join path, so the search text, the judge and value search treat it
+      // as a field of orders.
       expect(
-         fixture.pkgIndex.retrievalEntities
-            .filter((e) => e.name === "customer.profile.tier")
-            .map((e) => [e.source, e.joinPath, e.relationship]),
-      ).toEqual([["orders", "customer.profile", "one"]]);
+         fixture.index.catalog.nodes.get(
+            "dimension:orders@shop.malloy:delivery.region",
+         )?.joinPath,
+      ).toBeUndefined();
    });
 
-   it("finds a member by its words, as its own field on the source that holds it", () => {
-      const target = {
-         index: 0,
-         type: "dimension" as const,
-         text: "delivery city",
-         kinds: KINDS_BY_FIND_TARGET.dimension,
-      };
+   it("marks a repeated record's members many, and leaves an array of scalars alone", () => {
+      expect(shape("orders", "lines.sku")).toEqual({
+         dataType: "string",
+         joinPath: undefined,
+         recordPath: "lines",
+         relationship: "many",
+      });
+      expect(
+         fixture.pkgIndex.directEntities.filter((e) =>
+            e.name.startsWith("tags."),
+         ),
+      ).toEqual([]);
+   });
+
+   it("reaches a joined source's record members through the join, as it does the source's other fields", () => {
+      const tier = fixture.index.catalog.nodes.get(
+         "dimension:customers@shop.malloy:profile.tier",
+      )!;
+      expect(tier.joinPath).toBeUndefined();
+      // Not copied onto orders as a field of its own...
+      expect(
+         fixture.index.catalog.nodes.has(
+            "dimension:orders@shop.malloy:customer.profile.tier",
+         ),
+      ).toBe(false);
+      // ...but reached from it, like customer.id is.
+      expect(routeList(fixture.index.catalog, tier).map((r) => r.id)).toEqual([
+         "dimension:orders:customer.profile.tier",
+      ]);
+   });
+
+   it("gives a member its record's classification", () => {
+      expect(entity("orders", "billing_details")?.classifications).toEqual([
+         "pci",
+      ]);
+      // Listed under the raw record's name, classified by its alias.
+      expect(entity("orders", "billing.card")?.classifications).toEqual([
+         "pci",
+      ]);
+   });
+
+   it("folds a raw member into the documented dimension declared over it", () => {
+      expect(entity("orders", "delivery.city")).toBeUndefined();
+      const declared = entity("orders", "delivery_city");
+      expect(declared?.aliases).toEqual(["delivery.city"]);
+      expect(declared?.doc).toBe("The city the order was delivered to.");
+   });
+
+   it("lists a record's members once, under its own name, not again under an alias of the record", () => {
+      expect(entity("orders", "ship_to")?.dataType).toBe("record");
+      expect(
+         fixture.pkgIndex.directEntities.filter((e) =>
+            e.name.startsWith("ship_to."),
+         ),
+      ).toEqual([]);
+   });
+
+   it("finds a member by its words", () => {
       const [result] = find({
          index: fixture.index,
-         targets: [target],
+         targets: [
+            {
+               index: 0,
+               type: "dimension",
+               text: "billing card",
+               kinds: KINDS_BY_FIND_TARGET.dimension,
+            },
+         ],
          queries: new Map(),
          perTarget: 30,
          keyword: true,
@@ -103,7 +160,7 @@ describe("record members (#1526)", () => {
          allow: () => true,
       });
       expect(result.candidates[0]?.key).toBe(
-         "dimension:orders@shop.malloy:delivery.city",
+         "dimension:orders@shop.malloy:billing.card",
       );
    });
 
@@ -117,13 +174,14 @@ describe("record members (#1526)", () => {
             (await model.loadQuery(q).run()).data.toObject();
          expect(
             await run(
-               "run: orders -> { group_by: delivery.city, delivery.address.zip, customer.profile.tier; aggregate: order_count }",
+               "run: orders -> { group_by: delivery.city, delivery.address.zip, customer.profile.tier, billing.card; aggregate: order_count }",
             ),
          ).toEqual([
             {
                city: "Denver",
                zip: "80202",
                tier: "gold",
+               card: "4111",
                order_count: 1,
             },
          ]);
@@ -138,6 +196,27 @@ describe("record members (#1526)", () => {
          ]);
       } finally {
          await connection.close();
+      }
+   });
+});
+
+describe("record members on a wide table", () => {
+   it(`indexes at most ${MAX_RECORD_MEMBERS_PER_SOURCE} members per source`, async () => {
+      const members = Array.from(
+         { length: MAX_RECORD_MEMBERS_PER_SOURCE + 20 },
+         (_, i) => `'m${i}': ${i}`,
+      ).join(", ");
+      const wide = await buildFcjIndexFixture(CLUSTER_SETTINGS, {
+         "wide.malloy": `source: events is duckdb.sql("""select {${members}} as params""")`,
+      });
+      try {
+         const indexed = wide.pkgIndex.directEntities.filter(
+            (e) => e.recordPath !== undefined,
+         );
+         expect(indexed).toHaveLength(MAX_RECORD_MEMBERS_PER_SOURCE);
+         expect(indexed[0].name).toBe("params.m0");
+      } finally {
+         await wide.close();
       }
    });
 });

@@ -556,7 +556,16 @@ function routeRow(
       doc: node.displayDoc ? `${node.displayDoc} ${note}` : note,
       ...(node.doc ? { embedDoc: node.doc } : {}),
       joinPath,
-      ...(hop ? { relationship: hop.fanout } : {}),
+      // The wider of the join's and the field's own: a member of a repeated
+      // record (`items.sku`) fans out even behind a join_one.
+      ...(hop || node.relationship
+         ? {
+              relationship:
+                 node.relationship === "many"
+                    ? "many"
+                    : (hop?.fanout ?? node.relationship),
+           }
+         : {}),
       ...(node.dataType ? { dataType: node.dataType } : {}),
       ...(node.code ? { code: node.code } : {}),
    };

@@ -120,7 +120,7 @@ const MAX_JOIN_PATH_DEPTH = 2;
 /**
  * What the compiled model knows about a field that SourceInfo does not: `code`
  * is the authored expression ("sale_price.sum()"); `aliasOf` is set only when
- * the whole definition references a sibling field of the same source.
+ * the whole definition is a reference to another field, by name or dotted path.
  */
 interface FieldProvenance {
    code?: string;
@@ -278,9 +278,12 @@ function readFieldProvenance(
       };
       const fieldName = activeName(field);
       if (!fieldName) continue;
+      // A dotted path is a referent too (`delivery_city is delivery.city`):
+      // collapseAliases folds only a source's own fields, so it can match a
+      // record member, never a field reached through a join.
       const referent =
-         field.e?.node === "field" && field.e.path?.length === 1
-            ? field.e.path[0]
+         field.e?.node === "field" && (field.e.path?.length ?? 0) >= 1
+            ? field.e.path!.join(".")
             : undefined;
       // Malloy fills `code` for scalar expressions only, so a view arrives
       // with none; its text is sliced from the file at its `location`.
@@ -333,19 +336,33 @@ interface FieldType {
  */
 const MAX_RECORD_DEPTH = 4;
 
+/** Most record members indexed per source: a wide event table can hold hundreds. */
+export const MAX_RECORD_MEMBERS_PER_SOURCE = 300;
+
 /**
  * The members of a record dimension (a BigQuery RECORD, a DuckDB STRUCT) as
  * entities of their own, under dotted names (`delivery.city`), so they can be
- * found and grouped by. They are indexed the way joined fields are: on the
- * source that holds the record, with `joinPath` naming the record. A member
- * of a repeated record (an array of records, `lines.sku`) has relationship
- * `many`, as a field reached through a one-to-many join has, because
- * aggregating through it counts each element. A record inside a repeated
- * record stays `many`. An array of scalars has no members to index.
+ * found and grouped by. A member of a source's own record is that source's
+ * own field: it carries `recordPath`, never `joinPath`, so the engine does
+ * not describe it as reached through a join. A member of a record on a joined
+ * source keeps the join's `joinPath` beside its `recordPath`.
+ *
+ * A member of a repeated record (an array of records, `lines.sku`) has
+ * relationship `many`, because aggregating through it counts each element; a
+ * record inside a repeated record stays `many`. A member takes its record's
+ * classification when it has none of its own. An array of scalars has no
+ * members. At most MAX_RECORD_MEMBERS_PER_SOURCE are indexed per source
+ * (`budget`), in schema order; a dropped member is still queryable by name,
+ * only not offered by search.
  */
 function collectRecordMembers(args: {
    type: FieldType | undefined;
+   /** The member name's dotted prefix: `delivery`, or `customer.profile`. */
    path: string;
+   /** The record's path within its source: `delivery`, or `profile`. */
+   recordPath: string;
+   /** The join the record is reached through, for a joined source's record. */
+   joinPath?: string;
    sourceName: string;
    modelPath: string;
    /** The relationship of the path so far: `one` from a plain source. */
@@ -354,8 +371,14 @@ function collectRecordMembers(args: {
    nextId: () => string;
    out: Entity[];
    lineage?: Map<string, FieldClassification>;
+   /** The record's classes, which a member without its own inherits. */
+   parentClasses?: Pick<
+      Entity,
+      "classifications" | "classificationInferred" | "classificationInputs"
+   >;
+   budget: { left: number };
 }): void {
-   const { path, depth } = args;
+   const { path, recordPath, depth } = args;
    let type = args.type;
    let fanout = args.fanout;
    if (type?.kind === "array_type") {
@@ -365,7 +388,11 @@ function collectRecordMembers(args: {
    if (type?.kind !== "record_type" || depth > MAX_RECORD_DEPTH) return;
    for (const member of type.fields ?? []) {
       if (!member.name) continue;
+      if (args.budget.left <= 0) return;
+      args.budget.left -= 1;
       const name = `${path}.${member.name}`;
+      const own = classificationOf(args.lineage, name, undefined);
+      const classes = own.classifications ? own : (args.parentClasses ?? {});
       args.out.push({
          id: args.nextId(),
          kind: "dimension",
@@ -374,17 +401,24 @@ function collectRecordMembers(args: {
          modelPath: args.modelPath,
          doc: "",
          embedDoc: "",
-         ...classificationOf(args.lineage, name, undefined),
-         joinPath: path,
-         relationship: fanout,
+         ...classes,
+         ...(args.joinPath ? { joinPath: args.joinPath } : {}),
+         recordPath,
+         // On a source's own record only `many` says anything: `one` is
+         // what every own field already is.
+         ...(args.joinPath || fanout === "many"
+            ? { relationship: fanout }
+            : {}),
          dataType: malloyType(member),
       });
       collectRecordMembers({
          ...args,
          type: member.type,
          path: name,
+         recordPath: `${recordPath}.${member.name}`,
          fanout,
          depth: depth + 1,
+         parentClasses: classes,
       });
    }
 }
@@ -546,6 +580,8 @@ function collectJoinedFields(args: {
    out: Entity[];
    /** The entry source's lineage, keyed by dotted path; absent for a stand-in. */
    lineage?: Map<string, FieldClassification>;
+   /** Record members left to index for this source (collectRecordMembers). */
+   budget: { left: number };
 }): void {
    const {
       fields,
@@ -594,6 +630,8 @@ function collectJoinedFields(args: {
          collectRecordMembers({
             type: field.type,
             path: `${joinPath}.${field.name}`,
+            recordPath: field.name,
+            joinPath,
             sourceName,
             modelPath,
             fanout,
@@ -601,6 +639,12 @@ function collectJoinedFields(args: {
             nextId,
             out,
             ...(lineage ? { lineage } : {}),
+            parentClasses: classificationOf(
+               lineage,
+               `${joinPath}.${field.name}`,
+               field.annotations,
+            ),
+            budget: args.budget,
          });
       }
    }
@@ -687,6 +731,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          );
          // What each reachable field is, declared or by lineage. Absent for a
          // stand-in with no compiled model; fields then report their own note.
+         // Record members this source may still index (collectRecordMembers).
+         const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
          const lineage = modelDef
             ? readSourceClassifications(
                  findIrSource(modelDef, sourceName)?.fields,
@@ -796,6 +842,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   nextId: () => String(n++),
                   out: entities,
                   lineage,
+                  budget: memberBudget,
                });
                continue;
             }
@@ -832,10 +879,14 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   ? { aliasOf: fieldProvenance.aliasOf }
                   : {}),
             });
-            if (field.kind === "dimension") {
+            // A dimension defined as another (`addr is delivery`) is a
+            // second spelling of that record: its members are listed once,
+            // under the record's own name.
+            if (field.kind === "dimension" && !fieldProvenance?.aliasOf) {
                collectRecordMembers({
                   type: (field as { type?: FieldType }).type,
                   path: field.name,
+                  recordPath: field.name,
                   sourceName,
                   modelPath,
                   fanout: "one",
@@ -843,6 +894,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   nextId: () => String(n++),
                   out: entities,
                   ...(lineage ? { lineage } : {}),
+                  parentClasses: classificationOf(
+                     lineage,
+                     field.name,
+                     field.annotations,
+                  ),
+                  budget: memberBudget,
                });
             }
          }
@@ -913,7 +970,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       if (kept.length > 0) topology.set(root, kept);
       else topology.delete(root);
    }
-   const collapsed = collapseAliases(deduped);
+   const collapsed = inheritRecordClasses(collapseAliases(deduped));
    const kept = new Set(collapsed);
    return {
       entities: collapsed,
@@ -979,6 +1036,44 @@ interface CollectedModel {
 function malloyType(field: { type?: { kind?: string } }): string | undefined {
    const kind = field.type?.kind;
    return kind ? kind.replace(/_type$/, "") : undefined;
+}
+
+/**
+ * Give each record member without a class of its own its record's class,
+ * after collapseAliases. The class belongs to the column, so it is read off
+ * the record's whole alias group: `#(classification) "pci" dimension:
+ * billing_details is billing` classifies `billing.card`, though the members
+ * are listed under the raw record's name.
+ */
+function inheritRecordClasses(entities: Entity[]): Entity[] {
+   const cardKey = (e: Entity, name: string) =>
+      [e.modelPath, e.source ?? "", e.joinPath ?? "", name].join(KEY_SEPARATOR);
+   const classesOf = new Map<string, Entity>();
+   for (const e of entities) {
+      if (e.kind !== "dimension" || !e.classifications) continue;
+      for (const name of [e.name, ...(e.aliases ?? [])]) {
+         classesOf.set(cardKey(e, name), e);
+      }
+   }
+   if (classesOf.size === 0) return entities;
+   for (const e of entities) {
+      if (!e.recordPath || e.classifications) continue;
+      // The nearest classified record on the member's path.
+      const parts = e.recordPath.split(".");
+      for (let i = parts.length; i >= 1; i--) {
+         const record = parts.slice(0, i).join(".");
+         const name = e.joinPath ? `${e.joinPath}.${record}` : record;
+         const donor = classesOf.get(cardKey(e, name));
+         if (!donor) continue;
+         e.classifications = donor.classifications;
+         if (donor.classificationInferred) e.classificationInferred = true;
+         if (donor.classificationInputs) {
+            e.classificationInputs = donor.classificationInputs;
+         }
+         break;
+      }
+   }
+   return entities;
 }
 
 /**
@@ -1198,50 +1293,26 @@ function directEntitiesOf(
    topology: JoinTopology,
    aliasedAway: ReadonlySet<string>,
 ): readonly Entity[] {
-   // A field reached through a join has a path that starts with one of its
-   // source's joins. A record member has a path too (`delivery.city`), but
-   // its record is a column of the source itself, so it is a direct field.
-   const joins = new Set(
-      retrievalEntities
-         .filter((e) => e.kind === "join")
-         .map((e) => [e.modelPath, e.source ?? "", e.name].join(KEY_SEPARATOR)),
-   );
-   const throughJoin = (e: Entity): boolean =>
-      e.joinPath !== undefined &&
-      joins.has(
-         [e.modelPath, e.source ?? "", e.joinPath.split(".")[0]].join(
-            KEY_SEPARATOR,
-         ),
-      );
    const directFields = new Set([
       ...retrievalEntities
-         .filter((e) => !throughJoin(e))
+         .filter((e) => !e.joinPath)
          .map((e) =>
             [e.modelPath, e.source ?? "", e.kind, e.name].join(KEY_SEPARATOR),
          ),
       ...aliasedAway,
    ]);
    const rebuilt = (e: Entity): boolean => {
-      if (!e.joinPath || !throughJoin(e)) return false;
-      const reaches = topology.get(
-         sourceContextKey(e.modelPath, e.source ?? ""),
+      if (!e.joinPath) return false;
+      const reach = topology
+         .get(sourceContextKey(e.modelPath, e.source ?? ""))
+         ?.find((r) => r.path.join(".") === e.joinPath);
+      if (!reach) return false;
+      const field = e.name.slice(e.joinPath.length + 1);
+      return directFields.has(
+         [reach.targetModelPath, reach.targetSource, e.kind, field].join(
+            KEY_SEPARATOR,
+         ),
       );
-      // The longest prefix of the path that is a join: the rest is a record
-      // inside the joined source (`customer.profile.tier` is `profile.tier`
-      // on the source `customer` reaches).
-      const segments = e.joinPath.split(".");
-      for (let i = segments.length; i >= 1; i--) {
-         const prefix = segments.slice(0, i).join(".");
-         const reach = reaches?.find((r) => r.path.join(".") === prefix);
-         if (!reach) continue;
-         const field = e.name.slice(prefix.length + 1);
-         return directFields.has(
-            [reach.targetModelPath, reach.targetSource, e.kind, field].join(
-               KEY_SEPARATOR,
-            ),
-         );
-      }
-      return false;
    };
    return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
 }
