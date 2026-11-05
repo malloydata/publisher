@@ -31,6 +31,11 @@ import type {
 } from "./get_context_types";
 import { getPackageIndex, sourceContextKey } from "./package_entities";
 import { lockedForCaller } from "../../service/discovery_lock";
+import {
+   packageInfoOf,
+   resolveLevel,
+   type LevelOutcome,
+} from "./get_context_levels";
 import type { GivenValue } from "@malloydata/malloy";
 
 // server.ts and package.controller.ts import these from here.
@@ -48,7 +53,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 ## Contract rules
 - Use returned names verbatim; never invent one.
 - One target per concept, not a list in one search_text. A source returns only its matched fields, not all of them.
-- scopes is REQUIRED: exactly one environment and package (list_packages).
+- No search_targets lists environments, packages, sources or fields. A search needs one package in scopes.
 - Read warnings and any error/stale field before trusting a number or calling data absent.
 - A source's joins are all listed: empty means none. In an answer, never write a join; tell the user.
 - Read a source's doc before querying: it holds grain and population rules.
@@ -56,7 +61,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Empty sources: nothing answered; see unresolved_targets.
 
 ## Parameters
-search_targets: {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. dimensional_value: search_text is one value as typed, beside its dimension target; stored strings return in entities[].values (gated sources need givens, as in execute_query). Once its field is known, scope to it (source, entity_name). scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages results. include_code or a pinned entity_name returns code.
+search_targets: {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. dimensional_value: search_text is one value as typed, beside its dimension target; stored strings return in entities[].values (gated sources need givens, as in execute_query). Once its field is known, scope to it (source, entity_name). scopes: {environment, package} + optional model_path, source, entity_name. offset pages results. include_code or a pinned entity_name returns code.
 
 ## Response
 sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, classifications, relationship (fan-out), join_path, aliases, relevance, entity_id, values[] {value, relevance}, matched_targets[].match_reason.
@@ -201,6 +206,7 @@ function runListing(
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
+         ...(ctx.packageInfo ? { package_info: ctx.packageInfo } : {}),
          ...skillsFor(ctx),
          ...warningsFor(
             "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
@@ -210,6 +216,7 @@ function runListing(
    return jsonResource(uri, {
       sources,
       ...listingEnvelope,
+      ...(ctx.packageInfo ? { package_info: ctx.packageInfo } : {}),
       ...skillsFor(ctx),
       ...warningsFor(
          request.pureSourceListing
@@ -229,6 +236,7 @@ async function runContextQuery(
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
    traceMode: TraceMode = "none",
+   withPackageInfo = false,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
@@ -314,6 +322,21 @@ async function runContextQuery(
          (warning): warning is string => Boolean(warning),
       ),
    };
+   // From the package already in hand: naming one package never reads the
+   // rest of the server.
+   if (withPackageInfo) {
+      const built = packageInfoOf(
+         environmentName,
+         packageName,
+         (
+            pkgIndex.pkg as {
+               getPackageMetadata?: () => { description?: string };
+            }
+         ).getPackageMetadata?.()?.description,
+      );
+      ctx.packageInfo = built.info;
+      if (built.warning) ctx.warnings.push(built.warning);
+   }
 
    // Nothing to rank -> enumerate what the targets name.
    if (resolved.listingOnly) return runListing(ctx, uri);
@@ -360,12 +383,36 @@ export function registerGetContextTool(
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
       async (params: GetContextParams, extra?: RequestExtra) => {
-         const request = resolveRequest(params);
+         let level: LevelOutcome;
+         try {
+            level = await resolveLevel(params, environmentStore);
+         } catch (error) {
+            return contextError(
+               buildMalloyUri({}, "get-context"),
+               "environments",
+               error,
+            );
+         }
+         if (level.kind !== "scoped") {
+            const uri = buildMalloyUri(
+               level.environment ? { environment: level.environment } : {},
+               "get-context",
+            );
+            return level.kind === "listing"
+               ? jsonResource(uri, level.payload)
+               : contextError(
+                    uri,
+                    level.environment ?? "environments",
+                    level.error,
+                 );
+         }
+         const request = resolveRequest(level.params);
          return runContextQuery(
             request,
             environmentStore,
-            unsupportedTargetWarnings(request),
+            [...level.warnings, ...unsupportedTargetWarnings(request)],
             traceModeOf(extra),
+            level.withPackageInfo === true,
          );
       },
    );

@@ -230,29 +230,29 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
    it("orients a client to the sequence the schemas actually accept", async () => {
       // The tool DESCRIPTION is pinned against the response shape above; the
       // orientation string had no equivalent, and that asymmetry is how it
-      // kept teaching the pre-converged flow (a no-argument get_context to
-      // list environments) after the schema had started rejecting it. An
-      // agent reads this string in the initialize response, before it can
-      // check anything against it, so a wrong flow here fails its first call.
+      // once kept teaching a flow the schema rejected. An agent reads this
+      // string in the initialize response, before it can check anything
+      // against it, so a wrong flow here fails its first call.
       const instructions = client.getInstructions() ?? "";
       const { tools } = await client.listTools();
       const required = (tools.find((t) => t.name === "get_context")?.inputSchema
          ?.required ?? []) as string[];
 
       // Read off the REGISTERED schema rather than restated here: a parameter
-      // that becomes required fails this test until the orientation names it,
-      // which is the drift the assertion exists to catch.
-      expect(required.length).toBeGreaterThan(0);
+      // that becomes required fails this test until the orientation names it.
       for (const parameter of required) {
          expect(instructions).toContain(parameter);
       }
-
-      // Those required scope names come from list_packages, so it has to be
-      // the FIRST step. Naming it somewhere is not enough -- the instruction
-      // being corrected named get_context first and list_packages not at all.
-      expect(instructions).toContain("list_packages");
-      expect(instructions.indexOf("list_packages")).toBeLessThan(
-         instructions.indexOf("get_context"),
+      // A call with no arguments lists the environments, so the orientation
+      // must start there, and must not call it an error.
+      expect(required).toEqual([]);
+      expect(instructions).toContain(
+         "Start with get_context. Called with no arguments it lists the environments",
+      );
+      expect(instructions).not.toContain("validation error");
+      // A search still names exactly one package.
+      expect(instructions).toContain(
+         "scopes naming exactly one environment and package",
       );
    });
 
