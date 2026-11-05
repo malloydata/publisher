@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — get_context lists environments and packages, so an agent can find data with it alone
+
+`get_context` no longer requires `search_targets` or `scopes`. A call without targets lists, one level at a time, in the shapes the hosted retrieval API uses:
+
+- No arguments: `listing: "environments"`, each with how many packages it serves.
+- `environment`: `listing: "packages"`, each with the first line of its description as `one_line_summary`.
+- A package in `scopes`: its sources, plus `package_info` with the package's full description.
+- A source in `scopes`: its fields.
+
+A level with only one choice is entered rather than listed, and a warning says so. So on a server serving one package, a call with no arguments returns that package's sources, and a search with no `scopes` searches it, unless an environment could not be read or another package is still loading, when the search is refused and asks for the package by name. A search still needs one package: with several, it is refused with a `Fix:` naming them, because each package is indexed on its own. A package that failed to load, or is still loading, is named in a warning rather than listed, and a listing too long for one response is cut, with a warning saying how many it left out; `list_packages` still reports every package with its load error.
+
 ## [0.12.0] - A DuckLake catalog given as fields uses its own `sslmode`
 
 A DuckLake connection's `catalog.postgresConnection` given as fields (host, port, database, user, password) now applies its `sslmode`, where before the field was ignored and the catalog took the deployment's `PGSSLMODE`. A worker running `PGSSLMODE=allow` therefore no longer tries plaintext first against a catalog that sets `no-verify` (sent to libpq as `require`), `verify-ca` or `verify-full`. A catalog with no `sslmode`, and one given as a `connectionString`, build exactly as before, and the catalog still gets no statement timeout. **A catalog that already carried an `sslmode` changes behaviour on upgrade**: the value now applies, and `disable` is the sharpest case, since under `PGSSLMODE=require` it now connects in plaintext. The load also checks the value: an `sslmode` outside `disable | no-verify | verify-ca | verify-full`, or `verify-ca` with no readable CA bundle, rejects the connection (or, as a storage destination, that destination alone) instead of failing at every attach. Attached databases made the same change earlier (PR 1292).

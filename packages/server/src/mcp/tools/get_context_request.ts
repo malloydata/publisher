@@ -27,10 +27,11 @@ const DEFAULT_RANKED_LIMIT = 20;
  * The request shape, matching the hosted retrieval API's `GetContextRequest`
  * field for field so one caller and eval harness serve both.
  *
- * Divergences: `scopes` is required (exactly one environment + package),
- * because indexes are built per package and lazily, so an unscoped search
- * could not tell "not modelled" from "not indexed yet"; and `target_type` adds
- * `join`. `dimensional_value` is answered from the value index built at load
+ * Divergences: a search needs exactly one package in `scopes` (or a server
+ * serving one), because indexes are built per package and lazily, so an
+ * unscoped search could not tell "not modelled" from "not indexed yet"; with
+ * no `search_targets` a call lists instead (get_context_levels.ts); there are
+ * no organizations or workspaces; and `target_type` adds `join`. `dimensional_value` is answered from the value index built at load
  * (context/values_index.ts), and for a gated source by a lookup through the
  * query path with the caller's givens (get_context_values.ts); with
  * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
@@ -81,8 +82,9 @@ export const convergedContextShape = {
          }),
       )
       .min(1)
+      .nullish()
       .describe(
-         "What to find. One target per concept; several targets of different types answer one question in one call.",
+         "What to find. One target per concept; several targets of different types answer one question in one call. Omit to list instead: a source in `scopes` lists its fields, a package its sources; with no `scopes`, `environment` lists that environment's packages, and nothing at all lists the environments.",
       ),
    scopes: z
       .array(
@@ -108,8 +110,15 @@ export const convergedContextShape = {
          }),
       )
       .length(1)
+      .nullish()
       .describe(
-         "Required, exactly one: the environment and package to search, optionally narrowed to a model, source, or entity. Call list_packages for the names.",
+         "Exactly one when given: the environment and package to search or list, optionally narrowed to a model, source, or entity. Omit it to find those names: the response lists environments, or `environment`'s packages. A search needs it, unless only one package is served.",
+      ),
+   environment: z
+      .string()
+      .nullish()
+      .describe(
+         "With no `scopes`: list this environment's packages. A level with one choice is entered, so an environment with one package returns that package's sources (or searches it). Must match `scopes[0].environment` when both are given.",
       ),
    filter_params: z
       .record(z.union([z.string(), z.array(z.string())]))
@@ -158,7 +167,13 @@ export type GetContextParams = z.infer<
    z.ZodObject<typeof convergedContextShape>
 >;
 
-export function resolveRequest(params: GetContextParams): ResolvedRequest {
+/** Params with the package named and the targets set: what resolveRequest reads. */
+export type ScopedParams = GetContextParams & {
+   scopes: NonNullable<GetContextParams["scopes"]>;
+   search_targets: NonNullable<GetContextParams["search_targets"]>;
+};
+
+export function resolveRequest(params: ScopedParams): ResolvedRequest {
    const scope = params.scopes[0];
    const kinds = new Set<string>();
    const searches: ResolvedSearch[] = [];
