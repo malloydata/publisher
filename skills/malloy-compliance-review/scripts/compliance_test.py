@@ -356,13 +356,14 @@ class ChecksTest(unittest.TestCase):
         self.assertTrue(r["unloaded"])
         self.assertIn("not serving this package", c.report_md(r))
 
-    def test_an_unknown_package_fails(self):
+    def test_an_unknown_package_is_review_because_nothing_was_checked(self):
         class Unknown(FakeServer):
             def inventory(self):
                 raise c.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
 
-        r = run(Unknown(fixture()), [{"id": "AC-04", "checks": ["loads:ceiling"]}])
-        self.assertEqual(r["controls"][0]["status"], "fail")
+        r = run(Unknown(fixture()), [{"id": "AC-04", "checks": ["loads:ceiling"]},
+                                     {"id": "AC-03", "checks": ["access:chart"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["review", "review"])
         self.assertIn("does not serve", r["controls"][0]["findings"][0]["text"])
 
     def test_an_unknown_check_is_refused(self):
