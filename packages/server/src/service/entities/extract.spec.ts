@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import fs from "fs";
 import { Malloy, Model } from "@malloydata/malloy";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -166,6 +167,58 @@ source: b is duckdb.table('orders.csv') extend {
       expect(messages).toHaveLength(2);
       expect(messages[0]).toContain("multiple required filters");
       expect(messages[1]).toContain("is not a dimension");
+      expect((error as EntitiesValidationError).reasons).toEqual([
+         "duplicate_required_filter",
+         "not_a_dimension",
+      ]);
+   }, 60_000);
+
+   test("reads each model file at most once per extraction", async () => {
+      const { files, lookup } = await workspace({
+         "base.malloy": `source: base is duckdb.table('orders.csv') extend {
+  dimension: channel_upper is upper(channel_name)
+  measure: order_count is count()
+}
+`,
+         "index.malloy": `import "base.malloy"
+source: served is base extend {
+  dimension: region_label is concat('r-', region)
+}
+`,
+      });
+      const read = spyOn(fs, "readFileSync");
+      try {
+         await packageCompilationService.compilePackageModelFiles(
+            { modelFiles: files },
+            lookup,
+         );
+         const modelReads = read.mock.calls
+            .map(([file]) => String(file))
+            .filter((file) => file.endsWith(".malloy"));
+         expect(modelReads.length).toBeGreaterThan(0);
+         expect(new Set(modelReads).size).toBe(modelReads.length);
+      } finally {
+         read.mockRestore();
+      }
+   }, 60_000);
+
+   test("an #(index) fingerprint is the SHA-256 of the compiled scan query", async () => {
+      // Pinned: a change here re-keys every dimension index a host derives an
+      // id from (a Malloy upgrade that changes the generated SQL, or a change
+      // to the fingerprint query). Update it only on purpose.
+      const { files, lookup } = await workspace({
+         "orders.malloy": RICH_MODEL,
+      });
+      const [result] = await packageCompilationService.compilePackageModelFiles(
+         { modelFiles: files },
+         lookup,
+      );
+      const channelUpper = result.entities.find(
+         (e) => e.name === "channel_upper",
+      );
+      expect(channelUpper?.dim_index_fingerprint?.sql_fingerprint).toBe(
+         "7e55c92c0b088768e6094b40595578c2c27607f4ebf32770aeda0b85d267f53d",
+      );
    }, 60_000);
 
    test("reports a file that did not compile without failing the others", async () => {

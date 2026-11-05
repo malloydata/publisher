@@ -3,14 +3,14 @@
 
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Explore, Field } from "@malloydata/malloy";
 import { Annotations, Runtime, InMemoryURLReader } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { FileURLReader } from "./field_helpers";
 import { makeDimIndexLookupKey } from "./dim_index_discovery";
+import { compileEntryModel } from "./test_support";
 import type { GateExpr } from "./access_gates";
 import type { DimIndexFingerprintInputs } from "./dim_index_entity_id";
 import type { Given as ApiGiven } from "./internal_types";
@@ -1718,35 +1718,24 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
       modelAuthorize: GateExpr[] = [],
       nonQueryableSourceNames: Set<string> = new Set(),
    ) {
-      for (const [rel, contents] of Object.entries(files)) {
-         const abs = path.join(packageRoot, rel);
-         await mkdir(path.dirname(abs), { recursive: true });
-         await writeFile(abs, contents, "utf-8");
-      }
-      const conn = new DuckDBConnection("duckdb");
-      try {
-         await conn.runRawSQL("CREATE OR REPLACE TABLE t AS SELECT 1 as id");
-         const runtime = new Runtime({
-            urlReader: new FileURLReader(),
-            connection: conn,
-         });
-         const entryAbs = path.join(packageRoot, entryRelativePath);
-         const compiled = await runtime.getModel(new URL("file://" + entryAbs));
-         const source = files[entryRelativePath]!;
-         return sourceExtraction.extractMetadataFromExplores(
-            compiled.explores as unknown as Explore[],
-            entryRelativePath,
-            false,
-            "file://" + entryAbs,
-            modelGivens,
-            modelAuthorize,
-            nonQueryableSourceNames,
-            source,
-            packageRoot,
-         );
-      } finally {
-         await conn.close();
-      }
+      const compiled = await compileEntryModel(
+         packageRoot,
+         files,
+         entryRelativePath,
+      );
+      const entryAbs = path.join(packageRoot, entryRelativePath);
+      const source = files[entryRelativePath]!;
+      return sourceExtraction.extractMetadataFromExplores(
+         compiled.explores as unknown as Explore[],
+         entryRelativePath,
+         false,
+         "file://" + entryAbs,
+         modelGivens,
+         modelAuthorize,
+         nonQueryableSourceNames,
+         source,
+         packageRoot,
+      );
    }
 
    test("deep-import named join emits an AUTHORIZE (+ GIVENS) row for the join-only source", async () => {
@@ -2307,35 +2296,24 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
       files: Record<string, string>,
       entryRelativePath: string,
    ) {
-      for (const [rel, contents] of Object.entries(files)) {
-         const abs = path.join(packageRoot, rel);
-         await mkdir(path.dirname(abs), { recursive: true });
-         await writeFile(abs, contents, "utf-8");
-      }
-      const conn = new DuckDBConnection("duckdb");
-      try {
-         await conn.runRawSQL("CREATE OR REPLACE TABLE t AS SELECT 1 as id");
-         const runtime = new Runtime({
-            urlReader: new FileURLReader(),
-            connection: conn,
-         });
-         const entryAbs = path.join(packageRoot, entryRelativePath);
-         const compiled = await runtime.getModel(new URL("file://" + entryAbs));
-         const modelAuthorize = sourceExtraction.extractAuthorizeFromModel(
-            compiled,
-            entryRelativePath,
-         );
-         return sourceExtraction.extractMetadataFromExplores(
-            compiled.explores as unknown as Explore[],
-            entryRelativePath,
-            false,
-            "file://" + entryAbs,
-            [],
-            modelAuthorize,
-         );
-      } finally {
-         await conn.close();
-      }
+      const compiled = await compileEntryModel(
+         packageRoot,
+         files,
+         entryRelativePath,
+      );
+      const entryAbs = path.join(packageRoot, entryRelativePath);
+      const modelAuthorize = sourceExtraction.extractAuthorizeFromModel(
+         compiled,
+         entryRelativePath,
+      );
+      return sourceExtraction.extractMetadataFromExplores(
+         compiled.explores as unknown as Explore[],
+         entryRelativePath,
+         false,
+         "file://" + entryAbs,
+         [],
+         modelAuthorize,
+      );
    }
 
    const authorizeFor = (
@@ -2735,29 +2713,18 @@ describe("sourceExtraction.extractMetadataFromExplores — N-3 composite-source 
       files: Record<string, string>,
       entryRelativePath: string,
    ) {
-      for (const [rel, contents] of Object.entries(files)) {
-         const abs = path.join(packageRoot, rel);
-         await mkdir(path.dirname(abs), { recursive: true });
-         await writeFile(abs, contents, "utf-8");
-      }
-      const conn = new DuckDBConnection("duckdb");
-      try {
-         await conn.runRawSQL("CREATE OR REPLACE TABLE t AS SELECT 1 as id");
-         const runtime = new Runtime({
-            urlReader: new FileURLReader(),
-            connection: conn,
-         });
-         const entryAbs = path.join(packageRoot, entryRelativePath);
-         const compiled = await runtime.getModel(new URL("file://" + entryAbs));
-         return sourceExtraction.extractMetadataFromExplores(
-            compiled.explores as unknown as Explore[],
-            entryRelativePath,
-            false,
-            "file://" + entryAbs,
-         );
-      } finally {
-         await conn.close();
-      }
+      const compiled = await compileEntryModel(
+         packageRoot,
+         files,
+         entryRelativePath,
+      );
+      const entryAbs = path.join(packageRoot, entryRelativePath);
+      return sourceExtraction.extractMetadataFromExplores(
+         compiled.explores as unknown as Explore[],
+         entryRelativePath,
+         false,
+         "file://" + entryAbs,
+      );
    }
 
    const authorizeFor = (

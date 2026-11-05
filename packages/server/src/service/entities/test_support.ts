@@ -16,6 +16,7 @@ import {
    type LookupConnection,
    Malloy,
    type Model,
+   Runtime,
 } from "@malloydata/malloy";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -161,6 +162,68 @@ async function compilePackageModelFiles(
 }
 
 export const packageCompilationService = { compilePackageModelFiles };
+
+/**
+ * Write `files` (models and the data they read) to a temp package, compile
+ * every `.malloy` among them as a load does, extract the package's entities,
+ * and remove the package.
+ */
+export async function compileFixture(
+   files: Record<string, string>,
+   manifest?: PackageManifest,
+): Promise<ModelCompileResult[]> {
+   const ws = await writeWorkspace(
+      Object.entries(files).map(([relpath, contents]) => ({
+         relpath,
+         contents,
+      })),
+   );
+   const lookup = await ConnectionLookup.getInstance([], ws.dir);
+   try {
+      const modelFiles = Object.keys(files)
+         .filter((relpath) => relpath.endsWith(".malloy"))
+         .sort()
+         .map((relpath) => ({
+            packageRootPath: ws.dir,
+            absolutePath: path.join(ws.dir, relpath),
+            relativePath: relpath,
+         }));
+      return await compilePackageModelFiles({ modelFiles, manifest }, lookup);
+   } finally {
+      await lookup.dispose();
+      await ws.cleanup();
+   }
+}
+
+/**
+ * Write `files` under `root` and compile `entry` against an in-process DuckDB
+ * holding a one-row table `t`, for a test that walks the compiled explores
+ * itself.
+ */
+export async function compileEntryModel(
+   root: string,
+   files: Record<string, string>,
+   entry: string,
+): Promise<Model> {
+   for (const [relpath, contents] of Object.entries(files)) {
+      const absolutePath = path.join(root, relpath);
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, contents, "utf-8");
+   }
+   const connection = new DuckDBConnection("duckdb");
+   try {
+      await connection.runRawSQL("CREATE OR REPLACE TABLE t AS SELECT 1 as id");
+      const runtime = new Runtime({
+         urlReader: new FileURLReader(),
+         connection,
+      });
+      return await runtime.getModel(
+         new URL("file://" + path.join(root, entry)),
+      );
+   } finally {
+      await connection.close();
+   }
+}
 
 /** The root model a package with no `explores` surfaces. */
 const INDEX_MODEL_NAME = "index.malloy";

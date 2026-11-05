@@ -18,14 +18,10 @@
  * No external services — DuckDB runs in-process over a CSV written to a tmpdir.
  */
 
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { describe, test } from "bun:test";
 import assert from "node:assert";
-import path from "path";
-import { writeWorkspace, type Workspace } from "./test_support";
-import { packageCompilationService } from "./test_support";
-import { ConnectionLookup } from "./test_support";
+import { compileFixture } from "./test_support";
 import { EntitiesValidationError } from "./extract";
-import type { FilePointer } from "./test_support";
 
 // `report_id::number` is the required (no-default) parameter; `channel` is an
 // #(index) dimension on that parameterized source (as in
@@ -60,41 +56,13 @@ const INDEX_ON_MEASURE_MODEL = `source: orders is duckdb.table('orders.csv') ext
 `;
 
 describe("dim-index publish-time placement guards (integration)", () => {
-   let ws: Workspace;
-
-   beforeEach(async () => {
-      ws = await writeWorkspace(
-         [
-            {
-               relpath: "orders.csv",
-               contents: "rep_id,channel_name\n1,web\n2,store\n",
-            },
-         ],
-         "malloy-param-source-",
-      );
-   });
-
-   afterEach(async () => {
-      await ws.cleanup();
-   });
-
-   async function compile(modelContents: string) {
-      const { writeFile } = await import("node:fs/promises");
-      const absolutePath = path.join(ws.dir, "model.malloy");
-      await writeFile(absolutePath, modelContents);
-      const lookup = await ConnectionLookup.getInstance([], ws.dir);
-      const file: FilePointer = {
-         packageRootPath: ws.dir,
-         absolutePath,
-         relativePath: "model.malloy",
-      };
-      return (
-         await packageCompilationService.compilePackageModelFiles(
-            { modelFiles: [file] },
-            lookup,
-         )
+   const compile = async (model: string) =>
+      (
+         await compileFixture({
+            "orders.csv": "rep_id,channel_name\n1,web\n2,store\n",
+            "model.malloy": model,
+         })
       )[0];
-   }
 
    test("refuses an #(index) dimension on a source with a REQUIRED parameter", async () => {
       await assert.rejects(

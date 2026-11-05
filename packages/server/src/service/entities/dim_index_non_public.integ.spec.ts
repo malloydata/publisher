@@ -19,13 +19,9 @@
  * No external services — DuckDB runs in-process over a CSV written to a tmpdir.
  */
 
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { describe, test } from "bun:test";
 import assert from "node:assert";
-import path from "path";
-import { writeWorkspace, type Workspace } from "./test_support";
-import { packageCompilationService } from "./test_support";
-import { ConnectionLookup } from "./test_support";
-import type { FilePointer } from "./test_support";
+import { compileFixture } from "./test_support";
 import type { ModelCompileResult } from "./internal_types";
 
 /** The (source, field) pairs that carry an `#(index)` fingerprint. */
@@ -73,41 +69,13 @@ const INTERNAL_INDEXED_MEASURE_MODEL = `source: orders is duckdb.table('orders.c
 `;
 
 describe("dim-index non-public #(index) skip (integration)", () => {
-   let ws: Workspace;
-
-   beforeEach(async () => {
-      ws = await writeWorkspace(
-         [
-            {
-               relpath: "orders.csv",
-               contents: "rep_id,channel_name\n1,web\n2,store\n",
-            },
-         ],
-         "malloy-non-public-",
-      );
-   });
-
-   afterEach(async () => {
-      await ws.cleanup();
-   });
-
-   async function compile(modelContents: string) {
-      const { writeFile } = await import("node:fs/promises");
-      const absolutePath = path.join(ws.dir, "model.malloy");
-      await writeFile(absolutePath, modelContents);
-      const lookup = await ConnectionLookup.getInstance([], ws.dir);
-      const file: FilePointer = {
-         packageRootPath: ws.dir,
-         absolutePath,
-         relativePath: "model.malloy",
-      };
-      return (
-         await packageCompilationService.compilePackageModelFiles(
-            { modelFiles: [file] },
-            lookup,
-         )
+   const compile = async (model: string) =>
+      (
+         await compileFixture({
+            "orders.csv": "rep_id,channel_name\n1,web\n2,store\n",
+            "model.malloy": model,
+         })
       )[0];
-   }
 
    test("skips an internal #(index) dimension: SUCCESS, no entity", async () => {
       const result = await compile(INTERNAL_INDEXED_DIM_MODEL);

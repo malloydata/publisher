@@ -11,13 +11,8 @@
  */
 
 import { expect, test } from "bun:test";
-import path from "node:path";
 import { toApiEntities } from "./to_api";
-import {
-   ConnectionLookup,
-   packageCompilationService,
-   writeWorkspace,
-} from "./test_support";
+import { compileFixture } from "./test_support";
 
 const ORDERS_CSV =
    "order_id,channel_name,region,rep_id,tenant_id,amount\n1,web,us,1,t1,5\n2,store,eu,2,t2,7\n";
@@ -97,41 +92,17 @@ source: served is open_orders extend {
 
 for (const [name, c] of Object.entries(CASES)) {
    test(`the ${name} package's entities`, async () => {
-      const ws = await writeWorkspace([
-         { relpath: "orders.csv", contents: ORDERS_CSV },
-         { relpath: "reps.csv", contents: REPS_CSV },
-         ...Object.entries(c.files).map(([relpath, contents]) => ({
-            relpath,
-            contents,
-         })),
-      ]);
-      const lookup = await ConnectionLookup.getInstance([], ws.dir);
-      try {
-         const results =
-            await packageCompilationService.compilePackageModelFiles(
-               {
-                  modelFiles: Object.keys(c.files)
-                     .sort()
-                     .map((relpath) => ({
-                        packageRootPath: ws.dir,
-                        absolutePath: path.join(ws.dir, relpath),
-                        relativePath: relpath,
-                     })),
-                  manifest: c.manifest,
-               },
-               lookup,
-            );
-         expect(results.filter((r) => r.compileStatus === "ERROR").length).toBe(
-            c.errors ?? 0,
-         );
-         // A compile error's text is the compiler's, not the extraction's.
-         const api = toApiEntities(results).map((m) =>
-            m.error ? { ...m, error: "<compile error>" } : m,
-         );
-         expect(api).toMatchSnapshot();
-      } finally {
-         await lookup.dispose();
-         await ws.cleanup();
-      }
+      const results = await compileFixture(
+         { "orders.csv": ORDERS_CSV, "reps.csv": REPS_CSV, ...c.files },
+         c.manifest,
+      );
+      expect(results.filter((r) => r.compileStatus === "ERROR").length).toBe(
+         c.errors ?? 0,
+      );
+      // A compile error's text is the compiler's, not the extraction's.
+      const api = toApiEntities(results).map((m) =>
+         m.error ? { ...m, error: "<compile error>" } : m,
+      );
+      expect(api).toMatchSnapshot();
    }, 120_000);
 }

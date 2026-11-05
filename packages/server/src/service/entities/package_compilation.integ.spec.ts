@@ -20,13 +20,9 @@
  * No external services — DuckDB runs in-process over CSVs written to a tmpdir.
  */
 
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { describe, test } from "bun:test";
 import assert from "node:assert";
-import path from "path";
-import { writeWorkspace, type Workspace } from "./test_support";
-import { packageCompilationService } from "./test_support";
-import { ConnectionLookup } from "./test_support";
-import type { FilePointer } from "./test_support";
+import { compileFixture } from "./test_support";
 
 // A standalone top-level source `people`, plus `principals` which both has its
 // own fields (a column, a measure, a dimension) AND an inline-defined
@@ -61,49 +57,14 @@ source: principals_viewed is duckdb.table('principals.csv') extend {
 `;
 
 describe("extractEntitiesFromExplores (nested-index join, integration)", () => {
-   let ws: Workspace;
-   let pkgRoot: string;
-
-   beforeEach(async () => {
-      // A `people` table (the join target / standalone source) and a
-      // `principals` table (the owning source). Column names are snake_case so
-      // we can assert the exact stored field name.
-      ws = await writeWorkspace(
-         [
-            {
-               relpath: "people.csv",
-               contents: "nconst,primary_name\nnm1,Tom Hanks\nnm2,Meg Ryan\n",
-            },
-            {
-               relpath: "principals.csv",
-               contents:
-                  "tconst,nconst,category\ntt1,nm1,actor\ntt2,nm2,actor\n",
-            },
-            { relpath: "model.malloy", contents: MODEL },
-         ],
-         "malloy-nested-join-",
-      );
-      pkgRoot = ws.dir;
-   });
-
-   afterEach(async () => {
-      await ws.cleanup();
-   });
-
    // Compile MODEL against in-process DuckDB and return the extracted entities.
    async function compileEntities() {
-      const lookup = await ConnectionLookup.getInstance([], pkgRoot);
-      const file: FilePointer = {
-         packageRootPath: pkgRoot,
-         absolutePath: path.join(pkgRoot, "model.malloy"),
-         relativePath: "model.malloy",
-      };
-      const result = (
-         await packageCompilationService.compilePackageModelFiles(
-            { modelFiles: [file] },
-            lookup,
-         )
-      )[0];
+      const [result] = await compileFixture({
+         "people.csv": "nconst,primary_name\nnm1,Tom Hanks\nnm2,Meg Ryan\n",
+         "principals.csv":
+            "tconst,nconst,category\ntt1,nm1,actor\ntt2,nm2,actor\n",
+         "model.malloy": MODEL,
+      });
       assert.strictEqual(
          result.compileStatus,
          "SUCCESS",

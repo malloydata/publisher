@@ -41,9 +41,14 @@ const deleteMaterialization = mock(
    ) => Promise.resolve({ data: undefined }),
 );
 
+const getPackageBuildPlan = mock(
+   (_environmentName: string, _packageName: string, _versionId?: string) =>
+      Promise.resolve({ data: { servedRevision: "r1", buildPlan: null } }),
+);
+
 mockServerProvider(
    {
-      packages: { getPackage: pending },
+      packages: { getPackage: pending, getPackageBuildPlan },
       materializations: { listMaterializations, deleteMaterialization },
    },
    { mutable: true },
@@ -55,6 +60,7 @@ beforeEach(() => {
    clearCache();
    listMaterializations.mockClear();
    deleteMaterialization.mockClear();
+   getPackageBuildPlan.mockClear();
 });
 
 async function deleteTheRun(resourceUri: string) {
@@ -79,6 +85,8 @@ it("lists and deletes a pinned version's run by that version", async () => {
    await deleteTheRun("publisher://environments/env/packages/pkg?versionId=v2");
 
    expect(listMaterializations.mock.calls[0]?.[4]).toBe("v2");
+   // The detail view's build plan is the pinned version's, from its own route.
+   expect(getPackageBuildPlan.mock.calls[0]).toEqual(["env", "pkg", "v2"]);
    expect(deleteMaterialization.mock.calls[0]).toEqual([
       "env",
       "pkg",

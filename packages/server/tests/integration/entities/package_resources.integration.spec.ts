@@ -17,11 +17,8 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import type { components } from "../../../src/api";
-import { startRestE2E } from "../../harness/rest_e2e";
+import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
 type PackageEntities = components["schemas"]["PackageEntities"];
 type PackageBuildPlan = components["schemas"]["PackageBuildPlan"];
@@ -81,85 +78,25 @@ const STATUS_ENTRY_FIELDS = new Set([
 ]);
 
 describe("the package resource and its sub-resources", () => {
-   let env: Awaited<ReturnType<typeof startRestE2E>> | undefined;
-   let baseUrl = "";
-   let tempDir = "";
-
-   function writePackage(
+   let r: ResourcesEnv;
+   const get = (rel: string) => r.get(rel);
+   const publish = (name: string, location: string) =>
+      r.publish(name, location);
+   const writePackage = (
       name: string,
       files: Record<string, string>,
-      manifest: Record<string, unknown> = {},
-   ): string {
-      const dir = path.join(tempDir, name);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name, ...manifest }),
-      );
-      for (const [file, text] of Object.entries(files)) {
-         fs.writeFileSync(path.join(dir, file), text);
-      }
-      return dir;
-   }
-
-   async function publish(
-      name: string,
-      location: string,
-   ): Promise<{ status: number; json: Record<string, unknown> }> {
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
-         {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name, location }),
-         },
-      );
-      return {
-         status: res.status,
-         json: (await res.json()) as Record<string, unknown>,
-      };
-   }
-
-   async function get(
-      rel: string,
-   ): Promise<{ status: number; json: Record<string, unknown> }> {
-      const res = await fetch(`${baseUrl}/api/v0${rel}`);
-      return {
-         status: res.status,
-         json: (await res.json()) as Record<string, unknown>,
-      };
-   }
-
-   const pkgUrl = (name: string, sub = "") =>
-      `/environments/${ENV_NAME}/packages/${name}${sub}`;
+      manifest?: Record<string, unknown>,
+   ) => r.writePackage(name, files, manifest);
+   const pkgUrl = (name: string, sub = "") => r.pkgUrl(name, sub);
 
    async function statusEntry(name: string): Promise<Record<string, unknown>> {
-      const { json } = await get("/status");
-      const environments = json.environments as {
-         name: string;
-         packages: Record<string, unknown>[];
-      }[];
-      const entry = environments
-         .find((e) => e.name === ENV_NAME)
-         ?.packages.find((p) => p.name === name);
+      const [entry] = await r.statusEntries(name);
       expect(entry).toBeDefined();
       return entry!;
    }
 
    beforeAll(async () => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "package-resources-"));
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const created = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "content-type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [],
-            connections: [],
-         }),
-      });
-      expect(created.status).toBeLessThan(300);
+      r = await startResourcesEnv(ENV_NAME);
       const location = writePackage(
          "shop",
          { "orders.malloy": ORDERS, "helper.malloy": HELPER },
@@ -173,13 +110,7 @@ describe("the package resource and its sub-resources", () => {
       else process.env[INLINE] = savedInline;
    });
 
-   afterAll(async () => {
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      }).catch(() => undefined);
-      await env?.stop();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-   });
+   afterAll(() => r.stop());
 
    it("GET …/entities reports every model's entities, off-surface files included", async () => {
       const { status, json } = await get(pkgUrl("shop", "/entities"));
@@ -229,6 +160,22 @@ describe("the package resource and its sub-resources", () => {
       expect(index.json.status).toBeString();
 
       expect((await get(pkgUrl("nope", "/build-plan"))).status).toBe(404);
+   }, 60_000);
+
+   it("GET …/classification reads the loaded package, and 404s for an unknown one", async () => {
+      const { status, json } = await get(pkgUrl("shop", "/classification"));
+      expect(status).toBe(200);
+      // Nothing in the package is classified.
+      expect(json).toEqual({ sources: [] });
+      expect((await get(pkgUrl("nope", "/classification"))).status).toBe(404);
+   }, 60_000);
+
+   it("an empty servedRevision pins nothing", async () => {
+      for (const sub of ["/entities", "/build-plan"]) {
+         expect(
+            (await get(pkgUrl("shop", `${sub}?servedRevision=`))).status,
+         ).toBe(200);
+      }
    }, 60_000);
 
    it("a read pinned to a load is served while that load serves, and refused once the package reloads", async () => {
