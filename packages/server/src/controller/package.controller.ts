@@ -296,12 +296,18 @@ export class PackageController {
       packageName: string,
       versionId?: unknown,
    ): Promise<NonNullable<ApiPackage["embeddingIndex"]>> {
-      // Resolves the package (and its version) so an unknown one is a 404.
-      await this.loadedPackage(environmentName, packageName, versionId);
+      // The version named, so an unknown one is a 404 and a pinned read
+      // describes that version's index, not latest's.
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
       return getPackageEmbeddingStatus(
          this.environmentStore,
          environmentName,
          packageName,
+         pkg,
       );
    }
 

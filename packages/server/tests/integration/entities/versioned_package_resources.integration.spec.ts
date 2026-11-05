@@ -94,7 +94,13 @@ describe("a versioned package's sub-resources", () => {
    }, 60_000);
 
    it("an unknown version is a 404 and a malformed one a 400, on every sub-resource", async () => {
-      for (const sub of ["/status", "/entities", "/build-plan"]) {
+      for (const sub of [
+         "/status",
+         "/entities",
+         "/build-plan",
+         "/classification",
+         "/embedding-index",
+      ]) {
          expect((await at(sub, "9.9.9")).status).toBe(404);
          expect((await at(sub, "two")).status).toBe(400);
       }
