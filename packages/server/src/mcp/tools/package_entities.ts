@@ -733,6 +733,17 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // stand-in with no compiled model; fields then report their own note.
          // Record members this source may still index (collectRecordMembers).
          const memberBudget = { left: MAX_RECORD_MEMBERS_PER_SOURCE };
+         // The source's visible fields: a hidden one (`include { public: ... }`)
+         // is not in its schema, so nothing of it is indexed.
+         const visible = new Set(
+            (
+               (
+                  sourceInfo as {
+                     schema?: { fields?: Array<{ name?: string }> };
+                  }
+               ).schema?.fields ?? []
+            ).map((f) => f.name),
+         );
          const lineage = modelDef
             ? readSourceClassifications(
                  findIrSource(modelDef, sourceName)?.fields,
@@ -881,8 +892,13 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             });
             // A dimension defined as another (`addr is delivery`) is a
             // second spelling of that record: its members are listed once,
-            // under the record's own name.
-            if (field.kind === "dimension" && !fieldProvenance?.aliasOf) {
+            // under the record's own name. Unless that record is hidden
+            // (renamed, then `include { public: ship_to }`): then the alias
+            // is the only spelling, and lists them.
+            const aliasOfVisible =
+               fieldProvenance?.aliasOf !== undefined &&
+               visible.has(fieldProvenance.aliasOf);
+            if (field.kind === "dimension" && !aliasOfVisible) {
                collectRecordMembers({
                   type: (field as { type?: FieldType }).type,
                   path: field.name,

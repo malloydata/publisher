@@ -65,7 +65,7 @@ import type { Cluster, ConnectResult, PeerSource } from "./connect";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 import { keptValues, PATHS_SHOWN, type JudgeVerdict } from "./judge";
-import { parseRouteKey, routesFrom } from "./routes";
+import { parseRouteKey, routesFrom, throughFanout } from "./routes";
 
 /** Distinct values the query-time lookup reads for a gated dimension. */
 const GATED_LOOKUP_LIMIT = 2_000;
@@ -512,7 +512,9 @@ async function place(
          doc,
          ...(node.doc ? { embedDoc: node.doc } : {}),
          joinPath: path.join("."),
-         ...(entry.fanout ? { relationship: entry.fanout } : {}),
+         ...(throughFanout(entry.fanout, node.relationship)
+            ? { relationship: throughFanout(entry.fanout, node.relationship) }
+            : {}),
          ...(node.dataType ? { dataType: node.dataType } : {}),
          ...(node.code ? { code: node.code } : {}),
       };
@@ -556,15 +558,8 @@ function routeRow(
       doc: node.displayDoc ? `${node.displayDoc} ${note}` : note,
       ...(node.doc ? { embedDoc: node.doc } : {}),
       joinPath,
-      // The wider of the join's and the field's own: a member of a repeated
-      // record (`items.sku`) fans out even behind a join_one.
-      ...(hop || node.relationship
-         ? {
-              relationship:
-                 node.relationship === "many"
-                    ? "many"
-                    : (hop?.fanout ?? node.relationship),
-           }
+      ...(throughFanout(hop?.fanout, node.relationship)
+         ? { relationship: throughFanout(hop?.fanout, node.relationship) }
          : {}),
       ...(node.dataType ? { dataType: node.dataType } : {}),
       ...(node.code ? { code: node.code } : {}),

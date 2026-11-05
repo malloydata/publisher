@@ -10,7 +10,7 @@ import {
    type FcjIndexFixture,
 } from "../../test_helpers/fcj_index_fixture";
 import { find, KINDS_BY_FIND_TARGET } from "../context/find";
-import { routeList } from "../context/routes";
+import { routeList, routeOptions, throughFanout } from "../context/routes";
 import { MAX_RECORD_MEMBERS_PER_SOURCE } from "./package_entities";
 
 // A DuckDB STRUCT compiles to the same Malloy record type as a BigQuery
@@ -22,8 +22,12 @@ const SQL = `select 1 as order_id,
   [{'sku': 'a', 'qty': 2}, {'sku': 'b', 'qty': 1}] as lines,
   ['gift', 'rush'] as tags,
   7 as customer_id`;
-const MODEL = `
-source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile""")
+const MODEL = `##! experimental.access_modifiers
+source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile, [{'sku': 'x'}] as items""")
+
+source: renamed is duckdb.sql("""select 1 as k, {'city': 'Denver'} as delivery""") extend {
+  dimension: ship_to is delivery
+} include { public: k, ship_to }
 
 #(doc) One row per order.
 source: orders is duckdb.sql("""${SQL}""") extend {
@@ -116,6 +120,29 @@ describe("record members (#1526)", () => {
       ]);
    });
 
+   it("says many for a repeated-record member reached through a join_one, wherever the route is shown", () => {
+      const sku = fixture.index.catalog.nodes.get(
+         "dimension:customers@shop.malloy:items.sku",
+      )!;
+      expect(sku.relationship).toBe("many");
+      // The route options the judge is shown.
+      expect(
+         routeOptions(
+            fixture.index.catalog,
+            sku,
+            new Set(["orders@shop.malloy"]),
+            3,
+         ).map((o) => [o.id, o.fanout]),
+      ).toEqual([["dimension:orders:customer.items.sku", "many"]]);
+      expect(throughFanout("one", "many")).toBe("many");
+      expect(throughFanout("one", undefined)).toBe("one");
+   });
+
+   it("lists a renamed record's members under the new name when the raw column is hidden", () => {
+      expect(entity("renamed", "ship_to.city")?.recordPath).toBe("ship_to");
+      expect(entity("renamed", "delivery.city")).toBeUndefined();
+   });
+
    it("gives a member its record's classification", () => {
       expect(entity("orders", "billing_details")?.classifications).toEqual([
          "pci",
@@ -136,8 +163,8 @@ describe("record members (#1526)", () => {
    it("lists a record's members once, under its own name, not again under an alias of the record", () => {
       expect(entity("orders", "ship_to")?.dataType).toBe("record");
       expect(
-         fixture.pkgIndex.directEntities.filter((e) =>
-            e.name.startsWith("ship_to."),
+         fixture.pkgIndex.directEntities.filter(
+            (e) => e.source === "orders" && e.name.startsWith("ship_to."),
          ),
       ).toEqual([]);
    });
