@@ -69,6 +69,34 @@ class and reports `copied` as its input.
   the column, or the measure, and the lineage does the rest.
 - A hidden field (`private:`, `internal:`) is still an input: a public field derived from a
   private identifier carries the identifier's class.
+- A relabelled copy passes its input's classes on. A field that is a plain reference to
+  another (`dimension: yr is birth_year`, with or without a cast) and declares a lower class does
+  not drop the input's classes for whatever reads the copy: a field or view that reads `yr` carries
+  `birth_year`'s classes as well as `yr`'s own declaration.
+- A read Publisher cannot resolve is not skipped. A field whose expression reads something
+  that does not resolve against the source (a name a view declared with `extend:`, a reference
+  through a join the walk could not follow) has no known class. Under `#(carries)` that is a
+  refusal, not an unclassified pass.
+
+## A declared class below its inputs
+
+A declared class wins, but a declaration that is lower than what the field reads is the shape of a
+mistake or of a de-identification, and Publisher cannot tell which. It treats the two kinds of
+field differently:
+
+- A computed field warns. `dimension: birth_year is pick year(BIRTHDATE) when age < 90 else null`
+  with `#(classification) "phi.quasi_identifier"` over a `BIRTHDATE` classified
+  `phi.direct_identifier` loads, with a `classification-downgrade` warning that names the field and
+  the classes it drops. The warning is in `GET …/packages/{pkg}` `warnings` and `get_status`, and a
+  [compliance review](compliance-review.md) reports it as a finding for a person to decide.
+- A passthrough refuses, under `#(carries)`. A plain copy (a reference, optionally cast) cannot
+  de-identify anything, so a copy that declares a class below its input's refuses the package load.
+  Remove the declaration so the copy keeps its input's class, or derive a new field with a
+  function that does the de-identifying.
+
+A declared class is a statement of what the field is, and Publisher checks declarations, not
+truth: nothing reads the values. A field declared `none` whose values are SSNs loads. Proving the
+values match the classes is the review's value check.
 
 ## `#(carries)`: the classes an entry point may expose
 
@@ -78,10 +106,22 @@ entry point, who may enter and what they may see, sit on the same object and can
 that extends another and declares none inherits the base's list, the way it inherits a gate; its
 own declaration replaces it.
 
-**A leak refuses the package load.** When a dimension or measure reachable from a `#(carries)`
-source, its own, inherited, inferred, or reached through a join three deep, carries any class not
+**A leak refuses the package load.** When a dimension, measure or view reachable from a
+`#(carries)` source, its own, inherited, inferred, or reached through a join, carries any class not
 on the list, or carries no class at all, the package does not load, the way a gate that does not
-parse refuses it. The error names every leak, with the lineage it came through:
+parse refuses it. The walk covers:
+
+- views: a view returns what it groups by, aggregates and filters on, so the classes of every
+  field it references count. A view that reads a field with no class, or one it declares itself
+  with `extend:`, refuses; declare the field on the source and read it from there. A view whose
+  references cannot be read refuses too.
+- `->` query sources: the fields of `source: s is base -> { ... }` read what the query reads.
+- joins hidden from discovery: a field reached through a join carries the class declared where it
+  lives, whether or not the joined source is published.
+- fields a source declares as copies of others, as described above.
+
+A read that cannot be resolved fails closed: the field is treated as unknown and refused, not
+skipped. The error names every leak, with the lineage it came through:
 
 ```
 source research (index.malloy) carries [phi.clinical, phi.financial, none] but exposes masked,
@@ -160,17 +200,21 @@ Both follow what a caller can reach, not what a file declares:
 - Only models on the package's [surface](discovery-and-access.md) are read, and only the sources
   their `export { … }` publishes. A hidden base is not asked to classify its fields for its own
   sake.
-- A published source's joined fields count, under their dotted path (`person.ssn`), three joins
-  deep. A hidden base reached through a join from a published source is therefore reported
+- A published source's joined fields count, under their dotted path (`person.ssn`), up to 16
+  joins deep and 1024 join paths per source. Past either bound Publisher cannot read what the
+  source's fields carry, so a `#(carries)` source refuses rather than assume the rest is clean:
+  drop the joins past the bound, or split the source. A hidden base reached through a join from a published source is therefore reported
   **there**, which is where a caller reads it. Classify the field where it is declared; the class
   rides every join to it.
-- Fields with an access modifier (`private:`, `internal:`) never reach a caller, so they are not
-  demanded a class and cannot leak. They still feed lineage.
+- Fields with an access modifier (`private:`, `internal:`) are not demanded a class. They still
+  feed lineage, so a public field derived from one carries its class. A caller's own query can
+  re-expose an `internal:` field, so `internal:` is not a barrier; use `private:` to keep a column
+  off a source's surface.
 - A source locked with `#(authorize) false` publishes nothing a caller can read, so coverage does
   not report its own fields (its fields reached through a join from an open source are). A
   `#(carries)` on it is still enforced.
-- Views and joins are not classified; a view is a query over classified fields, and a join names a
-  relationship.
+- A view is not classified itself; a view under `#(carries)` is checked by the classes of the
+  fields it reads. A join names a relationship and is not classified.
 
 ## What it is not
 
