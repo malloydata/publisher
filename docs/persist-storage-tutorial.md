@@ -363,15 +363,14 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 ```
 
 Confirm the source is bound for storage serve — the warning is gone from the
-package, and the package's entry in `GET /api/v0/status` shows the routing in
-`storageServeBindings`:
+package, and its serving state (`GET …/packages/{pkg}/status`) shows the routing
+in `storageServeBindings`:
 
 ```bash
 curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial \
   | jq '{warnings}'
-curl -s http://localhost:4000/api/v0/status \
-  | jq '.environments[] | select(.name == "examples") | .packages[]
-        | select(.name == "persist-tutorial") | {storageServeBindings}'
+curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/status \
+  | jq '{storageServeBindings}'
 ```
 
 ```json

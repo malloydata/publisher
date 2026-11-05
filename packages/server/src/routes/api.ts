@@ -662,6 +662,16 @@ function registerPackageRoutes(
    // What moved off Package: each a read of the loaded package, never part
    // of a listing or the `/status` poll.
    app.get(
+      `${pkg}/status`,
+      apiRoute((req) =>
+         packageController.getPackageServingState(
+            req.params.environmentName,
+            req.params.packageName,
+            req.query.versionId,
+         ),
+      ),
+   );
+   app.get(
       `${pkg}/entities`,
       apiRoute((req) =>
          packageController.getPackageEntities(

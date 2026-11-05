@@ -206,7 +206,7 @@ def served_model_path(base: str, environment: str, package: str,
 
 def package_identity(base: str, environment: str, package: str) -> dict[str, str]:
     """What the server says it is serving: `sourceContentSha`, `servedRevision`,
-    read from the package's `/status` entry.
+    read from the package's serving state (`GET …/packages/{pkg}/status`).
 
     Take these rather than computing your own. `sourceContentSha` is a content
     hash over EVERY model path in the package, so it moves when an imported file
@@ -220,8 +220,17 @@ def package_identity(base: str, environment: str, package: str) -> dict[str, str
     set of goldens living inside the package needs its own hash.
     """
     keys = ("sourceContentSha", "servedRevision")
-    # The package's `/status` entry carries them; a versioned package has one
-    # entry per version held, and the one serving `latest` is the answer.
+    pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"
+                f"/packages/{urllib.parse.quote(package)}")
+    # The package's serving state; for a versioned package, its `latest`'s.
+    try:
+        d = get_json(base, f"{pkg_path}/status")
+        if any(isinstance(d.get(k), str) for k in keys):
+            return {k: d[k] for k in keys if isinstance(d.get(k), str)}
+    except Exception:                                   # noqa: BLE001
+        pass
+    # A server from before that route: the package's `/status` entry carries
+    # them, one entry per version held, and the one serving `latest` answers.
     try:
         status = get_json(base, "api/v0/status")
         for env in status.get("environments") or []:
@@ -236,11 +245,9 @@ def package_identity(base: str, environment: str, package: str) -> dict[str, str
                 return {k: entry[k] for k in keys if isinstance(entry.get(k), str)}
     except Exception:                                   # noqa: BLE001
         pass
-    # A server from before the `/status` entry carried them has them on the
-    # package resource.
+    # Older still: on the package resource.
     try:
-        d = get_json(base, f"api/v0/environments/{urllib.parse.quote(environment)}"
-                           f"/packages/{urllib.parse.quote(package)}")
+        d = get_json(base, pkg_path)
     except Exception:                                   # noqa: BLE001
         return {}
     return {k: d[k] for k in keys if isinstance(d.get(k), str)}

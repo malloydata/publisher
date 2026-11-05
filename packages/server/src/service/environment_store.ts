@@ -1671,7 +1671,7 @@ export class EnvironmentStore {
 
       const status: {
          timestamp: number;
-         environments: Array<components["schemas"]["Environment"]>;
+         environments: Array<components["schemas"]["ServerStatusEnvironment"]>;
          initialized: boolean;
          frozenConfig: boolean;
          operationalState: components["schemas"]["ServerStatus"]["operationalState"];
@@ -1742,6 +1742,9 @@ export class EnvironmentStore {
                const _environment = {
                   ...environment,
                   connections: _connections,
+                  // Every listed entry carries its name (the listing sets it).
+                  packages:
+                     packages as components["schemas"]["PackageStatusEntry"][],
                };
                environment.connections = _connections;
                status.environments.push(_environment);

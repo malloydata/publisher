@@ -34,6 +34,7 @@ import { changedFields } from "./versioned_patch";
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageEntities = components["schemas"]["PackageEntities"];
 type ApiPackageBuildPlan = components["schemas"]["PackageBuildPlan"];
+type ApiPackageServingState = components["schemas"]["PackageServingState"];
 type ApiClassificationSummary = components["schemas"]["ClassificationSummary"];
 
 /**
@@ -177,6 +178,22 @@ export class PackageController {
          false,
       );
       return environment.getPackage(packageName, false, { versionId });
+   }
+
+   /**
+    * `GET …/status`: how this server holds the package (or the named version)
+    * right now. Never loads it.
+    */
+   public async getPackageServingState(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiPackageServingState> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      return environment.describeServingState(packageName, versionId);
    }
 
    /**

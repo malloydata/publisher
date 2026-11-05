@@ -139,7 +139,7 @@ Problems fall in two classes. **Security** problems drop the whole agent, with a
 
 **Trust.** An asset is copied into an app unread and runs with the viewing user's data authority wherever that app opens, previews while it is being built included. Review assets as code before adopting an agent that ships them.
 
-Two hashes say which bytes a definition came from. `sourceContentSha`, on the package's entry in `GET /api/v0/status`, covers the models, the package skill files, the `agents` object and every file an agent reads, assets included; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills, asset listing (paths and sha256s) and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
+Two hashes say which bytes a definition came from. `sourceContentSha`, in the package's serving state (`GET …/packages/{pkg}/status`), covers the models, the package skill files, the `agents` object and every file an agent reads, assets included; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills, asset listing (paths and sha256s) and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
 
 ## Where the data comes from
 

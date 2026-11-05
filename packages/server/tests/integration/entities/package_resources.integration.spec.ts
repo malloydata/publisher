@@ -8,9 +8,10 @@
  * - `GET …/entities`, `GET …/build-plan` and `GET …/embedding-index` read the
  *   loaded package, and a read pinned to a load (`servedRevision`) is refused
  *   with a 409 once the package has reloaded.
+ * - `GET …/status` reads the package's serving state without loading it.
  * - With `PUBLISHER_PACKAGE_INLINE_FIELDS=off` a package response carries only
- *   the package's own fields; the `/status` entry always carries the serving
- *   state. With it on (the default) the moved fields are still inline.
+ *   the package's own fields, and its `GET /status` entry only what a reconcile
+ *   reads. With it on (the default) the moved fields are still inline.
  * - A package whose `#(index)` or required `#(filter)` an index cannot honor is
  *   refused with a 400.
  */
@@ -49,19 +50,35 @@ source: orders is ${ROWS} extend {
 const HELPER = `source: helper is ${ROWS}
 `;
 
-/** Fields that moved off Package to a route or the `/status` entry. */
+/** Fields that moved off Package to a route. */
 const MOVED = [
    "buildPlan",
    "agents",
    "secureGivens",
    "embeddingIndex",
    "status",
+   "loaded",
+   "archiveStatus",
    "servedRevision",
    "sourceContentSha",
    "manifestBindingStatus",
    "manifestEntryCount",
    "boundManifestUri",
+   "storageServeBindings",
 ] as const;
+
+/** What a slim `GET /status` entry may carry (PackageStatusEntry). */
+const STATUS_ENTRY_FIELDS = new Set([
+   "resource",
+   "name",
+   "versionId",
+   "latestVersion",
+   "loaded",
+   "archiveStatus",
+   "status",
+   "manifestBindingStatus",
+   "boundManifestUri",
+]);
 
 describe("the package resource and its sub-resources", () => {
    let env: Awaited<ReturnType<typeof startRestE2E>> | undefined;
@@ -237,7 +254,25 @@ describe("the package resource and its sub-resources", () => {
       expect(fresh.json.servedRevision).not.toBe(revision);
    }, 120_000);
 
-   it("with inline fields off, the package carries only its own fields and the /status entry the serving state", async () => {
+   it("GET …/status reports the serving state, and 404s for an unknown package", async () => {
+      const { status, json } = await get(pkgUrl("shop", "/status"));
+      expect(status).toBe(200);
+      expect(json.name).toBe("shop");
+      expect(json.resource).toBe(`/api/v0${pkgUrl("shop")}`);
+      expect(json.status).toMatchObject({ serving: true, loading: false });
+      expect(json.servedRevision).toBe(
+         (await get(pkgUrl("shop", "/entities"))).json.servedRevision,
+      );
+      expect(json.sourceContentSha).toBeString();
+      expect(json.manifestBindingStatus).toBe("unbound");
+      expect(json.manifestEntryCount).toBe(0);
+      // A serving state, never the package's own fields.
+      expect("warnings" in json).toBe(false);
+      expect("description" in json).toBe(false);
+      expect((await get(pkgUrl("nope", "/status"))).status).toBe(404);
+   }, 60_000);
+
+   it("with inline fields off, the package carries only its own fields and the /status entry only what a reconcile reads", async () => {
       process.env[INLINE] = "off";
       const { status, json } = await get(pkgUrl("shop"));
       expect(status).toBe(200);
@@ -254,15 +289,21 @@ describe("the package resource and its sub-resources", () => {
 
       const entry = await statusEntry("shop");
       expect(entry.status).toMatchObject({ serving: true });
-      expect(entry.servedRevision).toBeString();
-      expect(entry.sourceContentSha).toBeString();
-      expect(entry.manifestBindingStatus).toBeString();
-      expect("buildPlan" in entry).toBe(false);
-      expect("agents" in entry).toBe(false);
+      expect(entry.manifestBindingStatus).toBe("unbound");
+      for (const field of Object.keys(entry)) {
+         expect(STATUS_ENTRY_FIELDS.has(field)).toBe(true);
+      }
    }, 60_000);
 
-   it("with inline fields on (the default), the moved fields are still on the package", async () => {
+   it("with inline fields on (the default), the moved fields are still on the package and its /status entry", async () => {
       delete process.env[INLINE];
+      const entry = await statusEntry("shop");
+      expect(entry.servedRevision).toBeString();
+      expect(entry.sourceContentSha).toBeString();
+      // The package's own fields too, as before: more than a slim entry.
+      expect(
+         Object.keys(entry).some((field) => !STATUS_ENTRY_FIELDS.has(field)),
+      ).toBe(true);
       const pkg = (await get(pkgUrl("shop"))).json as ApiPackage;
       expect(pkg.status).toMatchObject({ serving: true });
       expect(pkg.servedRevision).toBeString();

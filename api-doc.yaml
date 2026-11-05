@@ -2706,6 +2706,56 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/status:
+    get:
+      tags:
+        - packages
+      operationId: get-package-status
+      summary: Read how this server holds a package right now
+      description: |
+        The package's serving state on this server: whether a compiled copy
+        serves and whether a load is in progress, which load it serves
+        (`servedRevision`) and the content of that load (`sourceContentSha`),
+        and which materialized tables are bound (`manifestBindingStatus`,
+        `manifestEntryCount`, `boundManifestUri`, `storageServeBindings`).
+        For a versioned package, the named version's, or its `latest`'s.
+
+        Reading it never loads the package. A package this server knows but
+        does not hold in memory reports `status.serving` false and none of
+        the load fields. `GET /status` carries the part of this an
+        orchestrator reconciles from, for every package at once.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The package's serving state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageServingState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/entities:
     get:
       tags:
@@ -2716,9 +2766,9 @@ paths:
         What every `.malloy` model of the package declares, in the form an
         indexer reads: each source's public fields (kind, type, declaring code,
         annotations, `#(doc)`, table, join target, and an `#(index)`
-        dimension's fingerprint and policy), the facts the model states about
-        each source (doc, parameters, visibility, queryability, filters,
-        access gates), the model's givens and each source's schema. One entry
+        dimension's fingerprint), the facts the model states about each
+        source (doc, visibility, queryability, filters, access gates), the
+        model's givens and each source's schema. One entry
         per `.malloy` file, files outside `explores` included, sorted by
         `modelPath`.
 
@@ -2746,8 +2796,8 @@ paths:
           in: query
           required: false
           description: >-
-            The `servedRevision` of the load the caller read, from the
-            package's entry in `GET /status`, a package response or an earlier read. When given,
+            The `servedRevision` of the load the caller read, from
+            `GET …/packages/{packageName}/status` or an earlier read. When given,
             the request is refused with a 409 (`reason` `REVISION_CHANGED`)
             unless this server still serves that load, so a caller reading
             several resources after a load never mixes facts from two loads.
@@ -2807,8 +2857,8 @@ paths:
           in: query
           required: false
           description: >-
-            The `servedRevision` of the load the caller read, from the
-            package's entry in `GET /status`, a package response or an earlier read. When given,
+            The `servedRevision` of the load the caller read, from
+            `GET …/packages/{packageName}/status` or an earlier read. When given,
             the request is refused with a 409 (`reason` `REVISION_CHANGED`)
             unless this server still serves that load, so a caller reading
             several resources after a load never mixes facts from two loads.
@@ -4535,9 +4585,11 @@ components:
             archived version, or one not loaded since the server started) carries only
             its name and version. An orchestrator reconciles what a server holds
             from this list, so it names every version rather than only `latest`
-            or only what is in memory; `resource` keeps its shape.
+            or only what is in memory; `resource` keeps its shape. Each entry
+            carries what a reconcile reads (`PackageStatusEntry`); the rest of a
+            package's serving state is at `GET …/packages/{packageName}/status`.
           items:
-            $ref: "#/components/schemas/Environment"
+            $ref: "#/components/schemas/ServerStatusEnvironment"
         initialized:
           type: boolean
           description: Whether the server is fully initialized and ready to serve requests
@@ -4895,6 +4947,367 @@ components:
             populated by the server or applied by the client; viewers currently
             use the instance-level theme only.
 
+    PackageStatus:
+      type: object
+      description: >-
+        Server-computed, read-only: how this server holds the package right
+        now. `serving` is whether a compiled copy answers queries here;
+        `loading` is whether a load, reinstall or recompile of the package
+        is in progress here. The two are independent. A first load reports
+        `loading` without `serving`. A reload of a package that is already
+        served reports both, because the previous copy keeps answering until
+        the new one is swapped in. Steady state reports `serving` alone.
+        `loadingSince` is when the in-progress load began, so a caller can
+        bound one that never completes. Which tables a serving copy answers
+        from is a separate question, answered by `manifestBindingStatus`.
+        A publish of a package version is a load from its download until
+        it settles, and while it runs every entry of that package reports
+        `loading`. With `includeLoading=true`, once its tree has named the
+        version, a version the package does not hold yet is listed as its
+        own entry, with its `versionId`, `loaded: false` and `loading`,
+        unless an unversioned copy of the package still serves.
+
+        A package that is loading for the first time, so is not yet
+        serving, is listed only where a caller asks for it:
+        `GET /status?includeLoading=true` includes it as its name and
+        `status`. Every other listing, the environment resources included,
+        shows packages that can be queried.
+      required: [serving, loading]
+      properties:
+        serving:
+          type: boolean
+          description: A compiled copy of the package answers queries here now.
+        loading:
+          type: boolean
+          description: >-
+            A load, reinstall or recompile of the package is in progress
+            here. While true, `manifestBindingStatus` describes the copy
+            being replaced, not the one being built.
+        loadingSince:
+          type: string
+          format: date-time
+          description: When the in-progress load began. Present only while `loading` is true.
+
+    StorageServeBinding:
+      type: object
+      properties:
+        sourceName:
+          type: string
+          description: >-
+            The materialized source served from storage.
+
+
+            **It may name no source in any model file**, exactly as
+            `ManifestEntry.sourceName` may: a pre-aggregation rollup is a
+            persist source the publisher synthesized, so its name is
+            generated. Check `origin` rather than resolving this against a
+            package's models and reading a miss as corruption.
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            What the bound source IS: `persist` for one a modeler annotated,
+            which is the meaning of an absent value, and `preaggregate` for
+            a rollup the publisher synthesized from `#@ preaggregate`
+            measures. Mirrors `ManifestEntry.origin`.
+        storageDestinationName:
+          type: string
+          description: >-
+            The storage destination the physical table lives in (an entry
+            in `storageDestinations`, not a connection).
+        tablePath:
+          type: string
+          description: The physical table the source is served from.
+
+    PackageServingState:
+      type: object
+      description: |
+        How this server holds one package, or one version of it, right now:
+        whether it serves and is loading, which load it serves, and which
+        materialized tables are bound to it. `GET …/packages/{packageName}/status`.
+        Reading it never loads the package: a package that is not in memory
+        reports `status.serving` false and none of the load fields.
+      required: [name, status]
+      properties:
+        resource:
+          type: string
+          description: Resource path to the package
+        name:
+          type: string
+          description: Package name
+        versionId:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          description: >-
+            The version this state describes, for a package that has versions:
+            the one the request named, or its `latest`. Absent otherwise.
+        loaded:
+          type: boolean
+          description: >-
+            For a version: whether this server holds it in memory. A published
+            version that is not loaded (an archived one, or one not loaded since
+            the server started) loads when a request next names it. Absent for a
+            package without versions, whose `status.serving` says the same.
+        archiveStatus:
+          type: string
+          enum: [archive, unarchive]
+          description: For a version, whether it is archived. Absent otherwise.
+        status:
+          $ref: "#/components/schemas/PackageStatus"
+        servedRevision:
+          type: string
+          readOnly: true
+          description: >-
+            Server-computed, read-only: an identifier for the load that produced
+            what this package is currently serving. Minted fresh per load, so
+            two loads of byte-identical files carry different revisions. Use it
+            to tell one load from another, NOT to tell whether content changed:
+            it moves on every reload regardless. `sourceContentSha` answers that.
+        sourceContentSha:
+          type: string
+          readOnly: true
+          description: >-
+            Server-computed, read-only: SHA-256 over the package-relative path
+            and bytes of every file the package is serving: each model file,
+            each package skill file under `skills/`, and, when the manifest
+            declares `agents`, the canonical form of that `agents` object plus
+            every instructions, task and skill file those agents read.
+
+            This is the reload receipt. Publisher serves a COPY of a package
+            under `publisher_data/<env>/<pkg>/` unless the environment was
+            started with `--watch-env`, so an edit to the original source
+            directory reaches nothing and the reload still reports success.
+            Comparing this value across a reload is what distinguishes "the
+            server recompiled my edit" from "the server recompiled the same
+            bytes it already had".
+
+            It covers EVERY model path in the package, so an edit to an imported
+            file moves it where a hash of one model path would not. It covers
+            nothing outside the list above: a data file, a `public/` asset, a
+            `version` bump or any other key in publisher.json (`retrieval`,
+            `explores`, `queryableSources`, `scope`) all leave it unchanged,
+            although some of those do change what is served. An unchanged value
+            therefore proves an edit to a hashed file did not reach the served
+            copy, and says nothing about an edit to anything else.
+        manifestBindingStatus:
+          type: string
+          readOnly: true
+          enum:
+            - unbound
+            - bound
+            - live_fallback
+          description: >-
+            Server-computed, read-only: whether the CONFIGURED build manifest is
+            currently bound to this package's served models. `unbound` = no
+            manifest configured, so the package serves live. `bound` = the
+            configured manifest was fetched and applied. `live_fallback` = a
+            `manifestLocation` is configured but its fetch/bind failed or timed
+            out, so the configured manifest is NOT applied. Lets the caller
+            confirm the publisher actually bound the configured manifest rather
+            than inferring it from logs.
+
+            `bound` reports that the bind ran to completion, NOT that any query
+            routes to a materialized table: an entry whose source fails the
+            eligibility gate is dropped, and the storage tier serves live under a
+            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
+            and `storageServeBindings` for what actually bound.
+
+            An EMPTY manifest is a bind like any other: it is fetched and applied,
+            binds nothing, and reports `bound` with `manifestEntryCount` 0 and no
+            `storageServeBindings`, while the package serves entirely live. That
+            combination is the signature — `bound` with neither tier populated
+            means the manifest carried nothing, not that the bind was missed.
+
+            `live_fallback` does NOT imply the package is serving live. It says
+            the configured manifest was not applied — not that nothing is. A
+            failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
+            a failed REBIND leaves the previously bound manifest in place: its
+            colocated substitutions stay compiled in, its storage serve bindings
+            stay installed, and `boundManifestUri`, `manifestEntryCount` and
+            `storageServeBindings` all continue to describe it.
+
+            That rebind guarantee covers a failure BEFORE either tier applies —
+            the manifest fetch failing or timing out, which is what produces
+            `live_fallback` in practice. A failure partway through the recompile,
+            after the new models are installed but before the binding is
+            recorded, is out of scope: the new substitutions would be live while
+            these fields still described the previous manifest.
+
+            So the invariant to hold, whatever the status says: a non-null
+            `boundManifestUri` is a LIVE reference to the manifest whose tables
+            this package is currently serving from. A caller reclaiming
+            superseded physical tables must treat it as one regardless of
+            `manifestBindingStatus` — reading `live_fallback` as "not serving
+            from manifest tables" and reclaiming that generation would drop
+            tables out from under a package actively serving them.
+
+            Note this value is not the `live_fallback` on a query result's
+            `servedFrom`, which reports that ONE query degraded to the warehouse.
+            This one is about the package's binding, and as above does not imply
+            any query ran live.
+        manifestEntryCount:
+          type: integer
+          readOnly: true
+          description: >-
+            Server-computed, read-only: number of sourceEntityId -> physical-table
+            entries currently bound for the COLOCATED (same-connection tableName
+            substitution) tier only. 0 when unbound, or when the bound manifest
+            carried no colocated entries — so a fully bound `storage=`-only
+            manifest reports `bound` with a count of 0. Corroborate a
+            cross-connection bind with `storageServeBindings`, not this count.
+
+            Describes whatever is CURRENTLY bound, not the configured manifest: on
+            a failed rebind this keeps the previously bound manifest's count (as
+            `boundManifestUri` keeps its URI), because those entries really are
+            still bound.
+        boundManifestUri:
+          type: ["string", "null"]
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the manifest URI actually bound to the
+            served models. Usually equals `manifestLocation`, but can differ
+            after an in-memory auto-load following a materialization build (no
+            URI), in which case it is null. Null whenever the package is unbound.
+
+            It also diverges after a FAILED REBIND: `manifestLocation` then names
+            the configured manifest that did not apply, while this names the
+            manifest still bound and still served from. So a non-null value here
+            is a live reference regardless of `manifestBindingStatus` — see that
+            field for the invariant a caller reclaiming superseded physical
+            tables has to hold.
+        storageServeBindings:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: sources currently bound to serve from a
+            `storage=` destination via the virtual-source transform (distinct
+            from the same-connection manifest binding above — a storage source is
+            read cross-connection from its destination, not substituted in the
+            manifest). Present only when at least one source is bound. Whether a
+            query actually routes to these tables additionally depends on
+            `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
+            be present but the serve path still runs live (see `warnings`).
+
+            Like `boundManifestUri`, this describes whatever is CURRENTLY bound
+            rather than the configured manifest: after a failed rebind it goes on
+            listing the previously bound manifest's sources, which are still
+            serving.
+
+
+            "Bound" is not the same as "serving", and an entry with
+            `origin: preaggregate` is where the two most often part: a rollup is
+            listed here once its table exists, but it is only offered to a query
+            through a composite re-exposing its base's name, so it does not serve
+            when something else already claims that name. Read `origin` before
+            treating a row as evidence that queries are being accelerated.
+          items:
+            $ref: "#/components/schemas/StorageServeBinding"
+
+    PackageStatusEntry:
+      type: object
+      description: |
+        A package's entry in `GET /status`, carrying what an orchestrator reconciles
+        a server from: which package or version it is, whether it is serving or
+        loading, and which manifest is bound. The rest of the package's serving
+        state is at `GET …/packages/{packageName}/status`.
+
+        While `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this
+        release, an entry also carries the fields of the package's own response
+        and the rest of its serving state, as before; a later release removes
+        them, and they are not described here.
+      required: [name]
+      properties:
+        resource:
+          type: string
+          description: Resource path to the package
+        name:
+          type: string
+          description: Package name
+        versionId:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          description: >-
+            The version this entry describes. A versioned package is listed once
+            per version this server holds. Absent for a package without versions.
+        latestVersion:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          description: >-
+            The package's `latest` version; null while none of its versions is
+            `latest`. Absent for a package without versions.
+        loaded:
+          type: boolean
+          description: >-
+            Set only on a version's entry: whether this server holds the version
+            in memory. A published version that is not loaded (an archived one, or
+            one not loaded since the server started) is still held, so it is still
+            listed, with `loaded: false` and only its `resource`, name, version,
+            `latestVersion`, `archiveStatus` and `status`. It loads when a request
+            next names it. A version still being published is listed only under
+            `includeLoading`, with `loaded: false`, no `archiveStatus`, and
+            `status.loading`.
+        archiveStatus:
+          type: string
+          enum: [archive, unarchive]
+          description: >-
+            Set only on a version's entry, except one still being published:
+            whether the version is archived.
+        status:
+          $ref: "#/components/schemas/PackageStatus"
+        manifestBindingStatus:
+          type: string
+          enum:
+            - unbound
+            - bound
+            - live_fallback
+          description: >-
+            Whether the configured build manifest is bound to the served models.
+            See `PackageServingState.manifestBindingStatus`, including the
+            invariant a caller reclaiming superseded tables has to hold.
+        boundManifestUri:
+          type: ["string", "null"]
+          description: >-
+            The manifest URI actually bound to the served models; null when
+            unbound. A non-null value is a live reference. See
+            `PackageServingState.boundManifestUri`.
+
+    ServerStatusEnvironment:
+      type: object
+      description: |
+        An environment as `GET /status` reports it: its identity and connections,
+        and one entry per package (per version, for a versioned package).
+        Connections are reported without their attributes.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the environment
+        name:
+          type: string
+          description: Environment name
+        readme:
+          type: string
+          description: Environment README content
+        location:
+          type: string
+          description: Environment location
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/Connection"
+        storageDestinations:
+          type: array
+          description: The environment's storage destinations, `name` and `type` only.
+          items:
+            $ref: "#/components/schemas/Connection"
+        packages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackageStatusEntry"
+
     Package:
       type: object
       description: Represents a Malloy package containing models, notebooks, and
@@ -4933,26 +5346,14 @@ components:
           type: boolean
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Set only on a version's entry in `GET /status`: whether this server
-            holds the version in memory. A published version that is not loaded
-            (an archived one, or one not loaded since the server started) is still
-            held, so it is still listed, with `loaded: false` and only its
-            `resource`, name, version, `latestVersion`, `archiveStatus` and
-            `status`. It loads when a request next names it. A version still
-            being published is listed only under `includeLoading`, with
-            `loaded: false`, no `archiveStatus`, and `status.loading`.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.loaded`) and the version's entry in `GET /status`. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         archiveStatus:
           deprecated: true
           type: string
           enum: [archive, unarchive]
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Set only on a version's entry in `GET /status`, except one still
-            being published: whether the version is archived.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.archiveStatus`) and the version's entry in `GET /status`. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         description:
           type: string
           description: Package description
@@ -5371,195 +5772,34 @@ components:
             - bound
             - live_fallback
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: whether the CONFIGURED build manifest is
-            currently bound to this package's served models. `unbound` = no
-            manifest configured, so the package serves live. `bound` = the
-            configured manifest was fetched and applied. `live_fallback` = a
-            `manifestLocation` is configured but its fetch/bind failed or timed
-            out, so the configured manifest is NOT applied. Lets the caller
-            confirm the publisher actually bound the configured manifest rather
-            than inferring it from logs.
-
-            `bound` reports that the bind ran to completion, NOT that any query
-            routes to a materialized table: an entry whose source fails the
-            eligibility gate is dropped, and the storage tier serves live under a
-            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
-            and `storageServeBindings` for what actually bound.
-
-            An EMPTY manifest is a bind like any other: it is fetched and applied,
-            binds nothing, and reports `bound` with `manifestEntryCount` 0 and no
-            `storageServeBindings`, while the package serves entirely live. That
-            combination is the signature — `bound` with neither tier populated
-            means the manifest carried nothing, not that the bind was missed.
-
-            `live_fallback` does NOT imply the package is serving live. It says
-            the configured manifest was not applied — not that nothing is. A
-            failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
-            a failed REBIND leaves the previously bound manifest in place: its
-            colocated substitutions stay compiled in, its storage serve bindings
-            stay installed, and `boundManifestUri`, `manifestEntryCount` and
-            `storageServeBindings` all continue to describe it.
-
-            That rebind guarantee covers a failure BEFORE either tier applies —
-            the manifest fetch failing or timing out, which is what produces
-            `live_fallback` in practice. A failure partway through the recompile,
-            after the new models are installed but before the binding is
-            recorded, is out of scope: the new substitutions would be live while
-            these fields still described the previous manifest.
-
-            So the invariant to hold, whatever the status says: a non-null
-            `boundManifestUri` is a LIVE reference to the manifest whose tables
-            this package is currently serving from. A caller reclaiming
-            superseded physical tables must treat it as one regardless of
-            `manifestBindingStatus` — reading `live_fallback` as "not serving
-            from manifest tables" and reclaiming that generation would drop
-            tables out from under a package actively serving them.
-
-            Note this value is not the `live_fallback` on a query result's
-            `servedFrom`, which reports that ONE query degraded to the warehouse.
-            This one is about the package's binding, and as above does not imply
-            any query ran live.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.manifestBindingStatus`) and the package's entry in `GET /status`. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         manifestEntryCount:
           deprecated: true
           type: integer
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound for the COLOCATED (same-connection tableName
-            substitution) tier only. 0 when unbound, or when the bound manifest
-            carried no colocated entries — so a fully bound `storage=`-only
-            manifest reports `bound` with a count of 0. Corroborate a
-            cross-connection bind with `storageServeBindings`, not this count.
-
-            Describes whatever is CURRENTLY bound, not the configured manifest: on
-            a failed rebind this keeps the previously bound manifest's count (as
-            `boundManifestUri` keeps its URI), because those entries really are
-            still bound.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.manifestEntryCount`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         boundManifestUri:
           deprecated: true
           type: ["string", "null"]
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: the manifest URI actually bound to the
-            served models. Usually equals `manifestLocation`, but can differ
-            after an in-memory auto-load following a materialization build (no
-            URI), in which case it is null. Null whenever the package is unbound.
-
-            It also diverges after a FAILED REBIND: `manifestLocation` then names
-            the configured manifest that did not apply, while this names the
-            manifest still bound and still served from. So a non-null value here
-            is a live reference regardless of `manifestBindingStatus` — see that
-            field for the invariant a caller reclaiming superseded physical
-            tables has to hold.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.boundManifestUri`) and the package's entry in `GET /status`. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         status:
           deprecated: true
-          type: object
+          allOf:
+            - $ref: "#/components/schemas/PackageStatus"
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: how this server holds the package right
-            now. `serving` is whether a compiled copy answers queries here;
-            `loading` is whether a load, reinstall or recompile of the package
-            is in progress here. The two are independent. A first load reports
-            `loading` without `serving`. A reload of a package that is already
-            served reports both, because the previous copy keeps answering until
-            the new one is swapped in. Steady state reports `serving` alone.
-            `loadingSince` is when the in-progress load began, so a caller can
-            bound one that never completes. Which tables a serving copy answers
-            from is a separate question, answered by `manifestBindingStatus`.
-            A publish of a package version is a load from its download until
-            it settles, and while it runs every entry of that package reports
-            `loading`. With `includeLoading=true`, once its tree has named the
-            version, a version the package does not hold yet is listed as its
-            own entry, with its `versionId`, `loaded: false` and `loading`,
-            unless an unversioned copy of the package still serves.
-
-            A package that is loading for the first time, so is not yet
-            serving, is listed only where a caller asks for it:
-            `GET /status?includeLoading=true` includes it as its name and
-            `status`. Every other listing, the environment resources included,
-            shows packages that can be queried.
-          required: [serving, loading]
-          properties:
-            serving:
-              type: boolean
-              description: A compiled copy of the package answers queries here now.
-            loading:
-              type: boolean
-              description: >-
-                A load, reinstall or recompile of the package is in progress
-                here. While true, `manifestBindingStatus` describes the copy
-                being replaced, not the one being built.
-            loadingSince:
-              type: string
-              format: date-time
-              description: When the in-progress load began. Present only while `loading` is true.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.status`) and the package's entry in `GET /status`. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         storageServeBindings:
           deprecated: true
           type: array
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: sources currently bound to serve from a
-            `storage=` destination via the virtual-source transform (distinct
-            from the same-connection manifest binding above — a storage source is
-            read cross-connection from its destination, not substituted in the
-            manifest). Present only when at least one source is bound. Whether a
-            query actually routes to these tables additionally depends on
-            `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
-            be present but the serve path still runs live (see `warnings`).
-
-            Like `boundManifestUri`, this describes whatever is CURRENTLY bound
-            rather than the configured manifest: after a failed rebind it goes on
-            listing the previously bound manifest's sources, which are still
-            serving.
-
-
-            "Bound" is not the same as "serving", and an entry with
-            `origin: preaggregate` is where the two most often part: a rollup is
-            listed here once its table exists, but it is only offered to a query
-            through a composite re-exposing its base's name, so it does not serve
-            when something else already claims that name. Read `origin` before
-            treating a row as evidence that queries are being accelerated.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.storageServeBindings`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
           items:
-            type: object
-            properties:
-              sourceName:
-                type: string
-                description: >-
-                  The materialized source served from storage.
-
-
-                  **It may name no source in any model file**, exactly as
-                  `ManifestEntry.sourceName` may: a pre-aggregation rollup is a
-                  persist source the publisher synthesized, so its name is
-                  generated. Check `origin` rather than resolving this against a
-                  package's models and reading a miss as corruption.
-              origin:
-                type: string
-                enum: [persist, preaggregate]
-                default: persist
-                description: >-
-                  What the bound source IS: `persist` for one a modeler annotated,
-                  which is the meaning of an absent value, and `preaggregate` for
-                  a rollup the publisher synthesized from `#@ preaggregate`
-                  measures. Mirrors `ManifestEntry.origin`.
-              storageDestinationName:
-                type: string
-                description: >-
-                  The storage destination the physical table lives in (an entry
-                  in `storageDestinations`, not a connection).
-              tablePath:
-                type: string
-                description: The physical table the source is served from.
+            $ref: "#/components/schemas/StorageServeBinding"
         buildPlan:
           deprecated: true
           oneOf:
@@ -5599,42 +5839,13 @@ components:
           type: string
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it, and the `GET …/entities` and `GET …/build-plan` responses. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: an identifier for the load that produced
-            what this package is currently serving. Minted fresh per load, so
-            two loads of byte-identical files carry different revisions. Use it
-            to tell one load from another, NOT to tell whether content changed:
-            it moves on every reload regardless. `sourceContentSha` answers that.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.servedRevision`), and the `GET …/entities` and `GET …/build-plan` responses. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         sourceContentSha:
           deprecated: true
           type: string
           readOnly: true
           description: >-
-            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
-
-            Server-computed, read-only: SHA-256 over the package-relative path
-            and bytes of every file the package is serving: each model file,
-            each package skill file under `skills/`, and, when the manifest
-            declares `agents`, the canonical form of that `agents` object plus
-            every instructions, task and skill file those agents read.
-
-            This is the reload receipt. Publisher serves a COPY of a package
-            under `publisher_data/<env>/<pkg>/` unless the environment was
-            started with `--watch-env`, so an edit to the original source
-            directory reaches nothing and the reload still reports success.
-            Comparing this value across a reload is what distinguishes "the
-            server recompiled my edit" from "the server recompiled the same
-            bytes it already had".
-
-            It covers EVERY model path in the package, so an edit to an imported
-            file moves it where a hash of one model path would not. It covers
-            nothing outside the list above: a data file, a `public/` asset, a
-            `version` bump or any other key in publisher.json (`retrieval`,
-            `explores`, `queryableSources`, `scope`) all leave it unchanged,
-            although some of those do change what is served. An unchanged value
-            therefore proves an edit to a hashed file did not reach the served
-            copy, and says nothing about an edit to anything else.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.sourceContentSha`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         agents:
           deprecated: true
           type: array

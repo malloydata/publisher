@@ -151,8 +151,8 @@ class CompactJson(unittest.TestCase):
 
 
 class PackageIdentityTests(unittest.TestCase):
-    """The served identity comes from the package's `/status` entry, and from
-    the package resource on a server from before that entry carried it."""
+    """The served identity comes from the package's serving state, and on older
+    servers from its `/status` entry or the package resource."""
 
     def identity(self, responses):
         def get_json(base, path):
@@ -162,7 +162,13 @@ class PackageIdentityTests(unittest.TestCase):
         with unittest.mock.patch.object(publisher_rest, "get_json", get_json):
             return publisher_rest.package_identity("http://x", "env", "pkg")
 
-    def test_the_status_entry_answers(self):
+    def test_the_serving_state_answers(self):
+        state = {"name": "pkg", "sourceContentSha": "abc", "servedRevision": "r1"}
+        self.assertEqual(
+            self.identity({"api/v0/environments/env/packages/pkg/status": state}),
+            {"sourceContentSha": "abc", "servedRevision": "r1"})
+
+    def test_a_server_without_the_route_answers_from_its_status_entry(self):
         status = {"environments": [{"name": "env", "packages": [
             {"name": "other", "sourceContentSha": "zzz"},
             {"name": "pkg", "sourceContentSha": "abc", "servedRevision": "r1"},
