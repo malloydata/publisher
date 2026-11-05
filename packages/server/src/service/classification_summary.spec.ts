@@ -30,7 +30,7 @@ const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222',10,'org-
 
 const BASE = `##! experimental.access_modifiers
 #(authorize) false
-source: people is ${ROWS} include { private: id, ssn, region, amount, org } extend {
+source: people is ${ROWS} include { internal: id, ssn, region, amount, org } extend {
    #(classification) ["phi.direct_identifier", "gdpr.personal"]
    dimension: social is ssn
    #(classification) "phi.financial"
