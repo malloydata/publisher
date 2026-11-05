@@ -25,6 +25,7 @@
  * boundary is a package-level policy and is the half `shipped_example_authorize`
  * cannot see.
  */
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
 import * as path from "path";
@@ -111,6 +112,7 @@ describe("examples/governed-analytics is curated by its index.malloy", () => {
          const { result } = await pkg
             .getModel("index.malloy")!
             .getQueryResults(
+               unrecordedAudit(),
                "sales",
                "by_region",
                undefined,
@@ -134,6 +136,7 @@ describe("examples/governed-analytics is curated by its index.malloy", () => {
             const { compactResult } = await pkg
                .getModel("index.malloy")!
                .getQueryResults(
+                  unrecordedAudit(),
                   "orders_secured",
                   "by_tenant",
                   undefined,
@@ -166,6 +169,7 @@ describe("examples/governed-analytics is curated by its index.malloy", () => {
             pkg
                .getModel("internal.malloy")!
                .getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders_base -> { aggregate: c is count() }",

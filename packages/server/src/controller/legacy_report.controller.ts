@@ -8,6 +8,7 @@ import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { DashboardNotFoundError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
+import { type QueryAudit, withAccessRecord } from "../service/access_record";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import {
@@ -120,8 +121,45 @@ export class LegacyReportController {
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
       versionId?: unknown,
+      identity: { caller?: string; traceId?: string } = {},
    ): Promise<NotebookCellRunResult> {
       recordDeprecatedUsage("notebook_cell");
+      return withAccessRecord(
+         {
+            environment: environmentName,
+            package: packageName,
+            modelPath: notebookPath,
+            adHoc: false,
+            ...(identity.caller ? { caller: identity.caller } : {}),
+            ...(identity.traceId ? { traceId: identity.traceId } : {}),
+         },
+         undefined,
+         (audit) =>
+            this.runNotebookCell(
+               audit,
+               environmentName,
+               packageName,
+               notebookPath,
+               cellIndex,
+               filterParams,
+               bypassFilters,
+               givens,
+               versionId,
+            ),
+      );
+   }
+
+   private async runNotebookCell(
+      audit: QueryAudit,
+      environmentName: string,
+      packageName: string,
+      notebookPath: string,
+      cellIndex: number,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
+      versionId?: unknown,
+   ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -130,6 +168,8 @@ export class LegacyReportController {
       // package-load admission gate.
       environment.assertCanAdmitQuery();
       const p = await environment.getPackage(packageName, false, { versionId });
+      const version = p.getVersionId();
+      if (version) audit.version = version;
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
@@ -141,6 +181,7 @@ export class LegacyReportController {
       return runWithQueryTimeout(
          (abortSignal) =>
             model.executeNotebookCell(
+               audit,
                cellIndex,
                filterParams,
                bypassFilters,

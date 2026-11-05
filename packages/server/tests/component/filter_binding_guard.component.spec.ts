@@ -25,6 +25,7 @@
  * than mere denial, and also lets a genuinely-served (non-misbound) query be
  * told apart from an accidentally-passing one.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -129,7 +130,15 @@ async function expectDeniedViaPackage(
    const model = pkg.getModel(modelPath);
    expect(model).toBeDefined();
    await expect(
-      model!.getQueryResults(undefined, undefined, queryText, {}, true, givens),
+      model!.getQueryResults(
+         unrecordedAudit(),
+         undefined,
+         undefined,
+         queryText,
+         {},
+         true,
+         givens,
+      ),
    ).rejects.toBeInstanceOf(AccessDeniedError);
 }
 
@@ -171,6 +180,7 @@ async function expectServesWithCountViaPackage(
    const model = pkg.getModel(modelPath);
    expect(model).toBeDefined();
    const result = await model!.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       queryText,
@@ -210,7 +220,15 @@ async function expectDenied(
    givens: Record<string, GivenValue> = {},
 ): Promise<void> {
    await expect(
-      model.getQueryResults(undefined, undefined, queryText, {}, true, givens),
+      model.getQueryResults(
+         unrecordedAudit(),
+         undefined,
+         undefined,
+         queryText,
+         {},
+         true,
+         givens,
+      ),
    ).rejects.toBeInstanceOf(AccessDeniedError);
 }
 
@@ -223,6 +241,7 @@ async function expectServesWithCount(
    givens: Record<string, GivenValue> = {},
 ): Promise<void> {
    const result = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       queryText,
@@ -313,6 +332,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
       try {
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: w_misbind -> { group_by: id; aggregate: n is count() }",
@@ -342,6 +362,7 @@ source: w_misbind is gated_parent extend { accept: id, val, n, owner } extend { 
       try {
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: w_misbind -> { group_by: id; aggregate: n is count() }",
@@ -372,6 +393,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
       try {
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: w_misbind -> { group_by: id; aggregate: n is count() }",
@@ -401,6 +423,7 @@ source: gated_parent is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                `
@@ -442,6 +465,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: w_misbind -> { group_by: id; aggregate: n is count() }",
@@ -472,6 +496,7 @@ source: renamed_unrelated is gated_parent extend { rename: label is val }
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: renamed_unrelated -> { aggregate: n is count() }",
@@ -504,6 +529,7 @@ source: qchild is gated_parent -> { group_by: id, org_id, val; aggregate: n is c
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: qchild -> { aggregate: n is count() }",
@@ -536,6 +562,7 @@ source: locked_renamed is locked extend { rename: owner_id is owner }
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const ok = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: locked_renamed -> { aggregate: n is count() }",
@@ -547,6 +574,7 @@ source: locked_renamed is locked extend { rename: owner_id is owner }
 
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: locked_renamed -> { aggregate: n is count() }",
@@ -580,6 +608,7 @@ source: joiner is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: joiner -> { aggregate: n is count() }",
@@ -608,6 +637,7 @@ source: joiner is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: joiner -> { aggregate: n is count() }",
@@ -638,6 +668,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                `
@@ -663,6 +694,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: filtered_parent -> { aggregate: n is count() }",
@@ -697,6 +729,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: filtered_parent extend { except: val } extend { rename: val is note } -> { group_by: id; aggregate: n is count() }",
@@ -721,6 +754,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: filtered_parent -> { aggregate: n is count() }",
@@ -747,6 +781,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: filtered_parent extend { except: val } -> { aggregate: n is count() }",
@@ -782,6 +817,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                `
@@ -818,6 +854,7 @@ source: mine is filtered_parent extend { except: val } extend { rename: val is n
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: mine -> { group_by: id; aggregate: n is count() }",
@@ -849,7 +886,7 @@ run: filtered_parent extend { except: val } extend { rename: val is note } -> { 
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.executeNotebookCell(1, { val: "a" }),
+            model.executeNotebookCell(unrecordedAudit(), 1, { val: "a" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1076,6 +1113,7 @@ source: gated_parent is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const res = model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: gated_parent include { private: org_id } extend { dimension: org_id is 1 } -> { aggregate: n is count() }",
@@ -1201,6 +1239,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
             const result = await model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: filtered_parent extend { where: id = 1 } -> { aggregate: n is count() }",
@@ -1243,9 +1282,15 @@ run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }
          );
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
-            const result = await model.executeNotebookCell(1, {}, false, {
-               GROUPS: [1],
-            });
+            const result = await model.executeNotebookCell(
+               unrecordedAudit(),
+               1,
+               {},
+               false,
+               {
+                  GROUPS: [1],
+               },
+            );
             expect(result.result).toBeDefined();
             expect(firstCellResultValue(result.result!)).toBe(1);
          } finally {
@@ -1267,6 +1312,7 @@ source: base_filtered is duckdb.table('orgtable') extend {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: base_filtered extend { except: org_id } extend { rename: org_id is owner } -> { aggregate: n is count() }",
@@ -1349,7 +1395,7 @@ run: child_src -> { aggregate: n is count() }
          const model = pkg.getModel("nb.malloynb");
          expect(model).toBeDefined();
          await expect(
-            model!.executeNotebookCell(1, { org_id: "2" }),
+            model!.executeNotebookCell(unrecordedAudit(), 1, { org_id: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1361,7 +1407,9 @@ run: child_src -> { aggregate: n is count() }
       try {
          const model = pkg.getModel("nb_unmodified.malloynb");
          expect(model).toBeDefined();
-         const result = await model!.executeNotebookCell(1, { org_id: "2" });
+         const result = await model!.executeNotebookCell(unrecordedAudit(), 1, {
+            org_id: "2",
+         });
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1382,7 +1430,7 @@ run: child_src -> { aggregate: n is count() }
          const model = pkg.getModel("nb_dimension_misbind.malloynb");
          expect(model).toBeDefined();
          await expect(
-            model!.executeNotebookCell(1, { org_id: "2" }),
+            model!.executeNotebookCell(unrecordedAudit(), 1, { org_id: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1747,7 +1795,15 @@ query: q1 is base_filtered extend { except: org_id } extend { rename: org_id is 
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(undefined, "q1", undefined, {}, true, {}),
+            model.getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               "q1",
+               undefined,
+               {},
+               true,
+               {},
+            ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1770,9 +1826,17 @@ query: q1 is gated_parent extend { except: org_id } extend { rename: org_id is o
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expect(
-            model.getQueryResults(undefined, "q1", undefined, {}, true, {
-               GROUPS: [1],
-            }),
+            model.getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               "q1",
+               undefined,
+               {},
+               true,
+               {
+                  GROUPS: [1],
+               },
+            ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1792,6 +1856,7 @@ query: q2 is base_filtered extend { where: val = 'a' } -> { aggregate: n is coun
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "q2",
             undefined,
@@ -2020,6 +2085,7 @@ source: base is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: base extend { join_one: g is gated_child on id = g.id } -> { group_by: id, gorg is g.org_id; order_by: id }",
@@ -2071,6 +2137,7 @@ source: base is duckdb.table('orgtable') extend {
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: base extend { join_one: p is plain_child on id = p.id } -> { group_by: id, porg is p.org_id; order_by: id }",

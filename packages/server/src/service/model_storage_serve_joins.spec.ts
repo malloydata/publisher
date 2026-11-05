@@ -13,6 +13,7 @@
 // Signals: the live sources return region_name 'LIVE' and amount 10; the bound
 // (materialized) tables return 'STORE' and amount 99 — so the value observed
 // tells which path ran.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -121,6 +122,7 @@ async function buildModel(): Promise<Model> {
 /** Run a query and return the first result row. */
 async function runRow<T>(model: Model, query: string): Promise<T> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -239,6 +241,7 @@ async function runGivens(
    query: string,
 ): Promise<{ region_name?: string; t: number }> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,

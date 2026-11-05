@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../service/access_record";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import sinon from "sinon";
@@ -28,7 +29,14 @@ beforeAll(async () => {
    });
    const model = temp.pkg.getModel("m.malloy")!;
    const run = async (query: string) =>
-      (await model.getQueryResults(undefined, undefined, query)).result;
+      (
+         await model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            query,
+         )
+      ).result;
    tagged = await run(
       "run: s -> {\n # bogus_tag\n group_by: a\n # drill\n aggregate: n is count() }",
    );
@@ -162,9 +170,9 @@ describe("QueryController.getQuery", () => {
       });
       await run(controller);
       const [compact, full] = getQueryResults.getCalls().map((c) => c.args);
-      expect(compact.slice(8)).toEqual(["compact", true, true]);
-      expect(full.slice(8)).toEqual(["full", undefined, undefined]);
-      expect(compact[7]).toMatchObject({
+      expect(compact.slice(9)).toEqual(["compact", true, true]);
+      expect(full.slice(9)).toEqual(["full", undefined, undefined]);
+      expect(compact[8]).toMatchObject({
          request: { team: "x" },
          queryClass: "interactive",
          environment: "env",
@@ -177,7 +185,7 @@ describe("QueryController.getQuery", () => {
       const client = new AbortController();
       let seen: AbortSignal | undefined;
       getQueryResults.callsFake(async (...args: unknown[]) => {
-         seen = args[6] as AbortSignal;
+         seen = args[7] as AbortSignal;
          client.abort("client gone");
          return { result: plain, serializedResult: "S" };
       });

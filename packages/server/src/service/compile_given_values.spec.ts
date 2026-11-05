@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
@@ -143,6 +144,7 @@ describe("compileSource checks filter given values", () => {
       const model = (await env.getPackage("pkg")).getModel("model.malloy")!;
       const queryError = await model
          .getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: gated -> filtered",

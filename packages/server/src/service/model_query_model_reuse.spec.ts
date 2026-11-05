@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    type Connection,
@@ -144,7 +145,12 @@ describe("one QueryModel per hydrated model", () => {
             "run: nums -> { group_by: two; aggregate: total_one }",
          ],
       ] as const) {
-         const r = await model.getQueryResults(source, view, query);
+         const r = await model.getQueryResults(
+            unrecordedAudit(),
+            source,
+            view,
+            query,
+         );
          out.push({ sql: r.result.sql, data: r.compactResult });
       }
       return out;
@@ -254,6 +260,7 @@ describe("one QueryModel per materializer a query compiles against", () => {
       givens?: Record<string, unknown>,
    ): Promise<unknown> {
       const r = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          query,

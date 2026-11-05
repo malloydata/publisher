@@ -21,6 +21,7 @@
  *    `child` names child_id 1 'north', 2 'south'.
  */
 
+import { unrecordedAudit } from "../service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -162,6 +163,7 @@ export async function queryRows(
    givens: Record<string, unknown> = {},
 ): Promise<Array<Record<string, unknown>>> {
    const result = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
