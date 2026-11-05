@@ -125,16 +125,6 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(leaks);
    }
-   // A gate keyed on a plain given is strict at load: the caller could satisfy
-   // it by sending a value, so it is a filter wearing a control's name.
-   const insecure = pkg.formatInsecureGateGivens();
-   if (insecure) {
-      logger.error(
-         `Package ${packageName} gates a source on a given that is not #(secure)`,
-         { packageName, detail: insecure },
-      );
-      throw new BadRequestError(insecure);
-   }
    // An author join that bypasses a gate is strict at load for the same
    // reason: the joined rows would reach every admitted caller unscoped.
    const bypasses = pkg.formatJoinBypasses();

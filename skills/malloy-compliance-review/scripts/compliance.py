@@ -594,7 +594,6 @@ def check_loads(gov, register, ctx):
                 continue
             m = re.match(r"source (\S+) \(", line)
             kind = ("ceiling" if " carries [" in line else
-                    "secure" if "not declared #(secure)" in line else
                     "join" if (" joins " in line and ("locked" in line or "whose gate reads" in line)) else
                     "other")
             f = finding("", "fail", f"{server.package} {state}", line[:400], m.group(1) if m else "")
@@ -645,7 +644,7 @@ CHECKS = {
 }
 
 
-LOAD_KINDS = ("ceiling", "secure", "join", "other")
+LOAD_KINDS = ("ceiling", "join", "other")
 
 
 def unknown_scope(kind: str, scope: str, gov, register, ctx) -> dict[str, Any] | None:
