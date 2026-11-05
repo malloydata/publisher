@@ -35,6 +35,7 @@ import type {
    Model as MalloyModel,
 } from "@malloydata/malloy";
 
+import { type Refuse, throwRefusal } from "./dim_index_discovery";
 import { errorMessage } from "./errors";
 import { extractCodeFromEntity } from "./model_text";
 import {
@@ -344,6 +345,7 @@ const extractDocsFromExplore = (explore: MalloyExplore): string | null => {
 const extractFiltersFromExplore = (
    explore: MalloyExplore,
    relativePath: string,
+   refuse: Refuse = throwRefusal,
 ): Filter[] => {
    const fieldsByName = new Map(
       (explore.allFields ?? []).map((f) => [f.name, f] as const),
@@ -369,9 +371,12 @@ const extractFiltersFromExplore = (
       const dimensionField = fieldsByName.get(parsed.dimension!);
       if (!dimensionField) {
          if (parsed.required) {
-            throw new RequiredFilterMissingDimensionError(
-               `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references unknown dimension '${parsed.dimension}'.`,
+            refuse(
+               new RequiredFilterMissingDimensionError(
+                  `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references unknown dimension '${parsed.dimension}'.`,
+               ),
             );
+            continue;
          }
          logger.warn(
             `[filters] Filter '${parsed.name}' on source '${explore.name}' in ${relativePath} references unknown dimension '${parsed.dimension}' — skipping.`,
@@ -386,9 +391,12 @@ const extractFiltersFromExplore = (
       // optional one with a warning (mirrors the unknown-dimension handling).
       if (getAccessModifier(dimensionField) !== AccessModifierEnum.Public) {
          if (parsed.required) {
-            throw new RequiredFilterNonPublicDimensionError(
-               `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references non-public dimension '${parsed.dimension}'. A required filter must reference a public dimension.`,
+            refuse(
+               new RequiredFilterNonPublicDimensionError(
+                  `${relativePath}: filter '${parsed.name}' on source '${explore.name}' is marked required but references non-public dimension '${parsed.dimension}'. A required filter must reference a public dimension.`,
+               ),
             );
+            continue;
          }
          logger.warn(
             `[filters] Filter '${parsed.name}' on source '${explore.name}' in ${relativePath} references non-public dimension '${parsed.dimension}' — skipping.`,
@@ -397,9 +405,12 @@ const extractFiltersFromExplore = (
       }
       if (parsed.required) {
          if (requiredDimensionNames.has(parsed.dimension!)) {
-            throw new DuplicateRequiredFilterError(
-               `${relativePath}: source '${explore.name}' declares multiple required filters on dimension '${parsed.dimension}'. A dimension may have at most one required filter.`,
+            refuse(
+               new DuplicateRequiredFilterError(
+                  `${relativePath}: source '${explore.name}' declares multiple required filters on dimension '${parsed.dimension}'. A dimension may have at most one required filter.`,
+               ),
             );
+            continue;
          }
          requiredDimensionNames.add(parsed.dimension!);
       }
@@ -887,6 +898,7 @@ const extractMetadataFromExplores = (
       string,
       NonNullable<SourceMetadata["servedFrom"]>
    > = new Map(),
+   refuse: Refuse = throwRefusal,
 ): SourceMetadata[] => {
    const metadataEntries: SourceMetadata[] = [];
    const sourceToModelPath = buildSourceToModelPathMap(
@@ -1003,7 +1015,7 @@ const extractMetadataFromExplores = (
          });
       }
 
-      const filters = extractFiltersFromExplore(explore, relativePath);
+      const filters = extractFiltersFromExplore(explore, relativePath, refuse);
       if (filters.length > 0) {
          metadataEntries.push({
             modelFilePath: relativePath,

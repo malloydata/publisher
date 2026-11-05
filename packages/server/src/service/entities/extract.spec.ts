@@ -173,6 +173,33 @@ source: b is duckdb.table('orders.csv') extend {
       ]);
    }, 60_000);
 
+   test("refuses every invalid annotation within one file, not only the first", async () => {
+      const { files, lookup } = await workspace({
+         "a.malloy": `
+source: a is duckdb.table('orders.csv') extend {
+  #(index)
+  measure: n is count()
+  #(index)
+  measure: m is count(region)
+  #(index sharing=all)
+  dimension: r is region
+}
+`,
+      });
+      const error = await packageCompilationService
+         .compilePackageModelFiles({ modelFiles: files }, lookup)
+         .then(
+            () => undefined,
+            (e: unknown) => e,
+         );
+      expect(error).toBeInstanceOf(EntitiesValidationError);
+      expect((error as EntitiesValidationError).reasons).toEqual([
+         "not_a_dimension",
+         "not_a_dimension",
+         "sharing_not_allowed_on_dimension",
+      ]);
+   }, 60_000);
+
    test("reads each model file at most once per extraction", async () => {
       const { files, lookup } = await workspace({
          "base.malloy": `source: base is duckdb.table('orders.csv') extend {

@@ -104,6 +104,17 @@ export abstract class DimIndexRejectionError extends Error {
 }
 
 /**
+ * Where an extraction reports an annotation the index refuses. The default
+ * throws; the load passes one that collects, so it can name every refused
+ * declaration in one 400 instead of the first per file.
+ */
+export type Refuse = (error: Error) => void;
+
+export const throwRefusal: Refuse = (error) => {
+   throw error;
+};
+
+/**
  * Thrown when a single ``#(index)``-tagged dimension would be partitioned by
  * more than one author-declared required ``#(filter)``. The index maps the
  * required filter to a partition key and supports exactly one, so >1 on an
@@ -570,6 +581,7 @@ export function collectDimIndexCandidates(
    explores: MalloyExplore[],
    modelFilePath: string,
    givenTypes: ReadonlyMap<string, string> = new Map(),
+   refuse: Refuse = throwRefusal,
 ): DimIndexCandidate[] {
    const candidates: DimIndexCandidate[] = [];
    // The lookup a string query_source base resolves against, as in extractMetadataFromExplores.
@@ -623,15 +635,6 @@ export function collectDimIndexCandidates(
             if (getAccessModifier(field) !== AccessModifierEnum.Public) {
                continue;
             }
-            // The field IS public and #(index)-tagged: it must be a
-            // dimension/column. A measure/view/join is refused at load rather
-            // than left with an index that never materializes.
-            assertIndexedFieldIsDimension({
-               sourceName,
-               fieldName: field.name,
-               isDimension: !field.isExploreField() && isDimensionField(field),
-               modelFilePath,
-            });
             const candidate: DimIndexCandidate = {
                sourceName,
                fieldName: field.name,
@@ -639,9 +642,25 @@ export function collectDimIndexCandidates(
                gateDimensions,
                requiredParameterNames,
             };
-            // Scope and schedule are package-level: refuse a per-dimension
-            // sharing= or schedule= on the #(index) annotation.
-            assertNoForbiddenIndexPolicyKeys(candidate, tags, modelFilePath);
+            try {
+               // The field IS public and #(index)-tagged: it must be a
+               // dimension/column. A measure/view/join is refused at load
+               // rather than left with an index that never materializes.
+               assertIndexedFieldIsDimension({
+                  sourceName,
+                  fieldName: field.name,
+                  isDimension:
+                     !field.isExploreField() && isDimensionField(field),
+                  modelFilePath,
+               });
+               // Scope and schedule are package-level: refuse a per-dimension
+               // sharing= or schedule= on the #(index) annotation.
+               assertNoForbiddenIndexPolicyKeys(candidate, tags, modelFilePath);
+            } catch (error) {
+               if (!(error instanceof DimIndexRejectionError)) throw error;
+               refuse(error);
+               continue;
+            }
             candidates.push(candidate);
          }
       }

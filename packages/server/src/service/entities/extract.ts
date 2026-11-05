@@ -15,6 +15,7 @@ import {
    collectDimIndexCandidates,
    DimIndexRejectionError,
    type DimIndexCandidate,
+   type Refuse,
    givenTypeMap,
    makeDimIndexLookupKey,
 } from "./dim_index_discovery";
@@ -145,9 +146,10 @@ async function extractAll(
             ),
          );
       } catch (error) {
-         const reason = refusalReason(error);
-         if (reason !== undefined) {
-            rejections.push({ message: errorMessage(error), reason });
+         if (error instanceof EntitiesValidationError) {
+            error.messages.forEach((message, i) =>
+               rejections.push({ message, reason: error.reasons[i]! }),
+            );
             continue;
          }
          const message = errorMessage(error);
@@ -227,6 +229,11 @@ async function extractModelFile(
       .getTaglines()
       .some((t) => /^##\|?\s*[([{<]?\s*agent-hidden\b/.test(t));
 
+   // Every annotation the index refuses, so the load names them all.
+   const refusals: Error[] = [];
+   const refuse: Refuse = (error) => {
+      refusals.push(error);
+   };
    const modelGivens = sourceExtraction.extractGivensFromModel(compiledModel);
    const modelAuthorize = sourceExtraction.extractAuthorizeFromModel(
       compiledModel,
@@ -246,6 +253,7 @@ async function extractModelFile(
       source,
       packageRoot,
       servedFrom(file, surface),
+      refuse,
    );
 
    // The `#(index)`-tagged dimensions. A non-public tagged field is skipped,
@@ -255,6 +263,7 @@ async function extractModelFile(
       explores,
       file.relativePath,
       givenTypeMap(modelGivens),
+      refuse,
    );
    const dimIndexFingerprints = await buildDimIndexFingerprintLookup({
       compiledModel,
@@ -262,7 +271,14 @@ async function extractModelFile(
       connections,
       modelFilePath: file.relativePath,
       packageName,
+      refuse,
    });
+   if (refusals.length > 0) {
+      throw new EntitiesValidationError(
+         refusals.map(errorMessage),
+         refusals.map((error) => refusalReason(error) ?? "unknown"),
+      );
+   }
 
    const entities = sourceExtraction.extractEntitiesFromExplores(
       explores,
@@ -302,19 +318,28 @@ async function buildDimIndexFingerprintLookup(args: {
    connections: LookupConnection<InfoConnection>;
    modelFilePath: string;
    packageName: string | undefined;
+   refuse: Refuse;
 }): Promise<Map<string, DimIndexFingerprintInputs>> {
    const out = new Map<string, DimIndexFingerprintInputs>();
    const { candidates } = args;
    if (candidates.length === 0) return out;
 
-   assertAtMostOneRequiredFilterPerIndexedDimension(
-      candidates,
-      args.modelFilePath,
-   );
-   assertNoRequiredParametersOnIndexedDimension(candidates, args.modelFilePath);
-
    const urlReader = new FileURLReader();
    for (const candidate of candidates) {
+      try {
+         assertAtMostOneRequiredFilterPerIndexedDimension(
+            [candidate],
+            args.modelFilePath,
+         );
+         assertNoRequiredParametersOnIndexedDimension(
+            [candidate],
+            args.modelFilePath,
+         );
+      } catch (error) {
+         if (!(error instanceof DimIndexRejectionError)) throw error;
+         args.refuse(error);
+         continue;
+      }
       // A dotted candidate source (`analytics.order_items`) is not a runnable
       // source: compile against the runnable root with a join-qualified field
       // path, as the index queries it.
