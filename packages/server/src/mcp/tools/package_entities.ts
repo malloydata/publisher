@@ -1067,6 +1067,7 @@ function collapseAliases(entities: Entity[]): Entity[] {
          if (donor) {
             keep.doc = donor.doc;
             keep.embedDoc = donor.embedDoc;
+            if (donor.docSource) keep.docSource = donor.docSource;
          }
       }
       // A class belongs to the column, so a spelling's class is the group's:

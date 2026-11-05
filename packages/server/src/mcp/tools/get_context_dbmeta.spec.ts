@@ -42,6 +42,10 @@ source: invoices is duckdb.sql("${INVOICES_SQL}") include {
   id
 }
 
+source: renamed is duckdb.sql("${ORDERS_SQL}") extend {
+  dimension: amount_usd is amount
+}
+
 source: orders is duckdb.sql("select 1 as id, 1 as bare_id") extend {
   join_one: b is bare on b.id = bare_id
 }
@@ -138,6 +142,14 @@ describe("database descriptions on a field", () => {
       const tax = find("dimension", "invoices", "tax");
       expect(tax?.doc).toBe("Tax charged.");
       expect(tax?.docSource).toBeUndefined();
+   });
+
+   it("carry their marker to an undocumented rename of the column", async () => {
+      const { find } = await indexWithDbmeta();
+      expect(find("dimension", "renamed", "amount_usd")).toMatchObject({
+         doc: NET_REVENUE,
+         docSource: "dbmeta",
+      });
    });
 
    it('give way to a #" doc string', async () => {
