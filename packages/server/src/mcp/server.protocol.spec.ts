@@ -157,19 +157,18 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // executeQuery; the sentence that said so was once dropped while
          // the fields were being renamed, and nothing caught it.
          "execute_query",
-         // The LLM steps. An empty answer can now be the model's pruning, a
-         // failed step is named in the error, a rating carries the model's
-         // reason, and a long answer loses whole sources; an agent told none
-         // of this reads an empty or short answer as "the data is not there".
+         // The LLM steps. An empty answer can be the judge picking nothing, a
+         // failed step is named in the error, a pick carries the judge's
+         // reason, and a long answer pages; an agent told none of this reads
+         // an empty or short answer as "the data is not there".
          "llm-stage-failed",
          "retrieval_stage",
          "match_reason",
          "35,000",
-         "pruned",
+         "unresolved_targets",
+         "clusters",
          "ranking",
          "total_available",
-         "below_cutoff_count",
-         "total_entities",
          "retrieval_reason",
          "warnings",
          "data_type",
@@ -187,6 +186,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // rule anyway, since a harness that cannot identify an entity
          // cannot score retrieval at all.
          "entity_id",
+         // Value search: without these an agent never learns that a typed
+         // value can be resolved to the stored string, or where it arrives.
+         "dimensional_value",
+         "values[]",
       ]) {
          expect(description).toContain(term);
       }

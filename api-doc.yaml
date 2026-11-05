@@ -8621,8 +8621,8 @@ components:
             for plaintext) — a server-applied default, not a schema default. On
             a direct connection the same modes apply against the configured
             host; when omitted, the deployment PGSSLMODE applies. Ignored when
-            connectionString is set, which carries its own sslmode. Not applied
-            to a DuckLake catalog connection.
+            connectionString is set, which carries its own sslmode. Applies to a
+            DuckLake catalog connection as well.
         statementTimeoutMilliseconds:
           type: integer
           minimum: 1
