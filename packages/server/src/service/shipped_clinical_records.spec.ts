@@ -10,8 +10,8 @@
  *     givens, and each surface's gates decide the way the policy's workforce
  *     table says.
  *   - Each seeded violation under `violations/` has the outcome its README
- *     promises: the two mechanical ones refuse the load with their reason,
- *     and the ones that only a review can catch load, and leak.
+ *     promises: the three mechanical ones refuse the load with their reason,
+ *     and the two that only a review can catch load, and leak.
  *
  * Runs through `Package.create`, because the refusals and the query boundary
  * are package-level.
@@ -324,6 +324,10 @@ describe("examples/clinical-records, seeded violations", () => {
          "source research (index.malloy) carries [none, phi.clinical, phi.financial, phi.quasi_identifier] but exposes person.ssn",
       ],
       [
+         "04-requester-asserted-scope",
+         "source patient_chart (index.malloy) is gated on $ORGANIZATIONS, which is not declared #(secure)",
+      ],
+      [
          "05-billing-reopened",
          "source billing (index.malloy) is open to every caller and joins patient, which is locked",
       ],
@@ -370,21 +374,20 @@ describe("examples/clinical-records, seeded violations", () => {
       }
    });
 
-   it.each([
-      ["02-mislabeled-identifier"],
-      ["03-billing-all-organizations"],
-      ["04-requester-asserted-scope"],
-   ])("loads %s, which only a review can catch", async (name) => {
-      const { dir, cleanup } = withViolation(name);
-      try {
-         const { pkg, close } = await load(dir);
+   it.each([["02-mislabeled-identifier"], ["03-billing-all-organizations"]])(
+      "loads %s, which only a review can catch",
+      async (name) => {
+         const { dir, cleanup } = withViolation(name);
          try {
-            expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
+            const { pkg, close } = await load(dir);
+            try {
+               expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
+            } finally {
+               await close();
+            }
          } finally {
-            await close();
+            cleanup();
          }
-      } finally {
-         cleanup();
-      }
-   });
+      },
+   );
 });

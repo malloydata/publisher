@@ -74,15 +74,28 @@ export function resolveDeclaredSource(
    return sawBrokenEntry ? { kind: "unresolvable" } : { kind: "none" };
 }
 
-/** The gate exprs of one level's own notes, for one route. */
+/**
+ * The gate exprs of one level's own notes, noting in `declaredAt` the document
+ * each gate note was written in (`""` for a note with no position: unknown).
+ */
 function gateAtLevel(
    annotations: AnnotationsDef | undefined,
    route: string,
+   declaredAt: Set<string> | undefined,
 ): string[] {
-   return collectAuthorizeExprsForRoute(
-      ownLevelNotes(annotations).map((note) => note.text),
+   const notes = ownLevelNotes(annotations);
+   const exprs = collectAuthorizeExprsForRoute(
+      notes.map((note) => note.text),
       route,
    );
+   if (declaredAt) {
+      for (const note of notes) {
+         if (collectAuthorizeExprsForRoute([note.text], route).length > 0) {
+            declaredAt.add(note.at?.url ?? "");
+         }
+      }
+   }
+   return exprs;
 }
 
 /**
@@ -116,10 +129,11 @@ export function ancestorGateExprs(
    modelDef: ModelDef | undefined,
    route: string,
    seen: Set<SourceDef> = new Set(),
+   declaredAt?: Set<string>,
 ): string[] {
    let inherited = struct.annotations?.inherits;
    for (let depth = 0; inherited && depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const exprs = gateAtLevel(inherited, route);
+      const exprs = gateAtLevel(inherited, route, declaredAt);
       if (exprs.length > 0) return exprs;
       inherited = inherited.inherits;
    }
@@ -146,10 +160,10 @@ export function ancestorGateExprs(
    // Do not hoist this walk above a call site's own-gate read either; losing
    // that read turns this `[]` into a real fail-open.
    if (declared.kind === "none" || seen.has(declared.source)) return [];
-   const exprs = gateAtLevel(declared.source.annotations, route);
+   const exprs = gateAtLevel(declared.source.annotations, route, declaredAt);
    return exprs.length > 0
       ? exprs
-      : ancestorGateExprs(declared.source, modelDef, route, seen);
+      : ancestorGateExprs(declared.source, modelDef, route, seen, declaredAt);
 }
 
 /**
@@ -219,8 +233,15 @@ export function effectiveAncestorGateExprs(
    modelDef: ModelDef | undefined,
    route: string,
    seen: Set<SourceDef> = new Set(),
+   declaredAt?: Set<string>,
 ): string[][] {
-   const direct = ancestorGateExprs(struct, modelDef, route, new Set(seen));
+   const direct = ancestorGateExprs(
+      struct,
+      modelDef,
+      route,
+      new Set(seen),
+      declaredAt,
+   );
    if (direct.length > 0) return [direct];
    if (seen.has(struct)) return [];
    seen.add(struct);
@@ -233,11 +254,17 @@ export function effectiveAncestorGateExprs(
          groups.push(["false"]);
       }
    } else if (!seen.has(base)) {
-      const ownExprs = gateAtLevel(base.annotations, route);
+      const ownExprs = gateAtLevel(base.annotations, route, declaredAt);
       groups.push(
          ...(ownExprs.length > 0
             ? [ownExprs]
-            : effectiveAncestorGateExprs(base, modelDef, route, seen)),
+            : effectiveAncestorGateExprs(
+                 base,
+                 modelDef,
+                 route,
+                 seen,
+                 declaredAt,
+              )),
       );
    }
    const composite = resolveCompositeResolvedBase(struct);
@@ -246,11 +273,21 @@ export function effectiveAncestorGateExprs(
       const compositeOwnNotes = ownLevelNotes(composite.annotations).filter(
          (note) => !parentOwnNotes.includes(note),
       );
-      const compositeOwn = gateAtLevel({ notes: compositeOwnNotes }, route);
+      const compositeOwn = gateAtLevel(
+         { notes: compositeOwnNotes },
+         route,
+         declaredAt,
+      );
       groups.push(
          ...(compositeOwn.length > 0
             ? [compositeOwn]
-            : effectiveAncestorGateExprs(composite, modelDef, route, seen)),
+            : effectiveAncestorGateExprs(
+                 composite,
+                 modelDef,
+                 route,
+                 seen,
+                 declaredAt,
+              )),
       );
    }
    return groups;
@@ -267,13 +304,29 @@ export function gateExprsForRoute(
    struct: SourceDef,
    modelDef: ModelDef | undefined,
    route: string,
+   declaredAt?: Set<string>,
 ): string[][] {
-   const own = gateAtLevel(struct.annotations, route);
+   const own = gateAtLevel(struct.annotations, route, declaredAt);
    if (own.length === 0) {
-      return effectiveAncestorGateExprs(struct, modelDef, route, new Set());
+      return effectiveAncestorGateExprs(
+         struct,
+         modelDef,
+         route,
+         new Set(),
+         declaredAt,
+      );
    }
    return struct.type === "query_source"
-      ? [own, ...effectiveAncestorGateExprs(struct, modelDef, route, new Set())]
+      ? [
+           own,
+           ...effectiveAncestorGateExprs(
+              struct,
+              modelDef,
+              route,
+              new Set(),
+              declaredAt,
+           ),
+        ]
       : [own];
 }
 

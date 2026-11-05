@@ -3,8 +3,9 @@
 
 /**
  * A source whose `#(authorize)` and `#(access_filter)` read a given that is
- * not `#(secure)` loads and serves: an API customer sets its givens from its
- * own trusted tier, so the gate is a real control there. Drives
+ * not `#(secure)`: refused at load by default, and loaded and gated under
+ * `PUBLISHER_REQUIRE_SECURE_GATE_GIVENS=false`, the setting for a deployment
+ * whose callers set their givens from their own trusted tier. Drives
  * `Package.create` on the worker path.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -25,7 +26,8 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AccessDeniedError } from "../errors";
+import { REQUIRE_SECURE_GATE_GIVENS_ENV } from "../config";
+import { AccessDeniedError, BadRequestError } from "../errors";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -34,6 +36,7 @@ import { unrecordedAudit } from "./access_record";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+const ORIGINAL_REQUIRE = process.env[REQUIRE_SECURE_GATE_GIVENS_ENV];
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b'),(3,'org-b')) as t(id, org)")`;
 
 const MODEL = `##! experimental.givens
@@ -73,16 +76,40 @@ describe("a gate on a given that is not #(secure)", () => {
    });
 
    afterEach(async () => {
+      if (ORIGINAL_REQUIRE === undefined) {
+         delete process.env[REQUIRE_SECURE_GATE_GIVENS_ENV];
+      } else {
+         process.env[REQUIRE_SECURE_GATE_GIVENS_ENV] = ORIGINAL_REQUIRE;
+      }
       await duckdb.close();
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
-   it("loads, admits the caller its lock names, and filters to its rows", async () => {
+   const malloyConfig = () => {
       const config = new MalloyConfig({ connections: {} });
       config.wrapConnections(
          () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
       );
-      const pkg = await Package.create("env", "pkg", tempDir, config);
+      return config;
+   };
+
+   it("is refused at load by default, naming the source and the given", async () => {
+      delete process.env[REQUIRE_SECURE_GATE_GIVENS_ENV];
+      let error: unknown;
+      try {
+         await Package.create("env", "pkg", tempDir, malloyConfig());
+      } catch (e) {
+         error = e;
+      }
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect((error as Error).message).toContain(
+         "source chart (m.malloy) is gated on",
+      );
+   });
+
+   it("with the requirement off, loads, admits the caller its lock names, and filters to its rows", async () => {
+      process.env[REQUIRE_SECURE_GATE_GIVENS_ENV] = "false";
+      const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const run = (givens: Record<string, unknown>) =>
          pkg
             .getModel("m.malloy")!

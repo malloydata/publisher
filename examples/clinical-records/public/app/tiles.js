@@ -290,9 +290,9 @@ export const VIOLATIONS = [
     id: "04",
     what: "The clinicians' organization scope reads a given the requester sets.",
     controls: "AC-03, MN-01",
-    refused: false,
+    refused: true,
     reason:
-      "Loads: a gate on a plain given is as trustworthy as whatever sets it. Here the requester sets $ORGANIZATIONS, so the gate is a filter, not a control; a review that reads which givens are #(secure) catches it.",
+      "source patient_chart is gated on $ORGANIZATIONS, which is not declared #(secure), so a caller can set it and the gate is a filter, not a control.",
   },
   {
     id: "05",

@@ -22,19 +22,10 @@ describe("metadata PATCH and the load gates", () => {
    let envPath: string;
    let env: Environment;
 
-   const CLEAN = `##! experimental.givens
-#(secure)
-given: ORGS :: string[]
+   const model = (secure: boolean, name: string) => `##! experimental.givens
+${secure ? "#(secure)\n" : ""}given: ORGS :: string[]
 #(access_filter) org in $ORGS
-source: tidy is ${ROWS}
-`;
-
-   const BYPASS = `#(authorize) false
-source: vault is ${ROWS}
-
-source: leaky is ${ROWS} extend {
-   join_one: locked is vault on locked.id = id
-}
+source: ${name} is ${ROWS}
 `;
 
    async function write(file: string, text: string): Promise<void> {
@@ -54,8 +45,8 @@ source: leaky is ${ROWS} extend {
          }),
       );
       await write("index.malloy", `source: open is ${ROWS}\n`);
-      await write("hidden.malloy", BYPASS);
-      await write("clean.malloy", CLEAN);
+      await write("hidden.malloy", model(false, "leaky"));
+      await write("clean.malloy", model(true, "tidy"));
       env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
    });
@@ -67,7 +58,7 @@ source: leaky is ${ROWS} extend {
    const metadata = async () =>
       (await env.getPackage("pkg", false)).getPackageMetadata();
 
-   it("refuses switching to queryableSources all over a hidden join bypass, and keeps the old metadata", async () => {
+   it("refuses switching to queryableSources all over a hidden insecure gate, and keeps the old metadata", async () => {
       const before = await metadata();
       let error: unknown;
       try {
@@ -80,7 +71,7 @@ source: leaky is ${ROWS} extend {
       }
       expect(error).toBeInstanceOf(BadRequestError);
       expect((error as Error).message).toContain(
-         "source leaky (hidden.malloy) is open to every caller and joins locked, which is locked",
+         "source leaky (hidden.malloy) is gated on $ORGS",
       );
       expect(await metadata()).toEqual(before);
       const manifest = JSON.parse(
@@ -89,7 +80,7 @@ source: leaky is ${ROWS} extend {
       expect(manifest.queryableSources).toBeUndefined();
    });
 
-   it("refuses adding a source with a join bypass to explores, and keeps the old metadata", async () => {
+   it("refuses adding a source with an insecure gate to explores, and keeps the old metadata", async () => {
       const before = await metadata();
       let error: unknown;
       try {

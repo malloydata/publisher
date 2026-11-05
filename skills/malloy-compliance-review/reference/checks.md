@@ -13,7 +13,7 @@ status. The rest are aggregate queries run as the register's personas. None read
 | Check | Fails when | Reads |
 | --- | --- | --- |
 | `inventory` | The package read has no classification summary, or `get_context` could not list the published fields | package read, `get_context` |
-| `loads` | The package did not load, or serves a stale model because its latest files were refused. One finding per refusal, tagged with the domain and kind (`ceiling`, `join`) | `/api/v0/status` |
+| `loads` | The package did not load, or serves a stale model because its latest files were refused. One finding per refusal, tagged with the domain and kind (`ceiling`, `secure`, `join`) | `/api/v0/status` |
 | `refusals` | Never fails on a refusal: a refused change is evidence that a violating change is not deployed | `/api/v0/status` |
 | `coverage` | A published field has no class. A field that declares a lower class than the fields it reads (a `classification-downgrade` warning) needs review | package read |
 | `gated` | A published domain has neither `#(authorize)` nor a row filter | model read |

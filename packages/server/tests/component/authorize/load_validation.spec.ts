@@ -34,7 +34,8 @@ function gateModel(
    gate: string,
    source = "source: X is duckdb.table('accounts') extend {}",
 ): string {
-   // A block-level #(secure) note marks every given.
+   // Every given a gate reads must be #(secure), or the load refuses the
+   // package before the check under test runs; a block-level note marks all.
    const givenBlock = givens
       ? `#(secure)\ngiven:\n${givens
            .split("\n")

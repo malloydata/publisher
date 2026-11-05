@@ -1079,6 +1079,22 @@ export const getPersistCollisionEnforce = (): boolean =>
    // parseBoolEnv, not `=== "true"`, so `1` or `yes` cannot fail open.
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
+export const REQUIRE_SECURE_GATE_GIVENS_ENV =
+   "PUBLISHER_REQUIRE_SECURE_GATE_GIVENS";
+
+/**
+ * Whether a package whose `#(authorize)` or `#(access_filter)` reads a given
+ * not declared `#(secure)` is refused at load, from
+ * `PUBLISHER_REQUIRE_SECURE_GATE_GIVENS` (default `true`).
+ *
+ * On, a gate must read givens the trusted tier sets, since a plain given is
+ * whatever the request carries. A deployment whose callers set their givens
+ * from their own authenticated tier, an API customer authorizing its users
+ * before it calls, sets `false`: there the plain given is the control.
+ */
+export const requireSecureGateGivens = (): boolean =>
+   parseBoolEnv(REQUIRE_SECURE_GATE_GIVENS_ENV) ?? true;
+
 /**
  * Which origins may read a cross-origin response from the MCP endpoint, from
  * `MCP_CORS_ORIGINS` (comma-separated; `*` allows any).
