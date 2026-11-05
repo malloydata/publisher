@@ -81,6 +81,5 @@ export function extractCodeFromEntity(
          keep.push(line);
       }
    }
-   logger.debug(`Code for ${entity.name}:`, keep.join("\n"));
    return keep.join("\n");
 }

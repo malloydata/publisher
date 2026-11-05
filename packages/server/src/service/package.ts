@@ -74,6 +74,7 @@ import {
 } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
+   recordEntitiesRefusals,
    recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
@@ -825,7 +826,9 @@ export class Package {
             manifestValidationTime,
          );
       } catch (error) {
-         logger.error(`Error loading package ${packageName}`, { error });
+         logger.error(`Error loading package ${packageName}`, {
+            error: errMessage(error),
+         });
          const endTime = performance.now();
          const executionTime = endTime - startTime;
          this.packageLoadHistogram.record(executionTime, {
@@ -1229,18 +1232,8 @@ export class Package {
          throw err;
       }
 
-      const endTime = performance.now();
-      const executionTime = endTime - startTime;
-      this.packageLoadHistogram.record(executionTime, {
-         malloy_package_name: packageName,
-         status: "success",
-      });
-      recordPackageLoadPhases(outcome.timings, "success");
-      logger.info(`Successfully loaded package ${packageName}`, {
-         packageName,
-         duration: formatDuration(executionTime),
-      });
-
+      // `malloy_package_load_duration` measures up to here, before discovery.
+      const executionTime = performance.now() - startTime;
       const pkg = new Package(
          environmentName,
          packageName,
@@ -1250,29 +1243,52 @@ export class Package {
          models,
          malloyConfig,
       );
-      const reportTimings = await pkg.discoverReports("load");
-      // After discovery: which findings a tile explains depends on the reports.
-      pkg.renderTagWarnings = pkg.surfacedRenderTagWarnings(renderTagWarnings);
-      pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
-      pkg.recordDeprecatedUsage(outcome);
-      pkg.retrievalSettings =
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
-      pkg.rawAgents = outcome.packageMetadata.agents;
-      // No manifest is bound yet, so this serves live until a bind.
-      pkg.wireFreshnessResolvers();
-      pkg.refreshServingIdentity();
+      let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
+      let buildPlanMs: Awaited<ReturnType<Package["applyLoadBuildPlan"]>>;
+      let entitiesMs: number;
+      try {
+         reportTimings = await pkg.discoverReports("load");
+         // After discovery: which findings a tile explains depends on the reports.
+         pkg.renderTagWarnings =
+            pkg.surfacedRenderTagWarnings(renderTagWarnings);
+         pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+         pkg.recordDeprecatedUsage(outcome);
+         pkg.retrievalSettings =
+            outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
+         pkg.rawAgents = outcome.packageMetadata.agents;
+         // No manifest is bound yet, so this serves live until a bind.
+         pkg.wireFreshnessResolvers();
+         pkg.refreshServingIdentity();
 
-      const buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
+         buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
 
-      applyLoadGates(pkg);
-      const entitiesStarted = performance.now();
-      await pkg.computeEntities();
-      const entitiesMs = performance.now() - entitiesStarted;
-      // After the gates, so a bad declaration is rejected before a companion is
-      // compiled. Unbound, the companion recomputes from the base until a bind.
-      await pkg.pushPreaggregateServeModels();
-      pkg.logEmptyDiscoveryWarnings();
+         applyLoadGates(pkg);
+         const entitiesStarted = performance.now();
+         await pkg.computeEntities();
+         entitiesMs = performance.now() - entitiesStarted;
+         // After the gates, so a bad declaration is rejected before a companion is
+         // compiled. Unbound, the companion recomputes from the base until a bind.
+         await pkg.pushPreaggregateServeModels();
+         pkg.logEmptyDiscoveryWarnings();
+      } catch (err) {
+         recordPackageLoadPhases(
+            outcome.timings,
+            packageLoadFailureStatus(err),
+         );
+         throw err;
+      }
 
+      // Recorded only now: a gate, the extraction or a companion compile can
+      // still refuse the load above, and Package.create records that failure.
+      this.packageLoadHistogram.record(executionTime, {
+         malloy_package_name: packageName,
+         status: "success",
+      });
+      recordPackageLoadPhases(outcome.timings, "success");
+      logger.info(`Successfully loaded package ${packageName}`, {
+         packageName,
+         duration: formatDuration(executionTime),
+      });
       recordPackageLoadPhaseDurations({
          worker: workerDoneTime - dispatchTime,
          hydrate: hydrationTimings.hydrateMs,
@@ -1525,6 +1541,7 @@ export class Package {
       try {
          results = await extractPackageEntities({
             packageRoot: this.packagePath,
+            packageName: this.packageName,
             modelFiles,
             manifest: {
                explores: this.packageMetadata.explores,
@@ -1534,15 +1551,34 @@ export class Package {
          });
       } catch (error) {
          if (error instanceof EntitiesValidationError) {
-            logger.error(
-               `Package ${this.packageName} declares an annotation its index cannot honor`,
-               { packageName: this.packageName, detail: error.message },
+            // The author's problem, not the server's: the 400 carries every
+            // refused declaration to them.
+            logger.warn(
+               "Refused a package whose annotations an index cannot honor",
+               {
+                  packageName: this.packageName,
+                  reasons: error.reasons,
+                  detail: error.message,
+               },
             );
+            recordEntitiesRefusals(error.reasons);
             throw new BadRequestError(error.message);
          }
          throw error;
       }
       this.entities = Object.freeze(toApiEntities(results));
+      logger.info("Extracted package entities", {
+         packageName: this.packageName,
+         models: this.entities.length,
+         failedModels: this.entities.filter((m) => m.error !== undefined)
+            .length,
+         fields: this.entities.reduce((n, m) => n + (m.fields?.length ?? 0), 0),
+         fingerprintedDimensions: this.entities.reduce(
+            (n, m) =>
+               n + (m.fields?.filter((f) => f.indexFingerprint).length ?? 0),
+            0,
+         ),
+      });
    }
 
    /** How this package is searched and indexed (publisher.json `retrieval`). */

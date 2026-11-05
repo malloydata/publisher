@@ -173,7 +173,6 @@ function getEntitiesFromExplore(
    nonQueryableSourceNames: ReadonlySet<string> = new Set(),
 ): Entity[] {
    const entities: Entity[] = [];
-   let non_public_entities_count = 0;
 
    const sourceName = composeSourceName(parentPath, explore.name);
    // The runnable source at the head of this (possibly dotted) walk —
@@ -190,7 +189,6 @@ function getEntitiesFromExplore(
       // its entire nested schema indexed even though the join itself is
       // not accessible from outside the declaring source/model file.
       if (getAccessModifier(field) !== AccessModifierEnum.Public) {
-         non_public_entities_count++;
          continue;
       }
 
@@ -304,9 +302,6 @@ function getEntitiesFromExplore(
       entities.push(codeEntity);
    }
 
-   logger.info(
-      `Source: ${sourceName} - Non-public entities skipped: ${non_public_entities_count}`,
-   );
    return entities;
 }
 
@@ -554,7 +549,7 @@ const buildAuthorizeForExplore = (
       givenTypes: givenTypeMap(modelGivens),
    });
    if (withheld) {
-      logger.info(
+      logger.debug(
          `[authorize] ${relativePath}: source '${explore.name}' access_filter terms withheld (${withheld})`,
       );
    }
@@ -931,7 +926,7 @@ const extractMetadataFromExplores = (
    }
 
    if (isModelFileAgentHidden) {
-      logger.info(
+      logger.debug(
          `[agent-hidden] Model file level agent-hidden tag found on ${relativePath} — will be applied to all sources defined in this file. The tag will not be applied to sources imported from other model files.`,
       );
    }
@@ -965,7 +960,7 @@ const extractMetadataFromExplores = (
          sourceLevelAgentHidden ||
          (isModelFileAgentHidden && definedInThisModelFile);
       if (sourceLevelAgentHidden) {
-         logger.info(
+         logger.debug(
             `[agent-hidden] Source-level agent-hidden found on source '${explore.name}' (defined in ${explore.location?.url ?? "unknown"}) - applied to metadata for model file ${relativePath}.`,
          );
       }
@@ -1114,9 +1109,6 @@ const extractMetadataFromExplores = (
       );
    }
 
-   logger.info(
-      `Model file: ${relativePath.split("/").pop()}: Extracted ${metadataEntries.length} metadata entries`,
-   );
    return metadataEntries;
 };
 
@@ -1166,9 +1158,6 @@ const extractEntitiesFromExplores = (
       );
       entities.push(...exploreEntities);
    }
-   logger.info(
-      `Model file: ${relativePath.split("/").pop()}: Extracted ${entities.length} entities`,
-   );
    return entities;
 };
 

@@ -18,6 +18,8 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { components } from "../../../src/api";
+import { resetPackageLoadMetricsForTesting } from "../../../src/package_load_metrics";
+import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
 type PackageEntities = components["schemas"]["PackageEntities"];
@@ -287,17 +289,36 @@ describe("the package resource and its sub-resources", () => {
       expect("classification" in pkg).toBe(false);
    }, 60_000);
 
-   it("a package with an #(index) on a measure is refused with a 400 naming it", async () => {
-      const location = writePackage("bad_index", {
-         "bad.malloy": `source: bad is ${ROWS} extend {
+   it("a package with an #(index) on a measure is refused with a 400 naming it, counted as a refusal and never as a success", async () => {
+      const harness = await startMetricsHarness();
+      resetPackageLoadMetricsForTesting();
+      try {
+         const location = writePackage("bad_index", {
+            "bad.malloy": `source: bad is ${ROWS} extend {
   #(index)
   measure: n is count()
 }
 `,
-      });
-      const created = await publish("bad_index", location);
-      expect(created.status).toBe(400);
-      expect(JSON.stringify(created.json)).toContain("is not a dimension");
+         });
+         const created = await publish("bad_index", location);
+         expect(created.status).toBe(400);
+         expect(JSON.stringify(created.json)).toContain("is not a dimension");
+         expect(
+            await harness.collectCounter(
+               "publisher_package_entities_refusals_total",
+               { reason: "not_a_dimension" },
+            ),
+         ).toBe(1);
+         const phases = (status: string) =>
+            harness.collectHistogram("malloy_package_load_compile_duration", {
+               status,
+            });
+         expect((await phases("policy_rejected")).count).toBe(1);
+         expect((await phases("success")).count).toBe(0);
+      } finally {
+         resetPackageLoadMetricsForTesting();
+         await harness.shutdown();
+      }
    }, 120_000);
 
    it("a package with two required filters on one dimension is refused with a 400", async () => {

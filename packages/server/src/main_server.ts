@@ -177,6 +177,9 @@ const modelController = new ModelController(environmentStore);
 // query, which matters most to an operator relying on `local-only` for a
 // no-network guarantee. The log records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+logger.info(
+   `Package inline fields (PUBLISHER_PACKAGE_INLINE_FIELDS): ${isPackageInlineFieldsEnabled() ? "on" : "off"}`,
+);
 // Validated (and the spill directory created) at boot: the health probes never
 // touch DuckDB, so a bad limit or directory would otherwise leave a pod
 // reporting ready while every query failed. `SET temp_directory` accepts a

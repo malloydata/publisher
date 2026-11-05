@@ -8,6 +8,7 @@ import {
    type Model,
 } from "@malloydata/malloy";
 import { logger } from "../../logger";
+import { recordEntitiesDegraded } from "../../package_load_metrics";
 import {
    assertAtMostOneRequiredFilterPerIndexedDimension,
    assertNoRequiredParametersOnIndexedDimension,
@@ -59,6 +60,8 @@ export type EntitiesModelFile =
 export interface ExtractPackageEntitiesInput {
    /** Absolute path of the package root. */
    packageRoot: string;
+   /** The package's name, for the extraction's logs. */
+   packageName?: string;
    /** Every `.malloy` file of the package, listed files or not. */
    modelFiles: EntitiesModelFile[];
    /** The package's discovery surface; absent when it curates nothing. */
@@ -106,9 +109,17 @@ async function extractAll(
       input.manifest,
       compiled as SurfaceModelFile[],
       (file, error) => {
-         const message = `Error reading the query surface of ${file.relativePath}: ${errorMessage(error)}`;
-         logger.warn(message);
-         surfaceErrors.set(file.relativePath, message);
+         const detail = errorMessage(error);
+         logger.warn("Could not read a model's part of the query surface", {
+            packageName: input.packageName,
+            modelPath: file.relativePath,
+            error: detail,
+         });
+         recordEntitiesDegraded("surface_read_failed");
+         surfaceErrors.set(
+            file.relativePath,
+            `Error reading the query surface of ${file.relativePath}: ${detail}`,
+         );
       },
    );
    const results: ModelCompileResult[] = [];
@@ -130,6 +141,7 @@ async function extractAll(
                input.packageRoot,
                surface,
                input.connections,
+               input.packageName,
             ),
          );
       } catch (error) {
@@ -139,10 +151,12 @@ async function extractAll(
             continue;
          }
          const message = errorMessage(error);
-         logger.warn(
-            `Failed to extract the entities of ${file.relativePath}: ${message}`,
-            { error },
-         );
+         logger.warn("Could not extract a model's entities", {
+            packageName: input.packageName,
+            modelPath: file.relativePath,
+            error: message,
+         });
+         recordEntitiesDegraded("file_extract_failed");
          results.push(errorResult(file.relativePath, message));
       }
    }
@@ -200,6 +214,7 @@ async function extractModelFile(
    packageRoot: string,
    surface: PackageQuerySurface,
    connections: LookupConnection<InfoConnection>,
+   packageName: string | undefined,
 ): Promise<ModelCompileResult> {
    const result = errorResult(file.relativePath);
    const compiledModel = file.model;
@@ -246,6 +261,7 @@ async function extractModelFile(
       candidates,
       connections,
       modelFilePath: file.relativePath,
+      packageName,
    });
 
    const entities = sourceExtraction.extractEntitiesFromExplores(
@@ -285,6 +301,7 @@ async function buildDimIndexFingerprintLookup(args: {
    candidates: DimIndexCandidate[];
    connections: LookupConnection<InfoConnection>;
    modelFilePath: string;
+   packageName: string | undefined;
 }): Promise<Map<string, DimIndexFingerprintInputs>> {
    const out = new Map<string, DimIndexFingerprintInputs>();
    const { candidates } = args;
@@ -328,11 +345,16 @@ async function buildDimIndexFingerprintLookup(args: {
          sql = queryModel.preparedQuery.preparedResult.sql;
       } catch (err) {
          logger.warn(
-            `Failed to compile the index fingerprint query for ` +
-               `${args.modelFilePath}::${candidate.sourceName}.${candidate.fieldName}; ` +
-               `it reports no fingerprint`,
-            { error: errorMessage(err) },
+            "Could not compile an #(index) fingerprint query; the dimension reports no fingerprint",
+            {
+               packageName: args.packageName,
+               modelPath: args.modelFilePath,
+               sourceName: candidate.sourceName,
+               fieldName: candidate.fieldName,
+               error: errorMessage(err),
+            },
          );
+         recordEntitiesDegraded("fingerprint_failed");
          continue;
       }
       out.set(
