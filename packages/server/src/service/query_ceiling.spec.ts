@@ -179,6 +179,16 @@ const DENIED: Array<[string, string, string]> = [
       "run: s extend { dimension: x is p.ssn } -> { index: x }",
       "cannot see completely",
    ],
+   [
+      "a dotted read through a join whose name a group_by output also takes",
+      'run: s -> { group_by: p is sid where: p.ssn = "x" }',
+      "p.ssn, which is classified phi.direct_identifier",
+   ],
+   [
+      "a dotted read through a join whose name an aggregate output also takes",
+      'run: s -> { aggregate: p is count() where: p.ssn = "x" }',
+      "p.ssn, which is classified phi.direct_identifier",
+   ],
 ];
 
 describe("#(carries) is checked per query", () => {
@@ -273,6 +283,8 @@ describe("#(carries) is checked per query", () => {
             "run: s -> { group_by: sid aggregate: c calculate: prev is lag(c) }",
             "run: s -> { group_by: sid aggregate: n is count() calculate: prev is lag(n) }",
             "run: s -> { group_by: sid aggregate: n is count() order_by: n desc }",
+            "run: s -> { group_by: p is sid order_by: p }",
+            "run: s -> { group_by: p is sid where: p.pid is not null }",
             "run: comp -> { group_by: k }",
             "run: comp_m -> { group_by: k }",
             "run: comp_q -> { group_by: only_b }",
@@ -408,6 +420,53 @@ describe("an unreadable chain on a joined struct", () => {
 
    it("twin: the same read through a join with no unreadable chain serves", () => {
       expect(ceilingRefusal(modelDefWith(undefined) as never, query)).toBe(
+         undefined,
+      );
+   });
+});
+
+describe("a read whose head shadows a name the first stage outputs", () => {
+   const modelDef = {
+      contents: {
+         s: {
+            name: "s",
+            type: "table",
+            annotations: { blockNotes: [{ text: '#(carries) ["none"]\n' }] },
+            fields: [
+               {
+                  name: "a",
+                  type: "string",
+                  annotations: {
+                     blockNotes: [{ text: '#(classification) "none"\n' }],
+                  },
+               },
+               { name: "n", join: "one", type: "table", fields: [] },
+            ],
+         },
+      },
+   };
+   const queryReading = (output: string, read: string[]) => ({
+      structRef: "s",
+      pipeline: [
+         {
+            type: "reduce",
+            queryFields: [{ type: "fieldref", path: ["a"], as: output }],
+            refSummary: { fieldUsage: [{ path: ["a"] }, { path: read }] },
+         },
+      ],
+   });
+
+   it("holds a dotted path the lineage cannot resolve to the ceiling", () => {
+      const refusal = ceilingRefusal(
+         modelDef as never,
+         queryReading("n", ["n", "x"]),
+      );
+      expect(refusal).toContain("n.x");
+      expect(refusal).toContain("cannot see completely");
+   });
+
+   it("twin: a bare output name, as in `order_by: n`, is not a read of the source", () => {
+      expect(ceilingRefusal(modelDef as never, queryReading("m", ["m"]))).toBe(
          undefined,
       );
    });
