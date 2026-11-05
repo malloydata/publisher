@@ -4217,18 +4217,6 @@ describe("buildPgConnectionString", () => {
             { name: "lake", applyConnectionOptions: false },
          ),
       ).toBe("host=db.example.com port=5432 dbname=lake user=u password=p");
-      expect(
-         buildPgConnectionString(
-            {
-               ...fields,
-               sslmode: "disable",
-               statementTimeoutMilliseconds: 5000,
-            },
-            { name: "lake", applyConnectionOptions: false },
-         ),
-      ).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
-      );
    });
 
    describe("a DuckLake catalog given as fields", () => {
@@ -4267,6 +4255,17 @@ describe("buildPgConnectionString", () => {
                { name: "lake", applyConnectionOptions: false },
             ),
          ).not.toContain("statement_timeout");
+      });
+
+      it("takes its own disable over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "disable" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
+         );
       });
 
       it("falls back to the deployment PGSSLMODE when it sets no sslmode", () => {
