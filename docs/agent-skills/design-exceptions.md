@@ -64,7 +64,7 @@ skills.
 Decision (when a retrieval tool ships): the description states what each parameter does and what
 the response groups by, with a request example per shape. It does NOT prescribe a call sequence.
 For `get_context` that means saying a query returns whole source cards with their matched
-fields nested, so one call answers, and that the listing tiers exist for finding an environment
+fields nested, so there is no drill-down step, and that the listing tiers exist for finding an environment
 or package name rather than as steps to walk. Refinement, retry, and gap-handling workflow stays
 in the analysis skill; `search_text` phrasing stays in `malloy-phrase-detection`.
 
