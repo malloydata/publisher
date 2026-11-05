@@ -1963,7 +1963,7 @@ export class Model {
                  (r) => r.callerJoin.join,
               )
             : [];
-         refusal = ceilingRefusal(modelDef, prepared._query, joins);
+         refusal = ceilingRefusal(modelDef, prepared._query, joins, true);
       } catch (err) {
          if (!(err instanceof CallerJoinWalkError)) throw err;
          refusal = "this query's joins cannot be read completely";

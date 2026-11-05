@@ -13,7 +13,7 @@ import { unrecordedAudit, type QueryAudit } from "./access_record";
 import { ceilingRefusal } from "./classification";
 import type { Model } from "./model";
 
-const MODEL = `##! experimental { access_modifiers }
+const MODEL = `##! experimental { access_modifiers composite_sources }
 source: people is duckdb.table("child") include { internal: * } extend {
    primary_key: id
    #(classification) "phi.direct_identifier"
@@ -47,6 +47,29 @@ source: leak_q is hub -> { group_by: y is r.p.ssn }
 source: tidy_q is hub -> { group_by: y is r.sid }
 source: deep_q is leak_q -> { group_by: z is y }
 source: deep_ok is tidy_q -> { group_by: z is y }
+source: ca is duckdb.table("child") include { internal: * } extend {
+   #(classification) "none"
+   dimension: k is id
+   #(classification) "none"
+   measure: n is count()
+}
+source: cb is duckdb.table("child") include { internal: * } extend {
+   #(classification) "none"
+   dimension: k is id
+   dimension: only_b is name
+   #(classification) "none"
+   measure: n is count()
+}
+#(carries) ["none"]
+source: comp is compose(ca, cb)
+#(carries) ["none"]
+source: cmem is duckdb.table("child") include { internal: * } extend {
+   #(classification) "none"
+   dimension: k is id
+   dimension: only_m is name
+}
+source: comp_m is compose(ca, cmem)
+source: comp_q is compose(ca, cb) -> { group_by: only_b }
 source: open_s is duckdb.table("child") include { internal: * } extend {
    join_one: p is people on id = p.id
    #(classification) "none"
@@ -105,6 +128,41 @@ const DENIED: Array<[string, string, string]> = [
       "a nest that reads a classified field",
       "run: s extend { dimension: x is p.ssn } -> { aggregate: c nest: z is { group_by: x } }",
       "x, which is classified phi.direct_identifier",
+   ],
+   [
+      "a join the caller writes whose on reads an internal column",
+      'run: s extend { join_one: q is people on sid = q.key and name = "north" } -> { aggregate: q.pc }',
+      "name, which has no #(classification)",
+   ],
+   [
+      "a filter on an internal column read through extend",
+      'run: s extend { dimension: x is name } -> { where: x = "north" aggregate: c }',
+      "no #(classification)",
+   ],
+   [
+      "a nest that reads an internal column through extend",
+      "run: s extend { dimension: x is name } -> { aggregate: c nest: z is { group_by: x } }",
+      "no #(classification)",
+   ],
+   [
+      "an index over an internal column",
+      "run: s extend { dimension: x is name } -> { index: x }",
+      "cannot see completely",
+   ],
+   [
+      "a join a later stage extends in, which reads an internal column",
+      "run: s -> { group_by: sid } -> { extend: { join_cross: self is s extend { dimension: x is name } } group_by: self.x }",
+      "no #(classification)",
+   ],
+   [
+      "a nest over a join a later stage extends in",
+      "run: s -> { group_by: sid } -> { extend: { join_cross: self is s extend { dimension: x is name } } nest: n is { group_by: self.x } }",
+      "no #(classification)",
+   ],
+   [
+      "a composite member that carries a ceiling and reads an internal column",
+      "run: comp_m -> { group_by: only_m }",
+      "source cmem carries [none]",
    ],
    [
       "an index over a classified field",
@@ -193,6 +251,35 @@ describe("#(carries) is checked per query", () => {
             (await run(model, "run: ok_q -> { group_by: sid }")).compactResult
                .length,
          ).toBeGreaterThan(0);
+      });
+   });
+
+   it("serves the twins: a later-stage join within the list, output-space names, a composite within its ceiling", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         for (const query of [
+            "run: s -> { group_by: sid } -> { extend: { join_cross: self is s extend { dimension: x is sid } } group_by: self.x }",
+            "run: s -> { group_by: sid } -> { extend: { dimension: y is sid } group_by: y }",
+            "run: s -> { group_by: sid aggregate: n is count() order_by: n desc }",
+            "run: s -> { group_by: sid aggregate: c calculate: prev is lag(c) }",
+            "run: comp -> { group_by: k }",
+            "run: comp_m -> { group_by: k }",
+            "run: comp_q -> { group_by: only_b }",
+         ]) {
+            expect(
+               (await run(model, query)).compactResult.length,
+            ).toBeGreaterThan(0);
+         }
+      });
+   });
+
+   it("refuses a composite member's unclassified field under the composite's ceiling", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const err = await run(
+            model,
+            "run: comp -> { group_by: only_b }",
+         ).catch((e) => e);
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect((err as Error).message).toContain("only_b");
       });
    });
 
@@ -311,5 +398,44 @@ describe("an unreadable chain on a joined struct", () => {
       expect(ceilingRefusal(modelDefWith(undefined) as never, query)).toBe(
          undefined,
       );
+   });
+});
+
+describe("the per-request model def is not rescanned for #(carries)", () => {
+   it("skips the scan when the caller already knows the model declares one", () => {
+      const scans = (declared?: boolean): number => {
+         let count = 0;
+         const contents = new Proxy(
+            {
+               s: {
+                  name: "s",
+                  type: "table",
+                  annotations: {
+                     blockNotes: [{ text: '#(carries) ["none"]\n' }],
+                  },
+                  fields: [{ name: "a", type: "string" }],
+               },
+            },
+            {
+               ownKeys(target) {
+                  count++;
+                  return Reflect.ownKeys(target);
+               },
+            },
+         );
+         const query = {
+            structRef: "s",
+            pipeline: [
+               {
+                  type: "reduce",
+                  queryFields: [{ type: "fieldref", path: ["a"] }],
+                  refSummary: { fieldUsage: [{ path: ["a"] }] },
+               },
+            ],
+         };
+         ceilingRefusal({ contents } as never, query, [], declared);
+         return count;
+      };
+      expect(scans(true)).toBeLessThan(scans(undefined));
    });
 });
