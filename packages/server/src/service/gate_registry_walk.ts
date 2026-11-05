@@ -258,6 +258,30 @@ export function effectiveAncestorGateExprs(
 }
 
 /**
+ * The gate groups in force on a struct for one route: its own notes when it
+ * declares any, else what it inherits ({@link effectiveAncestorGateExprs}).
+ * A `query_source` is the exception: derivation is ADDITIVE
+ * (docs/authorize.md), so its own gate never sheds its base's and both come
+ * back, as separate groups that AND.
+ */
+export function gateExprsForRoute(
+   struct: SourceDef,
+   modelDef: ModelDef | undefined,
+   route: string,
+): string[][] {
+   const own = collectAuthorizeExprsForRoute(
+      ownLevelNoteTexts(struct.annotations),
+      route,
+   );
+   if (own.length === 0) {
+      return effectiveAncestorGateExprs(struct, modelDef, route);
+   }
+   return struct.type === "query_source"
+      ? [own, ...effectiveAncestorGateExprs(struct, modelDef, route)]
+      : [own];
+}
+
+/**
  * Every struct reachable from `roots` (excluded) by the two hops
  * {@link effectiveAncestorGateExprs} takes, transitively.
  *

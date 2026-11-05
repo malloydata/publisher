@@ -71,10 +71,11 @@ const row = (
    given,
    operator: op,
 });
-const lit = (literal: string, given: string) => ({
+const lit = (literal: string, given: string, operator: "=" | "in") => ({
    scope: "source_level",
    literal,
    given,
+   operator,
 });
 
 describe("parseAuthorizeGrammarBody — accepted bodies", () => {
@@ -85,25 +86,41 @@ describe("parseAuthorizeGrammarBody — accepted bodies", () => {
       ["  true  ", NONE, AUTH, [{ scope: "admit_all" }]],
       ["false", NONE, AUTH, [{ scope: "deny_all" }]],
       // source-level terms read either way round for `=`; `in` is literal-first
-      ["'admin' = $ROLE", ROLE, AUTH, [lit("'admin'", "ROLE")]],
-      ["$ROLE = 'admin'", ROLE, AUTH, [lit("'admin'", "ROLE")]],
-      ["$REGION = 'analyst'", SCALAR, AUTH, [lit("'analyst'", "REGION")]],
-      ["'finance' in $GROUPS", LIST, AUTH, [lit("'finance'", "GROUPS")]],
+      ["'admin' = $ROLE", ROLE, AUTH, [lit("admin", "ROLE", "=")]],
+      ["$ROLE = 'admin'", ROLE, AUTH, [lit("admin", "ROLE", "=")]],
+      ["$REGION = 'analyst'", SCALAR, AUTH, [lit("analyst", "REGION", "=")]],
+      ["'finance' in $GROUPS", LIST, AUTH, [lit("finance", "GROUPS", "in")]],
+      // the literal is decoded as Malloy decodes it: either quote, escapes resolved
+      ['"admin" = $ROLE', ROLE, AUTH, [lit("admin", "ROLE", "=")]],
+      ["'it\\'s' in $GROUPS", LIST, AUTH, [lit("it's", "GROUPS", "in")]],
+      [
+         '"say \\"hi\\"" in $GROUPS',
+         LIST,
+         AUTH,
+         [lit('say "hi"', "GROUPS", "in")],
+      ],
+      ["'a\\\\b' in $GROUPS", LIST, AUTH, [lit("a\\b", "GROUPS", "in")]],
+      [
+         "'tab\\there' in $GROUPS",
+         LIST,
+         AUTH,
+         [lit("tab\there", "GROUPS", "in")],
+      ],
       // tokens inside a string literal are not syntax
       [
          "'research and development' in $GROUPS",
          LIST,
          AUTH,
-         [lit("'research and development'", "GROUPS")],
+         [lit("research and development", "GROUPS", "in")],
       ],
       [
          "'rock or roll' in $GROUPS",
          LIST,
          AUTH,
-         [lit("'rock or roll'", "GROUPS")],
+         [lit("rock or roll", "GROUPS", "in")],
       ],
-      ["'a>b' in $GROUPS", LIST, AUTH, [lit("'a>b'", "GROUPS")]],
-      ["'a!=b' in $GROUPS", LIST, AUTH, [lit("'a!=b'", "GROUPS")]],
+      ["'a>b' in $GROUPS", LIST, AUTH, [lit("a>b", "GROUPS", "in")]],
+      ["'a!=b' in $GROUPS", LIST, AUTH, [lit("a!=b", "GROUPS", "in")]],
       // row-level terms
       [
          "region = $REGION and org_id in $GROUPS",
