@@ -9,7 +9,7 @@ import path from "node:path";
 import type { Explore, Field } from "@malloydata/malloy";
 import { Annotations, Runtime, InMemoryURLReader } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { FileURLReader } from "./malloy_indexing_helpers";
+import { FileURLReader } from "./field_helpers";
 import { makeDimIndexLookupKey } from "./dim_index_discovery";
 import type { GateExpr } from "./access_gates";
 import type { DimIndexFingerprintInputs } from "./dim_index_entity_id";
@@ -17,11 +17,11 @@ import type { Given as ApiGiven } from "./internal_types";
 import {
    DuplicateRequiredFilterError,
    RequiredFilterNonPublicDimensionError,
-   packageSanitizationService,
+   sourceExtraction,
    parseJoinCode,
-} from "./package_sanitization";
+} from "./source_extraction";
 
-describe("packageSanitizationService.extractMetadataFromExplores", () => {
+describe("sourceExtraction.extractMetadataFromExplores", () => {
    const noTaglines = (): string[] => [];
 
    test("extracts docs from explores, and reports no source parameters", () => {
@@ -42,7 +42,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
       );
@@ -78,7 +78,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "consumer.malloy",
          false,
@@ -131,13 +131,12 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
                },
             } as unknown as Explore;
 
-            const metadata =
-               packageSanitizationService.extractMetadataFromExplores(
-                  [explore],
-                  "m.malloy",
-                  false,
-                  "file:///tmp/m.malloy",
-               );
+            const metadata = sourceExtraction.extractMetadataFromExplores(
+               [explore],
+               "m.malloy",
+               false,
+               "file:///tmp/m.malloy",
+            );
             assert.strictEqual(
                metadata[0]?.agentHidden,
                true,
@@ -193,7 +192,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [base, extending],
          "model2.malloy",
          false,
@@ -277,7 +276,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [base, extending],
          "model.malloy",
          false,
@@ -351,7 +350,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [base, child],
          "model.malloy",
          false,
@@ -415,7 +414,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "model.malloy",
          false,
@@ -478,7 +477,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [base, extending],
          "model2.malloy",
          false, // isModelFileAgentHidden = false (model2 has no ##(agent-hidden))
@@ -512,7 +511,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
       );
@@ -558,7 +557,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
 
       assert.throws(
          () =>
-            packageSanitizationService.extractMetadataFromExplores(
+            sourceExtraction.extractMetadataFromExplores(
                [explore],
                "orders.malloy",
             ),
@@ -583,7 +582,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       } as unknown as Explore;
 
       assert.doesNotThrow(() =>
-         packageSanitizationService.extractMetadataFromExplores(
+         sourceExtraction.extractMetadataFromExplores(
             [explore],
             "orders.malloy",
          ),
@@ -603,7 +602,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       } as unknown as Explore;
 
       assert.doesNotThrow(() =>
-         packageSanitizationService.extractMetadataFromExplores(
+         sourceExtraction.extractMetadataFromExplores(
             [explore],
             "orders.malloy",
          ),
@@ -624,7 +623,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
       );
@@ -656,7 +655,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
       );
@@ -680,7 +679,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
 
       assert.throws(
          () =>
-            packageSanitizationService.extractMetadataFromExplores(
+            sourceExtraction.extractMetadataFromExplores(
                [explore],
                "orders.malloy",
             ),
@@ -705,7 +704,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
 
       assert.throws(
          () =>
-            packageSanitizationService.extractMetadataFromExplores(
+            sourceExtraction.extractMetadataFromExplores(
                [explore],
                "orders.malloy",
             ),
@@ -730,7 +729,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
       );
@@ -753,7 +752,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
       );
@@ -778,7 +777,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [local, imported],
          "model.malloy",
          true,
@@ -832,7 +831,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       ({
          givens: new Map(givens.map((g) => [g.name, g])),
       }) as unknown as Parameters<
-         typeof packageSanitizationService.extractGivensFromModel
+         typeof sourceExtraction.extractGivensFromModel
       >[0];
 
    test("extractGivensFromModel renders types, defaults, and annotations", () => {
@@ -867,7 +866,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          }),
       ]);
 
-      const out = packageSanitizationService.extractGivensFromModel(model);
+      const out = sourceExtraction.extractGivensFromModel(model);
 
       assert.deepStrictEqual(out, [
          {
@@ -904,7 +903,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          }),
       ]);
 
-      const [given] = packageSanitizationService.extractGivensFromModel(model);
+      const [given] = sourceExtraction.extractGivensFromModel(model);
       assert.deepStrictEqual(given.annotations, ["#(description) ok"]);
    });
 
@@ -921,7 +920,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          mockGiven({ name: "report_date", type: { type: "date" } }),
       ]);
 
-      const out = packageSanitizationService.extractGivensFromModel(model);
+      const out = sourceExtraction.extractGivensFromModel(model);
 
       assert.deepStrictEqual(out, [
          {
@@ -956,7 +955,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          { name: "after", type: "timestamp", default: "@2003-01-01 00:00:00" },
       ];
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [local, imported],
          "model.malloy",
          false,
@@ -983,7 +982,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1011,7 +1010,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       ({
          getTaglines: () => taglines,
       }) as unknown as Parameters<
-         typeof packageSanitizationService.extractAuthorizeFromModel
+         typeof sourceExtraction.extractAuthorizeFromModel
       >[0];
 
    test("extractAuthorizeFromModel parses file-level expressions in declaration order", () => {
@@ -1021,7 +1020,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          "##(authorize) \"$REGION = 'us-west'\"",
       ]);
 
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1040,7 +1039,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          "##(authorize) \"$ROLE = 'admin'", // malformed: missing closing "
          "##(authorize) \"$REGION = 'us-west'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1051,7 +1050,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
 
    test("#( authorize ) with inner whitespace is matched", () => {
       const model = mockAuthorizeModel(["##( authorize ) \"$ROLE = 'admin'\""]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1064,7 +1063,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       const model = mockAuthorizeModel([
          "##(authorized-users) \"$ROLE = 'admin'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1073,7 +1072,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
 
    test("# (authorize) with whitespace between sigil and paren is matched (wider than Malloy's routing)", () => {
       const model = mockAuthorizeModel(["# (authorize) \"$ROLE = 'admin'\""]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1084,7 +1083,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
 
    test("## (authorize) with whitespace between sigil and paren is matched (wider than Malloy's routing)", () => {
       const model = mockAuthorizeModel(["## (authorize) \"$ROLE = 'admin'\""]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1097,7 +1096,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       const model = mockAuthorizeModel([
          "##(authorize_foo) \"$ROLE = 'admin'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1108,7 +1107,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       const model = mockAuthorizeModel([
          "##(access_filter) \"$ROLE = 'admin'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1121,7 +1120,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       const model = mockAuthorizeModel([
          "##( access_filter ) \"$ROLE = 'admin'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1134,7 +1133,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       const model = mockAuthorizeModel([
          "##(access_filtered) \"$ROLE = 'admin'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1145,7 +1144,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       const model = mockAuthorizeModel([
          "##(access-filter) \"$ROLE = 'admin'\"",
       ]);
-      const out = packageSanitizationService.extractAuthorizeFromModel(
+      const out = sourceExtraction.extractAuthorizeFromModel(
          model,
          "model.malloy",
       );
@@ -1186,7 +1185,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
                   if (!malloyRoutes) continue;
                   routed++;
                   assert.deepStrictEqual(
-                     packageSanitizationService.extractAuthorizeFromModel(
+                     sourceExtraction.extractAuthorizeFromModel(
                         mockAuthorizeModel([text]),
                         "model.malloy",
                      ),
@@ -1212,10 +1211,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       ]) {
          const model = mockAuthorizeModel([`${tag} "$ROLE = 'admin'"`]);
          assert.deepStrictEqual(
-            packageSanitizationService.extractAuthorizeFromModel(
-               model,
-               "model.malloy",
-            ),
+            sourceExtraction.extractAuthorizeFromModel(model, "model.malloy"),
             [],
             `${tag} should not be read as a gate`,
          );
@@ -1229,10 +1225,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
       for (const tag of ["row_authorize", "source_authorize"]) {
          const model = mockAuthorizeModel([`##(${tag}) "$ROLE = 'admin'"`]);
          assert.deepStrictEqual(
-            packageSanitizationService.extractAuthorizeFromModel(
-               model,
-               "model.malloy",
-            ),
+            sourceExtraction.extractAuthorizeFromModel(model, "model.malloy"),
             [],
          );
       }
@@ -1277,7 +1270,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [local, imported],
          "model.malloy",
          false,
@@ -1341,7 +1334,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [local, importedUngated],
          "model.malloy",
          false,
@@ -1374,7 +1367,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [orders],
          "model.malloy",
          false,
@@ -1409,7 +1402,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { type: "table", parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1438,7 +1431,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1471,7 +1464,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1505,7 +1498,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1540,7 +1533,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          structDef: { type: "nest_source", parameters: {} },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1579,7 +1572,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "orders.malloy",
          false,
@@ -1626,7 +1619,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "model.malloy",
          false,
@@ -1672,7 +1665,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "model.malloy",
          false,
@@ -1703,7 +1696,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
    });
 });
 
-describe("packageSanitizationService.extractMetadataFromExplores — join-aware authorize (compile-backed)", () => {
+describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize (compile-backed)", () => {
    // Real multi-file compiles, not fake Explore/Field stubs. A hand-built
    // stub can set `location: undefined` or a note without `at` — the exact
    // shapes `filterDirectlyDeclaredNotes` treats as "can't prove inherited,
@@ -1740,7 +1733,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — join-aware 
          const entryAbs = path.join(packageRoot, entryRelativePath);
          const compiled = await runtime.getModel(new URL("file://" + entryAbs));
          const source = files[entryRelativePath]!;
-         return packageSanitizationService.extractMetadataFromExplores(
+         return sourceExtraction.extractMetadataFromExplores(
             compiled.explores as unknown as Explore[],
             entryRelativePath,
             false,
@@ -2301,7 +2294,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — join-aware 
    });
 });
 
-describe("packageSanitizationService.extractMetadataFromExplores — entry-point #(authorize) inheritance through extend (compile-backed)", () => {
+describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authorize) inheritance through extend (compile-backed)", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pextauth-"));
@@ -2328,12 +2321,11 @@ describe("packageSanitizationService.extractMetadataFromExplores — entry-point
          });
          const entryAbs = path.join(packageRoot, entryRelativePath);
          const compiled = await runtime.getModel(new URL("file://" + entryAbs));
-         const modelAuthorize =
-            packageSanitizationService.extractAuthorizeFromModel(
-               compiled,
-               entryRelativePath,
-            );
-         return packageSanitizationService.extractMetadataFromExplores(
+         const modelAuthorize = sourceExtraction.extractAuthorizeFromModel(
+            compiled,
+            entryRelativePath,
+         );
+         return sourceExtraction.extractMetadataFromExplores(
             compiled.explores as unknown as Explore[],
             entryRelativePath,
             false,
@@ -2347,9 +2339,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — entry-point
    }
 
    const authorizeFor = (
-      metadata: ReturnType<
-         typeof packageSanitizationService.extractMetadataFromExplores
-      >,
+      metadata: ReturnType<typeof sourceExtraction.extractMetadataFromExplores>,
       sourceName: string,
    ) =>
       metadata.find(
@@ -2673,7 +2663,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — entry-point
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "model.malloy",
          false,
@@ -2711,7 +2701,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — entry-point
          },
       } as unknown as Explore;
 
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
+      const metadata = sourceExtraction.extractMetadataFromExplores(
          [explore],
          "model.malloy",
          false,
@@ -2732,7 +2722,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — entry-point
    });
 });
 
-describe("packageSanitizationService.extractMetadataFromExplores — N-3 composite-source #(authorize) propagation (compile-backed)", () => {
+describe("sourceExtraction.extractMetadataFromExplores — N-3 composite-source #(authorize) propagation (compile-backed)", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pcomposite-"));
@@ -2759,7 +2749,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — N-3 composi
          });
          const entryAbs = path.join(packageRoot, entryRelativePath);
          const compiled = await runtime.getModel(new URL("file://" + entryAbs));
-         return packageSanitizationService.extractMetadataFromExplores(
+         return sourceExtraction.extractMetadataFromExplores(
             compiled.explores as unknown as Explore[],
             entryRelativePath,
             false,
@@ -2771,9 +2761,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — N-3 composi
    }
 
    const authorizeFor = (
-      metadata: ReturnType<
-         typeof packageSanitizationService.extractMetadataFromExplores
-      >,
+      metadata: ReturnType<typeof sourceExtraction.extractMetadataFromExplores>,
       sourceName: string,
    ) =>
       metadata.find(
@@ -2871,7 +2859,7 @@ describe("packageSanitizationService.extractMetadataFromExplores — N-3 composi
 });
 
 describe("checkAuthorizeJoinBypass", () => {
-   const check = packageSanitizationService.checkAuthorizeJoinBypass;
+   const check = sourceExtraction.checkAuthorizeJoinBypass;
 
    test("fires when the child carries a gate the parent doesn't", () => {
       const advisories = check(
@@ -3015,7 +3003,7 @@ function fakeDimensionField(name: string, taglines: string[] = []): Field {
    } as unknown as Field;
 }
 
-describe("packageSanitizationService.extractEntitiesFromExplores", () => {
+describe("sourceExtraction.extractEntitiesFromExplores", () => {
    test("reports the fingerprint on a matching #(index) field, not on others", () => {
       const explore = {
          name: "orders",
@@ -3037,7 +3025,7 @@ describe("packageSanitizationService.extractEntitiesFromExplores", () => {
          ],
       ]);
 
-      const entities = packageSanitizationService.extractEntitiesFromExplores(
+      const entities = sourceExtraction.extractEntitiesFromExplores(
          [explore],
          "orders.malloy",
          "/tmp",
@@ -3070,7 +3058,7 @@ describe("packageSanitizationService.extractEntitiesFromExplores", () => {
          structDef: { parameters: {} },
       } as unknown as Explore;
 
-      const [country] = packageSanitizationService.extractEntitiesFromExplores(
+      const [country] = sourceExtraction.extractEntitiesFromExplores(
          [explore],
          "orders.malloy",
          "/tmp",
@@ -3111,7 +3099,7 @@ describe("packageSanitizationService.extractEntitiesFromExplores", () => {
          ],
       ]);
 
-      const entities = packageSanitizationService.extractEntitiesFromExplores(
+      const entities = sourceExtraction.extractEntitiesFromExplores(
          [explore],
          "orders.malloy",
          "/tmp",
@@ -3213,7 +3201,7 @@ describe("extractMetadataFromExplores — source #(doc) inheritance (compile-bac
          await conn.runRawSQL("CREATE OR REPLACE TABLE t AS SELECT 1 as id");
          const compiled = await runtime.getModel(model);
          const explores = names.map((n) => compiled.getExploreByName(n));
-         const md = packageSanitizationService.extractMetadataFromExplores(
+         const md = sourceExtraction.extractMetadataFromExplores(
             explores as unknown as Explore[],
             "m.malloy",
          );

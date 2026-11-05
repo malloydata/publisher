@@ -21,9 +21,9 @@ import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
 import { Malloy } from "@malloydata/malloy";
-import { FileURLReader } from "./malloy_indexing_helpers";
+import { FileURLReader } from "./field_helpers";
 import { ConnectionLookup } from "./test_support";
-import { packageSanitizationService } from "./package_sanitization";
+import { sourceExtraction } from "./source_extraction";
 
 async function compileModel(
    workspaceRoot: string,
@@ -161,7 +161,7 @@ describe("extractEntitiesFromExplores (integration)", () => {
          "entry.malloy",
       );
 
-      const entities = packageSanitizationService.extractEntitiesFromExplores(
+      const entities = sourceExtraction.extractEntitiesFromExplores(
          model.explores,
          "entry.malloy",
          workspace,
@@ -244,7 +244,7 @@ describe("extractEntitiesFromExplores (integration)", () => {
          "entry.malloy",
       );
 
-      const entities = packageSanitizationService.extractEntitiesFromExplores(
+      const entities = sourceExtraction.extractEntitiesFromExplores(
          model.explores,
          "entry.malloy",
          workspace,

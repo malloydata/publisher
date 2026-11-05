@@ -36,9 +36,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Malloy } from "@malloydata/malloy";
-import { FileURLReader } from "./malloy_indexing_helpers";
+import { FileURLReader } from "./field_helpers";
 import { ConnectionLookup } from "./test_support";
-import { packageSanitizationService } from "./package_sanitization";
+import { sourceExtraction } from "./source_extraction";
 import type { Entity } from "./internal_types";
 
 // ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ async function runExtraction(
       }),
    });
 
-   return packageSanitizationService.extractEntitiesFromExplores(
+   return sourceExtraction.extractEntitiesFromExplores(
       compiled.explores,
       layout.entryRelativePath,
       packageRoot,

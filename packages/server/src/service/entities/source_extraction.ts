@@ -13,7 +13,7 @@ import {
    getEntityFromMalloyField,
    getRawTaglines,
    parseDocAnnotation,
-} from "./malloy_indexing_helpers";
+} from "./field_helpers";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -1172,7 +1172,7 @@ const extractEntitiesFromExplores = (
    return entities;
 };
 
-export const packageSanitizationService = {
+export const sourceExtraction = {
    extractMetadataFromExplores,
    extractEntitiesFromExplores,
    extractGivensFromModel,

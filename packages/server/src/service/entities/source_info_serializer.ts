@@ -31,7 +31,7 @@ import {
    inferFieldDataType,
    inferType,
    isFieldHidden,
-} from "./malloy_indexing_helpers";
+} from "./field_helpers";
 import type { Explore, Field } from "@malloydata/malloy";
 import type {
    SourceInfo,

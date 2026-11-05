@@ -24,7 +24,7 @@ import path from "node:path";
 import { errorMessage } from "./errors";
 import { type EntitiesModelFile, extractPackageEntities } from "./extract";
 import type { ModelCompileResult } from "./internal_types";
-import { FileURLReader } from "./malloy_indexing_helpers";
+import { FileURLReader } from "./field_helpers";
 import type { PackageManifest } from "./query_surface";
 
 /** A single file to write inside a workspace, by workspace-relative path. */

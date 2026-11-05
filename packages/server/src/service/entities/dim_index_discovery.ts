@@ -10,7 +10,7 @@
  * finding the fields that need a fingerprint in the first place, and the
  * shape the lookup hits during sanitization.
  *
- * Lives next to derivation rather than inside ``package_sanitization``
+ * Lives next to derivation rather than inside ``source_extraction``
  * because every export here is purely dim-index-shaped: filter
  * parsing, index-tag detection, lookup-key formatting, candidate
  * walking. The sanitizer only consumes these — it doesn't define
@@ -27,7 +27,7 @@ import {
 import { parseFilterAnnotation, type Filter } from "./filter_parsing";
 import { findForbiddenIndexPolicyKeys } from "./index_annotation_parsing";
 import { walkExploreTree } from "./explore_walk";
-import { getAccessModifier } from "./malloy_indexing_helpers";
+import { getAccessModifier } from "./field_helpers";
 import { AccessModifierEnum } from "./internal_types";
 import type {
    Explore as MalloyExplore,

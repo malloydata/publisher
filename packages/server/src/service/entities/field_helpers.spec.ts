@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * @fileoverview Tests for malloy_indexing_helpers entity classification.
+ * @fileoverview Tests for field_helpers entity classification.
  */
 
 import { describe, test } from "bun:test";
@@ -17,7 +17,7 @@ import {
    inferType,
    isMalloyDefined,
    parseDocAnnotation,
-} from "./malloy_indexing_helpers";
+} from "./field_helpers";
 
 // Build a minimal Field whose location.range spans the whole docString.
 // Using an `internal.malloy` URL means extractCodeFromEntity reads from

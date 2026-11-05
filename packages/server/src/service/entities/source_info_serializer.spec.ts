@@ -14,7 +14,7 @@ import { serializeExploreToSourceInfo } from "./source_info_serializer";
 // without the location filter a childless-extend source would inherit the
 // base's #(doc) into its summary/description (an indexer describes a source
 // from its SourceInfo). Mirrors the extractDocsFromExplore test in
-// package_sanitization.spec.ts.
+// source_extraction.spec.ts.
 describe("serializeExploreToSourceInfo — source #(doc) inheritance (compile-backed)", () => {
    // The `internal.malloy` URL makes extractCodeFromEntity (reached via
    // inferType) read code from the docString we pass instead of from disk.

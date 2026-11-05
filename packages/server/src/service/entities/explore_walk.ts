@@ -10,7 +10,7 @@
  * field, or the resolver lookup misses by ``${sourceName}::${fieldName}``.
  */
 
-import { getAccessModifier } from "./malloy_indexing_helpers";
+import { getAccessModifier } from "./field_helpers";
 import { AccessModifierEnum } from "./internal_types";
 import type { Explore as MalloyExplore } from "@malloydata/malloy";
 

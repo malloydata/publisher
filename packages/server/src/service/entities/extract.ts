@@ -25,14 +25,14 @@ import {
 import { errorMessage } from "./errors";
 import { splitSourcePath } from "./explore_walk";
 import type { ModelCompileResult } from "./internal_types";
-import { FileURLReader } from "./malloy_indexing_helpers";
+import { FileURLReader } from "./field_helpers";
 import { withModelTextCache } from "./model_text";
 import {
    DuplicateRequiredFilterError,
-   packageSanitizationService,
+   sourceExtraction,
    RequiredFilterMissingDimensionError,
    RequiredFilterNonPublicDimensionError,
-} from "./package_sanitization";
+} from "./source_extraction";
 import {
    buildPackageQuerySurface,
    nonQueryableSources,
@@ -212,28 +212,26 @@ async function extractModelFile(
       .getTaglines()
       .some((t) => /^##\|?\s*[([{<]?\s*agent-hidden\b/.test(t));
 
-   const modelGivens =
-      packageSanitizationService.extractGivensFromModel(compiledModel);
-   const modelAuthorize = packageSanitizationService.extractAuthorizeFromModel(
+   const modelGivens = sourceExtraction.extractGivensFromModel(compiledModel);
+   const modelAuthorize = sourceExtraction.extractAuthorizeFromModel(
       compiledModel,
       file.relativePath,
    );
    // The sources this server refuses to run a query against, read from the
    // same rule the query path enforces (see query_surface.ts).
    const nonQueryableSourceNames = nonQueryableSources(file, surface);
-   const sourceMetadataEntries =
-      packageSanitizationService.extractMetadataFromExplores(
-         explores,
-         file.relativePath,
-         isAgentHiddenTagPresentOnModelFile,
-         modelUrl.href,
-         modelGivens,
-         modelAuthorize,
-         nonQueryableSourceNames,
-         source,
-         packageRoot,
-         servedFrom(file, surface),
-      );
+   const sourceMetadataEntries = sourceExtraction.extractMetadataFromExplores(
+      explores,
+      file.relativePath,
+      isAgentHiddenTagPresentOnModelFile,
+      modelUrl.href,
+      modelGivens,
+      modelAuthorize,
+      nonQueryableSourceNames,
+      source,
+      packageRoot,
+      servedFrom(file, surface),
+   );
 
    // The `#(index)`-tagged dimensions. A non-public tagged field is skipped,
    // never refused: an inherited tag internalized via `internal: *` cannot be
@@ -250,7 +248,7 @@ async function extractModelFile(
       modelFilePath: file.relativePath,
    });
 
-   const entities = packageSanitizationService.extractEntitiesFromExplores(
+   const entities = sourceExtraction.extractEntitiesFromExplores(
       explores,
       file.relativePath,
       packageRoot,

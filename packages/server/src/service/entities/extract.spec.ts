@@ -10,7 +10,7 @@ import {
    EntitiesValidationError,
    extractPackageEntities,
 } from "./extract";
-import { FileURLReader } from "./malloy_indexing_helpers";
+import { FileURLReader } from "./field_helpers";
 import {
    ConnectionLookup,
    type FilePointer,
