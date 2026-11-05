@@ -25,6 +25,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
+import { lockTermsOf, missingLockTerm } from "./join_bypass";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -211,6 +212,152 @@ export { audit }
       expect(message).not.toContain("source visits");
    });
 
+   const CHART = `#(authorize) 'clinician' in $ROLES
+source: chart is ${PEOPLE}
+`;
+
+   it("refuses an entry locked to one role that joins a source locked to another, naming the missing term", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}${CHART}
+#(authorize) 'billing' in $ROLES
+source: invoices is ${VISITS} extend {
+   join_one: c is chart on c.id = person_id
+}
+`,
+      );
+      const message = await refusal();
+      expect(message).toContain("source invoices (m.malloy)");
+      expect(message).toContain("'clinician' in $ROLES");
+      expect(message).toContain("join an extension of the source joined as c");
+   });
+
+   it("loads an entry whose lock carries the joined lock's term, however the literal is quoted", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}${CHART}
+#(authorize) "clinician" in $ROLES
+source: visits_view is ${VISITS} extend {
+   join_one: c is chart on c.id = person_id
+}
+`,
+      );
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("loads an entry whose lock carries every joined term plus its own", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}${CHART}
+#(authorize) 'clinician' in $ROLES and 'north' in $ORGS
+source: visits_view is ${VISITS} extend {
+   join_one: c is chart on c.id = person_id
+}
+`,
+      );
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("refuses an open entry that joins a locked source inside a -> pipeline stage", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}
+#(authorize) false
+source: vault is ${PEOPLE}
+
+source: open_visits is ${VISITS}
+
+source: sneaky is open_visits -> {
+   extend: { join_one: vault on vault.id = person_id }
+   select: id, leak is vault.ssn
+}
+`,
+      );
+      const message = await refusal();
+      expect(message).toContain(
+         "source sneaky (m.malloy) is open to every caller and joins vault, which is locked",
+      );
+   });
+
+   it("loads an entry that joins a curated extension of a locked base under the same lock", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}
+#(authorize) false
+source: people_base is ${PEOPLE}
+
+#(authorize) 'clinician' in $ROLES
+source: people is people_base extend { dimension: shown is org }
+
+#(authorize) 'clinician' in $ROLES
+source: visits is ${VISITS} extend {
+   join_one: person is people on person.id = person_id
+}
+`,
+      );
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("refuses a locked source joined inside a -> pipeline stage", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}${CHART}
+source: open_visits is ${VISITS}
+
+source: sneaky is open_visits -> {
+   extend: { join_one: chart on chart.id = person_id }
+   select: id, leak is chart.ssn
+}
+`,
+      );
+      const message = await refusal();
+      expect(message).toContain("source sneaky (m.malloy)");
+      expect(message).toContain("'clinician' in $ROLES");
+   });
+
+   it("compares row-level terms by given name only: a filter on the same given over a column the join does not tie still loads", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}
+#(access_filter) org in $ORGS
+source: people is ${PEOPLE}
+
+#(access_filter) org in $ORGS
+source: visits is ${VISITS} extend {
+   join_one: person is people on person.id = person_id
+}
+`,
+      );
+      expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+
+   it("counts a gate on a source hidden from discovery when a walk is cut short", async () => {
+      // Only s0 is an entry; s17, the sole gate in the package, is a lock nobody can list.
+      let base = `${GIVENS}#(authorize) false\nsource: s17 is ${PEOPLE}\n`;
+      for (let i = 16; i >= 1; i--) {
+         base += `source: s${i} is ${PEOPLE} extend {
+   join_one: n is s${i + 1} on n.id = id
+}
+`;
+      }
+      write("base.malloy", `${base}\nexport { s1 }\n`);
+      write(
+         "index.malloy",
+         `##! experimental.givens
+import "base.malloy"
+
+source: s0 is ${PEOPLE} extend {
+   join_one: n is s1 on n.id = id
+}
+
+export { s0 }
+`,
+      );
+      expect(await refusal()).toContain(
+         "source s0 (index.malloy) joins more than 16 deep",
+      );
+   });
+
    /** `s0 -> s1 -> ... -> s<joins>`, s0 gated unless `gated` is false. */
    function chain(joins: number, gated: boolean): string {
       let out = `${GIVENS}source: s${joins} is ${PEOPLE}\n`;
@@ -251,5 +398,36 @@ export { audit }
    it("loads a source past the bound when no source in the package has a gate", async () => {
       write("m.malloy", chain(17, false));
       expect((await load()).getPackageMetadata().name).toBe("pkg");
+   });
+});
+
+describe("lock term comparison", () => {
+   const terms = (...exprs: string[]) => {
+      const out = lockTermsOf(exprs);
+      if (out === "false") throw new Error("unexpected deny-all");
+      return out;
+   };
+
+   it("treats the same literal under a list given and a scalar given as different terms", () => {
+      expect(missingLockTerm(terms("'x' = $R"), terms("'x' in $R"))).toBe(
+         "'x' = $R",
+      );
+      expect(
+         missingLockTerm(terms("'x' in $R"), terms("'x' in $R")),
+      ).toBeUndefined();
+   });
+
+   it("compares decoded literals, so either quote style is the same term", () => {
+      expect(
+         missingLockTerm(terms("'x' in $R"), terms('"x" in $R')),
+      ).toBeUndefined();
+      expect(
+         missingLockTerm(terms("'x' in $R"), terms("'X' in $R")),
+      ).toBeDefined();
+   });
+
+   it("reads an unparseable or deny-all lock as false", () => {
+      expect(lockTermsOf(["false"])).toBe("false");
+      expect(lockTermsOf(["not a term"])).toBe("false");
    });
 });

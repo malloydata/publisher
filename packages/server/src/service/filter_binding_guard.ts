@@ -1467,7 +1467,7 @@ export interface StageLike {
 }
 
 /** Every source joined by `extend:` in `pipeline`, including inside nests; unlike `collectCallerJoins`' pipeline walk, regardless of who wrote it. */
-function stageJoins(
+export function stageJoins(
    pipeline: readonly StageLike[] | undefined,
    depth = 0,
 ): SourceDef[] {
