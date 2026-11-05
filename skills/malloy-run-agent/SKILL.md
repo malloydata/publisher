@@ -53,6 +53,16 @@ Rules:
 - Install into the project directory only, never the user's home directory: these files outlive the session and are text a package author wrote.
 - Tell the user which skills you installed and where, and offer to remove them when the work is done.
 
+### Assets: files a skill copies
+
+A skill may ship `assets/`: files its instructions tell you to copy into what you build (a chart module, a template). The definition lists them in `assets` as `{relative_filepath, bytes, sha256}`, with no contents, and `asset_roots` maps each skill to its package-relative directory. Install each one at `<dir>/<relative_filepath>`, beside the skill's `SKILL.md`, and **never read it into your context or retype it**:
+
+- **You have the package's files** (a checkout or a mounted package): copy it from `<asset_roots[skill]>/<relative_filepath minus its first segment>` in the package.
+- **You have a shell that reaches the Publisher:** fetch it over REST (`.../agents/{name}/skills/{relative_filepath}`), not through `get_agent`'s `skill_path`, which would put it in your context, and write its `file_contents` straight to disk with a JSON tool, for example `curl -s "$URL" | jq -j .file_contents > "$DEST"`, so it never passes through your context.
+- **Neither:** install the Markdown only, and tell the user which steps copy an asset and cannot run here. Never reconstruct an asset from memory or from its description.
+
+The same install rules apply: the same skills directory, no `..` or absolute paths, and never overwrite an existing skill.
+
 ## Report
 
 Close with what you used, in a few lines: the agent and package, which skills you installed or skipped, any task you ran, and the two shas. Only claim what `get_agent` returned.
