@@ -42,7 +42,8 @@ deployed. The fix is to the files on disk; the served model is still the last go
 On a fresh server, as in CI, a change Publisher refuses at load leaves no earlier model to serve, so
 the package is absent. The report says so at the top. The controls the refusal names fail; every
 other control needs review, marked "not checked", because nothing could be checked. A package the
-server does not know at all fails `loads`: check the environment and package names.
+server does not know at all, with no load error naming it, is review too (exit 3): nothing was
+checked, so check the environment and package names.
 
 ## Evidence
 

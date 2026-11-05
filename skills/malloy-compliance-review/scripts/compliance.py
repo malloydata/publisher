@@ -703,7 +703,7 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
             else:
                 by_check[kind] = CHECKS[kind](gov, register, ctx)
             if gov is None and kind == "loads" and by_check[kind][0]["status"] == "pass":
-                by_check[kind] = [{**finding("", "fail", f"the server does not serve {server.package}",
+                by_check[kind] = [{**finding("", "review", f"the server does not serve {server.package}",
                                              "no load error names it either: check the environment and package names"),
                                    "unscoped": True}]
     controls = []
