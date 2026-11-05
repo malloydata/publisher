@@ -225,6 +225,10 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   When a struct on that path cannot be read, or a query's shape cannot (an `index:`), the query is
   refused rather than assumed clean, whatever it enters, once the model declares a `#(carries)`
   anywhere; a model with none is not checked.
+- Every stage of a pipeline is read: a later stage's own `extend:` (a join to a source, a dimension)
+  is held to the list like the first stage's, against what the stage before it returned. A
+  `compose(…)` source is held to the ceiling of the member Malloy resolved for the query as well as
+  its own.
 - What counts as a read: every field the query selects, aggregates, groups, filters, nests or
   indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
   reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
