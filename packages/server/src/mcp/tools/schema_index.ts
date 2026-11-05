@@ -102,14 +102,20 @@ export const MAX_CACHED_SCHEMAS = 8;
 
 /**
  * The text indexed for one table: its humanized schema and table name, then
- * its humanized column names (`orders_line_item` -> "orders line item"), then
+ * its humanized column names (`orders_line_item` -> "orders line item",
+ * a record member `delivery.city` -> "delivery city"), then
  * types last, since they are weak signal and would crowd out column names
  * under the provider's input cap.
  */
 export function tableIndexText(entity: SchemaTableEntity): string {
    const name = humanizeName(entity.tableName) || entity.tableName;
    const schema = humanizeName(entity.schemaName) || entity.schemaName;
-   const columns = entity.columns.slice(0, MAX_COLUMNS_IN_INDEX_TEXT);
+   // Top-level columns first, then record members (`delivery.city`), so a
+   // wide record cannot push a table's own columns past the cap.
+   const columns = [
+      ...entity.columns.filter((c) => !c.name.includes(".")),
+      ...entity.columns.filter((c) => c.name.includes(".")),
+   ].slice(0, MAX_COLUMNS_IN_INDEX_TEXT);
    const columnNames = columns
       .map((c) => humanizeName(c.name) || c.name)
       .filter(Boolean)

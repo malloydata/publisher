@@ -30,6 +30,118 @@ export { sqlLiteral };
 
 type ApiSchema = components["schemas"]["Schema"];
 type ApiTable = components["schemas"]["Table"];
+
+type ApiColumn = NonNullable<ApiTable["columns"]>[number];
+
+/** A field of a Malloy table schema, as far as columnsOfSchema reads it. */
+interface SchemaField {
+   name: string;
+   type?: string;
+   fields?: SchemaField[];
+   elementTypeDef?: { type?: string };
+}
+
+/** How deep record members are listed: `delivery.address.zip` is depth 2. */
+const MAX_RECORD_DEPTH = 4;
+
+/**
+ * A table's columns from its Malloy schema: every top-level column, and after
+ * each record column (a BigQuery RECORD, a DuckDB STRUCT, a Trino ROW) its
+ * members under dotted names (`delivery.city`), nested records included. A
+ * repeated record (an array of records) keeps its type, `array`, and its
+ * members follow it the same way (`lines.sku`): a member under an `array`
+ * column has one value per element, not per row. An array of plain values
+ * has no members to list.
+ */
+export function columnsOfSchema(
+   fields: readonly SchemaField[] | undefined,
+   prefix = "",
+   depth = 1,
+): ApiColumn[] {
+   const out: ApiColumn[] = [];
+   for (const field of fields ?? []) {
+      if (!field.name) continue;
+      const name = `${prefix}${field.name}`;
+      out.push({ name, type: field.type });
+      const nested =
+         field.type === "record" ||
+         (field.type === "array" &&
+            field.elementTypeDef?.type === "record_element");
+      if (nested && depth <= MAX_RECORD_DEPTH) {
+         out.push(...columnsOfSchema(field.fields, `${name}.`, depth + 1));
+      }
+   }
+   return out;
+}
+
+/**
+ * A column type, as INFORMATION_SCHEMA spells it, that may hold record
+ * members: DuckDB `STRUCT(...)` and `STRUCT(...)[]`, Trino `row(...)` and
+ * `array(row(...))`. A plain array matches too; it costs one schema read and
+ * lists nothing extra.
+ */
+const NESTED_COLUMN_TYPE = /^(struct|row)\s*\(|\[\]\s*$|^array\s*[(<]/i;
+
+/** Most tables of one listing whose record members are read. Past it, the rest stay flat. */
+const MAX_TABLES_EXPANDED = 200;
+
+/**
+ * Replace the flat columns of each table that has a record column with the
+ * columns of its Malloy schema, which lists the members (columnsOfSchema).
+ * INFORMATION_SCHEMA names only top-level columns, and its type string for a
+ * struct is not worth parsing. A table whose schema cannot be read keeps its
+ * flat columns.
+ */
+async function withRecordMembers(
+   tables: ApiTable[],
+   malloyConnection: Connection,
+): Promise<ApiTable[]> {
+   const nested = tables
+      .filter(
+         (t) =>
+            t.resource &&
+            (t.columns ?? []).some((c) =>
+               NESTED_COLUMN_TYPE.test(c.type ?? ""),
+            ),
+      )
+      .slice(0, MAX_TABLES_EXPANDED);
+   if (nested.length === 0) return tables;
+   let schemas: Record<string, TableSourceDef> = {};
+   try {
+      const read = await malloyConnection.fetchSchemaForTables(
+         Object.fromEntries(nested.map((t) => [t.resource!, t.resource!])),
+         {},
+      );
+      schemas = read.schemas;
+      for (const [table, error] of Object.entries(read.errors ?? {})) {
+         logger.debug(
+            "Record members not listed: the table schema read failed",
+            {
+               table,
+               error,
+            },
+         );
+      }
+   } catch (error) {
+      logger.warn("Record members not listed: the table schema read failed", {
+         error: extractErrorDataFromError(error),
+      });
+      return tables;
+   }
+   return tables.map((t) => {
+      const schema = t.resource ? schemas[t.resource] : undefined;
+      if (!schema) return t;
+      // A top-level column keeps the type the database reported; only the
+      // members, which it did not report, carry Malloy's type names.
+      const reported = new Map((t.columns ?? []).map((c) => [c.name, c.type]));
+      return {
+         ...t,
+         columns: columnsOfSchema(schema.fields as SchemaField[]).map((c) =>
+            reported.has(c.name) ? { ...c, type: reported.get(c.name) } : c,
+         ),
+      };
+   });
+}
 type ApiAzureConnection = components["schemas"]["AzureConnection"];
 
 /**
@@ -1326,12 +1438,16 @@ export async function listTablesForSchema(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   return introspectorFor(connection).tables(
+   const tables = await introspectorFor(connection).tables(
       connection,
       schemaName,
       malloyConnection,
       tableNames,
    );
+   // BigQuery's introspector reads the Malloy schema already, members included.
+   return connection.type === "bigquery"
+      ? tables
+      : withRecordMembers(tables, malloyConnection);
 }
 
 /**
@@ -1381,11 +1497,9 @@ async function listTablesForBigQuery(
                         ) => Promise<TableSourceDef | undefined>;
                      }
                   ).fetchTableSchema(tableName, tablePath);
-                  const columns =
-                     source?.fields?.map((field) => ({
-                        name: field.name,
-                        type: field.type,
-                     })) || [];
+                  const columns = columnsOfSchema(
+                     source?.fields as SchemaField[] | undefined,
+                  );
                   return { resource: tablePath, columns };
                } catch (error) {
                   logger.warn(`Failed to get schema for table ${tableName}`, {

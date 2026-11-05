@@ -8530,10 +8530,18 @@ components:
       properties:
         name:
           type: string
-          description: Name of the column
+          description: |
+            Name of the column. A record column (a BigQuery RECORD, a DuckDB
+            STRUCT, a Trino ROW) is followed by its members, named by their
+            dotted path (`delivery.city`, `delivery.address.zip`). A member
+            that follows an `array` column belongs to a repeated record: it
+            has one value per element of the array, not one per row.
         type:
           type: string
-          description: Data type of the column
+          description: |
+            Data type of the column. A top-level column has the type the
+            database reports; a record member has Malloy's type name
+            (`string`, `number`, `record`, `array`).
 
     TableDescription:
       type: object

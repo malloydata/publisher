@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Schema listing and search_database_schema list the members of record columns
+
+A table's columns, from the REST table listing and from `search_database_schema`, now include the members of each record column (a BigQuery RECORD, a DuckDB STRUCT, a Trino ROW), named by their dotted path and listed after the record: `delivery`, `delivery.city`, `delivery.address.zip`. Before, a record was one column, so a search for "city" could not find a table that held the city only inside `delivery`, and BigQuery's members were not listed at all. A member listed after an `array` column belongs to a repeated record, and has one value per element. Top-level columns keep the type the database reports; members carry Malloy's type names. Table ranking puts a table's own columns ahead of members when it caps the columns it reads. Credible's hosted schema index reads the same listing, so it gains the members too.
+
 ## [Unreleased] — get_context has one search engine (BREAKING)
 
 Every ranked `get_context` request is now answered by the find, list, judge engine, for every package: it ranks each target against the whole package (embedding closeness, keyword match and stored values, fused by rank), shows a model the best candidates grouped by source with the join routes between them, and returns what the model picks. A request with no `search_text` is still a listing and is unchanged. The engine's settings are under `retrieval.fcj` in `publisher.json`; the defaults now put it in list mode (`connect: "list"`) with `listTopK: 30`, `listUnion: 30`, `dropRoutesAt: 4` and `readingsRule: true`, and `docs/configuration.md` describes them.

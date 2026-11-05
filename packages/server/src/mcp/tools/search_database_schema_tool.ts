@@ -285,7 +285,7 @@ Supply what you know, omit the rest. No arguments lists the environments and the
 - Read warnings: they name anything omitted or ignored.
 
 ## Response
-JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns, columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
+JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns (a record's members follow it as delivery.city), columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
 
 ## Worked example
 Start with no arguments and follow what it names. For connection "warehouse", schema "sales":
