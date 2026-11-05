@@ -97,16 +97,16 @@ export type DimIndexRejectionReason =
 
 /**
  * Base for the load-time ``#(index)`` placement rejections. {@link reason} is
- * the short code the load reports each refusal under.
+ * the short code the load reports each finding under.
  */
 export abstract class DimIndexRejectionError extends Error {
    abstract readonly reason: DimIndexRejectionReason;
 }
 
 /**
- * Where an extraction reports an annotation the index refuses. The default
- * throws; the load passes one that collects, so it can name every refused
- * declaration in one 400 instead of the first per file.
+ * Where an extraction reports an annotation an index cannot honor. The
+ * default throws; the load passes one that collects, so every such
+ * declaration becomes a package warning, not only the first per file.
  */
 export type Refuse = (error: Error) => void;
 
@@ -118,8 +118,8 @@ export const throwRefusal: Refuse = (error) => {
  * Thrown when a single ``#(index)``-tagged dimension would be partitioned by
  * more than one author-declared required ``#(filter)``. The index maps the
  * required filter to a partition key and supports exactly one, so >1 on an
- * indexed dimension is unrepresentable and must refuse the package load (an
- * ``EntitiesValidationError``, a 400) rather than produce a wrong index.
+ * indexed dimension is unrepresentable: it is reported as a package warning
+ * and gets no fingerprint, rather than a wrong index.
  * Gate columns derived from ``#(access_filter)`` are not counted.
  */
 export class MultipleRequiredFiltersOnIndexedDimensionError extends DimIndexRejectionError {
@@ -167,8 +167,7 @@ export function assertAtMostOneRequiredFilterPerIndexedDimension(
  * query to enumerate their distinct values — but it has no parameter values to
  * bind, so the query fails with "Argument not provided for required parameter
  * '<p>'" and the dimension can never be indexed. Such a package compiles fine
- * but is permanently un-indexable, so the package load refuses it (an
- * ``EntitiesValidationError``, a 400) rather than letting it wedge an
+ * but is permanently un-indexable, so the load reports it as a package warning rather than letting it wedge an
  * indexer with queries that fail forever.
  *
  * The fix for a model author is to give the parameter a default value (so the
@@ -215,7 +214,7 @@ export function assertNoRequiredParametersOnIndexedDimension(
  * dimension; an aggregate/query/join has no value set to enumerate, so the tag
  * is meaningless. Without this check ``collectDimIndexCandidates`` silently
  * skips the field and the author gets no index and no error. Refuses the
- * package load (an ``EntitiesValidationError``, a 400) so the mistake is
+ * package load (a package warning) so the mistake is
  * caught at publish.
  */
 export class IndexedFieldNotADimensionError extends DimIndexRejectionError {
@@ -261,7 +260,7 @@ export function assertIndexedFieldIsDimension(args: {
  * Scope and cadence are package-level (``Package.scope`` +
  * ``materialization.schedule``): a ``schedule`` is legal only at the package
  * level and only in ``scope: version`` mode, never per dimension. Refuses the
- * package load (an ``EntitiesValidationError``, a 400).
+ * package load (a package warning).
  */
 export class IndexScheduleNotAllowedError extends DimIndexRejectionError {
    readonly reason = "schedule_not_allowed_on_dimension" as const;
@@ -275,7 +274,7 @@ export class IndexScheduleNotAllowedError extends DimIndexRejectionError {
  * Thrown when an ``#(index)``-tagged dimension declares a ``sharing=`` value.
  * Scope is a package-level mode (``Package.scope``: ``version`` |
  * ``package``), so per-dimension ``sharing`` is unrepresentable and rejected at
- * publish (an ``EntitiesValidationError``, a 400).
+ * publish (a package warning).
  */
 export class IndexSharingNotAllowedError extends DimIndexRejectionError {
    readonly reason = "sharing_not_allowed_on_dimension" as const;
@@ -647,7 +646,7 @@ export function collectDimIndexCandidates(
             };
             try {
                // The field IS public and #(index)-tagged: it must be a
-               // dimension/column. A measure/view/join is refused at load
+               // dimension/column. A measure/view/join is reported at load
                // rather than left with an index that never materializes.
                assertIndexedFieldIsDimension({
                   sourceName,
