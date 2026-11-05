@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { unrecordedAudit, type QueryAudit } from "./access_record";
+import { ceilingRefusal } from "./classification";
 import type { Model } from "./model";
 
 const MODEL = `##! experimental { access_modifiers }
@@ -33,6 +34,19 @@ source: s is duckdb.table("child") include { internal: * } extend {
    measure: c is count()
    view: v is { aggregate: c }
 }
+source: hub is duckdb.table("child") include { internal: * } extend {
+   join_one: r is s on id = r.sid
+   #(classification) "none"
+   measure: hc is count()
+}
+#(carries) ["phi.direct_identifier", "none"]
+source: wide_q is s -> { group_by: x is p.ssn }
+#(carries) ["none"]
+source: ok_q is s -> { group_by: sid }
+source: leak_q is hub -> { group_by: y is r.p.ssn }
+source: tidy_q is hub -> { group_by: y is r.sid }
+source: deep_q is leak_q -> { group_by: z is y }
+source: deep_ok is tidy_q -> { group_by: z is y }
 source: open_s is duckdb.table("child") include { internal: * } extend {
    join_one: p is people on id = p.id
    #(classification) "none"
@@ -111,6 +125,77 @@ describe("#(carries) is checked per query", () => {
       });
    }
 
+   it("applies the ceiling of a carried source reached through a join from an open one", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         for (const query of [
+            "run: hub -> { group_by: r.p.ssn }",
+            "run: open_s extend { join_one: r is s on id = r.sid } -> { group_by: r.p.ssn }",
+         ]) {
+            const err = await run(model, query).catch((e) => e);
+            expect(err).toBeInstanceOf(BadRequestError);
+            expect((err as Error).message).toContain("source r carries [none]");
+            expect((err as Error).message).toContain("r.p.ssn");
+         }
+         for (const query of [
+            "run: hub -> { aggregate: r.c }",
+            "run: open_s extend { join_one: r is s on id = r.sid } -> { aggregate: r.c }",
+         ]) {
+            expect((await run(model, query)).compactResult.length).toBe(1);
+         }
+      });
+   });
+
+   it("follows a read to where it comes from: through a caller extend, and out of a query source's base", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         for (const query of [
+            "run: open_s extend { join_one: r is s on id = r.sid\n dimension: x is r.p.ssn } -> { group_by: x }",
+            "run: leak_q -> { group_by: y }",
+            "run: deep_q -> { group_by: z }",
+         ]) {
+            const err = await run(model, query).catch((e) => e);
+            expect(err).toBeInstanceOf(BadRequestError);
+            expect((err as Error).message).toContain("carries [none]");
+         }
+         for (const query of [
+            "run: open_s extend { join_one: r is s on id = r.sid\n dimension: x is r.sid } -> { group_by: x }",
+            "run: tidy_q -> { group_by: y }",
+            "run: deep_ok -> { group_by: z }",
+         ]) {
+            expect(
+               (await run(model, query)).compactResult.length,
+            ).toBeGreaterThan(0);
+         }
+      });
+   });
+
+   it("refuses a shape it cannot read once the model declares a ceiling, and serves a traceable read of an open source", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const err = await run(model, "run: hub -> { index: r.sid }").catch(
+            (e) => e,
+         );
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect((err as Error).message).toContain("cannot see completely");
+         expect(
+            (await run(model, "run: open_s -> { group_by: p.pid }"))
+               .compactResult.length,
+         ).toBeGreaterThan(0);
+      });
+   });
+
+   it("holds a query source to the ceiling of the source it runs on", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const err = await run(model, "run: wide_q -> { group_by: x }").catch(
+            (e) => e,
+         );
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect((err as Error).message).toContain("source s carries [none]");
+         expect(
+            (await run(model, "run: ok_q -> { group_by: sid }")).compactResult
+               .length,
+         ).toBeGreaterThan(0);
+      });
+   });
+
    it("refuses a caller relabel and a caller-written ceiling", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          for (const note of [
@@ -175,5 +260,56 @@ describe("#(carries) is checked per query", () => {
                .length,
          ).toBeGreaterThan(0);
       });
+   });
+});
+
+describe("an unreadable chain on a joined struct", () => {
+   const carried = {
+      name: "carried",
+      type: "table",
+      annotations: { blockNotes: [{ text: '#(carries) ["none"]\n' }] },
+      fields: [],
+   };
+   const modelDefWith = (joinQuery: unknown) => ({
+      contents: {
+         carried,
+         open: {
+            name: "open",
+            type: "table",
+            fields: [
+               {
+                  name: "j",
+                  join: "one",
+                  type: "table",
+                  fields: [{ name: "v", type: "string" }],
+                  ...(joinQuery ? { query: joinQuery } : {}),
+               },
+            ],
+         },
+      },
+   });
+   const query = {
+      structRef: "open",
+      pipeline: [
+         {
+            type: "reduce",
+            queryFields: [{ type: "fieldref", path: ["j", "v"] }],
+            refSummary: { fieldUsage: [{ path: ["j", "v"] }] },
+         },
+      ],
+   };
+
+   it("refuses a read through it when the model declares #(carries) anywhere", () => {
+      const refusal = ceilingRefusal(
+         modelDefWith({ structRef: "missing", pipeline: [] }) as never,
+         query,
+      );
+      expect(refusal).toContain("cannot see completely");
+   });
+
+   it("twin: the same read through a join with no unreadable chain serves", () => {
+      expect(ceilingRefusal(modelDefWith(undefined) as never, query)).toBe(
+         undefined,
+      );
    });
 });

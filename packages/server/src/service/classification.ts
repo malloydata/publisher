@@ -293,8 +293,19 @@ export interface ClassifiedInput {
    classifications: string[];
 }
 
+/** One `#(carries)` list a read is held to, and the source that declares it. */
+export interface Ceiling {
+   source: string;
+   classes: string[];
+   malformed?: string;
+}
+
 /** What the lineage knows about one field of a source. */
 export interface FieldClassification {
+   /** The ceilings of every carried struct this field lives in below the source or reads through, transitively. */
+   ceilings: Ceiling[];
+   /** True when some struct on those paths has a chain that could not be read, so its ceiling is unknown. */
+   ceilingUnresolved: boolean;
    /** The classes the field's own `#(classification)` lines declare. */
    declared: string[];
    /** The union of its inputs' classes, read when it declares none. */
@@ -434,7 +445,14 @@ function queryInput(
 export function readQueryFieldReads(
    modelDef: ModelDef | undefined,
    query: unknown,
-): { lineage: SourceLineage; paths: string[]; complete: boolean } | undefined {
+):
+   | {
+        lineage: SourceLineage;
+        fields: IrField[];
+        paths: string[];
+        complete: boolean;
+     }
+   | undefined {
    const q = query as IrQuery | undefined;
    const stage = q?.pipeline?.[0];
    if (!stage) return undefined;
@@ -461,6 +479,7 @@ export function readQueryFieldReads(
    }
    return {
       lineage: readSourceClassifications(input.fields, input.query),
+      fields: input.fields,
       // An empty path is the source itself (a `count()`), not a field.
       paths: Array.from(
          new Set(refs.filter((r) => r.length > 0).map((r) => r.join("."))),
@@ -471,49 +490,128 @@ export function readQueryFieldReads(
 
 /** Whether any source in the compiled model declares a `#(carries)`; a caller cannot add one. */
 export function modelDeclaresCarries(modelDef: ModelDef | undefined): boolean {
-   return Object.values(modelDef?.contents ?? {}).some(
-      (def) => readCarries((def as IrField).annotations).declared,
+   if (!modelDef) return false;
+   let declared = carriesMemo.get(modelDef);
+   if (declared === undefined) {
+      declared = Object.values(modelDef.contents ?? {}).some(
+         (def) => readCarries((def as IrField).annotations).declared,
+      );
+      carriesMemo.set(modelDef, declared);
+   }
+   return declared;
+}
+
+const carriesMemo = new WeakMap<object, boolean>();
+
+/**
+ * The ceilings a struct carries: its own, read down its annotation chain so a
+ * source declared over a carried one has it, and, for a `->` query source,
+ * those of the struct its query runs on, recursively. `unresolved` when a base
+ * cannot be found, which leaves its ceiling unknown.
+ */
+function structCeilings(
+   modelDef: ModelDef | undefined,
+   entry: IrField | undefined,
+   name: string,
+): { ceilings: Ceiling[]; unresolved: boolean } {
+   const ceilings: Ceiling[] = [];
+   let node = entry;
+   let label = name;
+   for (let hops = 0; node; hops++) {
+      if (hops >= MAX_JOIN_RECURSION_DEPTH)
+         return { ceilings, unresolved: true };
+      const carries = readCarries(node.annotations);
+      if (carries.declared) {
+         ceilings.push({
+            source: label,
+            classes: Array.from(carries.classes).sort(byCodepoint),
+            ...(carries.malformed ? { malformed: carries.malformed } : {}),
+         });
+      }
+      const ref = node.query?.structRef;
+      if (!ref) return { ceilings, unresolved: false };
+      node =
+         typeof ref === "string"
+            ? findIrSource(modelDef, ref)
+            : (ref as IrField);
+      if (!node) return { ceilings, unresolved: true };
+      label = typeof ref === "string" ? ref : (node.as ?? node.name ?? label);
+   }
+   return { ceilings, unresolved: false };
+}
+
+/** The two ceiling lists joined, each distinct one once. */
+function mergeCeilings(a: Ceiling[], b: Ceiling[]): Ceiling[] {
+   if (b.length === 0) return a;
+   const key = (c: Ceiling) => `${c.source}|${c.classes.join(",")}`;
+   const seen = new Set(a.map(key));
+   const extra = b.filter((c) => !seen.has(key(c)));
+   return extra.length > 0 ? [...a, ...extra] : a;
+}
+
+/** The strictest of a struct's ceilings: the classes on every list. */
+function strictestCarries(
+   ceilings: readonly Ceiling[],
+   unresolved: boolean,
+   modelDef: ModelDef | undefined,
+): { declared: boolean; classes: Set<string>; malformed?: string } {
+   const malformed =
+      ceilings.find((c) => c.malformed)?.malformed ??
+      (unresolved && (ceilings.length > 0 || modelDeclaresCarries(modelDef))
+         ? "runs on a source Publisher cannot read, so what its #(carries) holds it to is unknown"
+         : undefined);
+   const lists = ceilings.map((c) => new Set(c.classes));
+   const classes = new Set(
+      lists.length > 0
+         ? [...lists[0]].filter((k) => lists.every((l) => l.has(k)))
+         : [],
    );
+   return {
+      declared: lists.length > 0 || malformed !== undefined,
+      classes,
+      ...(malformed ? { malformed } : {}),
+   };
 }
 
 /**
- * The `#(carries)` ceiling of the struct a query enters, read along that
- * struct's own annotation chain so a source a caller declares over a carried
- * one still has it. Undefined when the entry declares none.
+ * Why a query reads past a `#(carries)` ceiling, or undefined when every field
+ * it reads is classified on every list that applies. Those are the lists of
+ * the struct it enters (and of the struct a `->` source runs on) and of each
+ * carried join a read passes through. The `on` of each caller join counts as a
+ * read, which the compiled query does not list. A read Publisher cannot place
+ * or follow refuses, as does a walk cut short.
  */
-export function queryCarries(
+export function ceilingRefusal(
    modelDef: ModelDef | undefined,
    query: unknown,
-): { source: string; classes: string[] } | undefined {
+   callerJoins: readonly unknown[] = [],
+): string | undefined {
+   // A model that declares no #(carries) has nothing to hold a read to.
+   if (!modelDeclaresCarries(modelDef)) return undefined;
    const ref = (query as IrQuery | undefined)?.structRef;
    const entry =
       typeof ref === "string"
          ? findIrSource(modelDef, ref)
          : (ref as IrField | undefined);
-   const carries = readCarries(entry?.annotations);
-   if (!carries.declared) return undefined;
-   return {
-      source: typeof ref === "string" ? ref : (entry?.as ?? entry?.name ?? ""),
-      classes: Array.from(carries.classes).sort(byCodepoint),
-   };
-}
-
-/**
- * Why a query reads past the ceiling its entry carries, or undefined when
- * every field it reads is classified on the list. The `on` of each caller
- * join counts as a read, which the compiled query does not list. A read Publisher
- * cannot place or follow refuses, as does a walk cut short.
- */
-export function ceilingRefusal(
-   modelDef: ModelDef | undefined,
-   query: unknown,
-   carries: { source: string; classes: string[] },
-   callerJoins: readonly unknown[] = [],
-): string | undefined {
-   const head = `source ${carries.source} carries [${carries.classes.join(", ")}]; this query reads`;
+   const own = structCeilings(
+      modelDef,
+      entry,
+      typeof ref === "string" ? ref : (entry?.as ?? entry?.name ?? ""),
+   );
+   const headOf = (c: Ceiling): string =>
+      `source ${c.source} carries [${c.classes.join(", ")}]; this query reads`;
+   if (
+      own.unresolved &&
+      (own.ceilings.length > 0 || modelDeclaresCarries(modelDef))
+   ) {
+      return `source ${typeof ref === "string" ? ref : (entry?.as ?? entry?.name ?? "")} runs on a source which Publisher cannot see completely`;
+   }
    const reads = readQueryFieldReads(modelDef, query);
-   if (!reads) return `${head} a struct which Publisher cannot see completely`;
-   const allowed = new Set(carries.classes);
+   if (!reads) {
+      return own.ceilings.length > 0
+         ? `${headOf(own.ceilings[0])} a struct which Publisher cannot see completely`
+         : undefined;
+   }
    const paths = Array.from(
       new Set([
          ...reads.paths,
@@ -525,27 +623,38 @@ export function ceilingRefusal(
       ]),
    ).sort(byCodepoint);
    if (!reads.complete || reads.lineage.truncated) {
-      return `${head} ${paths[0] ?? carries.source}, which Publisher cannot see completely`;
+      const first = own.ceilings[0] ?? {
+         source: "a joined source",
+         classes: [],
+      };
+      return `${headOf(first)} ${paths[0] ?? first.source}, which Publisher cannot see completely`;
    }
    for (const path of paths) {
       const known = reads.lineage.get(path);
-      if (!known) {
-         return `${head} ${path}, which Publisher cannot see completely`;
-      }
+      const applicable = mergeCeilings(own.ceilings, known?.ceilings ?? []);
+      const unseen = (): string =>
+         `${headOf(applicable[0] ?? { source: "a joined source", classes: [] })} ${path}, which Publisher cannot see completely`;
+      if (!known) return unseen();
       // A view or a join is not a field; what it reads is listed on its own.
       if (!known.isField) continue;
-      if (known.unresolved.length > 0 && known.declared.length === 0) {
-         return `${head} ${path}, which Publisher cannot see completely`;
+      if (
+         (known.unresolved.length > 0 && known.declared.length === 0) ||
+         (known.ceilingUnresolved && modelDeclaresCarries(modelDef))
+      ) {
+         return unseen();
       }
-      if (known.classifications.length === 0) {
-         return `${head} ${path}, which has no #(classification) on the list`;
-      }
-      const off = [
+      const classes = [
          ...known.classifications,
          ...known.filtered.flatMap((i) => i.classifications),
-      ].filter((k) => !allowed.has(k));
-      if (off.length > 0) {
-         return `${head} ${path}, which is classified ${off.join(" ")}, not on the list`;
+      ];
+      for (const c of applicable) {
+         if (classes.length === 0) {
+            return `${headOf(c)} ${path}, which has no #(classification) on the list`;
+         }
+         const off = classes.filter((k) => !c.classes.includes(k));
+         if (off.length > 0) {
+            return `${headOf(c)} ${path}, which is classified ${off.join(" ")}, not on the list`;
+         }
       }
    }
    return undefined;
@@ -602,6 +711,9 @@ function walkSourceClassifications(
          hidden: boolean;
          /** Set when the field is an output of a `->` query, not something declared over it. */
          out?: OutputScope;
+         /** The carried structs on the join path to it. */
+         ceilings: Ceiling[];
+         ceilingUnresolved: boolean;
       }
    >();
    const outputsOf = (q: IrQuery): QueryOutputs => {
@@ -615,6 +727,8 @@ function walkSourceClassifications(
       joins: number,
       hidden: boolean,
       scope: OutputScope | undefined,
+      ceilings: Ceiling[],
+      ceilingUnresolved: boolean,
    ): void => {
       for (const field of list) {
          const name = activeName(field);
@@ -637,7 +751,14 @@ function walkSourceClassifications(
                     rel: scope.rel ? `${scope.rel}.${name}` : name,
                  }
                : undefined;
-         byPath.set(path, { field, owner, hidden: isHidden, out });
+         byPath.set(path, {
+            field,
+            owner,
+            hidden: isHidden,
+            out,
+            ceilings,
+            ceilingUnresolved,
+         });
          if (!isJoinField(field)) continue;
          if (
             joins >= MAX_JOIN_RECURSION_DEPTH ||
@@ -651,7 +772,16 @@ function walkSourceClassifications(
             (field.query
                ? { outputs: outputsOf(field.query), rel: "" }
                : undefined);
-         collect(field.fields ?? [], path, joins + 1, isHidden, inner);
+         const through = structCeilings(undefined, field, path);
+         collect(
+            field.fields ?? [],
+            path,
+            joins + 1,
+            isHidden,
+            inner,
+            mergeCeilings(ceilings, through.ceilings),
+            ceilingUnresolved || through.unresolved,
+         );
       }
    };
    collect(
@@ -660,6 +790,8 @@ function walkSourceClassifications(
       0,
       false,
       query ? { outputs: outputsOf(query), rel: "" } : undefined,
+      [],
+      false,
    );
 
    const visiting = new Set<string>();
@@ -673,6 +805,8 @@ function walkSourceClassifications(
       if (visiting.has(path)) return undefined;
       visiting.add(path);
       const { field, owner, hidden, out } = entry;
+      let ceilings = entry.ceilings;
+      let ceilingUnresolved = entry.ceilingUnresolved;
       const texts = annotationTexts(field.annotations);
       const own = readClassification(texts);
       // An output of a query reads from the query's source, not from its own siblings.
@@ -702,6 +836,9 @@ function walkSourceClassifications(
                unresolvedRead(refPath);
                continue;
             }
+            // A read inherits the ceilings of whatever it reads through.
+            ceilings = mergeCeilings(ceilings, input.ceilings);
+            ceilingUnresolved ||= input.ceilingUnresolved;
             if (input.unresolved.length > 0 && input.declared.length === 0) {
                unresolvedRead(refPath);
             }
@@ -757,6 +894,8 @@ function walkSourceClassifications(
          filtered: inputs.slice(valueInputs),
          passthrough: reads.passthrough,
          unresolved,
+         ceilings,
+         ceilingUnresolved,
       };
       resolved.set(path, result);
       return result;
@@ -932,6 +1071,10 @@ export interface PublishedSource {
    modelPath: string;
    source: string;
    ir: IrField;
+   /** The strictest `#(carries)` the source is held to: its own and its query's base's. */
+   carries: { declared: boolean; classes: Set<string>; malformed?: string };
+   /** Whether the compiled model declares a `#(carries)` anywhere, which makes an unreadable struct a refusal. */
+   modelCarries: boolean;
    deniedToAll: boolean;
    /** Reachable dimensions and measures a caller can read, by path. */
    fields: Array<[string, FieldClassification]>;
@@ -1014,10 +1157,17 @@ export function publishedSources(
          };
          for (const v of views) for (const r of v.reads) visit(r.field);
          for (const [, c] of fields) for (const i of c.inputs) visit(i.field);
+         const chain = structCeilings(modelDef, ir, sourceInfo.name);
          out.push({
             modelPath,
             source: sourceInfo.name,
             ir,
+            carries: strictestCarries(
+               chain.ceilings,
+               chain.unresolved,
+               modelDef,
+            ),
+            modelCarries: modelDeclaresCarries(modelDef),
             deniedToAll: apiSource ? isDeniedToAll(apiSource) : false,
             fields,
             hiddenRead,
@@ -1101,7 +1251,7 @@ export function classificationWarnings(
       }
    }
    for (const s of sources) {
-      const carries = readCarries(s.ir.annotations);
+      const carries = s.carries;
       for (const [path, c] of [...s.fields, ...s.hiddenRead]) {
          const unknown = declaredUnknownReads(c);
          if (c.dropped.length === 0 && unknown.length === 0) continue;
@@ -1190,8 +1340,7 @@ export async function carriesCeilingLeaks(
          queries.push({ label: `notebook cell ${i + 1}`, ...cell }),
       );
       for (const { label, query, modelDef: def } of queries) {
-         const carries = queryCarries(def, query);
-         const refusal = carries && ceilingRefusal(def, query, carries);
+         const refusal = ceilingRefusal(def, query);
          if (refusal) messages.push(`${modelPath}: ${label}: ${refusal}.`);
       }
    }
@@ -1213,9 +1362,30 @@ export function classificationLeaks(
 ): string[] {
    const messages: string[] = [];
    for (const s of publishedSources(models, isListed, includeHidden)) {
-      const carries = readCarries(s.ir.annotations);
-      if (!carries.declared) continue;
+      const carries = s.carries;
       const where = `source ${s.source} (${s.modelPath})`;
+      // A read through a carried join is held to that join's list even when the source carries none.
+      for (const [path, c] of s.fields) {
+         if (c.ceilingUnresolved && s.modelCarries) {
+            messages.push(
+               `${where} exposes ${path}, which reads through a source whose #(carries) Publisher cannot read, so what holds it is unknown.`,
+            );
+         }
+         for (const ceiling of c.ceilings) {
+            const off = c.classifications.filter(
+               (k) => !ceiling.classes.includes(k),
+            );
+            if (c.classifications.length > 0 && off.length === 0) continue;
+            messages.push(
+               `${where} exposes ${path}, ${
+                  off.length > 0
+                     ? `classified ${off.join(" ")}`
+                     : "which has no class"
+               }, through ${ceiling.source}, which carries [${ceiling.classes.join(", ")}].`,
+            );
+         }
+      }
+      if (!carries.declared) continue;
       if (carries.malformed) {
          messages.push(`${where} ${carries.malformed}.`);
          continue;
