@@ -4,7 +4,7 @@
 /**
  * The shapes the entities extraction builds internally, one model file at a
  * time. `to_api.ts` turns a package's worth of them into the public
- * `Package.entities` payload. Field names here are the extraction's own
+ * `GET …/entities` payload. Field names here are the extraction's own
  * (snake_case on an entity, camelCase on a source row) and never reach the
  * wire as is.
  */

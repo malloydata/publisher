@@ -6,7 +6,7 @@
  * source as an entry point, and what an `#(access_filter)` body says.
  *
  * Reports what the query path enforces and never decides access. Kept free of
- * the sanitizer and the Malloy SDK so both `source_extraction` and
+ * the extraction and the Malloy SDK so both `source_extraction` and
  * `dim_index_discovery` can import it without a cycle.
  */
 

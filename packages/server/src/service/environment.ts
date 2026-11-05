@@ -1903,7 +1903,7 @@ export class Environment {
          ...metadata,
          ...(description !== null ? { description } : {}),
          latestVersion: await this.versionService.latestOf(packageName),
-         // Serving state moved to the `/status` entry; inline while
+         // Serving state (`GET …/status`), on a package response only while
          // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
          ...(isPackageInlineFieldsEnabled() && {
             status: this.describePackageStatus(packageName, versionId),

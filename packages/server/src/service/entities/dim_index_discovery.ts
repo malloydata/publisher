@@ -8,12 +8,12 @@
  * owns the compile-derived *inputs* to a stable id (the fingerprint
  * query + the hash of its compiled SQL), this module owns *discovery* —
  * finding the fields that need a fingerprint in the first place, and the
- * shape the lookup hits during sanitization.
+ * shape the lookup hits during extraction.
  *
  * Lives next to derivation rather than inside ``source_extraction``
  * because every export here is purely dim-index-shaped: filter
  * parsing, index-tag detection, lookup-key formatting, candidate
- * walking. The sanitizer only consumes these — it doesn't define
+ * walking. The extraction only consumes these — it doesn't define
  * them.
  */
 
@@ -35,9 +35,9 @@ import type {
 } from "@malloydata/malloy";
 
 /**
- * Lookup-key shape shared between the sanitizer (where we read it)
+ * Lookup-key shape shared between the extraction (where we read it)
  * and ``extract.ts`` (where the map is populated). Extraction hands
- * the sanitizer a ``ReadonlyMap`` keyed by this function; the sanitizer's
+ * the extraction a ``ReadonlyMap`` keyed by this function; the extraction's
  * ``getEntitiesFromExplore`` looks each field up via the same call,
  * so a ``get(key)`` miss is the signal that the field should keep
  * its per-run ``randomUUID()`` id.
@@ -225,8 +225,7 @@ export class IndexedFieldNotADimensionError extends DimIndexRejectionError {
  * the outside world can't query (dimension or not), and — because Malloy has
  * no way to strip an inherited annotation — a child source that internalizes
  * a tagged base field (``internal: *``) carries the tag unavoidably. Those
- * fields are skipped (recorded in {@link DimIndexCollection.nonPublicSkips})
- * instead of rejected.
+ * fields are skipped instead of rejected.
  *
  * @throws {IndexedFieldNotADimensionError} the field is a measure/view/join.
  */
@@ -248,7 +247,7 @@ export function assertIndexedFieldIsDimension(args: {
 
 /**
  * Thrown when an ``#(index)``-tagged dimension declares a ``schedule=`` cron.
- * Scope and cadence are package-level now (``Package.scope`` +
+ * Scope and cadence are package-level (``Package.scope`` +
  * ``materialization.schedule``): a ``schedule`` is legal only at the package
  * level and only in ``scope: version`` mode, never per dimension. Refuses the
  * package load (an ``EntitiesValidationError``, a 400).
@@ -263,7 +262,7 @@ export class IndexScheduleNotAllowedError extends DimIndexRejectionError {
 
 /**
  * Thrown when an ``#(index)``-tagged dimension declares a ``sharing=`` value.
- * Scope is a package-level mode now (``Package.scope``: ``version`` |
+ * Scope is a package-level mode (``Package.scope``: ``version`` |
  * ``package``), so per-dimension ``sharing`` is unrepresentable and rejected at
  * publish (an ``EntitiesValidationError``, a 400).
  */
@@ -277,10 +276,8 @@ export class IndexSharingNotAllowedError extends DimIndexRejectionError {
 
 /**
  * Enforce that no ``#(index)`` dimension declares a per-dimension ``sharing`` or
- * ``schedule`` key — both are now package-level concerns (``Package.scope`` and
- * ``materialization.schedule``). ``taglinesByCandidate`` supplies the raw
- * taglines per candidate so the check reads the annotation directly (the parsed
- * ``IndexPolicy`` no longer carries these keys).
+ * ``schedule`` key: both are package-level (``Package.scope`` and
+ * ``materialization.schedule``). Reads the field's raw taglines.
  *
  * @throws {IndexSharingNotAllowedError | IndexScheduleNotAllowedError}
  */
@@ -363,10 +360,10 @@ function requiredFilterDimensionsForExplore(explore: MalloyExplore): string[] {
 /**
  * Pull the names of an explore's *required* parameters — declared parameters
  * with no default value. Mirrors ``extractParametersFromExplore`` in the
- * sanitizer (same ``structDef.parameters`` shape) but keeps only the names we
+ * extraction (same ``structDef.parameters`` shape) but keeps only the names we
  * need here and only for the required ones: a parameter is required iff its
  * ``value`` (the default) is null/undefined, exactly the normalization the
- * sanitizer applies. A source with any required parameter cannot have its
+ * extraction applies. A source with any required parameter cannot have its
  * indexed dimensions enumerated by the dim-index count query.
  *
  * Returns an empty array for non-parameterized sources (the common case).
@@ -565,7 +562,7 @@ function isDimensionField(field: MalloyField): boolean {
 /**
  * Walk explores (including nested-join sub-sources) to collect every
  * ``#(index)``-tagged DIMENSION field that needs a derived id. Source
- * names follow the same composition rule the sanitizer uses (see
+ * names follow the same composition rule the extraction uses (see
  * {@link composeSourceName}) so resolver lookups hit by
  * ``${sourceName}::${fieldName}``.
  */
@@ -627,9 +624,8 @@ export function collectDimIndexCandidates(
                continue;
             }
             // The field IS public and #(index)-tagged: it must be a
-            // dimension/column. Reject the mis-tag the walk used to silently
-            // skip (a measure/view/join) so it surfaces a publish-time error
-            // instead of an index that never materializes.
+            // dimension/column. A measure/view/join is refused at load rather
+            // than left with an index that never materializes.
             assertIndexedFieldIsDimension({
                sourceName,
                fieldName: field.name,
@@ -643,8 +639,8 @@ export function collectDimIndexCandidates(
                gateDimensions,
                requiredParameterNames,
             };
-            // Scope/schedule are package-level now; reject any per-dimension
-            // sharing=/schedule= on the #(index) annotation at publish.
+            // Scope and schedule are package-level: refuse a per-dimension
+            // sharing= or schedule= on the #(index) annotation.
             assertNoForbiddenIndexPolicyKeys(candidate, tags, modelFilePath);
             candidates.push(candidate);
          }

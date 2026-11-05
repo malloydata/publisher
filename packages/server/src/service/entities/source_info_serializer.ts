@@ -3,7 +3,7 @@
 
 /**
  * Serializes Malloy Explore objects into the SourceInfo JSON format (a model's
- * `sourceSchemas` on `Package.entities`), which an indexer can use to
+ * `sourceSchemas` in `GET …/entities`), which an indexer can use to
  * summarize or describe a source.
  *
  * SourceInfo shape:

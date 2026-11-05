@@ -144,7 +144,7 @@ export class PackageController {
             versionId,
          });
          metadata = _package.getPackageMetadata();
-         // Serving state moved to the `/status` entry; inline while
+         // Serving state (`GET …/status`), on a package response only while
          // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
          if (isPackageInlineFieldsEnabled()) {
             metadata.status = environment.describePackageStatus(packageName);
@@ -155,7 +155,7 @@ export class PackageController {
          }
       }
 
-      // Moved to `GET …/embedding-index`; inline while
+      // `GET …/embedding-index`, on a package response only while
       // PUBLISHER_PACKAGE_INLINE_FIELDS is on, on both paths, so `?reload=true`
       // (the request that invalidates the index) carries it too.
       const embeddingIndex = isPackageInlineFieldsEnabled()

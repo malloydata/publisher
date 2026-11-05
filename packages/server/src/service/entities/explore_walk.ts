@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Generic Malloy explore-walk primitives shared by sanitization and
+ * Generic Malloy explore-walk primitives shared by extraction and
  * dim-index discovery. Lives in its own module so the source-name
  * composition rule and the tree-walk recursion semantics stay
  * single-sourced — both passes that decorate explores with derived
@@ -15,7 +15,7 @@ import { AccessModifierEnum } from "./internal_types";
 import type { Explore as MalloyExplore } from "@malloydata/malloy";
 
 /**
- * Compose the dotted source-name path the sanitizer emits for one
+ * Compose the dotted source-name path the extraction emits for one
  * explore. Root sources keep their bare name (``flights``); explores
  * reached via a nested-index join prepend the parent path
  * (``flights.origin``).
@@ -34,7 +34,7 @@ export function composeSourceName(
  * against it (the dim-index fingerprint fragment, an indexer's value
  * scans) must run against the root (``analytics``) with a
  * join-qualified field path (``order_items.<field>``). This is the single
- * home for that rule; the sanitizer's leaf-entity emission and the
+ * home for that rule; the extraction's leaf-entity emission and the
  * dim-index id derivation both go through it so they cannot disagree on
  * what the queryable root of a nested source path is.
  */
@@ -56,11 +56,11 @@ export function splitSourcePath(sourcePath: string): {
  * Yield every explore reachable from ``explores`` — including nested
  * sub-explores — along with its composed source-name path. Recurses
  * unconditionally into ``isExploreField()`` fields so any nested
- * source the sanitizer might walk via ``parseJoinCode.is_nested_index``
- * is visited too. Spurious entries (sub-explores that the sanitizer
+ * source the extraction might walk via ``parseJoinCode.is_nested_index``
+ * is visited too. Spurious entries (sub-explores that the extraction
  * does NOT recurse into) cost nothing for the dim-index candidate
  * collector because the resolver only fires on
- * ``${sourceName}::${fieldName}`` keys that the sanitizer separately
+ * ``${sourceName}::${fieldName}`` keys that the extraction separately
  * emits.
  */
 export function* walkExploreTree(

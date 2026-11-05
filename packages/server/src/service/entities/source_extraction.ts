@@ -199,7 +199,7 @@ function getEntitiesFromExplore(
          // field imported from another file is read from its OWN file
          // rather than slicing line numbers out of the current
          // ``docString`` (which would mis-parse imported joins as
-         // direct-table joins and spuriously recurse the sanitizer).
+         // direct-table joins and spuriously recurse the extraction).
          const joinCode = extractCodeFromEntity(field, docString);
          joinMetadata = parseJoinCode(joinCode, field.name, sourceToModelPath);
 
@@ -584,9 +584,8 @@ const authorizeIdentity = (a: Authorize): string =>
 /** Advisory check (NON-blocking): fires once per join edge where the joined
  *  (child) source carries at least one gate and the parent's
  *  gate set is not a superset of the child's — i.e. the join is a path
- *  around the child's own gate. Mirrors `checkAuthorizeGivensSecure`'s shape
- *  and posture: never fails publish, server-logged only, returned here so
- *  it's unit-testable. */
+ *  around the child's own gate. Never fails the load: it is logged only, and
+ *  returned here so it is unit-testable. */
 const checkAuthorizeJoinBypass = (
    parentAuthorize: Authorize[],
    childAuthorize: Authorize[],
@@ -601,7 +600,7 @@ const checkAuthorizeJoinBypass = (
    // advisory exists to catch: parent gated on ROLE, child on ROLE and
    // TENANT_ID, reached through the join without TENANT_ID.
    //
-   // No intra-source OR spoils the comparison. A source may now carry several
+   // No intra-source OR spoils the comparison. A source may carry several
    // notes — repeats on one route, and a lock beside a filter — but every one
    // of them ANDs, and file-level `##(...)` fails the model load on both routes
    // (see `parseGateAnnotation` for why this module does not enforce that
@@ -948,8 +947,7 @@ const extractMetadataFromExplores = (
       // import — enforced via the `definedInThisModelFile` check below.
       // Every bracket pair Malloy routes, not just `(` -- `#[agent-hidden]`
       // routes exactly as `#(agent-hidden)` does, and missing it leaves a
-      // source the author meant to hide visible to agents. Same grammar fact
-      // as AUTHORIZE_TAGLINE_RE above, same failing direction.
+      // source the author meant to hide visible to agents.
       const sourceLevelAgentHidden = getDirectTaglines(explore).some((t) =>
          /^#\|?\s*[([{<]?\s*agent-hidden\b/.test(t),
       );

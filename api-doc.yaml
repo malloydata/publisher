@@ -7289,7 +7289,7 @@ components:
           type: array
           description: >-
             The facts the model states about each of its sources: docs,
-            parameters, visibility, queryability, filters and access gates.
+            visibility, queryability, filters and access gates.
             Includes a source reached only through a join, with
             `joinOnly: true`, when the model gates or declares givens for it.
           items:

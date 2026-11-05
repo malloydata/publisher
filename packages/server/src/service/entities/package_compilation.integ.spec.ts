@@ -31,8 +31,8 @@ import { compileFixture } from "./test_support";
 // entity whose shape must be preserved by the fix.
 //
 // `join_one: ... is duckdb.table(...)` → parseJoinCode marks is_nested_index
-// =true, so getEntitiesFromExplore recurses into it and (pre-fix) emitted the
-// join's leaf fields with source="principals.people".
+// =true, so getEntitiesFromExplore recurses into it; its leaf fields must not
+// be reported under source="principals.people".
 const MODEL = `
 source: people is duckdb.table('people.csv')
 

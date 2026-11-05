@@ -211,7 +211,7 @@ export default function Package({
          ),
    });
 
-   // The package's agents, from their own route (they moved off Package).
+   // The package's agents, from their own route.
    const agentsQuery = useQueryWithApiError({
       queryKey: ["package-agents", environmentName, packageName, versionId],
       queryFn: () =>

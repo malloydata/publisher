@@ -1700,9 +1700,9 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
    // Real multi-file compiles, not fake Explore/Field stubs. A hand-built
    // stub can set `location: undefined` or a note without `at` — the exact
    // shapes `filterDirectlyDeclaredNotes` treats as "can't prove inherited,
-   // keep it" — which made the pre-fix bug (child gate dropped at
-   // extraction for a real, cross-file-located note) invisible to the old
-   // tests. A real compile always populates both `location` and `at`.
+   // keep it" — which would hide a child gate dropped at extraction for a
+   // real, cross-file-located note. A real compile always populates both
+   // `location` and `at`.
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pjoin-"));
@@ -1742,8 +1742,7 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
       // Two-hop import chain (entry → bridge → items): `order_items` is
       // never in `compiled.explores` for `entry.malloy` (Malloy's
       // transitive-import rule), so it's only reachable through
-      // `bridge_model`'s NAMED join (no `extend`) — the deep-import/
-      // BLOCKING-1 case. Malloy copies `order_items`'s own `#(authorize)`
+      // `bridge_model`'s NAMED join (no `extend`): the deep-import case. Malloy copies `order_items`'s own `#(authorize)`
       // onto the join field's structDef with the note's `at.url` pointing
       // at `items.malloy` (order_items's own file) while the join field's
       // `location.url` is `bridge.malloy` — a real cross-file, non-
@@ -1803,7 +1802,7 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
       // `is_nested_index: true`. The gate is declared directly above the
       // join line (same file, contiguous to the join field's own
       // location) — the extend/inherits base-vs-own distinction still
-      // applies here and must keep working post-fix.
+      // applies here too.
       const files = {
          "items.malloy": `source: order_items is duckdb.table('t') extend { dimension: oid is id }\n`,
          "entry.malloy":
@@ -1878,20 +1877,16 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
       // queryable root) — `shouldRecurse`'s `targetIsNonQueryable &&
       // rootIsQueryable` branch forces the join pass to walk it even though
       // it's already reachable (and already gets its own correct row) via
-      // the top-level loop. Before the fix: (a) the join pass hardcoded `[]`
-      // for `modelAuthorize` regardless of same-file-ness, and (b)
-      // `seenSourceKeys` was only ever populated by the join recursion, so
-      // the top-level loop's own emission was never registered — the join
-      // pass re-emitted a SECOND, `[]`-gated row for `child_src`, and
-      // because the base/shared source is declared before the fact source
-      // that joins it, that wrong row was written last and clobbered the
-      // correct file-level-gated one in a consumer's last-write-wins fold by
+      // the top-level loop. The join pass must neither drop the file-level
+      // gate for a same-file source nor re-emit a second row for one the
+      // top-level loop already reported: the base/shared source is declared
+      // before the fact source that joins it, so a second, wrongly gated row
+      // would be written last and win a consumer's last-write-wins fold by
       // (modelFilePath, sourceName).
-      // `child_src` also carries its OWN source-level `#(authorize)` so the
-      // pre-fix join-path row (file-level gate dropped, source-level kept)
-      // still has non-empty content and actually gets pushed — otherwise
-      // the `childAuthorize.length > 0` guard alone would swallow it and
-      // the bug would be invisible to this test.
+      // `child_src` also carries its OWN source-level `#(authorize)` so a
+      // wrong join-path row (file-level gate dropped, source-level kept)
+      // would have non-empty content and be pushed, rather than being
+      // swallowed by the `childAuthorize.length > 0` guard.
       const entryPath = "entry.malloy";
       const files = {
          [entryPath]:
@@ -2040,10 +2035,9 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
       // `order_items` declares its OWN malformed gate directly (not
       // inherited), and its base `base_src` carries no gate at all — so
       // `ownTaglines` is non-empty-but-all-malformed, not empty, and the
-      // ancestor walk finds nothing either. Before the fix, `sourceLevel.length
-      // === 0` conflated those two cases and fell back to the (empty) ancestor
-      // walk, silently reporting `order_items` as fully ungated instead of
-      // denying. `order_items` is reachable ONLY through the join (the entry
+      // ancestor walk finds nothing either. The two cases must not be
+      // conflated: falling back to the (empty) ancestor walk would report
+      // `order_items` as fully ungated instead of denying. `order_items` is reachable ONLY through the join (the entry
       // selectively imports `bridge_model`), so this exercises the
       // `ownTaglines !== undefined` branch, not the entry-point one.
       const entryPath = "entry.malloy";
@@ -2080,10 +2074,8 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
 
    test("a join-only target's own gate — one valid tagline plus one malformed sibling — denies rather than reporting only the valid gate", async () => {
       // `order_items` declares TWO own `#(authorize)` taglines: one valid, one
-      // malformed. Before the fix, `sourceLevel.length === 0` was false (the
-      // valid tagline pushed a gate), so the malformed-sibling deny never
-      // fired — the malformed tagline was silently dropped and only the valid
-      // gate was reported. `order_items` is reachable ONLY through the join
+      // malformed. The valid tagline must not mask the malformed one: the
+      // source denies rather than reporting only the valid gate. `order_items` is reachable ONLY through the join
       // (the entry selectively imports `bridge_model`), so this exercises the
       // `ownTaglines !== undefined` branch, not the entry-point one.
       const entryPath = "entry.malloy";
@@ -2700,7 +2692,7 @@ describe("sourceExtraction.extractMetadataFromExplores — entry-point #(authori
    });
 });
 
-describe("sourceExtraction.extractMetadataFromExplores — N-3 composite-source #(authorize) propagation (compile-backed)", () => {
+describe("sourceExtraction.extractMetadataFromExplores — composite-source #(authorize) propagation (compile-backed)", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pcomposite-"));
@@ -2929,10 +2921,10 @@ describe("checkAuthorizeJoinBypass", () => {
 //
 // ``extract.ts`` computes a fingerprint for every ``#(index)``-tagged
 // dimension and hands the ``${sourceName}::${fieldName}`` → fingerprint
-// map down to the sanitizer, which stamps it onto the entity's
+// map down to the extraction, which stamps it onto the entity's
 // ``dim_index_fingerprint``. These tests pin the wiring —
 // they don't exercise Malloy compilation; they construct a fake
-// Explore + Field and assert the sanitizer reads the map.
+// Explore + Field and assert the extraction reads the map.
 // --------------------------------------------------------------------
 
 /**
@@ -2957,7 +2949,7 @@ function fakeDimensionField(name: string, taglines: string[] = []): Field {
       },
       // No location → ``extractCodeFromEntity`` returns "" → the
       // ``is name`` detection in ``isMalloyDefined`` fails → type
-      // resolves to ``Column`` instead of ``Dimension``. The sanitizer
+      // resolves to ``Column`` instead of ``Dimension``. The extraction
       // reports the dim-index fingerprint regardless of which entity type
       // was inferred — the resolver wiring is the contract under test, not
       // the type inference.
@@ -3040,7 +3032,7 @@ describe("sourceExtraction.extractEntitiesFromExplores", () => {
       // ``buildDimIndexFingerprintLookup`` in ``extract.ts``
       // catches ``Malloy.compile`` failures on the per-dim fingerprint
       // fragment and SKIPS the candidate (logging a warning); the resulting
-      // map simply omits that ``${source}::${field}`` key. The sanitizer's
+      // map simply omits that ``${source}::${field}`` key. The extraction's
       // report-or-skip contract — pinned here — guarantees the entity still
       // gets a valid (random) id for that run instead of crashing, and simply
       // carries no fingerprint (so a host has no stable id to derive).

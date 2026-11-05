@@ -207,7 +207,7 @@ source: order_items is duckdb.table('order_items.csv') extend {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("package-sanitization: harness smoke", () => {
+describe("source extraction: harness smoke", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "psmoke-"));
@@ -238,7 +238,7 @@ describe("package-sanitization: harness smoke", () => {
    });
 });
 
-describe("package-sanitization: upstream-Malloy contracts the fix depends on", () => {
+describe("source extraction: upstream-Malloy contracts the join recursion depends on", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pcontract-"));
@@ -332,7 +332,7 @@ describe("package-sanitization: upstream-Malloy contracts the fix depends on", (
    });
 });
 
-describe("package-sanitization: fix behaviour (transitive-import join recursion)", () => {
+describe("source extraction: join recursion through transitive imports", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pfix-"));
@@ -527,7 +527,7 @@ describe("package-sanitization: fix behaviour (transitive-import join recursion)
    });
 });
 
-describe("package-sanitization: regression guards for the recursion gate", () => {
+describe("source extraction: guards on the recursion gate", () => {
    let packageRoot: string;
    beforeEach(async () => {
       packageRoot = await mkdtemp(path.join(tmpdir(), "pgate-"));

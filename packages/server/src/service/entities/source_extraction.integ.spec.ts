@@ -112,10 +112,9 @@ describe("extractEntitiesFromExplores (integration)", () => {
       // ``is_nested_index = true`` → spurious recursion → ghost
       // ``parent.child_join::<dim>`` entities.
       //
-      // Pre-fix (``getCode``), this is the bug. Post-fix
-      // (``extractCodeFromEntity``), the join field's
-      // ``location.url`` points back to inner.malloy and the slice
-      // comes from THAT file → correct classification.
+      // The join field's ``location.url`` points back to inner.malloy, so
+      // its code is sliced from THAT file, not the entry's text → correct
+      // classification.
       const decoyLine = "// pad pad padecoy is bait.x"; // 13-char prefix + decoy
       assert.strictEqual(
          decoyLine.length >= 28,

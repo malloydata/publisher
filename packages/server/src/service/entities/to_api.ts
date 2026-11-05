@@ -19,7 +19,7 @@ type ApiSourceEntities = Mutable<components["schemas"]["SourceEntities"]>;
 type ApiSourceSchemaField = components["schemas"]["SourceSchemaField"];
 type ApiGiven = components["schemas"]["Given"];
 
-/** The public `Package.entities` for one package's extraction results. */
+/** The `GET …/entities` models for one package's extraction results. */
 export function toApiEntities(
    results: readonly ModelCompileResult[],
 ): ApiModelEntities[] {
