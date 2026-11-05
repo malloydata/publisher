@@ -5,7 +5,7 @@ import { ClientSecretCredential } from "@azure/identity";
 import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Impersonated } from "google-auth-library";
-import { Connection, TableSourceDef } from "@malloydata/malloy";
+import { Connection, TableSourceDef, getDialect } from "@malloydata/malloy";
 import { components } from "../api";
 import { BadRequestError, InvalidArgumentError } from "../errors";
 import { logger } from "../logger";
@@ -75,14 +75,13 @@ export function columnsOfSchema(
    return out;
 }
 
-/** Most tables of one listing whose record members are read. Past it, the rest stay flat. */
-const MAX_TABLES_EXPANDED = 200;
 /** Schema reads in flight at once: each is a round trip to the warehouse. */
 const SCHEMA_READ_CONCURRENCY = 8;
 /**
  * How long one listing waits for schema reads. A table not read by then is
  * listed from the cache when its record types are unchanged, and flat
- * otherwise. Reads already in flight still finish and fill the cache.
+ * otherwise. Reads already in flight still finish and fill the cache, so a
+ * schema too large for one listing is covered over the next few.
  */
 const SCHEMA_READ_DEADLINE_MS = 10_000;
 /** Tables whose members are cached per connection. Past it, the oldest go. */
@@ -117,6 +116,21 @@ function nextRefreshTimestamp(): number {
    return lastRefreshTimestamp;
 }
 
+/**
+ * Whether Malloy will read a table's schema by this path. It refuses a path
+ * that is not canonical SQL for the dialect (`memory.main.my-tbl`, which needs
+ * quoting), on every read, so such a table's members are never listed, like a
+ * Databricks ARRAY's, rather than marked unread on every listing.
+ */
+function isReadablePath(dialectName: string, resource: string): boolean {
+   try {
+      const result = getDialect(dialectName).sqlValidateTableName(resource);
+      return result.ok && result.canonical === resource;
+   } catch {
+      return false;
+   }
+}
+
 function recordColumnsOf(table: ApiTable): ApiColumn[] {
    return (table.columns ?? []).filter((c) =>
       RECORD_COLUMN_TYPE.test(c.type ?? ""),
@@ -140,11 +154,13 @@ async function withRecordMembers(
    tables: ApiTable[],
    malloyConnection: Connection,
 ): Promise<ApiTable[]> {
-   const withRecords = tables.filter(
-      (t) => t.resource && recordColumnsOf(t).length > 0,
+   const nested = tables.filter(
+      (t) =>
+         t.resource &&
+         recordColumnsOf(t).length > 0 &&
+         isReadablePath(malloyConnection.dialectName, t.resource),
    );
-   if (withRecords.length === 0) return tables;
-   const nested = withRecords.slice(0, MAX_TABLES_EXPANDED);
+   if (nested.length === 0) return tables;
 
    let cache = memberCache.get(malloyConnection);
    if (!cache) {
@@ -255,7 +271,7 @@ async function withRecordMembers(
       }
    }
 
-   const unlisted = new Set(withRecords);
+   const unlisted = new Set(nested);
    return tables.map((t) => {
       const members = t.resource ? resolved.get(t.resource) : undefined;
       // A record whose members are not listed is flagged, so a reader can

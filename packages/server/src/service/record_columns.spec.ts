@@ -195,6 +195,27 @@ describe("a DuckDB schema with STRUCT columns", () => {
       }
    });
 
+   it("neither reads nor marks a table whose name Malloy will not read unquoted", async () => {
+      await malloy.runSQL(
+         `create table "my-tbl" as select 1 as id, {'city': 'Denver'} as place`,
+      );
+      const reads = spyOn(malloy, "fetchSchemaForTables");
+      try {
+         const [table] = await listTablesForSchema(
+            conn,
+            "memory.main",
+            malloy,
+            ["my-tbl"],
+         );
+         expect(reads).not.toHaveBeenCalled();
+         expect(table.membersUnread).toBeUndefined();
+         expect(table.columns?.map((c) => c.name)).toEqual(["id", "place"]);
+      } finally {
+         reads.mockRestore();
+         await malloy.runSQL(`drop table "my-tbl"`);
+      }
+   });
+
    it("ranks the table by a member's name, which matched nothing before", async () => {
       const tables = (
          await listTablesForSchema(conn, "memory.main", malloy)

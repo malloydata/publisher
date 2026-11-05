@@ -8409,12 +8409,12 @@ components:
             Present, and true, when the table has a record column (a DuckDB
             STRUCT, a Trino ROW, a Databricks STRUCT) whose members this
             listing did not add to `columns`: the table's schema read failed,
-            ran past the listing's time limit, or came after the 200 tables a
-            listing reads. `columns` then holds the database's top-level
-            columns only, so a missing member is not a removed one. Absent
-            when every record's members are listed, and for a column type
-            whose members are never listed (a Databricks ARRAY, a Snowflake
-            OBJECT).
+            or had not finished within the listing's time limit. Either can
+            clear on a later listing. `columns` then holds the database's
+            top-level columns only, so a missing member is not a removed one.
+            Absent when every record's members are listed, and when they are
+            never listed: a column type that declares none (a Databricks
+            ARRAY, a Snowflake OBJECT), or a table name that needs quoting.
 
     TemporaryTable:
       type: object
