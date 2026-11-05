@@ -21,7 +21,9 @@ import { PackageSection } from "../PackageSection";
 import { useServer } from "../ServerProvider";
 import { describeCron, formatNextRun } from "./cron";
 import CreateMaterializationDialog from "./CreateMaterializationDialog";
-import MaterializationDetailDialog from "./MaterializationDetailDialog";
+import MaterializationDetailDialog, {
+   type BuildPlanState,
+} from "./MaterializationDetailDialog";
 import MaterializationRunsList from "./MaterializationRunsList";
 import ScopeButton from "./ScopeButton";
 import SetScheduleDialog from "./SetScheduleDialog";
@@ -96,16 +98,32 @@ export default function Materializations({
          ),
    });
 
-   // The build plan of the package as loaded, from its own route, for the
-   // detail view.
+   // The build plan of the package as loaded, from its own route. Only the
+   // detail dialog shows it, so it is fetched when a run is opened rather than
+   // on mount. A server that predates the route answers 404, and its package
+   // response still carries the plan inline, so that is read instead (`inline`
+   // below). Any other failure — a plan that failed at load answers 409
+   // BUILD_PLAN_UNAVAILABLE — is shown as unavailable, never as "no persist
+   // sources".
    const buildPlanQuery = useQueryWithApiError({
       queryKey: ["package-build-plan", environmentName, packageName, versionId],
-      queryFn: () =>
-         apiClients.packages.getPackageBuildPlan(
-            environmentName,
-            packageName,
-            versionId,
-         ),
+      queryFn: async ({ signal }) => {
+         try {
+            const response = await apiClients.packages.getPackageBuildPlan(
+               environmentName,
+               packageName,
+               versionId,
+               { signal },
+            );
+            return { inline: false, plan: response.data };
+         } catch (error) {
+            const status = (error as { response?: { status?: number } })
+               ?.response?.status;
+            if (status === 404) return { inline: true, plan: null };
+            throw error;
+         }
+      },
+      enabled: selectedId !== null,
    });
 
    const invalidateList = () =>
@@ -254,6 +272,20 @@ export default function Materializations({
       stopMaterialization.isPending ||
       deleteMaterialization.isPending;
 
+   const buildPlan: BuildPlanState = buildPlanQuery.isError
+      ? { status: "unavailable" }
+      : !buildPlanQuery.isSuccess
+        ? { status: "loading" }
+        : !buildPlanQuery.data.inline
+          ? { status: "ready", plan: buildPlanQuery.data.plan }
+          : packageQuery.isSuccess
+            ? // `buildPlan` is deprecated on the package response; it is read
+              // only from a server old enough to lack the route.
+              { status: "ready", plan: currentPackage?.buildPlan ?? null }
+            : packageQuery.isError
+              ? { status: "unavailable" }
+              : { status: "loading" };
+
    const schedule = currentPackage?.materialization?.schedule ?? null;
    const scope =
       currentPackage?.scope === PackageScopeEnum.Version
@@ -368,7 +400,7 @@ export default function Materializations({
 
          <MaterializationDetailDialog
             materialization={selected}
-            buildPlan={buildPlanQuery.data?.data ?? null}
+            buildPlan={buildPlan}
             onClose={() => setSelectedId(null)}
          />
 
