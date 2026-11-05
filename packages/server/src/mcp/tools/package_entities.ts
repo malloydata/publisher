@@ -1025,11 +1025,13 @@ export function entityCardKey(e: {
 const ONE_LINE_SUMMARY_MAX_CHARS = 120;
 
 /**
- * A source's doc reduced to a catalog label: its first sentence or line,
- * capped. Undocumented sources get nothing rather than a fabricated summary.
+ * A doc reduced to a catalog label: its first sentence or line (blank lines
+ * before it skipped), capped. Used for a source's card and for a package in
+ * a get_context listing, so one text gets one summary. Undocumented sources
+ * get nothing rather than a fabricated summary.
  */
-function oneLineSummary(doc: string): string | undefined {
-   const firstLine = doc.split("\n")[0]?.trim();
+export function oneLineSummary(doc: string): string | undefined {
+   const firstLine = doc.trim().split("\n")[0]?.trim();
    if (!firstLine) return undefined;
    const sentenceEnd = firstLine.search(/[.!?](\s|$)/);
    const summary =

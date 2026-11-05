@@ -5,8 +5,8 @@
  * The levels above a package: a `get_context` call that names no package
  * lists environments, or one environment's packages, so an agent can find
  * data with this one tool. A level with a single choice is entered rather
- * than listed, so a server serving one package answers a call with no
- * arguments with that package's sources.
+ * than listed, with a warning, so a server serving one package answers a
+ * call with no arguments with that package's sources.
  *
  * The shapes are the hosted retrieval API's (`listing`, `environments`,
  * `packages`, `package_info`), without its organizations and workspaces,
@@ -20,11 +20,11 @@ import { InvalidArgumentError } from "../../errors";
 import { EnvironmentStore } from "../../service/environment_store";
 import { FCJ_MAX_CHARS } from "../context/pages";
 import type { GetContextParams, ScopedParams } from "./get_context_request";
+import { oneLineSummary } from "./package_entities";
 import {
    isServed,
    readPackageCatalog,
    type CatalogEnvironment,
-   type CatalogPackage,
 } from "./package_catalog";
 
 /** What `package_info` carries for a call scoped to one whole package. */
@@ -44,26 +44,16 @@ export type LevelOutcome =
         kind: "scoped";
         params: ScopedParams;
         warnings: string[];
-        packageInfo?: PackageInfo;
+        /**
+         * The response carries `package_info`: a listing of one whole
+         * package. Built from the package itself (packageInfoOf), so naming
+         * one package never reads the rest of the server.
+         */
+        withPackageInfo?: true;
      };
 
-/** The longest a one-line summary runs, cut at a word. */
-const ONE_LINE_MAX = 120;
 /** Most names a refusal lists before saying how many more there are. */
 const NAMES_IN_FIX = 20;
-
-/** The first line of a description, trimmed to ONE_LINE_MAX characters at a word. */
-export function oneLineSummary(description: string | undefined) {
-   const line = description
-      ?.split(/\r?\n/)
-      .map((l) => l.trim())
-      .find((l) => l.length > 0);
-   if (!line) return undefined;
-   if (line.length <= ONE_LINE_MAX) return line;
-   const cut = line.slice(0, ONE_LINE_MAX);
-   const space = cut.lastIndexOf(" ");
-   return `${(space > 0 ? cut.slice(0, space) : cut).trimEnd()}…`;
-}
 
 function names(list: readonly string[]): string {
    const shown = list.slice(0, NAMES_IN_FIX).join(", ");
@@ -72,24 +62,46 @@ function names(list: readonly string[]): string {
       : shown;
 }
 
-function packageInfoOf(
+/**
+ * `package_info` for a package, from its own description. One too long to
+ * send beside its sources is cut to its one-line summary, and the warning
+ * says where the rest is.
+ */
+export function packageInfoOf(
    environment: string,
-   pkg: CatalogPackage | undefined,
    packageName: string,
+   description: string | undefined,
 ): { info: PackageInfo; warning?: string } {
    const info: PackageInfo = { environment, package: packageName };
-   const description = pkg?.description;
    if (!description) return { info };
-   // A description that would crowd out the sources it introduces is cut to
-   // its first line, and the warning says where the rest is.
    if (description.length > FCJ_MAX_CHARS / 2) {
       const line = oneLineSummary(description);
       return {
          info: { ...info, ...(line ? { one_line_summary: line } : {}) },
-         warning: `The package description is ${description.length.toLocaleString("en-US")} characters, too long to send beside its sources, so package_info carries its first line. list_packages returns it in full.`,
+         warning: `The package description is ${description.length.toLocaleString("en-US")} characters, too long to send beside its sources, so package_info carries its one-line summary. list_packages returns it in full.`,
       };
    }
    return { info: { ...info, description } };
+}
+
+/** What makes the catalog an incomplete view of the server. */
+function incompleteness(envs: readonly CatalogEnvironment[]): string[] {
+   const out: string[] = [];
+   const unreadable = envs.filter((e) => e.error).map((e) => e.name);
+   if (unreadable.length > 0) {
+      out.push(
+         `${unreadable.length === 1 ? "environment" : "environments"} ${names(unreadable)} could not be listed`,
+      );
+   }
+   const loading = envs.flatMap((env) =>
+      env.packages.filter((p) => p.loading).map((p) => `${env.name}/${p.name}`),
+   );
+   if (loading.length > 0) {
+      out.push(
+         `${names(loading)} ${loading.length === 1 ? "is" : "are"} still loading`,
+      );
+   }
+   return out;
 }
 
 /** Warnings for packages a listing leaves out or that serve an old model. */
@@ -109,12 +121,20 @@ function healthWarnings(
    }
    const failed = envs.flatMap((env) =>
       env.packages
-         .filter((p) => !isServed(p))
+         .filter((p) => !isServed(p) && !p.loading)
          .map((p) => `${env.name}/${p.name}`),
    );
    if (failed.length > 0) {
       out.push(
          `${failed.length === 1 ? "A package" : `${failed.length} packages`} failed to load and ${failed.length === 1 ? "is" : "are"} not listed: ${names(failed)}. list_packages and get_status say why.`,
+      );
+   }
+   const loading = envs.flatMap((env) =>
+      env.packages.filter((p) => p.loading).map((p) => `${env.name}/${p.name}`),
+   );
+   if (loading.length > 0) {
+      out.push(
+         `${names(loading)} ${loading.length === 1 ? "is" : "are"} still loading and not listed yet. Ask again in a moment.`,
       );
    }
    if (stale) {
@@ -131,6 +151,22 @@ function healthWarnings(
       }
    }
    return out;
+}
+
+/**
+ * The longest prefix of `entries` whose JSON fits FCJ_MAX_CHARS, the budget
+ * every get_context response pages by. A listing is not paged, so the rest
+ * are named in a warning instead.
+ */
+function withinBudget<T>(entries: readonly T[]): T[] {
+   let size = 0;
+   const kept: T[] = [];
+   for (const e of entries) {
+      size += JSON.stringify(e).length + 1;
+      if (size > FCJ_MAX_CHARS && kept.length > 0) break;
+      kept.push(e);
+   }
+   return kept;
 }
 
 /** The targets a call with none lists: a source's fields, or a package's sources. */
@@ -151,8 +187,9 @@ const isWholePackage = (
 
 /**
  * Decide what a call is about. A call that names a package goes on as
- * before (with default listing targets when it sends none); one that does
- * not is answered with a listing, or enters the only choice there is.
+ * before (with default listing targets when it sends none), and never reads
+ * the rest of the server; one that does not is answered with a listing, or
+ * enters the only choice there is.
  */
 export async function resolveLevel(
    params: GetContextParams,
@@ -171,18 +208,6 @@ export async function resolveLevel(
             ),
          };
       }
-      const listing = !params.search_targets;
-      let packageInfo: PackageInfo | undefined;
-      const warnings: string[] = [];
-      if (listing && isWholePackage(scope)) {
-         const catalog = await readPackageCatalog(environmentStore);
-         const pkg = catalog
-            .find((e) => e.name === scope.environment)
-            ?.packages.find((p) => p.name === scope.package);
-         const built = packageInfoOf(scope.environment, pkg, scope.package);
-         packageInfo = built.info;
-         if (built.warning) warnings.push(built.warning);
-      }
       return {
          kind: "scoped",
          params: {
@@ -190,12 +215,16 @@ export async function resolveLevel(
             scopes: params.scopes!,
             search_targets: params.search_targets ?? listingTargets(scope),
          },
-         warnings,
-         ...(packageInfo ? { packageInfo } : {}),
+         warnings: [],
+         ...(!params.search_targets && isWholePackage(scope)
+            ? { withPackageInfo: true as const }
+            : {}),
       };
    }
 
-   const catalog = await readPackageCatalog(environmentStore);
+   const catalog = await readPackageCatalog(environmentStore, {
+      includeLoading: true,
+   });
    const served = (env: CatalogEnvironment) =>
       env.packages.filter(isServed).map((p) => p.name);
    const searching = (params.search_targets ?? []).length > 0;
@@ -208,37 +237,50 @@ export async function resolveLevel(
     * kept: a listing of environments or packages is never paged, so an offset
     * can only have come from this package's own results (a page of a search,
     * or of its sources).
+    *
+    * A search is entered only when the catalog is complete: with an
+    * environment that could not be listed, or a package still on its first
+    * load, the lone package that loaded may not be the one meant, and a miss
+    * there would read as "not modelled". A listing is entered either way,
+    * since its warnings say what is missing.
     */
-   const enter = (env: CatalogEnvironment, why: string): LevelOutcome => {
+   const enter = (
+      env: CatalogEnvironment,
+      why: string,
+      seen: readonly CatalogEnvironment[],
+   ): LevelOutcome => {
       const pkgName = served(env)[0];
-      const pkg = env.packages.find((p) => p.name === pkgName);
+      const gaps = incompleteness(seen);
+      if (ranked && gaps.length > 0) {
+         return {
+            kind: "error",
+            ...(environment ? { environment } : {}),
+            error: new InvalidArgumentError(
+               `Only ${env.name}/${pkgName} has loaded, but ${gaps.join(" and ")}, so it may not be the package to search. Fix: name the package in scopes, e.g. scopes: [{"environment": "${env.name}", "package": "${pkgName}"}], or ask again once the server has finished loading.`,
+            ),
+         };
+      }
       const what = ranked
          ? " and searched it"
          : searching
            ? ", and lists what the targets name in it"
            : ", and lists its sources";
-      const warnings = [
-         `${why}, so this call entered ${env.name}/${pkgName}${what}. Name it in scopes from now on.`,
-         // A package that failed to load would otherwise read as not there:
-         // "the only package" is only true of the ones that loaded.
-         ...healthWarnings(catalog, true, `${env.name}/${pkgName}`),
-      ];
-      const scoped: ScopedParams = {
-         ...params,
-         scopes: [{ environment: env.name, package: pkgName }],
-         search_targets: params.search_targets ?? [{ target_type: "source" }],
-      };
-      let packageInfo: PackageInfo | undefined;
-      if (!params.search_targets) {
-         const built = packageInfoOf(env.name, pkg, pkgName);
-         packageInfo = built.info;
-         if (built.warning) warnings.push(built.warning);
-      }
       return {
          kind: "scoped",
-         params: scoped,
-         warnings,
-         ...(packageInfo ? { packageInfo } : {}),
+         params: {
+            ...params,
+            scopes: [{ environment: env.name, package: pkgName }],
+            search_targets: params.search_targets ?? [
+               { target_type: "source" },
+            ],
+         },
+         warnings: [
+            `${why}, so this call entered ${env.name}/${pkgName}${what}. Name it in scopes from now on.`,
+            // A package that failed or is loading would otherwise read as not
+            // there: "the only package" is only true of the ones that loaded.
+            ...healthWarnings(seen, true, `${env.name}/${pkgName}`),
+         ],
+         ...(!params.search_targets ? { withPackageInfo: true as const } : {}),
       };
    };
 
@@ -260,14 +302,17 @@ export async function resolveLevel(
     */
    const listPackages = (
       env: CatalogEnvironment,
-      report: readonly CatalogEnvironment[] = [env],
+      report: readonly CatalogEnvironment[],
+      entered?: string,
    ): LevelOutcome => {
       const refused = refuseOffset("packages");
       if (refused) return refused;
-      const packages = env.packages
+      const all = env.packages
          .filter(isServed)
          .map((p) => {
-            const line = oneLineSummary(p.description);
+            const line = p.description
+               ? oneLineSummary(p.description)
+               : undefined;
             return {
                environment: env.name,
                package: p.name,
@@ -275,7 +320,16 @@ export async function resolveLevel(
             };
          })
          .sort((a, b) => (a.package < b.package ? -1 : 1));
-      const warnings = healthWarnings(report, true);
+      const packages = withinBudget(all);
+      const warnings = [
+         ...(entered ? [entered] : []),
+         ...healthWarnings(report, true),
+         ...(packages.length < all.length
+            ? [
+                 `Returned ${packages.length} of ${all.length} packages: the rest do not fit in one response. Name a package in scopes to list its sources, or call list_packages for every package.`,
+              ]
+            : []),
+      ];
       return {
          kind: "listing",
          environment: env.name,
@@ -283,7 +337,7 @@ export async function resolveLevel(
             sources: [],
             listing: "packages",
             packages,
-            total_available: packages.length,
+            total_available: all.length,
             returned: packages.length,
             ...(warnings.length > 0 ? { warnings } : {}),
          },
@@ -303,12 +357,14 @@ export async function resolveLevel(
       }
       const pkgs = served(env);
       if (pkgs.length === 1) {
-         return enter(env, `${env.name} serves one package`);
+         return enter(env, `${env.name} serves one package`, [env]);
       }
       if (searching) {
          const why = env.error
             ? `its packages could not be listed: ${env.error}`
-            : "it serves no package that loaded";
+            : env.packages.some((p) => p.loading)
+              ? "its packages are still loading"
+              : "it serves no package that loaded";
          return {
             kind: "error",
             environment,
@@ -319,13 +375,13 @@ export async function resolveLevel(
             ),
          };
       }
-      return listPackages(env);
+      return listPackages(env, [env]);
    }
 
    const withPackages = catalog.filter((e) => served(e).length > 0);
    const total = withPackages.reduce((n, e) => n + served(e).length, 0);
    if (total === 1) {
-      return enter(withPackages[0], "This server serves one package");
+      return enter(withPackages[0], "This server serves one package", catalog);
    }
    if (searching) {
       const all = withPackages.flatMap((e) =>
@@ -341,7 +397,12 @@ export async function resolveLevel(
       };
    }
    if (withPackages.length === 1) {
-      return listPackages(withPackages[0], catalog);
+      const env = withPackages[0];
+      return listPackages(
+         env,
+         catalog,
+         `Only environment ${env.name} has packages that loaded, so this lists its packages. Name it in environment from now on.`,
+      );
    }
 
    const refused = refuseOffset("environments");

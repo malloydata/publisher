@@ -30,7 +30,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 - A package in `scopes`: its sources, plus `package_info` with the package's full description.
 - A source in `scopes`: its fields.
 
-A level with only one choice is entered rather than listed, and a warning says so. So on a server serving one package, a call with no arguments returns that package's sources, and a search with no `scopes` searches it. A search still needs one package: with several, it is refused with a `Fix:` naming them, because each package is indexed on its own. A package that failed to load is named in a warning rather than listed; `list_packages` still reports every package with its load error.
+A level with only one choice is entered rather than listed, and a warning says so. So on a server serving one package, a call with no arguments returns that package's sources, and a search with no `scopes` searches it, unless an environment could not be read or another package is still loading, when the search is refused and asks for the package by name. A search still needs one package: with several, it is refused with a `Fix:` naming them, because each package is indexed on its own. A package that failed to load, or is still loading, is named in a warning rather than listed, and a listing too long for one response is cut, with a warning saying how many it left out; `list_packages` still reports every package with its load error.
 
 ## [Unreleased] — get_context has one search engine (BREAKING)
 

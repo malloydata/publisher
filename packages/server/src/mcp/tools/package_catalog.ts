@@ -15,6 +15,11 @@ export interface CatalogPackage {
     */
    error?: string;
    stale?: true;
+   /**
+    * On its first load: registered, not serving yet. Listed only when the
+    * catalog is read with `includeLoading`.
+    */
+   loading?: true;
 }
 
 /** One environment and its packages. */
@@ -33,6 +38,12 @@ export interface CatalogEnvironment {
  */
 export async function readPackageCatalog(
    environmentStore: EnvironmentStore,
+   /**
+    * Also list packages on their first load, marked `loading`. `get_context`
+    * asks for them, so "the only package" is never said while another is
+    * still loading; `list_packages` does not, and its output is unchanged.
+    */
+   { includeLoading = false }: { includeLoading?: boolean } = {},
 ): Promise<CatalogEnvironment[]> {
    const environments = await environmentStore.listEnvironments();
    const results: CatalogEnvironment[] = [];
@@ -43,8 +54,15 @@ export async function readPackageCatalog(
          const environment = await environmentStore.getEnvironment(name, false);
          const staleErrors = environment.getStaleCompileErrors();
          const packages: CatalogPackage[] = [];
-         for (const pkg of await environment.listPackages()) {
+         for (const pkg of await environment.listPackages({
+            includeLoading,
+         })) {
             if (!pkg.name) continue;
+            // A first load: a reload is `loading` too, but its copy serves.
+            if (pkg.status?.loading && pkg.status.serving === false) {
+               packages.push({ name: pkg.name, loading: true });
+               continue;
+            }
             const stale = staleErrors.get(pkg.name);
             packages.push({
                name: pkg.name,
@@ -70,7 +88,8 @@ export async function readPackageCatalog(
    return results;
 }
 
-/** A package that serves queries: loaded, stale or not. One that failed to load does not. */
+/** A package that serves queries: loaded, stale or not. One that failed or is on its first load does not. */
 export function isServed(pkg: CatalogPackage): boolean {
+   if (pkg.loading) return false;
    return !pkg.error || pkg.stale === true;
 }

@@ -32,9 +32,9 @@ import type {
 import { getPackageIndex, sourceContextKey } from "./package_entities";
 import { lockedForCaller } from "../../service/discovery_lock";
 import {
+   packageInfoOf,
    resolveLevel,
    type LevelOutcome,
-   type PackageInfo,
 } from "./get_context_levels";
 import type { GivenValue } from "@malloydata/malloy";
 
@@ -236,7 +236,7 @@ async function runContextQuery(
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
    traceMode: TraceMode = "none",
-   packageInfo?: PackageInfo,
+   withPackageInfo = false,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
@@ -321,8 +321,22 @@ async function runContextQuery(
       warnings: [staleNote, ...extraWarnings].filter(
          (warning): warning is string => Boolean(warning),
       ),
-      ...(packageInfo ? { packageInfo } : {}),
    };
+   // From the package already in hand: naming one package never reads the
+   // rest of the server.
+   if (withPackageInfo) {
+      const built = packageInfoOf(
+         environmentName,
+         packageName,
+         (
+            pkgIndex.pkg as {
+               getPackageMetadata?: () => { description?: string };
+            }
+         ).getPackageMetadata?.()?.description,
+      );
+      ctx.packageInfo = built.info;
+      if (built.warning) ctx.warnings.push(built.warning);
+   }
 
    // Nothing to rank -> enumerate what the targets name.
    if (resolved.listingOnly) return runListing(ctx, uri);
@@ -398,7 +412,7 @@ export function registerGetContextTool(
             environmentStore,
             [...level.warnings, ...unsupportedTargetWarnings(request)],
             traceModeOf(extra),
-            level.packageInfo,
+            level.withPackageInfo === true,
          );
       },
    );
