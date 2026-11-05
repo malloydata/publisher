@@ -19,7 +19,7 @@
 
 import type { GivenValue } from "@malloydata/malloy";
 import {
-   type AccessRecordBase,
+   type AccessIdentity,
    type QueryAudit,
    runUnrecorded,
    withAccessRecord,
@@ -54,7 +54,7 @@ export interface ValueFetchRequest {
    filterParams?: Record<string, string | string[]>;
    timeoutMs: number;
    /** Who asked, from the request headers, for the access record. */
-   identity?: Pick<AccessRecordBase, "caller" | "traceId">;
+   identity?: AccessIdentity;
 }
 
 export type ValueFetcher = (
@@ -92,7 +92,7 @@ export interface DistinctValueQuery {
    /** Labels a refusal at the query cap; see tryAcquireQuerySlot. */
    routeLabel: string;
    /** Who asked, from the request headers, for the access record. */
-   identity?: Pick<AccessRecordBase, "caller" | "traceId">;
+   identity?: AccessIdentity;
    /** The system's own read (the index build): no caller, so no access record. */
    system?: boolean;
 }

@@ -36,7 +36,7 @@ import {
    internalErrorToHttpError,
    ModelNotFoundError,
 } from "../errors";
-import { logger } from "../logger";
+import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { readQueryFieldReads } from "./classification";
 
@@ -52,6 +52,22 @@ export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
 export function callerHeaderName(): string {
    const configured = process.env.PUBLISHER_CALLER_HEADER?.trim();
    return (configured || DEFAULT_CALLER_HEADER).toLowerCase();
+}
+
+/** Who the gateway says is asking and the trace the request belongs to. */
+export type AccessIdentity = Pick<AccessRecordBase, "caller" | "traceId">;
+
+/** The identity a request's headers carry, with a key only for what is present so it spreads into a record base. */
+export function accessIdentityOf(
+   headers: Record<string, string | string[] | undefined> = {},
+): AccessIdentity {
+   const raw = headers[callerHeaderName()];
+   const caller = (Array.isArray(raw) ? raw[0] : raw) || undefined;
+   const traceId = traceIdOf({ headers });
+   return {
+      ...(caller ? { caller } : {}),
+      ...(traceId ? { traceId } : {}),
+   };
 }
 
 /** A field the compiled query read, with its classes as the model declares or infers them. */

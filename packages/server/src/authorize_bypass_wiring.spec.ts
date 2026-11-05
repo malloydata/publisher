@@ -232,9 +232,7 @@ describe("the legacy /projects alias accepts no bypass", () => {
             .send({ query: "run: orders -> { aggregate: c is count() }" });
          expect(response.status).toBe(200);
          expect(getQuery.calledOnce).toBe(true);
-         expect(getQuery.firstCall.args.length).toBeLessThanOrEqual(
-            BYPASS_ARGUMENT,
-         );
+         expect(getQuery.firstCall.args[BYPASS_ARGUMENT]).toBeUndefined();
       } finally {
          if (saved === undefined)
             delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];

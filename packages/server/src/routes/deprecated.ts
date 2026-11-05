@@ -15,9 +15,8 @@ import type express from "express";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { queryConcurrency } from "../query_concurrency";
-import { traceIdOf } from "../logger";
 import { optionalBooleanParamOr400 } from "../route_params";
-import { callerHeaderName } from "../service/access_record";
+import { accessIdentityOf } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
 import { jsonRoute, wildcardParam } from "./json_route";
 
@@ -118,7 +117,7 @@ export function registerDeprecatedRoutes(
             bypass.value,
             givens,
             req.query.versionId,
-            { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
+            accessIdentityOf(req.headers),
          );
          setFilterDeprecationHeaders(res, {
             filterParams,

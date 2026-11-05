@@ -8,7 +8,11 @@ import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { DashboardNotFoundError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
-import { type QueryAudit, withAccessRecord } from "../service/access_record";
+import {
+   type AccessIdentity,
+   type QueryAudit,
+   withAccessRecord,
+} from "../service/access_record";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import {
@@ -117,11 +121,11 @@ export class LegacyReportController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      versionId?: unknown,
-      identity: { caller?: string; traceId?: string } = {},
+      filterParams: FilterParams | undefined,
+      bypassFilters: boolean | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
    ): Promise<NotebookCellRunResult> {
       recordDeprecatedUsage("notebook_cell");
       return withAccessRecord(
@@ -130,8 +134,7 @@ export class LegacyReportController {
             package: packageName,
             modelPath: notebookPath,
             adHoc: false,
-            ...(identity.caller ? { caller: identity.caller } : {}),
-            ...(identity.traceId ? { traceId: identity.traceId } : {}),
+            ...identity,
          },
          undefined,
          (audit) =>

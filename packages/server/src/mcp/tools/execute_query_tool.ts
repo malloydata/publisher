@@ -14,7 +14,10 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
-import { withAccessRecord } from "../../service/access_record";
+import {
+   accessIdentityOf,
+   withAccessRecord,
+} from "../../service/access_record";
 import type { Package } from "../../service/package";
 import { filterPublisherOwnedRenderLogs } from "../../service/report_manifest";
 import { EnvironmentStore } from "../../service/environment_store";
@@ -24,7 +27,7 @@ import {
    classifyToolError,
    getModelForQuery,
 } from "../handler_utils";
-import { accessIdentityOf, type RequestExtra } from "../request_extra";
+import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
 import { buildQueryMetadataInput } from "../../service/query_metadata";
@@ -173,7 +176,7 @@ export function registerExecuteQueryTool(
                   ...(queryName ? { queryName } : {}),
                   ...(sourceName ? { requestedSource: sourceName } : {}),
                   adHoc: hasAdhocQuery,
-                  ...accessIdentityOf(extra),
+                  ...accessIdentityOf(extra?.requestInfo?.headers),
                },
                extra?.signal,
                async (audit) => {

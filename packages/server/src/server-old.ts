@@ -31,8 +31,8 @@ import {
 } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { BadRequestError } from "./errors";
-import { logger, redactSensitive, traceIdOf } from "./logger";
-import { callerHeaderName } from "./service/access_record";
+import { logger, redactSensitive } from "./logger";
+import { accessIdentityOf } from "./service/access_record";
 import { apiRoute } from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
@@ -324,6 +324,10 @@ export function registerLegacyRoutes(
             req.params.connectionName,
             req.query.sqlStatement as string,
             req.query.options as string,
+            undefined,
+            undefined,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -338,6 +342,9 @@ export function registerLegacyRoutes(
             req.query.sqlStatement as string,
             req.query.options as string,
             req.params.packageName,
+            undefined,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -357,6 +364,10 @@ export function registerLegacyRoutes(
             req.params.connectionName,
             req.body.sqlStatement as string,
             options as string,
+            undefined,
+            undefined,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -377,6 +388,9 @@ export function registerLegacyRoutes(
             req.body.sqlStatement as string,
             options as string,
             req.params.packageName,
+            undefined,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -390,6 +404,9 @@ export function registerLegacyRoutes(
             req.params.projectName,
             req.params.connectionName,
             req.body.sqlStatement as string,
+            undefined,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -403,6 +420,8 @@ export function registerLegacyRoutes(
             req.params.connectionName,
             req.body.sqlStatement as string,
             req.params.packageName,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -519,6 +538,10 @@ export function registerLegacyRoutes(
             req.body.bypassFilters === true ? true : undefined,
             undefined,
             { versionId: queryVersionIdOf(req) },
+            undefined,
+            undefined,
+            undefined,
+            accessIdentityOf(req.headers),
          );
       }),
    );
@@ -588,7 +611,7 @@ export function registerLegacyRoutes(
             bypassFilters,
             undefined,
             req.query.versionId,
-            { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
+            accessIdentityOf(req.headers),
          );
       }),
    );

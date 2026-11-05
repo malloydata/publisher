@@ -10,19 +10,20 @@
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import sinon from "sinon";
+import request from "supertest";
 import type { Connection } from "@malloydata/malloy";
 import { ConnectionController } from "../controller/connection.controller";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { QueryController } from "../controller/query.controller";
 import { AccessDeniedError, PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
-import { accessIdentityOf } from "../mcp/request_extra";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
 import { defaultIndexValueFetcher } from "../mcp/context/values_index";
 import { queryDistinctValues } from "../mcp/tools/get_context_values";
 import { tryAcquireQuerySlot } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
-import type { AccessRecord } from "./access_record";
+import { buildRouteApp } from "../test_helpers/route_app";
+import { accessIdentityOf, type AccessRecord } from "./access_record";
 import type { EnvironmentStore } from "./environment_store";
 
 const MODEL = `##! experimental.givens
@@ -337,7 +338,7 @@ describe("value search writes exactly one record per lookup", () => {
             timeoutMs: 5000,
             counted: false,
             routeLabel: "mcp:getContext:values",
-            identity: accessIdentityOf(EXTRA),
+            identity: accessIdentityOf(EXTRA.requestInfo.headers),
          });
          expect(records()).toMatchObject([
             {
@@ -387,6 +388,11 @@ describe("legacy notebook cell writes exactly one record", () => {
          "pkg",
          path,
          0,
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
    const notebook = (run: () => Promise<unknown>) => ({
       isNotebook: () => true,
@@ -449,6 +455,10 @@ describe("raw SQL writes exactly one record, as ungated", () => {
          "warehouse",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
       expect(records()).toMatchObject([
          {
@@ -495,6 +505,10 @@ describe("raw SQL writes exactly one record, as ungated", () => {
                "warehouse",
                "SELECT a FROM t",
                "",
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(PayloadTooLargeError);
          expect(records()).toMatchObject([
@@ -516,10 +530,56 @@ describe("raw SQL writes exactly one record, as ungated", () => {
             ),
       );
       await expect(
-         controller.getConnectionQueryData("env", "warehouse", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "warehouse",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toThrow();
       const [record] = records();
       expect(record.error).toBeDefined();
       expect(record.error).not.toContain("hunter2");
+   });
+
+   it("on the legacy routes, carrying the caller and trace the request named", async () => {
+      const controller = controllerOver(
+         sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 }),
+         { manifestTemporaryTable: async () => "tmp_1" },
+      );
+      const app = buildRouteApp({ connectionController: controller });
+      const base = "/api/v0/projects/env";
+      const named = {
+         "x-publisher-caller": "alice@example.com",
+         traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      };
+      const sql = { sqlStatement: "SELECT a FROM t", options: "" };
+      await request(app)
+         .get(`${base}/connections/warehouse/queryData`)
+         .query(sql)
+         .set(named)
+         .expect(200);
+      await request(app)
+         .post(`${base}/packages/pkg/connections/warehouse/sqlQuery`)
+         .send(sql)
+         .set(named)
+         .expect(200);
+      await request(app)
+         .post(`${base}/connections/warehouse/sqlTemporaryTable`)
+         .send(sql)
+         .set(named)
+         .expect(200);
+      expect(records()).toHaveLength(3);
+      for (const record of records()) {
+         expect(record).toMatchObject({
+            decision: "ungated",
+            caller: "alice@example.com",
+            traceId: "0af7651916cd43dd8448eb211c80319c",
+         });
+      }
    });
 });

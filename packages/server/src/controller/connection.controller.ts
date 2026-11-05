@@ -27,7 +27,10 @@ import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
-import { withAccessRecord } from "../service/access_record";
+import {
+   type AccessIdentity,
+   withAccessRecord,
+} from "../service/access_record";
 import { testConnectionConfig } from "../service/connection";
 import {
    toPublicConnection,
@@ -769,10 +772,10 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       options: string,
-      packageName?: string,
-      metadata?: { queryMetadata?: unknown; queryClass?: unknown },
-      versionId?: unknown,
-      identity: { caller?: string; traceId?: string } = {},
+      packageName: string | undefined,
+      metadata: { queryMetadata?: unknown; queryClass?: unknown } | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
    ): Promise<ApiQueryData> {
       return withAccessRecord(
          {
@@ -781,8 +784,7 @@ export class ConnectionController {
             connection: connectionName,
             adHoc: true,
             decision: "ungated",
-            ...(identity.caller ? { caller: identity.caller } : {}),
-            ...(identity.traceId ? { traceId: identity.traceId } : {}),
+            ...identity,
          },
          undefined,
          () =>
@@ -991,9 +993,9 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       sqlStatement: string,
-      packageName?: string,
-      versionId?: unknown,
-      identity: { caller?: string; traceId?: string } = {},
+      packageName: string | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
    ): Promise<ApiTemporaryTable> {
       return withAccessRecord(
          {
@@ -1002,8 +1004,7 @@ export class ConnectionController {
             connection: connectionName,
             adHoc: true,
             decision: "ungated",
-            ...(identity.caller ? { caller: identity.caller } : {}),
-            ...(identity.traceId ? { traceId: identity.traceId } : {}),
+            ...identity,
          },
          undefined,
          () =>

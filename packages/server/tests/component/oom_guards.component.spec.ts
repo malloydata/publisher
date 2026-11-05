@@ -41,6 +41,7 @@ import {
    resetActiveQueryCountForTesting,
    resetQueryConcurrencyTelemetryForTesting,
 } from "../../src/query_concurrency";
+import { accessIdentityOf } from "../../src/service/access_record";
 import type { EnvironmentStore } from "../../src/service/environment_store";
 
 function buildApp(
@@ -89,6 +90,10 @@ function buildApp(
                req.params.conn,
                req.body.sqlStatement as string,
                (req.body.options as string | undefined) ?? "",
+               undefined,
+               undefined,
+               undefined,
+               accessIdentityOf(req.headers),
             );
             res.status(200).json(result);
          } catch (error) {

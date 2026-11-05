@@ -41,10 +41,10 @@
  * cards (pages.ts).
  */
 
+import type { AccessIdentity } from "../../service/access_record";
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    defaultValueFetcher,
-   type ValueFetchRequest,
    type ValueFetcher,
 } from "../tools/get_context_values";
 import { matchValues } from "../tools/get_context_value_match";
@@ -120,7 +120,7 @@ export async function respond(args: {
    /** Aborted at the request's deadline: no gated lookup starts after it. */
    signal?: AbortSignal;
    /** Who asked, for the access record of each gated value lookup. */
-   identity?: ValueFetchRequest["identity"];
+   identity?: AccessIdentity;
 }): Promise<FcjAnswer> {
    const { index, request, connected, verdicts, targets } = args;
    const warnings: string[] = [];

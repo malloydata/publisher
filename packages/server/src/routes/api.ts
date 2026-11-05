@@ -11,8 +11,7 @@
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
-import { callerHeaderName } from "../service/access_record";
-import { traceIdOf } from "../logger";
+import { accessIdentityOf } from "../service/access_record";
 import type { CompileController } from "../controller/compile.controller";
 import type { ConnectionController } from "../controller/connection.controller";
 import type { DatabaseController } from "../controller/database.controller";
@@ -469,7 +468,7 @@ function registerConnectionRoutes(
             queryClass: req.body?.queryClass,
          },
          versionId,
-         { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
+         accessIdentityOf(req.headers),
       ),
    );
    bothScopes("/sqlTemporaryTable", (req, packageName, versionId) =>
@@ -479,7 +478,7 @@ function registerConnectionRoutes(
          req.body.sqlStatement as string,
          packageName,
          versionId,
-         { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
+         accessIdentityOf(req.headers),
       ),
    );
 }
@@ -792,10 +791,7 @@ function registerQueryRoutes(
             disconnected.signal,
             // For the access record: who the gateway says is asking, and the
             // trace this request belongs to. See docs/access-record.md.
-            {
-               caller: req.get(callerHeaderName()),
-               traceId: traceIdOf(req),
-            },
+            accessIdentityOf(req.headers),
          );
          setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
          res.status(200).json(result);

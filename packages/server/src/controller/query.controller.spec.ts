@@ -118,6 +118,7 @@ function run(
       opts.bypassAuthorize,
       opts.includeHidden,
       opts.signal,
+      {},
    );
 }
 

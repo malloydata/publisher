@@ -53,7 +53,7 @@ import {
    type FindResult,
    type FindTarget,
 } from "./find";
-import type { ValueFetchRequest } from "../tools/get_context_values";
+import type { AccessIdentity } from "../../service/access_record";
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
@@ -260,7 +260,7 @@ type FcjQueryArgs = {
    warnings: string[];
    traceMode: TraceMode;
    /** Who asked, for the access record of each gated value lookup. */
-   identity?: ValueFetchRequest["identity"];
+   identity?: AccessIdentity;
 };
 
 /**

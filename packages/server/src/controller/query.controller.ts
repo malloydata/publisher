@@ -6,7 +6,11 @@ import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import { type QueryAudit, withAccessRecord } from "../service/access_record";
+import {
+   type AccessIdentity,
+   type QueryAudit,
+   withAccessRecord,
+} from "../service/access_record";
 import {
    buildQueryMetadataInput,
    parseQueryClass,
@@ -42,18 +46,20 @@ export class QueryController {
       queryName: string,
       query: string,
       compactJson: boolean = false,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      metadata?: {
-         queryMetadata?: unknown;
-         queryClass?: unknown;
-         versionId?: unknown;
-      },
-      bypassAuthorize?: boolean,
-      includeHiddenFilesAndSources?: boolean,
-      clientSignal?: AbortSignal,
-      identity: { caller?: string; traceId?: string } = {},
+      filterParams: FilterParams | undefined,
+      bypassFilters: boolean | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      metadata:
+         | {
+              queryMetadata?: unknown;
+              queryClass?: unknown;
+              versionId?: unknown;
+           }
+         | undefined,
+      bypassAuthorize: boolean | undefined,
+      includeHiddenFilesAndSources: boolean | undefined,
+      clientSignal: AbortSignal | undefined,
+      identity: AccessIdentity,
    ): Promise<ApiQuery> {
       return withAccessRecord(
          {
@@ -63,8 +69,7 @@ export class QueryController {
             ...(queryName ? { queryName } : {}),
             ...(sourceName ? { requestedSource: sourceName } : {}),
             adHoc: Boolean(query),
-            ...(identity.caller ? { caller: identity.caller } : {}),
-            ...(identity.traceId ? { traceId: identity.traceId } : {}),
+            ...identity,
          },
          clientSignal,
          (audit) =>
