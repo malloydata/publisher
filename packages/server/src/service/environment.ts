@@ -1016,9 +1016,6 @@ export class Environment {
                         metadata = loaded.getPackageMetadata();
                      }
                      metadata.name = packageName;
-                     if (options.operational) {
-                        Object.assign(metadata, loaded?.getOperationalFields());
-                     }
                      if (
                         options.operational ||
                         isPackageInlineFieldsEnabled()
@@ -1926,7 +1923,7 @@ export class Environment {
       if (latest === null) {
          return {
             name: packageName,
-            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            resource: this.packageResource(packageName),
             versionId: null,
             latestVersion: null,
             ...(isPackageInlineFieldsEnabled() && {
@@ -1972,13 +1969,10 @@ export class Environment {
          const base: ApiPackage = !isPackageInlineFieldsEnabled()
             ? this.statusEntry(row.packageName, loaded, row.versionId)
             : loaded
-              ? {
-                   ...loaded.getPackageMetadata(),
-                   ...loaded.getOperationalFields(),
-                }
+              ? loaded.getPackageMetadata()
               : {
                    name: row.packageName,
-                   resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${row.packageName}`,
+                   resource: this.packageResource(row.packageName),
                    versionId: row.versionId,
                 };
          const list = entries.get(row.packageName) ?? [];
@@ -2001,7 +1995,7 @@ export class Environment {
          if (list.some((entry) => entry.versionId === versionId)) continue;
          list.push({
             name: packageName,
-            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            resource: this.packageResource(packageName),
             versionId,
             latestVersion: list[0]?.latestVersion ?? null,
             loaded: false,

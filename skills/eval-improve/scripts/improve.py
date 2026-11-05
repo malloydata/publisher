@@ -81,9 +81,21 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
 # package's serving state after the reload (the reload response itself carries
 # it only while the server inlines the serving fields).
 RELOAD = """curl -s -m 60 -o /dev/null "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true"
-curl -s -m 30 "{rest_url}/api/v0/environments/{environment}/packages/{package}/status" | python3 -c '
-import json, sys
-sha = json.load(sys.stdin).get("sourceContentSha")
+python3 -c '
+import json, urllib.request
+base = "{rest_url}/api/v0"
+def get(path):
+    try:
+        with urllib.request.urlopen(base + path, timeout=30) as r:
+            return json.load(r)
+    except Exception:
+        return {{}}
+sha = get("/environments/{environment}/packages/{package}/status").get("sourceContentSha")
+if not sha:  # a server from before that route: the package`s /status entry
+    for e in get("/status").get("environments") or []:
+        for p in (e.get("packages") or []) if e.get("name") == "{environment}" else []:
+            if p.get("name") == "{package}" and p.get("sourceContentSha"):
+                sha = p["sourceContentSha"]
 if sha:
     print("\\"sourceContentSha\\":\\"%s\\"" % sha)
 '"""

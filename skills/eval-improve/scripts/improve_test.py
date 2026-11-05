@@ -282,5 +282,51 @@ class Grants(unittest.TestCase):
             self.assertIn(f"mcp__publisher__{t}", improve.IMPROVE_TOOLS)
 
 
+class ReloadReceipt(unittest.TestCase):
+    """The reload helper prints the served sha: from the package's serving
+    state, or from its `/status` entry on a server from before that route."""
+
+    def run_reload(self, routes):
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                body = routes.get(path)
+                self.send_response(200 if body is not None else 404)
+                self.end_headers()
+                self.wfile.write(json.dumps(body or {}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            cmd = improve.RELOAD.format(
+                rest_url=f"http://127.0.0.1:{server.server_port}",
+                environment="env", package="pkg")
+            return subprocess.run(["bash", "-c", cmd], capture_output=True,
+                                  text=True, timeout=60).stdout.strip()
+        finally:
+            server.shutdown()
+
+    def test_reads_the_serving_state(self):
+        out = self.run_reload({
+            "/api/v0/environments/env/packages/pkg/status":
+                {"sourceContentSha": "abc"},
+        })
+        self.assertEqual(out, '"sourceContentSha":"abc"')
+
+    def test_falls_back_to_the_status_entry_on_an_older_server(self):
+        out = self.run_reload({
+            "/api/v0/status": {"environments": [{"name": "env", "packages": [
+                {"name": "pkg", "sourceContentSha": "old"}]}]},
+        })
+        self.assertEqual(out, '"sourceContentSha":"old"')
+
+
 if __name__ == "__main__":
     unittest.main()

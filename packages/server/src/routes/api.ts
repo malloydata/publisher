@@ -659,60 +659,51 @@ function registerPackageRoutes(
          ),
       ),
    );
-   // What moved off Package: each a read of the loaded package, never part
-   // of a listing or the `/status` poll.
-   app.get(
-      `${pkg}/status`,
-      apiRoute((req) =>
-         packageController.getPackageServingState(
-            req.params.environmentName,
-            req.params.packageName,
-            req.query.versionId,
+   // A package's sub-resources. Each takes `versionId`; the two computed at
+   // load also take `servedRevision`, to refuse a read of a later load.
+   const packageReads: [
+      string,
+      (
+         environmentName: string,
+         packageName: string,
+         versionId: unknown,
+         servedRevision: unknown,
+      ) => Promise<unknown>,
+   ][] = [
+      [
+         "status",
+         (e, p, v) => packageController.getPackageServingState(e, p, v),
+      ],
+      [
+         "entities",
+         (e, p, v, r) => packageController.getPackageEntities(e, p, v, r),
+      ],
+      [
+         "build-plan",
+         (e, p, v, r) => packageController.getPackageBuildPlan(e, p, v, r),
+      ],
+      [
+         "classification",
+         (e, p, v) => packageController.getPackageClassification(e, p, v),
+      ],
+      [
+         "embedding-index",
+         (e, p, v) => packageController.getPackageEmbeddingIndex(e, p, v),
+      ],
+   ];
+   for (const [resource, read] of packageReads) {
+      app.get(
+         `${pkg}/${resource}`,
+         apiRoute((req) =>
+            read(
+               req.params.environmentName,
+               req.params.packageName,
+               req.query.versionId,
+               req.query.servedRevision,
+            ),
          ),
-      ),
-   );
-   app.get(
-      `${pkg}/entities`,
-      apiRoute((req) =>
-         packageController.getPackageEntities(
-            req.params.environmentName,
-            req.params.packageName,
-            req.query.versionId,
-            req.query.servedRevision,
-         ),
-      ),
-   );
-   app.get(
-      `${pkg}/build-plan`,
-      apiRoute((req) =>
-         packageController.getPackageBuildPlan(
-            req.params.environmentName,
-            req.params.packageName,
-            req.query.versionId,
-            req.query.servedRevision,
-         ),
-      ),
-   );
-   app.get(
-      `${pkg}/classification`,
-      apiRoute((req) =>
-         packageController.getPackageClassification(
-            req.params.environmentName,
-            req.params.packageName,
-            req.query.versionId,
-         ),
-      ),
-   );
-   app.get(
-      `${pkg}/embedding-index`,
-      apiRoute((req) =>
-         packageController.getPackageEmbeddingIndex(
-            req.params.environmentName,
-            req.params.packageName,
-            req.query.versionId,
-         ),
-      ),
-   );
+      );
+   }
    app.get(
       `${pkg}/agents`,
       apiRoute((req) =>

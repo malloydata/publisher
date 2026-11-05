@@ -167,17 +167,37 @@ export class PackageController {
       };
    }
 
+   private environment(environmentName: string) {
+      return this.environmentStore.getEnvironment(environmentName, false);
+   }
+
    /** The loaded package `versionId` names, for a sub-resource read. */
    private async loadedPackage(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
    ) {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
+      const environment = await this.environment(environmentName);
       return environment.getPackage(packageName, false, { versionId });
+   }
+
+   /**
+    * The loaded package, refused with a 409 when `servedRevision` names a load
+    * this server no longer serves.
+    */
+   private async pinnedPackage(
+      environmentName: string,
+      packageName: string,
+      versionId: unknown,
+      servedRevision: unknown,
+   ) {
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      pkg.assertServedRevision(servedRevision);
+      return pkg;
    }
 
    /**
@@ -189,10 +209,7 @@ export class PackageController {
       packageName: string,
       versionId?: unknown,
    ): Promise<ApiPackageServingState> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
+      const environment = await this.environment(environmentName);
       return environment.describeServingState(packageName, versionId);
    }
 
@@ -207,12 +224,12 @@ export class PackageController {
       versionId?: unknown,
       servedRevision?: unknown,
    ): Promise<ApiPackageEntities> {
-      const pkg = await this.loadedPackage(
+      const pkg = await this.pinnedPackage(
          environmentName,
          packageName,
          versionId,
+         servedRevision,
       );
-      pkg.assertServedRevision(servedRevision);
       return {
          servedRevision: pkg.getServedRevision(),
          models: [...(pkg.getEntities() ?? [])],
@@ -230,12 +247,12 @@ export class PackageController {
       versionId?: unknown,
       servedRevision?: unknown,
    ): Promise<ApiPackageBuildPlan> {
-      const pkg = await this.loadedPackage(
+      const pkg = await this.pinnedPackage(
          environmentName,
          packageName,
          versionId,
+         servedRevision,
       );
-      pkg.assertServedRevision(servedRevision);
       return {
          servedRevision: pkg.getServedRevision(),
          buildPlan: pkg.getBuildPlan(),
