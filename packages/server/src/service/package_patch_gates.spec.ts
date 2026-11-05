@@ -93,6 +93,74 @@ source: leaky is ${ROWS} extend {
       expect(manifest.queryableSources).toBeUndefined();
    });
 
+   it("rolls a reinstall back when the new tree fails the gates under the body's listing, keeping the old tree and location", async () => {
+      const before = await metadata();
+      const newTree = path.join(rootDir, "next");
+      await fs.mkdir(newTree, { recursive: true });
+      await fs.writeFile(
+         path.join(newTree, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            description: "next",
+            explores: ["index.malloy"],
+         }),
+      );
+      await fs.writeFile(
+         path.join(newTree, "index.malloy"),
+         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
+      );
+      await fs.writeFile(path.join(newTree, "hidden.malloy"), BYPASS);
+      const download = (staging: string) =>
+         fs.cp(newTree, staging, { recursive: true });
+      let error: unknown;
+      try {
+         await env.installPackage("pkg", download, undefined, {
+            update: {
+               name: "pkg",
+               location: "gs://bucket/next.zip",
+               queryableSources: "all",
+            },
+         });
+      } catch (e) {
+         error = e;
+      }
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect((error as Error).message).toContain(
+         "source leaky (hidden.malloy)",
+      );
+      expect(await metadata()).toEqual(before);
+      const kept = await fs.readFile(
+         path.join(envPath, "pkg", "publisher.json"),
+         "utf8",
+      );
+      expect(JSON.parse(kept).description).toBe("fixture");
+   });
+
+   it("installs the same tree under a listing that does not expose the bypass", async () => {
+      const newTree = path.join(rootDir, "next");
+      await fs.mkdir(newTree, { recursive: true });
+      await fs.writeFile(
+         path.join(newTree, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            description: "next",
+            explores: ["index.malloy"],
+         }),
+      );
+      await fs.writeFile(
+         path.join(newTree, "index.malloy"),
+         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
+      );
+      await fs.writeFile(path.join(newTree, "hidden.malloy"), BYPASS);
+      await env.installPackage(
+         "pkg",
+         (staging) => fs.cp(newTree, staging, { recursive: true }),
+         undefined,
+         { update: { name: "pkg", location: "gs://bucket/next.zip" } },
+      );
+      expect((await metadata()).location).toBe("gs://bucket/next.zip");
+   });
+
    it("accepts the same PATCH in a package of gates alone, reporting the bypass as a warning", async () => {
       const dir = path.join(envPath, "gates");
       await fs.mkdir(dir, { recursive: true });

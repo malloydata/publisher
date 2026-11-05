@@ -2568,6 +2568,14 @@ export class Environment {
             if (validationMsg) {
                throw new BadRequestError(validationMsg);
             }
+            // The body's listing decides what the gates judge, so a refusal
+            // here rolls the swap back rather than 400ing a tree already live.
+            const gateMsg = options.update
+               ? await this.gatesRefuseUnder(newPackage, options.update)
+               : "";
+            if (gateMsg) {
+               throw new BadRequestError(gateMsg);
+            }
             logger.debug("install.phase2.committed", {
                environmentName: this.environmentName,
                packageName,
@@ -2599,6 +2607,7 @@ export class Environment {
          if (options.update !== undefined) {
             await this._updatePackageLocked(packageName, options.update, {
                recordLocation: true,
+               regated: true,
             });
          }
 
@@ -3038,6 +3047,44 @@ export class Environment {
       );
    }
 
+   /**
+    * The load gates' refusal for a package under the listing (`explores`,
+    * `queryableSources`) a body would give it, empty when the body leaves the
+    * listing as it is or the gates pass. The package's own metadata is put back.
+    */
+   private async gatesRefuseUnder(
+      pkg: Package,
+      body: ApiPackage,
+   ): Promise<string> {
+      const existing = pkg.getPackageMetadata();
+      const explores =
+         body.explores !== undefined
+            ? body.explores.map(normalizeModelPath)
+            : existing.explores;
+      const queryableSources =
+         body.queryableSources != null
+            ? body.queryableSources
+            : existing.queryableSources;
+      const listing = (e?: string[], q?: string) =>
+         JSON.stringify([e ?? null, q ?? "declared"]);
+      if (
+         listing(explores, queryableSources) ===
+         listing(existing.explores, existing.queryableSources)
+      ) {
+         return "";
+      }
+      pkg.setPackageMetadata({ ...existing, explores, queryableSources });
+      try {
+         await applyLoadGates(pkg);
+         return "";
+      } catch (error) {
+         if (error instanceof BadRequestError) return error.message;
+         throw error;
+      } finally {
+         pkg.setPackageMetadata(existing);
+      }
+   }
+
    /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
    private async _updatePackageLocked(
       packageName: string,
@@ -3048,6 +3095,8 @@ export class Environment {
           * for an install; a PATCH naming a new location is a reinstall.
           */
          recordLocation: boolean;
+         /** The install already ran the gates under this body's listing, inside its swap. */
+         regated?: boolean;
       },
    ) {
       const _package = this.packages.get(packageName);
@@ -3142,7 +3191,7 @@ export class Environment {
             existing.queryableSources ?? "declared",
          ]);
       let gateMsg = "";
-      if (listingChanged) {
+      if (listingChanged && !options.regated) {
          try {
             await applyLoadGates(_package);
          } catch (error) {
