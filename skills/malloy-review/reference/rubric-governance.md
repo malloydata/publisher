@@ -38,6 +38,8 @@ The reason `public: *` is discouraged is **documentation discipline**, not acces
 
 - **Severity:** major (blocking) · **Category:** governance · LLM-judgment
 - **Detection:** a column under `internal:` whose name or sampled values look sensitive: PII (email, phone, address, national ID, date of birth), credentials or tokens, salary or other compensation.
+- **Not a finding:** the source carries an `#(authorize)` gate, and so does every extension that keeps the column. The gate already decides who reads it. If you doubt that everyone the gate admits should see the column, ask it as a Question for the Author.
+- **Still a finding:** a raw `internal:` column behind a public masked dimension. The mask hides nothing, because a caller can read the raw column directly. Mark the raw column `private:`; the mask keeps working, since a `private:` field can still be read in the source's own `extend {}` (`malloy-lookml-review/reference/curate-visibility.md`, restricted-field masking).
 - **Why:** `internal:` only takes a field off the list. Any caller's query can still read it, by defining `dimension: e is f` in its own `extend` or by writing `include { public: f }`. `private:` refuses both.
 - **Fix:** mark the column `private:`, or gate the source with `#(authorize)`. Confirm with the user which one. `private:` applies to every caller, so if some audiences should keep the column, give each its own extension source and gate.
 - **See:** `malloy-model/reference/access-modifiers.md`
