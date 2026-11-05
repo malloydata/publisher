@@ -101,6 +101,46 @@ export const MAX_COLUMNS_IN_INDEX_TEXT = 60;
 export const MAX_CACHED_SCHEMAS = 8;
 
 /**
+ * The names among `columns` that are record members (db_utils.ts
+ * columnsOfSchema): a column whose dotted name extends another column's
+ * (`delivery.city` after `delivery`). A top-level column whose own name holds
+ * a dot is not one.
+ */
+export function recordMembers(columns: readonly SchemaColumn[]): Set<string> {
+   const names = new Set(columns.map((c) => c.name));
+   const members = new Set<string>();
+   for (const c of columns) {
+      const parts = c.name.split(".");
+      for (let i = parts.length - 1; i >= 1; i--) {
+         if (names.has(parts.slice(0, i).join("."))) {
+            members.add(c.name);
+            break;
+         }
+      }
+   }
+   return members;
+}
+
+/**
+ * At most `max` of `columns`, a table's own columns before record members,
+ * in their listed order (each record's members still follow it).
+ */
+export function capColumns<T extends SchemaColumn>(
+   columns: readonly T[],
+   max: number,
+): T[] {
+   if (columns.length <= max) return [...columns];
+   const members = recordMembers(columns);
+   const own = columns.filter((c) => !members.has(c.name));
+   const kept = new Set<T>(own.slice(0, max));
+   for (const c of columns) {
+      if (kept.size >= max) break;
+      if (members.has(c.name)) kept.add(c);
+   }
+   return columns.filter((c) => kept.has(c));
+}
+
+/**
  * The text indexed for one table: its humanized schema and table name, then
  * its humanized column names (`orders_line_item` -> "orders line item",
  * a record member `delivery.city` -> "delivery city"), then
@@ -112,9 +152,10 @@ export function tableIndexText(entity: SchemaTableEntity): string {
    const schema = humanizeName(entity.schemaName) || entity.schemaName;
    // Top-level columns first, then record members (`delivery.city`), so a
    // wide record cannot push a table's own columns past the cap.
+   const members = recordMembers(entity.columns);
    const columns = [
-      ...entity.columns.filter((c) => !c.name.includes(".")),
-      ...entity.columns.filter((c) => c.name.includes(".")),
+      ...entity.columns.filter((c) => !members.has(c.name)),
+      ...entity.columns.filter((c) => members.has(c.name)),
    ].slice(0, MAX_COLUMNS_IN_INDEX_TEXT);
    const columnNames = columns
       .map((c) => humanizeName(c.name) || c.name)

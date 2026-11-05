@@ -75,22 +75,29 @@ export function columnsOfSchema(
 }
 
 /**
- * A column type, as INFORMATION_SCHEMA spells it, that may hold record
- * members: DuckDB `STRUCT(...)` and `STRUCT(...)[]`, Trino `row(...)` and
- * `array(row(...))`. A plain array matches too; it costs one schema read and
- * lists nothing extra.
+ * A column type, as INFORMATION_SCHEMA spells it, that holds a record: DuckDB
+ * `STRUCT(...)` and `STRUCT(...)[]`, Trino `row(...)` and `array(row(...))`,
+ * Databricks `STRUCT` and `ARRAY<STRUCT<...>>`. A plain array has no members,
+ * so it is not read.
  */
-const NESTED_COLUMN_TYPE = /^(struct|row)\s*\(|\[\]\s*$|^array\s*[(<]/i;
+const RECORD_COLUMN_TYPE = /^(struct|row)\b|^array\s*[(<]\s*(struct|row)\b/i;
 
 /** Most tables of one listing whose record members are read. Past it, the rest stay flat. */
 const MAX_TABLES_EXPANDED = 200;
+/** Schema reads in flight at once: each is a round trip to the warehouse. */
+const SCHEMA_READ_CONCURRENCY = 8;
 
 /**
- * Replace the flat columns of each table that has a record column with the
- * columns of its Malloy schema, which lists the members (columnsOfSchema).
- * INFORMATION_SCHEMA names only top-level columns, and its type string for a
- * struct is not worth parsing. A table whose schema cannot be read keeps its
- * flat columns.
+ * Add each record column's members after it (columnsOfSchema), for every
+ * table with a record column. The database's own list stays the authority:
+ * its columns, their order and their types are kept as reported, and members
+ * are spliced in after the record they belong to. A table whose schema cannot
+ * be read keeps its flat list.
+ *
+ * The members come from the Malloy schema, read fresh for this listing:
+ * Malloy caches a schema for the life of the connection, and a cached one
+ * would list members of a struct that has since changed. INFORMATION_SCHEMA's
+ * type string for a struct is not worth parsing.
  */
 async function withRecordMembers(
    tables: ApiTable[],
@@ -101,45 +108,63 @@ async function withRecordMembers(
          (t) =>
             t.resource &&
             (t.columns ?? []).some((c) =>
-               NESTED_COLUMN_TYPE.test(c.type ?? ""),
+               RECORD_COLUMN_TYPE.test(c.type ?? ""),
             ),
       )
       .slice(0, MAX_TABLES_EXPANDED);
    if (nested.length === 0) return tables;
-   let schemas: Record<string, TableSourceDef> = {};
-   try {
-      const read = await malloyConnection.fetchSchemaForTables(
-         Object.fromEntries(nested.map((t) => [t.resource!, t.resource!])),
-         {},
-      );
-      schemas = read.schemas;
-      for (const [table, error] of Object.entries(read.errors ?? {})) {
-         logger.debug(
-            "Record members not listed: the table schema read failed",
-            {
-               table,
-               error,
-            },
-         );
+   const refreshTimestamp = Date.now();
+   const schemas = new Map<string, TableSourceDef>();
+   let next = 0;
+   const worker = async () => {
+      while (next < nested.length) {
+         const resource = nested[next++].resource!;
+         try {
+            const read = await malloyConnection.fetchSchemaForTables(
+               { [resource]: resource },
+               { refreshTimestamp },
+            );
+            const schema = read.schemas[resource];
+            if (schema) schemas.set(resource, schema);
+            else {
+               logger.debug(
+                  "Record members not listed: the table schema read failed",
+                  { table: resource, error: read.errors?.[resource] },
+               );
+            }
+         } catch (error) {
+            logger.debug(
+               "Record members not listed: the table schema read failed",
+               {
+                  table: resource,
+                  error: extractErrorDataFromError(error),
+               },
+            );
+         }
       }
-   } catch (error) {
-      logger.warn("Record members not listed: the table schema read failed", {
-         error: extractErrorDataFromError(error),
-      });
-      return tables;
-   }
+   };
+   await Promise.all(
+      Array.from(
+         { length: Math.min(SCHEMA_READ_CONCURRENCY, nested.length) },
+         worker,
+      ),
+   );
    return tables.map((t) => {
-      const schema = t.resource ? schemas[t.resource] : undefined;
+      const schema = t.resource ? schemas.get(t.resource) : undefined;
       if (!schema) return t;
-      // A top-level column keeps the type the database reported; only the
-      // members, which it did not report, carry Malloy's type names.
-      const reported = new Map((t.columns ?? []).map((c) => [c.name, c.type]));
-      return {
-         ...t,
-         columns: columnsOfSchema(schema.fields as SchemaField[]).map((c) =>
-            reported.has(c.name) ? { ...c, type: reported.get(c.name) } : c,
-         ),
-      };
+      const fields = new Map(
+         (schema.fields as SchemaField[]).map((f) => [f.name, f]),
+      );
+      const columns: ApiColumn[] = [];
+      for (const column of t.columns ?? []) {
+         columns.push(column);
+         const field = column.name ? fields.get(column.name) : undefined;
+         if (field && RECORD_COLUMN_TYPE.test(column.type ?? "")) {
+            // The members alone: the record itself is the reported column.
+            columns.push(...columnsOfSchema([field]).slice(1));
+         }
+      }
+      return { ...t, columns };
    });
 }
 type ApiAzureConnection = components["schemas"]["AzureConnection"];
@@ -1444,8 +1469,10 @@ export async function listTablesForSchema(
       malloyConnection,
       tableNames,
    );
-   // BigQuery's introspector reads the Malloy schema already, members included.
-   return connection.type === "bigquery"
+   // BigQuery's introspector reads the Malloy schema already, members
+   // included; a `publisher` connection lists what the remote Publisher
+   // listed, which has expanded them already.
+   return connection.type === "bigquery" || connection.type === "publisher"
       ? tables
       : withRecordMembers(tables, malloyConnection);
 }

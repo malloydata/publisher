@@ -10,7 +10,12 @@ import { getEmbeddingProvider } from "../../service/embedding_provider";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { RankingMode, SchemaTableEntity, rankTables } from "./schema_index";
+import {
+   RankingMode,
+   SchemaTableEntity,
+   capColumns,
+   rankTables,
+} from "./schema_index";
 
 /** Tables returned when the caller does not ask for a specific number. */
 const DEFAULT_LIMIT = 20;
@@ -264,7 +269,7 @@ function toResponseTable(
               ),
            }
          : {}),
-      columns: entity.columns.slice(0, options.maxColumns),
+      columns: capColumns(entity.columns, options.maxColumns),
       columnCount: entity.columns.length,
       ...(options.score !== undefined ? { score: options.score } : {}),
    };

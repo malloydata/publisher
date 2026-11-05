@@ -3,7 +3,7 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { rankLexically } from "../mcp/tools/schema_index";
+import { capColumns, rankLexically } from "../mcp/tools/schema_index";
 import { columnsOfSchema, listTablesForSchema } from "./db_utils";
 import type { ApiConnection } from "./model";
 
@@ -93,6 +93,24 @@ describe("a DuckDB schema with STRUCT columns", () => {
       ]);
    });
 
+   it("follows the database when a table changes after a listing, never a cached schema", async () => {
+      await malloy.runSQL(
+         "create table changing as select 1 as id, {'city': 'Denver'} as place",
+      );
+      const columnsOf = async () =>
+         (await listTablesForSchema(conn, "memory.main", malloy, ["changing"]))
+            .find((t) => t.resource?.endsWith(".changing"))
+            ?.columns?.map((c) => c.name);
+      expect(await columnsOf()).toEqual(["id", "place", "place.city"]);
+      await malloy.runSQL("alter table changing add column note varchar");
+      expect(await columnsOf()).toEqual(["id", "place", "place.city", "note"]);
+      await malloy.runSQL("drop table changing");
+      await malloy.runSQL(
+         "create table changing as select 1 as id, {'town': 'Boulder'} as place",
+      );
+      expect(await columnsOf()).toEqual(["id", "place", "place.town"]);
+   });
+
    it("ranks the table by a member's name, which matched nothing before", async () => {
       const tables = (
          await listTablesForSchema(conn, "memory.main", malloy)
@@ -112,5 +130,25 @@ describe("a DuckDB schema with STRUCT columns", () => {
             rankLexically(tables, query, 5).hits.map((h) => h.tableName),
          ]).toEqual([query, ["orders"]]);
       }
+   });
+});
+
+describe("capColumns", () => {
+   it("keeps a table's own columns before record members, in listed order", () => {
+      const columns = [
+         { name: "id" },
+         { name: "delivery" },
+         ...Array.from({ length: 5 }, (_, i) => ({ name: `delivery.m${i}` })),
+         { name: "zip_code" },
+         // A top-level column whose own name holds a dot is not a member.
+         { name: "a.b" },
+      ];
+      expect(capColumns(columns, 5).map((c) => c.name)).toEqual([
+         "id",
+         "delivery",
+         "delivery.m0",
+         "zip_code",
+         "a.b",
+      ]);
    });
 });
