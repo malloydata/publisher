@@ -23,10 +23,9 @@ import type { EnvironmentStore } from "../service/environment_store";
 import type { RetryPolicy } from "../service/http_retry";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import {
-   createEntityEmbeddingsTable,
+   createCatalogTables,
    createSourceSummariesTable,
 } from "../storage/duckdb/schema";
-import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { registerGetContextTool } from "../mcp/tools/get_context_tool";
 import { pollFor } from "./poll";
 
@@ -98,98 +97,8 @@ export function numberedLines(prompt: string): Array<[number, string]> {
    ]);
 }
 
-const STOP = new Set(
-   "a an the of to per one row is are for in on and or by that it its this with from".split(
-      " ",
-   ),
-);
-
-/** Lowercase words, identifiers split on `_`, without filler words. */
-export function contentWords(text: string): Set<string> {
-   return new Set(
-      (
-         text
-            .toLowerCase()
-            .replace(/_/g, " ")
-            .match(/[a-z0-9]+/g) ?? []
-      ).filter((w) => !STOP.has(w)),
-   );
-}
-
-const overlap = (a: Set<string>, b: Set<string>) =>
-   [...a].filter((w) => b.has(w)).length;
-
 /**
- * A deterministic stand-in for an LLM that answers both stages by keyword
- * overlap with the text it is shown.
- *
- * Refine: a candidate sharing 2 or more words with the phrase is HIGH, one
- * word is MEDIUM, none is LOW. Rerank: a source sharing 3 or more words with
- * the question is 3, then 2, 1, 0 by overlap; listed best first.
- */
-export function keywordReply(prompt: string): string {
-   if (prompt.includes("Source name: ") && prompt.includes("<fields>")) {
-      return summaryReply(prompt);
-   }
-   if (prompt.includes("Source search phrase:")) {
-      // Source match: 2 or more shared words is HIGH, one is MEDIUM, none is
-      // left out. Each candidate is two lines, so group them by blank line.
-      const phrase = /Source search phrase:\n(.*)/.exec(prompt)![1];
-      const words = contentWords(JSON.parse(phrase));
-      const body = prompt
-         .split("<candidates>\n")[1]
-         .split("\n</candidates>")[0];
-      return JSON.stringify(
-         body.split("\n\n").flatMap((block) => {
-            const index = Number(/^\[(\d+)\]/.exec(block)![1]);
-            const n = overlap(
-               words,
-               contentWords(block.replace(/^\[\d+\]/, "")),
-            );
-            return n >= 2
-               ? [{ index, score: "HIGH" }]
-               : n === 1
-                 ? [{ index, score: "MEDIUM" }]
-                 : [];
-         }),
-      );
-   }
-   if (prompt.includes("<candidates>")) {
-      const phrase = /Search phrase to rate the candidates against:\n(.*)/.exec(
-         prompt,
-      )![1];
-      const words = contentWords(JSON.parse(phrase));
-      return JSON.stringify(
-         numberedLines(prompt).map(([index, line]) => {
-            const n = overlap(words, contentWords(line));
-            const score = n >= 2 ? "HIGH" : n === 1 ? "MEDIUM" : "LOW";
-            return {
-               index,
-               score,
-               ...(score === "LOW"
-                  ? {}
-                  : {
-                       reason: `Shares ${n} word${n === 1 ? "" : "s"} with the phrase.`,
-                    }),
-            };
-         }),
-      );
-   }
-   const question = /Question the user is asking:\n(.*)/.exec(prompt)![1];
-   const words = contentWords(question);
-   const body = prompt.split("<sources>\n")[1].split("\n</sources>")[0];
-   const scored = body.split("\n\n").map((block, i) => {
-      const text = block.replace(/^\[\d+\] Source: [^\n]*\n/, "");
-      const name = /^\[\d+\] Source: ([^,]+),/.exec(block)![1];
-      const n = overlap(words, contentWords(`${name} ${text}`));
-      return { index: i + 1, score: Math.min(3, n) };
-   });
-   scored.sort((a, b) => b.score - a.score || a.index - b.index);
-   return JSON.stringify(scored);
-}
-
-/**
- * A deterministic stand-in for the source summary stage: the summary lists the
+ * A deterministic stand-in for the source summary step: the summary lists the
  * field names it was shown in backticks, and the one-liner is the first
  * sentence of the documentation, or the exact undocumented line.
  */
@@ -266,20 +175,22 @@ export interface SemanticHarness {
    /** Reset the index state and install the stub embedding provider. */
    reset(): void;
    close(): Promise<void>;
-   /** A get_context handler over `pkg`. */
-   handlerFor(pkg: unknown): Handler;
+   /** A get_context handler over `pkg`; `stale` maps a package name to its failed reload. */
+   handlerFor(
+      pkg: unknown,
+      stale?: Map<string, { message: string; failedAt: string }>,
+   ): Handler;
 }
 
 export async function semanticHarness(): Promise<SemanticHarness> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "get-context-llm-"));
    const db = new DuckDBConnection(path.join(dir, "llm.db"));
    await db.initialize();
-   await createEntityEmbeddingsTable(db);
+   await createCatalogTables(db);
    await createSourceSummariesTable(db);
    return {
       db,
       reset() {
-         _resetEmbeddingIndexStateForTests();
          _setEmbeddingProviderForTests(stubEmbeddingProvider());
       },
       async close() {
@@ -287,12 +198,12 @@ export async function semanticHarness(): Promise<SemanticHarness> {
          await db.close();
          fs.rmSync(dir, { recursive: true, force: true });
       },
-      handlerFor(pkg) {
+      handlerFor(pkg, stale = new Map()) {
          let handler: Handler | undefined;
          const store = {
             getEnvironment: async () => ({
                getPackage: async () => pkg,
-               getStaleCompileErrors: () => new Map(),
+               getStaleCompileErrors: () => stale,
             }),
             storageManager: { getDuckDbConnection: () => db },
          } as unknown as EnvironmentStore;

@@ -98,7 +98,7 @@ Two tools, in this order.
 }
 ```
 
-**One call answers.** The response groups the fields that matched under the sources holding them, so describing the fields is the whole search: there is no second call to drill into a source. Two variations are worth knowing:
+**One call usually answers.** The response groups the fields that matched under the sources holding them, so there is no drill-down step: describe each field you need as its own target. A source in the results is not every field it holds, though. When a field you need is missing, a target is listed in `unresolved_targets`, or a warning says results were cut, call again with `source` in the scope and one target per missing concept. Two variations are worth knowing:
 
 - Omit a target's `search_text` to enumerate that type instead of ranking it. A lone `{"target_type": "source"}` is the catalog browse, which returns a thin card per source (a one-line summary rather than the full doc) and pages with `offset` and `next_offset`.
 - Add `source` to the scope to narrow to one source, which is also how to read that source's full doc after a browse.
