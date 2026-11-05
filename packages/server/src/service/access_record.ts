@@ -317,6 +317,15 @@ const mintAudit = (): QueryAudit => ({}) as QueryAudit;
 export const unrecordedAudit = mintAudit;
 
 /**
+ * Run a query the system issues for itself (the value-index build at package
+ * load), which no caller asked for and so is owed no record. Nothing else may
+ * call it (`access_record_audit.spec`).
+ */
+export const runUnrecorded = <T>(
+   run: (audit: QueryAudit) => Promise<T>,
+): Promise<T> => run(mintAudit());
+
+/**
  * Run one request and emit exactly one access record for it, the only place
  * one is emitted: `ok` when `run` resolves, `cancelled` when `signal` aborted,
  * else the outcome the error maps to. A route wraps its whole request,

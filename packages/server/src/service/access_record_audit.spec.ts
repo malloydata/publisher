@@ -21,6 +21,23 @@ function sourceFiles(dir: string): string[] {
    });
 }
 
+describe("runUnrecorded", () => {
+   it("is called only by the value-index build, which no caller asked for", () => {
+      const callers = sourceFiles(SRC)
+         .map((file) => path.relative(SRC, file))
+         .filter(
+            (file) =>
+               file !== path.join("service", "access_record.ts") &&
+               fs
+                  .readFileSync(path.join(SRC, file), "utf8")
+                  .includes("runUnrecorded("),
+         );
+      expect(callers).toEqual([
+         path.join("mcp", "tools", "get_context_values.ts"),
+      ]);
+   });
+});
+
 describe("unrecordedAudit", () => {
    it("is called by no production file", () => {
       const callers = sourceFiles(SRC)

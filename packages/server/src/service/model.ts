@@ -6356,7 +6356,8 @@ export class Model {
       // with no fields, and a thrown summary yields none.
       try {
          audit.summary = await summarizeQueryAccess({
-            runnable,
+            // The storage serve shape carries no annotations; the live one does.
+            runnable: liveRunnable ?? runnable,
             modelDef: this.modelDef,
             apiSources: this.sources,
             modelGivens: this.givens,

@@ -986,7 +986,38 @@ export class ConnectionController {
       return { data: JSON.stringify(result), queryCorrelationId };
    }
 
+   /** Raw SQL like {@link getConnectionQueryData}, so it is recorded as ungated too. */
    public async getConnectionTemporaryTable(
+      environmentName: string,
+      connectionName: string,
+      sqlStatement: string,
+      packageName?: string,
+      versionId?: unknown,
+      identity: { caller?: string; traceId?: string } = {},
+   ): Promise<ApiTemporaryTable> {
+      return withAccessRecord(
+         {
+            environment: environmentName,
+            package: packageName ?? "",
+            connection: connectionName,
+            adHoc: true,
+            decision: "ungated",
+            ...(identity.caller ? { caller: identity.caller } : {}),
+            ...(identity.traceId ? { traceId: identity.traceId } : {}),
+         },
+         undefined,
+         () =>
+            this.runConnectionTemporaryTable(
+               environmentName,
+               connectionName,
+               sqlStatement,
+               packageName,
+               versionId,
+            ),
+      );
+   }
+
+   private async runConnectionTemporaryTable(
       environmentName: string,
       connectionName: string,
       sqlStatement: string,

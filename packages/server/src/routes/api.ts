@@ -479,6 +479,7 @@ function registerConnectionRoutes(
          req.body.sqlStatement as string,
          packageName,
          versionId,
+         { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
       ),
    );
 }

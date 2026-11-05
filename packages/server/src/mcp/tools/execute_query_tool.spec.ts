@@ -170,6 +170,7 @@ function storeCapturingMetadata(
             getPackage: async () => ({
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
+               getVersionId: () => undefined,
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",

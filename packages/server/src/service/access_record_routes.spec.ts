@@ -18,6 +18,7 @@ import { AccessDeniedError, PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
 import { accessIdentityOf } from "../mcp/request_extra";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
+import { defaultIndexValueFetcher } from "../mcp/context/values_index";
 import { queryDistinctValues } from "../mcp/tools/get_context_values";
 import { tryAcquireQuerySlot } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
@@ -67,11 +68,11 @@ function records(): AccessRecord[] {
       .map(([, record]) => record as AccessRecord);
 }
 
-function storeOf(model: unknown): EnvironmentStore {
+function storeOf(model: unknown, version?: string): EnvironmentStore {
    const pkg = {
       getModel: (path: string) => (path === "m.malloy" ? model : undefined),
       getDeclaredQueryMetadata: () => null,
-      getVersionId: () => undefined,
+      getVersionId: () => version,
    };
    const environment = {
       assertCanAdmitQuery: () => {},
@@ -240,6 +241,34 @@ describe("MCP execute_query writes exactly one record", () => {
       });
    });
 
+   it("naming the package version that answered", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         await mcpHandler(storeOf(model, "v7"))(
+            { ...MCP_ARGS, query: GATED, givens: { ORGS: ["org1"] } },
+            EXTRA,
+         );
+         expect(records()).toMatchObject([{ outcome: "ok", version: "v7" }]);
+      });
+   });
+
+   it("on an argument refusal, still throwing the protocol error", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         await expect(
+            mcpHandler(storeOf(model))({ ...MCP_ARGS }, EXTRA),
+         ).rejects.toThrow();
+         await expect(
+            mcpHandler(storeOf(model))(
+               { ...MCP_ARGS, query: GATED, queryName: "q" },
+               EXTRA,
+            ),
+         ).rejects.toThrow();
+         expect(records()).toMatchObject([
+            { outcome: "bad_request", caller: "agent@example.com" },
+            { outcome: "bad_request", caller: "agent@example.com" },
+         ]);
+      });
+   });
+
    it("on a model-access error, still answering with the tool error", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const result = await mcpHandler(storeOf(model))(
@@ -325,6 +354,30 @@ describe("value search writes exactly one record per lookup", () => {
          expect(records()).toMatchObject([{ outcome: "denied_lock" }]);
       });
    });
+
+   it("naming the package version that answered", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         await lookup(storeOf(model, "v7"), "open_src");
+         expect(records()).toMatchObject([{ version: "v7" }]);
+      });
+   });
+
+   it("not at all when the index build reads, which is the system's and not a caller's", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const read = await defaultIndexValueFetcher({
+            environmentStore: storeOf(model),
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            source: "open_src",
+            dimension: "label",
+            limit: 5,
+            timeoutMs: 5000,
+         });
+         expect(read.values.length).toBeGreaterThan(0);
+         expect(records()).toEqual([]);
+      });
+   });
 });
 
 describe("legacy notebook cell writes exactly one record", () => {
@@ -368,7 +421,7 @@ describe("legacy notebook cell writes exactly one record", () => {
 });
 
 describe("raw SQL writes exactly one record, as ungated", () => {
-   const controllerOver = (runSQL: sinon.SinonStub) => {
+   const controllerOver = (runSQL: sinon.SinonStub, extra: object = {}) => {
       const environment = {
          assertCanAdmitQuery: () => {},
          getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
@@ -383,7 +436,7 @@ describe("raw SQL writes exactly one record, as ungated", () => {
             },
             "getMalloyConnection",
          )
-         .resolves({ runSQL } as unknown as Connection);
+         .resolves({ runSQL, ...extra } as unknown as Connection);
       return controller;
    };
 
@@ -403,6 +456,29 @@ describe("raw SQL writes exactly one record, as ungated", () => {
             decision: "ungated",
             connection: "warehouse",
             adHoc: true,
+         },
+      ]);
+   });
+
+   it("on the temporary-table route too, as the same raw SQL", async () => {
+      const controller = controllerOver(sinon.stub(), {
+         manifestTemporaryTable: async () => "tmp_1",
+      });
+      await controller.getConnectionTemporaryTable(
+         "env",
+         "warehouse",
+         "SELECT a FROM t",
+         undefined,
+         undefined,
+         { caller: "alice@example.com" },
+      );
+      expect(records()).toMatchObject([
+         {
+            outcome: "ok",
+            decision: "ungated",
+            connection: "warehouse",
+            adHoc: true,
+            caller: "alice@example.com",
          },
       ]);
    });

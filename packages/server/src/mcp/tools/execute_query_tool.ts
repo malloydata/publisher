@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { BadRequestError } from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
@@ -151,19 +152,12 @@ export function registerExecuteQueryTool(
 
          const hasAdhocQuery = !!query;
          const hasNamedQuery = !!queryName;
-
-         if (!hasAdhocQuery && !hasNamedQuery) {
-            throw new McpError(
-               ErrorCode.InvalidParams,
-               MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS,
-            );
-         }
-         if (hasAdhocQuery && hasNamedQuery) {
-            throw new McpError(
-               ErrorCode.InvalidParams,
-               MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS,
-            );
-         }
+         const argumentError =
+            !hasAdhocQuery && !hasNamedQuery
+               ? MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
+               : hasAdhocQuery && hasNamedQuery
+                 ? MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
+                 : undefined;
          let refusal: ErrorDetails | undefined;
          let pkg: Package | undefined;
          // Shares the HTTP routes' slot pool so an agent loop cannot bypass
@@ -183,6 +177,8 @@ export function registerExecuteQueryTool(
                },
                extra?.signal,
                async (audit) => {
+                  // Inside the record, so a refused call is recorded; thrown below as the protocol error.
+                  if (argumentError) throw new BadRequestError(argumentError);
                   const modelResult = await getModelForQuery(
                      environmentStore,
                      environmentName,
@@ -195,6 +191,8 @@ export function registerExecuteQueryTool(
                   }
                   const { model, environment } = modelResult;
                   pkg = modelResult.pkg;
+                  const version = pkg.getVersionId();
+                  if (version) audit.version = version;
                   querySlot = tryAcquireQuerySlot("mcp:executeQuery");
                   // Built as the HTTP controller builds it: a connection's enforced
                   // properties describe the deployment, not the transport.
@@ -289,6 +287,9 @@ export function registerExecuteQueryTool(
                },
             );
          } catch (queryError) {
+            if (argumentError) {
+               throw new McpError(ErrorCode.InvalidParams, argumentError);
+            }
             if (refusal) {
                return jsonToolError(
                   "error://executeQuery/modelAccess",
