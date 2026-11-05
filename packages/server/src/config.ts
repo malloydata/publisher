@@ -1439,7 +1439,7 @@ function parseModeSetting<T extends string>(
  * manifest-binding and serving fields), marked deprecated, as it did before
  * they moved. Off, it carries only the package's own fields, and each moved
  * field is read where it now lives: `GET …/build-plan`, `…/agents`,
- * `…/entities`, `…/embedding-index`, or the package's `/status` entry. A later
+ * `…/entities`, `…/embedding-index`, or the package's entry in `GET /status`. A later
  * release turns it off by default, and the one after removes it with the
  * fields.
  */

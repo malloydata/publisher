@@ -2747,7 +2747,7 @@ paths:
           required: false
           description: >-
             The `servedRevision` of the load the caller read, from the
-            `/status` entry, a package response or an earlier read. When given,
+            package's entry in `GET /status`, a package response or an earlier read. When given,
             the request is refused with a 409 (`reason` `REVISION_CHANGED`)
             unless this server still serves that load, so a caller reading
             several resources after a load never mixes facts from two loads.
@@ -2808,7 +2808,7 @@ paths:
           required: false
           description: >-
             The `servedRevision` of the load the caller read, from the
-            `/status` entry, a package response or an earlier read. When given,
+            package's entry in `GET /status`, a package response or an earlier read. When given,
             the request is refused with a 409 (`reason` `REVISION_CHANGED`)
             unless this server still serves that load, so a caller reading
             several resources after a load never mixes facts from two loads.
@@ -4933,7 +4933,7 @@ components:
           type: boolean
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Set only on a version's entry in `GET /status`: whether this server
             holds the version in memory. A published version that is not loaded
@@ -4949,7 +4949,7 @@ components:
           enum: [archive, unarchive]
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Set only on a version's entry in `GET /status`, except one still
             being published: whether the version is archived.
@@ -5371,7 +5371,7 @@ components:
             - bound
             - live_fallback
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: whether the CONFIGURED build manifest is
             currently bound to this package's served models. `unbound` = no
@@ -5426,7 +5426,7 @@ components:
           type: integer
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: number of sourceEntityId -> physical-table
             entries currently bound for the COLOCATED (same-connection tableName
@@ -5444,7 +5444,7 @@ components:
           type: ["string", "null"]
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: the manifest URI actually bound to the
             served models. Usually equals `manifestLocation`, but can differ
@@ -5462,7 +5462,7 @@ components:
           type: object
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: how this server holds the package right
             now. `serving` is whether a compiled copy answers queries here;
@@ -5506,7 +5506,7 @@ components:
           type: array
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: sources currently bound to serve from a
             `storage=` destination via the virtual-source transform (distinct
@@ -5599,7 +5599,7 @@ components:
           type: string
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it, and the `GET …/entities` and `GET …/build-plan` responses. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it, and the `GET …/entities` and `GET …/build-plan` responses. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: an identifier for the load that produced
             what this package is currently serving. Minted fresh per load, so
@@ -5611,7 +5611,7 @@ components:
           type: string
           readOnly: true
           description: >-
-            **Moved** to the package's `/status` entry, which always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
+            **Moved** to `GET /status`, whose entry for the package (`environments[].packages[]`) always carries it. On any other package response it is present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it there.
 
             Server-computed, read-only: SHA-256 over the package-relative path
             and bytes of every file the package is serving: each model file,
