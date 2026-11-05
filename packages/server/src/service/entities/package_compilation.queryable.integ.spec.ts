@@ -152,7 +152,7 @@ describe("re-rooting non-queryable #(index) dims under a declared source", () =>
       );
       assert.strictEqual(reRooted.field_type, "dimension");
       assert.ok(
-         reRooted.tags?.includes("#(index"),
+         reRooted.tags?.some((t) => t.includes("#(index")),
          `re-rooted dim lost its #(index) tag: ${reRooted.tags}`,
       );
    }, 60_000);
@@ -174,7 +174,7 @@ describe("re-rooting non-queryable #(index) dims under a declared source", () =>
       );
       assert.strictEqual(deep.field_type, "dimension");
       assert.ok(
-         deep.tags?.includes("#(index"),
+         deep.tags?.some((t) => t.includes("#(index")),
          `deep re-rooted dim lost its #(index) tag: ${deep.tags}`,
       );
    }, 60_000);
@@ -230,7 +230,9 @@ describe("re-rooting non-queryable #(index) dims under a declared source", () =>
       const entities = await compileEntities();
 
       const indexedDims = entities.filter(
-         (e) => e.field_type === "dimension" && e.tags?.includes("#(index"),
+         (e) =>
+            e.field_type === "dimension" &&
+            e.tags?.some((t) => t.includes("#(index")),
       );
       // The two declared #(index) dims, each potentially appearing both rooted
       // at its non-queryable source and re-rooted under analytics.
@@ -348,7 +350,7 @@ describe("a root index.malloy as the package surface", () => {
          (e) => e.source === "orders" && e.name === "status_label",
       );
       assert.ok(dim, "expected orders::status_label from index.malloy");
-      assert.ok(dim.tags?.includes("#(index"));
+      assert.ok(dim.tags?.some((t) => t.includes("#(index")));
    }, 60_000);
 
    test("every source in the imported file is off the surface", async () => {

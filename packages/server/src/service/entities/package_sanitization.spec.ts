@@ -24,7 +24,7 @@ import {
 describe("packageSanitizationService.extractMetadataFromExplores", () => {
    const noTaglines = (): string[] => [];
 
-   test("extracts docs and parameters from explores", () => {
+   test("extracts docs from explores, and reports no source parameters", () => {
       const explore = {
          name: "orders",
          location: {
@@ -37,22 +37,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
                blockNotes: [{ text: "#(doc) Orders source" }],
             },
             parameters: {
-               state_param: {
-                  type: "string",
-                  value: null,
-               },
-               indexing_override: {
-                  type: "boolean",
-                  value: { node: "false" },
-               },
-               other: {
-                  type: "string",
-                  value: { node: "stringLiteral", literal: "HI" },
-               },
-               report_id: {
-                  type: "number",
-                  value: { node: "numberLiteral", literal: "3" },
-               },
+               state_param: { type: "string", value: null },
             },
          },
       } as unknown as Explore;
@@ -69,63 +54,7 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          metadata: "Orders source",
          metadataType: "DOCS",
          agentHidden: false,
-         parameters: [
-            {
-               name: "state_param",
-               type: "string",
-               defaultValue: null,
-            },
-            {
-               name: "indexing_override",
-               type: "boolean",
-               defaultValue: "false",
-            },
-            {
-               name: "other",
-               type: "string",
-               defaultValue: "HI",
-            },
-            {
-               name: "report_id",
-               type: "number",
-               defaultValue: "3",
-            },
-         ],
       });
-   });
-
-   test("serializes unknown parameter default shapes and emits params-only metadata", () => {
-      const explore = {
-         name: "orders",
-         location: {
-            url: "file:///tmp/orders.malloy",
-         },
-         getTaglines: noTaglines,
-         structDef: {
-            type: "table",
-            parameters: {
-               custom_param: {
-                  type: "string",
-                  value: { foo: "bar", baz: [1, 2] },
-               },
-            },
-         },
-      } as unknown as Explore;
-
-      const metadata = packageSanitizationService.extractMetadataFromExplores(
-         [explore],
-         "orders.malloy",
-      );
-
-      assert.strictEqual(metadata.length, 1);
-      assert.strictEqual(metadata[0].metadata, "");
-      assert.deepStrictEqual(metadata[0].parameters, [
-         {
-            name: "custom_param",
-            type: "string",
-            defaultValue: '{"baz":[1,2],"foo":"bar"}',
-         },
-      ]);
    });
 
    test("propagates source-level agent-hidden tag across imports", () => {
@@ -1003,141 +932,6 @@ describe("packageSanitizationService.extractMetadataFromExplores", () => {
          },
          { name: "report_date", type: "date" },
       ]);
-   });
-
-   // ---------------------------------------------------------------
-   // checkAuthorizeGivensSecure — NON-blocking advisory. #(authorize) is usable
-   // over any given (never fails publish); this only FLAGS givens a secure-given
-   // middleware wouldn't enforce. Fed ApiGiven[] + Authorize[] directly.
-   // ---------------------------------------------------------------
-   const check = packageSanitizationService.checkAuthorizeGivensSecure;
-   const g = (name: string, secure?: boolean) =>
-      secure
-         ? { name, type: "string[]", secure: true }
-         : { name, type: "string[]" };
-   const gate = (expression: string, given_names: string[]) => ({
-      expression,
-      given_names,
-   });
-
-   test("advisory: #(authorize) over a secure set-valued given → no advisory", () => {
-      assert.deepStrictEqual(
-         check(
-            [g("tenant_id", true)],
-            [gate("tenant_id != null", ["tenant_id"])],
-            "s",
-         ),
-         [],
-      );
-   });
-
-   test("advisory: #(authorize) over a declared-insecure given → flagged (never throws)", () => {
-      const out = check(
-         [g("tenant_id")],
-         [gate("tenant_id != null", ["tenant_id"])],
-         "s",
-      );
-      assert.strictEqual(out.length, 1);
-      assert.strictEqual(out[0].givenName, "tenant_id");
-      assert.match(out[0].reason, /not marked #\(secure\)/);
-   });
-
-   test("advisory: #(authorize) over a SECURE but scalar given → flagged (never registered → forgeable)", () => {
-      // Secure-given middleware trusts only set-valued secure givens, so a
-      // scalar one is never reserved and the caller's value passes through.
-      const out = check(
-         [{ name: "tenant_id", type: "number", secure: true }],
-         [gate("tenant_id != null", ["tenant_id"])],
-         "s",
-      );
-      assert.strictEqual(out.length, 1);
-      assert.match(out[0].reason, /scalar/);
-   });
-
-   test("advisory: #(authorize) over $GROUPS → no advisory (proxy-set, exempt)", () => {
-      assert.deepStrictEqual(
-         check([], [gate("code in $GROUPS", ["GROUPS"])], "s"),
-         [],
-      );
-   });
-
-   test("advisory: #(authorize) over $ORG_ROLES → no advisory (proxy-set, exempt)", () => {
-      // One composite given, admin-only.
-      assert.deepStrictEqual(
-         check(
-            [],
-            [
-               gate("concat(organization_id, ':admin') in $ORG_ROLES", [
-                  "ORG_ROLES",
-               ]),
-            ],
-            "s",
-         ),
-         [],
-      );
-   });
-
-   test("advisory: #(authorize) over $CELL_ID with $ORG_ROLES → no advisory (proxy-set, exempt)", () => {
-      // The same gate once rows also carry the cell that wrote them.
-      assert.deepStrictEqual(
-         check(
-            [],
-            [
-               gate(
-                  "cell_id in $CELL_ID and concat(organization_id, ':admin') in $ORG_ROLES",
-                  ["CELL_ID", "ORG_ROLES"],
-               ),
-            ],
-            "s",
-         ),
-         [],
-      );
-   });
-
-   test("advisory: a v2 gate reading a second $ORG_ROLES role → still no advisory", () => {
-      // Adding a modeler branch later must not start warning: it reads the SAME
-      // proxy-set given, so the exemption has to cover any role suffix, not
-      // just ':admin'.
-      assert.deepStrictEqual(
-         check(
-            [],
-            [
-               gate(
-                  "concat(organization_id, ':admin') in $ORG_ROLES" +
-                     " or concat(organization_id, ':modeler') in $ORG_ROLES",
-                  ["ORG_ROLES"],
-               ),
-            ],
-            "s",
-         ),
-         [],
-      );
-   });
-
-   test("advisory: gate referencing an undeclared name is skipped (regex over-capture)", () => {
-      // `$actor` from a string literal over-captures; with no declared given it
-      // is not our concern (fails the model compile elsewhere if real).
-      assert.deepStrictEqual(
-         check(
-            [g("tenant_id", true)],
-            [gate("'$actor' = $tenant_id", ["actor", "tenant_id"])],
-            "s",
-         ),
-         [],
-      );
-   });
-
-   test("advisory: multiple gates — every bypassable given is flagged, none block", () => {
-      const out = check(
-         [g("tenant_id", true), g("region")],
-         [
-            gate("tenant_id != null", ["tenant_id"]),
-            gate("region != null", ["region"]),
-         ],
-         "s",
-      );
-      assert.strictEqual(out.length, 1);
-      assert.strictEqual(out[0].givenName, "region");
    });
 
    test("emits GIVENS metadata for every source reachable in this compile", () => {
@@ -2453,25 +2247,6 @@ describe("packageSanitizationService.extractMetadataFromExplores — join-aware 
       );
    });
 
-   test("checkAuthorizeGivensSecure no-ops for a join-only source's undeclared given", () => {
-      // Pins the known gap noted in the design doc: a cross-file join-only
-      // source's given may not be in the entry file's `Model.givens` — the
-      // advisory must skip (not throw/flag) an undeclared given, same as the
-      // top-level case.
-      const advisories = packageSanitizationService.checkAuthorizeGivensSecure(
-         /* modelGivens */ [],
-         [
-            {
-               expression: "$TENANT_ID = '123'",
-               given_names: ["TENANT_ID"],
-               route: "authorize",
-            },
-         ],
-         "order_items",
-      );
-      assert.deepStrictEqual(advisories, []);
-   });
-
    test("a plain raw-SQL source emits no AUTHORIZE row (over-denial regression)", async () => {
       // `duckdb.sql(...)` with no embedded query compiles to `sql_select`
       // with `selectSegments` absent — an earlier allowlist regression treated
@@ -3241,8 +3016,6 @@ function fakeDimensionField(name: string, taglines: string[] = []): Field {
 }
 
 describe("packageSanitizationService.extractEntitiesFromExplores", () => {
-   const UUID_RE = /^[0-9a-f-]{36}$/i;
-
    test("reports the fingerprint on a matching #(index) field, not on others", () => {
       const explore = {
          name: "orders",
@@ -3277,21 +3050,18 @@ describe("packageSanitizationService.extractEntitiesFromExplores", () => {
       assert.ok(country, "country entity must be present");
       assert.ok(region, "region entity must be present");
       // The #(index) field reports the fingerprint a host derives a stable id
-      // from; its own id stays a per-run uuid.
+      // from.
       assert.deepStrictEqual(country.dim_index_fingerprint, {
          sql_fingerprint: "abc123",
          required_filter_dimensions: ["tier"],
       });
-      assert.match(country.id ?? "", UUID_RE);
-      // Non-indexed dims carry no fingerprint and keep a per-run uuid.
+      // Non-indexed dims carry no fingerprint.
       assert.strictEqual(region.dim_index_fingerprint, undefined);
-      assert.match(region.id ?? "", UUID_RE);
    });
 
    test("reports no fingerprint when the map is empty (default arg)", () => {
-      // Default-argument path: no resolver wired in at all. Every entity
-      // keeps a per-run uuid and carries no fingerprint; pinning this guards
-      // against a refactor that makes the map argument required.
+      // Default-argument path: no resolver wired in at all, so no entity
+      // carries a fingerprint.
       const explore = {
          name: "orders",
          allFields: [fakeDimensionField("country")],
@@ -3308,7 +3078,6 @@ describe("packageSanitizationService.extractEntitiesFromExplores", () => {
       );
 
       assert.ok(country);
-      assert.match(country.id ?? "", UUID_RE);
       assert.strictEqual(country.dim_index_fingerprint, undefined);
    });
 
@@ -3356,49 +3125,8 @@ describe("packageSanitizationService.extractEntitiesFromExplores", () => {
          sql_fingerprint: "deadbeef",
          required_filter_dimensions: [],
       });
-      assert.match(country.id ?? "", UUID_RE);
       // Candidate whose fingerprint compile failed: no fingerprint reported.
       assert.strictEqual(city.dim_index_fingerprint, undefined);
-      assert.match(city.id ?? "", UUID_RE);
-   });
-
-   test("emits index_policy from a #(index ...) tagline; omits it otherwise", () => {
-      // The dimension's declared per-dimension persistence policy travels on
-      // the entities channel as ``index_policy`` (parsed off the annotation),
-      // the dimension-grain analog of PersistSourcePlan.{refresh,freshness}.
-      // Scope is package-level now, so any per-dimension sharing=/schedule= is
-      // ignored here (and rejected at publish in collectDimIndexCandidates). A
-      // bare ``#(index)`` (the policy is opt-in) and a plain dimension carry nothing.
-      const explore = {
-         name: "orders",
-         allFields: [
-            fakeDimensionField("carrier", [
-               '#(index refresh=full freshness.window="24h")',
-            ]),
-            fakeDimensionField("bare", ["#(index)"]),
-            fakeDimensionField("plain"),
-         ],
-         sourceStructDef: { connection: "duckdb", dialect: "duckdb" },
-         location: { url: "file:///tmp/orders.malloy" },
-         structDef: { parameters: {} },
-      } as unknown as Explore;
-
-      const entities = packageSanitizationService.extractEntitiesFromExplores(
-         [explore],
-         "orders.malloy",
-         "/tmp",
-         "",
-      );
-      const carrier = entities.find((e) => e.name === "carrier");
-      const bare = entities.find((e) => e.name === "bare");
-      const plain = entities.find((e) => e.name === "plain");
-      assert.ok(carrier && bare && plain);
-      assert.deepStrictEqual(carrier.index_policy, {
-         refresh: "full",
-         freshness: { window: "24h" },
-      });
-      assert.strictEqual(bare.index_policy, undefined);
-      assert.strictEqual(plain.index_policy, undefined);
    });
 });
 

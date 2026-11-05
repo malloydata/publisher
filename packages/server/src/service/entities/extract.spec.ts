@@ -10,7 +10,6 @@ import {
    EntitiesValidationError,
    extractPackageEntities,
 } from "./extract";
-import type { ModelCompileResult } from "./internal_types";
 import { FileURLReader } from "./malloy_indexing_helpers";
 import {
    ConnectionLookup,
@@ -82,14 +81,6 @@ async function workspace(models: Record<string, string>): Promise<{
    return { files, lookup };
 }
 
-/** The results with each entity's per-run random id removed. */
-function withoutIds(results: ModelCompileResult[]): unknown {
-   return results.map((r) => ({
-      ...r,
-      entities: r.entities.map(({ id: _id, ...rest }) => rest),
-   }));
-}
-
 describe("extractPackageEntities", () => {
    test("a model rebuilt from its definition reports exactly what the compiled model does", async () => {
       // A load hands the extraction models rebuilt from the definitions the
@@ -129,7 +120,7 @@ describe("extractPackageEntities", () => {
          connections: lookup,
       });
 
-      expect(withoutIds(fromDefinition)).toEqual(withoutIds(compiled));
+      expect(fromDefinition).toEqual(compiled);
       // The comparison means something only if the fingerprints are there.
       const fingerprinted = fromDefinition[0].entities.filter(
          (e) => e.dim_index_fingerprint,

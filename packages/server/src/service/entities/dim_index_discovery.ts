@@ -25,11 +25,7 @@ import {
    type GateStructDef,
 } from "./access_gates";
 import { parseFilterAnnotation, type Filter } from "./filter_parsing";
-import {
-   parseIndexPolicy,
-   findForbiddenIndexPolicyKeys,
-   type IndexPolicy,
-} from "./index_annotation_parsing";
+import { findForbiddenIndexPolicyKeys } from "./index_annotation_parsing";
 import { walkExploreTree } from "./explore_walk";
 import { getAccessModifier } from "./malloy_indexing_helpers";
 import { AccessModifierEnum } from "./internal_types";
@@ -89,15 +85,6 @@ export interface DimIndexCandidate {
     * Empty for the common case of a non-parameterized source.
     */
    requiredParameterNames: string[];
-   /**
-    * The dimension's declared per-dimension persistence policy
-    * (``refresh`` / ``freshness``) parsed off its ``#(index ... )`` annotation,
-    * or ``null`` when it declares none. Reported verbatim on the entity as
-    * ``index_policy``. Scope is package-level now, so ``sharing`` / ``schedule``
-    * are not part of this policy and are rejected at publish (see
-    * {@link assertNoForbiddenIndexPolicyKeys}).
-    */
-   indexPolicy: IndexPolicy | null;
 }
 
 /** Why an ``#(index)`` tag was rejected at publish-time compile. */
@@ -109,10 +96,8 @@ export type DimIndexRejectionReason =
    | "sharing_not_allowed_on_dimension";
 
 /**
- * Base for the publish-time ``#(index)`` placement rejections. The {@link reason}
- * discriminant lets a caller recognize and handle every rejection uniformly
- * (see ``isEntitiesValidationFailure`` in ``extract.ts``) without an
- * instanceof ladder.
+ * Base for the load-time ``#(index)`` placement rejections. {@link reason} is
+ * the short code the load reports each refusal under.
  */
 export abstract class DimIndexRejectionError extends Error {
    abstract readonly reason: DimIndexRejectionReason;
@@ -309,14 +294,14 @@ export function assertNoForbiddenIndexPolicyKeys(
       throw new IndexSharingNotAllowedError(
          `${modelFilePath}: indexed dimension '${candidate.sourceName}.${candidate.fieldName}' ` +
             `declares sharing= on its #(index) annotation; scope is a package-level mode now ` +
-            `(set "scope": "version"|"package" in malloy-publisher.json). Remove sharing= from #(index).`,
+            `(set "scope": "version"|"package" in publisher.json). Remove sharing= from #(index).`,
       );
    }
    if (forbidden.includes("schedule")) {
       throw new IndexScheduleNotAllowedError(
          `${modelFilePath}: indexed dimension '${candidate.sourceName}.${candidate.fieldName}' ` +
             `declares schedule= on its #(index) annotation; a schedule is package-level and ` +
-            `scope: version only (materialization.schedule in malloy-publisher.json). ` +
+            `scope: version only (materialization.schedule in publisher.json). ` +
             `Remove schedule= from #(index), or use freshness.window for a refresh objective.`,
       );
    }
@@ -578,39 +563,6 @@ function isDimensionField(field: MalloyField): boolean {
 }
 
 /**
- * A (source, field) reference to an ``#(index)``-tagged field skipped because
- * it is non-public. Mirrors the ``IndexFieldRef`` API schema.
- */
-export interface DimIndexFieldRef {
-   sourceName: string;
-   fieldName: string;
-}
-
-/** Result of {@link collectDimIndexCandidates} over one model file. */
-export interface DimIndexCollection {
-   /** Public ``#(index)`` dimensions that will get a derived id. */
-   candidates: DimIndexCandidate[];
-   /**
-    * ``#(index)``-tagged fields skipped because they are internal/private.
-    * The tag is inert on a non-public field (its index could never be
-    * queried), so these are reported (``ModelEntities.indexSkips``), not
-    * errored — the load still succeeds.
-    */
-   nonPublicSkips: DimIndexFieldRef[];
-   /**
-    * Roots with `#(index)` dimensions whose `#(access_filter)` terms were
-    * withheld, so their indexes are not partitioned by the gate and stay empty.
-    */
-   gateWithholds: DimIndexGateWithhold[];
-}
-
-/** A source whose gate terms were withheld; mirrors the `IndexGateWithhold` API schema. */
-export interface DimIndexGateWithhold {
-   sourceName: string;
-   reason: GateTermsWithheldReason;
-}
-
-/**
  * Walk explores (including nested-join sub-sources) to collect every
  * ``#(index)``-tagged DIMENSION field that needs a derived id. Source
  * names follow the same composition rule the sanitizer uses (see
@@ -621,10 +573,8 @@ export function collectDimIndexCandidates(
    explores: MalloyExplore[],
    modelFilePath: string,
    givenTypes: ReadonlyMap<string, string> = new Map(),
-): DimIndexCollection {
+): DimIndexCandidate[] {
    const candidates: DimIndexCandidate[] = [];
-   const nonPublicSkips: DimIndexFieldRef[] = [];
-   const gateWithholds: DimIndexGateWithhold[] = [];
    // The lookup a string query_source base resolves against, as in extractMetadataFromExplores.
    const sourceDefsByName = new Map<string, GateStructDef>(
       explores
@@ -655,7 +605,6 @@ export function collectDimIndexCandidates(
       const gateDimensions = gate.columns.filter(
          (column) => !declaredFilterDimensions.includes(column),
       );
-      const candidatesBefore = candidates.length;
       const requiredFilterDimensions = [
          ...declaredFilterDimensions,
          ...gateDimensions,
@@ -673,9 +622,8 @@ export function collectDimIndexCandidates(
             // inert on ANY non-public field (measure or dimension alike), and
             // an inherited tag internalized via `internal: *` can't be
             // stripped in Malloy, so a non-public placement must never fail
-            // the publish. Record it so the load can report it and move on.
+            // the load.
             if (getAccessModifier(field) !== AccessModifierEnum.Public) {
-               nonPublicSkips.push({ sourceName, fieldName: field.name });
                continue;
             }
             // The field IS public and #(index)-tagged: it must be a
@@ -694,7 +642,6 @@ export function collectDimIndexCandidates(
                requiredFilterDimensions,
                gateDimensions,
                requiredParameterNames,
-               indexPolicy: parseIndexPolicy(tags),
             };
             // Scope/schedule are package-level now; reject any per-dimension
             // sharing=/schedule= on the #(index) annotation at publish.
@@ -702,12 +649,6 @@ export function collectDimIndexCandidates(
             candidates.push(candidate);
          }
       }
-      if (gate.withheld && candidates.length > candidatesBefore) {
-         gateWithholds.push({
-            sourceName: rootExplore.name,
-            reason: gate.withheld,
-         });
-      }
    }
-   return { candidates, nonPublicSkips, gateWithholds };
+   return candidates;
 }

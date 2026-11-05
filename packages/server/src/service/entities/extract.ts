@@ -12,6 +12,7 @@ import {
    assertAtMostOneRequiredFilterPerIndexedDimension,
    assertNoRequiredParametersOnIndexedDimension,
    collectDimIndexCandidates,
+   DimIndexRejectionError,
    type DimIndexCandidate,
    givenTypeMap,
    makeDimIndexLookupKey,
@@ -20,13 +21,18 @@ import {
    buildFingerprintQuery,
    computeSqlFingerprint,
    type DimIndexFingerprintInputs,
-   resolveFingerprintSql,
 } from "./dim_index_entity_id";
 import { errorMessage } from "./errors";
 import { splitSourcePath } from "./explore_walk";
 import type { ModelCompileResult } from "./internal_types";
-import { FileURLReader, formatEntities } from "./malloy_indexing_helpers";
-import { packageSanitizationService } from "./package_sanitization";
+import { FileURLReader } from "./malloy_indexing_helpers";
+import { withModelTextCache } from "./model_text";
+import {
+   DuplicateRequiredFilterError,
+   packageSanitizationService,
+   RequiredFilterMissingDimensionError,
+   RequiredFilterNonPublicDimensionError,
+} from "./package_sanitization";
 import {
    buildPackageQuerySurface,
    nonQueryableSources,
@@ -81,7 +87,13 @@ export interface ExtractPackageEntitiesInput {
  * Any other failure is reported on that file's result, so one file never hides
  * the rest.
  */
-export async function extractPackageEntities(
+export function extractPackageEntities(
+   input: ExtractPackageEntitiesInput,
+): Promise<ModelCompileResult[]> {
+   return withModelTextCache(() => extractAll(input));
+}
+
+async function extractAll(
    input: ExtractPackageEntitiesInput,
 ): Promise<ModelCompileResult[]> {
    const compiled = input.modelFiles.filter(
@@ -100,7 +112,7 @@ export async function extractPackageEntities(
       },
    );
    const results: ModelCompileResult[] = [];
-   const rejections: string[] = [];
+   const rejections: { message: string; reason: string }[] = [];
    for (const file of input.modelFiles) {
       if (!("model" in file)) {
          results.push(errorResult(file.relativePath, file.error));
@@ -121,8 +133,9 @@ export async function extractPackageEntities(
             ),
          );
       } catch (error) {
-         if (isEntitiesValidationFailure(error)) {
-            rejections.push(errorMessage(error));
+         const reason = refusalReason(error);
+         if (reason !== undefined) {
+            rejections.push({ message: errorMessage(error), reason });
             continue;
          }
          const message = errorMessage(error);
@@ -134,30 +147,38 @@ export async function extractPackageEntities(
       }
    }
    if (rejections.length > 0) {
-      throw new EntitiesValidationError(rejections);
+      throw new EntitiesValidationError(
+         rejections.map((r) => r.message),
+         rejections.map((r) => r.reason),
+      );
    }
    return results;
 }
 
-/** One or more model files declare an annotation the index cannot honor. */
+/**
+ * One or more model files declare an annotation the index cannot honor.
+ * `reasons` holds one short code per refusal, parallel to `messages`.
+ */
 export class EntitiesValidationError extends Error {
-   constructor(readonly messages: string[]) {
+   constructor(
+      readonly messages: string[],
+      readonly reasons: string[],
+   ) {
       super(messages.join("\n"));
       this.name = "EntitiesValidationError";
    }
 }
 
-const VALIDATION_ERROR_NAMES = new Set([
-   "RequiredFilterMissingDimensionError",
-   "RequiredFilterNonPublicDimensionError",
-   "DuplicateRequiredFilterError",
-]);
-
-function isEntitiesValidationFailure(error: unknown): boolean {
-   if (!(error instanceof Error)) return false;
-   return (
-      VALIDATION_ERROR_NAMES.has(error.name) || "reason" in error // a DimIndexRejectionError
-   );
+/** The reason code of an annotation the index refuses, or undefined for any other error. */
+function refusalReason(error: unknown): string | undefined {
+   if (error instanceof DimIndexRejectionError) return error.reason;
+   if (error instanceof RequiredFilterMissingDimensionError)
+      return "required_filter_missing_dimension";
+   if (error instanceof RequiredFilterNonPublicDimensionError)
+      return "required_filter_non_public_dimension";
+   if (error instanceof DuplicateRequiredFilterError)
+      return "duplicate_required_filter";
+   return undefined;
 }
 
 function errorResult(
@@ -168,7 +189,6 @@ function errorResult(
       modelFilePath: relativePath,
       entities: [],
       sourceMetadataEntries: [],
-      schemaStr: "",
       compileStatus: "ERROR",
       ...(message !== undefined && { errorMessage: message }),
    };
@@ -215,15 +235,14 @@ async function extractModelFile(
          servedFrom(file, surface),
       );
 
-   // The `#(index)`-tagged dimensions. A non-public tagged field is skipped
-   // and reported, never refused: an inherited tag internalized via
-   // `internal: *` cannot be removed in Malloy.
-   const { candidates, nonPublicSkips, gateWithholds } =
-      collectDimIndexCandidates(
-         explores,
-         file.relativePath,
-         givenTypeMap(modelGivens),
-      );
+   // The `#(index)`-tagged dimensions. A non-public tagged field is skipped,
+   // never refused: an inherited tag internalized via `internal: *` cannot be
+   // removed in Malloy.
+   const candidates = collectDimIndexCandidates(
+      explores,
+      file.relativePath,
+      givenTypeMap(modelGivens),
+   );
    const dimIndexFingerprints = await buildDimIndexFingerprintLookup({
       compiledModel,
       candidates,
@@ -244,9 +263,6 @@ async function extractModelFile(
    result.sourceInfos = explores.map((explore) =>
       serializeExploreToSourceInfo(explore, source),
    );
-   result.schemaStr = formatEntities(entities);
-   result.dimIndexNonPublicSkips = nonPublicSkips;
-   result.dimIndexGateWithholds = gateWithholds;
    result.compileStatus = "SUCCESS";
    return result;
 }
@@ -309,9 +325,9 @@ async function buildDimIndexFingerprintLookup(args: {
             source: fragment,
             model: args.compiledModel,
          });
-         sql = resolveFingerprintSql({
-            preparedSql: queryModel.preparedQuery.preparedResult.sql,
-         });
+         // Extraction runs before any manifest is bound, so this SQL names the
+         // source's own tables, never materialized ones that churn.
+         sql = queryModel.preparedQuery.preparedResult.sql;
       } catch (err) {
          logger.warn(
             `Failed to compile the index fingerprint query for ` +

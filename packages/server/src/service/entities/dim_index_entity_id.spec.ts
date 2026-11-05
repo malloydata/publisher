@@ -6,7 +6,6 @@ import { describe, expect, test } from "bun:test";
 import {
    buildFingerprintQuery,
    computeSqlFingerprint,
-   resolveFingerprintSql,
 } from "./dim_index_entity_id";
 
 // This server computes only the two compile-derived inputs to a dim-index
@@ -31,35 +30,6 @@ describe("computeSqlFingerprint", () => {
       expect(computeSqlFingerprint(sql)).toBe(
          "c8217f61924002d0cd291d688a5130c36919c4afeaaee33049cbde27a0079bad",
       );
-   });
-});
-
-describe("resolveFingerprintSql", () => {
-   test("falls back to the run SQL when no manifest-free SQL is available (today's path)", () => {
-      expect(resolveFingerprintSql({ preparedSql: "SELECT run_sql" })).toBe(
-         "SELECT run_sql",
-      );
-   });
-
-   test("prefers the manifest-free/pre-rewrite SQL when present (table-backed)", () => {
-      expect(
-         resolveFingerprintSql({
-            preparedSql: "SELECT rewritten FROM materialized_abc123",
-            preRewriteSql: "SELECT logical FROM flights",
-         }),
-      ).toBe("SELECT logical FROM flights");
-   });
-
-   test("treats an empty pre-rewrite string as a real value (not a fallback trigger)", () => {
-      // ?? only falls back on null/undefined; an empty string is a compiler
-      // result, not "absent". Guards against a future regression that coerces
-      // "" to the run SQL and silently diverges the fingerprint.
-      expect(
-         resolveFingerprintSql({
-            preparedSql: "SELECT run",
-            preRewriteSql: "",
-         }),
-      ).toBe("");
    });
 });
 

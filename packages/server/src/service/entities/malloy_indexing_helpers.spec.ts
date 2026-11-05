@@ -236,21 +236,10 @@ describe("parseDocAnnotation", () => {
       assert.strictEqual(parseDocAnnotation("#(doc) A name.\n"), "A name.");
    });
 
-   test("legacy #(ms2doc) line form", () => {
-      assert.strictEqual(parseDocAnnotation("#(ms2doc) A name."), "A name.");
-   });
-
    test("block form #|(doc) preserves internal newlines", () => {
       assert.strictEqual(
          parseDocAnnotation("#|(doc)\nFirst line.\nSecond line."),
          "First line.\nSecond line.",
-      );
-   });
-
-   test("legacy block form #|(ms2doc)", () => {
-      assert.strictEqual(
-         parseDocAnnotation("#|(ms2doc)\nFirst.\nSecond."),
-         "First.\nSecond.",
       );
    });
 

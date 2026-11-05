@@ -24,12 +24,7 @@ export enum EntityTypeEnum {
    Unknown = "unknown",
 }
 
-export enum OriginTypeEnum {
-   Published = "published",
-}
-
 export interface TableInfo {
-   table_id?: string | null;
    connection_name?: string | null;
    catalog_name?: string | null;
    schema_name?: string | null;
@@ -47,35 +42,19 @@ export interface DimIndexFingerprint {
    required_filter_dimensions: string[];
 }
 
-export interface Freshness {
-   window?: string | null;
-   fallback?: "live" | "stale_ok" | "fail" | null;
-}
-
-export interface IndexPolicy {
-   refresh?: "full" | "incremental" | null;
-   freshness?: Freshness | null;
-   queryMetadata?: Record<string, string> | null;
-}
-
 /** One field of a source, as the extraction reports it. */
 export interface Entity {
-   id?: string | null;
    name: string;
    field_type: string;
    field_data_type?: string | null;
-   is_malloy?: boolean;
    source?: string | null;
    code?: string | null;
-   tags?: string | null;
-   uri?: string | null;
-   origin_type?: string | null;
+   /** The field's annotation lines, trimmed. */
+   tags?: string[];
    description?: string;
-   name_readable?: string | null;
    table_info?: TableInfo | null;
    join_source_metadata?: JoinSourceMetadata | null;
    dim_index_fingerprint?: DimIndexFingerprint | null;
-   index_policy?: IndexPolicy | null;
 }
 
 export interface Filter {
@@ -107,12 +86,6 @@ export interface Authorize {
    terms?: AuthorizeTerm[];
 }
 
-export interface SourceParameter {
-   name: string;
-   type?: string | null;
-   defaultValue?: string | null;
-}
-
 export interface SourceAddress {
    modelFilePath: string;
    sourceName: string;
@@ -132,27 +105,11 @@ export interface SourceMetadata {
    sourceName: string;
    metadata: string;
    metadataType: SourceMetadataType;
-   parameters?: SourceParameter[];
    agentHidden?: boolean;
    servedFrom?: SourceAddress;
    filters?: Filter[];
    givens?: Given[];
    authorize?: Authorize[];
-}
-
-export interface DimIndexFieldRef {
-   sourceName: string;
-   fieldName: string;
-}
-
-export type DimIndexGateWithholdReason =
-   | "composite"
-   | "unparsed_gate"
-   | "gate_column_unqueryable";
-
-export interface DimIndexGateWithhold {
-   sourceName: string;
-   reason: DimIndexGateWithholdReason;
 }
 
 /** A source's schema: its public fields, recursively, with their annotations. */
@@ -181,8 +138,5 @@ export interface ModelCompileResult {
    sourceMetadataEntries: SourceMetadata[];
    compileStatus: "SUCCESS" | "ERROR";
    errorMessage?: string;
-   schemaStr?: string;
    sourceInfos?: SourceInfo[];
-   dimIndexNonPublicSkips?: DimIndexFieldRef[];
-   dimIndexGateWithholds?: DimIndexGateWithhold[];
 }

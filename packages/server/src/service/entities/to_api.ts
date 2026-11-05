@@ -56,7 +56,7 @@ function toApiField(entity: Entity): ApiEntityField {
       source: entity.source ?? "",
       kind: entity.field_type === "unknown" ? "hidden" : entityKind(entity),
       code: entity.code ?? "",
-      annotations: entity.tags ? (JSON.parse(entity.tags) as string[]) : [],
+      annotations: entity.tags ?? [],
       table: {
          ...(table.connection_name != null && {
             connection: table.connection_name,

@@ -42,51 +42,6 @@ export function computeSqlFingerprint(compiledSql: string): string {
 }
 
 /**
- * The two SQL forms a compiled fingerprint fragment can expose.
- *
- * - ``preparedSql`` is ``preparedResult.sql`` — the SQL Malloy actually
- *   runs. It is *post-manifest-rewrite*: for a table-backed index it would
- *   reference the materialized physical table names (which churn), so it is
- *   NOT a stable definitional fingerprint for those.
- * - ``preRewriteSql`` is the *manifest-free / logical* SQL — the query as it
- *   would compile with no materialization manifest applied. This is the
- *   fingerprint we want, because it identifies the logical projection a
- *   dimension carves out of its source independent of where the bytes
- *   currently live.
- */
-export interface FingerprintSqlSources {
-   preparedSql: string;
-   /**
-    * Populated only when the compiler can produce manifest-free SQL.
-    * ``undefined`` for every source today: forked-Malloy does not yet expose a
-    * manifest-free compile, and it is only *needed* by table-backed indexes.
-    * Until the compiler exposes one, {@link resolveFingerprintSql} falls back
-    * to ``preparedSql``.
-    */
-   preRewriteSql?: string;
-}
-
-/**
- * Choose the SQL to fingerprint.
- *
- * Prefer the manifest-free ``preRewriteSql`` when the compiler can produce
- * it; otherwise fall back to ``preparedSql``. The fallback is *correct today*
- * because every shipped ``#(index)`` dimension is connection-backed and has no
- * materialization manifest — its ``preparedResult.sql`` is already
- * manifest-free, so the two forms are byte-identical. Table-backed indexes
- * are the only case where the two diverge, and they cannot be supported
- * until the compiler can populate ``preRewriteSql``.
- *
- * Centralizing the decision here means the id derivation contract (what SQL
- * feeds the fingerprint) has exactly one definition, and flipping table-backed
- * indexes on later is a one-line change at the call site (populate
- * ``preRewriteSql``), not a semantics change here.
- */
-export function resolveFingerprintSql(sources: FingerprintSqlSources): string {
-   return sources.preRewriteSql ?? sources.preparedSql;
-}
-
-/**
  * Backtick-quote a (possibly dotted) Malloy field reference per segment.
  * Malloy traverses joins with ``.`` but quotes *identifiers* with
  * backticks, so a join-qualified path must be quoted segment-wise

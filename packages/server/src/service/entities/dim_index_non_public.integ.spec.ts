@@ -7,13 +7,11 @@
  *
  * These pin the parts that can only be proven against the real compiler:
  *
- *  - an ``internal:`` ``#(index)`` dimension compiles SUCCESS (no publish
- *    failure), lands in ``dimIndexNonPublicSkips``, and produces NO entity
- *    (so an indexer never sees it);
+ *  - an ``internal:`` ``#(index)`` dimension compiles SUCCESS (no load
+ *    failure) and produces NO entity (so an indexer never sees it);
  *  - a child source that internalizes an inherited indexed dimension via
- *    ``include { internal: ... }`` — the tag can't be stripped in Malloy, the
- *    a shape seen in real packages — records the skip on the child while
- *    the publish still succeeds;
+ *    ``include { internal: ... }`` (the tag can't be stripped in Malloy)
+ *    gets no fingerprint on the child while the load still succeeds;
  *  - an ``#(index)`` tag on an *internal measure* is skipped too, not
  *    rejected as ``not_a_dimension`` (the access check runs first: the tag is
  *    inert on any non-public field).
@@ -28,6 +26,14 @@ import { writeWorkspace, type Workspace } from "./test_support";
 import { packageCompilationService } from "./test_support";
 import { ConnectionLookup } from "./test_support";
 import type { FilePointer } from "./test_support";
+import type { ModelCompileResult } from "./internal_types";
+
+/** The (source, field) pairs that carry an `#(index)` fingerprint. */
+function fingerprinted(result: ModelCompileResult): string[] {
+   return (result.entities ?? [])
+      .filter((e) => e.dim_index_fingerprint)
+      .map((e) => `${e.source}.${e.name}`);
+}
 
 // An #(index) dimension that is internal in its own source — the tag is inert
 // (nothing outside the source can query the field) and must be skipped, not
@@ -103,7 +109,7 @@ describe("dim-index non-public #(index) skip (integration)", () => {
       )[0];
    }
 
-   test("skips an internal #(index) dimension: SUCCESS, skip recorded, no entity", async () => {
+   test("skips an internal #(index) dimension: SUCCESS, no entity", async () => {
       const result = await compile(INTERNAL_INDEXED_DIM_MODEL);
 
       assert.strictEqual(
@@ -111,9 +117,6 @@ describe("dim-index non-public #(index) skip (integration)", () => {
          "SUCCESS",
          `expected SUCCESS; got ${result.compileStatus} (${result.errorMessage})`,
       );
-      assert.deepEqual(result.dimIndexNonPublicSkips, [
-         { sourceName: "orders", fieldName: "channel" },
-      ]);
       // The skipped field never becomes an entity, so an indexer (driven by
       // entity tags) never sees it.
       const entityNames = (result.entities ?? []).map((e) => e.name);
@@ -123,7 +126,7 @@ describe("dim-index non-public #(index) skip (integration)", () => {
       );
    }, 30_000);
 
-   test("inherited #(index) internalized in a child source: child skip, publish succeeds", async () => {
+   test("inherited #(index) internalized in a child source: no child fingerprint, load succeeds", async () => {
       const result = await compile(INHERITED_INTERNALIZED_MODEL);
 
       assert.strictEqual(
@@ -131,9 +134,10 @@ describe("dim-index non-public #(index) skip (integration)", () => {
          "SUCCESS",
          `expected SUCCESS; got ${result.compileStatus} (${result.errorMessage})`,
       );
-      assert.deepEqual(result.dimIndexNonPublicSkips, [
-         { sourceName: "orders_discovery", fieldName: "channel" },
-      ]);
+      assert.ok(
+         !fingerprinted(result).includes("orders_discovery.channel"),
+         `got: ${fingerprinted(result).join(", ")}`,
+      );
    }, 30_000);
 
    test("skips an internal #(index) measure (access check precedes the dimension check)", async () => {
@@ -144,8 +148,6 @@ describe("dim-index non-public #(index) skip (integration)", () => {
          "SUCCESS",
          `expected SUCCESS (skip, not a not_a_dimension rejection); got ${result.compileStatus} (${result.errorMessage})`,
       );
-      assert.deepEqual(result.dimIndexNonPublicSkips, [
-         { sourceName: "orders", fieldName: "order_count" },
-      ]);
+      assert.deepEqual(fingerprinted(result), []);
    }, 30_000);
 });

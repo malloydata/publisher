@@ -22,7 +22,6 @@ function candidate(
       requiredFilterDimensions: [],
       gateDimensions: [],
       requiredParameterNames: [],
-      indexPolicy: null,
       ...overrides,
    };
 }
@@ -213,7 +212,7 @@ describe("assertNoForbiddenIndexPolicyKeys", () => {
    test("allows an #(index) with only freshness/refresh", () => {
       assert.doesNotThrow(() =>
          assertNoForbiddenIndexPolicyKeys(
-            candidate({ indexPolicy: { freshness: { window: "24h" } } }),
+            candidate(),
             ['#(index freshness.window="24h" refresh=full)'],
             "orders.malloy",
          ),
@@ -223,7 +222,7 @@ describe("assertNoForbiddenIndexPolicyKeys", () => {
    test("allows a bare #(index)", () => {
       assert.doesNotThrow(() =>
          assertNoForbiddenIndexPolicyKeys(
-            candidate({ indexPolicy: null }),
+            candidate(),
             ["#(index)"],
             "orders.malloy",
          ),

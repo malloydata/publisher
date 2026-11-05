@@ -14,8 +14,6 @@ import {
    getRawTaglines,
    parseDocAnnotation,
 } from "./malloy_indexing_helpers";
-import { stableStringify } from "./stable_stringify";
-import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -23,7 +21,6 @@ import type {
    Authorize,
    Given as ApiGiven,
    SourceMetadata,
-   SourceParameter,
 } from "./internal_types";
 
 /** Routes the `Given.annotations` contract excludes.
@@ -35,11 +32,11 @@ const isReservedRoute = (route: string): boolean =>
 
 import type {
    Explore as MalloyExplore,
-   Field as MalloyField,
    Model as MalloyModel,
 } from "@malloydata/malloy";
 
 import { errorMessage } from "./errors";
+import { extractCodeFromEntity } from "./model_text";
 import {
    parseGateAnnotation,
    resolveGates,
@@ -54,58 +51,6 @@ import {
 import type { DimIndexFingerprintInputs } from "./dim_index_entity_id";
 import { composeSourceName, splitSourcePath } from "./explore_walk";
 import { parseFilterAnnotation, type Filter } from "./filter_parsing";
-import { parseIndexPolicy } from "./index_annotation_parsing";
-import { randomUUID } from "crypto";
-
-/**
- * Extracts the Malloy code from an entity based on location.
- */
-function extractCodeFromEntity(
-   entity: MalloyExplore | MalloyField,
-   docString: string,
-): string {
-   const codeRange = entity.location?.range;
-   if (!codeRange) {
-      return "";
-   }
-   // If the code comes from another file, we need to load that file
-   const locationUrl = entity.location?.url;
-   if (locationUrl && !locationUrl.endsWith("internal.malloy")) {
-      const filePath = fileURLToPath(locationUrl);
-      try {
-         docString = fs.readFileSync(filePath, "utf8");
-      } catch (error) {
-         logger.warn(
-            `Failed to read file for entity ${entity.name}: ${filePath}`,
-            error,
-         );
-         return "";
-      }
-   }
-   const lines = docString.split("\n");
-   const keep: string[] = [];
-   for (let i = codeRange.start.line; i <= codeRange.end.line; i++) {
-      const line = lines[i];
-      if (i < 0 || i >= lines.length || !line) {
-         logger.warn("Trying to get code out of bounds");
-         break;
-      }
-
-      if (i === codeRange.start.line && i === codeRange.end.line) {
-         keep.push(
-            line.slice(codeRange.start.character, codeRange.end.character),
-         );
-      } else if (i === codeRange.start.line) {
-         keep.push(line.slice(codeRange.start.character));
-      } else if (i === codeRange.end.line) {
-         keep.push(line.slice(0, codeRange.end.character));
-      } else {
-         keep.push(line);
-      }
-   }
-   logger.debug(`Code for ${entity.name}:`, keep.join("\n"));
-   return keep.join("\n");
-}
 
 /**
  * Builds a map of source names to their relative model file paths.
@@ -335,7 +280,6 @@ function getEntitiesFromExplore(
       const codeEntity: Entity = getEntityFromMalloyField(
          field,
          entitySource,
-         relativePath,
          docString,
          explore.sourceStructDef?.connection ?? null,
          explore.sourceStructDef && "tablePath" in explore.sourceStructDef
@@ -344,14 +288,10 @@ function getEntitiesFromExplore(
          joinMetadata,
          nameOverride,
       );
-      // ``#(index)``-tagged DIMENSION fields carry a definitional
-      // ``dim_index_fingerprint`` (the compiled-SQL hash + required-filter
-      // set). A host that indexes the package can derive a cross-version-stable
-      // id from it in place of this per-run id, so an unchanged dimension
-      // maps onto the same index row across versions and source extensions.
-      // Every other field (and dim-index candidates whose fragment failed to
-      // compile) keeps its per-run ``randomUUID()`` and reports no fingerprint.
-      codeEntity.id = randomUUID();
+      // An ``#(index)``-tagged dimension carries its definitional fingerprint
+      // (the compiled-SQL hash and required-filter set), from which a host can
+      // derive an id that stays stable across versions. A candidate whose
+      // fingerprint compile failed reports none.
       const fingerprint = dimIndexFingerprints.get(
          makeDimIndexLookupKey(sourceName, field.name),
       );
@@ -360,19 +300,6 @@ function getEntitiesFromExplore(
             sql_fingerprint: fingerprint.sqlFingerprint,
             required_filter_dimensions: fingerprint.requiredFilterDimensions,
          };
-      }
-      // ``#(index)``-tagged dimensions carry their declared per-dimension
-      // persistence policy (``refresh`` / ``freshness``) parsed off the
-      // annotation — the dimension-grain analog of
-      // ``PersistSourcePlan.{refresh,freshness}`` on the entities channel. Scope
-      // is package-level (``Package.scope``), so per-dimension ``sharing`` /
-      // ``schedule`` are no longer part of the policy (rejected at publish).
-      // Absent when the dimension declares no policy (it is opt-in), so a
-      // bare ``#(index)`` reports nothing. Reported verbatim for the host that
-      // builds the index to schedule and display.
-      const indexPolicy = parseIndexPolicy(field.getTaglines?.() ?? []);
-      if (indexPolicy) {
-         codeEntity.index_policy = indexPolicy;
       }
       entities.push(codeEntity);
    }
@@ -406,64 +333,6 @@ const extractDocsFromExplore = (explore: MalloyExplore): string | null => {
       .filter((doc): doc is string => !!doc && doc.length > 0);
 
    return parts.length > 0 ? parts.join("\n") : null;
-};
-
-function normalizeParameterDefaultValue(
-   value: unknown,
-   sourceName: string,
-   parameterName: string,
-): string | null {
-   if (value === null || value === undefined) {
-      return null;
-   }
-   if (typeof value !== "object") {
-      return String(value);
-   }
-
-   const nodeValue = value as {
-      node?: unknown;
-      literal?: unknown;
-   };
-   const node = nodeValue.node;
-   if (node === "stringLiteral" || node === "numberLiteral") {
-      return nodeValue.literal === undefined ? null : String(nodeValue.literal);
-   }
-   if (node === "true" || node === "false") {
-      return String(node);
-   }
-
-   const serialized = stableStringify(value);
-   logger.warn(
-      `[INDEXER] Unknown parameter default value shape for ${sourceName}.${parameterName}: ${serialized}`,
-   );
-   return serialized;
-}
-
-const extractParametersFromExplore = (
-   explore: MalloyExplore,
-): SourceParameter[] => {
-   const params = (
-      explore.structDef as { parameters?: Record<string, unknown> }
-   )?.parameters;
-   if (!params) {
-      return [];
-   }
-
-   return Object.entries(params).map(([name, paramValue]) => {
-      const param = (paramValue ?? {}) as {
-         type?: unknown;
-         value?: unknown;
-      };
-      return {
-         name,
-         type: param.type == null ? null : String(param.type),
-         defaultValue: normalizeParameterDefaultValue(
-            param.value,
-            explore.name,
-            name,
-         ),
-      };
-   });
 };
 
 /**
@@ -760,64 +629,6 @@ const checkAuthorizeJoinBypass = (
    ];
 };
 
-/** Givens a fronting proxy sets from the caller's verified identity (GROUPS,
- *  ORG_ROLES) or its own configuration (CELL_ID), rather than accepting them
- *  from the caller. They are trusted independent of any marker, so none is
- *  declared `#(secure)` and the advisory must not flag them. */
-const ROUTER_SOURCED_GIVENS: ReadonlySet<string> = new Set([
-   "GROUPS",
-   "ORG_ROLES",
-   "CELL_ID",
-]);
-
-/** A non-blocking advisory: an `#(authorize)` gate references a given that
- *  won't be enforced as a server-set value by middleware that resolves/strips
- *  secure givens. */
-export interface AuthorizeGivenAdvisory {
-   sourceName: string;
-   givenName: string;
-   reason: string;
-}
-
-/** Advisory check (NON-blocking) over a source's `#(authorize)` gates.
- *  `#(authorize)` is usable over ANY given, so this must NOT require any
- *  middleware concept — it never fails the publish. It only flags gates that
- *  would be caller-forgeable *under middleware that resolves/strips secure
- *  givens*: there a gate is a real boundary only if its given is trusted, which
- *  needs BOTH the `#(secure)` marker AND a set-valued (`[]`) type, because such
- *  middleware trusts only set-valued secure givens. Rule per referenced given:
- *    - declared, secure, set-valued (`[]`) → ok (no advisory)
- *    - declared but not secure              → advise (un-marked)
- *    - declared + secure but scalar         → advise (never registered)
- *    - GROUPS / ORG_ROLES / CELL_ID         → ok (proxy-set, set-valued, trusted)
- *    - not a declared given                 → skip (the `$NAME` regex over-captures
- *      `$word` from string literals; an undeclared given fails compile elsewhere).
- *  Callers log these. A `where:` over an un-marked given is NOT flagged — that is a
- *  legitimate caller-supplied query filter. */
-const checkAuthorizeGivensSecure = (
-   givens: ApiGiven[],
-   authorize: Authorize[],
-   sourceName: string,
-): AuthorizeGivenAdvisory[] => {
-   const byName = new Map(givens.map((g) => [g.name, g] as const));
-   const advisories: AuthorizeGivenAdvisory[] = [];
-   for (const gate of authorize) {
-      for (const name of gate.given_names) {
-         if (ROUTER_SOURCED_GIVENS.has(name)) continue; // proxy-set, set-valued, trusted
-         const given = byName.get(name);
-         if (!given) continue; // undeclared → not our concern (regex over-capture)
-         const isSecure = given.secure === true;
-         const isMultiValue = (given.type ?? "").endsWith("[]");
-         if (isSecure && isMultiValue) continue;
-         const reason = !isSecure
-            ? "not marked #(secure)"
-            : `marked #(secure) but scalar ('${given.type}'); secure-given middleware trusts only set-valued secure givens`;
-         advisories.push({ sourceName, givenName: name, reason });
-      }
-   }
-   return advisories;
-};
-
 /** Convert each `Model.givens` entry into the wire `Given` shape — same
  *  contract this server emits on `Source.givens` so an agent reading metadata
  *  via either path sees the identical schema. The compiled Malloy `Given`
@@ -1024,16 +835,6 @@ function extractJoinAuthorizeMetadata(
       if (seenSourceKeys.has(dedupKey)) continue;
       seenSourceKeys.add(dedupKey);
 
-      for (const a of checkAuthorizeGivensSecure(
-         modelGivens,
-         childAuthorize,
-         childSourceName,
-      )) {
-         logger.warn(
-            `[acl-advisory] ${relativePath}: source '${a.sourceName}' #(authorize) gate references given '${a.givenName}' (${a.reason}); under middleware that resolves/strips secure givens this gate is caller-forgeable — mark it #(secure) and set-valued (\`:: T[]\`) if it is meant as an access boundary.`,
-         );
-      }
-
       if (childAuthorize.length > 0) {
          metadataEntries.push({
             modelFilePath: keyModelPath,
@@ -1136,7 +937,6 @@ const extractMetadataFromExplores = (
    }
    for (const explore of explores) {
       const docsString = extractDocsFromExplore(explore);
-      const parameters = extractParametersFromExplore(explore);
       // Source-level #(agent-hidden) is detected only on annotations that
       // are directly attached to this explore. We deliberately do NOT use
       // `explore.getTaglines()` here because that walks the
@@ -1169,13 +969,12 @@ const extractMetadataFromExplores = (
             `[agent-hidden] Source-level agent-hidden found on source '${explore.name}' (defined in ${explore.location?.url ?? "unknown"}) - applied to metadata for model file ${relativePath}.`,
          );
       }
-      if (docsString || parameters.length > 0) {
+      if (docsString) {
          metadataEntries.push({
             modelFilePath: relativePath,
             sourceName: explore.name,
-            metadata: docsString ?? "",
+            metadata: docsString,
             metadataType: "DOCS",
-            parameters,
             agentHidden,
          });
       }
@@ -1186,7 +985,6 @@ const extractMetadataFromExplores = (
             sourceName: explore.name,
             metadata: "",
             metadataType: "AGENT_HIDDEN",
-            parameters,
             agentHidden,
          });
       }
@@ -1208,7 +1006,6 @@ const extractMetadataFromExplores = (
             sourceName: explore.name,
             metadata: "",
             metadataType: "NOT_QUERYABLE",
-            parameters,
             ...(servedFrom ? { servedFrom } : {}),
          });
       }
@@ -1282,19 +1079,6 @@ const extractMetadataFromExplores = (
          sourceDefsByName,
          modelGivens,
       );
-      // Advisory (NON-blocking): warn when an #(authorize) gate references a
-      // given that middleware resolving/stripping secure givens wouldn't
-      // enforce — i.e. not #(secure)+set-valued. #(authorize) is usable over
-      // any given, so we never fail the publish; the advisory is logged only.
-      for (const a of checkAuthorizeGivensSecure(
-         modelGivens,
-         authorize,
-         explore.name,
-      )) {
-         logger.warn(
-            `[acl-advisory] ${relativePath}: source '${a.sourceName}' #(authorize) gate references given '${a.givenName}' (${a.reason}); under middleware that resolves/strips secure givens this gate is caller-forgeable — mark it #(secure) and set-valued (\`:: T[]\`) if it is meant as an access boundary.`,
-         );
-      }
       if (authorize.length > 0) {
          metadataEntries.push({
             modelFilePath: relativePath,
@@ -1389,11 +1173,9 @@ const extractEntitiesFromExplores = (
 };
 
 export const packageSanitizationService = {
-   extractCodeFromEntity,
    extractMetadataFromExplores,
    extractEntitiesFromExplores,
    extractGivensFromModel,
    extractAuthorizeFromModel,
-   checkAuthorizeGivensSecure,
    checkAuthorizeJoinBypass,
 };

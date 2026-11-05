@@ -2,18 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { Entity, JoinSourceMetadata } from "./internal_types";
-import {
-   AccessModifierEnum,
-   EntityTypeEnum,
-   OriginTypeEnum,
-} from "./internal_types";
-import { logger } from "../../logger";
-import { packageSanitizationService } from "./package_sanitization";
+import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
+import { extractCodeFromEntity } from "./model_text";
 import type {
    AtomicField,
    Explore,
    Field,
-   Model,
    URLReader,
 } from "@malloydata/malloy";
 import { readFile } from "node:fs/promises";
@@ -28,37 +22,6 @@ export class FileURLReader implements URLReader {
       const content = await readFile(path, "utf-8");
       return content;
    }
-}
-
-export function getCode(entity: Explore | Field, docString: string): string {
-   /**
-    * Extracts the Malloy code from an entity based on location.
-    */
-   const codeRange = entity.location?.range;
-   if (!codeRange) {
-      return "";
-   }
-   const lines = docString.split("\n");
-   const keep: string[] = [];
-   for (let i = codeRange.start.line; i <= codeRange.end.line; i++) {
-      if (i < 0 || i >= lines.length) {
-         logger.warn("Trying to get code out of bounds");
-         break;
-      }
-      if (i === codeRange.start.line && i === codeRange.end.line) {
-         keep.push(
-            lines[i]!.slice(codeRange.start.character, codeRange.end.character),
-         );
-      } else if (i === codeRange.start.line) {
-         keep.push(lines[i]!.slice(codeRange.start.character));
-      } else if (i === codeRange.end.line) {
-         keep.push(lines[i]!.slice(0, codeRange.end.character));
-      } else {
-         keep.push(lines[i]!);
-      }
-   }
-   // logger.info(`Code for ${entity.name}:`, keep.join('\n'));
-   return keep.join("\n");
 }
 
 /**
@@ -98,7 +61,6 @@ export function getAccessModifier(field: Field): AccessModifierEnum {
 export function getEntityFromMalloyField(
    field: Field,
    source: string,
-   uri: string | null,
    docString: string,
    connection: string | null,
    tablePath: string | null,
@@ -114,14 +76,9 @@ export function getEntityFromMalloyField(
    const name = nameOverride ?? field.name;
    const field_type = inferType(field, docString);
    const field_data_type = inferFieldDataType(field);
-   const code = packageSanitizationService.extractCodeFromEntity(
-      field,
-      docString,
-   );
-   const tagsList = getTags(field);
-   const tags = JSON.stringify(tagsList);
-   const description = getDescriptionFromTags(tagsList);
-   const origin_type = OriginTypeEnum.Published;
+   const code = extractCodeFromEntity(field, docString);
+   const tags = getTags(field);
+   const description = getDescriptionFromTags(tags);
    let catalog_name: string | null = null;
    let schema_name: string | null = null;
    let table_name: string | null = null;
@@ -139,27 +96,20 @@ export function getEntityFromMalloyField(
          }
       }
    }
-   const table_id = `${connection}.${catalog_name}.${schema_name}.${table_name}`;
    const table_info = {
-      table_id,
       connection_name: connection,
       catalog_name,
       schema_name,
       table_name,
    };
    return {
-      id: null,
       name,
       source,
       field_type,
       field_data_type,
-      is_malloy: true,
       code,
       tags,
-      uri,
-      origin_type,
       description,
-      name_readable: name,
       table_info,
       join_source_metadata: joinSourceMetadata ?? undefined,
    };
@@ -201,9 +151,9 @@ export function inferFieldDataType(field: Field): string | null {
 // Block-annotation forms (`#|(doc)\n…`) are emitted by Malloy as a single note
 // whose first line is the prefix and whose dedented body follows, joined with
 // `\n`. Line forms (`#(doc) …`) carry the body inline after the prefix. We
-// accept both, plus the legacy `ms2doc` alias.
-const DOC_BLOCK_PREFIXES = ["#|(doc)", "#|(ms2doc)"] as const;
-const DOC_LINE_PREFIXES = ["#(doc)", "#(ms2doc)"] as const;
+// accept both.
+const DOC_BLOCK_PREFIXES = ["#|(doc)"] as const;
+const DOC_LINE_PREFIXES = ["#(doc)"] as const;
 
 // Normalize line endings to `\n`: CRLF (Windows-authored files) and lone CRs
 // both collapse to `\n` so the stored description has clean newlines. (A lone
@@ -461,10 +411,10 @@ export function isFieldHidden(field: Field): boolean {
    return !!(pattern?.test(name) || strings.includes(name));
 }
 
-export const isStringTag = (tag: string | undefined): tag is string =>
+const isStringTag = (tag: string | undefined): tag is string =>
    typeof tag === "string";
 
-export function isFieldAggregate(field: Field) {
+function isFieldAggregate(field: Field) {
    return field.isAtomicField() && field.isCalculation();
 }
 
@@ -476,10 +426,7 @@ export function fieldType(field: Field) {
  * Returns true if the field is defined in the document.
  */
 export function isMalloyDefined(field: Field, docString: string): boolean {
-   const code = packageSanitizationService.extractCodeFromEntity(
-      field,
-      docString,
-   );
+   const code = extractCodeFromEntity(field, docString);
    // Remove any tags from the code
    const lines = code.split("\n");
    const keep: string[] = [];
@@ -498,129 +445,10 @@ export function isMalloyDefined(field: Field, docString: string): boolean {
    return regex.test(newCode);
 }
 
-export function getTags(field: Field): string[] {
+function getTags(field: Field): string[] {
    const tags = field.getTaglines() || []; // Default to an empty array if null/undefined
    if (tags.length > 0) {
       return tags.map((tag) => tag.trim()).filter((tag) => tag !== "");
    }
    return [];
-}
-
-/**
- * Formats the entities into a string.
- */
-export function formatEntities(entities: Entity[]): string {
-   const groupedEntities = {
-      Columns: [] as string[],
-      Dimensions: [] as string[],
-      Measures: [] as string[],
-      Views: [] as string[],
-      Joins: [] as string[],
-   };
-
-   for (const entity of entities) {
-      if (!entity.name) {
-         continue;
-      }
-
-      switch (entity.field_type.toLowerCase()) {
-         case "column":
-            groupedEntities.Columns.push(entity.name);
-            break;
-         case "dimension":
-            groupedEntities.Dimensions.push(entity.name);
-            break;
-         case "measure":
-            groupedEntities.Measures.push(entity.name);
-            break;
-         case "view":
-            groupedEntities.Views.push(entity.name);
-            break;
-         case "query":
-            groupedEntities.Views.push(entity.name);
-            break;
-         case "explore":
-            groupedEntities.Joins.push(entity.name);
-            break;
-         case "join":
-            groupedEntities.Joins.push(entity.name);
-            break;
-         default:
-            logger.warn(`Unknown field_type: ${entity.field_type}`);
-      }
-   }
-
-   const allEmpty = Object.values(groupedEntities).every(
-      (arr) => arr.length === 0,
-   );
-
-   return allEmpty ? "" : JSON.stringify(groupedEntities);
-}
-
-/**
- * Returns the connection and table name from the doc string.
- */
-function getConnectionAndTableNameFromDocString(docString: string) {
-   const connMatch = docString.match(/is\s+([^.]+)\.table/);
-   const connectionName = connMatch ? connMatch[1] : null;
-   const pathMatch = docString.match(/\.table\('([^']+)'\)/);
-   const tablePath = pathMatch ? pathMatch[1] : null;
-
-   return { connectionName, tablePath };
-}
-
-/**
- * Returns the entities from the model.
- */
-function getSourceEntitiesFromModel(model: Model, docString: string) {
-   const explores = model ? model.explores : [];
-   const { tablePath } = getConnectionAndTableNameFromDocString(docString);
-   let dataset = null;
-   let tableName = tablePath;
-   if (tablePath && tablePath.includes(".")) {
-      const parts = tablePath.split(".");
-      dataset = parts[parts.length - 2]!;
-      tableName = parts[parts.length - 1]!;
-   }
-   const sourceEntities: Entity[] = [];
-   for (const explore of explores) {
-      const source = explore.name;
-      const connection = explore.sourceStructDef?.connection ?? null;
-      let tablePath = `${tableName}`;
-      if (dataset) {
-         tablePath = `${dataset}.${tableName}`;
-      }
-      for (const field of explore.allFields) {
-         if (getAccessModifier(field) !== AccessModifierEnum.Public) {
-            continue;
-         }
-         const currEntity = getEntityFromMalloyField(
-            field,
-            source,
-            null,
-            docString,
-            connection,
-            tablePath,
-         );
-         currEntity.is_malloy = false;
-         sourceEntities.push(currEntity);
-      }
-      if (sourceEntities.length === 0) {
-         logger.warn(`No entities found for ${source}`);
-         continue;
-      }
-   }
-   return sourceEntities;
-}
-
-export function getModelMetadata(model: Model, docString: string) {
-   /**
-    * Returns the model data explores from the model.
-    */
-   const sourceEntities = getSourceEntitiesFromModel(model, docString);
-   const schemaStr = formatEntities(sourceEntities);
-   return {
-      sourceEntities,
-      schemaStr,
-   };
 }
