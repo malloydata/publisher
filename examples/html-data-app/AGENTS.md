@@ -33,7 +33,7 @@ public/                # ONLY this directory is web-served
 Only `public/` is reachable over the web, at
 `/environments/<env>/packages/<pkg>/<file>`. The model, data, and `publisher.json`
 are private and reached only through the query API, which still applies the
-model's governance (filters/givens, access modifiers, authorize rules). A package
+model's governance (filters/givens, `private:` fields, authorize rules). A package
 is a data app simply by having a `public/` directory.
 
 ## How to build or change a page
