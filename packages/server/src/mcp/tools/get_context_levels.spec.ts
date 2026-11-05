@@ -225,19 +225,68 @@ describe("get_context with no package named", () => {
       );
    });
 
-   it("refuses an offset on a listing of environments or packages, and drops it when a package is entered", async () => {
+   it("refuses an offset on a listing of environments or packages", async () => {
       expect((await call(TWO_ENVS, { offset: 5 })).payload.error).toContain(
          "Invalid offset: a listing of environments is not paged",
       );
-      const entered = await resolveLevel(
-         { environment: "dev", offset: 5 },
-         TWO_ENVS,
+   });
+
+   it("keeps offset when it enters the lone package, so its pages can be read", async () => {
+      // One package with more sources than a page.
+      const store = storeOf({ prod: { packages: [{ name: "sales" }] } });
+      const page = async (offset?: number) =>
+         (
+            await call(store, {
+               search_targets: [{ target_type: "source" }],
+               limit: 1,
+               ...(offset !== undefined ? { offset } : {}),
+            })
+         ).payload;
+      const first = await page();
+      expect(first.returned).toBe(1);
+      expect(first.warnings[0]).toBe(
+         "This server serves one package, so this call entered prod/sales, and lists what the targets name in it. Name it in scopes from now on.",
       );
-      expect(entered.kind === "scoped" && entered.params.offset).toBe(
-         undefined,
-      );
-      expect(entered.kind === "scoped" && entered.warnings[1]).toBe(
-         "offset was dropped: it was meant for a listing of packages or environments, which this call did not return.",
+      // The response's next_offset, sent back, reads past the first page.
+      const second = await page(1);
+      expect(second.returned).toBe(0);
+      expect(second.next_offset).toBeUndefined();
+   });
+
+   it("names failed packages and unreadable environments when it enters the lone package", async () => {
+      const store = storeOf({
+         prod: {
+            packages: [{ name: "sales" }],
+            failed: { broken: "Compile failed" },
+         },
+      });
+      const outcome = await resolveLevel({}, store);
+      expect(outcome.kind === "scoped" && outcome.warnings).toEqual([
+         "This server serves one package, so this call entered prod/sales, and lists its sources. Name it in scopes from now on.",
+         "A package failed to load and is not listed: prod/broken. list_packages and get_status say why.",
+      ]);
+   });
+
+   it("names other environments' failures when one environment holds every package", async () => {
+      const store = storeOf({
+         prod: { packages: [{ name: "a" }, { name: "b" }] },
+         other: { packages: [], failed: { gone: "Compile failed" } },
+      });
+      const { payload } = await call(store, {});
+      expect(payload.listing).toBe("packages");
+      expect(payload.warnings).toEqual([
+         "A package failed to load and is not listed: other/gone. list_packages and get_status say why.",
+      ]);
+   });
+
+   it("refuses a search naming an environment with no package that loaded, rather than listing it", async () => {
+      const { isError, payload } = await call(TWO_ENVS, {
+         environment: "empty",
+         search_targets: [{ target_type: "measure", search_text: "revenue" }],
+      });
+      expect(isError).toBe(true);
+      expect(payload.error).toContain(
+         'A search needs one package, and environment "empty" has none to search: it serves no package that loaded.',
       );
    });
 });

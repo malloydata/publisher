@@ -196,22 +196,32 @@ export async function resolveLevel(
    const served = (env: CatalogEnvironment) =>
       env.packages.filter(isServed).map((p) => p.name);
    const searching = (params.search_targets ?? []).length > 0;
+   const ranked = (params.search_targets ?? []).some((t) =>
+      Boolean(t.search_text?.trim()),
+   );
 
-   /** Enter `env`'s lone package, as if the call had named it. */
+   /**
+    * Enter `env`'s lone package, as if the call had named it. `offset` is
+    * kept: a listing of environments or packages is never paged, so an offset
+    * can only have come from this package's own results (a page of a search,
+    * or of its sources).
+    */
    const enter = (env: CatalogEnvironment, why: string): LevelOutcome => {
       const pkgName = served(env)[0];
       const pkg = env.packages.find((p) => p.name === pkgName);
+      const what = ranked
+         ? " and searched it"
+         : searching
+           ? ", and lists what the targets name in it"
+           : ", and lists its sources";
       const warnings = [
-         `${why}, so this call entered ${env.name}/${pkgName}${searching ? " and searched it" : ", and lists its sources"}. Name it in scopes from now on.`,
+         `${why}, so this call entered ${env.name}/${pkgName}${what}. Name it in scopes from now on.`,
+         // A package that failed to load would otherwise read as not there:
+         // "the only package" is only true of the ones that loaded.
+         ...healthWarnings(catalog, true),
       ];
-      if (params.offset) {
-         warnings.push(
-            "offset was dropped: it was meant for a listing of packages or environments, which this call did not return.",
-         );
-      }
       const scoped: ScopedParams = {
          ...params,
-         offset: undefined,
          scopes: [{ environment: env.name, package: pkgName }],
          search_targets: params.search_targets ?? [{ target_type: "source" }],
       };
@@ -240,7 +250,15 @@ export async function resolveLevel(
            }
          : undefined;
 
-   const listPackages = (env: CatalogEnvironment): LevelOutcome => {
+   /**
+    * List `env`'s packages. `report` is the environments whose failures the
+    * warnings name: every environment when the call named none, so a failure
+    * elsewhere is not hidden behind the one environment that has packages.
+    */
+   const listPackages = (
+      env: CatalogEnvironment,
+      report: readonly CatalogEnvironment[] = [env],
+   ): LevelOutcome => {
       const refused = refuseOffset("packages");
       if (refused) return refused;
       const packages = env.packages
@@ -254,7 +272,7 @@ export async function resolveLevel(
             };
          })
          .sort((a, b) => (a.package < b.package ? -1 : 1));
-      const warnings = healthWarnings([env], true);
+      const warnings = healthWarnings(report, true);
       return {
          kind: "listing",
          environment: env.name,
@@ -284,12 +302,17 @@ export async function resolveLevel(
       if (pkgs.length === 1) {
          return enter(env, `${env.name} serves one package`);
       }
-      if (searching && pkgs.length > 1) {
+      if (searching) {
+         const why = env.error
+            ? `its packages could not be listed: ${env.error}`
+            : "it serves no package that loaded";
          return {
             kind: "error",
             environment,
             error: new InvalidArgumentError(
-               `A search needs one package: Publisher indexes each package on its own. Fix: add scopes: [{"environment": "${env.name}", "package": "<one of: ${names(pkgs)}>"}].`,
+               pkgs.length > 1
+                  ? `A search needs one package: Publisher indexes each package on its own. Fix: add scopes: [{"environment": "${env.name}", "package": "<one of: ${names(pkgs)}>"}].`
+                  : `A search needs one package, and environment "${env.name}" has none to search: ${why}. Fix: call get_status or list_packages for load errors, or search another environment.`,
             ),
          };
       }
@@ -314,7 +337,9 @@ export async function resolveLevel(
          ),
       };
    }
-   if (withPackages.length === 1) return listPackages(withPackages[0]);
+   if (withPackages.length === 1) {
+      return listPackages(withPackages[0], catalog);
+   }
 
    const refused = refuseOffset("environments");
    if (refused) return refused;
