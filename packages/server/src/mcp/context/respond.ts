@@ -44,6 +44,7 @@
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    defaultValueFetcher,
+   type ValueFetchRequest,
    type ValueFetcher,
 } from "../tools/get_context_values";
 import { matchValues } from "../tools/get_context_value_match";
@@ -118,6 +119,8 @@ export async function respond(args: {
    alsoLikely?: readonly AlsoLikelyField[];
    /** Aborted at the request's deadline: no gated lookup starts after it. */
    signal?: AbortSignal;
+   /** Who asked, for the access record of each gated value lookup. */
+   identity?: ValueFetchRequest["identity"];
 }): Promise<FcjAnswer> {
    const { index, request, connected, verdicts, targets } = args;
    const warnings: string[] = [];
@@ -670,6 +673,7 @@ async function valuesFor(
             ? { filterParams: request.filterParams }
             : {}),
          timeoutMs: GATED_LOOKUP_TIMEOUT_MS,
+         ...(args.identity ? { identity: args.identity } : {}),
       });
       return matchValues(phrase, got.values).map((h) => ({
          value: h.value,

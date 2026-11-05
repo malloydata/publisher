@@ -18,7 +18,10 @@
  */
 
 import type { GivenValue } from "@malloydata/malloy";
-import { withAccessRecord } from "../../service/access_record";
+import {
+   type AccessRecordBase,
+   withAccessRecord,
+} from "../../service/access_record";
 import { quoteMalloyIdentifier } from "../../service/authorize";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { tryAcquireQuerySlot } from "../../query_concurrency";
@@ -48,6 +51,8 @@ export interface ValueFetchRequest {
    givens?: Record<string, unknown>;
    filterParams?: Record<string, string | string[]>;
    timeoutMs: number;
+   /** Who asked, from the request headers, for the access record. */
+   identity?: Pick<AccessRecordBase, "caller" | "traceId">;
 }
 
 export type ValueFetcher = (
@@ -84,6 +89,8 @@ export interface DistinctValueQuery {
    counted: boolean;
    /** Labels a refusal at the query cap; see tryAcquireQuerySlot. */
    routeLabel: string;
+   /** Who asked, from the request headers, for the access record. */
+   identity?: Pick<AccessRecordBase, "caller" | "traceId">;
 }
 
 /**
@@ -104,6 +111,7 @@ export async function queryDistinctValues(
             modelPath: request.modelPath,
             requestedSource: request.source,
             adHoc: true,
+            ...request.identity,
          },
          undefined,
          async (audit) => {

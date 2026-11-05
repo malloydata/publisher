@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EnvironmentStore } from "../../service/environment_store";
 import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri } from "../handler_utils";
-import type { RequestExtra } from "../request_extra";
+import { accessIdentityOf, type RequestExtra } from "../request_extra";
 import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import { runFcjQuery, type TraceMode } from "../context/engine";
@@ -230,6 +230,7 @@ async function runContextQuery(
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
    traceMode: TraceMode = "none",
+   identity?: ReturnType<typeof accessIdentityOf>,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
@@ -326,6 +327,7 @@ async function runContextQuery(
       uri,
       warnings: ctx.warnings,
       traceMode,
+      ...(identity ? { identity } : {}),
    });
 }
 
@@ -362,6 +364,7 @@ export function registerGetContextTool(
             environmentStore,
             unsupportedTargetWarnings(request),
             traceModeOf(extra),
+            accessIdentityOf(extra),
          );
       },
    );
