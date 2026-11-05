@@ -5,9 +5,8 @@
  * The package resource and what moved off it, over HTTP against the real
  * Express app and the real worker-pool load:
  *
- * - `GET …/entities`, `GET …/build-plan` and `GET …/embedding-index` read the
- *   loaded package, and a read pinned to a load (`servedRevision`) is refused
- *   with a 409 once the package has reloaded.
+ * - `GET …/entities`, `GET …/build-plan`, `GET …/classification` and
+ *   `GET …/embedding-index` read the loaded package.
  * - `GET …/status` reads the package's serving state without loading it.
  * - With `PUBLISHER_PACKAGE_INLINE_FIELDS=off` a package response carries only
  *   the package's own fields, and its `GET /status` entry only what a reconcile
@@ -22,8 +21,7 @@ import { resetPackageLoadMetricsForTesting } from "../../../src/package_load_met
 import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
-type PackageEntities = components["schemas"]["PackageEntities"];
-type PackageBuildPlan = components["schemas"]["PackageBuildPlan"];
+type ModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackage = components["schemas"]["Package"];
 
 const ENV_NAME = "package-resources-env";
@@ -117,13 +115,12 @@ describe("the package resource and its sub-resources", () => {
    it("GET …/entities reports every model's entities, off-surface files included", async () => {
       const { status, json } = await get(pkgUrl("shop", "/entities"));
       expect(status).toBe(200);
-      const body = json as unknown as PackageEntities;
-      expect(body.servedRevision).toBeString();
-      expect(body.models.map((m) => m.modelPath)).toEqual([
+      const models = json as unknown as ModelEntities[];
+      expect(models.map((m) => m.modelPath)).toEqual([
          "helper.malloy",
          "orders.malloy",
       ]);
-      const orders = body.models.find((m) => m.modelPath === "orders.malloy")!;
+      const orders = models.find((m) => m.modelPath === "orders.malloy")!;
       expect(orders.error).toBeUndefined();
       expect(orders.givens?.map((g) => [g.name, g.type, g.secure])).toEqual([
          ["ROLES", "string[]", true],
@@ -142,20 +139,19 @@ describe("the package resource and its sub-resources", () => {
       expect(regionLabel.indexFingerprint?.requiredFilterDimensions).toEqual([
          "channel",
       ]);
-      const helper = body.models.find((m) => m.modelPath === "helper.malloy")!;
+      const helper = models.find((m) => m.modelPath === "helper.malloy")!;
       expect(helper.sources!.find((s) => s.name === "helper")!.queryable).toBe(
          false,
       );
       // The whole response, as a load computes it from the rebuilt models.
-      expect(body.models).toMatchSnapshot();
+      expect(models).toMatchSnapshot();
    }, 60_000);
 
    it("GET …/build-plan and GET …/embedding-index read the loaded package", async () => {
       const plan = await get(pkgUrl("shop", "/build-plan"));
       expect(plan.status).toBe(200);
-      const body = plan.json as unknown as PackageBuildPlan;
-      expect(body.servedRevision).toBeString();
-      expect("buildPlan" in body).toBe(true);
+      // The package declares no persist source: an empty plan.
+      expect(plan.json).toEqual({ graphs: [], sources: {} });
 
       const index = await get(pkgUrl("shop", "/embedding-index"));
       expect(index.status).toBe(200);
@@ -172,48 +168,13 @@ describe("the package resource and its sub-resources", () => {
       expect((await get(pkgUrl("nope", "/classification"))).status).toBe(404);
    }, 60_000);
 
-   it("an empty servedRevision pins nothing", async () => {
-      for (const sub of ["/entities", "/build-plan"]) {
-         expect(
-            (await get(pkgUrl("shop", `${sub}?servedRevision=`))).status,
-         ).toBe(200);
-      }
-   }, 60_000);
-
-   it("a read pinned to a load is served while that load serves, and refused once the package reloads", async () => {
-      const { json } = await get(pkgUrl("shop", "/entities"));
-      const revision = (json as unknown as PackageEntities).servedRevision;
-      expect((await statusEntry("shop")).servedRevision).toBe(revision);
-
-      for (const sub of ["/entities", "/build-plan"]) {
-         const pinned = await get(
-            pkgUrl("shop", `${sub}?servedRevision=${revision}`),
-         );
-         expect(pinned.status).toBe(200);
-         expect(pinned.json.servedRevision).toBe(revision);
-      }
-
-      expect((await get(pkgUrl("shop", "?reload=true"))).status).toBe(200);
-      for (const sub of ["/entities", "/build-plan"]) {
-         const stale = await get(
-            pkgUrl("shop", `${sub}?servedRevision=${revision}`),
-         );
-         expect(stale.status).toBe(409);
-         expect(stale.json.reason).toBe("REVISION_CHANGED");
-      }
-      const fresh = await get(pkgUrl("shop", "/entities"));
-      expect(fresh.json.servedRevision).not.toBe(revision);
-   }, 120_000);
-
    it("GET …/status reports the serving state, and 404s for an unknown package", async () => {
       const { status, json } = await get(pkgUrl("shop", "/status"));
       expect(status).toBe(200);
       expect(json.name).toBe("shop");
       expect(json.resource).toBe(`/api/v0${pkgUrl("shop")}`);
       expect(json.status).toMatchObject({ serving: true, loading: false });
-      expect(json.servedRevision).toBe(
-         (await get(pkgUrl("shop", "/entities"))).json.servedRevision,
-      );
+      expect(json.servedRevision).toBeString();
       expect(json.sourceContentSha).toBeString();
       expect(json.manifestBindingStatus).toBe("unbound");
       expect(json.manifestEntryCount).toBe(0);

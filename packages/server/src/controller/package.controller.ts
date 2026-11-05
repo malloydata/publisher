@@ -20,6 +20,7 @@ import {
    internalErrorToHttpError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
@@ -32,8 +33,8 @@ import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 
 type ApiPackage = components["schemas"]["Package"];
-type ApiPackageEntities = components["schemas"]["PackageEntities"];
-type ApiPackageBuildPlan = components["schemas"]["PackageBuildPlan"];
+type ApiModelEntities = components["schemas"]["ModelEntities"];
+type ApiBuildPlan = components["schemas"]["BuildPlan"];
 type ApiPackageServingState = components["schemas"]["PackageServingState"];
 type ApiClassificationSummary = components["schemas"]["ClassificationSummary"];
 
@@ -182,25 +183,6 @@ export class PackageController {
    }
 
    /**
-    * The loaded package, refused with a 409 when `servedRevision` names a load
-    * this server no longer serves.
-    */
-   private async pinnedPackage(
-      environmentName: string,
-      packageName: string,
-      versionId: unknown,
-      servedRevision: unknown,
-   ) {
-      const pkg = await this.loadedPackage(
-         environmentName,
-         packageName,
-         versionId,
-      );
-      pkg.assertServedRevision(servedRevision);
-      return pkg;
-   }
-
-   /**
     * `GET …/status`: how this server holds the package (or the named version)
     * right now. Never loads it.
     */
@@ -215,48 +197,42 @@ export class PackageController {
 
    /**
     * `GET …/entities`: what every `.malloy` model declares, in the form an
-    * indexer reads, as computed at load. With `servedRevision`, refused with a
-    * 409 unless this server still serves that load.
+    * indexer reads, as computed at load.
     */
    public async getPackageEntities(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
-      servedRevision?: unknown,
-   ): Promise<ApiPackageEntities> {
-      const pkg = await this.pinnedPackage(
+   ): Promise<ApiModelEntities[]> {
+      const pkg = await this.loadedPackage(
          environmentName,
          packageName,
          versionId,
-         servedRevision,
       );
-      return {
-         servedRevision: pkg.getServedRevision(),
-         models: [...(pkg.getEntities() ?? [])],
-      };
+      return [...(pkg.getEntities() ?? [])];
    }
 
    /**
-    * `GET …/build-plan`: the persist build plan of the load, null when there
-    * is none or it could not be derived. With `servedRevision`, refused with a
-    * 409 unless this server still serves that load.
+    * `GET …/build-plan`: the persist build plan of the load; an empty plan
+    * when the package declares no persist source, and 503 when the plan could
+    * not be derived at load.
     */
    public async getPackageBuildPlan(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
-      servedRevision?: unknown,
-   ): Promise<ApiPackageBuildPlan> {
-      const pkg = await this.pinnedPackage(
+   ): Promise<ApiBuildPlan> {
+      const pkg = await this.loadedPackage(
          environmentName,
          packageName,
          versionId,
-         servedRevision,
       );
-      return {
-         servedRevision: pkg.getServedRevision(),
-         buildPlan: pkg.getBuildPlan(),
-      };
+      if (pkg.isBuildPlanUnavailable()) {
+         throw new ServiceUnavailableError(
+            `The build plan of package ${packageName} could not be derived at load; reload the package to derive it again.`,
+         );
+      }
+      return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
    }
 
    /**

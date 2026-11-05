@@ -659,28 +659,23 @@ function registerPackageRoutes(
          ),
       ),
    );
-   // A package's sub-resources. Each takes `versionId`; the two computed at
-   // load also take `servedRevision`, to refuse a read of a later load.
+   // A package's sub-resources, each read for the version `versionId` names.
    const packageReads: [
       string,
       (
          environmentName: string,
          packageName: string,
          versionId: unknown,
-         servedRevision: unknown,
       ) => Promise<unknown>,
    ][] = [
       [
          "status",
          (e, p, v) => packageController.getPackageServingState(e, p, v),
       ],
-      [
-         "entities",
-         (e, p, v, r) => packageController.getPackageEntities(e, p, v, r),
-      ],
+      ["entities", (e, p, v) => packageController.getPackageEntities(e, p, v)],
       [
          "build-plan",
-         (e, p, v, r) => packageController.getPackageBuildPlan(e, p, v, r),
+         (e, p, v) => packageController.getPackageBuildPlan(e, p, v),
       ],
       [
          "classification",
@@ -699,7 +694,6 @@ function registerPackageRoutes(
                req.params.environmentName,
                req.params.packageName,
                req.query.versionId,
-               req.query.servedRevision,
             ),
          ),
       );

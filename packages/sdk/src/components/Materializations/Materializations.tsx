@@ -368,7 +368,7 @@ export default function Materializations({
 
          <MaterializationDetailDialog
             materialization={selected}
-            buildPlan={buildPlanQuery.data?.data?.buildPlan ?? null}
+            buildPlan={buildPlanQuery.data?.data ?? null}
             onClose={() => setSelectedId(null)}
          />
 

@@ -47,7 +47,6 @@ import {
 } from "../constants";
 import {
    BadRequestError,
-   RevisionChangedError,
    ModelCompilationError,
    PackageManifestError,
    PackageNotFoundError,
@@ -371,6 +370,8 @@ export class Package {
    // it is stable per (package version, connection config). Null when the
    // package declares no persist source.
    private buildPlan: BuildPlan | null = null;
+   /** The build plan could not be derived at load (see applyLoadBuildPlan). */
+   private buildPlanFailed = false;
    // Keyed on the plan it came from, so a reload recomputes it.
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
@@ -1349,6 +1350,7 @@ export class Package {
             ? workerPlan.outcome
             : await computePackageBuildPlan(this);
          this.buildPlan = plan;
+         this.buildPlanFailed = false;
          this.droppedPersistSources = droppedPersistSources;
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
@@ -1371,6 +1373,7 @@ export class Package {
          );
          return performance.now() - buildPlanPhaseStart;
       } catch (err) {
+         this.buildPlanFailed = true;
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.packageName}`,
@@ -1395,6 +1398,11 @@ export class Package {
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
       return this.buildPlan;
+   }
+
+   /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
+   public isBuildPlanUnavailable(): boolean {
+      return this.buildPlanFailed;
    }
 
    /** The package-level `materialization` config, the least specific layer; null when none. */
@@ -1722,22 +1730,6 @@ export class Package {
             })),
          }),
       };
-   }
-
-   /**
-    * Throws {@link RevisionChangedError} unless `expected` is absent or names
-    * the load this package is serving. A caller that read the package after a
-    * load passes the load's `servedRevision` to every follow-up read, so it
-    * never mixes facts from two loads.
-    */
-   public assertServedRevision(expected: unknown): void {
-      if (expected === undefined || expected === "") return;
-      if (expected !== this.servedRevision) {
-         throw new RevisionChangedError(
-            `Package ${this.packageName} has reloaded: it is serving revision ` +
-               `${this.servedRevision}, not ${String(expected)}. Read the package again.`,
-         );
-      }
    }
 
    /** The bound manifest entries, or undefined when serving live; reused by /compile. */

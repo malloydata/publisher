@@ -35,7 +35,7 @@ A package response now describes the package. What was computed onto it moves to
 
 | Was on `Package` | Now |
 |---|---|
-| `buildPlan` | `GET …/packages/{pkg}/build-plan`: `{servedRevision, buildPlan}` |
+| `buildPlan` | `GET …/packages/{pkg}/build-plan`: the plan itself; empty when the package declares no persist source, 503 when it could not be derived |
 | `embeddingIndex` | `GET …/packages/{pkg}/embedding-index` |
 | `agents` | `GET …/packages/{pkg}/agents` (unchanged route) |
 | `secureGivens` | `GET …/packages/{pkg}/entities`: each model's `givens` carries `secure` (`.malloy` models; a given declared only in a notebook is not listed) |
@@ -48,8 +48,6 @@ The per-entry-point classification summary added in this release is served at `G
 **Nothing breaks in this release.** The moved fields are marked deprecated and stay on every package response while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on`, the default. Turn it `off` to serve only the package's own fields and check your callers read the new homes. A later release turns it off by default, and the one after removes the fields and the setting.
 
 **New: `GET …/packages/{pkg}/entities`** returns, for every `.malloy` model of the package (files outside `explores` included), what an indexer reads from it: each source's public fields (kind, type, declaring code, annotations, `#(doc)` text, table, what a join joins, and for an `#(index)` dimension its `indexFingerprint`), the facts the model states about each source (doc, `#(agent-hidden)`, whether this server queries it directly and which served source stands for it, `#(filter)`s, effective `#(authorize)`/`#(access_filter)` gates with their `field <op> $GIVEN` terms), the model's givens and each source's schema. An `#(index)` dimension's fingerprint is the SHA-256 of the SQL its canonical index query compiles to, plus the dimensions that partition it, so a host can reuse one index across versions that compile a dimension the same way. It is computed once at load from the models as compiled before any manifest is bound; a model that failed to compile has an entry with `error` only. A host that indexes packages no longer compiles each one a second time.
-
-**Reads pinned to a load.** `GET …/entities` and `GET …/build-plan` return the `servedRevision` of the load they describe and take `?servedRevision=`: a read pinned to a load this server no longer serves answers 409 with `reason` `REVISION_CHANGED`, so a caller that reads several resources after a publish never mixes two loads.
 
 **The load now refuses** (400 on publish and reload, a `loadErrors` entry otherwise) a package that declares a required `#(filter)` on a dimension that does not exist or is not public, two required filters on one dimension of a source, or an `#(index)` on a field that is not a dimension, on a source with a required parameter, with more than one author-declared required filter, or with a `sharing=` or `schedule=` key. The message names every such declaration so one fix clears them. An `#(index)` on a non-public field is skipped, never refused.
 

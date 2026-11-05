@@ -15,7 +15,7 @@ import type { components } from "../../../src/api";
 import { versioningOnForSuite } from "../../harness/versioning";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
-type PackageEntities = components["schemas"]["PackageEntities"];
+type ModelEntities = components["schemas"]["ModelEntities"];
 
 const ENV_NAME = "versioned-package-resources-env";
 const INLINE = "PUBLISHER_PACKAGE_INLINE_FIELDS";
@@ -65,7 +65,7 @@ describe("a versioned package's sub-resources", () => {
       const fieldsOf = async (versionId?: string) => {
          const { status, json } = await at("/entities", versionId);
          expect(status).toBe(200);
-         return (json as unknown as PackageEntities).models[0]!.fields!.map(
+         return (json as unknown as ModelEntities[])[0]!.fields!.map(
             (f) => f.name,
          );
       };

@@ -43,7 +43,7 @@ const deleteMaterialization = mock(
 
 const getPackageBuildPlan = mock(
    (_environmentName: string, _packageName: string, _versionId?: string) =>
-      Promise.resolve({ data: { servedRevision: "r1", buildPlan: null } }),
+      Promise.resolve({ data: { graphs: [], sources: {} } }),
 );
 
 mockServerProvider(

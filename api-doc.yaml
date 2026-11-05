@@ -2792,26 +2792,16 @@ paths:
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
         - $ref: "#/components/parameters/versionId"
-        - name: servedRevision
-          in: query
-          required: false
-          description: >-
-            The `servedRevision` of the load the caller read, from
-            `GET …/packages/{packageName}/status` or an earlier read. When given,
-            the request is refused with a 409 (`reason` `REVISION_CHANGED`)
-            unless this server still serves that load, so a caller reading
-            several resources after a load never mixes facts from two loads.
-          schema:
-            type: string
       responses:
         "200":
           description: The package's entities
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PackageEntities"
-        "409":
-          $ref: "#/components/responses/Conflict"
+                type: array
+                description: One entry per `.malloy` file, sorted by `modelPath`.
+                items:
+                  $ref: "#/components/schemas/ModelEntities"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2836,9 +2826,10 @@ paths:
         `sourceEntityId`, output columns and build SQL, the dependency graphs,
         and the sources refused a build. A caller assigns physical names and
         identity per source from it and issues one build call (see
-        `CreateMaterializationRequest.buildInstructions`). `buildPlan` is null
-        when the package declares no persist source, or when the plan could
-        not be derived at load (the load's `warnings` say why).
+        `CreateMaterializationRequest.buildInstructions`). A package that
+        declares no persist source has an empty plan. When the plan could not
+        be derived at load, the read answers 503; reloading the package derives
+        it again.
       parameters:
         - name: environmentName
           in: path
@@ -2853,26 +2844,13 @@ paths:
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
         - $ref: "#/components/parameters/versionId"
-        - name: servedRevision
-          in: query
-          required: false
-          description: >-
-            The `servedRevision` of the load the caller read, from
-            `GET …/packages/{packageName}/status` or an earlier read. When given,
-            the request is refused with a 409 (`reason` `REVISION_CHANGED`)
-            unless this server still serves that load, so a caller reading
-            several resources after a load never mixes facts from two loads.
-          schema:
-            type: string
       responses:
         "200":
           description: The package's build plan
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PackageBuildPlan"
-        "409":
-          $ref: "#/components/responses/Conflict"
+                $ref: "#/components/schemas/BuildPlan"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -5839,7 +5817,7 @@ components:
           type: string
           readOnly: true
           description: >-
-            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.servedRevision`), and the `GET …/entities` and `GET …/build-plan` responses. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
+            **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.servedRevision`). Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
         sourceContentSha:
           deprecated: true
           type: string
@@ -7218,45 +7196,6 @@ components:
             under several classes counts under each.
           additionalProperties:
             type: integer
-
-    PackageEntities:
-      type: object
-      readOnly: true
-      description: >-
-        What every `.malloy` model of a loaded package declares, as
-        `GET …/entities` returns it.
-      required:
-        - servedRevision
-        - models
-      properties:
-        servedRevision:
-          type: string
-          description: The load these entities were computed from.
-        models:
-          type: array
-          description: One entry per `.malloy` file, sorted by `modelPath`.
-          items:
-            $ref: "#/components/schemas/ModelEntities"
-
-    PackageBuildPlan:
-      type: object
-      readOnly: true
-      description: The persist build plan of a loaded package, as `GET …/build-plan` returns it.
-      required:
-        - servedRevision
-        - buildPlan
-      properties:
-        servedRevision:
-          type: string
-          description: The load this plan was derived from.
-        buildPlan:
-          oneOf:
-            - $ref: "#/components/schemas/BuildPlan"
-            - type: "null"
-          description: >-
-            The plan (per-source `sourceEntityId`, output columns, build SQL,
-            dependency graphs, refused sources). Null when the package declares
-            no persist source or the plan could not be derived at load.
 
     ModelEntities:
       type: object
