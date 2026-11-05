@@ -176,14 +176,14 @@ function storeCapturingMetadata(
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async (..._args: unknown[]) => {
-                     // Positional: sourceName, queryName, query, filterParams,
+                     // Positional: audit, sourceName, queryName, query, filterParams,
                      // bypassFilters, givens, abortSignal, metadata input,
                      // responseShape. Indexed rather than destructured off the
                      // end, because the argument list has grown twice and a
                      // trailing-element type went stale both times.
                      capturedArgs = _args;
-                     captured = _args[7] as ModelQueryMetadataInput | undefined;
-                     capturedShape = _args[8] as string | undefined;
+                     captured = _args[8] as ModelQueryMetadataInput | undefined;
+                     capturedShape = _args[9] as string | undefined;
                      return {
                         result: {
                            schema: { fields: [] },
@@ -475,7 +475,7 @@ describe("execute_query per-query metadata", () => {
 });
 
 describe("execute_query includeHiddenFilesAndSources", () => {
-   // getQueryResults positions: 9 is bypassAuthorize, 10 is
+   // getQueryResults positions: 10 is bypassAuthorize, 11 is
    // includeHiddenFilesAndSources.
    const calls = [
       args,
@@ -491,8 +491,8 @@ describe("execute_query includeHiddenFilesAndSources", () => {
          );
          expect(shape).toHaveProperty("includeHiddenFilesAndSources");
          await handler({ ...call, includeHiddenFilesAndSources: true });
-         expect(capturedArgs()[9]).toBe(false);
-         expect(capturedArgs()[10]).toBe(true);
+         expect(capturedArgs()[10]).toBe(false);
+         expect(capturedArgs()[11]).toBe(true);
       }
    });
 
@@ -501,8 +501,8 @@ describe("execute_query includeHiddenFilesAndSources", () => {
          const { store, capturedArgs } = storeCapturingMetadata();
          const { handler } = captureTool(store, serverRootWith(AUTHORING));
          await handler({ ...args, ...extra });
-         expect(capturedArgs()[9]).toBe(false);
          expect(capturedArgs()[10]).toBe(false);
+         expect(capturedArgs()[11]).toBe(false);
       }
    });
 
@@ -522,7 +522,7 @@ describe("execute_query includeHiddenFilesAndSources", () => {
             const { handler, shape } = captureTool(store, serverRootWith(mcp));
             expect(shape).not.toHaveProperty("includeHiddenFilesAndSources");
             await handler({ ...call, includeHiddenFilesAndSources: true });
-            expect(capturedArgs()[10]).toBe(false);
+            expect(capturedArgs()[11]).toBe(false);
          }
       }
    });

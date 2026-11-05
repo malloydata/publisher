@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -217,7 +218,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       expect(pkg.getModel("tracks.malloy")).toBe(servedBefore);
       const { result } = await pkg
          .getModel("tracks.malloy")!
-         .getQueryResults("tracks", "v");
+         .getQueryResults(unrecordedAudit(), "tracks", "v");
       expect(result.data).toBeDefined();
       expect(env.getFailedPackages().size).toBe(0);
    });

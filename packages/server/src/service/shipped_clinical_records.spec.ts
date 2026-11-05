@@ -16,6 +16,7 @@
  * Runs through `Package.create`, because the refusals and the query boundary
  * are package-level.
  */
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { GivenValue } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -96,6 +97,7 @@ describe("examples/clinical-records, clean", () => {
       pkg
          .getModel("index.malloy")!
          .getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             query,

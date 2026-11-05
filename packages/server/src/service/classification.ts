@@ -275,6 +275,8 @@ interface IrStage {
    }>;
    filterList?: unknown;
    refSummary?: IrRefSummary;
+   /** Fields the segment's own `extend:` adds to the source it runs on. */
+   extendSource?: IrField[];
 }
 
 /** The slice of a `->` query the lineage reads. */
@@ -356,15 +358,6 @@ function fieldKind(f: IrField): "dimension" | "measure" {
       : "dimension";
 }
 
-/**
- * Every field reference in an IR tree, in walk order: an expression's
- * `{node: "field", path}` and a query's `{type: "fieldref", path}`. Positions
- * are skipped; nothing a reference hides in.
- */
-export function fieldPathsIn(tree: unknown): string[][] {
-   return fieldReferences(tree);
-}
-
 /** Whether an expression is one field reference, optionally inside casts or parentheses. */
 function isPassthrough(e: unknown): boolean {
    let node = e as { node?: string; type?: string; e?: unknown } | undefined;
@@ -402,6 +395,36 @@ function fieldReferences(e: unknown): string[][] {
    };
    visit(e);
    return out;
+}
+
+/**
+ * What a compiled query's first stage reads from the struct it ran against:
+ * the paths of its own references (`refSummary.fieldUsage`, filters included)
+ * and the lineage of that struct, which is the named source (or the inline
+ * one) plus the segment's `extend:`. Undefined when the query names no struct
+ * the lineage can read, or its first stage has no reference summary.
+ */
+export function readQueryFieldReads(
+   modelDef: ModelDef | undefined,
+   query: unknown,
+): { lineage: SourceLineage; paths: string[] } | undefined {
+   const q = query as { structRef?: unknown; pipeline?: IrStage[] } | undefined;
+   const stage = q?.pipeline?.[0];
+   const usage = stage?.refSummary?.fieldUsage;
+   if (!stage || !usage) return undefined;
+   const ref = q?.structRef;
+   const base =
+      typeof ref === "string"
+         ? findIrSource(modelDef, ref)
+         : (ref as IrField | undefined);
+   if (!base?.fields) return undefined;
+   const fields = stage.extendSource?.length
+      ? [...base.fields, ...stage.extendSource]
+      : base.fields;
+   return {
+      lineage: readSourceClassifications(fields, base.query),
+      paths: Array.from(new Set(usage.map((u) => (u.path ?? []).join(".")))),
+   };
 }
 
 /** What one output field of a `->` query source reads. */

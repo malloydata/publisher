@@ -58,7 +58,7 @@ import {
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
-import { summarizeQueryAccess, type QueryAccessSummary } from "./access_record";
+import { summarizeQueryAccess, type QueryAudit } from "./access_record";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
@@ -5415,6 +5415,8 @@ export class Model {
    }
 
    private async runQueryResults(
+      // Receives what the query learned for the access record; see `QueryAudit`.
+      audit: QueryAudit,
       sourceName?: string,
       queryName?: string,
       query?: string,
@@ -5453,12 +5455,6 @@ export class Model {
       includeHiddenFilesAndSources = false,
    ): Promise<{
       result: Malloy.Result;
-      /**
-       * What this query accessed, for the access record (`access_record.ts`):
-       * the source entered, the gates and decision, the fields read with their
-       * classes, the row count. Absent only when building it failed.
-       */
-      access?: QueryAccessSummary;
       /**
        * The JSON of the `responseShape` asked for, built once. Callers should
        * send this string: it is the bytes the byte cap measured, and a payload
@@ -6259,9 +6255,8 @@ export class Model {
       }
       // Never fails the query: an unreadable prepared query yields a record
       // with no fields, and a thrown summary yields none.
-      let access: QueryAccessSummary | undefined;
       try {
-         access = await summarizeQueryAccess({
+         audit.summary = await summarizeQueryAccess({
             runnable,
             modelDef: this.modelDef,
             apiSources: this.sources,
@@ -6278,9 +6273,10 @@ export class Model {
             error: (err as Error).message,
          });
       }
+      audit.servedFrom = servedFrom ?? null;
+      audit.executionTimeMs = Math.round(executionTime);
       return {
          result: wrappedResult,
-         ...(access ? { access } : {}),
          serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
@@ -6829,6 +6825,7 @@ export class Model {
    }
 
    public async executeNotebookCell(
+      audit: QueryAudit,
       cellIndex: number,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
@@ -6850,6 +6847,7 @@ export class Model {
               : "code";
       try {
          const result = await this.runNotebookCell(
+            audit,
             cellIndex,
             filterParams,
             bypassFilters,
@@ -6883,6 +6881,7 @@ export class Model {
    }
 
    private async runNotebookCell(
+      audit: QueryAudit,
       cellIndex: number,
       filterParams: FilterParams | undefined,
       bypassFilters: boolean | undefined,
@@ -7080,6 +7079,28 @@ export class Model {
             );
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
+            try {
+               audit.summary = await summarizeQueryAccess({
+                  runnable: cellRunnable,
+                  modelDef: this.modelDef,
+                  apiSources: this.sources,
+                  modelGivens: this.givens,
+                  source:
+                     (await this.resolveAuthorizeSourceFromRunnable(
+                        cellRunnable,
+                     )) ?? extractRunTargetSourceName(cell.text),
+                  givens,
+                  bypassAuthorize: false,
+                  grafts:
+                     this.rowLevelFilteredRunnables.get(cellRunnable) ?? [],
+                  rowCount: result?.totalRows ?? 0,
+               });
+            } catch (err) {
+               logger.debug("Access summary unavailable", {
+                  modelPath: this.modelPath,
+                  error: (err as Error).message,
+               });
+            }
             // As in getQueryResults.
             if (
                result?._queryResult &&

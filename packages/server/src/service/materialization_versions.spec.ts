@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -208,6 +209,7 @@ async function answerOf(versionId?: string): Promise<number> {
    const model = pkg.getModel("model.malloy");
    expect(model).toBeDefined();
    const result = await model!.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       "run: summary -> { select: answer }",
@@ -514,6 +516,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       const result = await other
          .getModel("model.malloy")!
          .getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: summary -> { select: answer }",
@@ -1388,6 +1391,7 @@ describe("a package with no versions", () => {
       const result = await pkg
          .getModel("model.malloy")!
          .getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: summary -> { select: answer }",

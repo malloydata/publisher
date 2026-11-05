@@ -469,6 +469,7 @@ function registerConnectionRoutes(
             queryClass: req.body?.queryClass,
          },
          versionId,
+         { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
       ),
    );
    bothScopes("/sqlTemporaryTable", (req, packageName, versionId) =>

@@ -31,13 +31,13 @@
 import { trace } from "@opentelemetry/api";
 import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
-import { AccessDeniedError, ModelNotFoundError } from "../errors";
-import { logger } from "../logger";
 import {
-   fieldPathsIn,
-   findIrSource,
-   readSourceClassifications,
-} from "./classification";
+   AccessDeniedError,
+   internalErrorToHttpError,
+   ModelNotFoundError,
+} from "../errors";
+import { logger } from "../logger";
+import { readQueryFieldReads } from "./classification";
 
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
@@ -55,6 +55,8 @@ export function callerHeaderName(): string {
 export interface FieldRead {
    path: string;
    classifications: string[];
+   /** Classes its inputs carry that it declares below; present only when some. */
+   dropped?: string[];
 }
 
 /**
@@ -70,9 +72,9 @@ export interface QueryAccessSummary {
     * `open`: no gate on the source. `admitted`: a lock admitted the caller and
     * no row filter applied. `filtered`: a row filter was grafted (a lock may
     * also have admitted). `bypassed`: the data-management header skipped the
-    * gates.
+    * gates. `ungated`: a route that serves with no gate to run (raw SQL).
     */
-   decision: "open" | "admitted" | "filtered" | "bypassed";
+   decision: "open" | "admitted" | "filtered" | "bypassed" | "ungated";
    /** The names of every given supplied, secure or not; a plain given's value is never recorded. */
    givenNames: string[];
    /**
@@ -85,6 +87,8 @@ export interface QueryAccessSummary {
    gateGivenNames: string[];
    /** The fields the compiled query reads, by path from the source, with classes. */
    fieldsRead: FieldRead[];
+   /** False when a read could not be placed or the join walk was cut short, so `fieldsRead` may be short. */
+   fieldsReadComplete: boolean;
    /** Rows returned, after the cap. */
    rowCount: number;
 }
@@ -92,10 +96,11 @@ export interface QueryAccessSummary {
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
- * Build the summary for an admitted query. Reads the prepared query's IR for
- * the fields it references and resolves each against the entry source's
- * lineage, so a reference through a join (`patient.ssn`) carries the class
- * declared where the field lives. Anything unresolvable is simply absent.
+ * Build the summary for an admitted query. Resolves the fields the compiled
+ * query's first stage references against the lineage of the struct it ran
+ * against, so a reference through a join (`patient.ssn`) carries the class
+ * declared where the field lives. A read that cannot be placed, or a join
+ * walk that was cut short, sets `fieldsReadComplete` false.
  */
 export async function summarizeQueryAccess(args: {
    runnable: { getPreparedQuery(): Promise<unknown> };
@@ -126,29 +131,46 @@ export async function summarizeQueryAccess(args: {
           : "open";
 
    let fieldsRead: FieldRead[] = [];
+   let fieldsReadComplete = false;
    try {
       const prepared = (await args.runnable.getPreparedQuery()) as {
          _query?: unknown;
       };
-      const ir = args.source
-         ? findIrSource(args.modelDef, args.source)
-         : undefined;
-      const lineage = args.source
-         ? readSourceClassifications(ir?.fields, ir?.query)
-         : undefined;
-      const paths = new Set(
-         fieldPathsIn(prepared._query).map((p) => p.join(".")),
-      );
-      fieldsRead = Array.from(paths)
-         .sort(byCodepoint)
-         .flatMap((path) => {
-            const known = lineage?.get(path);
-            // Only dimensions and measures of the entry source (own or
-            // joined): a reference the lineage cannot place is not a field a
-            // caller read from this source.
-            if (!known || !known.isField) return [];
-            return [{ path, classifications: known.classifications }];
-         });
+      const reads = readQueryFieldReads(args.modelDef, prepared._query);
+      if (reads) {
+         const { lineage, paths } = reads;
+         fieldsReadComplete = !lineage.truncated;
+         const found = new Map<string, FieldRead>();
+         const add = (path: string, classifications: string[]): void => {
+            if (found.has(path)) return;
+            const dropped = lineage.get(path)?.dropped ?? [];
+            found.set(path, {
+               path,
+               classifications,
+               ...(dropped.length > 0 ? { dropped } : {}),
+            });
+         };
+         for (const path of paths) {
+            const known = lineage.get(path);
+            if (!known) {
+               fieldsReadComplete = false;
+               continue;
+            }
+            // A view or a join is not a field a caller read.
+            if (!known.isField) continue;
+            if (known.unresolved.length > 0 && known.declared.length === 0) {
+               fieldsReadComplete = false;
+            }
+            add(path, known.classifications);
+            // A derived field reads the classified fields it is built from.
+            for (const input of known.inputs) {
+               add(input.field, input.classifications);
+            }
+         }
+         fieldsRead = Array.from(found.values()).sort((a, b) =>
+            byCodepoint(a.path, b.path),
+         );
+      }
    } catch {
       // The record is emitted with no fields rather than not at all.
    }
@@ -171,6 +193,7 @@ export async function summarizeQueryAccess(args: {
       ...(Object.keys(secureGivens).length > 0 ? { secureGivens } : {}),
       gateGivenNames,
       fieldsRead,
+      fieldsReadComplete,
       rowCount: args.rowCount,
    };
 }
@@ -181,6 +204,7 @@ export type AccessOutcome =
    | "denied_lock"
    | "refused_surface"
    | "bad_request"
+   | "cancelled"
    | "error";
 
 /** The outcome a thrown error means, by its class; the status it maps to is the route's. */
@@ -200,7 +224,10 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
    environment: string;
    package: string;
    version?: string;
-   modelPath: string;
+   /** Absent on a route with no model (raw SQL). */
+   modelPath?: string;
+   /** The connection a raw SQL request ran against. */
+   connection?: string;
    /** The named query, when one was run. */
    queryName?: string;
    /** The source named in the request, when one was. */
@@ -230,7 +257,9 @@ export function emitAccessRecord(record: AccessRecord): void {
       "publisher.access.outcome": record.outcome,
       "publisher.access.status": record.status,
       "publisher.access.package": record.package,
-      "publisher.access.model_path": record.modelPath,
+      ...(record.modelPath
+         ? { "publisher.access.model_path": record.modelPath }
+         : {}),
       ...(record.source ? { "publisher.access.source": record.source } : {}),
       ...(record.decision
          ? { "publisher.access.decision": record.decision }
@@ -250,4 +279,82 @@ export function emitAccessRecord(record: AccessRecord): void {
            }
          : {}),
    });
+}
+
+declare const recorded: unique symbol;
+
+/**
+ * The slot a request's access record is read from. Only {@link withAccessRecord}
+ * mints one, so a query cannot run without a record being owed for it. The
+ * Model writes what it learned (`summary`, how the answer was served) here and
+ * never emits; a route writes what only it knows (`version`).
+ */
+export interface QueryAudit {
+   readonly [recorded]: true;
+   summary?: QueryAccessSummary;
+   version?: string;
+   servedFrom?: string | null;
+   executionTimeMs?: number;
+}
+
+/** What a route knows before it runs the request. */
+export type AccessRecordBase = Omit<
+   AccessRecord,
+   "event" | "outcome" | "status" | "durationMs"
+>;
+
+const mintAudit = (): QueryAudit => ({}) as QueryAudit;
+
+/** For specs that call the Model directly; `access_record_audit.spec` fails any other caller. */
+export const unrecordedAudit = mintAudit;
+
+/**
+ * Run one request and emit exactly one access record for it, the only place
+ * one is emitted: `ok` when `run` resolves, `cancelled` when `signal` aborted,
+ * else the outcome the error maps to. A route wraps its whole request,
+ * pre-model steps included, so a refusal before the model is recorded too.
+ */
+export async function withAccessRecord<T>(
+   base: AccessRecordBase,
+   signal: AbortSignal | undefined,
+   run: (audit: QueryAudit) => Promise<T>,
+): Promise<T> {
+   const started = performance.now();
+   const audit = mintAudit();
+   const durationMs = () => Math.round(performance.now() - started);
+   let result: T;
+   try {
+      result = await run(audit);
+   } catch (error) {
+      const { status } = internalErrorToHttpError(error as Error, {
+         log: false,
+      });
+      emitAccessRecord({
+         event: "access",
+         ...base,
+         ...(audit.version ? { version: audit.version } : {}),
+         ...(signal?.aborted
+            ? { outcome: "cancelled" as const, status: 499 }
+            : { outcome: outcomeOf(error, status), status }),
+         durationMs: durationMs(),
+         error: (error as Error).message,
+      });
+      throw error;
+   }
+   emitAccessRecord({
+      event: "access",
+      ...base,
+      ...(audit.version ? { version: audit.version } : {}),
+      ...audit.summary,
+      outcome: "ok",
+      status: 200,
+      durationMs: durationMs(),
+      ...(audit.servedFrom !== undefined
+         ? { servedFrom: audit.servedFrom }
+         : {}),
+      ...(audit.executionTimeMs !== undefined
+         ? { executionTimeMs: audit.executionTimeMs }
+         : {}),
+   });
+   return result;
 }

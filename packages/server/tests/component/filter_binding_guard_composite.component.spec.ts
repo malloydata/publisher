@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { describe, expect, it, spyOn } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
@@ -148,6 +149,7 @@ async function withModel(run: (model: Model) => Promise<void>): Promise<void> {
 
 async function count(model: Model, queryText: string): Promise<unknown> {
    const result = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       queryText,
@@ -367,6 +369,7 @@ describe("filter binding: a composite of parameterized members", () => {
       await withModel(async (model) => {
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: pc_high -> { aggregate: n }",

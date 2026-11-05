@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
 import { MalloyConfig } from "@malloydata/malloy";
@@ -244,6 +245,7 @@ describe("service/package", () => {
                   );
                   expect(rootModel).toBeDefined();
                   const rootResults = await rootModel!.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      "row_count",
                   );
@@ -320,6 +322,7 @@ describe("service/package", () => {
                   );
                   expect(outsideModel).toBeDefined();
                   const outsideResults = await outsideModel!.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      "row_count",
                   );

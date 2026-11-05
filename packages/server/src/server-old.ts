@@ -31,7 +31,8 @@ import {
 } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { BadRequestError } from "./errors";
-import { logger, redactSensitive } from "./logger";
+import { logger, redactSensitive, traceIdOf } from "./logger";
+import { callerHeaderName } from "./service/access_record";
 import { apiRoute } from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
@@ -587,6 +588,7 @@ export function registerLegacyRoutes(
             bypassFilters,
             undefined,
             req.query.versionId,
+            { caller: req.get(callerHeaderName()), traceId: traceIdOf(req) },
          );
       }),
    );

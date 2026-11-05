@@ -25,6 +25,7 @@
  * covered in `restricted_mode.spec.ts`.
  */
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -191,6 +192,7 @@ async function runAdHoc(
    filterParams?: FilterParams,
 ): Promise<Row[]> {
    const { compactResult } = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -214,6 +216,7 @@ async function expectFilterRejected(
    let leakedRows: number | undefined;
    try {
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          query,
@@ -520,6 +523,7 @@ async function expectNamedInjectionRejected(
    let leaked: Row[] | undefined;
    try {
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          sourceName,
          queryName,
       );
@@ -564,7 +568,7 @@ describe("a name field cannot smuggle a statement past filter injection", () => 
       const model = await makeModel("mixed.malloy");
       let rejected = false;
       try {
-         await model.getQueryResults("products", "by_org");
+         await model.getQueryResults(unrecordedAudit(), "products", "by_org");
       } catch (error) {
          rejected = true;
          expect(error).toBeInstanceOf(BadRequestError);
@@ -573,6 +577,7 @@ describe("a name field cannot smuggle a statement past filter injection", () => 
       expect(rejected).toBe(true);
 
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          "products",
          "by_org",
          undefined,
@@ -600,6 +605,7 @@ describe("regressions", () => {
    it("bypassFilters short-circuits filter enforcement on a derivation", async () => {
       const model = await makeModel("products.malloy");
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "source: a is products\nrun: a -> { group_by: org_id; aggregate: n is count() }",

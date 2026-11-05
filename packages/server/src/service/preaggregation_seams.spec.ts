@@ -10,6 +10,7 @@
 // at all — that a rollup reaches the wire plan under the author's model path, and
 // that routing a live query through the synthesized model does not change the
 // answer.
+import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -94,6 +95,7 @@ async function runGatedQuery(
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
    const { compactResult } = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -272,6 +274,7 @@ describe("the serve seam", () => {
       const model = pkg.getModel("model.malloy");
       if (!model) throw new Error("model.malloy did not load");
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          query,
@@ -462,6 +465,7 @@ source: orders is duckdb.sql("""
          );
          const model = pkg.getModel("model.malloy");
          const { compactResult } = await model!.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: orders -> { group_by: category; aggregate: total; order_by: category }",

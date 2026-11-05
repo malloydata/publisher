@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -58,6 +59,7 @@ async function answerOf(pkg: Package): Promise<number> {
    const model = pkg.getModel("model.malloy");
    expect(model).toBeDefined();
    const result = await model!.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       "run: numbers -> which_version",
