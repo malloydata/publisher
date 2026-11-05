@@ -59,11 +59,7 @@ import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
 import { summarizeQueryAccess, type QueryAudit } from "./access_record";
-import {
-   ceilingRefusal,
-   modelDeclaresCarries,
-   queryCarries,
-} from "./classification";
+import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
@@ -1960,8 +1956,6 @@ export class Model {
          _modelDef?: ModelDef;
       };
       const modelDef = prepared._modelDef ?? this.modelDef;
-      const carries = queryCarries(modelDef, prepared._query);
-      if (!carries) return;
       let refusal: string | undefined;
       try {
          const joins = region
@@ -1969,10 +1963,10 @@ export class Model {
                  (r) => r.callerJoin.join,
               )
             : [];
-         refusal = ceilingRefusal(modelDef, prepared._query, carries, joins);
+         refusal = ceilingRefusal(modelDef, prepared._query, joins);
       } catch (err) {
          if (!(err instanceof CallerJoinWalkError)) throw err;
-         refusal = `source ${carries.source} carries [${carries.classes.join(", ")}]; this query's joins cannot be read completely`;
+         refusal = "this query's joins cannot be read completely";
       }
       if (!refusal) return;
       try {

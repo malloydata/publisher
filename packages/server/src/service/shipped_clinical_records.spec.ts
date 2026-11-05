@@ -215,7 +215,10 @@ describe("examples/clinical-records, the data app's queries", () => {
          expect: Record<string, string>;
       }>;
       SAMPLES: Record<string, unknown>;
-      DEID: Record<string, { persona: string; ages: string; precision: string }>;
+      DEID: Record<
+         string,
+         { persona: string; ages: string; precision: string }
+      >;
       ATTEMPTS: Array<{
          id: string;
          query: (on: string) => string;
@@ -278,12 +281,18 @@ describe("examples/clinical-records, the data app's queries", () => {
             ATTRIBUTES: ["dua-signed"],
          });
       }
-      await run("run: research -> { group_by: conditions.condition; aggregate: conditions.diagnosis_count }", {
-         ROLES: ["researcher"],
-      });
-      await run("run: population_health extend { dimension: d is started_at.month } -> { group_by: d }", {
-         ROLES: ["quality"],
-      });
+      await run(
+         "run: research -> { group_by: conditions.condition; aggregate: conditions.diagnosis_count }",
+         {
+            ROLES: ["researcher"],
+         },
+      );
+      await run(
+         "run: population_health extend { dimension: d is started_at.month } -> { group_by: d }",
+         {
+            ROLES: ["quality"],
+         },
+      );
    });
 
    it("refuses each attempt the app shows, and a researcher's own extend, relabel and self-join", async () => {
@@ -298,7 +307,7 @@ describe("examples/clinical-records, the data app's queries", () => {
          "run: research extend { dimension: k is PATIENT } -> { group_by: k }",
          'run: research extend { join_many: r2 is research on Id = r2.Id and patient.SSN = "x" } -> { aggregate: n is r2.encounter_count }',
          "source: mine is research extend { dimension: y is patient.SSN }\nrun: mine -> { group_by: y }",
-         'run: research extend {\n#(classification) "none"\n dimension: y is concat(patient.SSN, \'\') } -> { group_by: y }',
+         "run: research extend {\n#(classification) \"none\"\n dimension: y is concat(patient.SSN, '') } -> { group_by: y }",
          'run: research extend {\n#(carries) ["phi.direct_identifier"]\n dimension: y is patient.SSN } -> { group_by: y }',
       ]) {
          await expect(run(query, researcher)).rejects.toBeInstanceOf(

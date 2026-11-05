@@ -1007,6 +1007,72 @@ export { s }
       expect(await warnings()).toEqual([]);
    });
 
+   it("holds a query source to the ceiling of the source its query runs on", async () => {
+      write("base.malloy", PEOPLE);
+      const model = (wide: string) =>
+         write(
+            "index.malloy",
+            `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: narrow is people
+
+#(carries) ${wide}
+source: wide is narrow -> { group_by: social }
+
+export { wide }
+`,
+         );
+      model('["none", "pii.direct_identifier"]');
+      const message = await loadError();
+      expect(message).toContain("source wide (index.malloy) carries [none]");
+      expect(message).toContain("exposes social");
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none", "pii.direct_identifier"]
+source: narrow is people
+
+#(carries) ["none", "pii.direct_identifier"]
+source: wide is narrow -> { group_by: social }
+
+export { wide }
+`,
+      );
+      expect(await warnings()).toEqual([]);
+   });
+
+   it("holds a source that carries nothing to the list of a carried source it joins", async () => {
+      write("base.malloy", PEOPLE);
+      const model = (carries: string) =>
+         write(
+            "index.malloy",
+            `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ${carries}
+source: tight is people
+
+source: hub is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   #(classification) "none"
+   dimension: area is region
+   join_one: t is tight on t.area = area
+}
+
+export { hub }
+`,
+         );
+      model('["none"]');
+      const message = await loadError();
+      expect(message).toContain("source hub (index.malloy) exposes t.social");
+      expect(message).toContain("through t, which carries [none]");
+      model('["none", "pii.direct_identifier", "financial"]');
+      expect(await warnings()).toEqual([]);
+   });
+
    const leaksOf = async (source: string, carries = '["none"]') => {
       write("base.malloy", PEOPLE);
       write(

@@ -213,7 +213,18 @@ source research carries [none, phi.clinical]; this query reads x, which is class
 ```
 
 - The ceiling is the one the entry struct carries, read down its own chain, so a source a caller
-  declares over a carried one (`source: mine is research extend { … }`) has it.
+  declares over a carried one (`source: mine is research extend { … }`) has it. A `->` query source
+  is also held to the list of the source its query runs on, and to that source's base in turn: the
+  strictest list along the chain applies, at load as well as per query.
+- A read through a join is held to the list of every carried source it passes through, whether the
+  entry carries a list or not: an open source that joins `research`, in the model or in the
+  caller's own `join_one:`, still cannot read `research`'s fields past `research`'s list. The list
+  follows the read to where it comes from: a field a caller's `extend:` or a `->` source's output
+  derives from `research.patient.ssn` is held to `research`'s list, however it is renamed. A
+  source that carries nothing is held to the lists of the carried sources it joins at load too.
+  When a struct on that path cannot be read, or a query's shape cannot (an `index:`), the query is
+  refused rather than assumed clean, whatever it enters, once the model declares a `#(carries)`
+  anywhere; a model with none is not checked.
 - What counts as a read: every field the query selects, aggregates, groups, filters, nests or
   indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
   reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
