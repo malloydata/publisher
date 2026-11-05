@@ -213,9 +213,8 @@ export function assertNoRequiredParametersOnIndexedDimension(
  * view/query, or join. A dimension index holds the *distinct values* of a
  * dimension; an aggregate/query/join has no value set to enumerate, so the tag
  * is meaningless. Without this check ``collectDimIndexCandidates`` silently
- * skips the field and the author gets no index and no error. Refuses the
- * package load (a package warning) so the mistake is
- * caught at publish.
+ * skips the field and the author gets no index and no error. Reported as a
+ * package warning, so the mistake is visible at load.
  */
 export class IndexedFieldNotADimensionError extends DimIndexRejectionError {
    readonly reason = "not_a_dimension" as const;
@@ -259,8 +258,8 @@ export function assertIndexedFieldIsDimension(args: {
  * Thrown when an ``#(index)``-tagged dimension declares a ``schedule=`` cron.
  * Scope and cadence are package-level (``Package.scope`` +
  * ``materialization.schedule``): a ``schedule`` is legal only at the package
- * level and only in ``scope: version`` mode, never per dimension. Refuses the
- * package load (a package warning).
+ * level and only in ``scope: version`` mode, never per dimension. Reported as
+ * a package warning.
  */
 export class IndexScheduleNotAllowedError extends DimIndexRejectionError {
    readonly reason = "schedule_not_allowed_on_dimension" as const;
@@ -273,8 +272,8 @@ export class IndexScheduleNotAllowedError extends DimIndexRejectionError {
 /**
  * Thrown when an ``#(index)``-tagged dimension declares a ``sharing=`` value.
  * Scope is a package-level mode (``Package.scope``: ``version`` |
- * ``package``), so per-dimension ``sharing`` is unrepresentable and rejected at
- * publish (a package warning).
+ * ``package``), so per-dimension ``sharing`` is unrepresentable. Reported as a
+ * package warning.
  */
 export class IndexSharingNotAllowedError extends DimIndexRejectionError {
    readonly reason = "sharing_not_allowed_on_dimension" as const;
