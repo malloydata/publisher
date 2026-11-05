@@ -1030,17 +1030,26 @@ source: orders is duckdb.sql("""
    });
 
    it(
-      "refuses a package whose author join reads a row-gated source the entry does not scope",
+      "loads a gate-only package whose author join reads a row-gated source the entry does not scope, with a join-bypass warning",
       async () => {
-         // The author join used to hand org two's rows to a caller scoped to
-         // org one; the load now refuses it (join_bypass.ts).
+         // The author join hands org two's rows to a caller scoped to org one.
+         // A package of gates alone loads it as 0.11 did; classifying anything
+         // in the package makes it a refusal (join_bypass.ts).
          const withAuthorJoin = CALLER_JOIN_MODEL.replace(
             '#@ preaggregate grain="category"',
             'join_one: author_org is orgs on org_id = author_org.org_id\n  #@ preaggregate grain="category"',
          );
-         await expect(loadPackage(withAuthorJoin)).rejects.toThrow(
-            "joins author_org, whose gate reads $GROUPS",
-         );
+         const pkg = await loadPackage(withAuthorJoin);
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            warnings.some(
+               (w) =>
+                  w.code === "join-bypass" &&
+                  w.message.includes(
+                     "joins author_org, whose gate reads $GROUPS",
+                  ),
+            ),
+         ).toBe(true);
       },
       { timeout: 60000 },
    );
