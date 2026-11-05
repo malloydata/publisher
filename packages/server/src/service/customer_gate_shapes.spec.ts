@@ -9,6 +9,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { GivenValue } from "@malloydata/malloy";
+import { expectAccessDenied } from "../test_helpers/authorize_fixture";
 import {
    loadTempPackage,
    type LoadedTempPackage,
@@ -115,9 +116,9 @@ source: placements is ${REPORTS} extend {
             { INTERNAL_REPORT_ID: 2 },
          ),
       ).toEqual([{ n: 1 }]);
-      await expect(
+      await expectAccessDenied(
          run(pkg, "summary.malloy", "run: summary -> { aggregate: n }", {}),
-      ).rejects.toThrow();
+      );
    });
 });
 
@@ -144,9 +145,9 @@ source: s${i} is ${ORGS} extend { measure: n is count() }
             }),
          ).toEqual([{ n: 2 }]);
       }
-      await expect(
+      await expectAccessDenied(
          run(pkg, "index.malloy", "run: s3 -> { aggregate: n }", {}),
-      ).rejects.toThrow();
+      );
    });
 });
 
@@ -182,9 +183,9 @@ source: audit is ${CAMPS} extend {
       expect(await n("many_camps", { CAMPS: [1, 3] })).toEqual([{ n: 2 }]);
       expect(await n("directors", { ROLES: ["director"] })).toEqual([{ n: 3 }]);
       expect(await n("audit", { CAMP_ID: 3 })).toEqual([{ n: 1 }]);
-      await expect(n("one_camp", {})).rejects.toThrow();
-      await expect(n("many_camps", {})).rejects.toThrow();
-      await expect(n("directors", { ROLES: ["viewer"] })).rejects.toThrow();
-      await expect(n("audit", {})).rejects.toThrow();
+      await expectAccessDenied(n("one_camp", {}));
+      await expectAccessDenied(n("many_camps", {}));
+      await expectAccessDenied(n("directors", { ROLES: ["viewer"] }));
+      await expectAccessDenied(n("audit", {}));
    });
 });
