@@ -971,6 +971,42 @@ run: research extend { dimension: x is social } -> { group_by: x }
       expect(await loadError()).toContain("tour.malloynb: notebook cell");
    });
 
+   it("carries a query source's filter classes to every field and view that reads its hidden output", async () => {
+      const hidden = (tail: string, carries = '["none"]') =>
+         write(
+            "index.malloy",
+            `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ${carries}
+source: s is people -> {
+   group_by:
+      #(classification) "none"
+      a is area
+   where: social = 'x'
+} include { internal: a } extend {
+${tail}
+}
+
+export { s }
+`,
+         );
+      write("base.malloy", PEOPLE);
+      hidden(`   dimension: y is upper(a)`);
+      expect(await loadError()).toContain(
+         "exposes y, classified none pii.direct_identifier",
+      );
+      hidden(`   view: v is { group_by: a }`);
+      expect(await loadError()).toContain(
+         "its view v reads social, classified pii.direct_identifier",
+      );
+      hidden(
+         `   dimension: y is upper(a)\n   view: v is { group_by: a }`,
+         '["none", "pii.direct_identifier"]',
+      );
+      expect(await warnings()).toEqual([]);
+   });
+
    const leaksOf = async (source: string, carries = '["none"]') => {
       write("base.malloy", PEOPLE);
       write(
