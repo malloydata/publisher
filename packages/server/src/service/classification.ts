@@ -475,14 +475,43 @@ function stageReferences(stage: IrStage): {
    };
 }
 
+/** What a stage returns, by name, and the classes of what each output reads from `scope`. */
+function outputClasses(
+   stage: IrStage,
+   scope: SourceLineage,
+): Map<string, string[]> {
+   const out = new Map<string, string[]>();
+   for (const f of stage.outputStruct?.fields ?? []) {
+      const name = f.as ?? f.name;
+      if (name) out.set(name, []);
+   }
+   for (const qf of stage.queryFields ?? []) {
+      const name = qf.as ?? qf.name ?? qf.path?.at(-1);
+      if (!name) continue;
+      const reads =
+         qf.type === "fieldref"
+            ? [qf.path ?? []]
+            : qf.type === "turtle"
+              ? (qf.refSummary?.fieldUsage ?? []).map((u) => u.path ?? [])
+              : fieldReferences(qf.e);
+      out.set(
+         name,
+         tokenSet(
+            reads.flatMap((r) => scope.get(r.join("."))?.classifications ?? []),
+         ),
+      );
+   }
+   return out;
+}
+
 /**
  * What a compiled query reads, stage by stage: each stage's own references
  * (`refSummary.fieldUsage`, filters included, plus what its fields name) and
  * the lineage of what they resolve against. The first stage resolves against
  * {@link queryInput}. A later stage reads the stage before it, which was
  * already held to account, so only what its own `extend:` brings in is added
- * (a join to a source adds that source's fields); an `extend:` dimension that
- * only reads the earlier stage's outputs is not a read of the source. A stage
+ * (a join to a source adds that source's fields), resolved against the
+ * earlier stage's outputs carrying the classes they read. A stage
  * Malloy gave no summary (one that reads no field) is read from its query
  * fields and filters instead, and `complete` is false when that stage nests,
  * which that read cannot follow. Undefined when the query names no struct the
@@ -512,43 +541,58 @@ export function readQueryFieldReads(
       // An empty path is the source itself (a `count()`), not a field.
       for (const r of refs) if (r.length > 0) paths.add(r.join("."));
    };
+   // What the stage before this one returned, by name, with the classes it read.
+   let prior = new Map<string, string[]>();
    stages.forEach((stage, i) => {
       // An `index:` reads every field its wildcard names, which no reference lists.
       if (stage.type === "index") complete = false;
       const { refs, summarized, nests } = stageReferences(stage);
       if (!summarized && nests) complete = false;
+      let scope = first;
       if (i === 0) {
-         keep(refs);
-         return;
-      }
-      const extend = stage.extendSource ?? [];
-      if (extend.length === 0) return;
-      const earlier = new Set(
-         (stages[i - 1].outputStruct?.fields ?? []).flatMap(
-            (f) => f.as ?? f.name ?? [],
-         ),
-      );
-      const added = readSourceClassifications(extend);
-      if (lineage === first) {
-         lineage = new SourceLineage(first);
-         lineage.truncated = first.truncated;
-      }
-      for (const [path, c] of added) {
-         // A dimension that reads only the earlier stage's outputs reads nothing of the source.
-         if (
-            c.isField &&
-            c.inputs.length === 0 &&
-            c.unresolved.length > 0 &&
-            c.unresolved.every((u) => earlier.has(u.split(".")[0]))
-         ) {
-            continue;
+         const outputs = new Set(
+            (stage.queryFields ?? []).flatMap(
+               (qf) => qf.as ?? qf.name ?? qf.path?.at(-1) ?? [],
+            ),
+         );
+         // A name the stage itself returns (`order_by: n`) is not a field of the source.
+         keep(refs.filter((r) => first.has(r.join(".")) || !outputs.has(r[0])));
+      } else {
+         // A later stage reads the one before it, already held to account, so
+         // only what its own `extend:` brings in is a read of the source.
+         const extend = stage.extendSource ?? [];
+         const stubs = Array.from(prior, ([name, classes]) => ({
+            name,
+            type: "string",
+            ...(classes.length > 0
+               ? {
+                    annotations: {
+                       blockNotes: [
+                          {
+                             text: `#(classification) ${JSON.stringify(classes)}\n`,
+                          },
+                       ],
+                    },
+                 }
+               : {}),
+         })) as unknown as IrField[];
+         scope = readSourceClassifications([...stubs, ...extend]);
+         if (extend.length > 0) {
+            const names = new Set(extend.flatMap((f) => activeName(f) ?? []));
+            if (lineage === first) {
+               lineage = new SourceLineage(first);
+               lineage.truncated = first.truncated;
+            }
+            for (const [path, c] of scope) {
+               if (!names.has(path.split(".")[0])) continue;
+               if (lineage.has(path)) complete = false;
+               else lineage.set(path, c);
+            }
+            if (scope.truncated) lineage.truncated = true;
+            keep(refs.filter((r) => names.has(r[0])));
          }
-         if (lineage.has(path)) complete = false;
-         else lineage.set(path, c);
       }
-      if (added.truncated) lineage.truncated = true;
-      const names = new Set(extend.flatMap((f) => activeName(f) ?? []));
-      keep(refs.filter((r) => names.has(r[0]) && lineage.has(r.join("."))));
+      prior = outputClasses(stage, scope);
    });
    return {
       lineage,

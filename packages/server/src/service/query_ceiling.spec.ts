@@ -155,6 +155,16 @@ const DENIED: Array<[string, string, string]> = [
       "no #(classification)",
    ],
    [
+      "a later-stage dimension over a join the same extend brings in",
+      "run: s -> { group_by: sid } -> { extend: { join_cross: self is s extend { dimension: x is name } dimension: z is self.x } group_by: z }",
+      "no #(classification)",
+   ],
+   [
+      "a later-stage dimension over a join that shares a name with an earlier output",
+      "run: s -> { group_by: self is sid } -> { extend: { join_cross: other is s extend { dimension: x is name } dimension: z is other.x } group_by: z }",
+      "no #(classification)",
+   ],
+   [
       "a nest over a join a later stage extends in",
       "run: s -> { group_by: sid } -> { extend: { join_cross: self is s extend { dimension: x is name } } nest: n is { group_by: self.x } }",
       "no #(classification)",
@@ -261,6 +271,8 @@ describe("#(carries) is checked per query", () => {
             "run: s -> { group_by: sid } -> { extend: { dimension: y is sid } group_by: y }",
             "run: s -> { group_by: sid aggregate: n is count() order_by: n desc }",
             "run: s -> { group_by: sid aggregate: c calculate: prev is lag(c) }",
+            "run: s -> { group_by: sid aggregate: n is count() calculate: prev is lag(n) }",
+            "run: s -> { group_by: sid aggregate: n is count() order_by: n desc }",
             "run: comp -> { group_by: k }",
             "run: comp_m -> { group_by: k }",
             "run: comp_q -> { group_by: only_b }",
