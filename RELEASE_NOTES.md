@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — get_context finds the members of a record column
+
+A record column (a BigQuery RECORD, a DuckDB STRUCT) was indexed as one field, so `get_context` could find `delivery` but not `delivery.city`, though a query could use it. Its members are now fields of their own, under dotted names with their types, nested records included (`delivery.address.zip`), and on a source reached through a join too. A member of a repeated record (an array of records, `lines.sku`) comes back with `relationship: "many"`, as a field through a one-to-many join does, because grouping or aggregating by it counts each element. An array of plain values has no members to list. A member has no description of its own: the compiled schema carries only its name and type. Closes #1526.
+
 ## [Unreleased] — get_context has one search engine (BREAKING)
 
 Every ranked `get_context` request is now answered by the find, list, judge engine, for every package: it ranks each target against the whole package (embedding closeness, keyword match and stored values, fused by rank), shows a model the best candidates grouped by source with the join routes between them, and returns what the model picks. A request with no `search_text` is still a listing and is unchanged. The engine's settings are under `retrieval.fcj` in `publisher.json`; the defaults now put it in list mode (`connect: "list"`) with `listTopK: 30`, `listUnion: 30`, `dropRoutesAt: 4` and `readingsRule: true`, and `docs/configuration.md` describes them.

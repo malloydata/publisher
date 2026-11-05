@@ -105,7 +105,7 @@ Two tools, in this order.
 
 `scopes` is required and takes exactly one entry, because retrieval is indexed per package.
 
-Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it.
+Use the names it returns exactly. Do not invent environments, packages, sources, or fields. A field reached through a join is named by its full dotted path; pass it verbatim rather than rebuilding it. So is a member of a record column (`delivery.city`). A member of a repeated record has `relationship: "many"`: grouping or aggregating by it counts each element, not each row.
 
 ## 2. Run the query
 

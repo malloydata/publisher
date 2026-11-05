@@ -314,7 +314,79 @@ interface JoinSchemaField {
    annotations?: Array<string | { value: string }>;
    relationship?: Relationship;
    schema?: { fields?: JoinSchemaField[] };
-   type?: { kind?: string };
+   type?: FieldType;
+}
+
+/** A field's compiled type, as far as the record walk reads it. */
+interface FieldType {
+   kind?: string;
+   /** A record's members. */
+   fields?: Array<{ name: string; type?: FieldType }>;
+   /** An array's element. */
+   element_type?: FieldType;
+}
+
+/**
+ * How deep record members are indexed: `delivery.address.city` is depth 2.
+ * Nested records come from the warehouse's schema rather than from joins a
+ * modeler wrote, so they get their own cap, above MAX_JOIN_PATH_DEPTH.
+ */
+const MAX_RECORD_DEPTH = 4;
+
+/**
+ * The members of a record dimension (a BigQuery RECORD, a DuckDB STRUCT) as
+ * entities of their own, under dotted names (`delivery.city`), so they can be
+ * found and grouped by. They are indexed the way joined fields are: on the
+ * source that holds the record, with `joinPath` naming the record. A member
+ * of a repeated record (an array of records, `lines.sku`) has relationship
+ * `many`, as a field reached through a one-to-many join has, because
+ * aggregating through it counts each element. A record inside a repeated
+ * record stays `many`. An array of scalars has no members to index.
+ */
+function collectRecordMembers(args: {
+   type: FieldType | undefined;
+   path: string;
+   sourceName: string;
+   modelPath: string;
+   /** The relationship of the path so far: `one` from a plain source. */
+   fanout: Relationship;
+   depth: number;
+   nextId: () => string;
+   out: Entity[];
+   lineage?: Map<string, FieldClassification>;
+}): void {
+   const { path, depth } = args;
+   let type = args.type;
+   let fanout = args.fanout;
+   if (type?.kind === "array_type") {
+      type = type.element_type;
+      fanout = "many";
+   }
+   if (type?.kind !== "record_type" || depth > MAX_RECORD_DEPTH) return;
+   for (const member of type.fields ?? []) {
+      if (!member.name) continue;
+      const name = `${path}.${member.name}`;
+      args.out.push({
+         id: args.nextId(),
+         kind: "dimension",
+         name,
+         source: args.sourceName,
+         modelPath: args.modelPath,
+         doc: "",
+         embedDoc: "",
+         ...classificationOf(args.lineage, name, undefined),
+         joinPath: path,
+         relationship: fanout,
+         dataType: malloyType(member),
+      });
+      collectRecordMembers({
+         ...args,
+         type: member.type,
+         path: name,
+         fanout,
+         depth: depth + 1,
+      });
+   }
 }
 
 /**
@@ -518,6 +590,19 @@ function collectJoinedFields(args: {
             ? { dataType: malloyType(field) }
             : {}),
       });
+      if (field.kind === "dimension") {
+         collectRecordMembers({
+            type: field.type,
+            path: `${joinPath}.${field.name}`,
+            sourceName,
+            modelPath,
+            fanout,
+            depth: 1,
+            nextId,
+            out,
+            ...(lineage ? { lineage } : {}),
+         });
+      }
    }
 }
 
@@ -747,6 +832,19 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   ? { aliasOf: fieldProvenance.aliasOf }
                   : {}),
             });
+            if (field.kind === "dimension") {
+               collectRecordMembers({
+                  type: (field as { type?: FieldType }).type,
+                  path: field.name,
+                  sourceName,
+                  modelPath,
+                  fanout: "one",
+                  depth: 1,
+                  nextId: () => String(n++),
+                  out: entities,
+                  ...(lineage ? { lineage } : {}),
+               });
+            }
          }
       }
 
@@ -1100,26 +1198,50 @@ function directEntitiesOf(
    topology: JoinTopology,
    aliasedAway: ReadonlySet<string>,
 ): readonly Entity[] {
+   // A field reached through a join has a path that starts with one of its
+   // source's joins. A record member has a path too (`delivery.city`), but
+   // its record is a column of the source itself, so it is a direct field.
+   const joins = new Set(
+      retrievalEntities
+         .filter((e) => e.kind === "join")
+         .map((e) => [e.modelPath, e.source ?? "", e.name].join(KEY_SEPARATOR)),
+   );
+   const throughJoin = (e: Entity): boolean =>
+      e.joinPath !== undefined &&
+      joins.has(
+         [e.modelPath, e.source ?? "", e.joinPath.split(".")[0]].join(
+            KEY_SEPARATOR,
+         ),
+      );
    const directFields = new Set([
       ...retrievalEntities
-         .filter((e) => !e.joinPath)
+         .filter((e) => !throughJoin(e))
          .map((e) =>
             [e.modelPath, e.source ?? "", e.kind, e.name].join(KEY_SEPARATOR),
          ),
       ...aliasedAway,
    ]);
    const rebuilt = (e: Entity): boolean => {
-      if (!e.joinPath) return false;
-      const reach = topology
-         .get(sourceContextKey(e.modelPath, e.source ?? ""))
-         ?.find((r) => r.path.join(".") === e.joinPath);
-      if (!reach) return false;
-      const field = e.name.slice(e.joinPath.length + 1);
-      return directFields.has(
-         [reach.targetModelPath, reach.targetSource, e.kind, field].join(
-            KEY_SEPARATOR,
-         ),
+      if (!e.joinPath || !throughJoin(e)) return false;
+      const reaches = topology.get(
+         sourceContextKey(e.modelPath, e.source ?? ""),
       );
+      // The longest prefix of the path that is a join: the rest is a record
+      // inside the joined source (`customer.profile.tier` is `profile.tier`
+      // on the source `customer` reaches).
+      const segments = e.joinPath.split(".");
+      for (let i = segments.length; i >= 1; i--) {
+         const prefix = segments.slice(0, i).join(".");
+         const reach = reaches?.find((r) => r.path.join(".") === prefix);
+         if (!reach) continue;
+         const field = e.name.slice(prefix.length + 1);
+         return directFields.has(
+            [reach.targetModelPath, reach.targetSource, e.kind, field].join(
+               KEY_SEPARATOR,
+            ),
+         );
+      }
+      return false;
    };
    return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
 }
