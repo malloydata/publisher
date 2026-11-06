@@ -25,7 +25,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 `?dryRun=true` on a publish loads the tree at `location` and runs the publish checks exactly as a publish would, then discards it and closes its connections. The answer is what a publish would answer for that tree: the same 400 or 424 refusal, or 200 with the package as it would load, `warnings` included, and the `location` it came from. With package versioning on it also requires a valid `version` in the tree's `publisher.json`, as a versioned publish does, and the 200 names it as `versionId`. Nothing is installed, served or listed, and the package already served under the name is untouched, so a CI gate can ask "would this publish?" of a branch head without exposing its content. Version lifecycle checks (an existing version, `latest`) are not part of it. A frozen configuration and memory backpressure refuse a dry run as they refuse a publish. `publisher_package_dry_run_duration{outcome}` times each one (`loaded`, `refused`, `backpressure`, `failed`); a dry run's load is not counted in the package load metrics, deprecated-usage counts or entities findings of the package it names, and a failed one logs at info, not as a load error.
 
-## [Unreleased] — `Package` carries the package's own fields; what an indexer reads, the build plan and the semantic index state move to their own routes, and serving state to `GET …/packages/{pkg}/status`
+## [0.12.1] — `Package` carries the package's own fields; what an indexer reads, the build plan and the semantic index state move to their own routes, and serving state to `GET …/packages/{pkg}/status`
 
 A package response now describes the package. What was computed onto it moves to where it is read, so a listing and the `/status` poll stop carrying per-model data for every package, and each fact has one home:
 
@@ -47,7 +47,7 @@ A package response now describes the package. What was computed onto it moves to
 
 **The load warns about annotations an index cannot honor**, and still loads the package: a required `#(filter)` on a dimension that does not exist or is not public, or an `#(index)` on a field that is not a dimension, on a source with a required parameter, with more than one author-declared required filter, or with a `sharing=` or `schedule=` key. Each is one package warning with a stable `code` (`entities-not-a-dimension`, `entities-parameterized-source`, `entities-multiple-required-filters`, `entities-sharing-not-allowed-on-dimension`, `entities-schedule-not-allowed-on-dimension`, `entities-required-filter-missing-dimension`, `entities-required-filter-non-public-dimension`) and a message that says what to change; the annotation is left out of `/entities` (no fingerprint, no filter). A host that indexes can refuse a publish on those codes. `POST …/compile` at scope `package` reports them too, and `publisher_package_entities_findings_total{reason}` counts them. An `#(index)` on a non-public field is skipped silently.
 
-## [Unreleased] — get_context lists environments and packages, so an agent can find data with it alone
+## [0.12.1] — get_context lists environments and packages, so an agent can find data with it alone
 
 `get_context` no longer requires `search_targets` or `scopes`. A call without targets lists, one level at a time, in the shapes the hosted retrieval API uses:
 
