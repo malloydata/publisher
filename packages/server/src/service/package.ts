@@ -153,7 +153,11 @@ import {
    classificationSummary,
    type ApiClassificationSummary,
 } from "./classification_summary";
-import { JOIN_BYPASS, joinBypasses } from "./join_bypass";
+import {
+   isTruncatedWalkFinding,
+   JOIN_BYPASS,
+   joinBypasses,
+} from "./join_bypass";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -2459,7 +2463,9 @@ export class Package {
          : messages.map((message) => ({
               code: JOIN_BYPASS,
               severity: "warn" as const,
-              message: `${message} ${GATE_ONLY_JOIN_BYPASS}`,
+              message: isTruncatedWalkFinding(message)
+                 ? message
+                 : `${message} ${GATE_ONLY_JOIN_BYPASS}`,
            }));
    }
 

@@ -570,8 +570,11 @@ source: invoices is ${VISITS} extend {
             (w) => w.code === "join-bypass" && w.message?.includes(fragment),
          );
          expect(matched).not.toHaveLength(0);
+         // A walk cut short exposes no named rows, so it gets no "expose those rows" note.
+         const truncated = fragment === "joins more than 16 deep";
          for (const w of matched) {
-            expect(w.message).toContain(
+            const note = expect(w.message);
+            (truncated ? note.not : note).toContain(
                "if this entry should expose those rows, there is nothing to do",
             );
          }
@@ -582,6 +585,31 @@ source: invoices is ${VISITS} extend {
          expect(refused).not.toContain("there is nothing to do");
       });
    }
+
+   it("names the source a join to a refinement reaches, read from what it extends", async () => {
+      gateOnly = true;
+      write(
+         "m.malloy",
+         `${GIVENS}
+#(access_filter) org in $ORGS
+source: people is ${PEOPLE}
+#(authorize) 'clinician' in $ROLES
+source: visits is ${VISITS} extend {
+   join_one: px is people extend { dimension: tag is 1 } on px.id = person_id
+}
+`,
+      );
+      const warnings = (await load()).getPackageMetadata().warnings ?? [];
+      expect(
+         warnings.filter(
+            (w) =>
+               w.code === "join-bypass" &&
+               w.message?.includes(
+                  "joins px (source people), whose gate reads $ORGS",
+               ),
+         ),
+      ).toHaveLength(1);
+   });
 
    it("loads a source past the bound when no source in the package has a gate", async () => {
       write("m.malloy", chain(17, false));

@@ -38,6 +38,7 @@
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { referencedGivenNames } from "./authorize";
 import type { AnnotationsDef } from "./annotations";
+import { splitSourceId } from "./source_id";
 import {
    parseAuthorizeGrammarBody,
    type AuthorizeGrammarParsedTerm,
@@ -64,6 +65,14 @@ import type { Model } from "./model";
 /** The warning code a join bypass carries in a package that has not opted in to refusing it. */
 export const JOIN_BYPASS = "join-bypass";
 
+const CANNOT_READ_PAST =
+   "beyond which Publisher cannot read the gates on what it joins";
+
+/** Whether a finding is a walk cut short at the bound, which exposes no named rows. */
+export function isTruncatedWalkFinding(message: string): boolean {
+   return message.includes(CANNOT_READ_PAST);
+}
+
 /** The slice of a compiled join field the check reads. */
 interface IrJoin {
    name?: string;
@@ -73,12 +82,14 @@ interface IrJoin {
    fields?: IrJoin[];
    annotations?: AnnotationsDef;
    sourceID?: string;
+   extends?: string;
    query?: { pipeline?: Parameters<typeof stageJoins>[0] };
 }
 
 /** A join's path, with the source it joins when that differs from the join's own name. */
 function joinedLabel(field: IrJoin, path: string): string {
-   const source = field.sourceID?.split("@")[0];
+   // A join to `src extend { … }` has no sourceID of its own; `extends` names src.
+   const source = splitSourceId(field.sourceID ?? field.extends)?.source;
    const name = field.as ?? field.name;
    return source && source !== name ? `${path} (source ${source})` : path;
 }
@@ -370,8 +381,7 @@ export function joinBypasses(
       for (const where of truncated) {
          messages.push(
             `${where} joins more than ${MAX_JOIN_RECURSION_DEPTH} deep or ` +
-               `past ${MAX_JOIN_PATHS} join paths, beyond which Publisher ` +
-               `cannot read the gates on what it joins, and this package ` +
+               `past ${MAX_JOIN_PATHS} join paths, ${CANNOT_READ_PAST}, and this package ` +
                `gates sources. Drop the joins past that, or split the source.`,
          );
       }

@@ -23,6 +23,7 @@
 import type { ModelDef } from "@malloydata/malloy";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
+import { splitSourceId } from "../../service/source_id";
 import {
    docOnlyText,
    docText,
@@ -446,15 +447,6 @@ function compiledSource(
    return Object.values(contents).find(
       (c) => activeName(c as CompiledSource) === name,
    ) as CompiledSource | undefined;
-}
-
-/** `name@url` split into its parts, as Malloy writes `sourceID`. */
-function splitSourceId(
-   id: string | undefined,
-): { source: string; url: string } | undefined {
-   if (typeof id !== "string") return undefined;
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
-   return match ? { source: match[1], url: match[2] } : undefined;
 }
 
 /** Every block note of an annotation and of everything it inherits. */

@@ -497,7 +497,7 @@ source: hub is duckdb.sql("select 1 as id") extend {
             const err = await run(model, query).catch((e) => e);
             expect(err).toBeInstanceOf(BadRequestError);
             expect((err as Error).message).toContain(
-               `${path}, which is classified pii.direct_identifier`,
+               `${path}, which filters on social (pii.direct_identifier)`,
             );
          }
          expect(

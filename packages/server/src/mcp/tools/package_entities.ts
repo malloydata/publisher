@@ -9,6 +9,7 @@ import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
+import { splitSourceId } from "../../service/source_id";
 import {
    findIrSource,
    isClassificationLine,
@@ -361,11 +362,7 @@ interface CompiledJoin {
 function joinTargetSource(
    join: CompiledJoin,
 ): { source: string; url: string } | undefined {
-   const id = join.sourceID ?? join.referenceID;
-   if (typeof id !== "string") return undefined;
-   // Greedy, so a name containing "@" still splits at the URL's own "@".
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
-   return match ? { source: match[1], url: match[2] } : undefined;
+   return splitSourceId(join.sourceID ?? join.referenceID);
 }
 
 /**

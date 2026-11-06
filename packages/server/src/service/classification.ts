@@ -850,19 +850,29 @@ export function ceilingRefusal(
       ) {
          return unseen();
       }
-      const classes = [
+      const valueClasses = [
          ...known.classifications,
          // A copy declared below its input still returns the input.
          ...(known.passthrough ? known.dropped : []),
-         ...known.filtered.flatMap((i) => i.classifications),
       ];
+      const filterClasses = known.filtered.flatMap((i) => i.classifications);
       for (const c of applicable) {
-         if (classes.length === 0) {
+         if (valueClasses.length === 0 && filterClasses.length === 0) {
             return `${headOf(c)} ${path}, which has no #(classification) on the list`;
          }
-         const off = classes.filter((k) => !c.classes.includes(k));
+         const off = valueClasses.filter((k) => !c.classes.includes(k));
          if (off.length > 0) {
             return `${headOf(c)} ${path}, which is classified ${off.join(" ")}, not on the list`;
+         }
+         // A field declared on the list can still reveal what its rows were filtered on.
+         const filters = known.filtered.filter((i) =>
+            i.classifications.some((k) => !c.classes.includes(k)),
+         );
+         if (filters.length > 0) {
+            const named = filters
+               .map((i) => `${i.field} (${i.classifications.join(" ")})`)
+               .join(", ");
+            return `${headOf(c)} ${path}, which filters on ${named}, not on the list`;
          }
       }
    }
