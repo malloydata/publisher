@@ -943,6 +943,43 @@ export { computed_q }
       expect(found[0].message).toContain("cannot be resolved: z");
    });
 
+   it("refuses an output under a nest with stages of its own, naming the nest's stages rather than the declaration", async () => {
+      write("base.malloy", PEOPLE);
+      const nested = (view: string) =>
+         write(
+            "index.malloy",
+            `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: q is people -> {
+   group_by: area
+   nest: n is ${view}
+}
+
+export { q }
+`,
+         );
+      for (const declare of ['#(classification) "none"', ""]) {
+         nested(`{ group_by:
+      ${declare}
+      a2 is area } -> { group_by:
+      ${declare}
+      a3 is a2 }`);
+         const message = await loadError();
+         expect(message).toContain(
+            "source q (index.malloy) carries [none] but exposes n.a3, an output Publisher cannot follow to what it reads",
+         );
+         expect(message).toContain("Flatten the nest into one stage");
+         expect(message).not.toContain("remove the declaration");
+         expect(message).not.toContain("reads no classified field");
+      }
+      nested(`{ group_by:
+      #(classification) "none"
+      a3 is area }`);
+      expect(await warnings()).toEqual([]);
+   });
+
    it("says nothing about a declared computed field whose reads all resolve", async () => {
       write("base.malloy", PEOPLE);
       write(

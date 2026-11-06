@@ -376,6 +376,8 @@ export interface FieldClassification {
    passthrough: boolean;
    /** Paths it reads that resolve to nothing the lineage can see: an unclassified read. */
    unresolved: string[];
+   /** True for a query output whose reads Publisher cannot follow, such as one under a nest with stages of its own. */
+   unread: boolean;
 }
 
 /**
@@ -1033,7 +1035,8 @@ function walkSourceClassifications(
       const unresolvedRead = (refPath: string): void => {
          if (!unresolved.includes(refPath)) unresolved.push(refPath);
       };
-      if (out && !out.outputs.reads.has(out.rel)) unresolvedRead(path);
+      const unread = out !== undefined && !out.outputs.reads.has(out.rel);
+      if (unread) unresolvedRead(path);
       const take = (list: ClassifiedInput[]): void => {
          for (const c of list) {
             if (seenInput.has(c.field)) continue;
@@ -1110,6 +1113,7 @@ function walkSourceClassifications(
          filtered: inputs.slice(valueInputs),
          passthrough: reads.passthrough,
          unresolved,
+         unread,
          ceilings,
          ceilingUnresolved,
       };
@@ -1417,13 +1421,22 @@ function declaredUnknownReads(c: FieldClassification): string[] {
    return c.declared.length > 0 ? c.unresolved : [];
 }
 
-/** The refusal for a plain copy declared below, or over, what it copies; undefined for any other field. */
+/** The refusal for a plain copy declared below, or over, what it copies, or for an output whose reads are unknown; undefined for any other field. */
 function copyLeak(
    where: string,
    allowed: string,
    path: string,
    c: FieldClassification,
 ): string | undefined {
+   // Its declaration cannot be the fix when what it reads is unknown.
+   if (c.unread) {
+      return (
+         `${where} carries [${allowed}] but exposes ${path}, an output ` +
+         `Publisher cannot follow to what it reads, so its class is ` +
+         `unknown: a nest with stages of its own is one. Flatten the nest ` +
+         `into one stage, or move it out of the source.`
+      );
+   }
    if (!c.passthrough) return undefined;
    const unknown = declaredUnknownReads(c);
    if (c.dropped.length === 0 && unknown.length === 0) return undefined;
