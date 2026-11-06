@@ -891,9 +891,13 @@ export function assertAuthorizeGrammarValid(
       const struct = modelDef.contents[sourceName];
       const ownGroupTerms: AuthorizeGrammarRoutedTerm[] = [];
       const declaredAdmitAllRoutes: string[] = [];
+      const ownRoutesSeen = new Set<string>();
       for (const { route, exprs } of groups) {
+         // A query source's own group comes first; the base group after it is inherited.
          const isOwn =
-            (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0;
+            (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0 &&
+            !ownRoutesSeen.has(route);
+         if (isOwn) ownRoutesSeen.add(route);
          const filteredExprs = exprs.filter(
             (expr) =>
                (isOwn || expr !== "false") && !isLegacyQuotedPayload(expr),

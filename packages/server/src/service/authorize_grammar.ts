@@ -49,6 +49,7 @@
  */
 
 import { routeOf } from "@malloydata/malloy";
+import { ParseUtil } from "@malloydata/malloy-tag";
 import { ModelCompilationError } from "../errors";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 
@@ -134,7 +135,13 @@ export type AuthorizeGrammarParsedTerm =
         given: string;
         operator: "=" | "in";
      }
-   | { scope: "source_level"; literal: string; given: string };
+   | {
+        scope: "source_level";
+        /** The string literal as Malloy decodes it: quotes off, escapes resolved. */
+        literal: string;
+        given: string;
+        operator: "=" | "in";
+     };
 
 /** What {@link parseAuthorizeGrammarBody} returns: the parsed terms of an
  *  `and`-joined body, or a single whole-body sentinel (`deny_all` for `false`,
@@ -436,7 +443,12 @@ function parseTerm(
    }
 
    if (leftIsLiteral) {
-      return { scope: "source_level", literal: left, given };
+      return {
+         scope: "source_level",
+         literal: ParseUtil.parseString(left, left[0]),
+         given,
+         operator,
+      };
    }
    return {
       scope: "row_level",

@@ -9,6 +9,7 @@
  * `tests/fixtures/notebooks-malloyyo/`, whose `notebooks/` holds one report
  * written as tiles (`layout.malloy`) and many written as cells.
  */
+import { unrecordedAudit } from "./access_record";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -140,13 +141,13 @@ describe("served linear report cells", () => {
 
    it("runs a tile cell, and answers a definition or markdown cell with its text and kind, and no result", async () => {
       const nb = model(LAYOUT);
-      const query = await nb.executeNotebookCell(4);
+      const query = await nb.executeNotebookCell(unrecordedAudit(), 4);
       expect(query.kind).toBe("query");
       expect(rowsOf(query.result).length).toBeGreaterThan(0);
-      const definition = await nb.executeNotebookCell(0);
+      const definition = await nb.executeNotebookCell(unrecordedAudit(), 0);
       expect(definition).toMatchObject({ type: "code", kind: "definition" });
       expect(definition.result).toBeUndefined();
-      const markdown = await nb.executeNotebookCell(2);
+      const markdown = await nb.executeNotebookCell(unrecordedAudit(), 2);
       expect(markdown).toMatchObject({ type: "markdown", kind: "markdown" });
       expect(markdown.result).toBeUndefined();
    });
@@ -220,12 +221,14 @@ describe("served linear report cells", () => {
             const givens =
                modelPath === SETTINGS ? { REGION: "EU" } : undefined;
             const a = await inProcess.executeNotebookCell(
+               unrecordedAudit(),
                queryAt,
                undefined,
                undefined,
                givens,
             );
             const b = await model(modelPath).executeNotebookCell(
+               unrecordedAudit(),
                queryAt,
                undefined,
                undefined,
@@ -305,9 +308,9 @@ describe("served linear report cells", () => {
          await expect(nb.getNotebook()).rejects.toBeInstanceOf(
             ModelCompilationError,
          );
-         await expect(nb.executeNotebookCell(0)).rejects.toBeInstanceOf(
-            ModelCompilationError,
-         );
+         await expect(
+            nb.executeNotebookCell(unrecordedAudit(), 0),
+         ).rejects.toBeInstanceOf(ModelCompilationError);
       });
 
       it("is a package finding of severity error, counted at discovery", async () => {
@@ -328,14 +331,16 @@ describe("served linear report cells", () => {
    });
 
    it("counts a cell run by format, kind and outcome", async () => {
-      await model(LAYOUT).executeNotebookCell(3);
+      await model(LAYOUT).executeNotebookCell(unrecordedAudit(), 3);
       expect(
          await harness.collectCounter(
             "publisher_notebook_cell_executions_total",
             { format: "malloy", kind: "query", outcome: "ok" },
          ),
       ).toBeGreaterThan(0);
-      await expect(model(REFUSED).executeNotebookCell(0)).rejects.toThrow();
+      await expect(
+         model(REFUSED).executeNotebookCell(unrecordedAudit(), 0),
+      ).rejects.toThrow();
       expect(
          await harness.collectCounter(
             "publisher_notebook_cell_executions_total",

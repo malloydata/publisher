@@ -23,6 +23,7 @@
  * return a row of `secrets` has escaped the curated surface.
  */
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -128,6 +129,7 @@ async function makeModel(modelPath: string): Promise<Model> {
 /** Run an ad-hoc query string and return the result rows. */
 async function runAdHoc(model: Model, query: string): Promise<Row[]> {
    const { compactResult } = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -191,6 +193,7 @@ async function expectNamedBlocked(
    let leakedRows: number | undefined;
    try {
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          sourceName,
          queryName,
       );
@@ -300,6 +303,7 @@ describe("the named source/view path takes names, and is restricted too", () => 
    it("still runs a legitimate published source and view by name", async () => {
       const model = await makeModel("catalog.malloy");
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          "widgets",
          "by_region",
       );

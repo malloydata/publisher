@@ -11,7 +11,8 @@ import {
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { llmConfigured } from "../providers/active";
-import type { Package } from "./package";
+import type { PreparedCeilingQueries } from "./classification";
+import type { ApiPackage, Package } from "./package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
@@ -83,9 +84,19 @@ export function warnInvalidExplores(pkg: Package): void {
 /**
  * The manifest and persistence policy gates a freshly loaded package passes
  * before it serves. Most warn; an invalid incremental refresh or
- * pre-aggregation declaration fails the load.
+ * pre-aggregation declaration fails the load. With a `listing`, the package is
+ * judged as that listing would serve it, and keeps its own.
  */
-export function applyLoadGates(pkg: Package): void {
+export async function applyLoadGates(
+   pkg: Package,
+   listing?: Pick<ApiPackage, "explores" | "queryableSources">,
+): Promise<void> {
+   // The only await, ahead of the listing, so no request is served under one the gates have not judged.
+   const prepared = await pkg.prepareCeilingQueries();
+   pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
+}
+
+function judgeLoadGates(pkg: Package, prepared: PreparedCeilingQueries): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
    // Same fail-safe split: warn at load, reject at publish.
@@ -125,25 +136,13 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(leaks);
    }
-   // A gate keyed on a plain given is strict at load: the caller could satisfy
-   // it by sending a value, so it is a filter wearing a control's name.
-   const insecure = pkg.formatInsecureGateGivens();
-   if (insecure) {
+   const ceiling = pkg.formatCarriesCeilingLeaks(prepared);
+   if (ceiling) {
       logger.error(
-         `Package ${packageName} gates a source on a given that is not #(secure)`,
-         { packageName, detail: insecure },
+         `Package ${packageName} has a query that reads past a source's #(carries)`,
+         { packageName, detail: ceiling },
       );
-      throw new BadRequestError(insecure);
-   }
-   // An author join that bypasses a gate is strict at load for the same
-   // reason: the joined rows would reach every admitted caller unscoped.
-   const bypasses = pkg.formatJoinBypasses();
-   if (bypasses) {
-      logger.error(
-         `Package ${packageName} has a join that bypasses a gate on what it joins`,
-         { packageName, detail: bypasses },
-      );
-      throw new BadRequestError(bypasses);
+      throw new BadRequestError(ceiling);
    }
    // `#@ preaggregate` is strict at load too (see
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which

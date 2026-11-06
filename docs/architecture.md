@@ -8,6 +8,10 @@ SPDX-License-Identifier: MIT
 > What this is: the mental model for Publisher and the Malloy stack it sits on. Read it when you
 > want to know which repo owns what, or how a query flows from a `.malloy` file to a rendered chart.
 
+> **Operating model.** Publisher is a microservice that runs locally with your own permissions or
+> inside your cloud behind your gateway; it does not authenticate anyone, and its access controls
+> rely on that gateway. See [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 Publisher is one component of the Malloy stack. From the bottom up:
 
 ## Malloy

@@ -27,6 +27,10 @@ import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
+import {
+   type AccessIdentity,
+   withAccessRecord,
+} from "../service/access_record";
 import { testConnectionConfig } from "../service/connection";
 import {
    toPublicConnection,
@@ -759,7 +763,44 @@ export class ConnectionController {
       return this.fetchTable(malloyConnection, tableKey, tablePath);
    }
 
+   /**
+    * Raw SQL against a connection: it serves with no gate, so its access record
+    * says `ungated` (docs/authorize.md: the deployment's gateway must block it).
+    */
    public async getConnectionQueryData(
+      environmentName: string,
+      connectionName: string,
+      sqlStatement: string,
+      options: string,
+      packageName: string | undefined,
+      metadata: { queryMetadata?: unknown; queryClass?: unknown } | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
+   ): Promise<ApiQueryData> {
+      return withAccessRecord(
+         {
+            environment: environmentName,
+            package: packageName ?? "",
+            connection: connectionName,
+            adHoc: true,
+            decision: "ungated",
+            ...identity,
+         },
+         undefined,
+         () =>
+            this.runConnectionQueryData(
+               environmentName,
+               connectionName,
+               sqlStatement,
+               options,
+               packageName,
+               metadata,
+               versionId,
+            ),
+      );
+   }
+
+   private async runConnectionQueryData(
       environmentName: string,
       connectionName: string,
       sqlStatement: string,
@@ -947,7 +988,37 @@ export class ConnectionController {
       return { data: JSON.stringify(result), queryCorrelationId };
    }
 
+   /** Raw SQL like {@link getConnectionQueryData}, so it is recorded as ungated too. */
    public async getConnectionTemporaryTable(
+      environmentName: string,
+      connectionName: string,
+      sqlStatement: string,
+      packageName: string | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
+   ): Promise<ApiTemporaryTable> {
+      return withAccessRecord(
+         {
+            environment: environmentName,
+            package: packageName ?? "",
+            connection: connectionName,
+            adHoc: true,
+            decision: "ungated",
+            ...identity,
+         },
+         undefined,
+         () =>
+            this.runConnectionTemporaryTable(
+               environmentName,
+               connectionName,
+               sqlStatement,
+               packageName,
+               versionId,
+            ),
+      );
+   }
+
+   private async runConnectionTemporaryTable(
       environmentName: string,
       connectionName: string,
       sqlStatement: string,

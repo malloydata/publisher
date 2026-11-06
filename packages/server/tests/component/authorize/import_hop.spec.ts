@@ -19,6 +19,7 @@
  * why this shipped broken. Every test here uses two files for that reason;
  * collapsing one into a single file makes it pass while testing nothing.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { describe, expect, it } from "bun:test";
 import { loadAuthorizeModel } from "../../../src/test_helpers/authorize_fixture";
 
@@ -101,9 +102,15 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            ROLE: "analyst",
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               ROLE: "analyst",
+            },
+         );
          // 4, not 0: an admitted given-only gate filters nothing away.
          expect(notebookCell(result).count).toBe(4);
       } finally {
@@ -126,9 +133,15 @@ run: gated -> { aggregate: c }
       try {
          // 2, not 4: the `2` is what proves the condition bound to `org_id`
          // rather than merely attaching somewhere and admitting everything.
-         const mine = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const mine = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          const mineCell = notebookCell(mine);
          expect(mineCell.count).toBe(2);
          // The gate reached the WAREHOUSE, not just the IR — the proof the
@@ -137,9 +150,15 @@ run: gated -> { aggregate: c }
          expect(mineCell.sql).toMatch(/org_id/i);
 
          // Empty membership matches no row — a 200 with zero, not a 403.
-         const none = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [],
-         });
+         const none = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [],
+            },
+         );
          expect(notebookCell(none).count).toBe(0);
       } finally {
          await cleanup();
@@ -170,9 +189,15 @@ run: gated -> { aggregate: c }
       try {
          expect(
             notebookCell(
-               await model.executeNotebookCell(0, undefined, false, {
-                  GROUPS: [1],
-               }),
+               await model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  false,
+                  {
+                     GROUPS: [1],
+                  },
+               ),
             ).count,
          ).toBe(2);
          // Runs second, against the same memoized runnable. A stacked or
@@ -180,16 +205,28 @@ run: gated -> { aggregate: c }
          // 4, and a lost graft shows up as 4 instead of 2 on a repeat.
          expect(
             notebookCell(
-               await model.executeNotebookCell(0, undefined, false, {
-                  GROUPS: [1, 2],
-               }),
+               await model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  false,
+                  {
+                     GROUPS: [1, 2],
+                  },
+               ),
             ).count,
          ).toBe(4);
          expect(
             notebookCell(
-               await model.executeNotebookCell(0, undefined, false, {
-                  GROUPS: [1],
-               }),
+               await model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  false,
+                  {
+                     GROUPS: [1],
+                  },
+               ),
             ).count,
          ).toBe(2);
 
@@ -241,9 +278,15 @@ run: plain -> { aggregate: c }
       );
       try {
          const cell = notebookCell(
-            await model.executeNotebookCell(0, undefined, false, {
-               GROUPS: [1],
-            }),
+            await model.executeNotebookCell(
+               unrecordedAudit(),
+               0,
+               undefined,
+               false,
+               {
+                  GROUPS: [1],
+               },
+            ),
          );
          expect(cell.count).toBe(4);
          expect(cell.sql).not.toMatch(/org_id/i);
@@ -282,6 +325,7 @@ query: tile is per_org -> { aggregate: c is count() }
       try {
          // Seed data holds two orgs. A caller scoped to one sees ONE group.
          const one = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "tile",
             undefined,
@@ -294,6 +338,7 @@ query: tile is per_org -> { aggregate: c is count() }
          // Scoped to both, the same tile counts two -- so the number tracks
          // the caller rather than being uniformly filtered or uniformly not.
          const both = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "tile",
             undefined,
@@ -327,6 +372,7 @@ query: tile is gated -> { aggregate: c }
       );
       try {
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "tile",
             undefined,
@@ -363,6 +409,7 @@ query: plain_tile is plain -> { aggregate: c }
       );
       try {
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "plain_tile",
             undefined,

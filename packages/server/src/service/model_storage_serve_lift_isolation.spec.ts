@@ -9,6 +9,7 @@
 //
 // The LIVE relation behind the fact is empty, so a wrapper answering with rows
 // is provably reading the stored table, and one answering with none fell back.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -129,6 +130,7 @@ async function buildModel(): Promise<Model> {
 
 async function rows(model: Model, query: string): Promise<unknown[]> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,

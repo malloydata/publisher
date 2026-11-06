@@ -92,14 +92,17 @@ interface FieldUsageEntryLike {
    path: readonly string[];
    at?: DocumentLocationLike;
 }
-interface RefSummaryLike {
+export interface RefSummaryLike {
    fieldUsage?: readonly FieldUsageEntryLike[];
 }
 
 /** Walk bounds: large enough for any real model, small enough that a
  *  pathological or cyclic one fails closed instead of hanging. */
 const MAX_CLOSURE_SIZE = 256;
+/** The number of joins from the entry source that any join walk follows. */
 export const MAX_JOIN_RECURSION_DEPTH = 16;
+/** The distinct join paths one join walk visits per entry source: bounds a fan-out that depth alone does not. */
+export const MAX_JOIN_PATHS = 1024;
 
 /** A field's visible name (`as`, else `name`), as Malloy's unexported
  *  `activeName`. `fieldUsage` paths use visible names, so matching `.name`
@@ -1464,7 +1467,7 @@ export interface StageLike {
 }
 
 /** Every source joined by `extend:` in `pipeline`, including inside nests; unlike `collectCallerJoins`' pipeline walk, regardless of who wrote it. */
-function stageJoins(
+export function stageJoins(
    pipeline: readonly StageLike[] | undefined,
    depth = 0,
 ): SourceDef[] {

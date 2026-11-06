@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { API, MalloyError, Runtime } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
@@ -358,7 +359,7 @@ describe("service/model", () => {
             );
 
             await expect(async () => {
-               await model.getQueryResults();
+               await model.getQueryResults(unrecordedAudit());
             }).toThrowError(BadRequestError);
 
             sinon.restore();
@@ -380,7 +381,7 @@ describe("service/model", () => {
             );
 
             await expect(async () => {
-               await model.getQueryResults();
+               await model.getQueryResults(unrecordedAudit());
             }).toThrowError(BadRequestError);
 
             sinon.restore();
@@ -435,6 +436,7 @@ describe("service/model", () => {
 
                await expect(
                   model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> { aggregate: c is count() }",
@@ -450,7 +452,7 @@ describe("service/model", () => {
                   buildDispatchModel();
 
                await expect(
-                  model.getQueryResults("orders", "summary"),
+                  model.getQueryResults(unrecordedAudit(), "orders", "summary"),
                ).rejects.toThrow(MalloyError);
 
                expect(loadRestrictedQuery.calledOnce).toBe(true);
@@ -498,6 +500,7 @@ describe("service/model", () => {
 
             await expect(
                model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -555,6 +558,7 @@ describe("service/model", () => {
 
             await expect(
                model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -597,7 +601,12 @@ describe("service/model", () => {
             );
 
             const thrown = await model
-               .getQueryResults(undefined, undefined, "run: orders -> summary")
+               .getQueryResults(
+                  unrecordedAudit(),
+                  undefined,
+                  undefined,
+                  "run: orders -> summary",
+               )
                .catch((e: unknown) => e);
             expect(thrown).toBe(exhausted);
 
@@ -688,6 +697,7 @@ describe("service/model", () => {
                });
 
                await model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -705,6 +715,7 @@ describe("service/model", () => {
                });
 
                await model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -725,6 +736,7 @@ describe("service/model", () => {
                });
 
                await model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -743,6 +755,7 @@ describe("service/model", () => {
 
                await expect(
                   model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -764,6 +777,7 @@ describe("service/model", () => {
 
                await expect(
                   model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -790,6 +804,7 @@ describe("service/model", () => {
                   });
 
                const compact = await build().model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -807,6 +822,7 @@ describe("service/model", () => {
                sinon.restore();
                await expect(
                   build().model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -844,6 +860,7 @@ describe("service/model", () => {
 
                await expect(
                   model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -877,6 +894,7 @@ describe("service/model", () => {
 
                const error = await model
                   .getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -907,6 +925,7 @@ describe("service/model", () => {
 
                await expect(
                   model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -936,6 +955,7 @@ describe("service/model", () => {
                });
 
                const { serializedResult } = await model.getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   "run: orders -> summary",
@@ -964,6 +984,7 @@ describe("service/model", () => {
 
                await expect(
                   model.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      undefined,
                      "run: orders -> summary",
@@ -1017,7 +1038,13 @@ describe("service/model", () => {
             );
 
             await expect(
-               model.executeNotebookCell(0, undefined, undefined, givensArg),
+               model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  undefined,
+                  givensArg,
+               ),
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.calledOnce).toBe(true);
@@ -1066,9 +1093,15 @@ describe("service/model", () => {
             );
 
             await expect(
-               model.executeNotebookCell(0, undefined, undefined, {
-                  target_code: "AA",
-               }),
+               model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  undefined,
+                  {
+                     target_code: "AA",
+                  },
+               ),
             ).rejects.toThrow(BadRequestError);
 
             sinon.restore();
@@ -1118,9 +1151,9 @@ describe("service/model", () => {
                undefined,
             );
 
-            await expect(model.executeNotebookCell(0)).rejects.toThrow(
-               expected,
-            );
+            await expect(
+               model.executeNotebookCell(unrecordedAudit(), 0),
+            ).rejects.toThrow(expected);
 
             sinon.restore();
          });
@@ -1160,7 +1193,10 @@ describe("service/model", () => {
                givens, // givens
             );
 
-            const result = await model.executeNotebookCell(0);
+            const result = await model.executeNotebookCell(
+               unrecordedAudit(),
+               0,
+            );
             const parsed = JSON.parse(result.newSources![0]);
             expect(parsed.name).toBe("carriers");
             expect(parsed.givens).toEqual(givens);
@@ -1206,9 +1242,15 @@ describe("service/model", () => {
             );
 
             await expect(
-               model.executeNotebookCell(0, undefined, undefined, {
-                  GROUPS: [1],
-               }),
+               model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  undefined,
+                  {
+                     GROUPS: [1],
+                  },
+               ),
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.firstCall.args[0]).toEqual({
@@ -1259,7 +1301,13 @@ describe("service/model", () => {
 
             const groupsArg = { GROUPS: [1] };
             await expect(
-               model.executeNotebookCell(0, undefined, undefined, groupsArg),
+               model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  undefined,
+                  undefined,
+                  groupsArg,
+               ),
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.firstCall.args[0]).toEqual({
@@ -1558,7 +1606,12 @@ describe("service/model", () => {
             storageFailsAt: "prepare",
          });
 
-         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+         await model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
 
          expect(liveRun.calledOnce).toBe(true);
          expect(liveRun.firstCall.args[0].rowLimit).toBe(250);
@@ -1580,6 +1633,7 @@ describe("service/model", () => {
          });
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -1619,6 +1673,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "source: c is cheap extend {}\nrun: expensive -> x",
@@ -1642,7 +1697,12 @@ describe("service/model", () => {
             modelNotes: ['## queryMetadata.surface="marts"'],
          });
 
-         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+         await model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
 
          const attached = liveRun.firstCall.args[0].queryMetadata;
          expect(attached.surface).toBe("marts");
@@ -1667,6 +1727,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -1694,6 +1755,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -1727,6 +1789,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -1768,6 +1831,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -1807,6 +1871,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "daily_view",
             undefined,
@@ -1836,6 +1901,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             // Ad-hoc text whose run target is resolvable from surface syntax.
@@ -1872,6 +1938,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -1952,6 +2019,7 @@ describe("service/model", () => {
          });
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -2007,6 +2075,7 @@ describe("service/model", () => {
             >);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -2026,6 +2095,7 @@ describe("service/model", () => {
          });
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -2045,7 +2115,12 @@ describe("service/model", () => {
             storageFailsAt: "run",
          });
 
-         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+         await model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
 
          for (const attrs of await recordedQueries()) {
             expect(attrs["malloy.model.query.query"]).toBeUndefined();
@@ -2063,6 +2138,7 @@ describe("service/model", () => {
          });
 
          await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: daily -> x",
@@ -2088,7 +2164,12 @@ describe("service/model", () => {
             storageFailsAt: "run",
          });
 
-         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+         await model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
 
          const success = (await recordedQueries())
             .map((a) => a as Record<string, string>)
@@ -2109,7 +2190,12 @@ describe("service/model", () => {
          });
 
          await expect(
-            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+            model.getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               undefined,
+               "run: daily -> x",
+            ),
          ).rejects.toThrow(BadRequestError);
 
          const errored = (await recordedQueries())
@@ -2125,9 +2211,9 @@ describe("service/model", () => {
             shapeBindings: [binding("daily", "live")],
             storageFailsAt: "run",
          });
-         await expect(model.getQueryResults("daily")).rejects.toThrow(
-            BadRequestError,
-         );
+         await expect(
+            model.getQueryResults(unrecordedAudit(), "daily"),
+         ).rejects.toThrow(BadRequestError);
          const statuses = (await recordedQueries()).map(
             (a) => a["malloy.model.query.status"],
          );
@@ -2148,7 +2234,12 @@ describe("service/model", () => {
             storageFailsAt: "run",
          });
 
-         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+         await model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
 
          expect(liveRun.calledOnce).toBe(true);
       });
@@ -2167,7 +2258,12 @@ describe("service/model", () => {
          });
 
          await expect(
-            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+            model.getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               undefined,
+               "run: daily -> x",
+            ),
          ).rejects.toThrow(ConnectionFailedError);
       });
 
@@ -2181,7 +2277,12 @@ describe("service/model", () => {
          });
 
          await expect(
-            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+            model.getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               undefined,
+               "run: daily -> x",
+            ),
          ).rejects.toThrow(ConnectionFailedError);
       });
 
@@ -2194,7 +2295,12 @@ describe("service/model", () => {
          });
 
          await expect(
-            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+            model.getQueryResults(
+               unrecordedAudit(),
+               undefined,
+               undefined,
+               "run: daily -> x",
+            ),
          ).rejects.toThrow(BadRequestError);
       });
    });

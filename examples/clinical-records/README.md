@@ -16,13 +16,15 @@ Everything below implements one of them.
 
 ## Layers
 
-| File                | Layer   | What it does                                                                                                                                                                         |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `base.malloy`       | Base    | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                     |
-| `core.malloy`       | Core    | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some domains may serve are left out. |
-| `deidentify.malloy` | Core    | The Safe Harbor derivations, declared once: years for dates, ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02).                   |
-| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, and declaring what it `#(carries)`.                                         |
-| `index.malloy`      | Surface | The package's published surface: exports the five domains and nothing else.                                                                                                          |
+| File                | Layer   | What it does                                                                                                                                                                                            |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base.malloy`       | Base    | One source per table, each `#(authorize) false` (AC-02). Nobody queries a table.                                                                                                                        |
+| `core.malloy`       | Core    | One classified source per entity. Every column is hidden and re-exposed as a named field with its `#(classification)` (CL-01). Identifiers only some domains may serve are left out.                    |
+| `deidentify.malloy` | Core    | The Safe Harbor derivations, declared once: years for dates (the year of birth withheld past 89), ages capped at 90, state and three-digit ZIP with the small-population areas as `000` (DI-01, DI-02). |
+| `domains.malloy`    | Domains | One entry point per access decision, each gated on `#(secure)` givens, and declaring what it `#(carries)`.                                                                                              |
+| `index.malloy`      | Surface | The package's published surface: exports the five domains and nothing else.                                                                                                                             |
+
+Not yet capped: `encounter_year` and `onset_year` for a patient over 89 are still published as the year they happened, which can place the patient's age above 89 (DI-01).
 
 ## Analytical domains
 
@@ -55,11 +57,13 @@ choose a persona.
 
 ## What Publisher enforces, and what it leaves to a review
 
-`violations/` holds five broken versions of `domains.malloy`. Three are refused at load: a
-de-identified domain that joins back to identifiers, a gate on a given the requester sets, and a
-domain re-opened over locked joins. Two load: an identifier declared `none`, and a billing domain
-that lost its organization scope. Those are false or missing statements, not inconsistent ones, and
-catching them takes reading the policy and the data. [`violations/README.md`](violations/README.md)
+`violations/` holds six broken versions of the package. One is refused at load: a de-identified
+domain that joins back to identifiers, which breaks a `#(carries)` ceiling. One loads with a
+`join-bypass` warning that the review fails: a domain re-opened over locked joins. Four load clean:
+an identifier declared `none`, a billing domain that lost its organization scope, a gate on a given
+the requester sets, and a de-identified patient that publishes the year of birth past age 89. Those
+are false or missing statements, not inconsistent ones, and catching them takes reading the policy
+and the data. [`violations/README.md`](violations/README.md)
 has the table.
 
 ## Try it

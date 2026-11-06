@@ -26,6 +26,7 @@
 // either — a pre-existing property of how `run:` resolves a raw source type,
 // unrelated to this relaxation. Every persist fixture elsewhere in this
 // codebase already uses the query_source shape for exactly this reason.
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
@@ -77,6 +78,7 @@ async function run(
    const model = pkg.getModel("model.malloy");
    if (!model) throw new Error("model.malloy did not load");
    const { compactResult } = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,

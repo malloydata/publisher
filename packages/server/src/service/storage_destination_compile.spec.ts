@@ -20,6 +20,7 @@
  * IS in a namespace. The end-to-end pair — a real catalog, a real materialized
  * table, a real routed query — lives in the hammer scenarios.
  */
+import { unrecordedAudit } from "./access_record";
 import {
    afterAll,
    afterEach,
@@ -281,6 +282,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          pkg
             .getModel("plain.malloy")!
             .getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
@@ -369,6 +371,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
             env: { ...BASE_ENV, PERSIST_STORAGE_MODE: "on" },
          }).restore;
          const answered = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: nums -> { select: a }",

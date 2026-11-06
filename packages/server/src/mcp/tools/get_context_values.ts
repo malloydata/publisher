@@ -18,10 +18,17 @@
  */
 
 import type { GivenValue } from "@malloydata/malloy";
+import {
+   type AccessIdentity,
+   type QueryAudit,
+   runUnrecorded,
+   withAccessRecord,
+} from "../../service/access_record";
 import { quoteMalloyIdentifier } from "../../service/authorize";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { tryAcquireQuerySlot } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
+import type { ErrorDetails } from "../error_messages";
 import { getModelForQuery } from "../handler_utils";
 
 /** What one lookup query returns. */
@@ -46,6 +53,8 @@ export interface ValueFetchRequest {
    givens?: Record<string, unknown>;
    filterParams?: Record<string, string | string[]>;
    timeoutMs: number;
+   /** Who asked, from the request headers, for the access record. */
+   identity?: AccessIdentity;
 }
 
 export type ValueFetcher = (
@@ -82,6 +91,10 @@ export interface DistinctValueQuery {
    counted: boolean;
    /** Labels a refusal at the query cap; see tryAcquireQuerySlot. */
    routeLabel: string;
+   /** Who asked, from the request headers, for the access record. */
+   identity?: AccessIdentity;
+   /** The system's own read (the index build): no caller, so no access record. */
+   system?: boolean;
 }
 
 /**
@@ -93,45 +106,73 @@ export interface DistinctValueQuery {
 export async function queryDistinctValues(
    request: DistinctValueQuery,
 ): Promise<Array<Record<string, unknown>>> {
-   const found = await getModelForQuery(
-      request.environmentStore,
-      request.environmentName,
-      request.packageName,
-      request.modelPath,
-   );
-   if ("error" in found) throw new Error(found.error.message);
-   const dim = quoteMalloyIdentifier(request.dimension);
-   // The stem is letters and digits only (see filterStem), so it needs no escaping.
-   const where = request.stem
-      ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
-      : `${dim} != null`;
-   const body = request.counted
-      ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
-      : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
-   const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
-   const slot = tryAcquireQuerySlot(request.routeLabel);
+   let refusal: ErrorDetails | undefined;
    try {
-      const { compactResult } = await runWithQueryTimeout(
-         (signal) =>
-            found.model.getQueryResults(
-               undefined,
-               undefined,
-               query,
-               request.filterParams,
-               undefined,
-               request.givens as Record<string, GivenValue> | undefined,
-               signal,
-               undefined,
-               "compact",
-               // MCP sends no #(authorize) bypass, ever; nor does value search.
-               false,
-               false,
-            ),
-         request.timeoutMs,
-      );
-      return compactResult as unknown as Array<Record<string, unknown>>;
-   } finally {
-      slot.release();
+      const run = async (audit: QueryAudit) => {
+         const found = await getModelForQuery(
+            request.environmentStore,
+            request.environmentName,
+            request.packageName,
+            request.modelPath,
+         );
+         if ("error" in found) {
+            refusal = found.error;
+            throw found.cause;
+         }
+         const version = found.pkg.getVersionId();
+         if (version) audit.version = version;
+         const dim = quoteMalloyIdentifier(request.dimension);
+         // The stem is letters and digits only (see filterStem), so it needs no escaping.
+         const where = request.stem
+            ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
+            : `${dim} != null`;
+         const body = request.counted
+            ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
+            : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
+         const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
+         const slot = tryAcquireQuerySlot(request.routeLabel);
+         try {
+            const { compactResult } = await runWithQueryTimeout(
+               (signal) =>
+                  found.model.getQueryResults(
+                     audit,
+                     undefined,
+                     undefined,
+                     query,
+                     request.filterParams,
+                     undefined,
+                     request.givens as Record<string, GivenValue> | undefined,
+                     signal,
+                     undefined,
+                     "compact",
+                     // MCP sends no #(authorize) bypass, ever; nor does value search.
+                     false,
+                     false,
+                  ),
+               request.timeoutMs,
+            );
+            return compactResult as unknown as Array<Record<string, unknown>>;
+         } finally {
+            slot.release();
+         }
+      };
+      return request.system
+         ? await runUnrecorded(run)
+         : await withAccessRecord(
+              {
+                 environment: request.environmentName,
+                 package: request.packageName,
+                 modelPath: request.modelPath,
+                 requestedSource: request.source,
+                 adHoc: true,
+                 ...request.identity,
+              },
+              undefined,
+              run,
+           );
+   } catch (error) {
+      if (refusal) throw new Error(refusal.message);
+      throw error;
    }
 }
 

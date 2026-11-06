@@ -10,6 +10,7 @@
 // while the table underneath does not. A test that only checked routing would
 // pass just as well against a shape that served the whole table to everyone,
 // which is the failure this exists to catch.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -127,6 +128,7 @@ async function sumFor(
    givens?: Record<string, number>,
 ): Promise<number> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       "run: scoped -> { aggregate: t is amount.sum() }",

@@ -13,6 +13,7 @@
  * aborting the load. Tests that need `hasAuthorize()` / introspection go
  * through the real `Model.create`.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import {
    API,
    type ModelDef,
@@ -864,6 +865,7 @@ source: X is duckdb.table('parent') extend {
       try {
          const err = await model
             .getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: X -> { group_by: org_id; aggregate: n is count() }",
@@ -1168,9 +1170,15 @@ run: local2 -> { aggregate: n is count() }
          // THIS CELL (cell 0's own scope, which does not have `local2` yet)
          // is what makes the redeclaration — and therefore the whole cell —
          // resolvable again.
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          // org_id=1 rows are ids 1,2 — the gate filters out the org_id=2
          // rows (ids 3,4), so the count is 2, not 4.
@@ -1218,9 +1226,15 @@ run: gated -> { aggregate: n is count() }
             // admitting unfiltered rows, and a denied caller would short-circuit
             // on the lock's 403 before reaching that question at all.
             await expect(
-               model.executeNotebookCell(0, { nonexistent_field: "x" }, false, {
-                  ROLE: "admin",
-               }),
+               model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  { nonexistent_field: "x" },
+                  false,
+                  {
+                     ROLE: "admin",
+                  },
+               ),
             ).rejects.toThrow(/nonexistent_field/);
          } finally {
             await cleanup();
@@ -1255,9 +1269,15 @@ run: gated -> { aggregate: n is count() }
 
          // org_id=1 rows are ids 1,2 — the gate filters out the org_id=2
          // rows (ids 3,4), so the count is 2, not 4.
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1290,9 +1310,15 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(0);
       } finally {
@@ -1328,9 +1354,15 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1366,9 +1398,15 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1401,9 +1439,15 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1437,9 +1481,15 @@ run: gated -> byorg
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1482,9 +1532,15 @@ run: gated -> { group_by: id, org_id, childtable.name }
          // query's own text already references the joined field, which is
          // what forces the join into the ORIGINALLY compiled queryDef before
          // the graft appends its condition.
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: ["bob"],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: ["bob"],
+            },
+         );
          expect(result.result).toBeDefined();
          const rowCount = (
             JSON.parse(result.result!) as {
@@ -1534,6 +1590,7 @@ run: joiner -> { aggregate: n is count() }
          // post-declaration model (both sources are declared in this SAME
          // self-declaring cell).
          const result = await model.executeNotebookCell(
+            unrecordedAudit(),
             0,
             undefined,
             false,
@@ -1609,6 +1666,7 @@ source: X is duckdb.table('parent') extend {
          ]);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -1682,6 +1740,7 @@ source: X is duckdb.table('parent') extend {
          ]);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -1760,6 +1819,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
 
          const result = await model
             .getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: W_except -> { aggregate: n is count() }",
@@ -1876,6 +1936,7 @@ source: X is duckdb.table('parent') extend {
          ]);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -1955,6 +2016,7 @@ source: X is duckdb.table('parent') extend {
          // storage routing off.
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: X extend { except: org_id } extend { rename: org_id is val } -> { aggregate: n is count() }",
@@ -2014,6 +2076,7 @@ source: X is duckdb.table('parent') extend {
          ).toBeUndefined();
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { group_by: org_id; aggregate: n is count() }",
