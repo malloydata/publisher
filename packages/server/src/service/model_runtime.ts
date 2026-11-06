@@ -35,8 +35,9 @@ export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
  * `overlay` maps an absolute `file://` URL to text served INSTEAD of reading
  * that path from disk. It lets pre-aggregation's synthesized (never written)
  * model live at a URL inside the package directory, so its `import` of the
- * author's model resolves. `modelPath` must still exist: it anchors
- * `importBaseURL`.
+ * author's model resolves, and serves a request's `files` overlay
+ * (`request_overlay.ts`). `modelPath` must exist on disk unless the overlay
+ * holds it.
  */
 export async function createModelRuntime(
    packagePath: string,
@@ -65,12 +66,17 @@ export async function createModelRuntime(
    } catch {
       throw new ModelNotFoundError(`${modelPath} does not exist.`);
    }
-   try {
-      if (!(await fs.stat(fullModelPath)).isFile()) {
-         throw new ModelNotFoundError(`${modelPath} is not a file.`);
+   // A model the overlay holds is the overlay's, whether or not it is on disk.
+   const overlaidModel =
+      options?.overlay?.has(new URL(`file://${fullModelPath}`).href) === true;
+   if (!overlaidModel) {
+      try {
+         if (!(await fs.stat(fullModelPath)).isFile()) {
+            throw new ModelNotFoundError(`${modelPath} is not a file.`);
+         }
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
       }
-   } catch {
-      throw new ModelNotFoundError(`${modelPath} does not exist.`);
    }
 
    let modelType: ModelType;

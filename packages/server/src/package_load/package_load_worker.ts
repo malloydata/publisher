@@ -535,17 +535,23 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 function makeWorkerUrlReader(job: LoadPackageRequest): {
    readURL: (url: URL) => Promise<string>;
 } {
+   // The replacement and the overlay, by resolved path; the replacement wins.
+   const inMemory = new Map<string, string>();
+   for (const file of job.overlay ?? []) {
+      inMemory.set(path.resolve(job.packagePath, file.modelPath), file.source);
+   }
+   if (job.replacement) {
+      inMemory.set(
+         path.resolve(job.packagePath, job.replacement.modelPath),
+         job.replacement.source,
+      );
+   }
    return {
       readURL: async (url: URL): Promise<string> => {
          if (url.protocol === "file:") {
             const filePath = fileURLToPath(url);
-            if (
-               job.replacement &&
-               path.resolve(filePath) ===
-                  path.resolve(job.packagePath, job.replacement.modelPath)
-            ) {
-               return job.replacement.source;
-            }
+            const held = inMemory.get(path.resolve(filePath));
+            if (held !== undefined) return held;
             return fs.promises.readFile(filePath, "utf8");
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
@@ -1557,6 +1563,10 @@ async function loadPackage(
       : undefined;
    if (job.replacement && !replacementMatchedExisting) {
       modelPaths.push(job.replacement.modelPath);
+   }
+   // An overlaid file new to the package compiles too.
+   for (const file of job.overlay ?? []) {
+      if (!modelPaths.includes(file.modelPath)) modelPaths.push(file.modelPath);
    }
 
    // The compile region starts here; schema-fetch accounting begins at the

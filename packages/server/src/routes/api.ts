@@ -857,6 +857,7 @@ function registerQueryRoutes(
                caller: req.get(callerHeaderName()),
                traceId: traceIdOf(req),
             },
+            req.body.files,
          );
          setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
          res.status(200).json(result);
@@ -894,6 +895,7 @@ function registerQueryRoutes(
             // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
             req.query.versionId,
+            req.body.files,
          ),
       ),
    );

@@ -2342,6 +2342,11 @@ paths:
         fails only at the grammar and names no source to run (for example `run` with no colon) is also
         a 400, because a grammar error says nothing about the model, unless the model carries any
         `#(authorize)` or `#(access_filter)`, or the text joins a source off the surface.
+
+        With `files`, the model in the URL is compiled for this request alone with the overlaid files
+        read instead of the package's (see `QueryRequest.files`), and the query runs against it: an
+        author's tool can run a query over edits it has not saved. The overlaid model does not compile
+        with a 400 carrying its `problems`, as ad-hoc text does.
       parameters:
         - name: environmentName
           in: path
@@ -2439,6 +2444,14 @@ paths:
         its deprecated `kind=` (`dashboard` is grid, `notebook` is linear), else
         grid when the tag lists `tiles` or carries a `dashboard { … }` grid tag,
         else linear. Where a file lives never decides it.
+
+        At scope "file" or "package", `files` overlays package files for this
+        compile only: the model in the URL and everything it imports read the
+        overlaid text where one is given, and an overlaid file new to the
+        package is compiled with the rest at "package". A problem's `model`
+        names the package file it belongs to, overlaid or not, and its `at`
+        gives the position in that file's text, so an author's tool can show
+        each file's errors in place without saving any of them.
       parameters:
         - name: environmentName
           in: path
@@ -2482,6 +2495,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
@@ -4313,6 +4328,9 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
+        A request is also refused with 413 when its `files` overlay (compile and
+        query) is past PUBLISHER_MAX_OVERLAY_FILES or PUBLISHER_MAX_OVERLAY_BYTES;
+        the message names the bound.
       content:
         application/json:
           schema:
@@ -7862,6 +7880,21 @@ components:
           items:
             type: string
 
+    OverlayFile:
+      type: object
+      description: One file of a request's `files` overlay.
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          description: >-
+            The file's path relative to the package root, `/`-separated, ending
+            in `.malloy` or `.malloynb`.
+          example: orders/orders.malloy
+        content:
+          type: string
+          description: The file's whole text.
+
     QueryRequest:
       type: object
       description: Request body for executing a Malloy query
@@ -7938,6 +7971,29 @@ components:
             When true, skip server-side `#(filter)` injection entirely.
         givens:
           $ref: "#/components/schemas/GivenValues"
+        files:
+          type: array
+          description: >-
+            Package files read instead of, or beside, the package's own for this
+            request only: an entry whose path names a package file replaces it,
+            and one naming a new file adds it, so an import of it resolves.
+            The model in the URL is compiled for this request alone, and the
+            query runs against it. Like `/compile`, such a query is an authoring
+            query: the package's discovery surface does not restrict it, and the
+            overlaid files' own gates do. Nothing is written, cached or served
+            to another request. Overlay
+            files are author content, read exactly as the package's own files:
+            they are not restricted like ad-hoc text, and their `#(authorize)`
+            and `#(access_filter)` annotations gate as written, so a host should
+            offer `files` only to callers who may edit the package. Only
+            `.malloy` and `.malloynb` files can be overlaid; data files and
+            `publisher.json` are read from the package as published. A path that
+            is absolute, has a "." or ".." segment or a backslash, names another
+            kind of file, or appears twice is a 400; more than
+            PUBLISHER_MAX_OVERLAY_FILES files (default 500) or
+            PUBLISHER_MAX_OVERLAY_BYTES bytes of text (default 8 MiB) is a 413.
+          items:
+            $ref: "#/components/schemas/OverlayFile"
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -9522,6 +9578,28 @@ components:
             and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
+        files:
+          type: array
+          description: >-
+            Package files read instead of, or beside, the package's own for this
+            compile only, at scope "file" or "package" (a 400 at "append", which
+            checks text against the package as published): an entry whose path names a package file replaces it,
+            and one naming a new file adds it, so an import of it resolves.
+            Nothing is written, cached or served to another request. At "file",
+            an entry for the model in the URL may stand in for `source`; giving
+            both is a 400. Overlay
+            files are author content, read exactly as the package's own files:
+            they are not restricted like ad-hoc text, and their `#(authorize)`
+            and `#(access_filter)` annotations gate as written, so a host should
+            offer `files` only to callers who may edit the package. Only
+            `.malloy` and `.malloynb` files can be overlaid; data files and
+            `publisher.json` are read from the package as published. A path that
+            is absolute, has a "." or ".." segment or a backslash, names another
+            kind of file, or appears twice is a 400; more than
+            PUBLISHER_MAX_OVERLAY_FILES files (default 500) or
+            PUBLISHER_MAX_OVERLAY_BYTES bytes of text (default 8 MiB) is a 413.
+          items:
+            $ref: "#/components/schemas/OverlayFile"
 
     ModelSourceWriteRequest:
       type: object

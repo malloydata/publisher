@@ -49,6 +49,7 @@ import {
    getExtensionFetchPolicy,
    getLlmSettings,
    getMaterializationSchedulerConfig,
+   getMaxOverlayBytes,
    getMemoryGovernorConfig,
    isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
@@ -358,6 +359,17 @@ app.use(
    }),
 );
 
+// Compile and query take a `files` overlay of up to PUBLISHER_MAX_OVERLAY_BYTES
+// of text, which JSON escaping can grow, so they parse a larger body; the
+// overlay's own bounds answer 413 past that. Parsed once: the general parser
+// below skips a body already read.
+const OVERLAY_ROUTE = /\/packages\/[^/]+\/models\/.+\/(compile|query)$/;
+const overlayBodyParser = bodyParser.json({
+   limit: 2 * getMaxOverlayBytes() + 1024 * 1024,
+});
+app.use((req, res, next) =>
+   OVERLAY_ROUTE.test(req.path) ? overlayBodyParser(req, res, next) : next(),
+);
 app.use(bodyParser.json({ limit: "1mb" }));
 app.use(legacyPackageNameBodyMiddleware());
 

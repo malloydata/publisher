@@ -87,6 +87,11 @@ export interface LoadPackageRequest {
     * touching disk.
     */
    replacement?: { modelPath: string; source: string };
+   /**
+    * More in-memory files for a package compile dry-run (a request's `files`
+    * overlay), read the same way as `replacement`.
+    */
+   overlay?: { modelPath: string; source: string }[];
    /** Include non-fatal compiler diagnostics in SerializedModel results. */
    collectProblems?: boolean;
    /**
