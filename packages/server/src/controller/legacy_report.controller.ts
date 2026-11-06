@@ -10,7 +10,9 @@ import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import {
    type AccessIdentity,
+   type AccessRecordBase,
    type QueryAudit,
+   recordRefusal,
    withAccessRecord,
 } from "../service/access_record";
 import { EnvironmentStore } from "../service/environment_store";
@@ -27,6 +29,19 @@ type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
+
+const cellAccessBase = (
+   environmentName: string,
+   packageName: string,
+   notebookPath: string,
+   identity: AccessIdentity,
+): AccessRecordBase => ({
+   environment: environmentName,
+   package: packageName,
+   modelPath: notebookPath,
+   adHoc: false,
+   ...identity,
+});
 
 /**
  * DEPRECATED: the `…/dashboards*` and `…/notebooks*` routes, answered from the
@@ -129,13 +144,7 @@ export class LegacyReportController {
    ): Promise<NotebookCellRunResult> {
       recordDeprecatedUsage("notebook_cell");
       return withAccessRecord(
-         {
-            environment: environmentName,
-            package: packageName,
-            modelPath: notebookPath,
-            adHoc: false,
-            ...identity,
-         },
+         cellAccessBase(environmentName, packageName, notebookPath, identity),
          undefined,
          (audit) =>
             this.runNotebookCell(
@@ -149,6 +158,20 @@ export class LegacyReportController {
                givens,
                versionId,
             ),
+      );
+   }
+
+   /** Record a cell request a route refused before {@link executeNotebookCell} was called. */
+   public recordCellRefusal(
+      environmentName: string,
+      packageName: string,
+      notebookPath: string,
+      identity: AccessIdentity,
+      error: Error,
+   ): Promise<void> {
+      return recordRefusal(
+         cellAccessBase(environmentName, packageName, notebookPath, identity),
+         error,
       );
    }
 

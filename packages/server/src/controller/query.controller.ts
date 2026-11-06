@@ -8,7 +8,9 @@ import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
 import {
    type AccessIdentity,
+   type AccessRecordBase,
    type QueryAudit,
+   recordRefusal,
    withAccessRecord,
 } from "../service/access_record";
 import {
@@ -25,6 +27,26 @@ import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
+
+function accessBase(
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+   sourceName: string | undefined,
+   queryName: string | undefined,
+   query: string | undefined,
+   identity: AccessIdentity,
+): AccessRecordBase {
+   return {
+      environment: environmentName,
+      package: packageName,
+      modelPath,
+      ...(queryName ? { queryName } : {}),
+      ...(sourceName ? { requestedSource: sourceName } : {}),
+      adHoc: Boolean(query),
+      ...identity,
+   };
+}
 
 export class QueryController {
    private environmentStore: EnvironmentStore;
@@ -62,15 +84,15 @@ export class QueryController {
       identity: AccessIdentity,
    ): Promise<ApiQuery> {
       return withAccessRecord(
-         {
-            environment: environmentName,
-            package: packageName,
+         accessBase(
+            environmentName,
+            packageName,
             modelPath,
-            ...(queryName ? { queryName } : {}),
-            ...(sourceName ? { requestedSource: sourceName } : {}),
-            adHoc: Boolean(query),
-            ...identity,
-         },
+            sourceName,
+            queryName,
+            query,
+            identity,
+         ),
          clientSignal,
          (audit) =>
             this.runQuery(
@@ -90,6 +112,29 @@ export class QueryController {
                includeHiddenFilesAndSources,
                clientSignal,
             ),
+      );
+   }
+
+   /** Record a request a route refused before {@link getQuery} was called, so it is not the one request without a record. */
+   public recordRefusal(
+      environmentName: string,
+      packageName: string,
+      modelPath: string,
+      body: { sourceName?: string; queryName?: string; query?: string },
+      identity: AccessIdentity,
+      error: Error,
+   ): Promise<void> {
+      return recordRefusal(
+         accessBase(
+            environmentName,
+            packageName,
+            modelPath,
+            body.sourceName,
+            body.queryName,
+            body.query,
+            identity,
+         ),
+         error,
       );
    }
 

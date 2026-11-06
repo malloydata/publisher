@@ -44,6 +44,7 @@ import { timeReportRead } from "../report_metrics";
 import {
    assertListingTakesNoVersionId,
    booleanParamOr400,
+   optionalBooleanParam,
    queryVersionIdOf,
    setCollectionReloadError,
 } from "../route_params";
@@ -55,6 +56,7 @@ import {
    apiRoute,
    jsonRoute,
    logRefusal,
+   recordGateRefusal,
    sendRouteError,
    wildcardParam,
    markDeprecated,
@@ -797,65 +799,91 @@ function registerQueryRoutes(
    pkg: string,
    { queryController, databaseController, compileController }: ApiControllers,
 ): void {
-   app.post(`${pkg}/models/*?/query`, queryConcurrency(), async (req, res) => {
-      const includeHiddenFilesAndSources = booleanParamOr400(
-         req,
-         res,
-         "includeHiddenFilesAndSources",
+   const recordRefusal = (req: express.Request, error: Error) =>
+      queryController.recordRefusal(
+         req.params.environmentName,
+         req.params.packageName,
+         wildcardParam(req),
+         req.body ?? {},
+         accessIdentityOf(req.headers),
+         error,
       );
-      if (includeHiddenFilesAndSources === undefined) return;
+   app.post(
+      `${pkg}/models/*?/query`,
+      queryConcurrency(),
+      async (req: express.Request, res: express.Response) => {
+         let includeHiddenFilesAndSources: boolean;
+         try {
+            includeHiddenFilesAndSources =
+               optionalBooleanParam(req, "includeHiddenFilesAndSources") ??
+               false;
+         } catch (error) {
+            await recordRefusal(req, error as Error);
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+            return;
+         }
 
-      // A client that goes away (a superseded dashboard tile, a closed tab)
-      // cancels its query: the concurrency slot is released on `close`, so
-      // the query must not keep running past it.
-      const disconnected = new AbortController();
-      res.on("close", () => {
-         if (!res.writableFinished)
-            disconnected.abort(new Error("client disconnected"));
-      });
+         // A client that goes away (a superseded dashboard tile, a closed tab)
+         // cancels its query: the concurrency slot is released on `close`, so
+         // the query must not keep running past it.
+         const disconnected = new AbortController();
+         res.on("close", () => {
+            if (!res.writableFinished)
+               disconnected.abort(new Error("client disconnected"));
+         });
 
-      try {
-         const filterParams = (req.body.filterParams ??
-            req.body.sourceFilters) as
-            | Record<string, string | string[]>
-            | undefined;
-         const bypassFilters =
-            req.body.bypassFilters === true ? true : undefined;
-         const result = await queryController.getQuery(
-            req.params.environmentName,
-            req.params.packageName,
-            wildcardParam(req),
-            req.body.sourceName as string,
-            req.body.queryName as string,
-            req.body.query as string,
-            req.body.compactJson === true,
-            filterParams,
-            bypassFilters,
-            req.body.givens as Record<string, GivenValue> | undefined,
-            {
-               queryMetadata: req.body?.queryMetadata,
-               queryClass: req.body?.queryClass,
-               versionId: queryVersionIdOf(req),
-            },
-            // Disables the author's `#(authorize)` gates. From a header, never
-            // the body, and nothing here bounds who may send it: the
-            // deployment must strip it at its edge. See
-            // docs/authorize-bypass-deployment.md.
-            readBypassAuthorize(req),
-            includeHiddenFilesAndSources,
-            disconnected.signal,
-            // For the access record: who the gateway says is asking, and the
-            // trace this request belongs to. See docs/access-record.md.
-            accessIdentityOf(req.headers),
-         );
-         setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
-         res.status(200).json(result);
-      } catch (error) {
-         // Nobody is waiting for the answer: not worth a log line.
-         if (disconnected.signal.aborted) return;
-         sendRouteError(res, error as Error, logRefusal(req, error as Error));
-      }
-   });
+         try {
+            const filterParams = (req.body.filterParams ??
+               req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined;
+            const bypassFilters =
+               req.body.bypassFilters === true ? true : undefined;
+            const result = await queryController.getQuery(
+               req.params.environmentName,
+               req.params.packageName,
+               wildcardParam(req),
+               req.body.sourceName as string,
+               req.body.queryName as string,
+               req.body.query as string,
+               req.body.compactJson === true,
+               filterParams,
+               bypassFilters,
+               req.body.givens as Record<string, GivenValue> | undefined,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+                  versionId: queryVersionIdOf(req),
+               },
+               // Disables the author's `#(authorize)` gates. From a header, never
+               // the body, and nothing here bounds who may send it: the
+               // deployment must strip it at its edge. See
+               // docs/authorize-bypass-deployment.md.
+               readBypassAuthorize(req),
+               includeHiddenFilesAndSources,
+               disconnected.signal,
+               // For the access record: who the gateway says is asking, and the
+               // trace this request belongs to. See docs/access-record.md.
+               accessIdentityOf(req.headers),
+            );
+            setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
+            res.status(200).json(result);
+         } catch (error) {
+            // Nobody is waiting for the answer: not worth a log line.
+            if (disconnected.signal.aborted) return;
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+         }
+      },
+      recordGateRefusal(recordRefusal),
+   );
 
    app.get(
       `${pkg}/databases`,

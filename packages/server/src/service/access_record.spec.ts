@@ -13,6 +13,8 @@ import { DEFAULT_CALLER_HEADER } from "../constants";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionError,
+   ConnectionPoolExhaustedError,
    ModelNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
@@ -24,6 +26,7 @@ import {
    outcomeOf,
    summarizeQueryAccess,
    unrecordedAudit,
+   withAccessRecord,
 } from "./access_record";
 
 const MODEL = `##! experimental.givens
@@ -325,6 +328,90 @@ describe("emitAccessRecord", () => {
             outcome: "ok",
             status: 200,
          });
+      } finally {
+         info.mockRestore();
+      }
+   });
+});
+
+describe("withAccessRecord", () => {
+   const base = {
+      environment: "env",
+      package: "pkg",
+      modelPath: "m.malloy",
+      adHoc: true,
+   };
+   const emitted = () => {
+      const info = spyOn(logger, "info").mockImplementation(() => logger);
+      return {
+         info,
+         records: () =>
+            (info.mock.calls as unknown[][])
+               .filter(([message]) => message === "Access record")
+               .map(([, record]) => record as { error?: string }),
+      };
+   };
+
+   it("records a driver's statement text only as the HTTP path would answer it", async () => {
+      const { info, records } = emitted();
+      try {
+         const driver = new ConnectionError(
+            `syntax error near "WHERE region = 'PLAIN-GIVEN-LITERAL'"`,
+         );
+         await expect(
+            withAccessRecord(base, undefined, async () => {
+               throw driver;
+            }),
+         ).rejects.toBe(driver);
+         expect(records()).toHaveLength(1);
+         expect(records()[0].error).not.toContain("PLAIN-GIVEN-LITERAL");
+         expect(records()[0].error).toBe("Upstream connection error.");
+      } finally {
+         info.mockRestore();
+      }
+   });
+
+   it("records a server-authored connection message as written", async () => {
+      const { info, records } = emitted();
+      try {
+         const refusal = new ConnectionPoolExhaustedError(
+            "Every session was busy.",
+         );
+         await expect(
+            withAccessRecord(base, undefined, async () => {
+               throw refusal;
+            }),
+         ).rejects.toBe(refusal);
+         expect(records()[0].error).toBe("Every session was busy.");
+      } finally {
+         info.mockRestore();
+      }
+   });
+
+   it("answers an ok query when the logger throws while recording it", async () => {
+      const info = spyOn(logger, "info").mockImplementation(() => {
+         throw new Error("log sink down");
+      });
+      try {
+         await expect(
+            withAccessRecord(base, undefined, async () => "rows"),
+         ).resolves.toBe("rows");
+      } finally {
+         info.mockRestore();
+      }
+   });
+
+   it("surfaces the original error when the logger throws while recording a refusal", async () => {
+      const info = spyOn(logger, "info").mockImplementation(() => {
+         throw new Error("log sink down");
+      });
+      try {
+         const original = new BadRequestError("bad input");
+         await expect(
+            withAccessRecord(base, undefined, async () => {
+               throw original;
+            }),
+         ).rejects.toBe(original);
       } finally {
          info.mockRestore();
       }

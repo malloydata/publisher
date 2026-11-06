@@ -457,6 +457,135 @@ describe("legacy notebook cell writes exactly one record", () => {
    });
 });
 
+describe("a request refused before its controller runs still writes one record", () => {
+   const MODEL_QUERY =
+      "/api/v0/environments/env/packages/pkg/models/m.malloy/query";
+   const LEGACY_MODEL_QUERY =
+      "/api/v0/projects/env/packages/pkg/models/m.malloy/query";
+   const cell = (prefix: string, index: string, query = "") =>
+      `/api/v0/${prefix}/env/packages/pkg/notebooks/n.malloynb/cells/${index}${query}`;
+   const CALLER = { "x-publisher-caller": "alice@example.com" };
+   const appOver = (store: EnvironmentStore) =>
+      buildRouteApp({
+         environmentStore: store,
+         queryController: new QueryController(store),
+      });
+   const atCap = (run: () => Promise<void>) =>
+      withSettings(
+         { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
+         async () => {
+            const held = tryAcquireQuerySlot("test");
+            try {
+               await run();
+            } finally {
+               held.release();
+            }
+         },
+      );
+
+   it("on a bad includeHiddenFilesAndSources", async () => {
+      await request(appOver(storeOf({})))
+         .post(`${MODEL_QUERY}?includeHiddenFilesAndSources=maybe`)
+         .set(CALLER)
+         .send({ query: "run: open_src -> { aggregate: n }" })
+         .expect(400);
+      expect(records()).toMatchObject([
+         {
+            outcome: "bad_request",
+            status: 400,
+            modelPath: "m.malloy",
+            adHoc: true,
+            caller: "alice@example.com",
+         },
+      ]);
+   });
+
+   it.each([
+      ["the model query route", MODEL_QUERY],
+      ["the legacy model query route", LEGACY_MODEL_QUERY],
+   ])("at the concurrency cap on %s", async (_name, path) => {
+      await atCap(async () => {
+         await request(appOver(storeOf({})))
+            .post(path)
+            .set(CALLER)
+            .send({ queryName: "by_area" })
+            .expect(503);
+      });
+      expect(records()).toMatchObject([
+         {
+            outcome: "error",
+            status: 503,
+            modelPath: "m.malloy",
+            queryName: "by_area",
+            adHoc: false,
+            caller: "alice@example.com",
+         },
+      ]);
+   });
+
+   it.each([
+      ["a cell index that is not a number", "abc", ""],
+      ["filter_params that are not JSON", "0", "?filter_params=%7B"],
+      ["a bad bypass_filters", "0", "?bypass_filters=maybe"],
+      ["givens that are not JSON", "0", "?givens=%7B"],
+   ])("on the notebook cell route with %s", async (_name, index, query) => {
+      await request(appOver(storeOf({})))
+         .get(cell("environments", index, query))
+         .set(CALLER)
+         .expect(400);
+      expect(records()).toMatchObject([
+         {
+            outcome: "bad_request",
+            status: 400,
+            modelPath: "n.malloynb",
+            caller: "alice@example.com",
+         },
+      ]);
+   });
+
+   it.each([
+      ["a cell index that is not a number", "abc", ""],
+      ["filter_params that are not JSON", "0", "?filter_params=%7B"],
+      ["a bad bypass_filters", "0", "?bypass_filters=maybe"],
+   ])(
+      "on the legacy notebook cell route with %s",
+      async (_name, index, query) => {
+         await request(appOver(storeOf({})))
+            .get(cell("projects", index, query))
+            .set(CALLER)
+            .expect(400);
+         expect(records()).toMatchObject([
+            { outcome: "bad_request", status: 400, modelPath: "n.malloynb" },
+         ]);
+      },
+   );
+
+   it.each([["environments"], ["projects"]])(
+      "at the concurrency cap on the %s notebook cell route",
+      async (prefix) => {
+         await atCap(async () => {
+            await request(appOver(storeOf({})))
+               .get(cell(prefix, "0"))
+               .set(CALLER)
+               .expect(503);
+         });
+         expect(records()).toMatchObject([
+            { outcome: "error", status: 503, modelPath: "n.malloynb" },
+         ]);
+      },
+   );
+
+   it("once, not twice, when the request reaches its controller", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         await request(appOver(storeOf(model)))
+            .post(`${MODEL_QUERY}?includeHiddenFilesAndSources=false`)
+            .send({ query: "run: open_src -> { aggregate: n }" })
+            .expect(200);
+         expect(records()).toHaveLength(1);
+      });
+   });
+});
+
 describe("raw SQL writes exactly one record, as ungated", () => {
    const controllerOver = (runSQL: sinon.SinonStub, extra: object = {}) => {
       const environment = {

@@ -14,25 +14,24 @@ import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { LegacyReportController } from "../controller/legacy_report.controller";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
+import { BadRequestError, internalErrorToHttpError } from "../errors";
 import { queryConcurrency } from "../query_concurrency";
-import { optionalBooleanParamOr400 } from "../route_params";
+import { optionalBooleanParam } from "../route_params";
 import { accessIdentityOf } from "../service/access_record";
 import type { EnvironmentStore } from "../service/environment_store";
-import { jsonRoute, wildcardParam } from "./json_route";
+import { jsonRoute, recordGateRefusal, wildcardParam } from "./json_route";
 
-/** Parse a JSON query parameter, or answer 400 naming it and return `null`. */
+/** Parse a JSON query parameter, or say why it is refused. */
 function jsonParam<T>(
    req: express.Request,
-   res: express.Response,
    name: string,
-): T | undefined | null {
+): { ok: true; value: T | undefined } | { ok: false; message: string } {
    const raw = req.query[name];
-   if (typeof raw !== "string") return undefined;
+   if (typeof raw !== "string") return { ok: true, value: undefined };
    try {
-      return JSON.parse(raw) as T;
+      return { ok: true, value: JSON.parse(raw) as T };
    } catch {
-      res.status(400).json({ error: `Invalid ${name}: must be valid JSON` });
-      return null;
+      return { ok: false, message: `Invalid ${name}: must be valid JSON` };
    }
 }
 
@@ -43,6 +42,14 @@ export function registerDeprecatedRoutes(
 ): void {
    const controller = new LegacyReportController(environmentStore);
    const pkg = `${apiPrefix}/environments/:environmentName/packages/:packageName`;
+   const recordCellRefusal = (req: express.Request, error: Error) =>
+      controller.recordCellRefusal(
+         req.params.environmentName,
+         req.params.packageName,
+         wildcardParam(req),
+         accessIdentityOf(req.headers),
+         error,
+      );
 
    app.get(
       `${pkg}/dashboards`,
@@ -87,44 +94,52 @@ export function registerDeprecatedRoutes(
       `${pkg}/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
       jsonRoute(async (req, res) => {
+         // Answers the 400 after recording it: no controller method has run to.
+         const refuse = async (
+            message: string,
+            body: object = { error: message },
+         ) => {
+            await recordCellRefusal(req, new BadRequestError(message));
+            res.status(400).json(body);
+         };
          const cellIndex = parseInt(req.params.cellIndex, 10);
-         if (isNaN(cellIndex)) {
-            res.status(400).json({ error: "Invalid cell index" });
-            return;
-         }
+         if (isNaN(cellIndex)) return refuse("Invalid cell index");
          const filterParams = jsonParam<Record<string, string | string[]>>(
             req,
-            res,
             "filter_params",
          );
-         if (filterParams === null) return;
+         if (!filterParams.ok) return refuse(filterParams.message);
          // Absence must stay distinguishable from an explicit `false` here:
          // the Deprecation header below fires on `bypassFilters !== undefined`.
-         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
-         if (!bypass.ok) return;
-         const givens = jsonParam<Record<string, GivenValue>>(
-            req,
-            res,
-            "givens",
-         );
-         if (givens === null) return;
+         let bypassFilters: boolean | undefined;
+         try {
+            bypassFilters = optionalBooleanParam(req, "bypass_filters");
+         } catch (error) {
+            return refuse(
+               (error as Error).message,
+               internalErrorToHttpError(error as Error).json,
+            );
+         }
+         const givens = jsonParam<Record<string, GivenValue>>(req, "givens");
+         if (!givens.ok) return refuse(givens.message);
          const result = await controller.executeNotebookCell(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
             cellIndex,
-            filterParams,
-            bypass.value,
-            givens,
+            filterParams.value,
+            bypassFilters,
+            givens.value,
             req.query.versionId,
             accessIdentityOf(req.headers),
          );
          setFilterDeprecationHeaders(res, {
-            filterParams,
-            bypassFilters: bypass.value,
+            filterParams: filterParams.value,
+            bypassFilters,
          });
          return result;
       }),
+      recordGateRefusal(recordCellRefusal),
    );
 
    app.get(

@@ -17,7 +17,7 @@
  */
 
 import bodyParser from "body-parser";
-import type { Express } from "express";
+import type { Express, Request } from "express";
 import { ParsedQs } from "qs";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -30,16 +30,16 @@ import {
    setPackagePatchDeprecationHeaders,
 } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
-import { BadRequestError } from "./errors";
+import { BadRequestError, internalErrorToHttpError } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { accessIdentityOf } from "./service/access_record";
-import { apiRoute } from "./routes/json_route";
+import { apiRoute, recordGateRefusal } from "./routes/json_route";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import {
    assertListingTakesNoVersionId,
    booleanParamOr400,
-   optionalBooleanParamOr400,
+   optionalBooleanParam,
    queryVersionIdOf,
    setCollectionReloadError,
 } from "./route_params";
@@ -92,6 +92,14 @@ export function registerLegacyRoutes(
       materializationController,
    } = controllers;
    const legacyReportController = new LegacyReportController(environmentStore);
+   const recordCellRefusal = (req: Request, error: Error) =>
+      legacyReportController.recordCellRefusal(
+         req.params.projectName,
+         req.params.packageName,
+         (req.params as Record<string, string>)["0"],
+         accessIdentityOf(req.headers),
+         error,
+      );
 
    // body-parser is inherited from the main app.
    void bodyParser; // keep the import; helper file reference for clarity
@@ -544,6 +552,16 @@ export function registerLegacyRoutes(
             accessIdentityOf(req.headers),
          );
       }),
+      recordGateRefusal((req, error) =>
+         queryController.recordRefusal(
+            req.params.projectName,
+            req.params.packageName,
+            (req.params as Record<string, string>)["0"],
+            req.body ?? {},
+            accessIdentityOf(req.headers),
+            error,
+         ),
+      ),
    );
 
    app.post(
@@ -578,30 +596,36 @@ export function registerLegacyRoutes(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
       apiRoute(async (req, res) => {
-         const cellIndex = parseInt(req.params.cellIndex, 10);
-         if (isNaN(cellIndex)) {
-            res.status(400).json({ error: "Invalid cell index" });
-            return;
-         }
          const notebookPath = (req.params as Record<string, string>)["0"];
+         // Answers the 400 after recording it: no controller method has run to.
+         const refuse = async (
+            message: string,
+            body: object = { error: message },
+         ) => {
+            await recordCellRefusal(req, new BadRequestError(message));
+            res.status(400).json(body);
+         };
+         const cellIndex = parseInt(req.params.cellIndex, 10);
+         if (isNaN(cellIndex)) return refuse("Invalid cell index");
          let filterParams: Record<string, string | string[]> | undefined;
          if (typeof req.query.filter_params === "string") {
             try {
                filterParams = JSON.parse(req.query.filter_params);
             } catch {
-               res.status(400).json({
-                  error: "Invalid filter_params: must be valid JSON",
-               });
-               return;
+               return refuse("Invalid filter_params: must be valid JSON");
             }
          }
          // Absence must stay distinguishable from an explicit `false`:
          // the Deprecation header fires on `bypassFilters !== undefined`.
-         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
-         if (!bypass.ok) {
-            return;
+         let bypassFilters: boolean | undefined;
+         try {
+            bypassFilters = optionalBooleanParam(req, "bypass_filters");
+         } catch (error) {
+            return refuse(
+               (error as Error).message,
+               internalErrorToHttpError(error as Error).json,
+            );
          }
-         const bypassFilters = bypass.value;
          return legacyReportController.executeNotebookCell(
             req.params.projectName,
             req.params.packageName,
@@ -614,6 +638,7 @@ export function registerLegacyRoutes(
             accessIdentityOf(req.headers),
          );
       }),
+      recordGateRefusal(recordCellRefusal),
    );
 
    app.get(

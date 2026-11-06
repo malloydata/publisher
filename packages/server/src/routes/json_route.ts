@@ -105,6 +105,22 @@ export function unhandledErrorMiddleware(
    sendRouteError(res, err, logRefusal(req, err));
 }
 
+/**
+ * A route-level handler for a query route: records what its concurrency gate
+ * refused before any controller ran, then hands the error on to be answered.
+ */
+export function recordGateRefusal(
+   record: (req: express.Request, error: Error) => Promise<void>,
+): express.ErrorRequestHandler {
+   return (error, req, _res, next) => {
+      // Answered whether or not the record was written, so a refusal never hangs.
+      void record(req, error).then(
+         () => next(error),
+         () => next(error),
+      );
+   };
+}
+
 /** Express's wildcard match, the rest of the path after the route's prefix. */
 export function wildcardParam(req: express.Request): string {
    return (req.params as Record<string, string>)["0"];

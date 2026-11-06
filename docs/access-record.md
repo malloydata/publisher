@@ -25,9 +25,17 @@ Every route that runs a query emits one record per request, on success and on re
 - value lookups in the `get_context` MCP tool, one record per lookup;
 - raw SQL against a connection, recorded with `decision: "ungated"` because no gate runs on it.
 
-A request writes exactly one record: a success, a refusal before the model is reached, a refusal
-inside it, a timeout, and a request the client abandoned (`cancelled`) each produce one. Materialization
-builds run as the system, not as a caller, and are not recorded. The record is separate from the request
+A request to one of those routes writes exactly one record: a success, a refusal before the model is
+reached (a bad query parameter or the concurrency cap included), a refusal inside it, a timeout, and
+a request the client abandoned (`cancelled`) each produce one. Four paths write none:
+
+- a request body that does not parse, which Express refuses before any route runs;
+- `compile` and `sqlSource`, which return a schema or compiled SQL and no rows;
+- an `execute_query` or `get_context` call the MCP SDK rejects for failing the tool's argument schema
+  before the handler runs (an argument the handler itself refuses is recorded);
+- `get_context` calls that look up no value.
+
+Materialization builds run as the system, not as a caller, and are not recorded. The record is separate from the request
 log, which is a debug-grade dump of the request and response bodies, and from the gate metrics,
 which count decisions with no identity attached.
 
@@ -51,7 +59,7 @@ which count decisions with no identity attached.
 | `connection`                                              | The connection a raw SQL request ran against. Raw SQL records no `modelPath`, `source`, `gates` or `fieldsRead`.                                                                                                                                                                                  |
 | `caller`                                                  | The value of the request header the deployment names (below), verbatim. Absent when the request carried none. The MCP routes carry it too.                                                                                                                                                        |
 | `traceId`                                                 | The W3C trace id from the request's `traceparent`, when it carried one, so the record joins the request log and the span.                                                                                                                                                                         |
-| `error`                                                   | The message on a non-ok outcome, with credentials a driver quotes back in it (connection strings, passwords) redacted and the text cut at 2000 characters. A gate's own detail is already redacted there.                                                                                                                                                                                                         |
+| `error`                                                   | The message on a non-ok outcome, with credentials a driver quotes back in it (connection strings, passwords) redacted and the text cut at 2000 characters. A gate's own detail is already redacted there. A connection error carries the text the HTTP answer carries instead: a driver's own message quotes the statement back, and a plain given's value is a literal in it. |
 
 A refused query has no `source`, `gates` or `fieldsRead`, because nothing was compiled for the
 caller; it has what the request named and the outcome. The exception is a query refused for reading
@@ -95,5 +103,5 @@ deployment ships these records somewhere durable. A breach investigation reads `
 reads in the policy's words: a line that says three `phi.direct_identifier` fields were read by a
 caller admitted as `billing` is the line an auditor was going to ask for.
 
-The record never changes what a query returns, and a failure to build it never fails the query:
-the query is answered, and the record is emitted with what was known.
+The record never changes what a query returns, and a failure to build or emit it never fails the
+query: the query's own answer or error is what the caller gets, and the failure is logged.

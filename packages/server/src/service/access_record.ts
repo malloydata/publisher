@@ -33,6 +33,8 @@ import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
 import {
    AccessDeniedError,
+   ConnectionAuthError,
+   ConnectionError,
    internalErrorToHttpError,
    ModelNotFoundError,
 } from "../errors";
@@ -338,6 +340,31 @@ export const runUnrecorded = <T>(
    run: (audit: QueryAudit) => Promise<T>,
 ): Promise<T> => run(mintAudit());
 
+/** A connection error's text is what the HTTP path answers, since a driver quotes the statement back and given values are literals in it. */
+function recordedErrorText(error: unknown, answered: string): string {
+   const text =
+      error instanceof ConnectionError || error instanceof ConnectionAuthError
+         ? answered
+         : // Driver errors quote connection config back; the record is a log line.
+           redactConnectionSecretShapes(
+              String((error as Error)?.message ?? error),
+           );
+   return text.slice(0, MAX_RECORDED_ERROR_CHARS);
+}
+
+/** Emit a record such that a failure to build or write it never replaces the query's own answer. */
+function emitBestEffort(build: () => AccessRecord): void {
+   try {
+      emitAccessRecord(build());
+   } catch (failure) {
+      try {
+         logger.error("Access record not emitted", { error: failure });
+      } catch {
+         // The sink that failed the record may fail this line too.
+      }
+   }
+}
+
 /**
  * Run one request and emit exactly one access record for it, the only place
  * one is emitted: `ok` when `run` resolves, `cancelled` when `signal` aborted,
@@ -356,27 +383,26 @@ export async function withAccessRecord<T>(
    try {
       result = await run(audit);
    } catch (error) {
-      const { status } = internalErrorToHttpError(error as Error, {
-         log: false,
-      });
-      emitAccessRecord({
-         event: "access",
-         ...base,
-         ...(audit.version ? { version: audit.version } : {}),
-         // Set by a refusal that read the query first (the ceiling), so the record says what was read.
-         ...audit.summary,
-         ...(signal?.aborted
-            ? { outcome: "cancelled" as const, status: 499 }
-            : { outcome: outcomeOf(error, status), status }),
-         durationMs: durationMs(),
-         // Driver errors quote connection config and SQL back; the record is a log line.
-         error: redactConnectionSecretShapes(
-            String((error as Error)?.message ?? error),
-         ).slice(0, MAX_RECORDED_ERROR_CHARS),
+      emitBestEffort(() => {
+         const { status, json } = internalErrorToHttpError(error as Error, {
+            log: false,
+         });
+         return {
+            event: "access",
+            ...base,
+            ...(audit.version ? { version: audit.version } : {}),
+            // Set by a refusal that read the query first (the ceiling), so the record says what was read.
+            ...audit.summary,
+            ...(signal?.aborted
+               ? { outcome: "cancelled" as const, status: 499 }
+               : { outcome: outcomeOf(error, status), status }),
+            durationMs: durationMs(),
+            error: recordedErrorText(error, json.message),
+         };
       });
       throw error;
    }
-   emitAccessRecord({
+   emitBestEffort(() => ({
       event: "access",
       ...base,
       ...(audit.version ? { version: audit.version } : {}),
@@ -390,6 +416,16 @@ export async function withAccessRecord<T>(
       ...(audit.executionTimeMs !== undefined
          ? { executionTimeMs: audit.executionTimeMs }
          : {}),
-   });
+   }));
    return result;
+}
+
+/** Record a request refused before it reached the controller that wraps it (a bad parameter, the concurrency cap). */
+export async function recordRefusal(
+   base: AccessRecordBase,
+   error: Error,
+): Promise<void> {
+   await withAccessRecord(base, undefined, () => Promise.reject(error)).catch(
+      () => undefined,
+   );
 }
