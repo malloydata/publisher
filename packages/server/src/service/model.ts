@@ -58,7 +58,8 @@ import {
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
-import { summarizeQueryAccess, type QueryAccessSummary } from "./access_record";
+import { summarizeQueryAccess, type QueryAudit } from "./access_record";
+import { ceilingRefusal, modelDeclaresCarries } from "./classification";
 import {
    type ServeBinding,
    serveShapeDiagnostics,
@@ -78,6 +79,7 @@ import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
+   assertNoCallerClassificationAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
@@ -1930,6 +1932,62 @@ export class Model {
             (name) => (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0,
          ),
       };
+   }
+
+   /**
+    * Refuse a query whose entry carries a `#(carries)` ceiling when it reads a
+    * field past it, so a source's list holds for what a caller reads and not
+    * only for what the author declared. The entry's ceiling is read off the
+    * compiled struct, so a source a caller declares over a carried one keeps
+    * it. A `bad_request` record names the reads.
+    */
+   private async assertWithinCarriesCeiling(
+      audit: QueryAudit,
+      live: QueryMaterializer,
+      bound: QueryMaterializer,
+      source: string | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      region: CallerRegion | undefined,
+   ): Promise<void> {
+      // Only a model that declares a ceiling pays for reading the query.
+      if (!modelDeclaresCarries(this.modelDef)) return;
+      const prepared = (await live.getPreparedQuery()) as {
+         _query?: unknown;
+         _modelDef?: ModelDef;
+      };
+      const modelDef = prepared._modelDef ?? this.modelDef;
+      let refusal: string | undefined;
+      try {
+         const joins = region
+            ? ((await this.resolvedCallerJoins(live, region)) ?? []).map(
+                 (r) => r.callerJoin.join,
+              )
+            : [];
+         refusal = ceilingRefusal(modelDef, prepared._query, joins);
+      } catch (err) {
+         if (!(err instanceof CallerJoinWalkError)) throw err;
+         refusal = "this query's joins cannot be read completely";
+      }
+      if (!refusal) return;
+      try {
+         audit.summary = await summarizeQueryAccess({
+            runnable: live,
+            modelDef: this.modelDef,
+            apiSources: this.sources,
+            modelGivens: this.givens,
+            source,
+            givens,
+            bypassAuthorize: false,
+            grafts: this.rowLevelFilteredRunnables.get(bound) ?? [],
+            rowCount: 0,
+         });
+      } catch (err) {
+         logger.debug("Access summary unavailable", {
+            modelPath: this.modelPath,
+            error: (err as Error).message,
+         });
+      }
+      throw new BadRequestError(refusal);
    }
 
    private modelQuerySource(name: string): string | undefined {
@@ -4088,12 +4146,19 @@ export class Model {
          : undefined;
    }
 
-   public getSources(): ApiSource[] | undefined {
-      return this.curateForDiscovery(this.sources);
+   /** `includeHidden` lists sources the file does not export, which `queryableSources: "all"` still serves. */
+   public getSources(includeHidden = false): ApiSource[] | undefined {
+      return includeHidden
+         ? this.sources
+         : this.curateForDiscovery(this.sources);
    }
 
-   public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.curateForDiscovery(this.sourceInfos);
+   public getSourceInfos(
+      includeHidden = false,
+   ): Malloy.SourceInfo[] | undefined {
+      return includeHidden
+         ? this.sourceInfos
+         : this.curateForDiscovery(this.sourceInfos);
    }
 
    public getQueries(): ApiQuery[] | undefined {
@@ -4110,6 +4175,29 @@ export class Model {
     */
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
+   }
+
+   /** The compiled query of each notebook cell that runs one, with the model state its query compiled in. */
+   public async preparedCellQueries(): Promise<
+      Array<{ query: unknown; modelDef: ModelDef | undefined }>
+   > {
+      const out: Array<{ query: unknown; modelDef: ModelDef | undefined }> = [];
+      for (const cell of this.runnableNotebookCells ?? []) {
+         if (!cell.runnable) continue;
+         let prepared: { _query?: unknown; _modelDef?: ModelDef };
+         try {
+            prepared =
+               (await cell.runnable.getPreparedQuery()) as typeof prepared;
+         } catch {
+            // A cell that does not compile fails when it runs, not here.
+            continue;
+         }
+         out.push({
+            query: prepared._query,
+            modelDef: prepared._modelDef ?? cell.modelDef,
+         });
+      }
+      return out;
    }
 
    /**
@@ -5419,6 +5507,8 @@ export class Model {
    }
 
    private async runQueryResults(
+      // Receives what the query learned for the access record; see `QueryAudit`.
+      audit: QueryAudit,
       sourceName?: string,
       queryName?: string,
       query?: string,
@@ -5457,12 +5547,6 @@ export class Model {
       includeHiddenFilesAndSources = false,
    ): Promise<{
       result: Malloy.Result;
-      /**
-       * What this query accessed, for the access record (`access_record.ts`):
-       * the source entered, the gates and decision, the fields read with their
-       * classes, the row count. Absent only when building it failed.
-       */
-      access?: QueryAccessSummary;
       /**
        * The JSON of the `responseShape` asked for, built once. Callers should
        * send this string: it is the bytes the byte cap measured, and a payload
@@ -5646,6 +5730,7 @@ export class Model {
                throw err;
             }
          }
+         if (query) assertNoCallerClassificationAnnotation(query);
          if (!sourceName && !queryName && query) {
             queryString = "\n" + query;
          } else if (queryName && !query) {
@@ -6013,6 +6098,16 @@ export class Model {
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
       });
+      if (!bypassAuthorize) {
+         await this.assertWithinCarriesCeiling(
+            audit,
+            liveRunnable ?? runnable,
+            runnable,
+            compiledSource ?? sourceName,
+            givens,
+            callerRegion,
+         );
+      }
       if (runCount !== undefined && runCount > 1) {
          queryExecutionHistogram().record(
             performance.now() - startTime,
@@ -6263,10 +6358,10 @@ export class Model {
       }
       // Never fails the query: an unreadable prepared query yields a record
       // with no fields, and a thrown summary yields none.
-      let access: QueryAccessSummary | undefined;
       try {
-         access = await summarizeQueryAccess({
-            runnable,
+         audit.summary = await summarizeQueryAccess({
+            // The storage serve shape carries no annotations; the live one does.
+            runnable: liveRunnable ?? runnable,
             modelDef: this.modelDef,
             apiSources: this.sources,
             modelGivens: this.givens,
@@ -6282,9 +6377,10 @@ export class Model {
             error: (err as Error).message,
          });
       }
+      audit.servedFrom = servedFrom ?? null;
+      audit.executionTimeMs = Math.round(executionTime);
       return {
          result: wrappedResult,
-         ...(access ? { access } : {}),
          serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
@@ -6838,6 +6934,7 @@ export class Model {
    }
 
    public async executeNotebookCell(
+      audit: QueryAudit,
       cellIndex: number,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
@@ -6859,6 +6956,7 @@ export class Model {
               : "code";
       try {
          const result = await this.runNotebookCell(
+            audit,
             cellIndex,
             filterParams,
             bypassFilters,
@@ -6892,6 +6990,7 @@ export class Model {
    }
 
    private async runNotebookCell(
+      audit: QueryAudit,
       cellIndex: number,
       filterParams: FilterParams | undefined,
       bypassFilters: boolean | undefined,
@@ -7045,6 +7144,16 @@ export class Model {
                   givens ?? {},
                );
             }
+            await this.assertWithinCarriesCeiling(
+               audit,
+               runnableToExecute,
+               runnableToExecute,
+               (await this.resolveAuthorizeSourceFromRunnable(
+                  runnableToExecute,
+               )) ?? extractRunTargetSourceName(cell.text),
+               givens,
+               undefined,
+            );
             // After the gate, as on the query path; before prepare.
             this.assertFilterGivens(givens);
 
@@ -7089,6 +7198,28 @@ export class Model {
             );
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
+            try {
+               audit.summary = await summarizeQueryAccess({
+                  runnable: cellRunnable,
+                  modelDef: this.modelDef,
+                  apiSources: this.sources,
+                  modelGivens: this.givens,
+                  source:
+                     (await this.resolveAuthorizeSourceFromRunnable(
+                        cellRunnable,
+                     )) ?? extractRunTargetSourceName(cell.text),
+                  givens,
+                  bypassAuthorize: false,
+                  grafts:
+                     this.rowLevelFilteredRunnables.get(cellRunnable) ?? [],
+                  rowCount: result?.totalRows ?? 0,
+               });
+            } catch (err) {
+               logger.debug("Access summary unavailable", {
+                  modelPath: this.modelPath,
+                  error: (err as Error).message,
+               });
+            }
             // As in getQueryResults.
             if (
                result?._queryResult &&

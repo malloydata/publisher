@@ -175,8 +175,8 @@ export const CONTROLS = [
   {
     id: "AC-05",
     text: "A join does not extend a domain's access.",
-    evidence: "server",
-    note: "Publisher refuses a package whose published source joins a gated source it does not scope.",
+    evidence: "review",
+    note: "Publisher warns when a published source joins a gated source it does not scope; the compliance review run in CI fails that warning.",
   },
   {
     id: "MN-01",
@@ -272,7 +272,7 @@ export const CONTROLS = [
     id: "AU-03",
     text: "A change that would violate a control is refused, not deployed with a warning.",
     evidence: "server",
-    note: "See the seeded violations below.",
+    note: "Publisher refuses a #(carries) leak at load; the compliance review run in CI fails the rest. See the seeded violations below.",
   },
 ];
 
@@ -290,17 +290,17 @@ export const VIOLATIONS = [
     id: "04",
     what: "The clinicians' organization scope reads a given the requester sets.",
     controls: "AC-03, MN-01",
-    refused: true,
+    refused: false,
     reason:
-      "source patient_chart is gated on $ORGANIZATIONS, which is not declared #(secure), so a caller can set it and the gate is a filter, not a control.",
+      "Loads: a gate on a plain given is as trustworthy as whatever sets it. Here the requester sets $ORGANIZATIONS, so the gate is a filter, not a control; a review that reads which givens are #(secure) catches it.",
   },
   {
     id: "05",
     what: "Billing is re-opened to every caller with #(authorize) true.",
     controls: "AC-01, AC-05",
-    refused: true,
+    refused: false,
     reason:
-      "source billing is open to every caller and joins patient, which is locked (#(authorize) false).",
+      "Loads with join-bypass warnings: billing is open to every caller and joins patient, which is locked (#(authorize) false). The compliance review fails AC-05 on them.",
   },
   {
     id: "02",

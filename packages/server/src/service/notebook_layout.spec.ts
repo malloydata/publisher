@@ -6,6 +6,7 @@
  * and the kind-from-tag rule, driven through `Package.create` on the
  * package-load worker pool, the way a real load runs.
  */
+import { unrecordedAudit } from "./access_record";
 import {
    afterAll,
    afterEach,
@@ -155,7 +156,7 @@ describe("notebooks written as tiles (worker path)", () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
          const model = pkg.getModel("notebooks/tour.malloy")!;
-         const result = await model.executeNotebookCell(2);
+         const result = await model.executeNotebookCell(unrecordedAudit(), 2);
          expect(result).toMatchObject({ type: "code", kind: "query" });
          expect(JSON.parse(result.result ?? "{}")).toBeTruthy();
       });

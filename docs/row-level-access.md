@@ -9,6 +9,13 @@ SPDX-License-Identifier: MIT
 > application of givens; for gating access with `#(access_filter)` see [authorize.md](authorize.md), and
 > for the base mechanism see [givens.md](givens.md).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 Three related but distinct things live here — keep them apart:
 
 - **Row-level filtering** — a source scopes its own rows by a caller-supplied given. This is a

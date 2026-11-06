@@ -172,6 +172,7 @@ describe("the lookup query over a real model (gates are the query path's)", () =
       const pkg = {
          listModels: async () => [{ path: "m.malloy" }],
          getModel: (p: string) => (p === "m.malloy" ? model : undefined),
+         getVersionId: () => undefined,
       };
       store = {
          getEnvironment: async () => ({

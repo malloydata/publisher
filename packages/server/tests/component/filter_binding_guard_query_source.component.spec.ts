@@ -16,6 +16,7 @@
  * honest B shapes); a misbound filter admits all three (n=3).
  */
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -220,6 +221,7 @@ async function serve(
                const r = await pkg
                   .getModel("index.malloy")!
                   .getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      namedQuery,
                      namedQuery ? undefined : query,
@@ -287,7 +289,7 @@ async function serveCell(id: string, notebook: string): Promise<Outcome> {
             withDenialSpy(async () => {
                const r = await pkg
                   .getModel("nb.malloynb")!
-                  .executeNotebookCell(1, {}, false, {});
+                  .executeNotebookCell(unrecordedAudit(), 1, {}, false, {});
                return { kind: "SERVED", detail: firstCellValue(r.result!) };
             }),
       );
@@ -1079,6 +1081,7 @@ ${BASE}`,
             const r = await pkg
                .getModel("index.malloy")!
                .getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   CALLER_Z,

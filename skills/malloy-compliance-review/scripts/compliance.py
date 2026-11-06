@@ -21,8 +21,10 @@ from it.
 classification summary, the model read, and get_context), runs the static checks,
 probes every domain as every persona the register names, runs the value checks,
 and writes report.json and report.md with a verdict and evidence per control.
-It exits 1 when any control fails, so it gates CI. `skill:malloy-compliance-review`
-writes the register this reads and judges what it reports.
+Exit codes: 0 every control holds, 1 any control fails, 2 usage, 3 something could
+not be checked and nothing failed (`--allow-review` makes that 0), 4 an internal
+error (the traceback is on stderr). `skill:malloy-compliance-review` writes the
+register this reads and judges what it reports.
 
 `attest` turns a report into a one-page control attestation a privacy officer
 can sign.
@@ -45,6 +47,7 @@ import datetime as _dt
 import json
 import pathlib
 import sys
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,10 +58,12 @@ from typing import Any
 
 GIVEN_REF = re.compile(r"\$([A-Za-z_]\w*)")
 
+LOCAL_MCP = "http://127.0.0.1:4040/mcp"
+
 
 class Server:
     def __init__(self, base: str, environment: str, package: str, model: str,
-                 mcp: str = "http://127.0.0.1:4040/mcp", package_dir: str = "."):
+                 mcp: str = LOCAL_MCP, package_dir: str = "."):
         self.base = base.rstrip("/")
         self.environment = environment
         self.package = package
@@ -134,6 +139,10 @@ class Server:
         HTTPError when the package is not served."""
         meta = self.get_json("")
         summary = self.classification_summary(meta)
+        downgrades = [w for w in meta.get("warnings") or []
+                      if isinstance(w, dict) and w.get("code") == "classification-downgrade"]
+        bypasses = [w for w in meta.get("warnings") or []
+                    if isinstance(w, dict) and w.get("code") == "join-bypass"]
         reads: dict[str, Any] = {}
         try:
             fields = self.context_fields()
@@ -164,7 +173,7 @@ class Server:
                 "fields": fields.get(d["name"], []),
             })
         return {"sources": sources, "secureGivens": sorted(secure_all),
-                "fieldsError": fields_error}
+                "fieldsError": fields_error, "downgrades": downgrades, "bypasses": bypasses}
 
     def status(self) -> dict[str, Any]:
         with urllib.request.urlopen(f"{self.base}/api/v0/status", timeout=60) as r:
@@ -280,6 +289,19 @@ def signals_of(p: dict[str, Any], own_grain: bool, numeric: bool = False) -> lis
     return out
 
 
+# The bodies of a 404 from the query boundary; any other 404 (a typo'd model) is not a refusal.
+SURFACE_REFUSAL = re.compile(r"^(Query target is not queryable\.|No queryable (model|source|query) )")
+
+
+def refused(status: int | None, msg: str | None, served_model: str | None = None) -> bool:
+    """A refusal before any data: a gate's 403, or the surface's 404. The server words a
+    missing model like a hidden one on purpose, so a 404 for the model the register says
+    serves the domains (`served_model`) is a wrong model path, not a refusal."""
+    if status == 404 and served_model and (msg or "") == f'No queryable model "{served_model}".':
+        return False
+    return status == 403 or (status == 404 and bool(SURFACE_REFUSAL.match(msg or "")))
+
+
 def persona_for(register: dict[str, Any], domain: str) -> tuple[str | None, dict[str, Any]]:
     """A persona the register expects to be admitted to `domain`, preferring an unscoped one."""
     expected = register.get("access", {}).get(domain, {})
@@ -294,6 +316,7 @@ def profile_domain(server: Server, register: dict[str, Any], domain: dict[str, A
                    progress=None) -> list[dict[str, Any]]:
     name = domain["name"]
     pid, givens = persona_for(register, name)
+    capped = {cap["field"] for cap in register.get("domains", {}).get(name, {}).get("caps", [])}
     out = []
     for f in domain["fields"]:
         if f["kind"] != "dimension":
@@ -310,9 +333,11 @@ def profile_domain(server: Server, register: dict[str, Any], domain: dict[str, A
         else:
             p = rows[0]
             entry["profile"] = {k.removeprefix("m_"): p.get(k) for k in p}
-            num, _, _ = server.query(numeric_query(name, f["path"]), givens)
+            num, nstatus, nmsg = server.query(numeric_query(name, f["path"]), givens)
+            if num is None:
+                entry["numeric_error"] = f"{nstatus}: {nmsg}"
             numeric = bool(num) and isinstance(num[0].get("max_value"), (int, float))
-            if numeric:
+            if numeric and f["path"] in capped:
                 entry["profile"]["max_value"] = num[0]["max_value"]
                 entry["profile"]["min_value"] = num[0]["min_value"]
             entry["signals"] = signals_of(entry["profile"], own_grain="." not in f["path"], numeric=numeric)
@@ -345,6 +370,9 @@ def check_coverage(gov, register, _ctx):
             missing = [f["path"] for f in s["fields"] if not f["classifications"]]
             out.append(finding("", "fail", f"{s['name']} publishes {s['unclassified']} unclassified fields",
                                ", ".join(missing[:12]), s["name"]))
+    for w in gov.get("downgrades", []):
+        out.append(finding("", "review", "a field declares a lower class than the fields it reads",
+                           (w.get("message") or "")[:400], w.get("subject") or ""))
     return out or [finding("", "pass", "every published field carries a class",
                            f"{sum(s['fieldCount'] for s in published(gov))} fields on {len(published(gov))} domains")]
 
@@ -385,28 +413,43 @@ def everyone(register: dict[str, Any]) -> dict[str, Any]:
 SOURCE_DECL = re.compile(r"(?m)^\s*source:\s+([A-Za-z_]\w*)\s+is\b")
 
 
+def declared_sources(server: Server) -> list[tuple[str, str]]:
+    """(file, source name) for every source the package's own files declare."""
+    root = pathlib.Path(server.package_dir)
+    return [(f.relative_to(root).as_posix(), name)
+            for f in sorted(root.rglob("*.malloy"))
+            for name in dict.fromkeys(SOURCE_DECL.findall(f.read_text()))]
+
+
 def check_locked(gov, register, ctx):
     """Every source the package does not publish refuses a caller holding
     every role the register names. Read from the package's own files, run
     from its directory, and probed through each file's own model path."""
     server: Server = ctx["server"]
-    root = pathlib.Path(server.package_dir)
+    root = pathlib.Path(server.package_dir).resolve()
+    # The server answers a hidden model and a missing one alike, so only a package directory makes its 404 a refusal.
+    if not (root / "publisher.json").is_file():
+        return [finding("", "review", "no unpublished source was probed",
+                        f"--package-dir {root} holds no publisher.json, so it is not a package; "
+                        "run from the package directory or pass --package-dir")]
     published_names = {s["name"] for s in published(gov)}
     who = everyone(register)
     out, probed = [], 0
-    for f in sorted(root.rglob("*.malloy")):
-        rel = f.relative_to(root).as_posix()
-        for name in dict.fromkeys(SOURCE_DECL.findall(f.read_text())):
-            if name in published_names:
-                continue
-            probed += 1
-            rows, status, _ = server.query(f"run: {name} -> {{ aggregate: n is count() }}", who, model=rel)
-            if rows is not None:
-                out.append(finding("", "fail", f"{name} ({rel}) answered a caller holding every role",
-                                   f"{rows[0].get('n')} rows; an unpublished source should refuse everyone"))
+    for rel, name in declared_sources(server):
+        if name in published_names:
+            continue
+        probed += 1
+        rows, status, msg = server.query(f"run: {name} -> {{ aggregate: n is count() }}", who, model=rel)
+        if rows is not None:
+            out.append(finding("", "fail", f"{name} ({rel}) answered a caller holding every role",
+                               f"{rows[0].get('n')} rows; an unpublished source should refuse everyone", name))
+        elif not refused(status, msg):
+            out.append(finding("", "review", f"{name} ({rel}) was not probed: the server neither answered nor refused",
+                               f"{status}: {msg}", name))
     if not probed:
         return [finding("", "review", "no unpublished source was found to probe",
-                        f"read .malloy files under {root.resolve()}; run from the package directory or pass --package-dir")]
+                        f"read .malloy files under {pathlib.Path(server.package_dir).resolve()}; "
+                        "run from the package directory or pass --package-dir")]
     return out or [finding("", "pass", "every unpublished source refuses a caller holding every role",
                            f"{probed} sources probed")]
 
@@ -437,12 +480,13 @@ def check_access(gov, register, ctx):
     personas = register.get("personas", {})
     results: dict[tuple[str, str], int | None] = {}
     errors = []
+    count = "aggregate: n is count()"
     for d in domains:
         for pid, p in personas.items():
-            rows, status, msg = server.query(f"run: {d} -> {{ aggregate: n is count() }}", p["givens"])
+            rows, status, msg = server.query(f"run: {d} -> {{ {count} }}", p["givens"])
             if rows is not None:
                 results[(d, pid)] = int(rows[0]["n"])
-            elif status == 403:
+            elif refused(status, msg, server.model):
                 results[(d, pid)] = None
             else:
                 errors.append(f"{d} as {pid}: {status} {msg}")
@@ -465,11 +509,23 @@ def check_access(gov, register, ctx):
     for d in sorted(set(expected) - set(domains)):
         out.append(finding("", "fail", f"the register expects {d}, which the package does not publish",
                            "a renamed or removed domain leaves its expectations unchecked", d))
+    # A caller with no identity holds no given, so every gate must refuse it.
+    gated = [s for s in published(gov) if s["authorize"] or s["accessFilter"]]
+    for s in gated:
+        d = s["name"]
+        rows, status, msg = server.query(f"run: {d} -> {{ {count} }}", {})
+        # With only a row filter, an unset given admits the source and matches no rows.
+        if rows is not None and not (not s["authorize"] and int(rows[0]["n"]) == 0):
+            out.append(finding("", "fail", f"{d} answered a caller with no identity",
+                               f"{rows[0].get('n')} rows with no givens; a gate should refuse them", d))
+        elif not refused(status, msg, server.model):
+            errors.append(f"{d} as no identity: {status} {msg}")
     for e in errors:
         out.append(finding("", "review", "a probe could not run", e, e.split(" ")[0]))
     n = len(domains) * len(personas)
     return out or [finding("", "pass", f"{n} of {n} access decisions match the register",
-                           f"{len(domains)} domains x {len(personas)} personas")]
+                           f"{len(domains)} domains x {len(personas)} personas, "
+                           f"and {len(gated)} gated domains refuse a caller with no identity")]
 
 
 def check_values(gov, register, ctx):
@@ -522,11 +578,26 @@ def check_values(gov, register, ctx):
             if "free_text" in sig:
                 out.append(finding("", "review", f"{where} looks like free text on a de-identified domain",
                                    f"average length {round(p['profile']['avg_length'] or 0)}", p["domain"]))
-        for cap in rule.get("caps", []):
-            if cap["field"] == p["path"]:
-                mx = p["profile"].get("max_value")
-                if mx is not None and mx > cap["max"]:
-                    out.append(finding("", "fail", f"{where} reaches {mx}; the policy caps it at {cap['max']}", "", p["domain"]))
+    by_field = {(p["domain"], p["path"]): p for p in profiles}
+    for s in published(gov):
+        for cap in rules.get(s["name"], {}).get("caps", []):
+            where = f"{s['name']}.{cap['field']}"
+            p = by_field.get((s["name"], cap["field"]))
+            if p is None:
+                out.append(finding("", "review", f"the cap on {where} was not checked: the field was not profiled",
+                                   "it is not a published dimension of the domain", s["name"]))
+                continue
+            problem = p.get("error") or p.get("numeric_error")
+            mx, mn = p.get("profile", {}).get("max_value"), p.get("profile", {}).get("min_value")
+            if not problem and mx is None and p.get("signals") != ["empty"]:
+                problem = "the field has no numeric values"
+            if problem:
+                out.append(finding("", "review", f"the cap on {where} was not checked", problem, s["name"]))
+                continue
+            if "max" in cap and mx is not None and mx > cap["max"]:
+                out.append(finding("", "fail", f"{where} reaches {mx}; the policy caps it at {cap['max']}", "", s["name"]))
+            if "min" in cap and mn is not None and mn < cap["min"]:
+                out.append(finding("", "fail", f"{where} reaches down to {mn}; the policy floors it at {cap['min']}", "", s["name"]))
     if not out:
         out.append(finding("", "pass", "every profiled field's values match its declared classes",
                            f"{len(profiles)} fields profiled, aggregates only"))
@@ -534,7 +605,7 @@ def check_values(gov, register, ctx):
 
 
 def check_loads(gov, register, ctx):
-    """The package loaded, and is not serving a model older than its files."""
+    """The package loaded, is not serving a model older than its files, and carries no join-bypass warning."""
     server: Server = ctx["server"]
     status = server.status()
     errs = [e for e in status.get("loadErrors") or []
@@ -552,15 +623,23 @@ def check_loads(gov, register, ctx):
                 continue
             m = re.match(r"source (\S+) \(", line)
             kind = ("ceiling" if " carries [" in line else
-                    "secure" if "not declared #(secure)" in line else
                     "join" if (" joins " in line and ("locked" in line or "whose gate reads" in line)) else
                     "other")
             f = finding("", "fail", f"{server.package} {state}", line[:400], m.group(1) if m else "")
             f["kind"] = kind
             out.append(f)
         return out or [finding("", "fail", f"{server.package} {state}")]
-    return [finding("", "pass", "the package loads with every load-time refusal satisfied",
-                    "no load error, and the served model is the one on disk")]
+    out = [finding("", "pass", "the package loads",
+                   "no load error, and the served model is the one on disk")]
+    # The server only warns on a join bypass; this review is what refuses it.
+    for w in (gov or {}).get("bypasses", []):
+        msg = w.get("message") or ""
+        m = re.match(r"source (\S+) \(", msg)
+        f = finding("", "fail", f"{server.package} serves a join that bypasses a gate",
+                    msg[:400], m.group(1) if m else "")
+        f["kind"] = "join"
+        out.append(f)
+    return out
 
 
 def check_refusals(gov, register, ctx):
@@ -568,7 +647,11 @@ def check_refusals(gov, register, ctx):
     A refused, stale package is evidence this holds; the control the change
     breaks is the one that fails."""
     loads = check_loads(gov, register, ctx)
+    # A join-bypass finding rides behind the pass finding, so only the first says whether the load failed.
     if loads[0]["status"] == "pass":
+        if ctx.get("unloaded"):
+            return [{**finding("", "review", f"not checked: {ctx['server'].package} is not being served"),
+                     "unscoped": True}]
         return [finding("", "pass", "no refused change is pending; the served model is the one on disk")]
     return [finding("", "pass", "the latest change was refused at load and is not being served",
                     loads[0]["evidence"])]
@@ -598,6 +681,37 @@ CHECKS = {
     "access": check_access,
     "values": check_values,
 }
+
+
+LOAD_KINDS = ("ceiling", "join", "other")
+
+# These checks walk the published domains alone, so a scope naming anything else is never reported on.
+PUBLISHED_SCOPE = ("coverage", "gated", "secure_gates", "ceiling", "values")
+
+
+def unknown_scope(kind: str, scope: str, gov, register, ctx) -> dict[str, Any] | None:
+    """A finding when `scope` names nothing the check could ever report on, so a
+    typo cannot silently pass; None when it is known or cannot be validated."""
+    declared = {n for _, n in declared_sources(ctx["server"])}
+    if kind == "locked_bases":
+        known = declared
+        if not known:
+            return finding("", "review", f"scope {scope!r} could not be validated: no source declarations were found",
+                           f"read .malloy files under {pathlib.Path(ctx['server'].package_dir).resolve()}")
+    elif gov is None:
+        return None  # the package is not served, so the check is already reported as not checked
+    elif kind in PUBLISHED_SCOPE:
+        known = {s["name"] for s in published(gov)}
+    else:
+        known = ({s["name"] for s in published(gov)} | declared
+                 | set(register.get("access", {})) | set(register.get("domains", {})))
+        if kind in ("loads", "refusals"):
+            known |= set(LOAD_KINDS)
+    if scope in known:
+        return None
+    return finding("", "fail", f"unknown scope {scope!r} on {kind}: it names no "
+                   f"{'published domain' if kind in PUBLISHED_SCOPE else 'domain or source'}",
+                   f"known: {', '.join(sorted(known)) or 'none'}")
 
 
 def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
@@ -633,7 +747,7 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
             else:
                 by_check[kind] = CHECKS[kind](gov, register, ctx)
             if gov is None and kind == "loads" and by_check[kind][0]["status"] == "pass":
-                by_check[kind] = [{**finding("", "fail", f"the server does not serve {server.package}",
+                by_check[kind] = [{**finding("", "review", f"the server does not serve {server.package}",
                                              "no load error names it either: check the environment and package names"),
                                    "unscoped": True}]
     controls = []
@@ -641,11 +755,16 @@ def run_check(server: Server, register: dict[str, Any]) -> dict[str, Any]:
         fs: list[dict[str, Any]] = []
         for name in c.get("checks", []):
             kind, _, scope = name.partition(":")
+            if scope and (bad := unknown_scope(kind, scope, gov, register, ctx)):
+                fs.append({**bad, "control": c["id"], "check": name})
+                continue
             before = len(fs)
             for f in by_check[kind]:
                 # A scoped check (`access:billing`, `values:research`) takes only its domain's findings.
-                # A scope names a domain or, for `loads`, a kind of refusal.
+                # A scope names a domain or, for `loads`, a kind of refusal. A finding that names
+                # neither (the profile could not run at all) is about every scope.
                 if (scope and f["status"] != "pass" and not f.get("unscoped")
+                        and (f.get("domain") or f.get("kind"))
                         and scope not in (f.get("domain"), f.get("kind"))):
                     continue
                 fs.append({**f, "control": c["id"], "check": name})
@@ -858,12 +977,36 @@ def attestation_md(r: dict[str, Any]) -> str:
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+def read_json(path: str, what: str) -> Any:
+    """A file the caller named; one that is missing or not JSON is a usage error."""
+    try:
+        return json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cannot read {what} {path}: {e}")
+
+
 def _server(a) -> Server:
     return Server(a.server, a.environment, a.package, a.model,
                   mcp=a.mcp, package_dir=a.package_dir)
 
 
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except SystemExit as e:
+        if isinstance(e.code, str):  # a register that cannot be run
+            print(e.code, file=sys.stderr)
+            return 2
+        raise
+    except Exception:  # noqa: BLE001 - the one place every failure becomes exit 4
+        traceback.print_exc()
+        return 4
+
+
+def _main(argv: list[str] | None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("profile", "check"):
@@ -872,8 +1015,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--environment", required=True)
         p.add_argument("--package", required=True)
         p.add_argument("--model", default="index.malloy")
-        p.add_argument("--mcp", default="http://127.0.0.1:4040/mcp",
-                       help="the server's MCP endpoint, for get_context")
+        p.add_argument("--mcp", default=None,
+                       help="the server's MCP endpoint, for get_context; required unless --server is "
+                            f"localhost (then {LOCAL_MCP})")
         p.add_argument("--package-dir", default=".",
                        help="the package's files, for the unpublished-source probe")
         p.add_argument("--register", required=True)
@@ -881,6 +1025,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--out")
         else:
             p.add_argument("--out-dir", default="review")
+            p.add_argument("--allow-review", action="store_true",
+                           help="exit 0 when controls need review and none fail")
     p = sub.add_parser("propose")
     p.add_argument("--profile", required=True, help="the output of `profile`")
     p.add_argument("--register", required=True)
@@ -889,9 +1035,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--report", required=True)
     p.add_argument("--out")
     a = ap.parse_args(argv)
+    if a.cmd in ("profile", "check") and a.mcp is None:
+        if urllib.parse.urlparse(a.server).hostname not in LOCAL_HOSTS:
+            ap.error(f"--mcp is required when --server ({a.server}) is not localhost")
+        a.mcp = LOCAL_MCP
 
     if a.cmd == "attest":
-        r = json.loads(pathlib.Path(a.report).read_text())
+        r = read_json(a.report, "report")
         text = attestation_md(r)
         if a.out:
             pathlib.Path(a.out).write_text(text)
@@ -899,9 +1049,11 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(text)
         return 0
 
-    register = json.loads(pathlib.Path(a.register).read_text())
+    register = read_json(a.register, "register")
+    if a.cmd == "check" and not isinstance(register.get("controls"), list):
+        raise SystemExit(f"register {a.register} has no `controls` list")
     if a.cmd == "propose":
-        rows = propose(json.loads(pathlib.Path(a.profile).read_text()), register)
+        rows = propose(read_json(a.profile, "profile"), register)
         if a.out:
             pathlib.Path(a.out).write_text(proposals_md(rows))
             pathlib.Path(a.out).with_suffix(".json").write_text(json.dumps(rows, indent=1))
@@ -930,7 +1082,9 @@ def main(argv: list[str] | None = None) -> int:
     s = report["summary"]
     print(f"{s['fail']} failing, {s['review']} needing review, {s['pass']} holding, "
           f"{s['not_provable_here']} not provable here. Report: {out_dir / 'report.md'}")
-    return 1 if s["fail"] else 0
+    if s["fail"]:
+        return 1
+    return 3 if s["review"] and not a.allow_review else 0
 
 
 if __name__ == "__main__":

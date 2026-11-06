@@ -5,15 +5,13 @@ import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
+import { BadRequestError, ModelNotFoundError } from "../errors";
 import {
-   BadRequestError,
-   internalErrorToHttpError,
-   ModelNotFoundError,
-} from "../errors";
-import {
-   emitAccessRecord,
-   outcomeOf,
-   type QueryAccessSummary,
+   type AccessIdentity,
+   type AccessRecordBase,
+   type QueryAudit,
+   recordRefusal,
+   withAccessRecord,
 } from "../service/access_record";
 import {
    buildQueryMetadataInput,
@@ -30,6 +28,26 @@ import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
+function accessBase(
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+   sourceName: string | undefined,
+   queryName: string | undefined,
+   query: string | undefined,
+   identity: AccessIdentity,
+): AccessRecordBase {
+   return {
+      environment: environmentName,
+      package: packageName,
+      modelPath,
+      ...(queryName ? { queryName } : {}),
+      ...(sourceName ? { requestedSource: sourceName } : {}),
+      adHoc: Boolean(query),
+      ...identity,
+   };
+}
+
 export class QueryController {
    private environmentStore: EnvironmentStore;
 
@@ -39,8 +57,8 @@ export class QueryController {
 
    /**
     * Answer a query and emit its access record (`access_record.ts`), on
-    * success and on refusal alike. `audit` is what only the HTTP boundary
-    * knows: the caller identity from the deployment's header and the trace id.
+    * success and on refusal alike. `identity` is what only the HTTP boundary
+    * knows: the caller from the deployment's header and the trace id.
     */
    public async getQuery(
       environmentName: string,
@@ -50,79 +68,78 @@ export class QueryController {
       queryName: string,
       query: string,
       compactJson: boolean = false,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      metadata?: {
-         queryMetadata?: unknown;
-         queryClass?: unknown;
-         versionId?: unknown;
-      },
-      bypassAuthorize?: boolean,
-      includeHiddenFilesAndSources?: boolean,
-      clientSignal?: AbortSignal,
-      audit: { caller?: string; traceId?: string } = {},
+      filterParams: FilterParams | undefined,
+      bypassFilters: boolean | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      metadata:
+         | {
+              queryMetadata?: unknown;
+              queryClass?: unknown;
+              versionId?: unknown;
+           }
+         | undefined,
+      bypassAuthorize: boolean | undefined,
+      includeHiddenFilesAndSources: boolean | undefined,
+      clientSignal: AbortSignal | undefined,
+      identity: AccessIdentity,
    ): Promise<ApiQuery> {
-      const started = performance.now();
-      const base = {
-         event: "access" as const,
-         environment: environmentName,
-         package: packageName,
-         modelPath,
-         ...(queryName ? { queryName } : {}),
-         ...(sourceName ? { requestedSource: sourceName } : {}),
-         adHoc: Boolean(query),
-         ...(audit.caller ? { caller: audit.caller } : {}),
-         ...(audit.traceId ? { traceId: audit.traceId } : {}),
-      };
-      try {
-         const answered = await this.runQuery(
+      return withAccessRecord(
+         accessBase(
             environmentName,
             packageName,
             modelPath,
             sourceName,
             queryName,
             query,
-            compactJson,
-            filterParams,
-            bypassFilters,
-            givens,
-            metadata,
-            bypassAuthorize,
-            includeHiddenFilesAndSources,
-            clientSignal,
-         );
-         emitAccessRecord({
-            ...base,
-            ...(answered.version ? { version: answered.version } : {}),
-            ...answered.access,
-            outcome: "ok",
-            status: 200,
-            durationMs: Math.round(performance.now() - started),
-            servedFrom: answered.api.servedFrom,
-            ...(answered.api.executionTimeMs !== undefined
-               ? { executionTimeMs: answered.api.executionTimeMs }
-               : {}),
-         });
-         return answered.api;
-      } catch (error) {
-         // A disconnected client's abort is not an access decision.
-         if (clientSignal?.aborted) throw error;
-         const { status } = internalErrorToHttpError(error as Error, {
-            log: false,
-         });
-         emitAccessRecord({
-            ...base,
-            outcome: outcomeOf(error, status),
-            status,
-            durationMs: Math.round(performance.now() - started),
-            error: (error as Error).message,
-         });
-         throw error;
-      }
+            identity,
+         ),
+         clientSignal,
+         (audit) =>
+            this.runQuery(
+               audit,
+               environmentName,
+               packageName,
+               modelPath,
+               sourceName,
+               queryName,
+               query,
+               compactJson,
+               filterParams,
+               bypassFilters,
+               givens,
+               metadata,
+               bypassAuthorize,
+               includeHiddenFilesAndSources,
+               clientSignal,
+            ),
+      );
+   }
+
+   /** Record a request a route refused before {@link getQuery} was called, so it is not the one request without a record. */
+   public recordRefusal(
+      environmentName: string,
+      packageName: string,
+      modelPath: string,
+      body: { sourceName?: string; queryName?: string; query?: string },
+      identity: AccessIdentity,
+      error: Error,
+   ): Promise<void> {
+      return recordRefusal(
+         accessBase(
+            environmentName,
+            packageName,
+            modelPath,
+            body.sourceName,
+            body.queryName,
+            body.query,
+            identity,
+         ),
+         error,
+      );
    }
 
    private async runQuery(
+      audit: QueryAudit,
       environmentName: string,
       packageName: string,
       modelPath: string,
@@ -149,11 +166,7 @@ export class QueryController {
       includeHiddenFilesAndSources?: boolean,
       /** Aborted when the HTTP client disconnects: cancels the query with it. */
       clientSignal?: AbortSignal,
-   ): Promise<{
-      api: ApiQuery;
-      access?: QueryAccessSummary;
-      version?: string;
-   }> {
+   ): Promise<ApiQuery> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
       try {
@@ -174,6 +187,8 @@ export class QueryController {
       const p = await environment.getPackage(packageName, false, {
          versionId: metadata?.versionId,
       });
+      const version = p.getVersionId();
+      if (version) audit.version = version;
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -183,7 +198,6 @@ export class QueryController {
       } else {
          const {
             result,
-            access,
             serializedResult,
             rowLimit,
             rowLimitSource,
@@ -194,6 +208,7 @@ export class QueryController {
          } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
+                  audit,
                   sourceName,
                   queryName,
                   query,
@@ -247,11 +262,7 @@ export class QueryController {
             executionTimeMs,
             queryCostBytes,
          } as ApiQuery;
-         return {
-            api,
-            ...(access ? { access } : {}),
-            ...(p.getVersionId() ? { version: p.getVersionId() } : {}),
-         };
+         return api;
       }
    }
 }

@@ -17,6 +17,7 @@
  * so GROUPS [1] admits exactly parent ids 1,2. `active` is true only for
  * children 1,2.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import {
    type FilterCondition,
    type GivenValue,
@@ -203,6 +204,7 @@ async function rows(
    givens: Record<string, GivenValue>,
 ): Promise<Record<string, unknown>[]> {
    const result = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       queryText,
@@ -617,6 +619,7 @@ run: gated_active -> { group_by: id, child.org_id; order_by: id }
          );
          try {
             const result = await model.executeNotebookCell(
+               unrecordedAudit(),
                1,
                undefined,
                false,

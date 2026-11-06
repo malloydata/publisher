@@ -9,6 +9,13 @@ SPDX-License-Identifier: MIT
 > [row-level access](row-level-access.md), and [`#(access_filter)`](authorize.md) gates.
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics).
 
+> **Operating model.** Publisher is a microservice. It runs locally with your own permissions, or
+> inside your cloud behind the gateway or application that authenticates your users; it does not
+> authenticate anyone itself. The controls on this page are evaluated against what each request
+> carries, so they enforce your policy only when that gateway authenticates the user, sets the
+> givens from the verified identity, and is the only way to reach Publisher. See
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
+
 Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI and the model Explorer, and forwards values to Malloy's runtime.
 
 For the authoritative Malloy reference (semantics, supported types, scoping rules), see [Malloy: Givens](https://docs.malloydata.dev/documentation/experiments/givens).

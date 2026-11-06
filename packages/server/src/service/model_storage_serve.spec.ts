@@ -7,6 +7,7 @@
 // returning 60 — so the value observed proves whether the query was routed
 // through the serve-shape transform (60) or served live from the original
 // model (0). This pins the mode gate, the binding gate, and the safe fallback.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -109,6 +110,7 @@ async function buildModel(opts?: {
 
 async function runTotal(model: Model): Promise<number> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       QUERY,
@@ -213,6 +215,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // 2 rows in storage vs the original source's 1 — so the count proves which
       // path ran without referencing a column.
       const res = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: X -> { aggregate: c is count() }",
@@ -251,6 +254,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // ...and the hidden one is still refused, not served as 'from_storage'.
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { group_by: secret }",
@@ -286,6 +290,7 @@ describe("storage= serve routing (end-to-end)", () => {
          },
       ]);
       const computed = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: X -> { group_by: Total }",
@@ -298,6 +303,7 @@ describe("storage= serve routing (end-to-end)", () => {
       expect(computed.servedFrom).toBe("storage");
       // And the physical column it collides with still resolves to itself.
       const raw = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: X -> { group_by: total }",
@@ -339,6 +345,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // fix this returned 'from_storage' — the leak.)
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { group_by: secret }",

@@ -7,6 +7,7 @@
 // process-wide across spec files, so under `src/` it would get the mock; the
 // integration runner gives it a clean module cache (see theme_store.spec.ts).
 
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -318,6 +319,7 @@ describe("reclaiming an archived version's tables", () => {
       const result = await pkg
          .getModel("model.malloy")!
          .getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: summary -> { select: answer }",
@@ -1225,6 +1227,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       const result = await pkg
          .getModel("model.malloy")!
          .getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: summary -> { select: answer }",

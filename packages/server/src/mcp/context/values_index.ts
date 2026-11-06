@@ -109,6 +109,7 @@ export const defaultIndexValueFetcher: IndexValueFetcher = async (request) => {
    const rows = await queryDistinctValues({
       ...request,
       counted: true,
+      system: true,
       routeLabel: "mcp:getContext:valueIndex",
    });
    const values: Array<{ value: string; count: number }> = [];

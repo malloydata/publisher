@@ -262,7 +262,7 @@ describe("the legacy /projects routes reached with a combined package name", () 
          .send({ query: "run: flights -> by_carrier" })
          .expect(200);
       expect(calls[0].slice(0, 2)).toEqual(["acme", "sales"]);
-      expect(calls[0][calls[0].length - 1]).toMatchObject({
+      expect(calls[0][10]).toMatchObject({
          versionId: "1.0.0",
       });
    });

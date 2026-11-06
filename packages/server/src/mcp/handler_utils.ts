@@ -233,7 +233,8 @@ export async function getModelForQuery(
    modelPath: string,
 ): Promise<
    | { model: Model; environment: Environment; pkg: Package }
-   | { error: ErrorDetails }
+   // `cause` is what the access record classifies; `error` is what the caller reads.
+   | { error: ErrorDetails; cause: unknown }
 > {
    try {
       const environment = await environmentStore.getEnvironment(
@@ -249,7 +250,10 @@ export async function getModelForQuery(
          const details = getNotFoundError(
             `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
          );
-         return { error: details };
+         return {
+            error: details,
+            cause: new ModelNotFoundError(details.message),
+         };
       }
       // Surface a compilation error here rather than mid-query.
       await model.getModel();
@@ -304,7 +308,7 @@ export async function getModelForQuery(
          `[MCP Server Error] Error accessing package/model for query: ${environmentName}/${packageName}/${modelPath}`,
          { error },
       );
-      return { error: errorDetails };
+      return { error: errorDetails, cause: error };
    }
 }
 

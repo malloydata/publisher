@@ -68,6 +68,7 @@ import {
 } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
+import { applyLoadGates } from "./package_load_gates";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import {
    compileSource,
@@ -2846,6 +2847,14 @@ export class Environment {
                validate,
                { dryRun: false },
             );
+            // The body's listing decides what the gates judge, so a refusal
+            // here rolls the swap back rather than 400ing a tree already live.
+            const gateMsg = options.update
+               ? await this.gatesRefuseUnder(newPackage, options.update)
+               : "";
+            if (gateMsg) {
+               throw new BadRequestError(gateMsg);
+            }
             logger.debug("install.phase2.committed", {
                environmentName: this.environmentName,
                packageName,
@@ -2877,6 +2886,7 @@ export class Environment {
          if (options.update !== undefined) {
             await this._updatePackageLocked(packageName, options.update, {
                recordLocation: true,
+               regated: true,
             });
          }
 
@@ -3316,6 +3326,41 @@ export class Environment {
       );
    }
 
+   /**
+    * The load gates' refusal for a package under the listing (`explores`,
+    * `queryableSources`) a body would give it, empty when the body leaves the
+    * listing as it is or the gates pass. The package keeps its own listing.
+    */
+   private async gatesRefuseUnder(
+      pkg: Package,
+      body: ApiPackage,
+   ): Promise<string> {
+      const existing = pkg.getPackageMetadata();
+      const explores =
+         body.explores !== undefined
+            ? body.explores.map(normalizeModelPath)
+            : existing.explores;
+      const queryableSources =
+         body.queryableSources != null
+            ? body.queryableSources
+            : existing.queryableSources;
+      const listing = (e?: string[], q?: string) =>
+         JSON.stringify([e ?? null, q ?? "declared"]);
+      if (
+         listing(explores, queryableSources) ===
+         listing(existing.explores, existing.queryableSources)
+      ) {
+         return "";
+      }
+      try {
+         await applyLoadGates(pkg, { explores, queryableSources });
+         return "";
+      } catch (error) {
+         if (error instanceof BadRequestError) return error.message;
+         throw error;
+      }
+   }
+
    /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
    private async _updatePackageLocked(
       packageName: string,
@@ -3326,14 +3371,13 @@ export class Environment {
           * for an install; a PATCH naming a new location is a reinstall.
           */
          recordLocation: boolean;
+         /** The install already ran the gates under this body's listing, inside its swap. */
+         regated?: boolean;
       },
    ) {
       const _package = this.packages.get(packageName);
       if (!_package) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
-      }
-      if (body.name) {
-         _package.setName(body.name);
       }
       // `setPackageMetadata` replaces the whole object, so omitted fields
       // carry over; a wiped `explores` would silently serve every model.
@@ -3380,6 +3424,11 @@ export class Environment {
          materializationBase || queryMetadata !== null
             ? { ...(materializationBase ?? {}), queryMetadata }
             : materializationBase;
+      // Judged before the listing goes live, so a query meanwhile is served
+      // under the old one. Only a change to what is queryable re-runs them.
+      const gateMsg = options.regated
+         ? ""
+         : await this.gatesRefuseUnder(_package, body);
       // Omitted (or null) fields carry over, so a rebind PATCH keeps the
       // `location` a reload reinstalls from and the `resource` an
       // orchestrator identifies the package by. An empty string is a value.
@@ -3412,10 +3461,16 @@ export class Environment {
          normalizedExplores !== undefined
             ? _package.formatInvalidExplores()
             : "";
-      const invalidMsg = [exploresMsg, policyMsg].filter(Boolean).join("\n");
+      const invalidMsg = [exploresMsg, policyMsg, gateMsg]
+         .filter(Boolean)
+         .join("\n");
       if (invalidMsg) {
          _package.setPackageMetadata(existing);
          throw new BadRequestError(invalidMsg);
+      }
+      // After the checks, so a refused PATCH leaves the name as it was.
+      if (body.name) {
+         _package.setName(body.name);
       }
 
       await this.writePackageManifest(packageName, {

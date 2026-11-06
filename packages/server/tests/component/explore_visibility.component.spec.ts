@@ -19,6 +19,7 @@
  *
  * The deprecated `explores` key is pinned in the labelled block at the end.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -120,7 +121,7 @@ export { customers }`,
          // and a query that joins through base_source executes.
          const { result } = await pkg
             .getModel("index.malloy")!
-            .getQueryResults("customers", "v", undefined);
+            .getQueryResults(unrecordedAudit(), "customers", "v", undefined);
          expect(result.data).toBeDefined();
 
          // Reports are always public regardless of the surface.
@@ -234,6 +235,7 @@ export { customers }`,
             pkg
                .getModel("base.malloy")!
                .getQueryResults(
+                  unrecordedAudit(),
                   "base_source",
                   undefined,
                   "run: base_source -> { select: * }",
@@ -265,6 +267,7 @@ source: open_src is duckdb.sql("select 1 as id")`,
             pkg
                .getModel(file)!
                .getQueryResults(
+                  unrecordedAudit(),
                   undefined,
                   undefined,
                   query,
@@ -758,6 +761,7 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
             expect(namedResponse.modelInfo).not.toContain(absent);
          }
          const ran = await namedIndex.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "through_join",
             undefined,
@@ -765,7 +769,12 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
          expect(ran.result.data).toBeDefined();
          for (const refused of ["unexported", "hidden_ids"]) {
             await expect(
-               namedIndex.getQueryResults(undefined, refused, undefined),
+               namedIndex.getQueryResults(
+                  unrecordedAudit(),
+                  undefined,
+                  refused,
+                  undefined,
+               ),
             ).rejects.toThrow(NotQueryableError);
          }
       } finally {

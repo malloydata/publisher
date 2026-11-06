@@ -13,14 +13,14 @@ status. The rest are aggregate queries run as the register's personas. None read
 | Check | Fails when | Reads |
 | --- | --- | --- |
 | `inventory` | The classification summary lists no source, or `get_context` could not list the published fields | classification summary, `get_context` |
-| `loads` | The package did not load, or serves a stale model because its latest files were refused. One finding per refusal, tagged with the domain and kind (`ceiling`, `secure`, `join`) | `/api/v0/status` |
+| `loads` | The package did not load, serves a stale model because its latest files were refused, or loads with a `join-bypass` warning (a join that reaches a stricter gate than the entry's). One finding per refusal or warning, tagged with the domain and kind (`ceiling`, `join`); a warning is always kind `join` | `/api/v0/status`, the package read's `warnings` |
 | `refusals` | Never fails on a refusal: a refused change is evidence that a violating change is not deployed | `/api/v0/status` |
-| `coverage` | A published field has no class | classification summary |
+| `coverage` | A published field has no class. A field that declares a lower class than the fields it reads (a `classification-downgrade` warning) needs review | classification summary |
 | `gated` | A published domain has neither `#(authorize)` nor a row filter | model read |
 | `secure_gates` | A gate reads a given that is not `#(secure)` | model read |
-| `locked_bases` | A source the package does not publish answers a count to an identity holding every role the register names. Its sources are read from the package's `.malloy` files and queried through each file's own path; with no files found it needs review | package files, a count per source |
+| `locked_bases` | A source the package does not publish answers a count to an identity holding every role the register names. Its sources are read from the package's `.malloy` files and queried through each file's own path; with no files found, or a probe the server neither answered nor refused, it needs review | package files, a count per source |
 | `ceiling` | A domain declares no `#(carries)`, declares a class its `must_not_carry` forbids, or serves a class beyond it | classification summary, register |
-| `access` | A persona's outcome on a domain differs from the register, or the register names a domain the package does not publish | a count per domain per persona |
+| `access` | A persona's outcome on a domain differs from the register, a gated domain answers a caller with no givens (a domain gated only by a row filter may answer with no rows), or the register names a domain the package does not publish. A probe the server neither answered nor refused needs review | a count per domain per persona, and per gated domain with no givens |
 | `values` | A field's values prove more than its class allows, a de-identified domain serves day dates, five-digit ZIPs or uncapped values. Free text there needs review | `get_context`, an aggregate profile per field |
 
 ## What the values prove
@@ -43,8 +43,17 @@ A floor is a lower bound. A birth date's values show dates to the day, a quasi-i
 policy's class table makes it direct. The check fails a field declared *below* its floor, never one
 declared above.
 
+A probe is **refused** when the server answers 403, or 404 with the query boundary's own refusal
+(`Query target is not queryable.` or `No queryable ...`). Any other non-2xx (a 400 from a typo, a 401,
+a 404 for a domain's model path that is not served) means the probe never reached the gate, so it needs
+review rather than counting as a refusal. `locked_bases` probes models the package keeps off its surface,
+which the server answers like a missing one, so it runs only when `--package-dir` holds a `publisher.json`,
+and is review otherwise.
+
 ## Scoping
 
 A check runs once per review, however many controls name it. A control that names `values:research`
-takes only the findings about `research`; if every finding is about another domain, the control
+takes only the findings about `research`; a scope on `coverage`, `gated`, `secure_gates`, `ceiling` or `values` that names no published domain, or on any other
+check that names no domain, declared source or refusal kind, fails as an unknown scope, and `locked_bases` scopes are checked against the sources the
+package's files declare; if every finding is about another domain, the control
 holds for that check and the report says nothing it found touches `research`.

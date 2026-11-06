@@ -11,6 +11,7 @@
  * bypass, and the counters each refusal books. Joins an AUTHOR writes are
  * never gated (Q16: entry-point-only evaluation); joins a CALLER writes are.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection, GivenValue, MalloyError } from "@malloydata/malloy";
 import {
@@ -95,6 +96,7 @@ async function runGated(
 ) {
    const model = await loadModel(modelFile);
    return model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -314,6 +316,7 @@ query: secret is gated -> { aggregate: c }
       // it. The gate is a lock, so a mismatched given is a 403.
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "secret",
             undefined,
@@ -326,6 +329,7 @@ query: secret is gated -> { aggregate: c }
       ).rejects.toBeInstanceOf(AccessDeniedError);
       // And it runs when the gate passes.
       const { result } = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          "secret",
          undefined,
@@ -343,6 +347,7 @@ query: secret is gated -> { aggregate: c }
       // it as absent and runs the ad-hoc query.
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             "",
             undefined,
             "run: gated -> { aggregate: c }",
@@ -542,12 +547,20 @@ run: secret
          const model = await loadModel("rt_nb.malloynb");
          // Cell 1 is `run: secret` — the lock refuses a mismatched given.
          await expect(
-            model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
+            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               ROLE: "intern",
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
          // ...and allowed when the gate passes.
-         const ok = await model.executeNotebookCell(1, undefined, false, {
-            ROLE: "analyst",
-         });
+         const ok = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ROLE: "analyst",
+            },
+         );
          expect(ok.result).toBeDefined();
       });
 
@@ -577,14 +590,22 @@ run: mine -> { aggregate: cc }
          const model = await loadModel("rt_nb_authorize.malloynb");
          // Not rejected as forged caller policy — the author's gate is honored, so
          // it grants on the satisfying given...
-         const ok = await model.executeNotebookCell(1, undefined, false, {
-            ROLE: "analyst",
-         });
+         const ok = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ROLE: "analyst",
+            },
+         );
          expect(ok.result).toBeDefined();
          // ...and still DENIES on a non-satisfying one. The cell's gate is
          // really enforced, not merely tolerated — this is a gate, not a hole.
          await expect(
-            model.executeNotebookCell(1, undefined, false, { ROLE: "nobody" }),
+            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               ROLE: "nobody",
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       });
 
@@ -602,7 +623,13 @@ run: secret_join
 `,
          );
          const model = await loadModel("rt_locked_join.malloynb");
-         const ok = await model.executeNotebookCell(1, undefined, false, {});
+         const ok = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {},
+         );
          expect(ok.result).toBeDefined();
       });
    });
@@ -1544,6 +1571,7 @@ source: regional is duckdb.table('customers') extend {
       await writeModel("compose.malloy", COMPOSED);
       const model = await loadModel("compose.malloy");
       return model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: regional -> in_region",
@@ -2317,6 +2345,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
       const model = await loadModel("inj.malloy");
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             `inj_plain -> { aggregate: c }
              #(authorize) true
              source: mine is inj_locked extend { measure: cc is count() }
@@ -2335,6 +2364,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
       const model = await loadModel("inj.malloy");
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             `{ aggregate: c }
              #(authorize) true
@@ -2673,6 +2703,7 @@ describe("a rejected caller-declared gate is counted", () => {
       const model = await loadModel("gm.malloy");
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             "#(authorize) true\nsource: sneaky is gm_base extend {}\nrun: sneaky",
             "v",
             undefined,

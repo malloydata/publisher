@@ -9,6 +9,9 @@ that reported the controls it broke as holding.
 """
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import pathlib
 import re
 import tempfile
@@ -74,11 +77,14 @@ def profile_row(**counts):
 class FakeServer(c.Server):
     """Answers count probes from `access` and profile queries from `profiles`."""
 
-    def __init__(self, gov, access=None, profiles=None, load_errors=None):
+    def __init__(self, gov, access=None, profiles=None, load_errors=None, statuses=None,
+                 numeric_errors=()):
         super().__init__("http://fake", "env", "pkg", "index.malloy")
         self._gov = gov
         self._access = access or {}
         self._profiles = profiles or {}
+        self._statuses = statuses or {}  # (domain, first role) -> (status, message)
+        self._numeric_errors = set(numeric_errors)
         self.load_errors = load_errors or []
         self.queries = []
 
@@ -95,7 +101,10 @@ class FakeServer(c.Server):
                     counts[k] = counts.get(k, 0) + 1
             out.append({**s, "classCounts": counts, "fieldCount": len(s["fields"]),
                         "unclassified": sum(1 for f in s["fields"] if not f["classifications"])})
-        return {"sources": out, "secureGivens": self._gov.get("secureGivens", [])}
+        return {"sources": out, "secureGivens": self._gov.get("secureGivens", []),
+                "fieldsError": self._gov.get("fieldsError"),
+                "downgrades": self._gov.get("downgrades", []),
+                "bypasses": self._gov.get("bypasses", [])}
 
     def status(self):
         errs = [{**e, "environment": "env", "package": "pkg"} for e in self.load_errors]
@@ -106,18 +115,22 @@ class FakeServer(c.Server):
         m = re.match(r"run: (\w+) -> \{ aggregate: n is count\(\) \}", malloy)
         if m:
             role = (givens.get("ROLES") or [""])[0]
+            if (m.group(1), role) in self._statuses:
+                return (None, *self._statuses[(m.group(1), role)])
             n = self._access.get((m.group(1), role))
             return ([{"n": n}], None, None) if n is not None else (None, 403, "Access denied")
         m = re.match(r"run: (\w+) -> \{ aggregate: max_value", malloy)
         if m:
             path = re.search(r"max\(([\w.]+)\)", malloy).group(1)
-            mx = self._profiles.get((m.group(1), path), {}).get("max_value")
-            return [{"max_value": mx, "min_value": 0}], None, None
+            if (m.group(1), path) in self._numeric_errors:
+                return None, 500, "boom"
+            p = self._profiles.get((m.group(1), path), {})
+            return [{"max_value": p.get("max_value"), "min_value": p.get("min_value", 0)}], None, None
         m = re.match(r"run: (\w+) -> \{ aggregate: rows is count\(\)", malloy)
         if m:
             path = re.search(r"distinct_values is count\(([\w.]+)\)", malloy).group(1)
             p = self._profiles.get((m.group(1), path), {})
-            return [profile_row(**{k: v for k, v in p.items() if k != "max_value"})], None, None
+            return [profile_row(**{k: v for k, v in p.items() if k not in ("max_value", "min_value")})], None, None
         return None, 400, f"unexpected query {malloy}"
 
 
@@ -207,10 +220,12 @@ class ProposeTest(unittest.TestCase):
 
 class ChecksTest(unittest.TestCase):
     def test_a_clean_package_holds(self):
-        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900})
+        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900},
+                            profiles={("research", "age"): {"max_value": 80}})
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         (pathlib.Path(tmp.name) / "base.malloy").write_text("#(authorize) false\nsource: base is duckdb.table('x')\n")
+        (pathlib.Path(tmp.name) / "publisher.json").write_text('{"name": "pkg"}')
         server.package_dir = tmp.name
         r = run(server, [
             {"id": "CL-01", "checks": ["coverage"]},
@@ -284,6 +299,7 @@ class ChecksTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
             (root / "base.malloy").write_text("#(authorize) false\nsource: base is duckdb.table('x')\n")
+            (root / "publisher.json").write_text('{"name": "pkg"}')
             (root / "core.malloy").write_text("source: scratch is base extend {}\n")
             # A domain is defined in one file and re-exported by another: published.
             (root / "domains.malloy").write_text("source: chart is base extend {}\n")
@@ -318,6 +334,29 @@ class ChecksTest(unittest.TestCase):
         self.assertTrue(r["stale"])
         self.assertIn("still serving the model it compiled before", c.report_md(r))
 
+    def test_a_join_bypass_warning_on_a_served_package_fails_loads_join_and_nothing_else(self):
+        gov = fixture()
+        gov["bypasses"] = [{"code": "join-bypass", "subject": "billing",
+                            "message": "source billing (index.malloy) joins patient, whose gate reads $ROLES, "
+                                       "and the join bypasses the lock on patient."}]
+        server = FakeServer(gov)
+        r = run(server, [{"id": "AC-04", "checks": ["loads:ceiling"]},
+                         {"id": "AC-05", "checks": ["loads:join"]},
+                         {"id": "AC-06", "checks": ["loads"]},
+                         {"id": "AC-07", "checks": ["loads:research"]},
+                         {"id": "AU-03", "checks": ["refusals"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["pass", "fail", "fail", "pass", "pass"])
+        f = r["controls"][1]["findings"]
+        self.assertEqual(f[0]["status"], "pass")
+        self.assertEqual((f[1]["status"], f[1]["kind"], f[1]["domain"]), ("fail", "join", "billing"))
+        self.assertIn("bypasses the lock", f[1]["evidence"])
+        self.assertFalse(r["stale"])
+        self.assertNotIn("was refused at load", r["controls"][4]["findings"][0]["text"])
+
+    def test_a_clean_package_loads(self):
+        r = run(FakeServer(fixture()), [{"id": "AC-05", "checks": ["loads:join"]}, {"id": "AC-06", "checks": ["loads"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["pass", "pass"])
+
     def test_an_expected_domain_the_package_does_not_publish_fails(self):
         server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
         r = c.run_check(server, {**REGISTER, "access": {**REGISTER["access"], "billing": {"clinician": "scoped"}},
@@ -345,18 +384,307 @@ class ChecksTest(unittest.TestCase):
         self.assertTrue(r["unloaded"])
         self.assertIn("not serving this package", c.report_md(r))
 
-    def test_an_unknown_package_fails(self):
+    def test_an_unknown_package_is_review_because_nothing_was_checked(self):
         class Unknown(FakeServer):
             def inventory(self):
                 raise c.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
 
-        r = run(Unknown(fixture()), [{"id": "AC-04", "checks": ["loads:ceiling"]}])
-        self.assertEqual(r["controls"][0]["status"], "fail")
+        r = run(Unknown(fixture()), [{"id": "AC-04", "checks": ["loads:ceiling"]},
+                                     {"id": "AC-03", "checks": ["access:chart"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["review", "review"])
         self.assertIn("does not serve", r["controls"][0]["findings"][0]["text"])
 
     def test_an_unknown_check_is_refused(self):
         with self.assertRaises(SystemExit):
             run(FakeServer(fixture()), [{"id": "X-01", "checks": ["telepathy"]}])
+
+
+def package_dir(files):
+    files = {"publisher.json": '{"name": "pkg"}', **files}
+    tmp = tempfile.TemporaryDirectory()
+    for name, text in files.items():
+        (pathlib.Path(tmp.name) / name).write_text(text)
+    return tmp
+
+
+SURFACE_404 = (404, "Query target is not queryable.")
+
+
+class UncheckedIsNotPassedTest(unittest.TestCase):
+    """What the server answered with neither data nor a refusal is not a pass."""
+
+    def locked(self, statuses, scope="", manifest='{"name": "pkg"}'):
+        tmp = package_dir({"base.malloy": "#(authorize) false\nsource: base is duckdb.table('x')\n",
+                           "publisher.json": manifest or ""})
+        if manifest is None:
+            (pathlib.Path(tmp.name) / "publisher.json").unlink()
+        self.addCleanup(tmp.cleanup)
+        server = FakeServer(fixture(), statuses=statuses)
+        server.package_dir = tmp.name
+        return run(server, [{"id": "AC-02", "checks": ["locked_bases" + (f":{scope}" if scope else "")]}])["controls"][0]
+
+    def test_a_locked_probe_answered_400_for_a_typo_is_review_not_pass(self):
+        ctl = self.locked({("base", "clinical"): (400, "no such field")})
+        self.assertEqual(ctl["status"], "review")
+        self.assertIn("400", ctl["findings"][0]["evidence"])
+        self.assertEqual(ctl["findings"][0]["domain"], "base")
+
+    def test_a_locked_probe_refused_by_the_surface_or_a_gate_passes(self):
+        self.assertEqual(self.locked({("base", "clinical"): SURFACE_404})["status"], "pass")
+        self.assertEqual(self.locked({("base", "clinical"): (403, "Access denied")})["status"], "pass")
+
+    def test_a_404_that_is_not_the_surface_refusal_is_review(self):
+        self.assertEqual(self.locked({("base", "clinical"): (404, "Some other 404")})["status"], "review")
+
+    def test_a_locked_probe_of_a_model_the_surface_hides_passes(self):
+        self.assertEqual(
+            self.locked({("base", "clinical"): (404, 'No queryable model "base.malloy".')})["status"], "pass")
+
+    def test_a_package_dir_that_is_not_this_package_is_review(self):
+        hidden = {("base", "clinical"): (404, 'No queryable model "base.malloy".')}
+        ctl = self.locked(hidden, manifest=None)
+        self.assertEqual(ctl["status"], "review")
+        self.assertIn("--package-dir", ctl["findings"][0]["evidence"])
+
+    def test_a_locked_probe_hidden_by_the_surface_still_passes_beside_a_wrong_model_path(self):
+        self.assertEqual(self.locked({("base", "clinical"): (404, 'No queryable source "base".')})["status"], "pass")
+
+    def test_an_unknown_locked_bases_scope_fails_and_a_declared_one_holds(self):
+        ctl = self.locked({}, scope="patiens")
+        self.assertEqual(ctl["status"], "fail")
+        self.assertIn("unknown scope", ctl["findings"][0]["text"])
+        self.assertEqual(self.locked({}, scope="base")["status"], "pass")
+
+    def test_an_unknown_scope_on_a_domain_check_fails(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        r = run(server, [{"id": "X", "checks": ["values:resarch"]}, {"id": "Y", "checks": ["loads:ceiling"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["fail", "pass"])
+
+    def test_a_persona_probe_that_is_not_a_refusal_is_review(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900},
+                            statuses={("research", "clinical"): (401, "no token"),
+                                      ("chart", "researcher"): SURFACE_404})
+        r = run(server, [{"id": "MN-01", "checks": ["access"]}])
+        self.assertEqual([f["status"] for f in r["controls"][0]["findings"]], ["review"])
+        self.assertIn("401", r["controls"][0]["findings"][0]["evidence"])
+
+    def test_a_missing_model_404_is_review_not_a_refusal(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900},
+                            statuses={("research", "clinical"): (404, 'No queryable model "index.malloy".')})
+        r = run(server, [{"id": "MN-01", "checks": ["access"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+        self.assertIn("404", r["controls"][0]["findings"][0]["evidence"])
+
+    def test_a_scoped_values_check_is_review_when_nothing_could_be_profiled(self):
+        gov = fixture()
+        gov["fieldsError"] = "get_context failed: connection refused"
+        server = FakeServer(gov, access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        r = run(server, [{"id": "DI-01", "checks": ["values:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+        self.assertIn("get_context", r["controls"][0]["findings"][0]["evidence"])
+
+    def test_a_scoped_values_check_still_takes_only_its_domains_findings(self):
+        gov = fixture()
+        gov["sources"][0]["fields"] = [field("ssn", [])]
+        server = FakeServer(gov, access={("chart", "clinical"): 1, ("research", "researcher"): 1},
+                            profiles={("chart", "ssn"): {"ssn": 1000}, ("research", "age"): {"max_value": 80}})
+        r = run(server, [{"id": "DI-01", "checks": ["values:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "pass")
+
+    def test_a_gated_domain_answering_with_no_identity_fails(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900,
+                                               ("chart", ""): 40})
+        r = run(server, [{"id": "AC-01", "checks": ["access"]}])
+        f = r["controls"][0]["findings"]
+        self.assertEqual(r["controls"][0]["status"], "fail")
+        self.assertIn("no identity", f[0]["text"])
+        self.assertEqual(f[0]["domain"], "chart")
+        self.assertIn({}, [q[1] for q in server.queries])
+
+    def anonymous(self, gates, rows):
+        """The access check of one domain, gated as `gates` says, that answers `rows` to a caller with no identity."""
+        src = source("ledger", [field("amount", ["none"])], carries=["none"], **gates)
+        reg = {**REGISTER, "access": {"ledger": {"clinician": "rows", "researcher": "rows"}},
+               "controls": [{"id": "AC-01", "checks": ["access"]}]}
+        server = FakeServer(fixture(sources=[src]),
+                            access={("ledger", "clinical"): 3, ("ledger", "researcher"): 3, ("ledger", ""): rows})
+        return c.run_check(server, reg)["controls"][0]
+
+    def test_a_row_filtered_only_domain_answering_zero_rows_with_no_identity_holds(self):
+        ctl = self.anonymous({"access_filter": [gate("org in $ORGS", "ORGS")]}, 0)
+        self.assertEqual([f["text"] for f in ctl["findings"] if "no identity" in f["text"]], [])
+
+    def test_a_row_filtered_only_domain_answering_rows_with_no_identity_fails(self):
+        ctl = self.anonymous({"access_filter": [gate("org in $ORGS", "ORGS")]}, 3)
+        self.assertTrue(any("no identity" in f["text"] and f["status"] == "fail" for f in ctl["findings"]))
+
+    def test_an_authorize_gated_domain_answering_zero_rows_with_no_identity_fails(self):
+        ctl = self.anonymous({"authorize": [gate("'clinical' in $ROLES", "ROLES")]}, 0)
+        self.assertTrue(any("no identity" in f["text"] and f["status"] == "fail" for f in ctl["findings"]))
+
+    def test_a_domain_gated_by_both_answering_zero_rows_with_no_identity_fails(self):
+        ctl = self.anonymous({"authorize": [gate("'clinical' in $ROLES", "ROLES")],
+                              "access_filter": [gate("org in $ORGS", "ORGS")]}, 0)
+        self.assertTrue(any("no identity" in f["text"] and f["status"] == "fail" for f in ctl["findings"]))
+
+    def test_a_scope_naming_a_register_domain_the_package_does_not_publish_fails(self):
+        reg = {**REGISTER, "domains": {**REGISTER["domains"], "archive": {}}}
+        server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        names = [f"{k}:archive" for k in ("values", "ceiling", "coverage", "gated", "secure_gates")]
+        r = c.run_check(server, {**reg, "controls": [{"id": n, "checks": [n]} for n in names]})
+        self.assertEqual([x["status"] for x in r["controls"]], ["fail"] * len(names))
+        self.assertIn("unknown scope", r["controls"][0]["findings"][0]["text"])
+
+    def test_a_scope_naming_a_published_domain_still_holds(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        r = run(server, [{"id": "X", "checks": ["ceiling:research", "coverage:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "pass")
+
+    def test_a_gated_domain_whose_anonymous_probe_errors_is_review(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900},
+                            statuses={("chart", ""): (500, "boom")})
+        r = run(server, [{"id": "AC-01", "checks": ["access"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+
+    def test_a_cap_on_a_field_that_was_not_profiled_is_review(self):
+        reg = {**REGISTER, "domains": {"research": {"caps": [{"field": "agee", "max": 90}]}},
+               "controls": [{"id": "DI-01", "checks": ["values:research"]}]}
+        server = FakeServer(fixture(), access={("research", "researcher"): 900})
+        r = c.run_check(server, reg)
+        self.assertEqual(r["controls"][0]["status"], "review")
+        self.assertIn("agee", r["controls"][0]["findings"][0]["text"])
+
+    def test_a_cap_whose_numeric_query_errored_is_review(self):
+        server = FakeServer(fixture(), access={("research", "researcher"): 900}, numeric_errors={("research", "age")})
+        r = run(server, [{"id": "DI-01", "checks": ["values:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+        self.assertIn("500", r["controls"][0]["findings"][0]["evidence"])
+
+    def test_a_cap_can_declare_a_minimum(self):
+        reg = {**REGISTER, "domains": {"research": {"caps": [{"field": "age", "min": 1930}]}},
+               "controls": [{"id": "DI-01", "checks": ["values:research"]}]}
+        server = FakeServer(fixture(), access={("research", "researcher"): 900},
+                            profiles={("research", "age"): {"max_value": 2000, "min_value": 1900}})
+        r = c.run_check(server, reg)
+        self.assertEqual(r["controls"][0]["status"], "fail")
+        self.assertIn("1900", r["controls"][0]["findings"][0]["text"])
+
+    def test_numeric_extremes_are_kept_only_for_capped_fields(self):
+        server = FakeServer(fixture(), access={("research", "researcher"): 900},
+                            profiles={("research", "age"): {"max_value": 80}, ("research", "year"): {"max_value": 2020}})
+        out = c.profile_domain(server, REGISTER, server.inventory()["sources"][1])
+        by_path = {e["path"]: e["profile"] for e in out}
+        self.assertEqual(by_path["age"]["max_value"], 80)
+        self.assertNotIn("max_value", by_path["year"])
+        self.assertNotIn("min_value", by_path["year"])
+
+    def test_refusals_on_an_unserved_package_is_not_checked_rather_than_holding(self):
+        class Unserved(FakeServer):
+            def inventory(self):
+                raise c.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+
+        r = run(Unserved(fixture()), [{"id": "AU-03", "checks": ["refusals"]}])
+        self.assertEqual(r["controls"][0]["status"], "review")
+
+    def test_a_downgrade_warning_is_review_and_the_value_profile_fails_the_field(self):
+        # `concat(social, '')` declared "none": Publisher warns, the values prove it.
+        gov = fixture()
+        gov["sources"][1]["fields"].append(field("x", ["none"]))
+        gov["downgrades"] = [{"model": "index.malloy", "subject": "research",
+                              "message": "Field x of source research declares none but reads fields classified phi.direct_identifier."}]
+        server = FakeServer(gov, access={("research", "researcher"): 1},
+                            profiles={("research", "x"): {"ssn": 1000, "distinct_values": 900}})
+        r = run(server, [{"id": "CL-01", "checks": ["coverage"]}, {"id": "CL-02", "checks": ["values"]}])
+        self.assertEqual([x["status"] for x in r["controls"]], ["review", "fail"])
+        self.assertEqual(r["controls"][0]["findings"][0]["domain"], "research")
+        self.assertIn("research.x", r["controls"][1]["findings"][0]["text"])
+
+
+class ExitCodeTest(unittest.TestCase):
+    def main(self, server, *extra, server_url="http://localhost:4000", controls=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reg = pathlib.Path(tmp.name) / "controls.json"
+        reg.write_text(json.dumps({**REGISTER, "controls": controls or [{"id": "CL-01", "checks": ["coverage"]}]}))
+        argv = ["check", "--server", server_url, "--environment", "env", "--package", "pkg",
+                "--register", str(reg), "--out-dir", str(pathlib.Path(tmp.name) / "out"), *extra]
+        real, c._server = c._server, (lambda a: server)
+        self.addCleanup(setattr, c, "_server", real)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = c.main(argv)
+        return code, err.getvalue()
+
+    def unclassified(self):
+        gov = fixture()
+        gov["sources"][1]["fields"].append(field("x", []))
+        return FakeServer(gov)
+
+    def test_pass_exits_0(self):
+        self.assertEqual(self.main(FakeServer(fixture()))[0], 0)
+
+    def test_a_failing_control_exits_1(self):
+        self.assertEqual(self.main(self.unclassified())[0], 1)
+
+    def test_a_review_with_no_failure_exits_3_and_allow_review_makes_it_0(self):
+        gov = fixture()
+        gov["downgrades"] = [{"subject": "chart", "message": "Field x declares none but reads phi."}]
+        self.assertEqual(self.main(FakeServer(gov))[0], 3)
+        self.assertEqual(self.main(FakeServer(gov), "--allow-review")[0], 0)
+
+    def test_allow_review_does_not_hide_a_failure(self):
+        self.assertEqual(self.main(self.unclassified(), "--allow-review")[0], 1)
+
+    def test_an_unexpected_exception_exits_4_with_a_traceback(self):
+        class Boom(FakeServer):
+            def inventory(self):
+                raise RuntimeError("kaboom")
+
+        code, err = self.main(Boom(fixture()))
+        self.assertEqual(code, 4)
+        self.assertIn("Traceback", err)
+        self.assertIn("kaboom", err)
+
+    def test_a_remote_server_without_mcp_is_a_usage_error(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.main(FakeServer(fixture()), server_url="https://publisher.example.com")
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_a_remote_server_with_mcp_runs(self):
+        code, _ = self.main(FakeServer(fixture()), "--mcp", "https://publisher.example.com/mcp",
+                            server_url="https://publisher.example.com")
+        self.assertEqual(code, 0)
+
+    def test_a_register_that_cannot_be_run_is_a_usage_error_not_a_failure(self):
+        code, err = self.main(FakeServer(fixture()), controls=[{"id": "X", "checks": ["telepathy"]}])
+        self.assertEqual(code, 2)
+        self.assertIn("telepathy", err)
+
+
+class RegisterLoadTest(unittest.TestCase):
+    """A register that cannot be read is a usage error (2), not an internal one (4)."""
+
+    def code(self, text):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reg = pathlib.Path(tmp.name) / "controls.json"
+        if text is not None:
+            reg.write_text(text)
+        argv = ["check", "--environment", "env", "--package", "pkg", "--register", str(reg),
+                "--out-dir", str(pathlib.Path(tmp.name) / "out")]
+        real, c._server = c._server, (lambda a: FakeServer(fixture()))
+        self.addCleanup(setattr, c, "_server", real)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return c.main(argv)
+
+    def test_a_missing_file_is_2(self):
+        self.assertEqual(self.code(None), 2)
+
+    def test_bad_json_is_2(self):
+        self.assertEqual(self.code("{not json"), 2)
+
+    def test_a_register_with_no_controls_is_2(self):
+        self.assertEqual(self.code(json.dumps({"personas": {}})), 2)
 
 
 class OutputTest(unittest.TestCase):

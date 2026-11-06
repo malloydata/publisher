@@ -9,6 +9,12 @@ SPDX-License-Identifier: MIT
 > to read its lifecycle state. For the full config/env-var reference, see
 > [configuration.md](configuration.md). To build from a clone, see [development.md](development.md).
 
+> **Operating model.** Publisher is a microservice. Run it locally with your own permissions,
+> bound to loopback, or inside your existing cloud as a service reached only through the gateway
+> or application that authenticates your users. It does not authenticate anyone, and its access
+> controls rely on that gateway setting the givens from a verified identity. Never expose `:4000`
+> or `:4040` to untrusted callers. See [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway) for what the gateway has to do.
+
 ## Run with npx
 
 ```bash
