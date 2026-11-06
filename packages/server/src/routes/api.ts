@@ -11,17 +11,25 @@
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { readBypassAuthorize } from "../authorize_bypass_header";
+import { accessIdentityOf } from "../service/access_record";
 import type { CompileController } from "../controller/compile.controller";
 import type { ConnectionController } from "../controller/connection.controller";
 import type { DatabaseController } from "../controller/database.controller";
 import type { MaterializationController } from "../controller/materialization.controller";
 import type { ModelController } from "../controller/model.controller";
-import type { PackageController } from "../controller/package.controller";
+import {
+   setPackagePatchDeprecationHeaders,
+   type PackageController,
+} from "../controller/package.controller";
 import type { QueryController } from "../controller/query.controller";
 import type { ReportController } from "../controller/report.controller";
 import type { SkillController } from "../controller/skill.controller";
 import type { StorageDestinationController } from "../controller/storage_destination.controller";
 import type { ThemeController } from "../controller/theme.controller";
+import {
+   registerVersionRoutes,
+   type VersionController,
+} from "../controller/version.controller";
 import type { WatchModeController } from "../controller/watch-mode.controller";
 import { BadRequestError, ServiceUnavailableError } from "../errors";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
@@ -33,7 +41,13 @@ import {
    parseNonNegativeIntParam,
 } from "../query_param_utils";
 import { timeReportRead } from "../report_metrics";
-import { booleanParamOr400, setCollectionReloadError } from "../route_params";
+import {
+   assertListingTakesNoVersionId,
+   booleanParamOr400,
+   optionalBooleanParam,
+   queryVersionIdOf,
+   setCollectionReloadError,
+} from "../route_params";
 import { exemptFromSocketTimeout } from "../server_timeouts";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
 import type { EnvironmentStore } from "../service/environment_store";
@@ -43,8 +57,8 @@ import {
    apiRoute,
    jsonRoute,
    logRefusal,
+   recordGateRefusal,
    sendRouteError,
-   setVersionIdError,
    wildcardParam,
    markDeprecated,
 } from "./json_route";
@@ -66,6 +80,7 @@ export interface ApiControllers {
    compileController: CompileController;
    materializationController: MaterializationController;
    storageDestinationController: StorageDestinationController;
+   versionController: VersionController;
 }
 
 // Caps long-lived SSE streams so they cannot exhaust sockets or memory.
@@ -182,7 +197,10 @@ function registerWatchModeRoutes(
             envName,
             false,
          );
-         await environment.getPackage(pkgName, false); // 404 if missing
+         // 404 if missing; 404/410 for a version it does not serve.
+         await environment.getPackage(pkgName, false, {
+            versionId: req.query.versionId,
+         });
       } catch (error) {
          sendRouteError(res, error as Error, logRefusal(req, error as Error));
          return;
@@ -370,6 +388,9 @@ function registerConnectionRoutes(
    ] as const) {
       const packageName = (req: express.Request) =>
          scoped ? req.params.packageName : undefined;
+      // A package-scoped route reads the version its request names.
+      const versionId = (req: express.Request) =>
+         scoped ? req.query.versionId : undefined;
       app.get(
          `${prefix}/schemas`,
          apiRoute((req) =>
@@ -377,6 +398,7 @@ function registerConnectionRoutes(
                req.params.environmentName,
                req.params.connectionName,
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -389,6 +411,7 @@ function registerConnectionRoutes(
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -401,6 +424,7 @@ function registerConnectionRoutes(
                req.params.schemaName,
                req.params.tablePath,
                packageName(req),
+               versionId(req),
             ),
          ),
       );
@@ -413,28 +437,32 @@ function registerConnectionRoutes(
       handler: (
          req: express.Request,
          packageName: string | undefined,
+         versionId: unknown,
       ) => Promise<unknown>,
    ) => {
       app.post(
          `${conn}${suffix}`,
          queryConcurrency(),
-         apiRoute((req) => handler(req, undefined)),
+         apiRoute((req) => handler(req, undefined, undefined)),
       );
       app.post(
          `${pkgConn}${suffix}`,
          queryConcurrency(),
-         apiRoute((req) => handler(req, req.params.packageName)),
+         apiRoute((req) =>
+            handler(req, req.params.packageName, req.query.versionId),
+         ),
       );
    };
-   bothScopes("/sqlSource", (req, packageName) =>
+   bothScopes("/sqlSource", (req, packageName, versionId) =>
       connectionController.getConnectionSqlSource(
          req.params.environmentName,
          req.params.connectionName,
          req.body.sqlStatement as string,
          packageName,
+         versionId,
       ),
    );
-   bothScopes("/sqlQuery", (req, packageName) =>
+   bothScopes("/sqlQuery", (req, packageName, versionId) =>
       connectionController.getConnectionQueryData(
          req.params.environmentName,
          req.params.connectionName,
@@ -445,16 +473,49 @@ function registerConnectionRoutes(
             queryMetadata: req.body?.queryMetadata,
             queryClass: req.body?.queryClass,
          },
+         versionId,
+         accessIdentityOf(req.headers),
       ),
    );
-   bothScopes("/sqlTemporaryTable", (req, packageName) =>
+   bothScopes("/sqlTemporaryTable", (req, packageName, versionId) =>
       connectionController.getConnectionTemporaryTable(
          req.params.environmentName,
          req.params.connectionName,
          req.body.sqlStatement as string,
          packageName,
+         versionId,
+         accessIdentityOf(req.headers),
       ),
    );
+}
+
+/**
+ * The `givens` query parameter, a JSON object the trusted tier sets for the
+ * caller, so a model read can omit sources the caller cannot enter (see
+ * service/discovery_lock.ts). `null` when absent; `undefined` after a 400
+ * has been sent for one that is not a JSON object.
+ */
+function givensParamOr400(
+   req: express.Request,
+   res: express.Response,
+): Record<string, GivenValue> | null | undefined {
+   const raw = req.query.givens;
+   if (raw === undefined) return null;
+   if (typeof raw === "string") {
+      try {
+         const parsed = JSON.parse(raw) as unknown;
+         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed as Record<string, GivenValue>;
+         }
+      } catch {
+         // fall through to the 400
+      }
+   }
+   res.status(400).json({
+      code: 400,
+      message: "givens must be one JSON object",
+   });
+   return undefined;
 }
 
 function registerPackageRoutes(
@@ -470,11 +531,13 @@ function registerPackageRoutes(
       skillController,
       reportController,
       environmentStore,
+      versionController,
    } = c;
 
    app.get(
       `${env}/packages`,
       jsonRoute((req, res) => {
+         assertListingTakesNoVersionId(req.query.versionId);
          if (req.query.reload !== undefined) {
             setCollectionReloadError(
                res,
@@ -487,14 +550,31 @@ function registerPackageRoutes(
    );
    app.post(
       `${env}/packages`,
-      apiRoute(async (req) => {
+      apiRoute(async (req, res) => {
+         const dryRun = booleanParamOr400(req, res, "dryRun");
+         if (dryRun === undefined) return undefined;
+         if (dryRun) {
+            return packageController.dryRunPackage(
+               req.params.environmentName,
+               req.body,
+            );
+         }
          const added = await packageController.addPackage(
             req.params.environmentName,
             req.body,
          );
-         return added?.getPackageMetadata();
+         // The same metadata as before for a package with no versions; a
+         // published version also carries the package's current `latest`.
+         if (!added) return undefined;
+         const environment = await environmentStore.getEnvironment(
+            req.params.environmentName,
+            false,
+         );
+         return environment.describePackage(added);
       }),
    );
+   // A package's published versions, their lifecycle and its `latest`.
+   registerVersionRoutes(app, pkg, versionController);
    app.get(
       pkg,
       jsonRoute((req, res) => {
@@ -504,18 +584,21 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             reload,
+            req.query.versionId,
          );
       }),
    );
+   // Deprecated (see setPackagePatchDeprecationHeaders), and kept working.
    app.patch(
       pkg,
-      apiRoute((req) =>
-         packageController.updatePackage(
+      apiRoute((req, res) => {
+         setPackagePatchDeprecationHeaders(res);
+         return packageController.updatePackage(
             req.params.environmentName,
             req.params.packageName,
             req.body,
-         ),
-      ),
+         );
+      }),
    );
    app.delete(
       pkg,
@@ -539,7 +622,7 @@ function registerPackageRoutes(
          return modelController.listModels(
             req.params.environmentName,
             req.params.packageName,
-            { includeHiddenFilesAndSources },
+            { includeHiddenFilesAndSources, versionId: req.query.versionId },
          );
       }),
    );
@@ -552,11 +635,17 @@ function registerPackageRoutes(
             "includeHiddenFilesAndSources",
          );
          if (includeHiddenFilesAndSources === undefined) return;
+         const givens = givensParamOr400(req, res);
+         if (givens === undefined) return;
          return modelController.getModel(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
-            { includeHiddenFilesAndSources },
+            {
+               includeHiddenFilesAndSources,
+               versionId: req.query.versionId,
+               ...(givens ? { givens } : {}),
+            },
          );
       }),
    );
@@ -570,6 +659,7 @@ function registerPackageRoutes(
          skillController.listSkills(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -580,15 +670,72 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req) ?? "",
+            req.query.versionId,
          ),
       ),
    );
+   // A package's sub-resources, each read for the version `versionId` names.
+   const packageReads: [
+      string,
+      (
+         environmentName: string,
+         packageName: string,
+         versionId: unknown,
+      ) => Promise<unknown>,
+   ][] = [
+      [
+         "status",
+         (e, p, v) => packageController.getPackageServingState(e, p, v),
+      ],
+      [
+         "build-plan",
+         (e, p, v) => packageController.getPackageBuildPlan(e, p, v),
+      ],
+      [
+         "classification",
+         (e, p, v) => packageController.getPackageClassification(e, p, v),
+      ],
+      [
+         "embedding-index",
+         (e, p, v) => packageController.getPackageEmbeddingIndex(e, p, v),
+      ],
+   ];
+   app.get(
+      `${pkg}/entities`,
+      jsonRoute((req, res) => {
+         const includeHiddenFilesAndSources = booleanParamOr400(
+            req,
+            res,
+            "includeHiddenFilesAndSources",
+         );
+         if (includeHiddenFilesAndSources === undefined) return;
+         return packageController.getPackageEntities(
+            req.params.environmentName,
+            req.params.packageName,
+            req.query.versionId,
+            includeHiddenFilesAndSources,
+         );
+      }),
+   );
+   for (const [resource, read] of packageReads) {
+      app.get(
+         `${pkg}/${resource}`,
+         apiRoute((req) =>
+            read(
+               req.params.environmentName,
+               req.params.packageName,
+               req.query.versionId,
+            ),
+         ),
+      );
+   }
    app.get(
       `${pkg}/agents`,
       apiRoute((req) =>
          skillController.listAgents(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -607,6 +754,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             skills,
+            req.query.versionId,
          );
       }),
    );
@@ -618,6 +766,7 @@ function registerPackageRoutes(
             req.params.packageName,
             req.params.agentName,
             wildcardParam(req) ?? "",
+            req.query.versionId,
          ),
       ),
    );
@@ -637,6 +786,7 @@ function registerPackageRoutes(
          reportController.listReports(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -648,6 +798,7 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
+            req.query.versionId,
          ),
       ),
    );
@@ -660,66 +811,91 @@ function registerQueryRoutes(
    pkg: string,
    { queryController, databaseController, compileController }: ApiControllers,
 ): void {
-   app.post(`${pkg}/models/*?/query`, queryConcurrency(), async (req, res) => {
-      if (req.body.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      const includeHiddenFilesAndSources = booleanParamOr400(
-         req,
-         res,
-         "includeHiddenFilesAndSources",
+   const recordRefusal = (req: express.Request, error: Error) =>
+      queryController.recordRefusal(
+         req.params.environmentName,
+         req.params.packageName,
+         wildcardParam(req),
+         req.body ?? {},
+         accessIdentityOf(req.headers),
+         error,
       );
-      if (includeHiddenFilesAndSources === undefined) return;
+   app.post(
+      `${pkg}/models/*?/query`,
+      queryConcurrency(),
+      async (req: express.Request, res: express.Response) => {
+         let includeHiddenFilesAndSources: boolean;
+         try {
+            includeHiddenFilesAndSources =
+               optionalBooleanParam(req, "includeHiddenFilesAndSources") ??
+               false;
+         } catch (error) {
+            await recordRefusal(req, error as Error);
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+            return;
+         }
 
-      // A client that goes away (a superseded dashboard tile, a closed tab)
-      // cancels its query: the concurrency slot is released on `close`, so
-      // the query must not keep running past it.
-      const disconnected = new AbortController();
-      res.on("close", () => {
-         if (!res.writableFinished)
-            disconnected.abort(new Error("client disconnected"));
-      });
+         // A client that goes away (a superseded dashboard tile, a closed tab)
+         // cancels its query: the concurrency slot is released on `close`, so
+         // the query must not keep running past it.
+         const disconnected = new AbortController();
+         res.on("close", () => {
+            if (!res.writableFinished)
+               disconnected.abort(new Error("client disconnected"));
+         });
 
-      try {
-         const filterParams = (req.body.filterParams ??
-            req.body.sourceFilters) as
-            | Record<string, string | string[]>
-            | undefined;
-         const bypassFilters =
-            req.body.bypassFilters === true ? true : undefined;
-         const result = await queryController.getQuery(
-            req.params.environmentName,
-            req.params.packageName,
-            wildcardParam(req),
-            req.body.sourceName as string,
-            req.body.queryName as string,
-            req.body.query as string,
-            req.body.compactJson === true,
-            filterParams,
-            bypassFilters,
-            req.body.givens as Record<string, GivenValue> | undefined,
-            {
-               queryMetadata: req.body?.queryMetadata,
-               queryClass: req.body?.queryClass,
-               versionId: req.body?.versionId as string | undefined,
-            },
-            // Disables the author's `#(authorize)` gates. From a header, never
-            // the body, and nothing here bounds who may send it: the
-            // deployment must strip it at its edge. See
-            // docs/authorize-bypass-deployment.md.
-            readBypassAuthorize(req),
-            includeHiddenFilesAndSources,
-            disconnected.signal,
-         );
-         setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
-         res.status(200).json(result);
-      } catch (error) {
-         // Nobody is waiting for the answer: not worth a log line.
-         if (disconnected.signal.aborted) return;
-         sendRouteError(res, error as Error, logRefusal(req, error as Error));
-      }
-   });
+         try {
+            const filterParams = (req.body.filterParams ??
+               req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined;
+            const bypassFilters =
+               req.body.bypassFilters === true ? true : undefined;
+            const result = await queryController.getQuery(
+               req.params.environmentName,
+               req.params.packageName,
+               wildcardParam(req),
+               req.body.sourceName as string,
+               req.body.queryName as string,
+               req.body.query as string,
+               req.body.compactJson === true,
+               filterParams,
+               bypassFilters,
+               req.body.givens as Record<string, GivenValue> | undefined,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+                  versionId: queryVersionIdOf(req),
+               },
+               // Disables the author's `#(authorize)` gates. From a header, never
+               // the body, and nothing here bounds who may send it: the
+               // deployment must strip it at its edge. See
+               // docs/authorize-bypass-deployment.md.
+               readBypassAuthorize(req),
+               includeHiddenFilesAndSources,
+               disconnected.signal,
+               // For the access record: who the gateway says is asking, and the
+               // trace this request belongs to. See docs/access-record.md.
+               accessIdentityOf(req.headers),
+            );
+            setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
+            res.status(200).json(result);
+         } catch (error) {
+            // Nobody is waiting for the answer: not worth a log line.
+            if (disconnected.signal.aborted) return;
+            sendRouteError(
+               res,
+               error as Error,
+               logRefusal(req, error as Error),
+            );
+         }
+      },
+      recordGateRefusal(recordRefusal),
+   );
 
    app.get(
       `${pkg}/databases`,
@@ -727,6 +903,7 @@ function registerQueryRoutes(
          databaseController.listDatabases(
             req.params.environmentName,
             req.params.packageName,
+            req.query.versionId,
          ),
       ),
    );
@@ -746,6 +923,8 @@ function registerQueryRoutes(
             req.body.givens as Record<string, GivenValue> | undefined,
             // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
+            req.query.versionId,
+            req.body.files,
          ),
       ),
    );
@@ -782,6 +961,7 @@ function registerMaterializationRoutes(
             {
                limit: parseNonNegativeIntParam(req.query.limit),
                offset: parseNonNegativeIntParam(req.query.offset),
+               versionId: req.query.versionId,
             },
          ),
       ),
@@ -793,6 +973,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            req.query.versionId,
          ),
       ),
    );
@@ -809,6 +990,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            req.query.versionId,
          );
       }),
    );
@@ -821,7 +1003,7 @@ function registerMaterializationRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
+            { dropTables, versionId: req.query.versionId },
          );
          res.status(204).send();
       }),

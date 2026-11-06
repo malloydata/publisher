@@ -5,7 +5,6 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
-   type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
 import {
@@ -27,7 +26,7 @@ import { logger } from "../logger";
 import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
-import { projectToPublicColumns } from "./build_plan";
+import { plannedSources, projectToPublicColumns } from "./build_plan";
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
@@ -985,8 +984,9 @@ async function buildSameCatalogIntoStorage(params: {
       throw new BadRequestError(
          `Cannot materialize a source that reads storage destination ` +
             `'${destinationName}' and carries SQL its author wrote (an .sql() source ` +
-            `or a sql_* expression): a build on the catalog runs only Malloy's own SQL. ` +
-            `Express it in Malloy, or persist it without storage=.`,
+            `or a sql_* expression) or reads a file or URL as a table: a build on the catalog ` +
+            `runs only Malloy's own SQL over the catalog's tables. Express it that way. ` +
+            `Dropping storage= does not help when the source's own connection is the catalog.`,
       );
    }
    const { session, dispose, workDir } = createIsolatedBuildSession(
@@ -1130,17 +1130,22 @@ export async function buildDownstreamIntoStorage(params: {
             message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
          });
       }
-      // `getBuildPlan`, not `getBuildTargets`: targets render every source's SQL
-      // while planning, and the rebound virtual parents cannot render without
-      // the `virtualMap`, which that call cannot take.
-      const plan = model.getBuildPlan();
-      let downstream: PersistSource | undefined;
-      for (const ps of Object.values(plan.sources)) {
-         if (ps.name === downstreamName) {
-            downstream = ps;
-            break;
-         }
+      // Planning renders every source's SQL, and the rebound virtual parents
+      // render only through the `virtualMap`.
+      const targets = await runtime.getBuildTargets(model, { virtualMap });
+      const unbuildable = targets.unbuildable.find(
+         (u) => u.source.name === downstreamName,
+      );
+      if (unbuildable) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model could not plan '${downstreamName}' over ` +
+               `the rebound parents: ${unbuildable.problem.message}`,
+         });
       }
+      const downstream = plannedSources(targets).find(
+         (ps) => ps.name === downstreamName,
+      );
       if (!downstream) {
          // The downstream references something the rebind model lacks (an
          // uncarried parent refinement, a live leaf). The caller falls back.

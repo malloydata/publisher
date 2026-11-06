@@ -5,6 +5,7 @@
 // `filterParams` and `bypassFilters` (see RELEASE_NOTES deprecations).
 // Every test in this file is about that deprecated feature.
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import {
@@ -347,6 +348,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
          );
@@ -366,6 +368,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -387,6 +390,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -408,6 +412,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -429,6 +434,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -450,6 +456,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "by_region",
             undefined,
@@ -472,6 +479,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: orders -> { aggregate: order_count is count() }",
@@ -509,6 +517,7 @@ describe("filter integration", () => {
          // given restricts to APAC; filterParam restricts to active.
          // APAC + active: only (5,'APAC','active',300) → order_count=1, total_amount=300.
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "by_given_region",
             undefined,
@@ -538,6 +547,7 @@ describe("filter integration", () => {
          // Default given target_region='US'; filterParam restricts to active.
          // US + active: (1,'US','active',100) and (2,'US','active',200) → order_count=2, total_amount=300.
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "by_given_region",
             undefined,
@@ -566,9 +576,15 @@ describe("filter integration", () => {
          );
 
          await expect(
-            model.getQueryResults("orders", "summary", undefined, {
-               region: ["US"],
-            }),
+            model.getQueryResults(
+               unrecordedAudit(),
+               "orders",
+               "summary",
+               undefined,
+               {
+                  region: ["US"],
+               },
+            ),
          ).rejects.toThrow(BadRequestError);
       });
 
@@ -581,7 +597,13 @@ describe("filter integration", () => {
          );
 
          try {
-            await model.getQueryResults("orders", "summary", undefined, {});
+            await model.getQueryResults(
+               unrecordedAudit(),
+               "orders",
+               "summary",
+               undefined,
+               {},
+            );
             throw new Error("Should have thrown");
          } catch (error) {
             expect(error).toBeInstanceOf(BadRequestError);
@@ -598,6 +620,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -619,6 +642,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -645,6 +669,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -667,6 +692,7 @@ describe("filter integration", () => {
          );
 
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "orders",
             "summary",
             undefined,
@@ -694,7 +720,7 @@ describe("filter integration", () => {
          // Cell 0 = markdown ("# Test Notebook")
          // Cell 1 = code (model definition — no query, just source)
          // Cell 2 = code (run: orders -> summary)
-         const codeCell = await model.executeNotebookCell(2);
+         const codeCell = await model.executeNotebookCell(unrecordedAudit(), 2);
          expect(codeCell.type).toBe("code");
          expect(codeCell.result).toBeDefined();
 
@@ -712,9 +738,13 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const codeCell = await model.executeNotebookCell(2, {
-            region: ["US"],
-         });
+         const codeCell = await model.executeNotebookCell(
+            unrecordedAudit(),
+            2,
+            {
+               region: ["US"],
+            },
+         );
          expect(codeCell.result).toBeDefined();
 
          const notebookRows = parseNotebookResult(codeCell.result!);
@@ -731,9 +761,13 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const codeCell = await model.executeNotebookCell(2, {
-            status: "cancelled",
-         });
+         const codeCell = await model.executeNotebookCell(
+            unrecordedAudit(),
+            2,
+            {
+               status: "cancelled",
+            },
+         );
          expect(codeCell.result).toBeDefined();
 
          const notebookRows = parseNotebookResult(codeCell.result!);
@@ -751,6 +785,7 @@ describe("filter integration", () => {
          );
 
          const codeCell = await model.executeNotebookCell(
+            unrecordedAudit(),
             2,
             { region: ["US"] },
             true,
@@ -770,7 +805,10 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const markdownCell = await model.executeNotebookCell(0);
+         const markdownCell = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+         );
          expect(markdownCell.type).toBe("markdown");
          expect(markdownCell.text).toContain("Test Notebook");
       });
@@ -788,6 +826,7 @@ describe("filter integration", () => {
          // Cell 2: run: orders -> by_given_region with target_region overridden to 'EU'
          // EU rows: (3,'EU','active',150) and (4,'EU','cancelled',75) → order_count=2, total_amount=225
          const codeCell = await model.executeNotebookCell(
+            unrecordedAudit(),
             2,
             undefined,
             undefined,
@@ -823,6 +862,7 @@ describe("filter integration", () => {
          // given restricts to APAC; filterParam restricts to active
          // APAC + active: only (5,'APAC','active',300) → order_count=1, total_amount=300
          const codeCell = await model.executeNotebookCell(
+            unrecordedAudit(),
             2,
             { status: "active" },
             undefined,
@@ -929,6 +969,7 @@ describe("filter integration", () => {
 
          // status=active is inherited from the base; should work on child
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "child_orders",
             "summary",
             undefined,
@@ -950,6 +991,7 @@ describe("filter integration", () => {
 
          // region is overridden to type=equal on the child
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "child_orders",
             "summary",
             undefined,
@@ -972,6 +1014,7 @@ describe("filter integration", () => {
          // On the base, tenant is required. On the child, it's not.
          // Running without tenant should NOT throw.
          const { compactResult } = await model.getQueryResults(
+            unrecordedAudit(),
             "child_orders",
             "summary",
          );
@@ -989,9 +1032,13 @@ describe("filter integration", () => {
          );
 
          // Apply status=cancelled (inherited from base) via notebook cell
-         const codeCell = await model.executeNotebookCell(2, {
-            status: "cancelled",
-         });
+         const codeCell = await model.executeNotebookCell(
+            unrecordedAudit(),
+            2,
+            {
+               status: "cancelled",
+            },
+         );
          expect(codeCell.result).toBeDefined();
 
          const rows = parseNotebookResult(codeCell.result!);

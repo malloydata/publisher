@@ -17,6 +17,7 @@
  * so GROUPS [1] admits exactly parent ids 1,2. `active` is true only for
  * children 1,2.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import {
    type FilterCondition,
    type GivenValue,
@@ -50,6 +51,7 @@ INSERT INTO grandtable VALUES (1, 1), (2, 1), (3, 2), (4, 2);
 
 const MODEL_TEXT = `##! experimental { givens parameters }
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -202,6 +204,7 @@ async function rows(
    givens: Record<string, GivenValue>,
 ): Promise<Record<string, unknown>[]> {
    const result = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       queryText,
@@ -593,6 +596,7 @@ source: gated_min is duckdb.table('orgtable') extend {
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -615,6 +619,7 @@ run: gated_active -> { group_by: id, child.org_id; order_by: id }
          );
          try {
             const result = await model.executeNotebookCell(
+               unrecordedAudit(),
                1,
                undefined,
                false,

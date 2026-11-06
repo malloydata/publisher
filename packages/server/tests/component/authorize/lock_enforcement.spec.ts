@@ -11,6 +11,7 @@
  * bypass, and the counters each refusal books. Joins an AUTHOR writes are
  * never gated (Q16: entry-point-only evaluation); joins a CALLER writes are.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection, GivenValue, MalloyError } from "@malloydata/malloy";
 import {
@@ -38,6 +39,10 @@ import {
 } from "../../../src/errors";
 import { logger } from "../../../src/logger";
 import { Model } from "../../../src/service/model";
+import {
+   installSettings,
+   withSettings,
+} from "../../../src/test_helpers/settings_env";
 import {
    connectionsFor,
    seededDuckdb,
@@ -91,6 +96,7 @@ async function runGated(
 ) {
    const model = await loadModel(modelFile);
    return model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -151,6 +157,7 @@ async function expectDeniedByLock(
 
 const LOCK_METRIC_GATED = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -249,6 +256,7 @@ describe("books a lock refusal under the label that matches it", () => {
 describe("authorize runtime gate", () => {
    const SINGLE_GATE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -291,6 +299,7 @@ source: gated is duckdb.table('customers') extend {
          "rt_namedq.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -307,6 +316,7 @@ query: secret is gated -> { aggregate: c }
       // it. The gate is a lock, so a mismatched given is a 403.
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             "secret",
             undefined,
@@ -319,6 +329,7 @@ query: secret is gated -> { aggregate: c }
       ).rejects.toBeInstanceOf(AccessDeniedError);
       // And it runs when the gate passes.
       const { result } = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          "secret",
          undefined,
@@ -336,6 +347,7 @@ query: secret is gated -> { aggregate: c }
       // it as absent and runs the ad-hoc query.
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             "",
             undefined,
             "run: gated -> { aggregate: c }",
@@ -354,6 +366,7 @@ query: secret is gated -> { aggregate: c }
          "rt_multi.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -390,6 +403,7 @@ source: gated is duckdb.table('customers') extend {
          "rt_row_multi.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   TENANTS :: number[]
   REGIONS :: number[]
@@ -440,6 +454,7 @@ source: other is duckdb.table('customers') extend {
 
    const MIXED_SOURCE_GATE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -482,6 +497,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
          "rt_quoted.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -514,6 +530,7 @@ source: \`gated-source\` is duckdb.table('customers') extend {
             `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -530,12 +547,20 @@ run: secret
          const model = await loadModel("rt_nb.malloynb");
          // Cell 1 is `run: secret` — the lock refuses a mismatched given.
          await expect(
-            model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
+            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               ROLE: "intern",
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
          // ...and allowed when the gate passes.
-         const ok = await model.executeNotebookCell(1, undefined, false, {
-            ROLE: "analyst",
-         });
+         const ok = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ROLE: "analyst",
+            },
+         );
          expect(ok.result).toBeDefined();
       });
 
@@ -565,14 +590,22 @@ run: mine -> { aggregate: cc }
          const model = await loadModel("rt_nb_authorize.malloynb");
          // Not rejected as forged caller policy — the author's gate is honored, so
          // it grants on the satisfying given...
-         const ok = await model.executeNotebookCell(1, undefined, false, {
-            ROLE: "analyst",
-         });
+         const ok = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ROLE: "analyst",
+            },
+         );
          expect(ok.result).toBeDefined();
          // ...and still DENIES on a non-satisfying one. The cell's gate is
          // really enforced, not merely tolerated — this is a gate, not a hole.
          await expect(
-            model.executeNotebookCell(1, undefined, false, { ROLE: "nobody" }),
+            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               ROLE: "nobody",
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       });
 
@@ -590,13 +623,20 @@ run: secret_join
 `,
          );
          const model = await loadModel("rt_locked_join.malloynb");
-         const ok = await model.executeNotebookCell(1, undefined, false, {});
+         const ok = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {},
+         );
          expect(ok.result).toBeDefined();
       });
    });
 
    const LOCKED_BASE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
   DENY :: string[]
@@ -929,6 +969,7 @@ source: top_join is duckdb.table('customers') extend {
          "rt_tagged_ext.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
   DENY :: string[]
@@ -1134,6 +1175,7 @@ source: open_src is duckdb.table('customers') extend {
 
 ##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -1218,6 +1260,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
 ##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -1273,6 +1316,7 @@ source: combo_locked_first is compose(locked_src, open_src)
          "c_composite_qs_two_elements.malloy",
          `##! experimental { composite_sources givens }
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1307,6 +1351,7 @@ describe("a query-local join to a gated source is gated", () => {
 
 ##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
   ROLE :: string
@@ -1372,6 +1417,7 @@ source: role_locked is duckdb.table('customers') extend {
 describe("authorize compile-path gate", () => {
    const CP_GATE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -1386,6 +1432,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
 ##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -1505,6 +1552,7 @@ describe("authorize composes with given parameters", () => {
    // `ROLE` gates access; `REGION` is a runtime filter parameter on the view.
    const COMPOSED = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
   REGION :: string
@@ -1523,6 +1571,7 @@ source: regional is duckdb.table('customers') extend {
       await writeModel("compose.malloy", COMPOSED);
       const model = await loadModel("compose.malloy");
       return model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: regional -> in_region",
@@ -1569,6 +1618,7 @@ source: regional is duckdb.table('customers') extend {
 describe("a joined given-based gate is not evaluated (Q16)", () => {
    const G_BASE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -1656,6 +1706,7 @@ source: g_top is duckdb.table('customers') extend {
 describe("authorize query-source derivation enforcement (BLOCKING-5)", () => {
    const QS_MODEL = `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -1742,6 +1793,7 @@ source: double_laundered is laundered -> { select: id, secret }
 describe("a query-source's own inner-pipeline join is not gated (Q16)", () => {
    const QS_INNER_JOIN_MODEL = `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -1819,6 +1871,7 @@ source: open_inner_join is open9 -> {
 describe("filterGivensToModelSurface no longer over-drops a non-gate given (SHOULD-2)", () => {
    const HB_BASE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -1887,6 +1940,7 @@ source: hb_top is duckdb.table('customers') extend {
 describe("an off-surface gate given the query also reads is forwarded, not dropped", () => {
    const OG_BASE = `##! experimental { givens parameters }
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -1907,6 +1961,7 @@ source: arg_bound is pp(x is $HIDE) -> { group_by: region }
 `;
    const OG_GATE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 
@@ -2054,6 +2109,7 @@ source: open_src is duckdb.table('customers') extend {
 
 ##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -2140,6 +2196,7 @@ source: open_src is duckdb.table('customers') extend {
 
 ##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -2237,6 +2294,7 @@ describe("authorize allows a givens-free joined gate (MUST-FIX 2)", () => {
          "rt_pub.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ID :: number
 
@@ -2270,6 +2328,7 @@ source: pub_joiner is duckdb.table('customers') extend {
 describe("the caller-text guard covers sourceName/queryName too", () => {
    const LOCKED = `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -2286,6 +2345,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
       const model = await loadModel("inj.malloy");
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             `inj_plain -> { aggregate: c }
              #(authorize) true
              source: mine is inj_locked extend { measure: cc is count() }
@@ -2304,6 +2364,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
       const model = await loadModel("inj.malloy");
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             `{ aggregate: c }
              #(authorize) true
@@ -2484,6 +2545,7 @@ source: route_locked is duckdb.table('customers') extend {
 describe("an inherited gate is reported, not just enforced", () => {
    const INHERITED = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
   DENY :: number[]
@@ -2534,6 +2596,7 @@ source: rep_ext is rep_locked extend {}
          "rep_override.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ONE :: number
   DENY :: number[]
@@ -2640,6 +2703,7 @@ describe("a rejected caller-declared gate is counted", () => {
       const model = await loadModel("gm.malloy");
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             "#(authorize) true\nsource: sneaky is gm_base extend {}\nrun: sneaky",
             "v",
             undefined,
@@ -2661,6 +2725,7 @@ describe("a rejected caller-declared gate is counted", () => {
 describe("docs/authorize.md worked example", () => {
    const DOC_EXAMPLE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
   DENY :: string[]
@@ -2774,6 +2839,7 @@ source: headcount_by_dept is duckdb.table('departments') extend {
 describe("an admitted lock does not block a caller-declared derivation", () => {
    const LOCKED = `##! experimental.givens
 
+#(secure)
 given:
   ALLOW :: string[]
 
@@ -2872,6 +2938,7 @@ describe("the early gate agrees with the compiled backstop (no schema oracle)", 
          "oracle_derived.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: string[]
 
@@ -2924,6 +2991,7 @@ source: laundered is locked_src -> { group_by: region }
 describe("the pre-compile lock reads keywords in any case", () => {
    const MODEL = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -2977,6 +3045,7 @@ source: kc_open is duckdb.table('customers') extend { measure: c is count() }
 describe("run-target expressions do not skip the early gate", () => {
    const DECLARED = `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3062,6 +3131,7 @@ describe("a gate declared in a multi-definition source: block is not silently dr
          "block.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3091,6 +3161,7 @@ source:
          "block_mixed.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3119,6 +3190,7 @@ source:
          "block_sibling.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3184,6 +3256,7 @@ source:
          "block_inherit.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3218,6 +3291,7 @@ source: bf_ext is bf_base extend {}
          "block_registry.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3252,6 +3326,7 @@ source: bf_reg_derived is bf_reg_base -> { select: id, secret }
          "block_given.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -3285,6 +3360,7 @@ source:
          "block_afteris.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
 
@@ -3315,6 +3391,7 @@ source: bf_afteris is
          "block_validate.malloy",
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -3347,6 +3424,7 @@ source:
 describe("authorize bypass (private data-management path)", () => {
    const GATED = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -3360,6 +3438,7 @@ source: dm_gated is duckdb.table('customers') extend {
    // per-name (not per-query) shape of the "source" bypass tick.
    const GATED_TWO = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -3379,6 +3458,7 @@ source: dm_gated2 is duckdb.table('customers') extend {
    // is not.
    const GATED_PLUS_WHERE = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -3604,19 +3684,15 @@ source: dm_mixed is duckdb.table('customers') extend {
    // that a header reaches the gate and that a body field does not.
    describe("arrives on the header, not the body", () => {
       const BYPASS_SECRET = "s3cret-bypass-value";
-      const savedSecret = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+      let restoreSettings: () => void;
 
       beforeEach(() => {
-         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = BYPASS_SECRET;
+         restoreSettings = installSettings({
+            env: { [BYPASS_AUTHORIZE_SECRET_ENV]: BYPASS_SECRET },
+         }).restore;
       });
 
-      afterEach(() => {
-         if (savedSecret === undefined) {
-            delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-         } else {
-            process.env[BYPASS_AUTHORIZE_SECRET_ENV] = savedSecret;
-         }
-      });
+      afterEach(() => restoreSettings());
 
       it("honours the bypass when the header carries the secret", async () => {
          await writeModel("dm_gated.malloy", GATED);
@@ -3635,19 +3711,20 @@ source: dm_mixed is duckdb.table('customers') extend {
       // The gate stays enforced when no secret is configured, which is the
       // fail-closed half: the header alone can no longer disable it.
       it("leaves gates enforced when no secret is configured", async () => {
-         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-         await writeModel("dm_gated.malloy", GATED);
-         await expect(
-            runGated(
-               "dm_gated.malloy",
-               "run: dm_gated -> { aggregate: c }",
-               {},
-               undefined,
-               readBypassAuthorize({
-                  headers: { [BYPASS_AUTHORIZE_HEADER]: BYPASS_SECRET },
-               }),
-            ),
-         ).rejects.toThrow();
+         await withSettings({}, async () => {
+            await writeModel("dm_gated.malloy", GATED);
+            await expect(
+               runGated(
+                  "dm_gated.malloy",
+                  "run: dm_gated -> { aggregate: c }",
+                  {},
+                  undefined,
+                  readBypassAuthorize({
+                     headers: { [BYPASS_AUTHORIZE_HEADER]: BYPASS_SECRET },
+                  }),
+               ),
+            ).rejects.toThrow();
+         });
       });
 
       // The whole safety argument for putting this on a header rather than in
@@ -3680,6 +3757,7 @@ describe("a locked name is decided wherever it appears", () => {
    // refusals, before compile, on the /query path.
    const MODEL = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 

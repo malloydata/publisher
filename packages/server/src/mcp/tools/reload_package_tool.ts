@@ -42,7 +42,7 @@ ${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster w
 Recompiles the package from its on-disk content under publisher_data/, the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them. A hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode, the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Mode "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them; "unchanged": an immutable published version. A hard compile error returns an error payload instead.`;
 
 /**
  * Registers reload_package: recompiles a package from disk so a saved edit is
@@ -76,12 +76,15 @@ export function registerReloadPackageTool(
          );
 
          try {
-            const { metadata: pkg, mode } =
-               await packageController.reloadPackage(
-                  environmentName,
-                  packageName,
-                  "mcp",
-               );
+            const {
+               metadata: pkg,
+               operational,
+               mode,
+            } = await packageController.reloadPackage(
+               environmentName,
+               packageName,
+               "mcp",
+            );
 
             const payload = {
                status: "reloaded" as const,
@@ -90,11 +93,11 @@ export function registerReloadPackageTool(
                mode,
                name: pkg.name,
                // A reload succeeds whether or not it saw the caller's edit; an unchanged sha on a hashed file is the signal.
-               ...(pkg.sourceContentSha !== undefined && {
-                  sourceContentSha: pkg.sourceContentSha,
+               ...(operational.sourceContentSha !== undefined && {
+                  sourceContentSha: operational.sourceContentSha,
                }),
-               ...(pkg.servedRevision !== undefined && {
-                  servedRevision: pkg.servedRevision,
+               ...(operational.servedRevision !== undefined && {
+                  servedRevision: operational.servedRevision,
                }),
                ...(pkg.description !== undefined && {
                   description: pkg.description,

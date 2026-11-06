@@ -18,6 +18,44 @@ reportability: the unauthenticated API and the permissive default framing policy
 classified there as working as documented, so the gaps below are arguments for changing the design,
 not vulnerability reports.
 
+## Operating model: a microservice behind your gateway
+
+Publisher is a microservice, not an internet-facing product. It has no user accounts and does not
+authenticate anyone. It is meant to run in one of two ways:
+
+- **Locally, with your own permissions.** On a laptop or workstation, bound to loopback
+  (`--host 127.0.0.1`). Its connections use whatever credentials you configure, usually your own, so
+  it reads what those credentials can read. A connection in `publisher.config.json` that carries
+  someone else's credentials reads with theirs.
+- **Inside your existing cloud, behind your gateway.** A service in your own network, reached only
+  through an authenticating gateway or the application that embeds it. Its connections use a
+  service identity you grant, scoped by your cloud's own IAM.
+
+Every access control Publisher has is evaluated against what the request carries:
+`#(authorize)`, `#(access_filter)`, `#(secure)` givens, the discovery and query boundaries,
+`#(carries)`, and the access record. These controls enforce your policy only when a tier you trust
+stands in front of Publisher and does all of the following:
+
+1. Authenticates the end user.
+2. Sets the givens from that verified identity, replacing any value a client sent. At minimum this
+   covers every given a package declares `#(secure)`.
+3. Is the only network path to Publisher's ports. REST (`:4000`) and MCP (`:4040`) are not exposed to
+   untrusted callers.
+4. Blocks the routes a gated package's callers must not use:
+   - raw SQL against a connection;
+   - `/compile` at `file` or `package` scope, and the MCP `compile_model` tool at the same scopes;
+   - the `x-publisher-bypass-authorize` header;
+   - the operator write routes: creating, updating or deleting an environment or package, writing a
+     model (`PUT …/models/{path}`), and managing connections. A caller who can write a package can
+     publish an ungated source over the same connection. Block them at the gateway, or set
+     `"frozenConfig": true` so the server refuses them.
+5. Forwards who is asking in the caller header (`x-publisher-caller`, renamed with
+   `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
+   the [access record](access-record.md) names the caller.
+
+Without that tier the controls are advisory. Anyone who can reach the port can set their own givens
+and pass any gate. The rest of this page is the detail behind that rule.
+
 ## The trust boundary
 
 **Publisher trusts the operator and the packages the operator registers. It does not
@@ -83,8 +121,8 @@ Concretely:
     prose is refused with 400; gates live in the model file.
 - **Error bodies name the server's own paths, deliberately.** A filesystem access the server
   cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
-  path, and `/api/v0/status` names the config path in `initError` and the failing path in a
-  `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
+  path, and `/api/v0/status` names a server root it cannot write in `initError` and the failing
+  path in a `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
   the message is composed from the errno's fields, never copied from a driver or an SDK. Every
   other 5xx keeps the generic body, because its message can carry a warehouse host, caller SQL
   or a connection string, and a recorded load failure never says more than the response did.
@@ -237,8 +275,12 @@ It becomes a gap the moment one worker process serves more than one tenant, beca
 happen on a host holding another tenant's data. The control belongs at the layer that knows a
 request is untrusted, which Publisher does not: **a multi-tenant deployment must reject
 caller-supplied Malloy constructs before they reach compile.** Malloy's restricted mode is the
-mechanism -- it refuses `.sql()`, `.table()`, `import` and `given:` -- and the query path already
-uses it via `loadRestrictedQuery`. An egress policy denying link-local is the network-layer
+mechanism -- it refuses `.sql()`, `.table()`, direct SQL function calls and the `sql_*` functions,
+`import`, and `##!` flags (which also keeps out `given:` declarations) -- and the query path already
+uses it via `loadRestrictedQuery`. It does not stop a query from defining or extending sources, so
+a caller can still read an `internal:` field (`include { public: f }`); keep any data callers must
+not read in `private:` fields or behind an `#(authorize)` gate.
+An egress policy denying link-local is the network-layer
 backstop that survives a restricted-mode bypass.
 
 Do not reach for DuckDB's own `securityPolicy` to close this. `sandboxed` sets
@@ -248,6 +290,14 @@ relative path against the process working directory for its permission check rat
 own files, is refused. Measured against the connector: absolute paths pass, relative ones do not,
 and `allowed_paths` does not rescue them. Publisher compiles packages in `worker_threads` sharing
 one process working directory, so per-package `chdir` is not available either.
+
+**7. With package versioning on, an older version keeps its own governance.** A published
+version serves its own files, so its own `#(authorize)` gates, row filters and `index.malloy`
+curation. A gate or a hidden source added in a new version does not reach the older ones: a
+request that names an older version with `versionId` is answered under that version's rules
+until it is archived, and moving `latest` back rolls the rules back too. The MCP tools serve
+`latest` only. Archive a version whose rules must no longer apply
+([package-versions.md](package-versions.md#limits-worth-knowing)).
 
 ## If isolation gets built
 

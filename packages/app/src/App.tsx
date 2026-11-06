@@ -33,8 +33,8 @@ const HomePage = React.lazy(
 const MainPage = React.lazy(
    () => import("./components/layout/MainPage/MainPage"),
 );
-const ModelPage = React.lazy(
-   () => import("./components/pages/ModelPage/ModelPage"),
+const PackageSplatRoute = React.lazy(
+   () => import("./components/pages/PackageSplatRoute"),
 );
 const PackagePage = React.lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
@@ -106,8 +106,10 @@ export const createMalloyRouter = (
                element: <PackagePage />,
             },
             {
+               // A path inside the package, or a version segment and a path
+               // inside that version: `/<env>/<pkg>/1.2.0/sales/q3`.
                path: ":environmentName/:packageName/*",
-               element: <ModelPage />,
+               element: <PackageSplatRoute />,
             },
          ],
       },

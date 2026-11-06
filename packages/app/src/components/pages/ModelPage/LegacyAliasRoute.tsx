@@ -12,6 +12,7 @@ import { Box, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { Link as RouterLink, Navigate, useLocation } from "react-router-dom";
 import { withEdit } from "../../common/documentRoutes";
+import { withVersionSegment } from "../../common/packageRoute";
 import { PAGE_FRAME_SX } from "../pageFrame";
 
 /**
@@ -28,6 +29,7 @@ import { PAGE_FRAME_SX } from "../pageFrame";
 export default function LegacyAliasRoute({
    environmentName,
    packageName,
+   versionSegment,
    routePath,
    edit,
    reports,
@@ -35,6 +37,8 @@ export default function LegacyAliasRoute({
 }: {
    environmentName: string;
    packageName: string;
+   /** The route's version segment (`latest` or an id), kept on the redirect. */
+   versionSegment?: string;
    /** The route's path under the package, with no report at it. */
    routePath: string;
    /** The route carries `?edit`. */
@@ -43,6 +47,14 @@ export default function LegacyAliasRoute({
    children: ReactNode;
 }) {
    const { search } = useLocation();
+   // A report's route at the version on screen.
+   const routeOf = (path: string) =>
+      withVersionSegment(
+         reportRoute(environmentName, packageName, path),
+         environmentName,
+         packageName,
+         versionSegment,
+      );
    const alias = legacyAliasOf(routePath);
    if (!alias) return <>{children}</>;
    const lookup = locateReportByName(alias.name, reports, alias.prefer);
@@ -50,7 +62,7 @@ export default function LegacyAliasRoute({
       return (
          <Navigate
             replace
-            to={`${reportRoute(environmentName, packageName, lookup.found.path)}${edit ? withEdit(search) : search}`}
+            to={`${routeOf(lookup.found.path)}${edit ? withEdit(search) : search}`}
          />
       );
    if ("ambiguous" in lookup)
@@ -67,11 +79,7 @@ export default function LegacyAliasRoute({
                {lookup.ambiguous.map((candidate) => (
                   <li key={candidate}>
                      <RouterLink
-                        to={reportRoute(
-                           environmentName,
-                           packageName,
-                           candidate,
-                        )}
+                        to={routeOf(candidate)}
                         style={{ fontFamily: MONO_FONT_FAMILY }}
                      >
                         {candidate}

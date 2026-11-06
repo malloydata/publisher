@@ -24,6 +24,7 @@ import { ReportController } from "./controller/report.controller";
 import { SkillController } from "./controller/skill.controller";
 import { StorageDestinationController } from "./controller/storage_destination.controller";
 import { ThemeController } from "./controller/theme.controller";
+import { VersionController } from "./controller/version.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    drainingGuard,
@@ -35,12 +36,15 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
+import {
+   legacyPackageNameBodyMiddleware,
+   legacyPackageNameMiddleware,
+} from "./legacy_package_name";
 import { logger, loggerMiddleware } from "./logger";
 import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
    getDuckDBTempDirectory,
-   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
    getEmbeddingSettings,
    getExtensionFetchPolicy,
    getLlmSettings,
@@ -50,13 +54,13 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
+   isPackageInlineFieldsEnabled,
    embeddingStartupNotices,
    getRetrievalConfig,
    getServerSocketTimeoutMs,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { checkHeapConfiguration } from "./heap_check";
-import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
 import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
    addCommand,
@@ -82,27 +86,16 @@ import {
    registerDataAppListRoute,
    registerDataAppStaticRoutes,
 } from "./routes/data_apps";
-import {
-   createAdminApp,
-   resolveAdminHost,
-   resolveAdminPort,
-} from "./routes/admin";
-import {
-   CatalogAdmin,
-   catalogAdminConfigFromEnv,
-} from "./service/catalog_admin";
-import { createMcpApp, resolveMcpHost } from "./routes/mcp";
+import { createAdminApp } from "./routes/admin";
+import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
+import { createMcpApp } from "./routes/mcp";
 import { registerSpaFallback } from "./routes/spa";
-import {
-   RATE_LIMIT_ENV,
-   parseRateLimit,
-   rateLimitMiddleware,
-} from "./rate_limit";
-import {
-   FRAME_ANCESTORS_ENV,
-   frameAncestorsMiddleware,
-} from "./frame_ancestors";
+import { rateLimitMiddleware } from "./rate_limit";
+import { frameAncestorsMiddleware } from "./frame_ancestors";
+import { externalEnv, settings } from "./settings";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
+import { isOverlayRoute } from "./service/request_overlay";
+import { MAX_OVERLAY_BYTES } from "./constants";
 
 // These getters throw on an invalid value. Read once at boot so a typo fails
 // startup instead of later requests: package metadata, publishes, and (for the
@@ -110,57 +103,57 @@ import { acceptBundledExperimentalDialects } from "./service/experimental_dialec
 getPersistStorageMode();
 getPersistCollisionEnforce();
 getQueryMetadataMode();
+isPackageInlineFieldsEnabled();
 
 // Before any compile on this thread: a connection-test, an MCP compile or a
 // package load on the main thread would otherwise refuse a SQL Server model.
 acceptBundledExperimentalDialects();
 
-const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
-const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
-const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+const PUBLISHER_PORT = settings.get("port");
+const PUBLISHER_HOST = settings.get("host");
+const MCP_PORT = settings.get("mcp.port");
 // The MCP endpoint is unauthenticated and exposes every tool, so it binds
-// loopback by default. Precedence: MCP_HOST, an explicit PUBLISHER_HOST (so
-// `--host` moves both listeners), then loopback.
-const MCP_HOST = resolveMcpHost(process.env);
-// The admin listener (routes/admin.ts) is off unless a port is given. Resolved
+// loopback by default; `mcp.host`'s default follows an explicit `host` (so
+// `--host` moves both listeners).
+const MCP_HOST = settings.get("mcp.host");
+// The admin listener (routes/admin.ts) is off unless a port is given. Read
 // here so a malformed port fails startup before anything binds.
-const ADMIN_PORT = resolveAdminPort(process.env);
-const ADMIN_HOST = resolveAdminHost(process.env);
+const ADMIN_PORT = settings.get("admin.port") ?? null;
+const ADMIN_HOST = settings.get("admin.host");
 // The catalog database the admin API finds catalogs in, read here so a malformed
 // storage setting fails startup. Null leaves the catalog routes answering 503.
-const ADMIN_CATALOG_CONFIG =
-   ADMIN_PORT === null ? null : catalogAdminConfigFromEnv(process.env);
+const ADMIN_CATALOG_CONFIG = ADMIN_PORT === null ? null : catalogAdminConfig();
 const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
    ? new CatalogAdmin(ADMIN_CATALOG_CONFIG)
    : null;
 // Resolved at module scope, not in the listen callback: it throws on a typo,
 // and a throw there would be an uncaughtException after both ports are bound.
 const MCP_CONFIG_ENABLED = mcpConfigEnabled();
-const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
-   process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
+const SHUTDOWN_DRAIN_DURATION_SECONDS = settings.get(
+   "shutdown.drainDurationSeconds",
 );
-const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
-   process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
+const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = settings.get(
+   "shutdown.gracefulCloseTimeoutSeconds",
 );
 // The app directory sits next to this bundled file, under ESM and under npx.
 const __filename_esm = fileURLToPath(import.meta.url);
 const ROOT = path.join(path.dirname(__filename_esm), "app");
-const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
+const SERVER_ROOT = path.resolve(process.cwd(), settings.get("root"));
 const API_PREFIX = "/api/v0";
-const isDevelopment = process.env["NODE_ENV"] === "development";
+const isDevelopment = externalEnv("NODE_ENV") === "development";
 
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
 // Ahead of every early-answering middleware (the rate limiter's 429 included),
 // so the frame-ancestors policy is on every response.
-app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
+app.use(frameAncestorsMiddleware(settings.get("frameAncestors")));
 // Health probes come before every middleware they do not need, such as
 // static-file serving, which would stat the filesystem first.
 registerHealthEndpoints(app);
-// Opt-in (PUBLISHER_RATE_LIMIT) and mounted before every route; probes and
-// /metrics are exempt inside the middleware.
-app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
+// Opt-in (`rateLimit`) and mounted before every route; probes and /metrics
+// are exempt inside the middleware.
+app.use(rateLimitMiddleware(settings.get("rateLimit")));
 // Advisory only: warns when --max-old-space-size looks low for the default
 // row/byte caps, so operators check that before chasing OOMKills.
 checkHeapConfiguration();
@@ -172,6 +165,9 @@ const modelController = new ModelController(environmentStore);
 // query, which matters most to an operator relying on `local-only` for a
 // no-network guarantee. The log records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+logger.info(
+   `Package inline fields (PUBLISHER_PACKAGE_INLINE_FIELDS): ${isPackageInlineFieldsEnabled() ? "on" : "off"}`,
+);
 // Validated (and the spill directory created) at boot: the health probes never
 // touch DuckDB, so a bad limit or directory would otherwise leave a pod
 // reporting ready while every query failed. `SET temp_directory` accepts a
@@ -198,9 +194,12 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // fails loudly with its fix rather than on the first question. The provider
 // getters read them back from module state. Logs name the host, never the key.
 //
-// An unreadable config must not kill the process: the environment store reads
-// the same file, reports it as `initError` / PUBLISHER_INIT_FAILED and keeps
-// the server up so /status can name it. So this read logs and carries on.
+// A config file that cannot be read or parsed has already failed startup in
+// server.ts. What can still fail here must not kill the process: an unset
+// `${VAR}` in the environments, which the environment store reports as
+// `initError` / PUBLISHER_INIT_FAILED with the server kept up so /status can
+// name it, and a rejected `retrieval` block, which leaves retrieval at its
+// defaults. So this read logs and carries on.
 let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
 try {
    retrievalConfig = getRetrievalConfig(SERVER_ROOT);
@@ -236,13 +235,9 @@ if (llmSettings) {
          `Fix: set LLM_API_KEY in the server's environment.`,
    );
 }
-const semanticIndexMaxEntities =
-   retrievalConfig?.indexing?.maxEntities ??
-   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
-setMaxEmbeddedEntities(semanticIndexMaxEntities);
-if (embeddingConfig) {
-   logger.info(
-      `Semantic index entity cap: ${semanticIndexMaxEntities} (retrieval.indexing.maxEntities)`,
+if (retrievalConfig?.indexing?.maxEntities !== undefined) {
+   logger.warn(
+      "retrieval.indexing.maxEntities in publisher.config.json no longer does anything: the search index has no entity cap. Fix: remove the key.",
    );
 }
 const memoryGovernorConfig = getMemoryGovernorConfig();
@@ -252,8 +247,10 @@ const memoryGovernor = memoryGovernorConfig
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
 observePackageStates(environmentStore);
-// Build the semantic index as each package loads, not on the first question.
-// This only queues work; with no embedding provider the job returns at once.
+// Build each package's search index as it loads, not on the first question.
+// This only queues the build. The build runs with or without an embedding
+// provider: without one it still builds the catalog, the keyword index and
+// the value index of #(index) dimensions, and skips only the vectors.
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );
@@ -269,6 +266,39 @@ const storageDestinationController = new StorageDestinationController(
 );
 const materializationController = new MaterializationController(
    materializationService,
+);
+const versionController = new VersionController(environmentStore);
+// Archiving a version reclaims the tables it alone owns, in the background.
+environmentStore.setVersionArchivedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.reclaimVersionTables(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// Deleting a version stops its builds and reclaims those tables, in the
+// background, once its row is gone.
+environmentStore.setVersionDeletedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.cleanUpDeletedVersion(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// A publish of a version id a delete freed first reclaims what the deleted
+// version still owes, if that delete's cleanup has not run yet.
+environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
+   materializationService.reclaimOwedNow(environment, packageName, versionId),
+);
+// A reclaim that a crash cut short is finished once the environments have
+// loaded: nothing else would start it again.
+void environmentStore.finishedInitialization.then(
+   () => materializationService.reclaimArchivedVersions(),
+   () => undefined,
 );
 /**
  * Start the standalone materialization scheduler, or return null when
@@ -290,9 +320,13 @@ export function startMaterializationSchedulerFromEnv(
 // The sweep timer is unref'd, so it never keeps the process alive.
 startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
-const themeController = new ThemeController(themeStore, SERVER_ROOT);
+const themeController = new ThemeController(themeStore);
 
 export const mcpApp = createMcpApp(environmentStore);
+
+// Before every package route, the data-app static routes included: a package
+// version named in a combined package name (see legacy_package_name).
+app.use(legacyPackageNameMiddleware());
 
 // The data-app static routes come before the SPA catch-all and (in dev) the
 // Vite proxy.
@@ -328,7 +362,18 @@ app.use(
    }),
 );
 
+// Compile takes a `files` overlay of up to MAX_OVERLAY_BYTES of text,
+// which JSON escaping can grow, so it parses a larger body; the
+// overlay's own bounds answer 413 past that. Parsed once: the general parser
+// below skips a body already read.
+const overlayBodyParser = bodyParser.json({
+   limit: 2 * MAX_OVERLAY_BYTES + 1024 * 1024,
+});
+app.use((req, res, next) =>
+   isOverlayRoute(req.path) ? overlayBodyParser(req, res, next) : next(),
+);
 app.use(bodyParser.json({ limit: "1mb" }));
+app.use(legacyPackageNameBodyMiddleware());
 
 try {
    const metricsHandler = getPrometheusMetricsHandler();
@@ -360,6 +405,7 @@ registerApiRoutes(app, API_PREFIX, {
    compileController,
    materializationController,
    storageDestinationController,
+   versionController,
 });
 
 // Legacy `/projects/...` aliases; must precede the SPA catch-all.
@@ -417,10 +463,7 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
    }
    // `--watch-env` / PUBLISHER_WATCH: those envs' packages are mounted in
    // place (see `loadEnvironmentIntoDisk`), so the watcher sees source edits.
-   const watchEnvList = (process.env.PUBLISHER_WATCH || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+   const watchEnvList = settings.get("watchEnvironments");
    if (watchEnvList.length > 0) {
       // WatchModeController holds one watcher, so only the first env
       // auto-reloads; the rest are still mounted in place.
@@ -452,8 +495,8 @@ const mcpServer = mcpApp.listen(
    MCP_PORT,
    MCP_HOST,
    function (this: import("net").Server) {
-      // Read back rather than reusing MCP_PORT: `--mcp_port 0` (or, under
-      // bun, a non-numeric value) binds an ephemeral port.
+      // Read back rather than reusing MCP_PORT: `--mcp_port 0` binds an
+      // ephemeral port.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
       // The bind address, deliberately not resolveClientHost: the docs tell
       // readers this line is the address really bound, which is how they

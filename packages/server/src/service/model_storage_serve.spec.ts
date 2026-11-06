@@ -7,6 +7,7 @@
 // returning 60 — so the value observed proves whether the query was routed
 // through the serve-shape transform (60) or served live from the original
 // model (0). This pins the mode gate, the binding gate, and the safe fallback.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -18,6 +19,26 @@ import {
 import { afterEach, describe, expect, it } from "bun:test";
 import { Model } from "./model";
 import type { ServeBinding } from "./materialization_serve_transform";
+import { installSettings } from "../test_helpers/settings_env";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 const ROOT = "file:///storage-serve-e2e/";
 const QUERY = "run: X -> { aggregate: t is total.sum() }";
@@ -89,6 +110,7 @@ async function buildModel(opts?: {
 
 async function runTotal(model: Model): Promise<number> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       QUERY,
@@ -101,39 +123,35 @@ async function runTotal(model: Model): Promise<number> {
 }
 
 describe("storage= serve routing (end-to-end)", () => {
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    it("mode=on + a binding routes the query to the materialized table", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       model.setServeBindings([BINDING]);
       expect(await runTotal(model)).toBe(60);
    });
 
    it("mode=off serves live even with a binding present (kill switch)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "off";
+      setStorageMode("off");
       const model = await buildModel();
       model.setServeBindings([BINDING]);
       expect(await runTotal(model)).toBe(0);
    });
 
    it("mode=write-only serves live (build-only rung)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "write-only";
+      setStorageMode("write-only");
       const model = await buildModel();
       model.setServeBindings([BINDING]);
       expect(await runTotal(model)).toBe(0);
    });
 
    it("mode=on with no bindings serves live", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       expect(await runTotal(model)).toBe(0);
    });
 
    it("falls back to live when the serve shape cannot compile (bad connection)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       // A binding on a destination the config doesn't have — the serve-shape
       // compile throws, and the query must still succeed, served live.
@@ -147,7 +165,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // That source has no field list here, so its narrowed schema is empty — the
       // serve shape must simply omit it, not emit an empty `type: {}` that fails
       // the whole shape model and drops storage serving for X too.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
       model.setServeBindings([
          BINDING,
@@ -170,7 +188,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // compile with "Reference to undefined object" and served live — silently,
       // since the rows are still correct. The physical column stays "TOTAL";
       // DuckDB resolves the author-cased declaration against it.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel({
          storageSQL: 'CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS "TOTAL"',
       });
@@ -186,7 +204,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // case-sensitive — yet it fell back too, because the whole SOURCE had left
       // the shape. A fix that only reconciled field references would pass the test
       // above and still fail this one.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel({
          storageSQL:
             'CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS "TOTAL" UNION ALL SELECT 7',
@@ -197,6 +215,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // 2 rows in storage vs the original source's 1 — so the count proves which
       // path ran without referencing a column.
       const res = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: X -> { aggregate: c is count() }",
@@ -212,7 +231,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // match must widen which PHYSICAL column can match an author field without
       // widening the set of author fields. `secret` is except:-ed, so "SECRET" has
       // nothing public to match and stays out of the shape.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel({
          originalText:
             `source: X is duckdb.sql("SELECT 0 AS total, 'live' AS secret") ` +
@@ -235,6 +254,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // ...and the hidden one is still refused, not served as 'from_storage'.
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { group_by: secret }",
@@ -252,7 +272,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // returned 1 while reporting `servedFrom: storage` — wrong rows, no warning,
       // which is worse than any fallback. The assertion is the value, because the
       // shape compiling is not the property that matters.
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel({
          originalText:
             `source: X is duckdb.sql("SELECT 1 AS total, 2 AS other") extend {\n` +
@@ -270,6 +290,7 @@ describe("storage= serve routing (end-to-end)", () => {
          },
       ]);
       const computed = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: X -> { group_by: Total }",
@@ -282,6 +303,7 @@ describe("storage= serve routing (end-to-end)", () => {
       expect(computed.servedFrom).toBe("storage");
       // And the physical column it collides with still resolves to itself.
       const raw = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: X -> { group_by: total }",
@@ -295,7 +317,7 @@ describe("storage= serve routing (end-to-end)", () => {
    });
 
    it("does not serve an except:-hidden column from storage (vector A)", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       // X hides `secret` via except:, but the built table still carries it (the
       // build's getSQL projected it) and the binding schema captured it.
       const model = await buildModel({
@@ -323,6 +345,7 @@ describe("storage= serve routing (end-to-end)", () => {
       // fix this returned 'from_storage' — the leak.)
       await expect(
          model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { group_by: secret }",

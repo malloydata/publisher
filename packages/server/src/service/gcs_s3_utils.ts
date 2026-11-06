@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
-import { getS3CredentialChainPolicy } from "../config";
+import { ConnectionOrigin, getS3CredentialChainPolicy } from "../config";
 import { logger } from "../logger";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
@@ -30,6 +30,78 @@ const S3_PROVIDERS = ["config", "credential_chain"] as const;
 // (workstation flows).
 export const DEFAULT_S3_CREDENTIAL_CHAIN = "env;web_identity;instance";
 
+/**
+ * An S3-compatible endpoint as DuckDB and the AWS SDK each need it. DuckDB's
+ * `ENDPOINT` is a bare `host[:port][/path]` and speaks TLS unless the secret
+ * says `USE_SSL false`; given a scheme it requests `https://http://…`. The SDK
+ * needs the full URL and rejects a bare host as `Invalid URL`. So an endpoint
+ * may be written either way, and `http://` is the one form that turns TLS off.
+ *
+ * Anything the two read differently is refused: another scheme, whitespace, a
+ * query or fragment, userinfo, and a path with no host. No message repeats the
+ * endpoint, which may carry a credential.
+ */
+export function parseS3Endpoint(endpoint: string): {
+   hostAndPath: string;
+   useSsl: boolean;
+   url: string;
+} {
+   const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(endpoint);
+   const protocol = scheme?.[1].toLowerCase();
+   if (protocol !== undefined && protocol !== "http" && protocol !== "https") {
+      throw new Error(
+         `S3 endpoint scheme must be http:// or https://, got ${protocol}://`,
+      );
+   }
+   if (/\s/.test(endpoint)) {
+      throw new Error("S3 endpoint must not contain whitespace");
+   }
+   if (/[?#]/.test(endpoint)) {
+      throw new Error(
+         "S3 endpoint must not contain a query string or fragment",
+      );
+   }
+   // A loop, not /\/+$/: that regex backtracks on a long run of slashes.
+   let end = endpoint.length;
+   while (end > 0 && endpoint[end - 1] === "/") end--;
+   const hostAndPath = endpoint.slice(scheme ? scheme[0].length : 0, end);
+   if (!hostAndPath) {
+      throw new Error("S3 endpoint must include a host");
+   }
+   if (hostAndPath.startsWith("/")) {
+      throw new Error("S3 endpoint must include a host before any path");
+   }
+   if (hostAndPath.split("/", 1)[0].includes("@")) {
+      throw new Error("S3 endpoint must not contain userinfo");
+   }
+   const useSsl = protocol !== "http";
+   return {
+      hostAndPath,
+      useSsl,
+      url: `${useSsl ? "https" : "http"}://${hostAndPath}`,
+   };
+}
+
+/**
+ * The endpoint a connection may use with its credentials: {@link parseS3Endpoint},
+ * and no plain `http://` for `credential_chain`, whose signed requests carry the
+ * host role's session token. Connection authors are less trusted than the host
+ * operator (the chain is policy-gated for that reason), so an author must not be
+ * able to send the host's credentials in cleartext.
+ */
+export function checkS3Endpoint(
+   endpoint: string,
+   provider: string | undefined,
+): ReturnType<typeof parseS3Endpoint> {
+   const parsed = parseS3Endpoint(endpoint);
+   if (!parsed.useSsl && provider === "credential_chain") {
+      throw new Error(
+         "S3 endpoint must use https:// with provider credential_chain: its requests carry the host's credentials",
+      );
+   }
+   return parsed;
+}
+
 export interface CloudStorageCredentials {
    type: CloudStorageType;
    accessKeyId: string;
@@ -42,6 +114,9 @@ export interface CloudStorageCredentials {
    // with; `chain` is the provider order to try.
    provider?: "config" | "credential_chain";
    chain?: string;
+   // The URL prefix the secret is restricted to (`SCOPE`); unset keeps DuckDB's
+   // default scope, the whole scheme.
+   scope?: string;
 }
 
 interface CloudStorageBucket {
@@ -102,7 +177,7 @@ export function validateS3ProviderShape(
    connectionName: string | undefined,
    // The credential-chain policy turns on this. Unstated means the
    // author-supplied case, the one worth refusing.
-   origin: "connection" | "storage-destination" = "connection",
+   origin: ConnectionOrigin = "connection",
 ): void {
    const provider = s3Connection.provider as unknown;
    if (provider !== undefined) {
@@ -165,7 +240,7 @@ export function validateS3ProviderShape(
 export function resolveCloudStorageCredentials(
    attachedDb: ApiAttachedDatabase,
    // Forwarded to validateS3ProviderShape; unstated means author-supplied.
-   origin: "connection" | "storage-destination" = "connection",
+   origin: ConnectionOrigin = "connection",
 ): CloudStorageCredentials {
    if (attachedDb.type === "gcs") {
       if (!attachedDb.gcsConnection) {
@@ -196,6 +271,15 @@ export function resolveCloudStorageCredentials(
    }
    const s3 = attachedDb.s3Connection;
    validateS3ProviderShape(s3, attachedDb.name, origin);
+   // Here rather than at attach, so a storage destination with an unusable
+   // endpoint is refused when it is configured, not at its first build.
+   if (typeof s3.endpoint === "string" && s3.endpoint !== "") {
+      try {
+         checkS3Endpoint(s3.endpoint, s3.provider);
+      } catch (error) {
+         throw new Error(`${(error as Error).message} (${attachedDb.name})`);
+      }
+   }
    if (
       s3.provider !== "credential_chain" &&
       (!s3.accessKeyId || !s3.secretAccessKey)
@@ -238,7 +322,11 @@ export function createCloudStorageClient(
       !isGCS && credentials.provider === "credential_chain";
 
    const client = new S3Client({
-      endpoint: isGCS ? "https://storage.googleapis.com" : credentials.endpoint,
+      endpoint: isGCS
+         ? "https://storage.googleapis.com"
+         : credentials.endpoint
+           ? checkS3Endpoint(credentials.endpoint, credentials.provider).url
+           : undefined,
       region: isGCS ? "auto" : credentials.region || "us-east-1",
       ...(useHostCredentials
          ? {}

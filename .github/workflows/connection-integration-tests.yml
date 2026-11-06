@@ -9,6 +9,8 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
+      - "packages/server/src/service/proxy.ts"
+      - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
       - "packages/server/src/service/materialization_build_session.ts"
       - "packages/server/src/service/build_read_cost.ts"
       - "packages/server/src/service/build_query_tag.ts"
@@ -36,6 +38,8 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
+      - "packages/server/src/service/proxy.ts"
+      - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
       - "packages/server/src/service/materialization_build_session.ts"
       - "packages/server/src/service/build_read_cost.ts"
       - "packages/server/src/service/build_query_tag.ts"

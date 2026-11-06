@@ -32,11 +32,11 @@ export type RetrievalLlmConfig = {
    location?: string;
    timeoutMs: number;
    concurrency: number;
-   /** Most chat calls one index sync may make; the spend ceiling. */
+   /** Most chat calls one index build may make; the spend ceiling. */
    maxCallsPerSync: number;
    /**
-    * Most chat calls one `get_context` request may make, counted across refine
-    * and rerank; the request-time spend ceiling. A request that would pass it
+    * Most chat calls one `get_context` request may make (the judge's); the
+    * request-time spend ceiling. A request that would pass it
     * fails with an error that names this setting.
     */
    maxCallsPerRequest: number;
@@ -74,13 +74,32 @@ export type RetrievalConfig = {
    llm?: RetrievalLlmConfig;
    embedding?: RetrievalEmbeddingConfig;
    /**
-    * What may be sent to the LLM. `default`: entity names, `#(doc)` text and
-    * schema context. `full`: also code and dimension values. Access
+    * What may be sent to the LLM. `default`: entity names, doc text (`#(doc)`,
+    * `#"`, and the database's descriptions on a connection with `dbmeta` on)
+    * and schema context. `full`: also code and dimension values. Access
     * predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever
     * this says; there is no switch for that.
     */
    egress?: { preset: EgressPreset };
+   /**
+    * Value search: how `get_context` answers a `dimensional_value` target.
+    * Every key is optional; see {@link DIMENSION_VALUE_DEFAULTS}.
+    */
+   dimensionValues?: DimensionValuesConfig;
 };
+
+/** The `retrieval.dimensionValues` block, as the operator wrote it. */
+export type DimensionValuesConfig = {
+   /**
+    * `false` turns value search off: no `#(index)` value is read when a
+    * package's search index is built, and a `dimensional_value` target gets
+    * the "No index" warning.
+    */
+   enabled?: boolean;
+};
+
+/** What each `retrieval.dimensionValues` key means when the operator leaves it out. */
+export const DIMENSION_VALUE_DEFAULTS = { enabled: true } as const;
 
 /**
  * Default for `retrieval.indexing.maxEntities`. A package past this is not
@@ -406,10 +425,31 @@ function parseEgress(raw: unknown): { preset: EgressPreset } | undefined {
    ) {
       throw new Error(
          `Invalid retrieval.egress.preset: expected one of ${EGRESS_PRESETS.join(", ")}, got ${describe(obj.preset)}. ` +
-            `Fix: "preset": "default" (names, #(doc) text and schema context) or "full" (also code and dimension values).`,
+            `Fix: "preset": "default" (names, doc text and schema context) or "full" (also code and dimension values).`,
       );
    }
    return { preset: obj.preset as EgressPreset };
+}
+
+const DIMENSION_VALUE_KEYS = ["enabled"] as const;
+
+function parseDimensionValues(raw: unknown): DimensionValuesConfig {
+   const fields = block(
+      raw,
+      "retrieval.dimensionValues",
+      DIMENSION_VALUE_KEYS,
+      `"dimensionValues": { "enabled": false }`,
+   );
+   const out: DimensionValuesConfig = {};
+   if (fields.enabled !== undefined && fields.enabled !== null) {
+      if (typeof fields.enabled !== "boolean") {
+         throw new Error(
+            `Invalid retrieval.dimensionValues.enabled: expected a boolean, got ${describe(fields.enabled)}. Fix: "enabled": false`,
+         );
+      }
+      out.enabled = fields.enabled;
+   }
+   return out;
 }
 
 /**
@@ -432,7 +472,7 @@ export function parseRetrievalConfig(
    const input = block(
       raw,
       "retrieval",
-      ["indexing", "llm", "embedding", "egress"],
+      ["indexing", "llm", "embedding", "egress", "dimensionValues"],
       `"retrieval": { "indexing": { "maxEntities": 20000 } }`,
    );
    const out: RetrievalConfig = {};
@@ -465,6 +505,9 @@ export function parseRetrievalConfig(
       const egress = parseEgress(input.egress);
       if (egress) out.egress = egress;
    }
+   if (input.dimensionValues !== undefined && input.dimensionValues !== null) {
+      out.dimensionValues = parseDimensionValues(input.dimensionValues);
+   }
    return out;
 }
 
@@ -477,6 +520,11 @@ export function setRetrievalConfig(config: RetrievalConfig | undefined): void {
 
 export function loadedRetrievalConfig(): RetrievalConfig | undefined {
    return loaded;
+}
+
+/** The `retrieval.dimensionValues` settings in force, defaults filled in. */
+export function getDimensionValueSettings(): Required<DimensionValuesConfig> {
+   return { ...DIMENSION_VALUE_DEFAULTS, ...loaded?.dimensionValues };
 }
 
 /** The egress preset in force: `default` unless the operator chose `full`. */

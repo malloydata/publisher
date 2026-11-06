@@ -18,7 +18,7 @@ import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    computeSourceEntityId,
-   iterGraphSources,
+   sourcesInBuildOrder,
    type CompiledBuildPlan,
 } from "./build_plan";
 import type { IncrementalRunContext } from "./incremental_build";
@@ -172,7 +172,7 @@ export function resolveInstruction(
  * model-declared collision can still reach this build.
  */
 export function assertNoTableCollisions(
-   graphs: CompiledBuildPlan["graphs"],
+   builds: CompiledBuildPlan["builds"],
    sources: CompiledBuildPlan["sources"],
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
@@ -182,8 +182,8 @@ export function assertNoTableCollisions(
       { sourceName: string; sourceEntityId: string }
    >();
    const collisions: { first: string; second: string; table: string }[] = [];
-   for (const graph of graphs) {
-      for (const persistSource of iterGraphSources(graph, sources)) {
+   for (const build of builds) {
+      for (const persistSource of sourcesInBuildOrder(build, sources)) {
          let address: string;
          try {
             address = computeSourceEntityId(persistSource, connectionDigests);
@@ -199,7 +199,7 @@ export function assertNoTableCollisions(
          if (!instruction) continue;
          // Must be the same key as the build loop's write guard, or this
          // pre-pass and the guard disagree on what a collision is.
-         const target = physicalTargetKey(instruction, graph.connectionName);
+         const target = physicalTargetKey(instruction, build.connectionName);
          const claim = claimedBy.get(target);
          if (!claim) {
             claimedBy.set(target, {

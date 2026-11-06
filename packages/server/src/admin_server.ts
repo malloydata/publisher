@@ -10,21 +10,15 @@ import { markReady, registerSignalHandlers } from "./health";
 import { getPrometheusMetricsHandler } from "./instrumentation";
 import { logger } from "./logger";
 import { resolveBoundPort } from "./mcp_config";
-import {
-   createAdminApp,
-   resolveAdminHost,
-   resolveAdminPort,
-} from "./routes/admin";
+import { createAdminApp } from "./routes/admin";
 import { applyServerTimeouts } from "./server_timeouts";
-import {
-   CatalogAdmin,
-   catalogAdminConfigFromEnv,
-} from "./service/catalog_admin";
+import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
+import { settings } from "./settings";
 
 // assertServerApis has already required the port.
-const ADMIN_PORT = resolveAdminPort(process.env)!;
-const ADMIN_HOST = resolveAdminHost(process.env);
-const CATALOG_CONFIG = catalogAdminConfigFromEnv(process.env);
+const ADMIN_PORT = settings.get("admin.port")!;
+const ADMIN_HOST = settings.get("admin.host");
+const CATALOG_CONFIG = catalogAdminConfig();
 const catalogs = CATALOG_CONFIG ? new CatalogAdmin(CATALOG_CONFIG) : null;
 
 // The only listener, so the only place the process's metrics can be scraped.
@@ -59,7 +53,7 @@ applyServerTimeouts(adminServer, getServerSocketTimeoutMs());
 registerSignalHandlers(
    null,
    null,
-   Number(process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0),
-   Number(process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0),
+   settings.get("shutdown.drainDurationSeconds"),
+   settings.get("shutdown.gracefulCloseTimeoutSeconds"),
    [adminServer],
 );

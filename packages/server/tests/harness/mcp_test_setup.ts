@@ -14,6 +14,7 @@ import { AddressInfo } from "net";
 import path from "path";
 import { fileURLToPath } from "url";
 import { URL } from "url";
+import { installSettings } from "../../src/test_helpers/settings_env";
 import { pollUntil } from "./spawn_server";
 
 // --- Real Server Import ---
@@ -25,8 +26,17 @@ export interface McpE2ETestEnvironment {
    httpServer: http.Server;
    serverUrl: string;
    mcpClient: Client<Request, Notification, Result>;
-   originalServerRoot: string | undefined;
-   originalInitializeStorage: string | undefined;
+   /** Puts back the settings that were current before setup. */
+   restoreSettings: () => void;
+}
+
+/** This process's variables, as a server process started here would read them. */
+function processEnv(): Record<string, string> {
+   return Object.fromEntries(
+      Object.entries(process.env).filter(
+         (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+   );
 }
 
 // True mutex: the previous Promise-based lock had a TOCTOU race where two beforeAll hooks
@@ -37,39 +47,66 @@ const e2eSetupMutex = new Mutex();
 /**
  * Starts the real application server and connects a real MCP client.
  */
-export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> {
+/**
+ * `env` holds the variables a suite starts its server with, over this
+ * process's own; a key set to undefined is removed.
+ */
+export async function setupE2ETestEnvironment(
+   options: { env?: Record<string, string | undefined> } = {},
+): Promise<McpE2ETestEnvironment> {
    return e2eSetupMutex.runExclusive(async () => {
       console.log(
          "[E2E Test Setup] Acquired setup mutex; starting environment...",
       );
-      return setupE2ETestEnvironmentInternal();
+      return setupE2ETestEnvironmentInternal(options.env ?? {});
    });
 }
 
-async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment> {
-   // --- Store and Set SERVER_ROOT Env Var ---
-   // The EnvironmentStore relies on SERVER_ROOT to find publisher.config.json.
-   const originalServerRoot = process.env.SERVER_ROOT; // Store original value
+async function setupE2ETestEnvironmentInternal(
+   suiteEnv: Record<string, string | undefined>,
+): Promise<McpE2ETestEnvironment> {
    // Resolve the path to 'packages/server' based on the location of this file
    // Use import.meta.url for cross-platform compatibility (works on Windows)
    const __filename = fileURLToPath(import.meta.url);
    const __dirname = path.dirname(__filename);
    const serverPackageDir = path.resolve(__dirname, "../../"); // Go up two levels from .../packages/server/tests/harness
-   process.env.SERVER_ROOT = serverPackageDir;
-   console.log(
-      `[E2E Test Setup] Temporarily set SERVER_ROOT=${process.env.SERVER_ROOT}`,
-   );
 
-   // --- Set INITIALIZE_STORAGE to ensure packages are downloaded ---
-   // This ensures packages from GitHub are cloned/downloaded during initialization
-   const originalInitializeStorage = process.env.INITIALIZE_STORAGE; // Store original value
-   process.env.INITIALIZE_STORAGE = "true";
+   // --- Install the settings the server starts with ---
+   // The server runs in this process, so it starts with this process's
+   // variables, as a server process started here would, and then the suite's.
+   // On top of them, the server root is packages/server, where
+   // publisher.config.json is, and INITIALIZE_STORAGE makes initialization
+   // clone/download the packages from GitHub. Kept until cleanup, since the
+   // server reads settings as it runs.
+   const env: Record<string, string> = processEnv();
+   for (const [key, value] of Object.entries(suiteEnv)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+   }
+   const { restore: restoreSettings } = installSettings({
+      env: {
+         ...env,
+         SERVER_ROOT: serverPackageDir,
+         INITIALIZE_STORAGE: "true",
+      },
+      cwd: process.cwd(),
+   });
    console.log(
-      `[E2E Test Setup] Temporarily set INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
+      `[E2E Test Setup] Installed settings with SERVER_ROOT=${serverPackageDir} INITIALIZE_STORAGE=true`,
    );
+   try {
+      return await startServerAndClient(restoreSettings);
+   } catch (error) {
+      restoreSettings();
+      throw error;
+   }
+}
 
-   // --- IMPORTANT: Import server *after* setting env var ---
-   // Dynamically import the actual app instance
+async function startServerAndClient(
+   restoreSettings: () => void,
+): Promise<McpE2ETestEnvironment> {
+   // --- IMPORTANT: Import server *after* installing the settings ---
+   // It reads them at import. Dynamically import the actual app instance
    const { mcpApp } = await import("../../src/main_server");
 
    // An OS-assigned port: suites set up one after another under the mutex,
@@ -179,8 +216,7 @@ async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment>
       httpServer: listeningServerInstance,
       serverUrl: listeningServerUrl,
       mcpClient,
-      originalServerRoot,
-      originalInitializeStorage,
+      restoreSettings,
    };
 }
 
@@ -195,30 +231,16 @@ export async function cleanupE2ETestEnvironment(
       return;
    }
 
-   // --- Restore Original SERVER_ROOT and INITIALIZE_STORAGE ---
-   // Restore the original SERVER_ROOT value after tests are complete.
-   const { originalServerRoot, originalInitializeStorage } = env;
-   if (originalServerRoot === undefined) {
-      delete process.env.SERVER_ROOT;
-      console.log("[E2E Test Cleanup] Restored SERVER_ROOT (deleted)");
-   } else {
-      process.env.SERVER_ROOT = originalServerRoot;
-      console.log(
-         `[E2E Test Cleanup] Restored SERVER_ROOT=${process.env.SERVER_ROOT}`,
-      );
+   try {
+      await closeClientAndServer(env);
+   } finally {
+      // After the server is closed, since it reads settings until then.
+      env.restoreSettings();
+      console.log("[E2E Test Cleanup] Restored the settings.");
    }
+}
 
-   // Restore the original INITIALIZE_STORAGE value after tests are complete.
-   if (originalInitializeStorage === undefined) {
-      delete process.env.INITIALIZE_STORAGE;
-      console.log("[E2E Test Cleanup] Restored INITIALIZE_STORAGE (deleted)");
-   } else {
-      process.env.INITIALIZE_STORAGE = originalInitializeStorage;
-      console.log(
-         `[E2E Test Cleanup] Restored INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
-      );
-   }
-
+async function closeClientAndServer(env: McpE2ETestEnvironment): Promise<void> {
    const { mcpClient, httpServer } = env;
 
    // 1. Close client first (with timeout)

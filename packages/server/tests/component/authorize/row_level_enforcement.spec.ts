@@ -13,6 +13,7 @@
  * aborting the load. Tests that need `hasAuthorize()` / introspection go
  * through the real `Model.create`.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import {
    API,
    type ModelDef,
@@ -45,6 +46,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 import { duckdbMalloyConfig } from "../../../src/test_helpers/temp_package";
 
 /**
@@ -53,6 +55,7 @@ import { duckdbMalloyConfig } from "../../../src/test_helpers/temp_package";
  */
 const ENTRY = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -77,6 +80,7 @@ query: q is X -> { aggregate: n is count() }
 describe("row-level authorize — P0 join scoping", () => {
    it("CRITICAL — P0's wanted case: a parent gate referencing a joined field filters AND emits the JOIN", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   BOB :: string
 
@@ -128,6 +132,7 @@ describe("row-level authorize — entry-point matrix", () => {
       const { internals, mm, duckdb } =
          await buildGatedModel(`##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -268,6 +273,7 @@ describe("row-level authorize — fail-closed (CRITICAL)", () => {
 
    it("an unresolvable graft target: resolveGraftTarget returns undefined (synthetic IR real Malloy input cannot express — same idiom as authorize_gate_walk.spec.ts)", async () => {
       const { internals, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -308,6 +314,7 @@ source: X is duckdb.table('parent') extend {
       // with nowhere to attach cannot be enforced, so a missing graft target
       // rejects outright rather than attempting any fallback classification.
       const { internals, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -364,6 +371,7 @@ source: X is duckdb.table('parent') extend {
       // `classifyAuthorizeGate` unit tests were deleted (Task 4) — restored
       // here against the real function instead.
       const { internals, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -431,6 +439,7 @@ source: X is duckdb.table('parent') extend {
       // independently under each, rather than one reusing a stale
       // classification the other cached.
       const { internals, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -571,6 +580,7 @@ describe("row-level authorize — runnable identity (CRITICAL)", () => {
       // doc states: the recompile must use whatever text the filter refinement
       // already rebuilt, not the pre-refinement cell text.
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -605,6 +615,7 @@ source: X is duckdb.table('parent') extend {
 
    it("a bound row-level-gated query rejects at run time when its given reference has no value (self-triggering case)", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -650,6 +661,7 @@ source: X is duckdb.table('parent') extend {
 describe("row-level authorize — posture", () => {
    it("CRITICAL — /compile 403s a row-field gate whose givens the caller did NOT supply", async () => {
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -682,6 +694,7 @@ source: X is duckdb.table('parent') extend {
       // runs the query; it returns a schema (and, with includeSql, the
       // UNGRAFTED SQL — see `docs/authorize.md`).
       const text = `
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -743,6 +756,7 @@ source: X is duckdb.table('parent') extend {
       // ephemeral copy of the INHERITED gate stands — `resolveGraftTarget`
       // fails all three strategies against it, same as before the fix.
       const text = `
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -806,6 +820,7 @@ source: solo is duckdb.table('parent') extend {
       // though the run target IS the on-disk "X" with a satisfying given —
       // the same case the fold-in fixes for `assertAuthorizedForRunnable`.
       const text = `
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -835,6 +850,7 @@ source: X is duckdb.table('parent') extend {
          {
             "m.malloy": `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -849,6 +865,7 @@ source: X is duckdb.table('parent') extend {
       try {
          const err = await model
             .getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: X -> { group_by: org_id; aggregate: n is count() }",
@@ -900,6 +917,7 @@ source: X is duckdb.table('parent') extend {
 describe("row-level authorize — state (no shared-state mutation)", () => {
    it("the original modelDef is never mutated, and a graft never accumulates across repeated requests", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -938,6 +956,7 @@ source: X is duckdb.table('parent') extend {
 
    it("a gated request followed by a bypass request on the same query returns all rows", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -974,6 +993,7 @@ source: X is duckdb.table('parent') extend {
 describe("row-level authorize — givens", () => {
    it("an empty array given yields zero rows (WHERE FALSE), including on a multi-stage query", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1014,6 +1034,7 @@ describe("row-level authorize — other", () => {
       // (see the "fail-closed" describe block's own tests: an `extend {
       // except: ... }` resolves to a live, empty result instead).
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1041,6 +1062,7 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
 
    it("the gate predicate does not appear in the response's serialized annotations (isSourceFilter keeps it out of drill_filters)", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1116,6 +1138,7 @@ describe("deprecated: .malloynb — row-level authorize — notebook cells", () 
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1147,9 +1170,15 @@ run: local2 -> { aggregate: n is count() }
          // THIS CELL (cell 0's own scope, which does not have `local2` yet)
          // is what makes the redeclaration — and therefore the whole cell —
          // resolvable again.
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          // org_id=1 rows are ids 1,2 — the gate filters out the org_id=2
          // rows (ids 3,4), so the count is 2, not 4.
@@ -1168,6 +1197,7 @@ run: local2 -> { aggregate: n is count() }
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -1196,9 +1226,15 @@ run: gated -> { aggregate: n is count() }
             // admitting unfiltered rows, and a denied caller would short-circuit
             // on the lock's 403 before reaching that question at all.
             await expect(
-               model.executeNotebookCell(0, { nonexistent_field: "x" }, false, {
-                  ROLE: "admin",
-               }),
+               model.executeNotebookCell(
+                  unrecordedAudit(),
+                  0,
+                  { nonexistent_field: "x" },
+                  false,
+                  {
+                     ROLE: "admin",
+                  },
+               ),
             ).rejects.toThrow(/nonexistent_field/);
          } finally {
             await cleanup();
@@ -1212,6 +1248,7 @@ run: gated -> { aggregate: n is count() }
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1232,9 +1269,15 @@ run: gated -> { aggregate: n is count() }
 
          // org_id=1 rows are ids 1,2 — the gate filters out the org_id=2
          // rows (ids 3,4), so the count is 2, not 4.
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1248,6 +1291,7 @@ run: gated -> { aggregate: n is count() }
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1266,9 +1310,15 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(0);
       } finally {
@@ -1285,6 +1335,7 @@ run: gated -> { aggregate: n is count() }
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1303,9 +1354,15 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1322,6 +1379,7 @@ run: gated -> { aggregate: n is count() }
 source: unrelated is duckdb.table('childtable') extend { primary_key: id }
 
 >>>malloy
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1340,9 +1398,15 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1356,6 +1420,7 @@ run: gated -> { aggregate: n is count() }
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1374,9 +1439,15 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1390,6 +1461,7 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1409,9 +1481,15 @@ run: gated -> byorg
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: [1],
+            },
+         );
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
@@ -1425,6 +1503,7 @@ run: gated -> byorg
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: string[]
 
@@ -1453,9 +1532,15 @@ run: gated -> { group_by: id, org_id, childtable.name }
          // query's own text already references the joined field, which is
          // what forces the join into the ORIGINALLY compiled queryDef before
          // the graft appends its condition.
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: ["bob"],
-         });
+         const result = await model.executeNotebookCell(
+            unrecordedAudit(),
+            0,
+            undefined,
+            false,
+            {
+               GROUPS: ["bob"],
+            },
+         );
          expect(result.result).toBeDefined();
          const rowCount = (
             JSON.parse(result.result!) as {
@@ -1474,6 +1559,7 @@ run: gated -> { group_by: id, org_id, childtable.name }
             "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ID :: number
 
@@ -1504,6 +1590,7 @@ run: joiner -> { aggregate: n is count() }
          // post-declaration model (both sources are declared in this SAME
          // self-declaring cell).
          const result = await model.executeNotebookCell(
+            unrecordedAudit(),
             0,
             undefined,
             false,
@@ -1523,8 +1610,9 @@ run: joiner -> { aggregate: n is count() }
 
 describe("row-level authorize — storage routing", () => {
    it("CRITICAL — a row-level gated query does not route to storage", async () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-"));
       try {
@@ -1538,6 +1626,7 @@ describe("row-level authorize — storage routing", () => {
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1577,6 +1666,7 @@ source: X is duckdb.table('parent') extend {
          ]);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -1593,11 +1683,7 @@ source: X is duckdb.table('parent') extend {
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(2);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1618,6 +1704,7 @@ source: X is duckdb.table('parent') extend {
       // predictor still finds the gate by walking the compiled entry point
       // directly, independent of `this.sources`.
       const { model, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1626,8 +1713,9 @@ source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `);
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       try {
          // Confirms the premise: `hasAuthorize()` really is blind here, which
          // is why the guard removed from `queryEntryPointHasRowLevelGate`
@@ -1652,6 +1740,7 @@ source: X is duckdb.table('parent') extend {
          ]);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -1665,18 +1754,15 @@ source: X is duckdb.table('parent') extend {
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(2);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
       }
    });
 
    it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
       try {
@@ -1691,6 +1777,7 @@ source: X is duckdb.table('parent') extend {
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1732,6 +1819,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
 
          const result = await model
             .getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: W_except -> { aggregate: n is count() }",
@@ -1749,11 +1837,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
          // caused it — the isolated unit test below is what pins that.
          expect(result).toBeInstanceOf(AccessDeniedError);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1772,6 +1856,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
       // predicate regresses to admitting a `deny` resolution — independent of
       // any other gate in the request path that happens to also catch it.
       const { internals, mm, duckdb } = await buildGatedModel(`
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1801,8 +1886,9 @@ source: W_except is X extend { except: org_id }
       // enforced by a whole-source boolean probe that ran regardless of
       // routing. That escape is gone: EVERY gate blocks storage now, whether
       // or not its condition happens to mention a column.
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(
          path.join(os.tmpdir(), "rla-storage-given-only-"),
@@ -1812,6 +1898,7 @@ source: W_except is X extend { except: org_id }
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -1849,6 +1936,7 @@ source: X is duckdb.table('parent') extend {
          ]);
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -1862,11 +1950,7 @@ source: X is duckdb.table('parent') extend {
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(4);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1878,8 +1962,9 @@ source: X is duckdb.table('parent') extend {
    // swaps `runnable` for the shape and routing succeeds. A regression pin,
    // not a gap: a misbound plain `where:` must still deny, routed or not.
    it("CRITICAL — a plain (unannotated) where:-filtered source's misbound derivation still denies under storage routing", async () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-plain-"));
       try {
@@ -1931,6 +2016,7 @@ source: X is duckdb.table('parent') extend {
          // storage routing off.
          await expect(
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: X extend { except: org_id } extend { rename: org_id is val } -> { aggregate: n is count() }",
@@ -1940,11 +2026,7 @@ source: X is duckdb.table('parent') extend {
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1973,6 +2055,7 @@ describe("row-level authorize — constant gate expressions are refused by the g
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -1993,6 +2076,7 @@ source: X is duckdb.table('parent') extend {
          ).toBeUndefined();
 
          const result = await model.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             "run: X -> { group_by: org_id; aggregate: n is count() }",
@@ -2030,6 +2114,7 @@ source: X is duckdb.table('parent') extend {
 describe("row-level authorize — grafted materializer cache is bounded", () => {
    const GATED = `##! experimental.givens
 
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS
@@ -2172,6 +2257,7 @@ source: leaf is mid extend {}
    it("a model refused as admit_all_with_sibling ticks nothing — the callback runs after coherence", async () => {
       const { model, cleanup } = await loadAuthorizeModel(
          withGivensFlag(`
+#(secure)
 given:
   ROLE :: string[]
 

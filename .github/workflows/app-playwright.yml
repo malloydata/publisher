@@ -3,9 +3,10 @@
 
 name: App Playwright E2E
 
+# Every pull request, whatever its base, as build.yml does: a PR stacked on
+# another PR's branch changes the Console as much as one into main.
 on:
   pull_request:
-    branches: [main]
 
 env:
   BUN_VERSION: 1.4.4
@@ -18,7 +19,10 @@ permissions:
 jobs:
   playwright:
     name: Playwright (packages/app)
-    runs-on: ubuntu-latest
+    # Pinned: `ubuntu-latest` began resolving to ubuntu-26.04 on 2026-10-30, and
+    # `playwright install --with-deps chromium` refuses that image ("does not
+    # support chromium on ubuntu26.04"), failing the job before any test runs.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +95,7 @@ jobs:
       # its webServer, polls /api/v0/status in global-setup until the publisher
       # reaches operationalState=serving, then runs the suite.
       - name: Run Playwright suite
+        id: suite
         working-directory: packages/app
         run: bunx playwright test --config=playwright.config.ts
         env:
@@ -111,4 +116,59 @@ jobs:
         with:
           name: playwright-test-results
           path: packages/app/test-results
+          retention-days: 7
+
+      # The suite above runs against a server with package versioning off, so
+      # package-versions.spec.ts skips itself there. Run that spec again
+      # against a server of its own with versioning on: the playwright.config.ts
+      # webServer inherits this step's environment, and the server the step
+      # above started has stopped with it. EXPECT_PACKAGE_VERSIONING makes the
+      # spec fail rather than skip if the server reports versioning off. It
+      # runs whenever the suite above ran, passed or failed, so a failure
+      # there never hides one here; not when setup failed before either.
+      - name: Run the package-versions spec with versioning on
+        id: package-versions
+        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
+        working-directory: packages/app
+        run: bunx playwright test --config=playwright.config.ts --output=test-results-versions tests/playwright/package-versions.spec.ts
+        env:
+          CI: "true"
+          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_PACKAGE_VERSIONING: "on"
+          EXPECT_PACKAGE_VERSIONING: "on"
+
+      - name: Upload the package-versions report and results
+        if: failure() && steps.package-versions.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-package-versions
+          path: |
+            packages/app/playwright-report
+            packages/app/test-results-versions
+          retention-days: 7
+
+      # The model viewer's specs, the same way: the suite above runs against a
+      # server on the default model page, the Explorer, so they skip
+      # themselves there. Run them again against a server of their own with
+      # PUBLISHER_MODEL_PAGE=viewer; EXPECT_MODEL_PAGE makes them fail rather
+      # than skip if the server reports another page.
+      - name: Run the model viewer specs with PUBLISHER_MODEL_PAGE=viewer
+        id: model-viewer
+        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
+        working-directory: packages/app
+        run: bunx playwright test --config=playwright.config.ts --output=test-results-model-viewer tests/playwright/model-page-literals.spec.ts tests/playwright/model-page-givens.spec.ts tests/playwright/model-viewer.spec.ts
+        env:
+          CI: "true"
+          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_MODEL_PAGE: viewer
+          EXPECT_MODEL_PAGE: viewer
+
+      - name: Upload the model viewer report and results
+        if: failure() && steps.model-viewer.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-model-viewer
+          path: |
+            packages/app/playwright-report
+            packages/app/test-results-model-viewer
           retention-days: 7

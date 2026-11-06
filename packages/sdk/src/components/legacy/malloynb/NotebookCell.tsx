@@ -27,6 +27,7 @@ import { AppDialog } from "../../AppDialog";
 import { highlight } from "../../highlighter";
 import { ModelExplorerDialog } from "../../Model/ModelExplorerDialog";
 import { FloatingIconButton } from "../../FloatingIconButton";
+import { useServer } from "../../ServerProvider";
 import { Prose } from "../../Prose";
 import type { NavigationClick } from "../../click_helper";
 import { useDrill, type DrillNavigation } from "../../drill";
@@ -114,6 +115,11 @@ export function NotebookCell({
       React.useState<string>();
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
+   // The "Data sources" dialog is the Malloy Explorer, which a server with
+   // `PUBLISHER_MODEL_PAGE=viewer` takes out of the Console; it waits on
+   // `/status` so such a server never offers it.
+   const { modelPage, isLoadingStatus } = useServer();
+   const explorerAllowed = !isLoadingStatus && modelPage !== "viewer";
 
    const [copyMessage, setCopyMessage] = useState("");
 
@@ -144,19 +150,12 @@ export function NotebookCell({
       // `markDrillableCells`'s principle, that a destination the surface cannot
       // reach never becomes a link, and it is why this is a prop rather than
       // something the cell assumes.
-      //
-      // Wiring it also makes `drillMenu` reachable for the first time: a menu
-      // opens only for two or more honorable destinations, so until there was a
-      // second one every drillable cell applied its filter on the first click.
       onNavigate: onDrillNavigate,
       onSelf: onDrillSelf,
       // Only the notebook knows which givens it declares, and a self-drill onto
       // one it does not is refused. Asking here keeps the affordance honest
       // instead of painting a link whose click only logs a warning.
       canSelf: canDrillSelf,
-      // The reader is in a notebook, so `to=self` says so: the drill tag is on
-      // a shared model dimension and cannot know which document it fired in.
-      selfLabel: "Filter this report",
    });
    // Regex to extract imported names from import statements
    const IMPORT_NAMES_REGEX = /import\s*\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/;
@@ -349,7 +348,7 @@ export function NotebookCell({
                               }}
                            />
                         )}
-                        {hasValidImport && (
+                        {hasValidImport && explorerAllowed && (
                            <FloatingIconButton
                               aria-label="Data sources"
                               sx={{ flexShrink: 0 }}
@@ -365,7 +364,7 @@ export function NotebookCell({
 
             {/* Data Sources Dialog */}
             <ModelExplorerDialog
-               open={sourcesDialogOpen}
+               open={sourcesDialogOpen && explorerAllowed}
                onClose={() => setSourcesDialogOpen(false)}
                title="Data Sources"
                hasValidImport={hasValidImport}

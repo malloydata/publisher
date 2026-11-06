@@ -293,6 +293,22 @@ describe("toPublicConnection", () => {
       } as ApiConnection);
    });
 
+   it("keeps a bigquery connection's dbmeta switch", () => {
+      const view = toPublicConnection({
+         name: "bq",
+         type: "bigquery",
+         bigqueryConnection: {
+            defaultProjectId: "data-project",
+            serviceAccountKeyJson: SENTINEL,
+            dbmeta: true,
+         },
+      } as ApiConnection);
+      expect(view.bigqueryConnection).toEqual({
+         defaultProjectId: "data-project",
+         dbmeta: true,
+      });
+   });
+
    it("omits the credential rather than masking it", () => {
       // A masked placeholder would be echoed back by any caller that
       // round-trips what it reads, and stored as the real credential.

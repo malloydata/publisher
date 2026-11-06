@@ -58,7 +58,12 @@ You'll see two path styles, and they're not interchangeable:
   whose own path ends in `edit` (`sales/edit.malloy`, at `/{environment}/{package}/sales/edit`) opens as
   itself. An older `…/sales/q3/edit` link still opens the builder, by redirecting to `?edit`, unless a
   report is at `sales/q3/edit.malloy`. A report under `data-apps/` opens as a report; any other path
-  there opens the package's data app of that name.
+  there opens the package's data app of that name. A package with published versions (see
+  [package-versions.md](package-versions.md)) carries the version as the first segment after the
+  package, `latest` spelled out: `/{environment}/{package}/latest/sales/q3`, or
+  `/{environment}/{package}/1.2.0/sales/q3` pinned to 1.2.0, and a bare `/{environment}/{package}`
+  opens `/latest`. A package with no versions keeps the routes above, so a folder of its own named
+  `latest` or `1.2.0` still opens by its path.
 - **Resource paths** are fully qualified — `/environments/{environment}/packages/{package}/...`.
   This is the canonical form the [REST and MCP APIs](api-overview.md) use, and it's also how an
   in-package HTML data app is served, e.g.
@@ -82,6 +87,17 @@ is a Console convenience.
   none; the path appears beside it only to tell apart two reports with the same name, and a
   `.malloynb` keeps its path. Without a `title=` in the artifact tag, a report's title comes from its
   `"` description or its opening markdown heading.
+- **Switch between a package's versions** — a package with published versions shows its version
+  beside its title (`v1.2.0 ▾`). The switch lists every version, highest first, with `latest`
+  marked; archived ones are listed but do not open. Picking one pins the page, and everything opened
+  from it (models, reports, data apps, materialization runs) stays on that version. Each row's
+  **⋯** menu offers **Pin as latest** (after a confirmation), **Archive** (**Unarchive** on an
+  archived version) and **Delete version** (after a confirmation). An action the server would
+  refuse is disabled, with why: `latest` and the last version in service cannot be archived, and
+  while other versions remain they cannot be deleted either. Deleting a package's only version
+  deletes the package and returns to its environment. A published version is immutable, so its
+  pages offer no **+ Report** or **Edit**, and its Materializations section has no **Scope** or
+  **Schedule**.
 - **Build a report by dragging** — every report page has an **Edit** button in the header, beside the
   breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
   status, undo and redo, an **Add** menu (a tile, text or a filter), and
@@ -134,7 +150,17 @@ is a Console convenience.
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
   and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
-  every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
+  every action generates Malloy, and you can view the Malloy and SQL behind any result. The
+  Explorer writes a drilled value into that Malloy unescaped, so a value holding a double quote
+  rewrites its query.
+- **Browse a model** — on a server started with `PUBLISHER_MODEL_PAGE=viewer` (see
+  [configuration](configuration.md)), the model page is the model viewer instead, which builds no
+  query: open a `.malloy` file to see one source at a time, picked from its "N sources" pill: the
+  givens it reads, its views and the model's named queries (each runs when you open it), its
+  measures, calculations, dimensions and joins, each opening to its Malloy. A dimension tagged
+  `#(index)` lists its most common values. Nothing runs until you open a row or a given's picker.
+  The source and the given values are in the address (`?source=`, `?REGION=…`), so a link, and Copy
+  link, opens on them.
 - **Read a legacy notebook** — a `.malloynb` in a package renders as a linear report: its markdown,
   and its query cells run inline, including `# dashboard` views (KPI tiles + nested charts). The
   format is deprecated and the bundled examples no longer ship one, but the viewer stays for packages

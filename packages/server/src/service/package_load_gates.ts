@@ -11,7 +11,8 @@ import {
 import { logger } from "../logger";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import { llmConfigured } from "../providers/active";
-import type { Package } from "./package";
+import type { PreparedCeilingQueries } from "./classification";
+import type { ApiPackage, Package } from "./package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
    assertRequiredStagesAvailable,
@@ -83,9 +84,19 @@ export function warnInvalidExplores(pkg: Package): void {
 /**
  * The manifest and persistence policy gates a freshly loaded package passes
  * before it serves. Most warn; an invalid incremental refresh or
- * pre-aggregation declaration fails the load.
+ * pre-aggregation declaration fails the load. With a `listing`, the package is
+ * judged as that listing would serve it, and keeps its own.
  */
-export function applyLoadGates(pkg: Package): void {
+export async function applyLoadGates(
+   pkg: Package,
+   listing?: Pick<ApiPackage, "explores" | "queryableSources">,
+): Promise<void> {
+   // The only await, ahead of the listing, so no request is served under one the gates have not judged.
+   const prepared = await pkg.prepareCeilingQueries();
+   pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
+}
+
+function judgeLoadGates(pkg: Package, prepared: PreparedCeilingQueries): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
    // Same fail-safe split: warn at load, reject at publish.
@@ -113,6 +124,25 @@ export function applyLoadGates(pkg: Package): void {
          },
       );
       throw new BadRequestError(invalidIncremental);
+   }
+   // A `#(carries)` ceiling is strict at load too: a surface that lists what
+   // it carries must not serve a field outside the list, and a warning would
+   // leave it serving. The message names every leak so one fix clears them.
+   const leaks = pkg.formatClassificationLeaks();
+   if (leaks) {
+      logger.error(
+         `Package ${packageName} exposes a field outside a source's #(carries)`,
+         { packageName, detail: leaks },
+      );
+      throw new BadRequestError(leaks);
+   }
+   const ceiling = pkg.formatCarriesCeilingLeaks(prepared);
+   if (ceiling) {
+      logger.error(
+         `Package ${packageName} has a query that reads past a source's #(carries)`,
+         { packageName, detail: ceiling },
+      );
+      throw new BadRequestError(ceiling);
    }
    // `#@ preaggregate` is strict at load too (see
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which

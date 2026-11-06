@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
 import { MalloyConfig } from "@malloydata/malloy";
@@ -10,6 +11,7 @@ import fs from "fs/promises";
 import { join, resolve } from "path";
 import sinon from "sinon";
 import { PackageNotFoundError } from "../errors";
+import { installSettings } from "../test_helpers/settings_env";
 import { Model } from "./model";
 import { Package } from "./package";
 
@@ -84,6 +86,8 @@ describe("service/package", () => {
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
                   setSiblingModelDefResolver: () => {},
+                  getGivens: () => [],
+                  getCompilationError: () => undefined,
                } as unknown as Model,
             ],
             [
@@ -93,6 +97,8 @@ describe("service/package", () => {
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
                   setSiblingModelDefResolver: () => {},
+                  getGivens: () => [],
+                  getCompilationError: () => undefined,
                } as unknown as Model,
             ],
          ]),
@@ -102,13 +108,10 @@ describe("service/package", () => {
    });
 
    describe("per-package sandbox extension pinning", () => {
-      const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+      let restoreSettings: (() => void) | undefined;
       afterEach(() => {
-         if (originalPolicy === undefined) {
-            delete process.env.EXTENSION_FETCH_POLICY;
-         } else {
-            process.env.EXTENSION_FETCH_POLICY = originalPolicy;
-         }
+         restoreSettings?.();
+         restoreSettings = undefined;
       });
 
       it(
@@ -120,7 +123,9 @@ describe("service/package", () => {
             // against DuckDB's implicit auto-install, or a sandbox query
             // referencing an unbaked extension could silently fetch from the
             // CDN. Uses a spy (not a stub) so real DuckDB runs the pragma.
-            process.env.EXTENSION_FETCH_POLICY = "local-only";
+            restoreSettings = installSettings({
+               env: { EXTENSION_FETCH_POLICY: "local-only" },
+            }).restore;
             const spy = sinon.spy(DuckDBConnection.prototype, "runSQL");
             await Package.create(
                "testProject",
@@ -240,6 +245,7 @@ describe("service/package", () => {
                   );
                   expect(rootModel).toBeDefined();
                   const rootResults = await rootModel!.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      "row_count",
                   );
@@ -316,6 +322,7 @@ describe("service/package", () => {
                   );
                   expect(outsideModel).toBeDefined();
                   const outsideResults = await outsideModel!.getQueryResults(
+                     unrecordedAudit(),
                      undefined,
                      "row_count",
                   );
@@ -349,6 +356,8 @@ describe("service/package", () => {
                         setDiscoveryCuration: () => {},
                         setQueryBoundary: () => {},
                         setSiblingModelDefResolver: () => {},
+                        getGivens: () => [],
+                        getCompilationError: () => undefined,
                      } as unknown as Model,
                   ],
                   [
@@ -367,6 +376,8 @@ describe("service/package", () => {
                         getNotebookListing: () => ({}),
                         setQueryBoundary: () => {},
                         setSiblingModelDefResolver: () => {},
+                        getGivens: () => [],
+                        getCompilationError: () => undefined,
                      } as unknown as Model,
                   ],
                ]),
@@ -694,6 +705,63 @@ describe("service/package", () => {
 
          expect(boundSources(pkg)).toEqual(["all_rows"]);
       });
+
+      describe("a published version binds only what its own definition built", () => {
+         /** A package whose plan defines each source at the given address. */
+         const definedAs = (
+            versionId: string | undefined,
+            sources: Record<string, string>,
+         ) => {
+            const pkg = packageWith({
+               eligible: Object.keys(sources),
+               refused: {},
+            });
+            pkg.setPackageMetadata({ ...pkg.getPackageMetadata(), versionId });
+            (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+               graphs: [],
+               sources: Object.fromEntries(
+                  Object.entries(sources).map(([name, sourceEntityId]) => [
+                     `${name}@m.malloy`,
+                     { name, sourceEntityId, sourceID: `${name}@m.malloy` },
+                  ]),
+               ),
+            };
+            return pkg;
+         };
+         // What a run stamps: the source's name and its definition's address.
+         const built = (sourceName: string, sourceEntityId: string) => ({
+            ...entry(sourceName, `t_${sourceName}`),
+            sourceEntityId,
+         });
+
+         it("serves live a source whose stored table another definition built", () => {
+            // Another version rebuilt `orders` from a changed definition, under
+            // the name every version of a `scope: package` package shares.
+            const pkg = definedAs("1.0.0", {
+               orders: "v1-orders",
+               items: "items",
+            });
+
+            pkg.bindStorageServeBindings({
+               a: built("orders", "v2-orders"),
+               b: built("items", "items"),
+            });
+
+            expect(boundSources(pkg)).toEqual(["items"]);
+         });
+
+         it("binds a table its own definition built", () => {
+            const pkg = definedAs("2.0.0", { orders: "v2-orders" });
+            pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            expect(boundSources(pkg)).toEqual(["orders"]);
+         });
+
+         it("leaves a package with no versions binding by name, as before", () => {
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            expect(boundSources(pkg)).toEqual(["orders"]);
+         });
+      });
    });
 
    // The colocated-tier analogue of the storage gate above — a positive
@@ -767,6 +835,97 @@ describe("service/package", () => {
          expect(pkg.getBuildManifestEntries()).toEqual({
             "eid-known": { tableName: "t_known" },
          });
+      });
+   });
+
+   describe("secureGivens", () => {
+      const stubModel = (
+         modelPath: string,
+         givens: { name: string; type: string; secure?: boolean }[],
+         compilationError?: Error,
+      ) =>
+         ({
+            getPath: () => modelPath,
+            setDiscoveryCuration: () => {},
+            setQueryBoundary: () => {},
+            setSiblingModelDefResolver: () => {},
+            getGivens: () => givens,
+            getCompilationError: () => compilationError,
+            isNotebook: () => modelPath.endsWith(".malloynb"),
+            getNotebookListing: () => ({}),
+            hasEmptyDiscoverySurface: () => false,
+            getDeclaredQueryMetadata: () => [],
+            getDeclaredSourceQueryMetadata: () => [],
+            preaggregateViolations: () => [],
+            declaredFilterSourceNames: () => [],
+         }) as unknown as Model;
+      const roles = { name: "ROLES", type: "string[]", secure: true };
+      const pkgWith = (models: Map<string, Model>) =>
+         new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            models,
+         );
+      /** Stands in for any path that installs a new models map (reload, rebuild). */
+      const replaceModels = (pkg: Package, models: Map<string, Model>) => {
+         (pkg as unknown as { models: Map<string, Model> }).models = models;
+      };
+
+      it("is returned by reference, frozen, until the models are replaced", () => {
+         const pkg = pkgWith(
+            new Map([["a.malloy", stubModel("a.malloy", [roles])]]),
+         );
+         const first = pkg.getPackageMetadata().secureGivens;
+         expect(first).toEqual([
+            { name: "ROLES", type: "string[]", modelPaths: ["a.malloy"] },
+         ]);
+         expect(Object.isFrozen(first)).toBe(true);
+         expect(pkg.getPackageMetadata().secureGivens).toBe(first!);
+
+         replaceModels(pkg, new Map([["a.malloy", stubModel("a.malloy", [])]]));
+         expect(pkg.getPackageMetadata().secureGivens).toEqual([]);
+      });
+
+      it("is absent when any model or notebook failed to compile", () => {
+         const pkg = pkgWith(
+            new Map([
+               ["a.malloy", stubModel("a.malloy", [roles])],
+               [
+                  "nb.malloynb",
+                  stubModel("nb.malloynb", [], new Error("does not compile")),
+               ],
+            ]),
+         );
+         const metadata = pkg.getPackageMetadata();
+         expect("secureGivens" in metadata).toBe(false);
+      });
+
+      it("is never stored from a setPackageMetadata round trip", () => {
+         const pkg = pkgWith(
+            new Map([["a.malloy", stubModel("a.malloy", [roles])]]),
+         );
+         pkg.setPackageMetadata({
+            ...pkg.getPackageMetadata(),
+            description: "edited",
+         });
+         replaceModels(pkg, new Map([["b.malloy", stubModel("b.malloy", [])]]));
+         expect(pkg.getPackageMetadata().secureGivens).toEqual([]);
+
+         // A stale or forged value is dropped even when the models are unknown.
+         replaceModels(
+            pkg,
+            new Map([
+               ["b.malloy", stubModel("b.malloy", [], new Error("broken"))],
+            ]),
+         );
+         pkg.setPackageMetadata({
+            name: "testPackage",
+            secureGivens: [{ name: "X", type: "string", modelPaths: [] }],
+         });
+         expect("secureGivens" in pkg.getPackageMetadata()).toBe(false);
       });
    });
 

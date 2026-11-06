@@ -93,6 +93,7 @@ import {
 } from "../service/package_manifest";
 import {
    type PackageRetrievalSettings,
+   ignoredRetrievalWarnings,
    readPackageRetrieval,
 } from "../service/package_retrieval";
 import {
@@ -534,17 +535,23 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 function makeWorkerUrlReader(job: LoadPackageRequest): {
    readURL: (url: URL) => Promise<string>;
 } {
+   // The replacement and the overlay, by resolved path; the replacement wins.
+   const inMemory = new Map<string, string>();
+   for (const file of job.overlay ?? []) {
+      inMemory.set(path.resolve(job.packagePath, file.modelPath), file.source);
+   }
+   if (job.replacement) {
+      inMemory.set(
+         path.resolve(job.packagePath, job.replacement.modelPath),
+         job.replacement.source,
+      );
+   }
    return {
       readURL: async (url: URL): Promise<string> => {
          if (url.protocol === "file:") {
             const filePath = fileURLToPath(url);
-            if (
-               job.replacement &&
-               path.resolve(filePath) ===
-                  path.resolve(job.packagePath, job.replacement.modelPath)
-            ) {
-               return job.replacement.source;
-            }
+            const held = inMemory.get(path.resolve(filePath));
+            if (held !== undefined) return held;
             return fs.promises.readFile(filePath, "utf8");
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
@@ -761,6 +768,8 @@ async function readPackageMetadata(
          queryMetadata.queryMetadata,
          queryMetadata.home,
       ),
+      // `retrieval` keys an earlier release read: the package loads, they do nothing.
+      ...ignoredRetrievalWarnings(parsed.retrieval),
    ];
    return {
       name: parsed.name,
@@ -1097,6 +1106,7 @@ async function compileMalloyModel(
          modelPath,
          materializer: mm,
          model: compiled,
+         runtime,
          importBaseURL,
          queries,
          sources,
@@ -1148,6 +1158,7 @@ async function prepareForMainThread(
       modelPath: string;
       materializer: ModelMaterializer;
       model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      runtime: Runtime;
       importBaseURL: URL;
       queries: Parameters<typeof renderTagTargets>[0];
       sources: Parameters<typeof renderTagTargets>[1];
@@ -1254,6 +1265,7 @@ async function prepareForMainThread(
             packagePath: job.packagePath,
             materializer,
             malloyModel: model.model,
+            runtime: model.runtime,
             getRuntime: companionRuntime,
             synthesized: companion,
          });
@@ -1552,6 +1564,10 @@ async function loadPackage(
    if (job.replacement && !replacementMatchedExisting) {
       modelPaths.push(job.replacement.modelPath);
    }
+   // An overlaid file new to the package compiles too.
+   for (const file of job.overlay ?? []) {
+      if (!modelPaths.includes(file.modelPath)) modelPaths.push(file.modelPath);
+   }
 
    // The compile region starts here; schema-fetch accounting begins at the
    // same boundary so `compileDurationMs = compileRegion - schemaFetchWait`
@@ -1639,11 +1655,11 @@ async function finishWorkerBuildPlan(
             getMalloyConnection: (name: string) =>
                malloyConfig.connections.lookupConnection(name),
          },
-         parts.graphs.map((g) => g.connectionName),
+         parts.builds.map((b) => b.connectionName),
       );
       const connectionDigests = await resolveConnectionDigests(
          connections,
-         parts.graphs,
+         parts.builds,
          (name) => digestSkipped.push(name),
       );
       const outcome = deriveBuildPlanOutcome(

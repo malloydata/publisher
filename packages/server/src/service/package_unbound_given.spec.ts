@@ -11,6 +11,7 @@
  * One `PackageLoadPool` is shared across the cases for the reason given in
  * `tests/component/package_worker_path.component.spec.ts`.
  */
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -70,6 +71,7 @@ query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const ACCESS_FILTERED = `##! experimental.givens
+#(secure)
 given: GROUPS :: number[]
 
 #(access_filter) org_id in $GROUPS
@@ -79,6 +81,7 @@ query: all_gated is gated -> { aggregate: c }
 `;
 
 const AUTHORIZED = `##! experimental.givens
+#(secure)
 given: ROLE :: string
 
 #(authorize) 'analyst' = $ROLE
@@ -121,19 +124,14 @@ describe("a query that bakes a default-less given loads", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
-   const originalWorkers = process.env.PACKAGE_LOAD_WORKERS;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (originalWorkers === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = originalWorkers;
    });
 
    beforeEach(() => {
@@ -206,9 +204,15 @@ describe("a query that bakes a default-less given loads", () => {
          expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(
             true,
          );
-         const run = await model.executeNotebookCell(1, undefined, false, {
-            ORG: 2,
-         });
+         const run = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ORG: 2,
+            },
+         );
          expect(count(run.result)).toBe(2);
       });
    });
@@ -227,6 +231,7 @@ describe("a query that bakes a default-less given loads", () => {
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const model = pkg.getModel("m.malloy")!;
       const withGiven = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          "for_org",
          undefined,
@@ -236,7 +241,12 @@ describe("a query that bakes a default-less given loads", () => {
       );
       expect(count(withGiven.result)).toBe(2);
       await expect(
-         model.getQueryResults(undefined, "for_org", undefined),
+         model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            "for_org",
+            undefined,
+         ),
       ).rejects.toThrow();
    });
 
@@ -245,6 +255,7 @@ describe("a query that bakes a default-less given loads", () => {
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const model = pkg.getModel("m.malloy")!;
       const run = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          "all_gated",
          undefined,

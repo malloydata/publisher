@@ -262,6 +262,15 @@ resolves their assigned values, and replaces anything the request supplied. Publ
 not itself strip or resolve it. If nothing in front of Publisher implements that, marking a
 given `#(secure)` changes nothing about who can send what.
 
+A host learns which givens it must set from `GET …/packages/{pkg}/entities`: each model's
+`givens` lists every given the model surfaces, with `secure: true` on the ones declared
+`#(secure)`. It is computed when the package loads, so the host does not compile the package
+again. It covers `.malloy` models only, not `.malloynb` notebooks, and a model that failed to
+compile has an entry with `error` and no `givens`: read that model's givens as unknown, never as
+none. An older server instead lists them as `secureGivens` on the package that
+`POST …/packages` and `GET …/packages/{pkg}` return (notebooks included, absent while any file
+fails to compile), and this one still does while `PUBLISHER_PACKAGE_INLINE_FIELDS` is `on`.
+
 **A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
 `in`, not `=`:
 
@@ -439,7 +448,7 @@ A materialization run compiles the package, builds every `#@ persist` source int
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 
-Each run records a **trigger** in its metadata: `ON_DEMAND` (a manual/API build) or `SCHEDULER` (a scheduled fire). Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build.
+Each run records a **trigger** in its metadata: `ON_DEMAND` (a manual/API build) or `SCHEDULER` (a scheduled fire). Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
 On demand, via the CLI:
 
@@ -552,7 +561,7 @@ PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS=60000 \
 
 See [configuration.md](configuration.md) for the env vars. Fire semantics:
 
-- **Sweeps only already-loaded packages.** It never forces a load; a not-yet-loaded package simply isn't scheduled until something else loads it.
+- **Sweeps already-loaded packages, and every published version in service.** It never forces a package's load; a not-yet-loaded package simply isn't scheduled until something else loads it. A published version's schedule is read from its `publisher.json` without loading it, and the version is loaded only when its cron comes due; archiving a version takes it out of the sweep. See [package-versions.md](package-versions.md#materializations).
 - **Arms to the next occurrence.** On first sight it computes the next cron time (strictly future), so a freshly-scheduled package does **not** fire on the arming tick.
 - **Recovers one missed occurrence across a restart.** On first arm after a (re)start it re-anchors from the newest recorded `SCHEDULER` run: if an occurrence came due while the process was down, it fires exactly one catch-up and then jumps forward, rather than skipping it. (A schedule set while the scheduler was _disabled_ has no prior run to anchor from, so it is not caught up on first enable.)
 - **Skips what it must not fire:** a control-plane-driven package (one with a `manifestLocation`), a package whose policy is invalid, or one with an unparseable cron.

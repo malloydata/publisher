@@ -28,6 +28,21 @@ function mount(initialEntry: string) {
       change(next: Record<string, string>, managed: string[]) {
          act(() => view.result.current.hook.onGivensChange(next, managed));
       },
+      /** Both writes in one tick, before the router commits either. */
+      setThenChange(
+         name: string,
+         value: string,
+         next: Record<string, string>,
+         managed: string[],
+      ) {
+         act(() => {
+            view.result.current.hook.setParam(name, value);
+            view.result.current.hook.onGivensChange(next, managed);
+         });
+      },
+      setParam(name: string, value: string | undefined) {
+         act(() => view.result.current.hook.setParam(name, value));
+      },
    };
 }
 
@@ -64,6 +79,23 @@ describe("useGivenUrlParams", () => {
       const host = mount("/d?utm=x#trend");
       host.change({ REGION: "West" }, ["REGION"]);
       expect(host.hash).toBe("#trend");
+   });
+
+   it("writes a host's own parameter the same way, keeping the fragment", () => {
+      const host = mount("/d?REGION=West#trend");
+      host.setParam("source", "orders");
+      expect(host.search.get("source")).toBe("orders");
+      expect(host.search.get("REGION")).toBe("West");
+      expect(host.hash).toBe("#trend");
+      host.setParam("source", undefined);
+      expect(host.search.has("source")).toBe(false);
+   });
+
+   it("keeps both of two writes made in one tick", () => {
+      const host = mount("/d?source=items");
+      host.setThenChange("source", "orders", { REGION: "West" }, ["REGION"]);
+      expect(host.search.get("source")).toBe("orders");
+      expect(host.search.get("REGION")).toBe("West");
    });
 
    it("is not fooled by a given named like an Object.prototype member", () => {

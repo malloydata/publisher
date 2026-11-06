@@ -1,0 +1,82 @@
+// Seeded violation 02: see ../README.md. Swap in for domains.malloy.
+// The published domains: one per access decision in the policy's workforce
+// table. Each is gated on attributes Riverbend's identity provider sets
+// (`#(secure)` givens, policy AC-01, AC-03) and declares the classes it serves
+// (`#(carries)`, AC-04).
+// Each extends a core, which inherits a locked base, so its own gate replaces
+// the lock on this route and nothing else re-opens it.
+##! experimental { access_modifiers givens }
+
+import "core.malloy"
+import "deidentify.malloy"
+
+#(doc) The caller's workforce classes, as the identity provider asserts them: clinical, billing, quality, researcher, partner.
+#(secure)
+given: ROLES :: string[]
+
+#(doc) The care organizations the caller belongs to, as the identity provider asserts them.
+#(secure)
+given: ORGANIZATIONS :: string[]
+
+#(doc) Attributes of the caller's identity, such as an executed data use agreement (dua-signed).
+#(secure)
+given: ATTRIBUTES :: string[]
+
+#(doc) The full patient record, one row per encounter, for treating clinicians and the care team, limited to encounters at the caller's organizations.
+#(authorize) 'clinical' in $ROLES
+#(access_filter) ORGANIZATION in $ORGANIZATIONS
+#(carries) ["phi.direct_identifier", "phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
+source: patient_chart is encounters_core extend {
+  #(doc) The encounter's identifier.
+  #(classification) "phi.direct_identifier"
+  dimension: encounter_id is Id
+  join_one: patient is patients_core on PATIENT = patient.Id
+  join_one: organization is organizations_core on ORGANIZATION = organization.Id
+  join_one: provider is providers_core on PROVIDER = provider.Id
+  join_one: payer is payers_core on PAYER = payer.Id
+  join_many: conditions is conditions_core on Id = conditions.ENCOUNTER
+  join_many: medications is medications_core on Id = medications.ENCOUNTER
+  join_many: procedures is procedures_core on Id = procedures.ENCOUNTER
+  join_many: observations is observations_core on Id = observations.ENCOUNTER
+}
+
+#(doc) Encounters, procedures and claims with the identifiers billing needs, for billing and claims staff, limited to the caller's organizations. No observations, care plans or medications.
+#(authorize) 'billing' in $ROLES
+#(access_filter) ORGANIZATION in $ORGANIZATIONS
+#(carries) ["phi.direct_identifier", "phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
+source: billing is encounters_core extend {
+  #(doc) The encounter's identifier, the claim's reference.
+  #(classification) "phi.direct_identifier"
+  dimension: encounter_id is Id
+  join_one: patient is patients_core on PATIENT = patient.Id
+  join_one: organization is organizations_core on ORGANIZATION = organization.Id
+  join_one: payer is payers_core on PAYER = payer.Id
+  join_many: procedures is procedures_core on Id = procedures.ENCOUNTER
+}
+
+#(doc) A limited data set for quality and population health analysts: encounters, diagnoses and costs with dates, city, ZIP and age, and no direct identifier.
+#(authorize) 'quality' in $ROLES
+#(carries) ["phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
+source: population_health is encounters_core extend {
+  // SEEDED VIOLATION (LDS-01, CL-02): the encounter's identifier, a unique
+  // record number, served on a limited data set and declared `none`. The
+  // declaration is wrong, and nothing the server checks can know that.
+  #(doc) A reference for the visit.
+  #(classification) "none"
+  dimension: visit_ref is Id
+  join_one: patient is patients_lds on PATIENT = patient.Id
+  join_one: organization is organizations_core on ORGANIZATION = organization.Id
+  join_many: conditions is conditions_core on Id = conditions.ENCOUNTER
+}
+
+#(doc) The same limited data set for an external partner, admitted only under an executed data use agreement.
+#(authorize) 'partner' in $ROLES and 'dua-signed' in $ATTRIBUTES
+source: partner_lds is population_health extend {}
+
+#(doc) De-identified encounters for IRB-approved researchers: years, state, three-digit ZIP and capped ages only, no identifier and no free text.
+#(authorize) 'researcher' in $ROLES
+#(carries) ["phi.quasi_identifier", "phi.clinical", "phi.financial", "none"]
+source: research is encounters_deid extend {
+  join_one: patient is patients_deid on PATIENT = patient.Id
+  join_many: conditions is conditions_deid on Id = conditions.ENCOUNTER
+}

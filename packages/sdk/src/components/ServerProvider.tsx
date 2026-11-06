@@ -22,8 +22,10 @@ import {
    ModelsApi,
    NotebooksApi,
    PackagesApi,
+   AgentsApi,
    PublisherApi,
    ReportsApi,
+   VersionsApi,
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
@@ -32,6 +34,9 @@ import { ThemeProvider } from "../theme/ThemeContext";
 import type { ReportUiOverrides } from "../theme/ui";
 import type { Theme, ThemeMode } from "../theme/types";
 import { globalQueryClient } from "../utils/queryClient";
+import { modelPageState, type ModelPage } from "./modelPage";
+
+export type { ModelPage };
 
 const THEME_MODE_STORAGE_KEY = "publisher:themeMode";
 
@@ -79,6 +84,10 @@ export interface ServerContextValue {
    apiClients: ApiClients;
    /** `undefined` while `/status` loads (or failed) and the host passed no `mutable`. */
    mutable: boolean | undefined;
+   /**
+    * `/status` has neither answered nor failed yet, including while a retry is
+    * paused (offline, or a hidden tab).
+    */
    isLoadingStatus: boolean;
    /**
     * Instance-wide default theme, pulled from the `/api/v0/status` response.
@@ -86,6 +95,15 @@ export interface ServerContextValue {
     * theme in `publisher.config.json`.
     */
    instanceTheme?: Theme;
+   /**
+    * Which page `Model` shows, the server's `PUBLISHER_MODEL_PAGE` from
+    * `/status`: `explorer`, the Malloy Explorer, unless the server says
+    * `viewer`, and `viewer` when `/status` could not be read (see
+    * `modelPageOf`). `explorer` while `/status` loads and from a server
+    * that predates the setting, so wait on `isLoadingStatus` before showing
+    * anything the Explorer would replace.
+    */
+   modelPage: ModelPage;
 }
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
@@ -153,6 +171,7 @@ const getApiClients = (
       publisher: new PublisherApi(config, basePath, axiosInstance),
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
+      agents: new AgentsApi(config, basePath, axiosInstance),
       dashboards: new DashboardsApi(config, basePath, axiosInstance),
       dataApps: new DataAppsApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
@@ -165,6 +184,7 @@ const getApiClients = (
          axiosInstance,
       ),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
+      versions: new VersionsApi(config, basePath, axiosInstance),
    };
 };
 
@@ -201,14 +221,21 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
 
    // Fetch /status via react-query so callers like the Theme Editor can
    // invalidate the "status" key after a write and pick up the new
-   // instanceTheme without a full page reload.
+   // instanceTheme without a full page reload. Keyed by the server too: the
+   // query client is shared, and two providers on different servers must not
+   // read one server's model page, theme or frozen config.
    const statusQuery = useQuery({
-      queryKey: ["status"],
+      queryKey: ["status", server],
+      // Retried, unlike the client's other reads: the model page depends on
+      // the answer for the whole session, and one dropped request would
+      // otherwise settle it.
+      retry: 3,
       queryFn: async () => {
          const response = await apiClients.publisher.getStatus();
          return response.data as {
             frozenConfig?: boolean;
             theme?: Theme;
+            modelPage?: ModelPage;
          };
       },
    });
@@ -219,7 +246,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
 
    const frozenConfig = statusQuery.data?.frozenConfig;
    const instanceTheme = statusQuery.data?.theme;
-   const isLoadingStatus = statusQuery.isLoading;
+   const { modelPage, isLoadingStatus } = modelPageState(statusQuery);
 
    // Preserve original semantics: while loading or on error, mirror the
    // mutableProp the caller passed in (which itself may be undefined).
@@ -288,6 +315,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
       mutable,
       isLoadingStatus,
       instanceTheme,
+      modelPage,
    };
 
    return (

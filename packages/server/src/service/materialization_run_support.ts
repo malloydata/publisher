@@ -276,15 +276,11 @@ export function compilerMissingUpstream(
 /**
  * Derive {@link ChainedPlanFacts} from the compiled plan.
  *
- * Equivalent to `Runtime.getBuildTargets()`'s `target.sources`
- * (malloydata/malloy#3029); `computeSourceEntityId` is pinned equal to
- * `target.buildId` by `build_targets_address_equality.spec.ts`. Not built on
- * `getBuildTargets` because it renders every target's SQL unguarded, so one
- * unrenderable source (free parameter, given) fails the whole model, where
- * this skips just that source; nor can it take the `virtualMap` the chained
- * build's rebound parents need (see `buildDownstreamIntoStorage`). Moving to
- * it would retire `compilerKeyBySourceId` and `manifestForCompiler`, since
- * `target.buildId` is a single key.
+ * Each source is addressed by `computeSourceEntityId`, which
+ * `build_targets_address_equality.spec.ts` pins equal to `target.buildId` for
+ * an unpartitioned source. A `partition=` layout moves the address but not the
+ * key the compiler files the table under, so the compiler's key is kept beside
+ * it (`compilerKeyBySourceId`, read by `manifestForCompiler`).
  */
 export function chainedPlanFacts(
    sources: Record<string, PersistSource>,

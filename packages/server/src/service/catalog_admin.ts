@@ -16,6 +16,7 @@
  * owned by the role that owns the catalog and its grants keep applying.
  */
 
+import { settings } from "../settings";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
@@ -32,6 +33,7 @@ import {
    createIsolatedBuildSession,
    dropStorageTable,
 } from "./materialization_build_session";
+import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { quoteIdentifier } from "./quoting";
 import { withStatementUsage } from "./statement_usage";
@@ -83,15 +85,13 @@ export interface CatalogAdminConfig {
 }
 
 /**
- * Reads the listener's configuration. Null when no catalog database is set: the
- * routes then answer 503, so a listener started for nothing else still serves
- * its health endpoints. A storage setting that cannot be used throws, so a typo
- * fails startup.
+ * Reads the listener's configuration (the `admin.*` settings). Null when no
+ * catalog database is set: the routes then answer 503, so a listener started
+ * for nothing else still serves its health endpoints. A storage setting that
+ * cannot be used throws, so a typo fails startup.
  */
-export function catalogAdminConfigFromEnv(
-   env: NodeJS.ProcessEnv,
-): CatalogAdminConfig | null {
-   const catalogDatabase = env.PUBLISHER_ADMIN_CATALOG_DATABASE?.trim();
+export function catalogAdminConfig(): CatalogAdminConfig | null {
+   const catalogDatabase = settings.get("admin.catalogDatabase");
    if (!catalogDatabase) return null;
    // A session acts as each catalog's owner through libpq `options`, which would
    // silently replace options given here; refuse them rather than drop them.
@@ -100,12 +100,14 @@ export function catalogAdminConfigFromEnv(
          "PUBLISHER_ADMIN_CATALOG_DATABASE must not set `options`: the admin API sets the session role per catalog. Set server parameters on the role or database instead (ALTER ROLE … SET).",
       );
    }
-   const provider = env.PUBLISHER_ADMIN_STORAGE_PROVIDER?.trim() ?? "";
-   const keyId = env.PUBLISHER_ADMIN_STORAGE_KEY_ID;
-   const secret = env.PUBLISHER_ADMIN_STORAGE_SECRET;
+   const provider = settings.get("admin.storage.provider");
+   const keyId = settings.get("admin.storage.keyId");
+   const secret = settings.get("admin.storage.secret");
+   const region = settings.get("admin.storage.region");
+   const endpoint = settings.get("admin.storage.endpoint");
    let storage: CatalogAdminConfig["storage"];
    switch (provider) {
-      case "":
+      case undefined:
          storage = undefined;
          break;
       case "s3":
@@ -114,13 +116,22 @@ export function catalogAdminConfigFromEnv(
                "PUBLISHER_ADMIN_STORAGE_PROVIDER=s3 needs PUBLISHER_ADMIN_STORAGE_KEY_ID and PUBLISHER_ADMIN_STORAGE_SECRET.",
             );
          }
+         if (endpoint) {
+            try {
+               parseS3Endpoint(endpoint);
+            } catch (error) {
+               throw new Error(
+                  `PUBLISHER_ADMIN_STORAGE_ENDPOINT: ${(error as Error).message}`,
+               );
+            }
+         }
          storage = {
             s3Connection: {
                provider: "config",
                accessKeyId: keyId,
                secretAccessKey: secret,
-               region: env.PUBLISHER_ADMIN_STORAGE_REGION,
-               endpoint: env.PUBLISHER_ADMIN_STORAGE_ENDPOINT,
+               region,
+               endpoint,
             },
          };
          break;
@@ -128,7 +139,7 @@ export function catalogAdminConfigFromEnv(
          storage = {
             s3Connection: {
                provider: "credential_chain",
-               region: env.PUBLISHER_ADMIN_STORAGE_REGION,
+               region,
             },
          };
          break;
@@ -140,10 +151,6 @@ export function catalogAdminConfigFromEnv(
          }
          storage = { gcsConnection: { keyId, secret } };
          break;
-      default:
-         throw new Error(
-            `PUBLISHER_ADMIN_STORAGE_PROVIDER must be s3, s3_credential_chain or gcs, got '${provider}'.`,
-         );
    }
    return { catalogDatabase, storage };
 }
@@ -879,8 +886,10 @@ export class CatalogAdmin {
       if (/must sit under the catalog's data path/.test(safe)) {
          return new CatalogAdminError(400, "OBJECT_OUTSIDE_DATA_PATH", safe);
       }
-      // A request the load path refused (a reader option it cannot use):
-      // a 400 with a reason, like every other admin refusal.
+      // A request the load path refused -- a reader option it cannot use, or a
+      // file the reader refused (not the format it claims, a value it cannot
+      // convert; storage_table_load.ts's readerRefusal): a 400 with a reason,
+      // like every other admin refusal.
       if (error instanceof BadRequestError) {
          return new CatalogAdminError(400, "INVALID_REQUEST", safe);
       }

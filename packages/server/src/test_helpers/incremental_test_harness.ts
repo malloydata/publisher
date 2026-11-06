@@ -13,7 +13,7 @@ import {
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
-import type { BuildPlanPackage } from "../service/build_plan";
+import { plannedSources, type BuildPlanPackage } from "../service/build_plan";
 
 /**
  * Shared real-compile harness for the incremental specs (declaration,
@@ -84,10 +84,12 @@ export async function compilePersistSources(
    sources: Record<string, PersistSource>;
    materializer: ModelMaterializer;
 }> {
-   const materializer = loadTestModel(connections, model);
+   const { runtime, materializer } = loadTestRuntime(connections, model);
    const compiled = await materializer.getModel();
    const sources: Record<string, PersistSource> = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
+   for (const source of plannedSources(
+      await runtime.getBuildTargets(compiled),
+   )) {
       sources[source.name] = source;
    }
    return { sources, materializer };

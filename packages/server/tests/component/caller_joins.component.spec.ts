@@ -6,6 +6,7 @@
 // grafted into the caller join's ON, and a source off the query boundary is
 // unreachable. Author (model-declared) joins keep the entry-point-only rule.
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection, GivenValue } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -23,6 +24,7 @@ let removePkgDir: () => void;
 let duck: DuckDBConnection;
 
 const MODEL = `##! experimental { givens composite_sources }
+#(secure)
 given:
   GROUPS :: string[]
 
@@ -124,6 +126,7 @@ async function run(
    bypassAuthorize = false,
 ): Promise<{ rows: Record<string, unknown>[]; sql: string }> {
    const { compactResult, result } = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -927,6 +930,7 @@ describe("author joins", () => {
       await fs.writeFile(
          path.join(PKG_DIR, "base.malloy"),
          `##! experimental { givens }
+#(secure)
 given:
   GROUPS :: string[]
 

@@ -2,7 +2,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Set the top-level "version" field of one or more package.json files.
+// Set the top-level "version" field of one or more package.json files, and
+// the [project] version of a pyproject.toml (the Python SDK, which releases in
+// lockstep with sdk/app/server).
 //
 //   node scripts/set-version.mjs <version> <file>...
 //
@@ -53,6 +55,50 @@ const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/;
 // parsing is what loses the formatting.
 const FIELD = /("version"\s*:\s*")[^"]*(")/;
 
+// pyproject.toml: PEP 621 puts the version in the [project] table, so the key
+// is found inside that table and nowhere else. No TOML parser ships with Node,
+// and parsing would lose the formatting anyway, so this walks lines: the
+// table runs from its `[project]` header to the next header line, and inside
+// it the version is the one `version = "..."` line. A file where that
+// cannot be found is refused rather than guessed at, the same as a
+// package.json with no version field.
+const TABLE_HEADER = /^\s*\[\[?[^\]]+\]\]?\s*(#.*)?$/;
+const PROJECT_HEADER = /^\s*\[project\]\s*(#.*)?$/;
+const TOML_VERSION = /^(\s*version\s*=\s*")([^"\r\n]*)("[^\r\n]*\r?)$/;
+
+/** The [project] version line's index and current value, or null. */
+function projectVersionLine(lines) {
+  const start = lines.findIndex((line) => PROJECT_HEADER.test(line));
+  if (start === -1) return null;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (TABLE_HEADER.test(lines[i])) return null;
+    const m = TOML_VERSION.exec(lines[i]);
+    if (m) return { index: i, value: m[2] };
+  }
+  return null;
+}
+
+function setToml(file, before) {
+  // Split on "\n" and join with it, so CRLF and the trailing newline survive
+  // as they are: a `\r` stays at the end of its line, outside the match.
+  const lines = before.split("\n");
+  const found = projectVersionLine(lines);
+  if (!found) {
+    fail(`${file} has no version = "..." line in its [project] table to set`);
+  }
+  lines[found.index] = lines[found.index].replace(
+    TOML_VERSION,
+    `$1${version}$3`,
+  );
+  const after = lines.join("\n");
+  // The JSON branch re-parses to confirm; this re-reads the same way it read.
+  const check = projectVersionLine(after.split("\n"));
+  if (!check || check.value !== version) {
+    fail(`${file} does not declare version "${version}" in [project] after the replace`);
+  }
+  return after;
+}
+
 function fail(message) {
   console.error(`set-version: ${message}`);
   process.exit(1);
@@ -77,6 +123,19 @@ for (const file of files) {
     before = readFileSync(file, "utf8");
   } catch (error) {
     fail(`could not read ${file}: ${error.message}`);
+  }
+
+  if (file.endsWith(".toml")) {
+    const after = setToml(file, before);
+    if (after !== before) {
+      try {
+        writeFileSync(file, after);
+      } catch (error) {
+        fail(`could not write ${file}: ${error.message}`);
+      }
+      changed++;
+    }
+    continue;
   }
 
   if (!FIELD.test(before)) {

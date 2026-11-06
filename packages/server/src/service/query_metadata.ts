@@ -208,11 +208,8 @@ export interface QueryContext {
    environment?: string;
    package?: string;
    /**
-    * Published version id, when the query runs against a versioned package.
-    *
-    * Not yet reachable: the only supplier is a query request's `versionId`,
-    * which the route rejects with 501. It keeps its slot in
-    * {@link CONTEXT_SHED_ORDER}.
+    * Published version id, when the query runs against a versioned package:
+    * the version of the package that ran it (see QueryController).
     */
    version?: string;
    /** Package-relative model path, for query paths. */

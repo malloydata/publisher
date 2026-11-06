@@ -1,18 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isUnconditionalDenyAuthorize } from "../../service/entities/access_gates";
 import path from "path";
 import { fileURLToPath } from "url";
-import lunr from "lunr";
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import { referencedGivenNames } from "../../service/authorize";
+import { splitSourceId } from "../../service/source_id";
+import {
+   findIrSource,
+   isClassificationLine,
+   readClassification,
+   readSourceClassifications,
+   type FieldClassification,
+} from "../../service/classification";
 import { logger } from "../../logger";
 import { entityRowKey, KEY_SEPARATOR } from "./embedding_index";
-import type { PipelineSettings } from "./get_context_pipeline";
-import { compareText } from "./retrieval_shared";
+import { compareText } from "../../compare_text";
 import type {
    Entity,
    JoinReach,
@@ -32,43 +40,140 @@ import type {
 export const SOURCE_DOC_MAX_CHARS = 500;
 export const JOIN_DOC_MAX_CHARS = 200;
 
-function truncateDoc(doc: string, max: number): string {
+export function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
    const cut = doc.slice(0, max);
    const lastSpace = cut.lastIndexOf(" ");
    return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
-/**
- * Extract ONLY `#(doc)` annotation text, empty when there is none. The safe
- * input for embedding: unlike docText it never falls back to raw annotation
- * lines, so `#(access_filter)` rules, tenant lists and `#(malloy)` internals
- * never reach an external embedding provider.
- */
-export function docOnlyText(
-   annotations?: Array<string | { value: string }>,
-): string {
-   if (!annotations || annotations.length === 0) return "";
-   const docs = annotations
-      .map((a) => (typeof a === "string" ? a : a.value))
-      .map((a) => a.match(/#\(doc\)\s*(.*)/)?.[1]?.trim() ?? "")
-      .filter(Boolean);
-   return docs.join(" ").replace(/\s+/g, " ").trim();
+type AnnotationLines = Array<string | { value: string }>;
+
+const AUTHORED_DOC_LINES = [/^\s*#\(doc\)\s*(.*)/, /^\s*#"\s*(.*)/];
+
+function linesOf(annotations?: AnnotationLines): string[] {
+   return (annotations ?? []).map((a) => (typeof a === "string" ? a : a.value));
+}
+
+function oneLine(text: string): string {
+   return text.replace(/\s+/g, " ").trim();
+}
+
+/** `#(doc)` text, else `#"` doc string text, empty when there is neither. */
+function authoredDoc(lines: string[]): string {
+   for (const pattern of AUTHORED_DOC_LINES) {
+      const text = lines
+         .map((line) => line.match(pattern)?.[1]?.trim() ?? "")
+         .filter(Boolean)
+         .join(" ");
+      if (text) return text;
+   }
+   return "";
+}
+
+function dbmetaDescription(lines: string[]): string {
+   for (const line of lines) {
+      if (!/^#\(dbmeta\)\s/.test(line)) continue;
+      const { tag, log } = parseAnnotation(line);
+      if (log.length > 0) continue;
+      const description = tag.text("description")?.trim();
+      if (description) return description;
+   }
+   return "";
 }
 
 /**
- * Human-facing doc text for the response `doc` field: `#(doc)` text, falling
- * back to the raw annotation lines. Never embedding input (see docOnlyText).
+ * The doc text of one entity and where it came from: the authored doc in
+ * `annotations`, else the `#(dbmeta)` description in `dbmetaFrom`.
+ */
+function docParts(
+   annotations?: AnnotationLines,
+   dbmetaFrom: AnnotationLines | undefined = annotations,
+): { text: string; fromDbmeta: boolean } {
+   const authored = oneLine(authoredDoc(linesOf(annotations)));
+   if (authored) return { text: authored, fromDbmeta: false };
+   const description = oneLine(dbmetaDescription(linesOf(dbmetaFrom)));
+   return { text: description, fromDbmeta: description !== "" };
+}
+
+/**
+ * Extract ONLY doc text: `#(doc)`, else a `#"` doc string, else the
+ * `#(dbmeta)` description, empty when there is none. The safe input for
+ * embedding: unlike docText it never falls back to raw annotation lines, so
+ * `#(access_filter)` rules, tenant lists and `#(malloy)` internals never reach
+ * an external embedding provider.
+ */
+export function docOnlyText(annotations?: AnnotationLines): string {
+   return docParts(annotations).text;
+}
+
+/**
+ * Human-facing doc text for the response `doc` field: docOnlyText's text,
+ * falling back to the raw annotation lines. Never embedding input (see
+ * docOnlyText).
  * Accepts Annotation objects (sources, fields) and raw strings (queries).
  */
-export function docText(
+export function docText(annotations?: AnnotationLines): string {
+   return docOnlyText(annotations) || rawDoc(annotations);
+}
+
+/**
+ * Every annotation line on one line, the fallback when there is no doc text.
+ * A `#(classification)` note has its own card field, so it is not doc text.
+ */
+function rawDoc(annotations?: AnnotationLines): string {
+   return oneLine(
+      linesOf(annotations)
+         .filter((line) => !isClassificationLine(line))
+         .join(" "),
+   );
+}
+
+/**
+ * An entity's `doc`, `embedDoc` and `docSource`, read from `annotations`, with
+ * the `#(dbmeta)` fallback read from `dbmetaFrom`.
+ */
+export function entityDocs(
+   annotations?: AnnotationLines,
+   dbmetaFrom: AnnotationLines | undefined = annotations,
+): Pick<Entity, "doc" | "embedDoc" | "docSource"> {
+   const { text, fromDbmeta } = docParts(annotations, dbmetaFrom);
+   return {
+      doc: text || rawDoc(annotations),
+      embedDoc: text,
+      ...(fromDbmeta ? { docSource: "dbmeta" as const } : {}),
+   };
+}
+
+/**
+ * The classification an entity reports: the lineage's answer for the field's
+ * path when the compiled model is at hand (declared, or inferred from the
+ * fields it reads, with those inputs), else the field's own annotation.
+ */
+function classificationOf(
+   lineage: Map<string, FieldClassification> | undefined,
+   path: string,
    annotations?: Array<string | { value: string }>,
-): string {
-   const doc = docOnlyText(annotations);
-   if (doc) return doc;
-   if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
-   return lines.join(" ").replace(/\s+/g, " ").trim();
+): Pick<
+   Entity,
+   "classifications" | "classificationInferred" | "classificationInputs"
+> {
+   const known = lineage?.get(path);
+   if (known) {
+      return {
+         ...(known.classifications.length > 0
+            ? { classifications: known.classifications }
+            : {}),
+         ...(known.inferred.length > 0
+            ? { classificationInferred: true as const }
+            : {}),
+         ...(known.inputs.length > 0
+            ? { classificationInputs: known.inputs }
+            : {}),
+      };
+   }
+   const { values } = readClassification(annotations);
+   return values.length > 0 ? { classifications: values } : {};
 }
 
 /**
@@ -321,11 +426,7 @@ interface CompiledJoin {
 function joinTargetSource(
    join: CompiledJoin,
 ): { source: string; url: string } | undefined {
-   const id = join.sourceID ?? join.referenceID;
-   if (typeof id !== "string") return undefined;
-   // Greedy, so a name containing "@" still splits at the URL's own "@".
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
-   return match ? { source: match[1], url: match[2] } : undefined;
+   return splitSourceId(join.sourceID ?? join.referenceID);
 }
 
 /**
@@ -433,6 +534,8 @@ function collectJoinedFields(args: {
    depth: number;
    nextId: () => string;
    out: Entity[];
+   /** The entry source's lineage, keyed by dotted path; absent for a stand-in. */
+   lineage?: Map<string, FieldClassification>;
 }): void {
    const {
       fields,
@@ -443,6 +546,7 @@ function collectJoinedFields(args: {
       depth,
       nextId,
       out,
+      lineage,
    } = args;
    for (const field of fields) {
       if (field.kind === "join") {
@@ -463,8 +567,12 @@ function collectJoinedFields(args: {
          // The source that DECLARES the traversal, the card a caller queries.
          source: sourceName,
          modelPath,
-         doc: docText(field.annotations),
-         embedDoc: docOnlyText(field.annotations),
+         ...entityDocs(field.annotations),
+         ...classificationOf(
+            lineage,
+            `${joinPath}.${field.name}`,
+            field.annotations,
+         ),
          joinPath,
          relationship: fanout,
          ...(field.kind === "measure" || field.kind === "dimension"
@@ -472,24 +580,6 @@ function collectJoinedFields(args: {
             : {}),
       });
    }
-}
-
-/**
- * Whether `apiSource` is denied unconditionally: a bare `false` conjunct on
- * EITHER route (the routes AND together) denies every caller whatever givens
- * are supplied. The filter route can carry one as the fail-closed placeholder
- * for an unattributable gate, so this keys on the deny, not the route.
- * Case-insensitive, because the wire payload can carry `FALSE` uppercase.
- */
-function isUnconditionalDenyAuthorize(apiSource: {
-   accessFilter?: string[];
-   authorize?: string[];
-}): boolean {
-   const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
-   return (
-      (apiSource.accessFilter ?? []).some(isDeny) ||
-      (apiSource.authorize ?? []).some(isDeny)
-   );
 }
 
 /**
@@ -514,6 +604,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    const droppedSources = new Set<string>();
    // Which sources each source reaches by joins; see buildJoinReaches.
    const topology = new Map<string, JoinReach[]>();
+   const sourceLines = new Map<string, string[]>();
+   const joinLines = new Map<Entity, string[]>();
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
@@ -545,6 +637,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // untrusted here and evaluating a real rule would be forgeable (see
          // execute_query_tool.ts).
          const governanceKey = sourceContextKey(modelPath, sourceName);
+         sourceLines.set(governanceKey, linesOf(sourceInfo.annotations));
          if (droppedSources.has(governanceKey)) {
             continue;
          }
@@ -553,6 +646,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             sourceName,
             sourceTextFor,
          );
+         // What each reachable field is, declared or by lineage. Absent for a
+         // stand-in with no compiled model; fields then report their own note.
+         const ir = modelDef ? findIrSource(modelDef, sourceName) : undefined;
+         const lineage = modelDef
+            ? readSourceClassifications(ir?.fields, ir?.query)
+            : undefined;
          // Keyed per (model path, source) like the card, so a card never shows
          // another file's givens or gates.
          if (!governance.has(governanceKey)) {
@@ -604,16 +703,18 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          }
          // The source's own doc, not an inherited one (see readSourceOwnDoc),
          // falling back to the flattened annotations with no compiled model.
+         // Undocumented, it takes its table's `#(dbmeta)` description.
          const ownDoc = readSourceOwnDoc(modelDef, sourceName);
-         const sourceAnnotations = ownDoc ?? sourceInfo.annotations;
          entities.push({
             id: String(n++),
             kind: "source",
             name: sourceName,
             source: sourceName,
             modelPath,
-            doc: docText(sourceAnnotations),
-            embedDoc: docOnlyText(sourceAnnotations),
+            ...entityDocs(
+               ownDoc ?? sourceInfo.annotations,
+               sourceInfo.annotations,
+            ),
          });
          if (!topology.has(governanceKey)) {
             const reaches: JoinReach[] = [];
@@ -632,7 +733,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             // `calculate` (window) fields are not referenceable outside their
             // view, so they stay unindexed.
             if (field.kind === "join") {
-               entities.push({
+               const join: Entity = {
                   id: String(n++),
                   kind: "join",
                   name: field.name,
@@ -640,11 +741,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   // sees the join.
                   source: sourceName,
                   modelPath,
-                  doc: docText(field.annotations),
-                  embedDoc: docOnlyText(field.annotations),
+                  ...entityDocs(field.annotations),
                   relationship: field.relationship,
                   ...joinTargetOf(topology.get(governanceKey), field.name),
-               });
+               };
+               entities.push(join);
+               joinLines.set(join, linesOf(field.annotations));
                // The join entity says a relationship exists; the fields below
                // say what it reaches and under what path.
                collectJoinedFields({
@@ -656,6 +758,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   depth: 1,
                   nextId: () => String(n++),
                   out: entities,
+                  lineage,
                });
                continue;
             }
@@ -675,11 +778,17 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                name: field.name,
                source: sourceName,
                modelPath,
-               doc: docText(field.annotations),
-               embedDoc: docOnlyText(field.annotations),
+               ...entityDocs(field.annotations),
                ...(field.kind === "view"
                   ? {}
-                  : { dataType: malloyType(field) }),
+                  : {
+                       dataType: malloyType(field),
+                       ...classificationOf(
+                          lineage,
+                          field.name,
+                          field.annotations,
+                       ),
+                    }),
                ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
                ...(!isView && fieldProvenance?.aliasOf
                   ? { aliasOf: fieldProvenance.aliasOf }
@@ -707,8 +816,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             name: query.name,
             source: query.sourceName,
             modelPath,
-            doc: docText(query.annotations),
-            embedDoc: docOnlyText(query.annotations),
+            ...entityDocs(query.annotations),
          });
       }
    }
@@ -722,6 +830,33 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
+   // Nothing a deny-all source documents reaches a prompt through a join to
+   // it. A join that documents nothing carries its target's notes, so the join
+   // keeps only lines its target does not have (none, when the target's are
+   // unknown), and every field reached through it loses its doc. After the
+   // full walk, since a join can name a source from a later file.
+   for (const e of deduped) {
+      const path =
+         e.kind === "join" ? [e.name] : (e.joinPath?.split(".") ?? []);
+      if (path.length === 0) continue;
+      const locked = lockedReach(
+         topology.get(sourceContextKey(e.modelPath, e.source ?? "")),
+         path,
+         droppedSources,
+      );
+      if (!locked) continue;
+      const targetLines = sourceLines.get(
+         sourceContextKey(locked.targetModelPath, locked.targetSource),
+      );
+      const ownLines =
+         e.kind === "join" && locked.path.length === path.length && targetLines
+            ? (joinLines.get(e) ?? []).filter(
+                 (line) => !targetLines.includes(line),
+              )
+            : [];
+      delete e.docSource;
+      Object.assign(e, entityDocs(ownLines, []));
+   }
    // A join whose target is not indexed (deny-all, or not exported) keeps
    // its alias but drops the target's real name, which would otherwise reach
    // the LLM prompts. After the full walk, since a join can name a source
@@ -770,6 +905,24 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ),
       ),
    };
+}
+
+/** The first deny-all source on a join path, as the reach that leads to it. */
+function lockedReach(
+   reaches: readonly JoinReach[] | undefined,
+   path: readonly string[],
+   droppedSources: ReadonlySet<string>,
+): JoinReach | undefined {
+   return reaches
+      ?.filter(
+         (reach) =>
+            reach.path.length <= path.length &&
+            reach.path.every((alias, i) => path[i] === alias) &&
+            droppedSources.has(
+               sourceContextKey(reach.targetModelPath, reach.targetSource),
+            ),
+      )
+      .sort((a, b) => a.path.length - b.path.length)[0];
 }
 
 /** `{ joinTarget }` for the join `alias` declared by a source, or nothing when its target is unknown. */
@@ -910,6 +1063,21 @@ function collapseAliases(entities: Entity[]): Entity[] {
          if (donor) {
             keep.doc = donor.doc;
             keep.embedDoc = donor.embedDoc;
+            if (donor.docSource) keep.docSource = donor.docSource;
+         }
+      }
+      // A class belongs to the column, so a spelling's class is the group's:
+      // `state is st` classified and `raw_state is st` not are one column
+      // with one class, whichever spelling survives.
+      if (!keep.classifications) {
+         const donor = members.find((e) => e !== keep && e.classifications);
+         if (donor) {
+            keep.classifications = donor.classifications;
+            if (donor.classificationInferred)
+               keep.classificationInferred = true;
+            if (donor.classificationInputs) {
+               keep.classificationInputs = donor.classificationInputs;
+            }
          }
       }
       const folded = members.filter((e) => e !== keep);
@@ -949,11 +1117,13 @@ export function entityCardKey(e: {
 const ONE_LINE_SUMMARY_MAX_CHARS = 120;
 
 /**
- * A source's doc reduced to a catalog label: its first sentence or line,
- * capped. Undocumented sources get nothing rather than a fabricated summary.
+ * A doc reduced to a catalog label: its first sentence or line (blank lines
+ * before it skipped), capped. Used for a source's card and for a package in
+ * a get_context listing, so one text gets one summary. Undocumented sources
+ * get nothing rather than a fabricated summary.
  */
-function oneLineSummary(doc: string): string | undefined {
-   const firstLine = doc.split("\n")[0]?.trim();
+export function oneLineSummary(doc: string): string | undefined {
+   const firstLine = doc.trim().split("\n")[0]?.trim();
    if (!firstLine) return undefined;
    const sentenceEnd = firstLine.search(/[.!?](\s|$)/);
    const summary =
@@ -981,6 +1151,7 @@ function buildSourceContext(
          name: e.name,
          modelPath: e.modelPath,
          doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
+         ...(e.docSource ? { docSource: e.docSource } : {}),
          joins: [],
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
@@ -1010,21 +1181,6 @@ function buildSourceContext(
 // Per Package instance: a reload swaps in a new instance, so a stale entry
 // drops out of the WeakMap on its own.
 const indexCache = new WeakMap<Package, PackageIndex>();
-
-/**
- * The entities the semantic index embeds and searches. With joins made at
- * assembly that is the direct fields only: a joined copy would be embedded
- * again under a longer name and take a window slot from the field it copies.
- * The lexical path ranks `retrievalEntities` regardless.
- */
-export function embeddedEntitiesOf(
-   pkgIndex: PackageIndex,
-   settings: PipelineSettings,
-): readonly Entity[] {
-   return settings.joins === "assembly"
-      ? pkgIndex.directEntities
-      : pkgIndex.retrievalEntities;
-}
 
 /**
  * Every entity except a joined copy that assembly will rebuild from the
@@ -1063,7 +1219,7 @@ function directEntitiesOf(
    return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
 }
 
-/** Get, or lazily build and cache, the lunr entity index for a package. */
+/** Get, or lazily build and cache, the entity index for a package. */
 export async function getPackageIndex(
    environmentStore: EnvironmentStore,
    environmentName: string,
@@ -1088,20 +1244,6 @@ export async function packageIndexOf(
    const collected = await collectEntities(pkg);
    const { entities } = collected;
    const byId = new Map(entities.map((e) => [e.id, e]));
-   const index = lunr(function () {
-      this.ref("id");
-      this.field("name", { boost: 4 });
-      this.field("source");
-      this.field("doc");
-      for (const e of entities) {
-         this.add({
-            id: e.id,
-            name: e.name,
-            source: e.source ?? "",
-            doc: e.doc,
-         });
-      }
-   });
    const retrievalEntities = Object.freeze(Array.from(byId.values()));
    const built: PackageIndex = {
       pkg,
@@ -1113,7 +1255,6 @@ export async function packageIndexOf(
          collected.aliasedAway,
       ),
       topology: collected.topology,
-      index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
       droppedSources: collected.droppedSources,

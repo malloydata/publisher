@@ -27,6 +27,7 @@ import type { ReactNode } from "react";
 import {
    clearCache,
    mockServerProvider,
+   noVersions,
    pending,
    serverWrapper,
 } from "../../../test/serverProvider";
@@ -46,6 +47,7 @@ import { DocumentStorageProvider } from "./DocumentStorageProvider";
 
 mockServerProvider(
    {
+      versions: noVersions,
       packages: { getPackage: pending },
       reports: {
          listReports: () => Promise.resolve({ data: [] }),

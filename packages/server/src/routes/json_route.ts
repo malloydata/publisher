@@ -5,19 +5,10 @@ import type express from "express";
 import {
    internalErrorToHttpError,
    logInternalFailure,
-   NotImplementedError,
    WriteRollbackFailedError,
    WriteRolledBackError,
 } from "../errors";
 import { logger } from "../logger";
-
-/** Answer a request that names a version, which this server does not keep. */
-export function setVersionIdError(res: express.Response): void {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-}
 
 type RouteHandler = (
    req: express.Request,
@@ -62,16 +53,13 @@ export function logRefusal(
       });
 }
 
-/** {@link apiRoute} for a route that refuses a `versionId` query (501). */
+/**
+ * {@link apiRoute} for a read route. Its handler reads `versionId` itself
+ * (omitted, empty or `latest` means the package's `latest`), so a version a
+ * request names is never ignored.
+ */
 export function jsonRoute(handler: RouteHandler): express.RequestHandler {
-   const route = apiRoute(handler);
-   return (req, res, next) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      return route(req, res, next);
-   };
+   return apiRoute(handler);
 }
 
 /**
@@ -115,6 +103,22 @@ export function unhandledErrorMiddleware(
    _next: express.NextFunction,
 ): void {
    sendRouteError(res, err, logRefusal(req, err));
+}
+
+/**
+ * A route-level handler for a query route: records what its concurrency gate
+ * refused before any controller ran, then hands the error on to be answered.
+ */
+export function recordGateRefusal(
+   record: (req: express.Request, error: Error) => Promise<void>,
+): express.ErrorRequestHandler {
+   return (error, req, _res, next) => {
+      // Answered whether or not the record was written, so a refusal never hangs.
+      void record(req, error).then(
+         () => next(error),
+         () => next(error),
+      );
+   };
 }
 
 /** Express's wildcard match, the rest of the path after the route's prefix. */

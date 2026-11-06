@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
@@ -32,6 +33,7 @@ const PUBLISHER_JSON = JSON.stringify({
 // is locked by a ROW-FIELD condition (`org_id`), not just a given.
 const MODEL = `##! experimental { givens composite_sources }
 
+#(secure)
 given:
   ROLE :: string
   GROUPS :: number[]
@@ -309,6 +311,7 @@ describe("compile-path authorize gate (compileSource)", () => {
             await env.getPackage("pkg")
          ).getCompileAuthorizationModel("model.malloy");
          const { compactResult, result } = await model!.getQueryResults(
+            unrecordedAudit(),
             undefined,
             undefined,
             text,
@@ -977,6 +980,7 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
       const run = (query: string, groups: number[]) =>
          model
             ?.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                query,
@@ -1075,6 +1079,7 @@ export { customers }`,
          pkg
             .getModel("index.malloy")!
             .getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: helper -> { aggregate: hc }",
@@ -1109,6 +1114,7 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
             path.join(stagingPath, "secret.malloy"),
             `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 

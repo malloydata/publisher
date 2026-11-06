@@ -81,6 +81,11 @@ export function emptyRepository(
       }),
       listConnections: async () => [],
       listStorageDestinations: async () => [],
+      // The version registry: no package here has published versions.
+      listVersions: async () => [],
+      listVersionsByEnvironment: async () => [],
+      hasVersions: async () => false,
+      getVersion: async () => null,
       ...overrides,
    };
 }

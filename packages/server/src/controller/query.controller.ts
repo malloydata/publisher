@@ -7,6 +7,13 @@ import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
 import {
+   type AccessIdentity,
+   type AccessRecordBase,
+   type QueryAudit,
+   recordRefusal,
+   withAccessRecord,
+} from "../service/access_record";
+import {
    buildQueryMetadataInput,
    parseQueryClass,
    parseSuppliedQueryMetadata,
@@ -21,6 +28,26 @@ import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
+function accessBase(
+   environmentName: string,
+   packageName: string,
+   modelPath: string,
+   sourceName: string | undefined,
+   queryName: string | undefined,
+   query: string | undefined,
+   identity: AccessIdentity,
+): AccessRecordBase {
+   return {
+      environment: environmentName,
+      package: packageName,
+      modelPath,
+      ...(queryName ? { queryName } : {}),
+      ...(sourceName ? { requestedSource: sourceName } : {}),
+      adHoc: Boolean(query),
+      ...identity,
+   };
+}
+
 export class QueryController {
    private environmentStore: EnvironmentStore;
 
@@ -28,7 +55,91 @@ export class QueryController {
       this.environmentStore = environmentStore;
    }
 
+   /**
+    * Answer a query and emit its access record (`access_record.ts`), on
+    * success and on refusal alike. `identity` is what only the HTTP boundary
+    * knows: the caller from the deployment's header and the trace id.
+    */
    public async getQuery(
+      environmentName: string,
+      packageName: string,
+      modelPath: string,
+      sourceName: string,
+      queryName: string,
+      query: string,
+      compactJson: boolean = false,
+      filterParams: FilterParams | undefined,
+      bypassFilters: boolean | undefined,
+      givens: Record<string, GivenValue> | undefined,
+      metadata:
+         | {
+              queryMetadata?: unknown;
+              queryClass?: unknown;
+              versionId?: unknown;
+           }
+         | undefined,
+      bypassAuthorize: boolean | undefined,
+      includeHiddenFilesAndSources: boolean | undefined,
+      clientSignal: AbortSignal | undefined,
+      identity: AccessIdentity,
+   ): Promise<ApiQuery> {
+      return withAccessRecord(
+         accessBase(
+            environmentName,
+            packageName,
+            modelPath,
+            sourceName,
+            queryName,
+            query,
+            identity,
+         ),
+         clientSignal,
+         (audit) =>
+            this.runQuery(
+               audit,
+               environmentName,
+               packageName,
+               modelPath,
+               sourceName,
+               queryName,
+               query,
+               compactJson,
+               filterParams,
+               bypassFilters,
+               givens,
+               metadata,
+               bypassAuthorize,
+               includeHiddenFilesAndSources,
+               clientSignal,
+            ),
+      );
+   }
+
+   /** Record a request a route refused before {@link getQuery} was called, so it is not the one request without a record. */
+   public recordRefusal(
+      environmentName: string,
+      packageName: string,
+      modelPath: string,
+      body: { sourceName?: string; queryName?: string; query?: string },
+      identity: AccessIdentity,
+      error: Error,
+   ): Promise<void> {
+      return recordRefusal(
+         accessBase(
+            environmentName,
+            packageName,
+            modelPath,
+            body.sourceName,
+            body.queryName,
+            body.query,
+            identity,
+         ),
+         error,
+      );
+   }
+
+   private async runQuery(
+      audit: QueryAudit,
       environmentName: string,
       packageName: string,
       modelPath: string,
@@ -43,7 +154,7 @@ export class QueryController {
       metadata?: {
          queryMetadata?: unknown;
          queryClass?: unknown;
-         versionId?: string;
+         versionId?: unknown;
       },
       /**
        * Skip `#(authorize)` gates for this request. Set from the
@@ -73,7 +184,11 @@ export class QueryController {
       // through a query. Loaded packages bypass the package-load admission
       // gate, so this is the only guard for query traffic on a hot pod.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: metadata?.versionId,
+      });
+      const version = p.getVersionId();
+      if (version) audit.version = version;
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -93,6 +208,7 @@ export class QueryController {
          } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
+                  audit,
                   sourceName,
                   queryName,
                   query,
@@ -106,8 +222,10 @@ export class QueryController {
                      pkg: p,
                      request: requestMetadata,
                      queryClass,
-                     // Always undefined: the route 501s any versionId first.
-                     version: metadata?.versionId,
+                     // The version that answered (latest when none was
+                     // named), not the raw request value; undefined for a
+                     // package with no versions.
+                     version: p.getVersionId(),
                      noLayersLogMessage:
                         "No query-metadata layers for connection",
                   }),
@@ -124,7 +242,7 @@ export class QueryController {
             validateRenderTags(result),
             p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
-         return {
+         const api = {
             // Serialized by the model: re-stringifying here would copy the
             // payload, and an oversized one would surface as a bare 500 rather
             // than the byte cap's 413.
@@ -144,6 +262,7 @@ export class QueryController {
             executionTimeMs,
             queryCostBytes,
          } as ApiQuery;
+         return api;
       }
    }
 }

@@ -38,6 +38,15 @@ function parse(result: { content: Array<{ resource: { text: string } }> }) {
 // A store whose package reload returns `metadata`. `location` is left undefined
 // so PackageController takes the in-place-reload branch (no re-download). The
 // optional `calls` array records the `reload` flag of every getPackage call.
+// The reload receipt (`servedRevision`, `sourceContentSha`) is the package's
+// serving state, so the stub serves it from the same record.
+function operationalOf(metadata: Record<string, unknown>) {
+   return {
+      servedRevision: metadata.servedRevision,
+      sourceContentSha: metadata.sourceContentSha,
+   };
+}
+
 function storeReturning(
    metadata: Record<string, unknown>,
    calls?: boolean[],
@@ -45,9 +54,14 @@ function storeReturning(
    return {
       getEnvironment: async () =>
          ({
+            // No registry: this package has no published versions.
+            getVersionService: () => null,
             getPackage: async (_pkg: string, reload: boolean) => {
                calls?.push(reload);
-               return { getPackageMetadata: () => metadata } as never;
+               return {
+                  getPackageMetadata: () => metadata,
+                  getOperationalFields: () => operationalOf(metadata),
+               } as never;
             },
          }) as never,
    };
@@ -67,6 +81,7 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
       store: {
          getEnvironment: async () =>
             ({
+               getVersionService: () => null,
                getPackage: async () =>
                   ({
                      getPackageMetadata: () => ({
@@ -76,7 +91,10 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
                   }) as never,
                installPackage: async (pkg: string) => {
                   installCalls.push(pkg);
-                  return { getPackageMetadata: () => installed } as never;
+                  return {
+                     getPackageMetadata: () => installed,
+                     getOperationalFields: () => operationalOf(installed),
+                  } as never;
                },
             }) as never,
       },

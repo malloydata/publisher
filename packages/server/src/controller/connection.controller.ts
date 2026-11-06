@@ -27,12 +27,17 @@ import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
+import {
+   type AccessIdentity,
+   withAccessRecord,
+} from "../service/access_record";
 import { testConnectionConfig } from "../service/connection";
 import {
    toPublicConnection,
    toPublicConnections,
 } from "../service/connection_public_view";
 import { validateDuckdbApiSurface } from "../service/connection_config";
+import { assertSingleSelect } from "../service/single_select";
 import { ConnectionService } from "../service/connection_service";
 import {
    getSchemasForConnection,
@@ -293,6 +298,26 @@ export class ConnectionController {
    }
 
    /**
+    * A managed DuckLake connection (a platform database's connection view). A
+    * name the environment does not configure is not one; the lookup that
+    * follows answers it.
+    */
+   private isManagedConnection(
+      environment: Environment,
+      connectionName: string,
+   ): boolean {
+      try {
+         return (
+            this.getApiConnectionForLookup(environment, connectionName)
+               .managed === true
+         );
+      } catch (error) {
+         if (error instanceof ConnectionNotFoundError) return false;
+         throw error;
+      }
+   }
+
+   /**
     * A connection's default per-query metadata, or null when it declares none.
     * Fails open: metadata is observability, so a connection whose config can't be
     * read contributes no default rather than failing the query the caller asked
@@ -342,12 +367,14 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
+      versionId?: unknown,
    ): Promise<Connection> {
       try {
          return await this.lookupMalloyConnection(
             environmentName,
             connectionName,
             packageName,
+            versionId,
          );
       } catch (error) {
          if (error instanceof UnconfiguredConnectionError) {
@@ -363,6 +390,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
+      versionId?: unknown,
    ): Promise<Connection> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -384,7 +412,9 @@ export class ConnectionController {
                   `Package "${packageName}" not found in environment "${environmentName}"`,
                );
             }
-            const pkg = await environment.getPackage(packageName);
+            const pkg = await environment.getPackage(packageName, false, {
+               versionId,
+            });
             return await pkg.getMalloyConnection(connectionName);
          }
          if (packages.length === 0) {
@@ -411,6 +441,14 @@ export class ConnectionController {
                `/environments/${environmentName}/packages/{packageName}/connections/duckdb/...`,
          );
       } else {
+         // A package route that names a version is answered for that version even though the connection is the environment's: an
+         // unknown version is 404 and an archived one 410, as on every other
+         // package route.
+         if (packageName) {
+            await environment
+               .getVersionService()
+               ?.resolve(packageName, versionId);
+         }
          return await environment.getMalloyConnection(connectionName);
       }
    }
@@ -528,6 +566,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
+      versionId?: unknown,
    ): Promise<ApiSchema[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -541,6 +580,7 @@ export class ConnectionController {
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       return withDatabaseAccessClassified(() =>
@@ -556,6 +596,7 @@ export class ConnectionController {
       schemaName: string,
       tableNames?: string[],
       packageName?: string,
+      versionId?: unknown,
    ): Promise<ApiTable[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -569,6 +610,7 @@ export class ConnectionController {
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       return withDatabaseAccessClassified(() =>
@@ -586,11 +628,22 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
+      versionId?: unknown,
    ): Promise<ApiSqlSource> {
+      // A managed database runs one SELECT and nothing else (single_select.ts).
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      if (this.isManagedConnection(environment, connectionName)) {
+         await assertSingleSelect(connectionName, sqlStatement);
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
       try {
          const schema = await (
@@ -626,11 +679,13 @@ export class ConnectionController {
       schemaName: string,
       tablePath: string,
       packageName?: string,
+      versionId?: unknown,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -643,8 +698,11 @@ export class ConnectionController {
 
       if (connection.type === "ducklake") {
          if (tablePath.split(".").length === 1) {
-            // tablePath is just the table name, construct full path
-            tablePath = `${connectionName}.${schemaName}.${tablePath}`;
+            // db-publisher sends `tablePath.split('.')[0]` as the schema, so `table('t')` arrives as schema `t`.
+            tablePath =
+               schemaName === tablePath
+                  ? `${connectionName}.${tablePath}`
+                  : `${connectionName}.${schemaName}.${tablePath}`;
          } else if (
             tablePath.split(".").length === 2 &&
             !tablePath.startsWith(connectionName)
@@ -705,7 +763,44 @@ export class ConnectionController {
       return this.fetchTable(malloyConnection, tableKey, tablePath);
    }
 
+   /**
+    * Raw SQL against a connection: it serves with no gate, so its access record
+    * says `ungated` (docs/authorize.md: the deployment's gateway must block it).
+    */
    public async getConnectionQueryData(
+      environmentName: string,
+      connectionName: string,
+      sqlStatement: string,
+      options: string,
+      packageName: string | undefined,
+      metadata: { queryMetadata?: unknown; queryClass?: unknown } | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
+   ): Promise<ApiQueryData> {
+      return withAccessRecord(
+         {
+            environment: environmentName,
+            package: packageName ?? "",
+            connection: connectionName,
+            adHoc: true,
+            decision: "ungated",
+            ...identity,
+         },
+         undefined,
+         () =>
+            this.runConnectionQueryData(
+               environmentName,
+               connectionName,
+               sqlStatement,
+               options,
+               packageName,
+               metadata,
+               versionId,
+            ),
+      );
+   }
+
+   private async runConnectionQueryData(
       environmentName: string,
       connectionName: string,
       sqlStatement: string,
@@ -717,6 +812,7 @@ export class ConnectionController {
        * connector refuse the statement at dispatch.
        */
       metadata?: { queryMetadata?: unknown; queryClass?: unknown },
+      versionId?: unknown,
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
@@ -739,10 +835,16 @@ export class ConnectionController {
          await this.environmentStore.getEnvironment(environmentName, false);
       environmentForAdmission.assertCanAdmitQuery();
 
+      // A managed database runs one SELECT and nothing else (single_select.ts).
+      if (this.isManagedConnection(environmentForAdmission, connectionName)) {
+         await assertSingleSelect(connectionName, sqlStatement);
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       let runSQLOptions: RunSQLOptions = {};
@@ -886,11 +988,42 @@ export class ConnectionController {
       return { data: JSON.stringify(result), queryCorrelationId };
    }
 
+   /** Raw SQL like {@link getConnectionQueryData}, so it is recorded as ungated too. */
    public async getConnectionTemporaryTable(
       environmentName: string,
       connectionName: string,
       sqlStatement: string,
+      packageName: string | undefined,
+      versionId: unknown,
+      identity: AccessIdentity,
+   ): Promise<ApiTemporaryTable> {
+      return withAccessRecord(
+         {
+            environment: environmentName,
+            package: packageName ?? "",
+            connection: connectionName,
+            adHoc: true,
+            decision: "ungated",
+            ...identity,
+         },
+         undefined,
+         () =>
+            this.runConnectionTemporaryTable(
+               environmentName,
+               connectionName,
+               sqlStatement,
+               packageName,
+               versionId,
+            ),
+      );
+   }
+
+   private async runConnectionTemporaryTable(
+      environmentName: string,
+      connectionName: string,
+      sqlStatement: string,
       packageName?: string,
+      versionId?: unknown,
    ): Promise<ApiTemporaryTable> {
       // Re-validated for the same reason as in getConnectionQueryData.
       if (typeof sqlStatement !== "string") {
@@ -903,10 +1036,18 @@ export class ConnectionController {
          await this.environmentStore.getEnvironment(environmentName, false);
       environmentForAdmission.assertCanAdmitQuery();
 
+      // A CREATE is not a SELECT: refused on a managed database outright.
+      if (this.isManagedConnection(environmentForAdmission, connectionName)) {
+         throw new BadRequestError(
+            `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, so it cannot create a temporary table.`,
+         );
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       // `manifestTemporaryTable` takes no abortSignal, so the call is raced

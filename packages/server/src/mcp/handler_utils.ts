@@ -19,6 +19,7 @@ import {
    NotQueryableError,
    OffSurfaceError,
    PackageManifestError,
+   PackageVersionError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ResponseUnserializableError,
@@ -53,8 +54,8 @@ export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
  * Malloy advice; anything else is reported as internal.
  *
  * Routing is by class, not message: getMalloyErrorDetails's message patterns
- * do not all match what the shipped engine emits, so "did it refine?" would
- * send genuine compile errors to the internal branch.
+ * do not all match what the tools emit, so a pattern check would send
+ * genuine compile errors to the internal branch.
  *
  * @param operation The operation that failed (e.g. 'compile', 'reloadPackage').
  * @param identifier The resource it failed on (e.g. 'env/package').
@@ -72,6 +73,18 @@ export function classifyToolError(
          suggestions: [
             "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
             "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof PackageVersionError) {
+      // A package-version refusal (an unknown, archived or malformed version,
+      // or no `latest` yet). Not transient and not the model's fault; the
+      // message says which, and what to name instead.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient: retrying fails the same way until the package's versions change.",
+            "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it.",
          ],
       } satisfies ErrorDetails;
    }
@@ -220,7 +233,8 @@ export async function getModelForQuery(
    modelPath: string,
 ): Promise<
    | { model: Model; environment: Environment; pkg: Package }
-   | { error: ErrorDetails }
+   // `cause` is what the access record classifies; `error` is what the caller reads.
+   | { error: ErrorDetails; cause: unknown }
 > {
    try {
       const environment = await environmentStore.getEnvironment(
@@ -229,13 +243,17 @@ export async function getModelForQuery(
       );
       // Shed load before any disk / DB work, as the HTTP query controllers do.
       environment.assertCanAdmitQuery();
+      // The MCP tools serve the package's `latest`.
       const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
       if (!model || model.getType() === "notebook") {
          const details = getNotFoundError(
             `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
          );
-         return { error: details };
+         return {
+            error: details,
+            cause: new ModelNotFoundError(details.message),
+         };
       }
       // Surface a compilation error here rather than mid-query.
       await model.getModel();
@@ -251,6 +269,14 @@ export async function getModelForQuery(
       } else if (error instanceof PackageNotFoundError) {
          errorDetails = getNotFoundError(
             `package '${packageName}' in environment '${environmentName}'`,
+         );
+      } else if (error instanceof PackageVersionError) {
+         // A package with versions and no `latest` yet: its own message, not
+         // an internal error.
+         errorDetails = classifyToolError(
+            "executeQuery (load model)",
+            `package '${packageName}' in environment '${environmentName}'`,
+            error,
          );
       } else if (error instanceof ModelNotFoundError) {
          errorDetails = getNotFoundError(
@@ -282,7 +308,7 @@ export async function getModelForQuery(
          `[MCP Server Error] Error accessing package/model for query: ${environmentName}/${packageName}/${modelPath}`,
          { error },
       );
-      return { error: errorDetails };
+      return { error: errorDetails, cause: error };
    }
 }
 

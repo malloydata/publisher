@@ -15,6 +15,7 @@ import { createMocks } from "../test_helpers/materialization_service_harness";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import { startMetricsHarness } from "../test_helpers/metrics_harness";
+import { installSettings } from "../test_helpers/settings_env";
 
 /**
  * Instructed builds (executeInstructedBuild): resolving each instruction,
@@ -134,12 +135,7 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "eonlyaaaaaaaaaa",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [[{ sourceID: "only", dependsOn: [] }]],
-            },
-         ],
+         builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
          sources: { only },
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
@@ -212,14 +208,8 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "bbadbbbbbbbbbbb",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [
-                  [{ sourceID: "good", dependsOn: [] }],
-                  [{ sourceID: "bad", dependsOn: [] }],
-               ],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
          sources: { good, bad },
          connectionDigests: { duckdb: "dig" },
@@ -303,14 +293,8 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "cbadbbbbbbbbbbb",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [
-                  [{ sourceID: "good", dependsOn: [] }],
-                  [{ sourceID: "bad", dependsOn: [] }],
-               ],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
          sources: { good, bad },
          connectionDigests: { duckdb: "dig" },
@@ -380,14 +364,8 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "cbadbbbbbbbbbbb",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [
-                  [{ sourceID: "good", dependsOn: [] }],
-                  [{ sourceID: "bad", dependsOn: [] }],
-               ],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
          sources: { good, bad },
          connectionDigests: { duckdb: "dig" },
@@ -444,14 +422,8 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "dbadbbbbbbbbbbb",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [
-                  [{ sourceID: "good", dependsOn: [] }],
-                  [{ sourceID: "bad", dependsOn: [] }],
-               ],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
          sources: { good, bad },
          connectionDigests: { duckdb: "dig" },
@@ -580,12 +552,7 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "bonlyaaaaaaaaaa",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [[{ sourceID: "only", dependsOn: [] }]],
-            },
-         ],
+         builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
          sources: { only },
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
@@ -607,11 +574,8 @@ describe("executeInstructedBuild", () => {
       ).rejects.toThrow(/warehouse unreachable/);
    });
 
-   it("builds an intermediate persist source nested under a root node", async () => {
-      // Mirrors malloy getBuildPlan(): only the terminal `root` is a graph
-      // node; its persist dependency `mid` is nested in dependsOn (not a node).
-      // Before the iterGraphSources fix, `mid` was silently never built even
-      // though the caller instructed it. Both must now build, `mid` first.
+   it("builds every instructed source of a build, dependencies first", async () => {
+      // `root` reads `mid`; both are instructed, so both build, `mid` first.
       const runSQL = sinon.stub().resolves();
       const connection = { runSQL } as unknown as MalloyConnection;
       const root = fakeSource({
@@ -623,18 +587,8 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "bmidbbbbbbbbbbb",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [
-                  [
-                     {
-                        sourceID: "root",
-                        dependsOn: [{ sourceID: "mid", dependsOn: [] }],
-                     },
-                  ],
-               ],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["mid", "root"], dependsOn: {} },
          ],
          sources: { root, mid },
          connectionDigests: { duckdb: "dig" },
@@ -696,22 +650,11 @@ describe("executeInstructedBuild", () => {
          name: "ext",
          sourceEntityId: "bsharedaaaaaaaa",
       });
-      // The real graph shape: an extension DEPENDS on its base, so the plan's root
-      // is the EXTENSION and the base hangs under `dependsOn`. iterGraphSources is
-      // post-order, so the base is reached first.
+      // Malloy's walk reaches an extension through its base, so the base comes
+      // first among the sources on their shared table.
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [
-                  [
-                     {
-                        sourceID: "ext",
-                        dependsOn: [{ sourceID: "base", dependsOn: [] }],
-                     },
-                  ],
-               ],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["base", "ext"], dependsOn: {} },
          ],
          sources: { base, ext },
          connectionDigests: { duckdb: "dig" },
@@ -746,12 +689,11 @@ describe("executeInstructedBuild", () => {
    });
 
    it("does not collapse one source across two connections", async () => {
-      // The target key's connection half is the GRAPH's, because `buildOneSource`
-      // writes through the connection resolved from `graph.connectionName`. Malloy
-      // groups only ROOT nodes by connection, so the same declaration can be yielded
-      // under roots of two different connections — two tables, in two warehouses, that
-      // must not dedupe onto one key. Keying on the SOURCE's connection would collapse
-      // them and write only the first.
+      // The target key's connection half is the BUILD's, because `buildOneSource`
+      // writes through the connection resolved from `build.connectionName`. One
+      // declaration under two builds' connections is two tables, in two
+      // warehouses, that must not dedupe onto one key. Keying on the SOURCE's
+      // connection would collapse them and write only the first.
       const runDuck = sinon.stub().resolves();
       const runPg = sinon.stub().resolves();
       const shared = fakeSource({
@@ -759,15 +701,9 @@ describe("executeInstructedBuild", () => {
          sourceEntityId: "bsharedddddddddd",
       });
       const compiled = {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: [[{ sourceID: "shared", dependsOn: [] }]],
-            },
-            {
-               connectionName: "postgres",
-               nodes: [[{ sourceID: "shared", dependsOn: [] }]],
-            },
+         builds: [
+            { connectionName: "duckdb", order: ["shared"], dependsOn: {} },
+            { connectionName: "postgres", order: ["shared"], dependsOn: {} },
          ],
          sources: { shared },
          connectionDigests: { duckdb: "dig", postgres: "dig2" },
@@ -794,23 +730,23 @@ describe("executeInstructedBuild", () => {
       expect(createsFrom(runPg)).toHaveLength(1);
    });
 
-   it("builds one table once when two models' graphs both reach it", async () => {
+   it("builds one table once when two models' builds both reach it", async () => {
       // A source declared in one model and consumed in another appears in BOTH
-      // models' graphs, and the package plan concatenates them. The per-graph
-      // walk resets its own seen-set, so the artifact has to be deduplicated
-      // across graphs rather than within one.
+      // models' builds, and the package plan concatenates them, so the artifact
+      // has to be deduplicated across builds rather than within one.
       const runSQL = sinon.stub().resolves();
       const connection = { runSQL } as unknown as MalloyConnection;
       const shared = fakeSource({
          name: "shared",
          sourceEntityId: "bsharedbbbbbbbb",
       });
-      const graph = {
+      const build = {
          connectionName: "duckdb",
-         nodes: [[{ sourceID: "shared", dependsOn: [] }]],
+         order: ["shared"],
+         dependsOn: {},
       };
       const compiled = {
-         graphs: [graph, graph],
+         builds: [build, build],
          sources: { shared },
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
@@ -1001,8 +937,9 @@ describe("executeInstructedBuild", () => {
       // first CTAS: a mid-loop throw would leave the pair's first table already
       // replaced, and nothing puts the overwritten rows back — the failure path
       // reclaims storage tables only, and a reclaim cannot restore data.
-      const prev = process.env.PERSIST_COLLISION_ENFORCE;
-      process.env.PERSIST_COLLISION_ENFORCE = "true";
+      const { restore } = installSettings({
+         env: { PERSIST_COLLISION_ENFORCE: "true" },
+      });
       const runSQL = sinon.stub().resolves();
       try {
          const promise = collidingBuild(runSQL);
@@ -1014,8 +951,7 @@ describe("executeInstructedBuild", () => {
          );
          expect(createsFrom(runSQL)).toHaveLength(0);
       } finally {
-         if (prev === undefined) delete process.env.PERSIST_COLLISION_ENFORCE;
-         else process.env.PERSIST_COLLISION_ENFORCE = prev;
+         restore();
       }
    });
 
@@ -1188,7 +1124,7 @@ describe("executeInstructedBuild", () => {
       expect(seen?.buildManifest?.entries?.up?.tableName).toBe("orders_base");
    });
 
-   it("throws when an instructed graph's connection is missing", async () => {
+   it("throws when an instructed build's connection is missing", async () => {
       const s1 = fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" });
       const compiled = compiledWith({ s1 }, [["s1"]], new Map());
 
@@ -1223,7 +1159,7 @@ describe("executeInstructedBuild", () => {
 
       it("is skipped, and the run completes, when the caller never instructed it", async () => {
          // Before the reorder, the eligibility assert ran unconditionally on
-         // EVERY persist source in the graph — including one with no
+         // EVERY persist source in the build — including one with no
          // instruction at all — so this refused, uninstructed sibling threw
          // and aborted the whole run, taking `ok`'s build down with it.
          const runSQL = sinon.stub().resolves();

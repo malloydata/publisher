@@ -14,11 +14,13 @@ import {
 } from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
+import { withSettings } from "../../test_helpers/settings_env";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
    EnvironmentNotFoundError,
    NotQueryableError,
    OffSurfaceError,
+   PackageVersionError,
    QueryTimeoutError,
    ServiceUnavailableError,
 } from "../../errors";
@@ -79,15 +81,19 @@ function captureTool(
          handler = h;
       },
    };
-   registerExecuteQueryTool(
-      fakeServer as never,
-      {
-         // What EnvironmentStore's constructor reads from the config, once.
-         mcpIncludeHiddenFilesAndSources:
-            isMcpIncludeHiddenFilesAndSources(serverRootPath),
-         ...store,
-         serverRootPath,
-      } as EnvironmentStore,
+   // Registered with the settings read from this server root, so a tool that
+   // read the config itself, rather than the store, would see it.
+   withSettings({ cwd: serverRootPath }, () =>
+      registerExecuteQueryTool(
+         fakeServer as never,
+         {
+            // What EnvironmentStore's constructor reads from the config, once.
+            mcpIncludeHiddenFilesAndSources:
+               isMcpIncludeHiddenFilesAndSources(),
+            ...store,
+            serverRootPath,
+         } as EnvironmentStore,
+      ),
    );
    if (!handler || !shape) throw new Error("handler was not registered");
    return { handler, shape };
@@ -117,6 +123,8 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
          ({
             assertCanAdmitQuery: () => undefined,
             getPackage: async () => ({
+               // A package with no published versions.
+               getVersionId: () => undefined,
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
@@ -167,20 +175,21 @@ function storeCapturingMetadata(
             getPackage: async () => ({
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
+               getVersionId: () => undefined,
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async (..._args: unknown[]) => {
-                     // Positional: sourceName, queryName, query, filterParams,
+                     // Positional: audit, sourceName, queryName, query, filterParams,
                      // bypassFilters, givens, abortSignal, metadata input,
                      // responseShape. Indexed rather than destructured off the
                      // end, because the argument list has grown twice and a
                      // trailing-element type went stale both times.
                      capturedArgs = _args;
-                     captured = _args[7] as ModelQueryMetadataInput | undefined;
-                     capturedShape = _args[8] as string | undefined;
+                     captured = _args[8] as ModelQueryMetadataInput | undefined;
+                     capturedShape = _args[9] as string | undefined;
                      return {
                         result: {
                            schema: { fields: [] },
@@ -472,7 +481,7 @@ describe("execute_query per-query metadata", () => {
 });
 
 describe("execute_query includeHiddenFilesAndSources", () => {
-   // getQueryResults positions: 9 is bypassAuthorize, 10 is
+   // getQueryResults positions: 10 is bypassAuthorize, 11 is
    // includeHiddenFilesAndSources.
    const calls = [
       args,
@@ -488,8 +497,8 @@ describe("execute_query includeHiddenFilesAndSources", () => {
          );
          expect(shape).toHaveProperty("includeHiddenFilesAndSources");
          await handler({ ...call, includeHiddenFilesAndSources: true });
-         expect(capturedArgs()[9]).toBe(false);
-         expect(capturedArgs()[10]).toBe(true);
+         expect(capturedArgs()[10]).toBe(false);
+         expect(capturedArgs()[11]).toBe(true);
       }
    });
 
@@ -498,8 +507,8 @@ describe("execute_query includeHiddenFilesAndSources", () => {
          const { store, capturedArgs } = storeCapturingMetadata();
          const { handler } = captureTool(store, serverRootWith(AUTHORING));
          await handler({ ...args, ...extra });
-         expect(capturedArgs()[9]).toBe(false);
          expect(capturedArgs()[10]).toBe(false);
+         expect(capturedArgs()[11]).toBe(false);
       }
    });
 
@@ -519,7 +528,7 @@ describe("execute_query includeHiddenFilesAndSources", () => {
             const { handler, shape } = captureTool(store, serverRootWith(mcp));
             expect(shape).not.toHaveProperty("includeHiddenFilesAndSources");
             await handler({ ...call, includeHiddenFilesAndSources: true });
-            expect(capturedArgs()[10]).toBe(false);
+            expect(capturedArgs()[11]).toBe(false);
          }
       }
    });
@@ -546,14 +555,12 @@ describe("execute_query includeHiddenFilesAndSources", () => {
  * real tool handler and a real loaded Package with a root index.malloy.
  */
 describe("execute_query includeHiddenFilesAndSources on a real package", () => {
-   const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
    let tempDir: string;
    let duckdb: { close: () => Promise<void> };
    let handler: Handler;
    let store: Partial<EnvironmentStore>;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       await __setPackageLoadPoolForTests(new PackageLoadPool(1));
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-hidden-"));
       fs.writeFileSync(
@@ -605,8 +612,6 @@ export { customers }`,
    afterAll(async () => {
       await duckdb?.close();
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
@@ -662,4 +667,111 @@ export { customers }`,
       expect(result.isError).toBe(true);
       expect(parse(result).error).toContain("published surface");
    });
+});
+
+describe("execute_query on a package with published versions", () => {
+   /**
+    * A store whose package is the published version `versionId` (undefined:
+    * a package with no versions), recording the options each load was asked
+    * for.
+    */
+   function versionedStore(options: {
+      versionId?: string;
+      refuse?: PackageVersionError;
+      queryError?: unknown;
+   }): { store: Partial<EnvironmentStore>; asked: () => unknown[] } {
+      const asked: unknown[] = [];
+      const store: Partial<EnvironmentStore> = {
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => undefined,
+               getApiConnection: () => ({}),
+               getPackage: async (
+                  _name: string,
+                  _reload: boolean,
+                  loadOptions?: unknown,
+               ) => {
+                  asked.push(loadOptions);
+                  if (options.refuse) throw options.refuse;
+                  return {
+                     getVersionId: () => options.versionId,
+                     getDeclaredQueryMetadata: () => null,
+                     getModel: () => ({
+                        getType: () => "model",
+                        carriesReportTag: () => false,
+                        getModel: async () => ({}),
+                        getQueryResults: async () => {
+                           if (options.queryError) throw options.queryError;
+                           return {
+                              result: { schema: { fields: [] } },
+                              compactResult: [{ c: 1 }],
+                              rowLimit: 1000,
+                              rowLimitSource: "server_default",
+                              queryCorrelationId: "corr-1",
+                           };
+                        },
+                     }),
+                  };
+               },
+            }) as never,
+      };
+      return { store, asked: () => asked };
+   }
+
+   it("takes no version: the MCP tools serve latest", () => {
+      expect(captureTool({}).shape).not.toHaveProperty("version");
+      expect(
+         captureTool({}, serverRootWith(AUTHORING)).shape,
+      ).not.toHaveProperty("version");
+   });
+
+   it("queries the package's latest, naming no version", async () => {
+      const { store, asked } = versionedStore({ versionId: "1.2.0" });
+      expect((await captureHandler(store)(args)).isError).not.toBe(true);
+      expect(asked()).toEqual([undefined]);
+   });
+
+   it("answers a package with no latest yet with its own message, not an internal error", async () => {
+      const { store } = versionedStore({
+         refuse: new PackageVersionError(
+            "VERSION_NOT_FOUND",
+            "Package pkg has no latest version yet; name a version, or make one latest.",
+         ),
+      });
+      const result = await captureHandler(store)(args);
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.error).toContain("no latest version yet");
+      expect(JSON.stringify(parsed.suggestions)).toContain(
+         "PUT .../packages/{package}/latest",
+      );
+   });
+
+   it.each([
+      [
+         "a published version",
+         "1.2.0",
+         "Publish the change as a new version",
+         "Call reload_package",
+      ],
+      [
+         "a package with no versions",
+         undefined,
+         "Call reload_package",
+         "Publish the change as a new version",
+      ],
+   ])(
+      "points an undefined name on %s at the step that picks a new name up",
+      async (_label, versionId, says, never) => {
+         const { store } = versionedStore({
+            versionId,
+            queryError: new MalloyError("'orders_v2' is not defined", []),
+         });
+         const result = await captureHandler(store)(args);
+         expect(result.isError).toBe(true);
+         const suggestions = JSON.stringify(parse(result).suggestions);
+         expect(suggestions).toContain(says);
+         expect(suggestions).not.toContain(never);
+      },
+   );
 });

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection, GivenValue } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
@@ -78,6 +79,7 @@ async function run(
    const model = await Model.create("pkg", PKG_DIR, file, connections());
    try {
       const { compactResult } = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          query,

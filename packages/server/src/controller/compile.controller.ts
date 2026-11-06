@@ -12,6 +12,7 @@ import {
 } from "../telemetry";
 import type { CompiledDocument } from "../service/compile_document";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
+import { parseOverlayFiles } from "../service/request_overlay";
 import {
    withLegacyDocumentKind,
    type LegacyKind,
@@ -42,6 +43,9 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
+      versionId?: unknown,
+      /** The request's `files` overlay, unchecked (see `request_overlay.ts`). */
+      files?: unknown,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -63,6 +67,8 @@ export class CompileController {
                   includeSql,
                   givens,
                   scope,
+                  versionId,
+                  files,
                ),
          );
          outcome = result.status;
@@ -88,6 +94,8 @@ export class CompileController {
       includeSql: boolean,
       givens: Record<string, GivenValue> | undefined,
       scope: CompileScope,
+      versionId: unknown,
+      files: unknown,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -99,6 +107,7 @@ export class CompileController {
       if (typeof source === "string") text = source;
       else if (source !== undefined)
          throw new BadRequestError("`source` must be a string of Malloy text.");
+      const overlay = parseOverlayFiles(files);
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -110,6 +119,8 @@ export class CompileController {
          includeSql,
          givens,
          scope,
+         versionId,
+         overlay,
       );
 
       const hasErrors = problems.some((p) => p.severity === "error");

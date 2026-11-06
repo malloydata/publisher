@@ -11,6 +11,7 @@
  * must keep working, and so must the named `sourceName`/`queryName` path.
  */
 
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -99,6 +100,7 @@ async function makeModel(): Promise<Model> {
 
 async function runAdHoc(model: Model, query: string): Promise<Row[]> {
    const { compactResult } = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -202,9 +204,17 @@ describe("text with exactly one run: statement keeps running", () => {
 
    it("runs a named view and a named query by name", async () => {
       const model = await makeModel();
-      const view = await model.getQueryResults("widgets", "by_region");
+      const view = await model.getQueryResults(
+         unrecordedAudit(),
+         "widgets",
+         "by_region",
+      );
       expect((view.compactResult as Row[]).length).toBe(3);
-      const query = await model.getQueryResults(undefined, "widget_count");
+      const query = await model.getQueryResults(
+         unrecordedAudit(),
+         undefined,
+         "widget_count",
+      );
       expect(query.compactResult as Row[]).toEqual([{ n: 3 }]);
    });
 });

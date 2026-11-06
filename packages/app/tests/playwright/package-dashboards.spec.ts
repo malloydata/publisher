@@ -618,7 +618,7 @@ test.describe("package-dashboards", () => {
       });
    }
 
-   test("a single-destination drill navigates with the clicked value seeded", async ({
+   test("a single-destination drill says where it goes, and navigates with the clicked value seeded", async ({
       page,
    }) => {
       await openDashboard(page, "combined");
@@ -632,14 +632,75 @@ test.describe("package-dashboards", () => {
       // no dashboard declares: the tile is clickable because it groups by it.
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
 
-      // One destination acts immediately: the slug becomes the route and the
-      // clicked value becomes the given.
+      // Even one destination is a menu: a click says what it will do before
+      // doing it, each item naming the value, and the rows behind the value
+      // are offered beside it. No header row: every entry is an action.
+      await expect(
+         page.getByRole("menuitem", {
+            name: "Open Business Overview (brand_name: Nike)",
+         }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+         page.getByRole("menuitem", { name: /^Show rows \(brand_name: Nike/ }),
+      ).toBeVisible();
+      await expect(page.getByText("Nike →")).toHaveCount(0);
+      await page
+         .getByRole("menuitem", {
+            name: "Open Business Overview (brand_name: Nike)",
+         })
+         .click();
+
+      // The slug becomes the route and the clicked value becomes the given.
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/overview\\?BRAND=Nike$`),
       );
       // Arriving seeded means arriving filtered, so the destination's control
       // shows the drilled value.
       await expectFilterValue(page, "Brand", "Nike");
+   });
+
+   test("the rows behind a value download as CSV, every row the unlimited query returns", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
+      await page
+         .getByRole("menuitem", { name: /^Show rows \(brand_name: Nike/ })
+         .click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByText(/Rows where/)).toBeVisible({
+         timeout: 30_000,
+      });
+
+      // The download runs the dialog's query with no limit through the same
+      // query endpoint; its response is the oracle for the file.
+      const unlimited = page.waitForResponse((response) => {
+         const body = response.request().postData() ?? "";
+         return (
+            response.request().method() === "POST" &&
+            body.includes("select: *") &&
+            !body.includes("limit:")
+         );
+      });
+      const download = page.waitForEvent("download");
+      await dialog.getByRole("button", { name: /Download CSV/ }).click();
+      const [response, file] = await Promise.all([unlimited, download]);
+
+      const result = JSON.parse((await response.json()).result) as {
+         data?: { array_value?: unknown[] };
+      };
+      const expected = result.data?.array_value?.length ?? 0;
+      expect(expected).toBeGreaterThan(0);
+      expect(file.suggestedFilename()).toMatch(/^orders_rows_Nike.*\.csv$/);
+      const text = await (
+         await import("fs/promises")
+      ).readFile(await file.path(), "utf8");
+      const lines = text
+         .replace(/^\uFEFF/, "")
+         .trimEnd()
+         .split("\r\n");
+      // A header, then one line per row of the unlimited query.
+      expect(lines.length - 1).toBe(expected);
    });
 
    test("a two-destination drill offers a menu, and `self` filters in place", async ({
@@ -655,16 +716,18 @@ test.describe("package-dashboards", () => {
       // `# drill { to=["dashboards/regions", "self"] given=REGION }`: more than one
       // destination is a choice, not a guess.
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
-      // The destination reads as a sentence rather than as a filename, which is
-      // how Malloyyo labels the same menu.
-      await expect(page.getByRole("menuitem", { name: "Regions" })).toBeVisible(
-         {
-            timeout: 30_000,
-         },
-      );
+      // The destination reads by its title (here the doc comment it falls back
+      // to), not its file name.
+      await expect(
+         page.getByRole("menuitem", { name: /^Open Orders by region \(/ }),
+      ).toBeVisible({
+         timeout: 30_000,
+      });
 
       // `self` never leaves the page; it sets the control instead.
-      await page.getByRole("menuitem", { name: "Filter this report" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Filter to region_name: / })
+         .click();
       await expect(page).toHaveURL(/[?&]REGION=EU/);
       await expectFilterValue(page, "Region", "EU");
    });
@@ -680,7 +743,9 @@ test.describe("package-dashboards", () => {
       );
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
-      await page.getByRole("menuitem", { name: "Regions" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Open Orders by region \(/ })
+         .click();
 
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/regions\\?REGION=EU$`),
@@ -715,7 +780,9 @@ test.describe("package-dashboards", () => {
       await closeFilter(page);
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
-      await page.getByRole("menuitem", { name: "Regions" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Open Orders by region \(/ })
+         .click();
 
       const seeded = new RegExp(
          `/${env}/${PKG}/dashboards/regions\\?REGION=EU$`,
@@ -746,6 +813,9 @@ test.describe("package-dashboards", () => {
          .getByText("Nike", { exact: true })
          .first()
          .click({ timeout: 60_000 });
+      await page
+         .getByRole("menuitem", { name: /^Open Business Overview \(/ })
+         .click();
 
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${LINEAR_PKG}/dashboards/overview\\?BRAND=Nike$`),
@@ -840,7 +910,9 @@ test.describe("package-dashboards", () => {
          .getByText("EU", { exact: true })
          .first()
          .click({ timeout: 60_000 });
-      await page.getByRole("menuitem", { name: "Filter this report" }).click();
+      await page
+         .getByRole("menuitem", { name: /^Filter to region_name: / })
+         .click();
 
       // Filtering in place is a URL change, not a navigation: still the
       // report, now with the given set.
@@ -934,8 +1006,13 @@ test.describe("package-dashboards", () => {
 
       await target.focus();
       await page.keyboard.press("Enter");
-      // Two honorable destinations, so Enter opens the menu rather than acting.
-      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      // Enter opens the same menu a click does: the two destinations, then the
+      // rows behind the value.
+      await expect(page.getByRole("menuitem")).toHaveCount(3);
+      await expect(page.getByRole("menuitem").nth(0)).toHaveText(/^Filter to /);
+      await expect(page.getByRole("menuitem").nth(2)).toHaveText(
+         /^Show rows \(/,
+      );
    });
 
    test("arrow keys move within a drillable column and the stop follows", async ({
@@ -975,7 +1052,8 @@ test.describe("package-dashboards", () => {
       await page.keyboard.press("End");
       await expect(drillCells.nth(total - 1)).toBeFocused();
       await page.keyboard.press("Enter");
-      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      // Filter to, Open Orders by region, Show rows.
+      await expect(page.getByRole("menuitem")).toHaveCount(3);
    });
 
    test("clicking a cell moves the tab stop to it", async ({ page }) => {
@@ -1016,7 +1094,7 @@ test.describe("package-dashboards", () => {
       const before = page.url();
       await target.focus();
       await page.keyboard.press("Space");
-      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      await expect(page.getByRole("menuitem")).toHaveCount(3);
       expect(page.url()).toBe(before);
    });
 

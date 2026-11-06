@@ -17,6 +17,7 @@
  * this file exists: the suites that were green throughout that migration could
  * not see either one.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { type Connection } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
@@ -40,6 +41,7 @@ describe("examples/governed-analytics ships a working gate", () => {
       givens: Record<string, string[]>,
    ): Promise<number> {
       const result = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: orders_secured -> { aggregate: n is count() group_by: tenant }",
@@ -95,6 +97,7 @@ describe("examples/governed-analytics ships a working gate", () => {
  */
 const PLAYWRIGHT_FIXTURE = `##! experimental.givens
 
+#(secure)
 given: role :: string
 
 #(authorize) 'analyst' = $role
@@ -128,6 +131,7 @@ describe("the Playwright notebook-authorize fixture model", () => {
 
          const run = (givens: Record<string, string>) =>
             model.getQueryResults(
+               unrecordedAudit(),
                undefined,
                undefined,
                "run: gated_products -> spotlight",
