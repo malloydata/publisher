@@ -218,7 +218,9 @@ describe("settings in a running server", () => {
 
       it("refuses to start on a value other than on or off", async () => {
          expect(
-            await refused({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "false" } }),
+            await refused({
+               env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "false" },
+            }),
          ).toContain(
             'packageInlineFields from PUBLISHER_PACKAGE_INLINE_FIELDS: expected one of "off" or "on", got "false"',
          );
