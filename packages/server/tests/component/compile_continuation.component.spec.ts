@@ -27,6 +27,7 @@
  * AND returns real rows from DuckDB.
  */
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -207,6 +208,7 @@ describe("append scope on a shipped package still serves ordinary work", () => {
       const model = await pkg.getModel("storefront.malloy");
       expect(model).toBeDefined();
       const result = await model!.getQueryResults(
+         unrecordedAudit(),
          undefined,
          undefined,
          "run: order_items -> { aggregate: n is count() }",

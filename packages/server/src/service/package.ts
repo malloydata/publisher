@@ -143,13 +143,22 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
-import { classificationLeaks, classificationWarnings } from "./classification";
+import {
+   carriesCeilingLeaks,
+   classificationLeaks,
+   classificationWarnings,
+   prepareCeilingQueries,
+   type PreparedCeilingQueries,
+} from "./classification";
 import {
    classificationSummary,
    type ApiClassificationSummary,
 } from "./classification_summary";
-import { joinBypasses } from "./join_bypass";
-import { insecureGateGivens } from "./gate_given_warnings";
+import {
+   isTruncatedWalkFinding,
+   JOIN_BYPASS,
+   joinBypasses,
+} from "./join_bypass";
 import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
@@ -258,6 +267,14 @@ interface ReportDiscovery {
 export type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+
+interface ClassificationMemo {
+   forModels: Map<string, Model>;
+   listing: string;
+   summary?: { value: ApiClassificationSummary | undefined };
+   warnings?: ApiPackageWarning[];
+   joinBypass?: string[];
+}
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
 type ApiAgentSource = components["schemas"]["AgentSource"];
@@ -306,6 +323,12 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    return "error";
 }
 
+/** Why a join-bypass finding is a warning and not a refusal (docs/authorize.md, "Gates are edge controls"). */
+const JOIN_BYPASS_NOTE =
+   "Each gate governs only the source a query enters through, so exposing these rows to every " +
+   "caller this entry admits is the author's choice, and a compliance review flags it; " +
+   "otherwise apply the fix above.";
+
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -325,19 +348,18 @@ export class Package {
         }
       | undefined;
    /**
+    * The classification walks over the `models` map and the listing metadata
+    * they were computed for: `explores` and `queryableSources` are all
+    * `applyQueryBoundaryToModels` reads, so a PATCH that changes neither keeps it.
+    */
+   private classificationMemo: ClassificationMemo | undefined;
+   /**
     * What every `.malloy` model declares, in the form an indexer reads
     * (`Package.entities`). Computed once at load from the models as they
     * compiled then, before any manifest is bound, and frozen; a reload that
     * rebinds models does not change it.
     */
    private entities: readonly ApiModelEntities[] | undefined;
-   /** {@link classificationSummary} over the `models` map it was computed for, keyed like `secureGivensMemo`. */
-   private classificationSummaryMemo:
-      | {
-           forModels: Map<string, Model>;
-           value: ApiClassificationSummary | undefined;
-        }
-      | undefined;
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /**
@@ -1312,7 +1334,7 @@ export class Package {
 
          buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
 
-         applyLoadGates(pkg);
+         await applyLoadGates(pkg);
          const entitiesStarted = performance.now();
          await pkg.computeEntities();
          entitiesMs = performance.now() - entitiesStarted;
@@ -1554,20 +1576,19 @@ export class Package {
    /**
     * For each published entry point, its `#(carries)` and its field count by
     * class, or `undefined` when nothing published is classified. Walks every
-    * published field, so it is memoized per models map and served by
+    * published field, so it is memoized with the classification walks and served by
     * `GET …/classification` (and, deprecated, inline on the single-package
     * read while PUBLISHER_PACKAGE_INLINE_FIELDS is on), never on a listing or
     * the `/status` poll path.
     */
    public getClassificationSummary(): ApiClassificationSummary | undefined {
-      const memo = this.classificationSummaryMemo;
-      if (memo?.forModels === this.models) return memo.value;
-      const forModels = this.models;
-      const value = classificationSummary(forModels, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      );
-      this.classificationSummaryMemo = { forModels, value };
-      return value;
+      const memo = this.currentClassificationMemo();
+      memo.summary ??= {
+         value: classificationSummary(this.models, (modelPath) =>
+            this.isListedModelPath(modelPath),
+         ),
+      };
+      return memo.summary.value;
    }
 
    /**
@@ -1729,6 +1750,31 @@ export class Package {
    }
 
    /**
+   /** {@link classificationWarnings}, memoized: it runs on every `/status` poll. */
+   private classificationWarningsMemoized(): ApiPackageWarning[] {
+      const memo = this.currentClassificationMemo();
+      memo.warnings ??= classificationWarnings(this.models, (modelPath) =>
+         this.isListedModelPath(modelPath),
+      );
+      return memo.warnings;
+   }
+
+   private currentClassificationMemo(): ClassificationMemo {
+      const listing = JSON.stringify([
+         this.packageMetadata.explores ?? null,
+         this.packageMetadata.queryableSources ?? null,
+      ]);
+      const memo = this.classificationMemo;
+      if (memo?.forModels === this.models && memo.listing === listing) {
+         return memo;
+      }
+      return (this.classificationMemo = {
+         forModels: this.models,
+         listing,
+      });
+   }
+
+   /**
     * ON THE `/status` POLL PATH: runs for every package every few seconds.
     * Anything added below must be trivially cheap or memoized on the Model; an
     * unmemoized walk over model fields blocks the event loop for seconds.
@@ -1784,9 +1830,8 @@ export class Package {
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
-         ...classificationWarnings(this.models, (modelPath) =>
-            this.isListedModelPath(modelPath),
-         ),
+         ...this.classificationWarningsMemoized(),
+         ...this.joinBypassWarnings(),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2389,38 +2434,94 @@ export class Package {
    }
 
    /**
+    * Which sources the load gates judge: the published surface, or every
+    * top-level source of every model under `queryableSources: "all"`, where a
+    * hidden source answers a query by name.
+    */
+   private gateScope(): {
+      isListed: (modelPath: string) => boolean;
+      includeHidden: boolean;
+   } {
+      if (this.packageMetadata.queryableSources === "all") {
+         return {
+            isListed: (modelPath) => modelPath.endsWith(MODEL_FILE_SUFFIX),
+            includeHidden: true,
+         };
+      }
+      return {
+         isListed: (modelPath) => this.isListedModelPath(modelPath),
+         includeHidden: false,
+      };
+   }
+
+   /**
     * REJECTION messages for every field a `#(carries)` surface exposes outside
     * its list (docs/classification.md), one per line, empty when there are
     * none. Strict at load, like an invalid incremental policy: a surface that
     * says what it carries must not serve what it does not.
     */
    public formatClassificationLeaks(): string {
-      return classificationLeaks(this.models, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      ).join("\n");
+      const { isListed, includeHidden } = this.gateScope();
+      return classificationLeaks(this.models, isListed, includeHidden).join(
+         "\n",
+      );
+   }
+
+   /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
+   public prepareCeilingQueries(): Promise<PreparedCeilingQueries> {
+      return prepareCeilingQueries(this.models);
+   }
+
+   /** REJECTION messages for every author query that reads past the `#(carries)` of its source, one per line. */
+   public formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string {
+      const { isListed } = this.gateScope();
+      return carriesCeilingLeaks(prepared, isListed).join("\n");
    }
 
    /**
-    * REJECTION messages for every author join from a published source that
-    * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
-    * when there are none. Strict at load, like a `#(carries)` leak.
+    * `judge`'s result with `listing` in force, the package's own put back
+    * before it returns. `judge` must be synchronous: nothing can be served
+    * under a listing that is in force only inside one synchronous step.
     */
-   public formatJoinBypasses(): string {
-      return joinBypasses(this.models, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      ).join("\n");
+   public underListing<T>(
+      listing: Pick<ApiPackage, "explores" | "queryableSources"> | undefined,
+      judge: () => T,
+   ): T {
+      if (!listing) return judge();
+      const existing = this.packageMetadata;
+      const memo = this.classificationMemo;
+      this.setPackageMetadata({ ...existing, ...listing });
+      try {
+         return judge();
+      } finally {
+         this.setPackageMetadata(existing);
+         this.classificationMemo = memo;
+      }
+   }
+
+   /** {@link joinBypasses}, memoized per models map and listing. */
+   private joinBypassFindings(): string[] {
+      const memo = this.currentClassificationMemo();
+      if (!memo.joinBypass) {
+         const { isListed, includeHidden } = this.gateScope();
+         memo.joinBypass = joinBypasses(this.models, isListed, includeHidden);
+      }
+      return memo.joinBypass;
    }
 
    /**
-    * REJECTION messages for every published source gated on a given that is
-    * not `#(secure)` (`gate_given_warnings.ts`), one per line, empty when
-    * there are none. Strict at load: a gate a caller can satisfy by sending a
-    * value is a filter, not a control.
+    * The join bypasses of every published source, as `join-bypass` warnings:
+    * each gate governs its own entry point, so a join from a broader one is the
+    * author's choice of what that entry exposes.
     */
-   public formatInsecureGateGivens(): string {
-      return insecureGateGivens(this.models, (modelPath) =>
-         this.isListedModelPath(modelPath),
-      ).join("\n");
+   public joinBypassWarnings(): ApiPackageWarning[] {
+      return this.joinBypassFindings().map((message) => ({
+         code: JOIN_BYPASS,
+         severity: "warn" as const,
+         message: isTruncatedWalkFinding(message)
+            ? message
+            : `${message} ${JOIN_BYPASS_NOTE}`,
+      }));
    }
 
    /**

@@ -26,7 +26,7 @@
  */
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
-import { ownLevelNotes, ownLevelNoteTexts } from "./annotations";
+import { type AnnotationsDef, ownLevelNotes } from "./annotations";
 import { collectAuthorizeExprsForRoute } from "./authorize";
 
 /**
@@ -74,6 +74,17 @@ export function resolveDeclaredSource(
    return sawBrokenEntry ? { kind: "unresolvable" } : { kind: "none" };
 }
 
+/** The gate exprs of one level's own notes, for one route. */
+function gateAtLevel(
+   annotations: AnnotationsDef | undefined,
+   route: string,
+): string[] {
+   return collectAuthorizeExprsForRoute(
+      ownLevelNotes(annotations).map((note) => note.text),
+      route,
+   );
+}
+
 /**
  * The gate a struct inherits from the source it was derived from, used when
  * it declares no gate of its own.
@@ -88,7 +99,7 @@ export function resolveDeclaredSource(
  * or doc comment. All links are followed, nearest first; the first ancestor
  * declaring a gate wins ("own wins over ancestor" is what lets a curated
  * extension replace a locked base's gate). Each level is read with
- * {@link ownLevelNoteTexts} so a gate under `notes` is found too.
+ * {@link gateAtLevel} so a gate under `notes` is found too.
  *
  * Fail-closed: an exhausted walk or an `unresolvable` registry link returns
  * `["false"]`, never `[]`: the chain exists and was not read to its end.
@@ -108,10 +119,7 @@ export function ancestorGateExprs(
 ): string[] {
    let inherited = struct.annotations?.inherits;
    for (let depth = 0; inherited && depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const exprs = collectAuthorizeExprsForRoute(
-         ownLevelNoteTexts(inherited),
-         route,
-      );
+      const exprs = gateAtLevel(inherited, route);
       if (exprs.length > 0) return exprs;
       inherited = inherited.inherits;
    }
@@ -138,10 +146,7 @@ export function ancestorGateExprs(
    // Do not hoist this walk above a call site's own-gate read either; losing
    // that read turns this `[]` into a real fail-open.
    if (declared.kind === "none" || seen.has(declared.source)) return [];
-   const exprs = collectAuthorizeExprsForRoute(
-      ownLevelNoteTexts(declared.source.annotations),
-      route,
-   );
+   const exprs = gateAtLevel(declared.source.annotations, route);
    return exprs.length > 0
       ? exprs
       : ancestorGateExprs(declared.source, modelDef, route, seen);
@@ -228,10 +233,7 @@ export function effectiveAncestorGateExprs(
          groups.push(["false"]);
       }
    } else if (!seen.has(base)) {
-      const ownExprs = collectAuthorizeExprsForRoute(
-         ownLevelNoteTexts(base.annotations),
-         route,
-      );
+      const ownExprs = gateAtLevel(base.annotations, route);
       groups.push(
          ...(ownExprs.length > 0
             ? [ownExprs]
@@ -244,10 +246,7 @@ export function effectiveAncestorGateExprs(
       const compositeOwnNotes = ownLevelNotes(composite.annotations).filter(
          (note) => !parentOwnNotes.includes(note),
       );
-      const compositeOwn = collectAuthorizeExprsForRoute(
-         compositeOwnNotes.map((note) => note.text),
-         route,
-      );
+      const compositeOwn = gateAtLevel({ notes: compositeOwnNotes }, route);
       groups.push(
          ...(compositeOwn.length > 0
             ? [compositeOwn]
@@ -255,6 +254,27 @@ export function effectiveAncestorGateExprs(
       );
    }
    return groups;
+}
+
+/**
+ * The gate groups in force on a struct for one route: its own notes when it
+ * declares any, else what it inherits ({@link effectiveAncestorGateExprs}).
+ * A `query_source` is the exception: derivation is ADDITIVE
+ * (docs/authorize.md), so its own gate never sheds its base's and both come
+ * back, as separate groups that AND.
+ */
+export function gateExprsForRoute(
+   struct: SourceDef,
+   modelDef: ModelDef | undefined,
+   route: string,
+): string[][] {
+   const own = gateAtLevel(struct.annotations, route);
+   if (own.length === 0) {
+      return effectiveAncestorGateExprs(struct, modelDef, route, new Set());
+   }
+   return struct.type === "query_source"
+      ? [own, ...effectiveAncestorGateExprs(struct, modelDef, route, new Set())]
+      : [own];
 }
 
 /**

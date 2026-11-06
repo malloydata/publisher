@@ -12,6 +12,10 @@ SPDX-License-Identifier: MIT
 > Publisher is created and maintained by [Credible](https://www.credibledata.com), the company
 > behind the AI Analytics Engine. For where the open-source engine ends and Credible's hosted engine
 > begins, see [credibledata.com/malloy](https://www.credibledata.com/malloy).
+>
+> Publisher is a microservice: run it locally with your own permissions, or inside your cloud
+> behind the gateway that authenticates your users. Its access controls rely on that gateway; see
+> [the operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway).
 
 ## Examples
 

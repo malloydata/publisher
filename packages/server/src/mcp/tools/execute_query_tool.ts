@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { BadRequestError } from "../../errors";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
@@ -13,6 +14,11 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
+import {
+   accessIdentityOf,
+   withAccessRecord,
+} from "../../service/access_record";
+import type { Package } from "../../service/package";
 import { filterPublisherOwnedRenderLogs } from "../../service/report_manifest";
 import { EnvironmentStore } from "../../service/environment_store";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
@@ -21,6 +27,7 @@ import {
    classifyToolError,
    getModelForQuery,
 } from "../handler_utils";
+import type { RequestExtra } from "../request_extra";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
 import { buildQueryMetadataInput } from "../../service/query_metadata";
@@ -128,7 +135,7 @@ export function registerExecuteQueryTool(
       (offerHidden
          ? executeQueryShape
          : curatedShape) as typeof executeQueryShape,
-      async (params) => {
+      async (params, extra?: RequestExtra) => {
          const {
             environmentName,
             packageName,
@@ -148,130 +155,150 @@ export function registerExecuteQueryTool(
 
          const hasAdhocQuery = !!query;
          const hasNamedQuery = !!queryName;
-
-         if (!hasAdhocQuery && !hasNamedQuery) {
-            throw new McpError(
-               ErrorCode.InvalidParams,
-               MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS,
-            );
-         }
-         if (hasAdhocQuery && hasNamedQuery) {
-            throw new McpError(
-               ErrorCode.InvalidParams,
-               MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS,
-            );
-         }
-         const modelResult = await getModelForQuery(
-            environmentStore,
-            environmentName,
-            packageName,
-            modelPath,
-         );
-
-         if ("error" in modelResult) {
-            return jsonToolError(
-               "error://executeQuery/modelAccess",
-               modelResult.error,
-            );
-         }
-
-         const { model, environment, pkg } = modelResult;
+         const argumentError =
+            !hasAdhocQuery && !hasNamedQuery
+               ? MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
+               : hasAdhocQuery && hasNamedQuery
+                 ? MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
+                 : undefined;
+         let refusal: ErrorDetails | undefined;
+         let pkg: Package | undefined;
          // Shares the HTTP routes' slot pool so an agent loop cannot bypass
          // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on
          // the dashboard. A refusal throws into the catch below.
-         let querySlot: QuerySlotHandle | null = null;
+         let querySlot = null as QuerySlotHandle | null;
          try {
-            querySlot = tryAcquireQuerySlot("mcp:executeQuery");
-            // Built as the HTTP controller builds it: a connection's enforced
-            // properties describe the deployment, not the transport.
-            const queryMetadataInput = buildQueryMetadataInput({
-               environmentName,
-               environment,
-               pkg,
-               noLayersLogMessage:
-                  "[MCP Tool executeQuery] No query-metadata layers for connection",
-            });
-            // The two call modes differ only in which arguments carry the
-            // query; everything after the run is identical, so they share one
-            // path rather than two copies that can drift. Ad-hoc text runs on
-            // its own: a sourceName sent beside it is not passed on.
-            const target = query
-               ? { sourceName: undefined, queryName: undefined, query }
-               : { sourceName, queryName, query: undefined };
-            const {
-               result,
-               compactResult,
-               rowLimit,
-               rowLimitSource,
-               queryCorrelationId,
-            } = await runWithQueryTimeout(
-               (abortSignal) =>
-                  model.getQueryResults(
-                     target.sourceName,
-                     target.queryName,
-                     target.query,
-                     filterParams,
-                     undefined,
-                     givens as Record<string, GivenValue> | undefined,
-                     abortSignal,
-                     queryMetadataInput,
-                     // The envelope is built from `compactResult`, so cap
-                     // that shape: measuring the wrapped result would 413 on
-                     // bytes the agent never receives.
-                     "compact",
-                     // MCP sends no #(authorize) bypass, ever.
-                     false,
-                     includeHiddenFilesAndSources,
-                  ),
-               getQueryTimeoutMs(),
-            );
-            recordDeprecatedFilterUsage({ filterParams });
-
-            // Render-tag validation reads the FULL Malloy result: the tags live
-            // in its schema annotations, which the flat rows do not carry. It
-            // runs regardless of which shape is returned.
-            const renderLogs = filterPublisherOwnedRenderLogs(
-               validateRenderTags(result),
-               pkg.getModel(modelPath)?.carriesReportTag() ?? false,
-            );
-
-            const resultUri = buildMalloyUri(
+            return await withAccessRecord(
                {
                   environment: environmentName,
                   package: packageName,
-                  resourceType: "models" as const,
-                  resourceName: modelPath,
+                  modelPath,
+                  ...(queryName ? { queryName } : {}),
+                  ...(sourceName ? { requestedSource: sourceName } : {}),
+                  adHoc: hasAdhocQuery,
+                  ...accessIdentityOf(extra?.requestInfo?.headers),
                },
-               "result",
+               extra?.signal,
+               async (audit) => {
+                  // Inside the record, so a refused call is recorded; thrown below as the protocol error.
+                  if (argumentError) throw new BadRequestError(argumentError);
+                  const modelResult = await getModelForQuery(
+                     environmentStore,
+                     environmentName,
+                     packageName,
+                     modelPath,
+                  );
+                  if ("error" in modelResult) {
+                     refusal = modelResult.error;
+                     throw modelResult.cause;
+                  }
+                  const { model, environment } = modelResult;
+                  pkg = modelResult.pkg;
+                  const version = pkg.getVersionId();
+                  if (version) audit.version = version;
+                  querySlot = tryAcquireQuerySlot("mcp:executeQuery");
+                  // Built as the HTTP controller builds it: a connection's enforced
+                  // properties describe the deployment, not the transport.
+                  const queryMetadataInput = buildQueryMetadataInput({
+                     environmentName,
+                     environment,
+                     pkg,
+                     noLayersLogMessage:
+                        "[MCP Tool executeQuery] No query-metadata layers for connection",
+                  });
+                  // The two call modes differ only in which arguments carry the
+                  // query; everything after the run is identical, so they share one
+                  // path rather than two copies that can drift. Ad-hoc text runs on
+                  // its own: a sourceName sent beside it is not passed on.
+                  const target = query
+                     ? { sourceName: undefined, queryName: undefined, query }
+                     : { sourceName, queryName, query: undefined };
+                  const {
+                     result,
+                     compactResult,
+                     rowLimit,
+                     rowLimitSource,
+                     queryCorrelationId,
+                  } = await runWithQueryTimeout(
+                     (abortSignal) =>
+                        model.getQueryResults(
+                           audit,
+                           target.sourceName,
+                           target.queryName,
+                           target.query,
+                           filterParams,
+                           undefined,
+                           givens as Record<string, GivenValue> | undefined,
+                           abortSignal,
+                           queryMetadataInput,
+                           // The envelope is built from `compactResult`, so cap
+                           // that shape: measuring the wrapped result would 413 on
+                           // bytes the agent never receives.
+                           "compact",
+                           // MCP sends no #(authorize) bypass, ever.
+                           false,
+                           includeHiddenFilesAndSources,
+                        ),
+                     getQueryTimeoutMs(),
+                  );
+                  recordDeprecatedFilterUsage({ filterParams });
+
+                  // Render-tag validation reads the FULL Malloy result: the tags live
+                  // in its schema annotations, which the flat rows do not carry. It
+                  // runs regardless of which shape is returned.
+                  const renderLogs = filterPublisherOwnedRenderLogs(
+                     validateRenderTags(result),
+                     pkg.getModel(modelPath)?.carriesReportTag() ?? false,
+                  );
+
+                  const resultUri = buildMalloyUri(
+                     {
+                        environment: environmentName,
+                        package: packageName,
+                        resourceType: "models" as const,
+                        resourceName: modelPath,
+                     },
+                     "result",
+                  );
+
+                  const envelope = buildQueryEnvelope(
+                     compactResult,
+                     rowLimit,
+                     result,
+                     renderLogs.map((log) => log.message),
+                     undefined,
+                     rowLimitSource,
+                     queryCorrelationId,
+                  );
+
+                  // A capped or truncated result, and a broken render tag, are the
+                  // things an agent most needs to notice, so they are stated in text
+                  // rather than left for a client that parses the payload.
+                  const notes = [
+                     envelope.warning,
+                     envelope.renderLogErrors &&
+                        `Render tag problems: ${envelope.renderLogErrors.join("; ")}`,
+                  ].filter(Boolean);
+
+                  return jsonResource(resultUri, envelope, {
+                     space: 2,
+                     // BigInt reaches here: compactResult is raw driver output and
+                     // DuckDB returns count() as one.
+                     replacer: bigIntReplacer,
+                     text: notes.length > 0 ? notes.join("\n\n") : undefined,
+                  });
+               },
             );
-
-            const envelope = buildQueryEnvelope(
-               compactResult,
-               rowLimit,
-               result,
-               renderLogs.map((log) => log.message),
-               undefined,
-               rowLimitSource,
-               queryCorrelationId,
-            );
-
-            // A capped or truncated result, and a broken render tag, are the
-            // things an agent most needs to notice, so they are stated in text
-            // rather than left for a client that parses the payload.
-            const notes = [
-               envelope.warning,
-               envelope.renderLogErrors &&
-                  `Render tag problems: ${envelope.renderLogErrors.join("; ")}`,
-            ].filter(Boolean);
-
-            return jsonResource(resultUri, envelope, {
-               space: 2,
-               // BigInt reaches here: compactResult is raw driver output and
-               // DuckDB returns count() as one.
-               replacer: bigIntReplacer,
-               text: notes.length > 0 ? notes.join("\n\n") : undefined,
-            });
          } catch (queryError) {
+            if (argumentError) {
+               throw new McpError(ErrorCode.InvalidParams, argumentError);
+            }
+            if (refusal) {
+               return jsonToolError(
+                  "error://executeQuery/modelAccess",
+                  refusal,
+               );
+            }
             logger.error(
                `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },
@@ -291,7 +318,7 @@ export function registerExecuteQueryTool(
             const suggestions = [...errorDetails.suggestions];
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
-                  pkg.getVersionId() !== undefined
+                  pkg?.getVersionId() !== undefined
                      ? "This package serves published versions, which never change, so reload_package does not pick up a source or view added or renamed on disk. Publish the change as a new version (bump `version` in publisher.json), then query it once it is the package's latest."
                      : "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
                );

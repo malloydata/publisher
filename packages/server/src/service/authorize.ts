@@ -492,6 +492,29 @@ export function assertNoAuthorizeTagLike(callerText: string): void {
    refuseCallerAuthorizeAnnotation();
 }
 
+/** A superset of the spellings of `#(classification)` and `#(carries)`, matched like {@link AUTHORIZE_TAG_LIKE}. */
+const CLASSIFICATION_TAG_LIKE = new RegExp(
+   String.raw`##?\|?[ \t]*(?:[([{<][ \t]*)?(?:classification|carries)(?=[)\]}>]|[ \t]|$)`,
+   "iu",
+);
+
+/**
+ * Reject caller text that declares a `#(classification)` or `#(carries)`: the
+ * caller's query is judged by the classes the author declared, so a relabel or
+ * a raised ceiling written in the query would decide its own check. Matched
+ * anywhere in the text, so a false positive is a clear 400.
+ */
+export function assertNoCallerClassificationAnnotation(
+   callerText: string,
+): void {
+   if (!CLASSIFICATION_TAG_LIKE.test(callerText)) return;
+   throw new BadRequestError(
+      "A `classification` or `carries` annotation is not permitted in " +
+         "caller-submitted Malloy text. Classes are declared by the model " +
+         "author on the field or source; a query is checked against them.",
+   );
+}
+
 function refuseCallerAuthorizeAnnotation(): never {
    // A caller-input rejection, so 400 — not ModelCompilationError's 424, which
    // reads as "the package is broken".

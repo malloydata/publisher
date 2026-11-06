@@ -13,6 +13,7 @@
 // Signals: the live sources return region_name 'LIVE' and amount 10; the bound
 // (materialized) tables return 'STORE' and amount 99 — so the value observed
 // tells which path ran.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -80,11 +81,11 @@ const REGIONS_BINDING: ServeBinding = {
 
 const tmpDirs: string[] = [];
 
-async function buildModel(): Promise<Model> {
+async function buildModel(src: string = MODEL_SRC): Promise<Model> {
    const dir = mkdtempSync(join(tmpdir(), "mz-join-"));
    tmpDirs.push(dir);
    const file = join(dir, "m.malloy");
-   writeFileSync(file, MODEL_SRC);
+   writeFileSync(file, src);
    const fileUrl = pathToFileURL(file).toString();
 
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
@@ -100,7 +101,7 @@ async function buildModel(): Promise<Model> {
 
    // Register the source under its real file:// URL so the compiled modelDef's
    // locations point at the file liftText reads back from disk.
-   const urlReader = new InMemoryURLReader(new Map([[fileUrl, MODEL_SRC]]));
+   const urlReader = new InMemoryURLReader(new Map([[fileUrl, src]]));
    const runtime = new Runtime({
       urlReader,
       connections: new FixedConnectionMap(connMap, "duckdb"),
@@ -141,6 +142,7 @@ async function buildModel(): Promise<Model> {
 /** Run a query and return the first result row. */
 async function runRow<T>(model: Model, query: string): Promise<T> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,
@@ -166,6 +168,30 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
       const row = await runRow<{ region_name: string }>(model, JOIN_QUERY);
       expect(row.region_name).toBe("STORE"); // join ran over the bound tables
+   });
+
+   it("records the classified fields of a query it serves from storage", async () => {
+      setStorageMode("on");
+      const model = await buildModel(
+         MODEL_SRC.replace(
+            "  measure: total",
+            '  #(classification) "phi.direct_identifier"\n  dimension: amt is amount\n  measure: total',
+         ),
+      );
+      model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
+      const audit = unrecordedAudit();
+      await model.getQueryResults(
+         audit,
+         undefined,
+         undefined,
+         "run: orders -> { group_by: amt }",
+         {},
+         true,
+      );
+      expect(audit.servedFrom).toBe("storage");
+      expect(audit.summary?.fieldsRead).toEqual([
+         { path: "amt", classifications: ["phi.direct_identifier"] },
+      ]);
    });
 
    it("serves a named view (grouping by a joined field) from the materialized tables", async () => {
@@ -256,6 +282,7 @@ async function runGivens(
    query: string,
 ): Promise<{ region_name?: string; t: number }> {
    const res = await model.getQueryResults(
+      unrecordedAudit(),
       undefined,
       undefined,
       query,

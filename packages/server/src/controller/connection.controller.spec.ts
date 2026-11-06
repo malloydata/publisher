@@ -178,6 +178,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(runSQL.calledOnce).toBe(true);
@@ -202,6 +206,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const parsed = JSON.parse(result.data ?? "") as { rows: unknown[] };
@@ -220,6 +228,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(PayloadTooLargeError);
       await expect(
@@ -228,6 +240,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toThrow("more than 3 rows");
    });
@@ -238,7 +254,16 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
 
-      await controller.getConnectionQueryData("env", "conn", "SHOW TABLES", "");
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SHOW TABLES",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
 
       expect(runSQL.firstCall.args[0]).toBe("SHOW TABLES");
       const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
@@ -256,6 +281,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(runSQL.firstCall.args[0]).toBe("SELECT a FROM t");
@@ -270,7 +299,16 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
-      await controller.getConnectionQueryData("env", "conn", "SELECT 1", "");
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
 
       const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
       // Default cap is 100_000, so we request cap+1 = 100_001.
@@ -287,6 +325,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT 1",
          JSON.stringify({ rowLimit: 5 }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
@@ -303,6 +345,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT 1",
          JSON.stringify({ rowLimit: 50, abortSignal: {} }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const opts = runSQL.firstCall.args[1] as {
@@ -346,6 +392,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
                "conn",
                sqlStatement as unknown as string,
                "",
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -368,6 +418,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
                "conn",
                "SELECT 1",
                options as unknown as string,
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -383,12 +437,20 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          "conn",
          "SELECT 1",
          undefined as unknown as string,
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
       await controller.getConnectionQueryData(
          "env",
          "conn",
          "SELECT 1",
          null as unknown as string,
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(runSQL.callCount).toBe(2);
@@ -419,6 +481,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
                "conn",
                "SELECT 1",
                options,
+               undefined,
+               undefined,
+               undefined,
+               {},
             ),
          ).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -435,6 +501,10 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
             "conn",
             "SELECT 1",
             "{not json",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(BadRequestError);
       expect(runSQL.called).toBe(false);
@@ -464,7 +534,16 @@ describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
       const { controller } = buildController(runSQL);
 
       const thrown = await controller
-         .getConnectionQueryData("env", "conn", "SELECT 1", "")
+         .getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         )
          .catch((e: unknown) => e);
 
       expect(thrown).toBe(error);
@@ -498,7 +577,16 @@ describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
          .resolves(fakeConnection);
 
       const thrown = await controller
-         .getConnectionQueryData("env", "conn", "SELECT 1", "")
+         .getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         )
          .catch((e: unknown) => e);
 
       expect(thrown).toBe(error);
@@ -577,6 +665,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(seenSql.value).toBe("SELECT a FROM t");
@@ -596,6 +688,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT a FROM t",
          JSON.stringify({ rowLimit: 10 }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(seenOptions.value?.rowLimit).toBe(10);
@@ -615,6 +711,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(PayloadTooLargeError);
       await expect(
@@ -623,6 +723,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT a FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toThrow("more than 2 rows");
    });
@@ -645,6 +749,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT s FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(PayloadTooLargeError);
       await expect(
@@ -653,6 +761,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
             "conn",
             "SELECT s FROM t",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toThrow("exceeded 60 bytes");
    });
@@ -674,6 +786,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT s FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       const parsed = JSON.parse(result.data ?? "") as { rows: QueryRecord[] };
@@ -693,6 +809,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT a FROM t",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       expect(seenOptions.value?.rowLimit).toBeUndefined();
@@ -711,6 +831,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
          "conn",
          "SELECT 1",
          JSON.stringify({ abortSignal: {} }),
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
 
       // The controller clears the caller-supplied abortSignal (which
@@ -749,7 +873,16 @@ describe("ConnectionController.getConnectionQueryData admission gate", () => {
       });
 
       await expect(
-         controller.getConnectionQueryData("env", "conn", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(ServiceUnavailableError);
 
       // The gate must fire *before* the connector — no SQL should ever
@@ -762,7 +895,16 @@ describe("ConnectionController.getConnectionQueryData admission gate", () => {
       const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
       const { controller, assertCanAdmitQuery } = buildController(runSQL);
 
-      await controller.getConnectionQueryData("env", "conn", "SELECT 1", "");
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
 
       expect(assertCanAdmitQuery.called).toBe(true);
       expect(runSQL.called).toBe(true);
@@ -794,7 +936,16 @@ describe("ConnectionController.getConnectionQueryData query timeout", () => {
 
       const { QueryTimeoutError } = await import("../errors");
       await expect(
-         controller.getConnectionQueryData("env", "conn", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(QueryTimeoutError);
 
       // Critical invariant: the abort signal MUST actually fire
@@ -862,10 +1013,14 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       );
 
       await expect(
-         controller.getConnectionTemporaryTable("env", "conn", [
-            "SELECT 1",
-            "SELECT 2",
-         ] as unknown as string),
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            ["SELECT 1", "SELECT 2"] as unknown as string,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(BadRequestError);
 
       expect(manifestTemporaryTable.called).toBe(false);
@@ -887,7 +1042,14 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       );
 
       await expect(
-         controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            "SELECT 1",
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(ServiceUnavailableError);
 
       // Load-shedding invariant: the gate must fire BEFORE any
@@ -907,6 +1069,9 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
          "env",
          "conn",
          "SELECT 1",
+         undefined,
+         undefined,
+         {},
       );
 
       expect(assertCanAdmitQuery.called).toBe(true);
@@ -929,7 +1094,14 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
 
       const { QueryTimeoutError } = await import("../errors");
       await expect(
-         controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            "SELECT 1",
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(QueryTimeoutError);
    });
 });
@@ -1266,6 +1438,10 @@ describe("ConnectionController.getConnectionQueryData statement rejection", () =
             "conn",
             "SELECT sundance_name FROM public.spaces",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(InvalidArgumentError);
    });
@@ -1290,6 +1466,10 @@ describe("ConnectionController.getConnectionQueryData statement rejection", () =
             "conn",
             "SELECT 1 FROM public.spaces",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(TableNotFoundError);
    });
@@ -1331,6 +1511,10 @@ describe("ConnectionController.getConnectionQueryData statement rejection", () =
             "conn",
             "SELECT sundance_name FROM public.spaces",
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(InvalidArgumentError);
    });
@@ -1340,7 +1524,16 @@ describe("ConnectionController.getConnectionQueryData statement rejection", () =
          sinon.stub().rejects(new Error("something the driver said")),
       );
       await expect(
-         controller.getConnectionQueryData("env", "conn", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(ConnectionError);
    });
 });
@@ -1363,6 +1556,9 @@ describe("ConnectionController.getConnectionTemporaryTable statement rejection",
             "env",
             "conn",
             "SELECT sundance_name FROM public.spaces",
+            undefined,
+            undefined,
+            {},
          ),
       ).rejects.toBeInstanceOf(InvalidArgumentError);
    });
@@ -1420,7 +1616,16 @@ describe("ConnectionController on a database that cannot be reached", () => {
    it("answers sqlQuery with a connection failure", async () => {
       const controller = controllerOn(await deadPostgres());
       await expect(
-         controller.getConnectionQueryData("env", "warehouse", "SELECT 1", ""),
+         controller.getConnectionQueryData(
+            "env",
+            "warehouse",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         ),
       ).rejects.toBeInstanceOf(ConnectionFailedError);
    });
 
@@ -1450,7 +1655,14 @@ describe("ConnectionController on a database that cannot be reached", () => {
       [
          "sqlTemporaryTable",
          (c: ConnectionController) =>
-            c.getConnectionTemporaryTable("env", "warehouse", "SELECT 1"),
+            c.getConnectionTemporaryTable(
+               "env",
+               "warehouse",
+               "SELECT 1",
+               undefined,
+               undefined,
+               {},
+            ),
       ],
    ])("answers %s with a connection failure", async (_route, call) => {
       const controller = controllerOn(await deadPostgres());
@@ -1587,7 +1799,16 @@ describe("ConnectionController connection lookup failures", () => {
          new UnconfiguredConnectionError("warehuose"),
       );
       const error = await controller
-         .getConnectionQueryData("env", "warehuose", "SELECT 1", "")
+         .getConnectionQueryData(
+            "env",
+            "warehuose",
+            "SELECT 1",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         )
          .catch((e) => e);
       expect(error).toBeInstanceOf(ConnectionNotFoundError);
       expect(internalErrorToHttpError(error, { log: false })).toEqual({
@@ -1731,6 +1952,10 @@ describe("raw SQL on a managed database", () => {
          "sales",
          "SELECT * FROM sales.main.orders",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
       expect(runSQL.calledOnce).toBe(true);
       expect(JSON.parse(result.data!)).toEqual({
@@ -1754,6 +1979,10 @@ describe("raw SQL on a managed database", () => {
             "sales",
             sql,
             "",
+            undefined,
+            undefined,
+            undefined,
+            {},
          );
          await expect(refused).rejects.toBeInstanceOf(BadRequestError);
          expect(runSQL.called).toBe(false);
@@ -1766,6 +1995,9 @@ describe("raw SQL on a managed database", () => {
          "env",
          "sales",
          "SELECT 1",
+         undefined,
+         undefined,
+         {},
       );
       await expect(refused).rejects.toBeInstanceOf(BadRequestError);
       await expect(refused).rejects.toThrow("cannot create a temporary table");
@@ -1782,6 +2014,10 @@ describe("raw SQL on a managed database", () => {
          "lake",
          "SELECT 1; SELECT 2",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
       expect(runSQL.calledOnce).toBe(true);
    });
@@ -1816,6 +2052,10 @@ describe("raw SQL on a managed database", () => {
          "sales",
          "SELECT 1; SET threads = 1",
          "",
+         undefined,
+         undefined,
+         undefined,
+         {},
       );
       await expect(refused).rejects.toThrow("config unreadable");
       expect(runSQL.called).toBe(false);

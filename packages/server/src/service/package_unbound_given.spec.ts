@@ -11,6 +11,7 @@
  * One `PackageLoadPool` is shared across the cases for the reason given in
  * `tests/component/package_worker_path.component.spec.ts`.
  */
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -203,9 +204,15 @@ describe("a query that bakes a default-less given loads", () => {
          expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(
             true,
          );
-         const run = await model.executeNotebookCell(1, undefined, false, {
-            ORG: 2,
-         });
+         const run = await model.executeNotebookCell(
+            unrecordedAudit(),
+            1,
+            undefined,
+            false,
+            {
+               ORG: 2,
+            },
+         );
          expect(count(run.result)).toBe(2);
       });
    });
@@ -224,6 +231,7 @@ describe("a query that bakes a default-less given loads", () => {
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const model = pkg.getModel("m.malloy")!;
       const withGiven = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          "for_org",
          undefined,
@@ -233,7 +241,12 @@ describe("a query that bakes a default-less given loads", () => {
       );
       expect(count(withGiven.result)).toBe(2);
       await expect(
-         model.getQueryResults(undefined, "for_org", undefined),
+         model.getQueryResults(
+            unrecordedAudit(),
+            undefined,
+            "for_org",
+            undefined,
+         ),
       ).rejects.toThrow();
    });
 
@@ -242,6 +255,7 @@ describe("a query that bakes a default-less given loads", () => {
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
       const model = pkg.getModel("m.malloy")!;
       const run = await model.getQueryResults(
+         unrecordedAudit(),
          undefined,
          "all_gated",
          undefined,

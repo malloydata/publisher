@@ -16,6 +16,25 @@ import { invalidBooleanMessage, parseBooleanParam } from "./query_param_utils";
 import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 
 /**
+ * Read a boolean query param, keeping absent distinct from `false`, and throw
+ * a {@link BadRequestError} for an unusable value, for a route that records
+ * its refusals before answering them.
+ */
+export function optionalBooleanParam(
+   req: Pick<Request, "query" | "path" | "method">,
+   name: string,
+): boolean | undefined {
+   const raw = req.query[name];
+   const parsed = parseBooleanParam(raw);
+   if (!parsed.ok) {
+      throw new BadRequestError(
+         invalidBooleanMessage(name, raw, req.method, req.path),
+      );
+   }
+   return raw === undefined ? undefined : parsed.value;
+}
+
+/**
  * Read a boolean query param, keeping absent distinct from `false`, and answer
  * 400 for an unusable value. Only for params that need the distinction, such
  * as `bypass_filters`, whose Deprecation header fires on `!== undefined`;
@@ -26,18 +45,13 @@ export function optionalBooleanParamOr400(
    res: Response,
    name: string,
 ): { ok: true; value: boolean | undefined } | { ok: false } {
-   const raw = req.query[name];
-   const parsed = parseBooleanParam(raw);
-   if (parsed.ok) {
-      return { ok: true, value: raw === undefined ? undefined : parsed.value };
+   try {
+      return { ok: true, value: optionalBooleanParam(req, name) };
+   } catch (error) {
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+      return { ok: false };
    }
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(
-         invalidBooleanMessage(name, raw, req.method, req.path),
-      ),
-   );
-   res.status(status).json(json);
-   return { ok: false };
 }
 
 /**

@@ -31,7 +31,6 @@ import {
 import {
    assertNoAuthorizeNearMisses,
    authorizeAnnotationRoute,
-   collectAuthorizeExprsForRoute,
    collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
    type AuthorizeMap,
@@ -52,7 +51,7 @@ import {
 } from "./filter";
 import {
    derivedStructsReachable,
-   effectiveAncestorGateExprs,
+   gateExprsForRoute,
 } from "./gate_registry_walk";
 
 /** A `#(filter)` definition enriched with the dimension's Malloy type. */
@@ -426,7 +425,6 @@ export function extractSourcesFromModelDef(
 
          // Own-wins-or-inherits independently PER ROUTE: an own note on one
          // route never sheds an inherited gate on the other.
-         const ownNotes = ownLevelNoteTexts(struct.annotations);
          const ownAuthorizeNotes = ownLevelNotes(struct.annotations).filter(
             (note) => containsAuthorizeAnnotationTag([note.text]),
          );
@@ -459,18 +457,11 @@ export function extractSourcesFromModelDef(
          // Per route, so each wire field reports only its own route.
          const routeGroupsByRoute = new Map<string, string[][]>();
          for (const route of CANONICAL_AUTHORIZE_ROUTES) {
-            const ownExprsForRoute = collectAuthorizeExprsForRoute(
-               ownNotes,
+            const groupsForRoute = gateExprsForRoute(
+               struct as SourceDef,
+               modelDef,
                route,
             );
-            const groupsForRoute =
-               ownExprsForRoute.length > 0
-                  ? [ownExprsForRoute]
-                  : effectiveAncestorGateExprs(
-                       struct as SourceDef,
-                       modelDef,
-                       route,
-                    );
             for (const exprs of groupsForRoute) {
                groupsForSource.push({ route, exprs });
             }
