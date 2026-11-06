@@ -285,9 +285,11 @@ Reads `#(carries)` does not yet hold to the list:
 - A field that is both read and filtered on loses the filter's contribution.
 - Per query, a passthrough relabel read through a joined `#(carries)` source is charged only its
   declared class. The package load refuses it, so this reaches only a model served without the load gates.
-- In a multi-stage `->` source, a downgrade in a middle stage is not checked, and same-named filter
-  inputs from different stages are merged.
-- An `index:` query is refused in any model that reaches a `#(carries)`, even on a source with no ceiling.
+- In a multi-stage `->` source, a downgrade in a middle stage is not checked. An earlier stage's
+  filter is merged by name with a later filter or value read of the same name, so its class can be lost.
+
+The ceiling also refuses one shape it could serve: an `index:` query, in any model that reaches a
+`#(carries)`, even on a source with no ceiling.
 
 ## What it is not
 
