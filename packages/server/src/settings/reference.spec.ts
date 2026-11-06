@@ -6,9 +6,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { withSettings } from "../test_helpers/settings_env";
-import { REGISTRY, Settings } from ".";
+import { REGISTRY, Settings, type SettingKey } from ".";
 import {
+   exampleConfigText,
    helpText,
+   inBlockWithLeaves,
    REFERENCE_END,
    REFERENCE_START,
    settingsLine,
@@ -79,6 +81,66 @@ describe("the generated settings reference", () => {
       const table = settingsReferenceTable();
       expect(table).toContain("| `host` when given, else `127.0.0.1` |");
       expect(table).not.toMatch(/\{(host|mcp\.host|root|config)\}/);
+   });
+});
+
+describe("publisher.config.json.example", () => {
+   const EXAMPLE = path.resolve(
+      import.meta.dir,
+      "../../../../publisher.config.json.example",
+   );
+   const readExample = () =>
+      fs.readFileSync(EXAMPLE, "utf8").replaceAll("\r\n", "\n");
+
+   it("is what the registry generates (run `bun run generate-settings-reference` after a registry change)", () => {
+      expect(readExample()).toBe(exampleConfigText());
+   });
+
+   it("holds every setting the file can hold, at its key", () => {
+      const example = JSON.parse(readExample()) as Record<string, unknown>;
+      const at = (key: string) =>
+         key
+            .split(".")
+            .reduce<unknown>(
+               (node, part) =>
+                  node !== null && typeof node === "object"
+                     ? (node as Record<string, unknown>)[part]
+                     : undefined,
+               example,
+            );
+      for (const entry of REGISTRY) {
+         // A launch setting decides which file is read, and `retrieval` is
+         // read as a whole block (see exampleConfig), so neither is there.
+         if (entry.kind === "launch" || inBlockWithLeaves(entry.key)) {
+            expect(at(entry.key), entry.key).toBeUndefined();
+            continue;
+         }
+         expect(at(entry.key), entry.key).not.toBeUndefined();
+      }
+      expect(inBlockWithLeaves("retrieval.llm.apiKey")).toBe(true);
+      expect(inBlockWithLeaves("mcp.port")).toBe(false);
+   });
+
+   it("changes nothing when copied in as the config, and warns about nothing", () => {
+      const read = (file?: Record<string, unknown>) =>
+         withSettings(file === undefined ? {} : { file }, () => {
+            const settings = Settings.current();
+            return {
+               warnings: settings.warnings.map((warning) => warning.message),
+               values: Object.fromEntries(
+                  REGISTRY.map((entry) => [
+                     entry.key,
+                     settings.get(entry.key as SettingKey) as unknown,
+                  ]),
+               ),
+            };
+         });
+      const copied = read(JSON.parse(readExample()));
+      expect(copied.warnings).toEqual([]);
+      // `mcp.host` follows `host` when it is given, so `host` is `null`
+      // there: given its own default, it would move MCP onto every interface.
+      expect(copied.values["mcp.host"]).toBe("127.0.0.1");
+      expect(copied.values).toEqual(read().values);
    });
 });
 

@@ -67,6 +67,69 @@ export function withReferenceTable(doc: string): string {
    );
 }
 
+/**
+ * `publisher.config.json.example`: every setting the file can hold, at its
+ * key, with its default, so a copy of it changes nothing. A launch setting is
+ * left out, since it decides which file is read. `null`, which the file reads
+ * as unset, stands where the default is unset, follows another setting
+ * (`mcp.host`), or is a secret's, which the file can give only as a `${VAR}`
+ * reference. It also stands for a setting another default follows (`host`,
+ * named `{host}` in `mcp.host`'s default text): given its own default, it
+ * would still count as given, and move the other with it.
+ *
+ * A structured setting whose leaves are settings of their own (`retrieval`)
+ * is left out with its leaves. Its own parser reads the block as a whole, and
+ * a block of unset leaves is not the same as no block: an `llm` without the
+ * provider and model, which are not settings, is refused.
+ */
+export function exampleConfig(): Record<string, unknown> {
+   const followed = new Set(
+      REGISTRY.flatMap((entry) =>
+         [
+            ...(entry.defaultText ?? "").matchAll(/\{([a-zA-Z][a-zA-Z.]*)\}/g),
+         ].map((match) => match[1]),
+      ),
+   );
+   const example: Record<string, unknown> = {};
+   for (const entry of REGISTRY) {
+      if (entry.kind === "launch" || inBlockWithLeaves(entry.key)) continue;
+      const fallback = entry.default;
+      const value =
+         entry.secret ||
+         followed.has(entry.key) ||
+         fallback === undefined ||
+         typeof fallback === "function"
+            ? null
+            : fallback;
+      let node = example;
+      const parts = entry.key.split(".");
+      for (const part of parts.slice(0, -1)) {
+         node = (node[part] ??= {}) as Record<string, unknown>;
+      }
+      node[parts[parts.length - 1]] = value;
+   }
+   return example;
+}
+
+/** {@link exampleConfig} as the checked-in file holds it. */
+export function exampleConfigText(): string {
+   return `${JSON.stringify(exampleConfig(), null, 2)}\n`;
+}
+
+/**
+ * Whether `key` is a structured setting whose leaves are settings of their
+ * own (`retrieval`), or one of those leaves: what {@link exampleConfig} leaves
+ * out.
+ */
+export function inBlockWithLeaves(key: string): boolean {
+   return REGISTRY.some(
+      (entry) =>
+         entry.kind === "structured" &&
+         REGISTRY.some((other) => other.key.startsWith(`${entry.key}.`)) &&
+         (key === entry.key || key.startsWith(`${entry.key}.`)),
+   );
+}
+
 /** `--help`: today's flags, with what each sets and its default. */
 export function helpText(): string {
    const flagged = NAMED.filter((entry) => flagSpecs(entry).length > 0).map(

@@ -17,6 +17,13 @@ variables. Every CLI flag below has an env-var equivalent; pass either.
 Pass `--config <path>` to point the server at a specific `publisher.config.json`, or place a
 `publisher.config.json` in the directory you launch from. Both forms override the bundled default.
 
+[`publisher.config.json.example`](../publisher.config.json.example) lists every setting the file can
+hold, at its key, with its default, or `null` where it has none, so a copy of it changes nothing; keep
+the keys you change. It leaves out the launch settings, which decide which file is read, and the
+`retrieval` block, which is read as a whole (see
+[Providers and the retrieval settings](#providers-and-the-retrieval-settings)). It is generated from
+the settings registry by `bun run generate-settings-reference`, and CI fails when it falls behind.
+
 ```bash
 # Point at a directory that holds your own publisher.config.json + packages
 npx @malloy-publisher/server --port 4000 --config /path/to/your/publisher.config.json
