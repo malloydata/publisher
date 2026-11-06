@@ -92,7 +92,13 @@ async function abandonQuery(
    const server = buildRouteApp({
       queryController: {
          getQuery: async (...args: unknown[]) => {
-            await query(args[args.length - 1] as AbortSignal);
+            // Found by type: the route passes more after the signal (the
+            // caller's identity, for the access record).
+            const signal = args.find(
+               (arg): arg is AbortSignal => arg instanceof AbortSignal,
+            );
+            if (!signal) throw new Error("the route passed no AbortSignal");
+            await query(signal);
             return { result: "[]" } as never;
          },
       },
@@ -154,7 +160,7 @@ describe("query concurrency slot after the client disconnects", () => {
 
 describe("query cancellation when the client disconnects", () => {
    it("aborts the signal the route handed the query", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "4";
+      installCap("4");
       let signal: AbortSignal | undefined;
       // A query that only ends when it is cancelled.
       const server = await abandonQuery(
