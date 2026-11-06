@@ -33,9 +33,10 @@ policy over Synthea data, plus five changes that each break a control
 
 ## What the check does
 
-It reads what the served package publishes from three places: the package read's
-[classification summary](classification.md#the-classification-summary-on-the-package-read) (each
-domain's `#(carries)` and its fields by class), the model read (each domain's gates, and which
+It reads what the served package publishes from three places: the package's
+[classification summary](classification.md#the-classification-summary)
+(`GET …/packages/{pkg}/classification`: each domain's `#(carries)` and its fields by class), the
+model read (each domain's gates, and which
 givens are `#(secure)`), and `get_context` over the MCP endpoint (each published field with its
 classes). It reads `GET /api/v0/status` for load refusals. Then:
 

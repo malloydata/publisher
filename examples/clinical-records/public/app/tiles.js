@@ -266,7 +266,7 @@ export const CONTROLS = [
     id: "AU-02",
     text: "An inventory of every domain, gate, class and field, from the served model.",
     evidence: "server",
-    note: "This page reads it: the package read's classification summary and the model read.",
+    note: "This page reads it: the package's classification summary and the model read.",
   },
   {
     id: "AU-03",

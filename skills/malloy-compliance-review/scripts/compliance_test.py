@@ -16,6 +16,7 @@ import pathlib
 import re
 import tempfile
 import unittest
+import urllib.error
 
 import compliance as c
 
@@ -616,6 +617,35 @@ class OutputTest(unittest.TestCase):
         self.assertIn("| AU-01 | Not provable here |", att)
         self.assertIn("Signature:", att)
 
+
+
+class ClassificationSummaryRead(unittest.TestCase):
+    """The summary comes from its own route; an older server's package read
+    carries it instead."""
+
+    def server(self, routes):
+        srv = c.Server("http://fake", "env", "pkg", "index.malloy")
+
+        def get_json(path):
+            if path in routes:
+                return routes[path]
+            raise urllib.error.HTTPError(path, 404, "Not Found", None, None)
+
+        srv.get_json = get_json
+        return srv
+
+    def test_the_route_is_read(self):
+        summary = {"sources": [{"name": "chart"}]}
+        srv = self.server({"/classification": summary})
+        self.assertEqual(srv.classification_summary({}), summary)
+
+    def test_an_older_server_is_read_from_the_package(self):
+        summary = {"sources": [{"name": "chart"}]}
+        srv = self.server({})
+        self.assertEqual(srv.classification_summary({"classification": summary}), summary)
+
+    def test_none_anywhere_is_no_domains(self):
+        self.assertEqual(self.server({}).classification_summary({}), {"sources": []})
 
 if __name__ == "__main__":
     unittest.main()

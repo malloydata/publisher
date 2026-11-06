@@ -55,7 +55,7 @@ Rules for drafting:
 - **Name a persona for every workforce class the policy names**, and one that should be refused
   (a partner without an agreement). The refusals are half of what the access check proves.
 - **Givens come from the model.** A persona's givens are the model's `#(secure)` givens, named
-  exactly; `get_context` lists them on each domain, and the package read lists every one under `secureGivens`.
+  exactly; `get_context` lists them on each domain, and `GET …/packages/{pkg}/entities` marks each with `secure: true` in its model's `givens`.
 
 Show the register to the user and stop for approval. It is the policy owner's statement of what
 the policy means; you drafted it.
@@ -69,7 +69,7 @@ python3 <skills>/malloy-compliance-review/scripts/compliance.py check \
   --environment <env> --package <pkg> --register policies/controls.json --out-dir review
 ```
 
-It reads the package read's classification summary, the model read's gates, `get_context` over
+It reads the package's classification summary (`GET …/packages/{pkg}/classification`), the model read's gates, `get_context` over
 the MCP endpoint (`--mcp`, default `http://127.0.0.1:4040/mcp`) and `GET /api/v0/status`. It probes
 every published domain as every persona with a count, queries every source the package does not
 publish (read from the `.malloy` files in the current directory, or `--package-dir`) to confirm it

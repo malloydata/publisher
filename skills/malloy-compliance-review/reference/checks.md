@@ -5,21 +5,21 @@ SPDX-License-Identifier: MIT
 
 # The checks
 
-Each check reads one of four things: the package read's classification summary (each published
+Each check reads one of four things: the package's classification summary (`GET …/classification`: each published
 domain's `#(carries)` and its field count by class), the model read (each domain's gates and which
 givens are `#(secure)`), `get_context` (each published dimension with its classes), or the server
 status. The rest are aggregate queries run as the register's personas. None reads a row.
 
 | Check | Fails when | Reads |
 | --- | --- | --- |
-| `inventory` | The package read has no classification summary, or `get_context` could not list the published fields | package read, `get_context` |
+| `inventory` | The classification summary lists no source, or `get_context` could not list the published fields | classification summary, `get_context` |
 | `loads` | The package did not load, or serves a stale model because its latest files were refused. One finding per refusal, tagged with the domain and kind (`ceiling`, `join`) | `/api/v0/status` |
 | `refusals` | Never fails on a refusal: a refused change is evidence that a violating change is not deployed | `/api/v0/status` |
-| `coverage` | A published field has no class. A field that declares a lower class than the fields it reads (a `classification-downgrade` warning) needs review | package read |
+| `coverage` | A published field has no class. A field that declares a lower class than the fields it reads (a `classification-downgrade` warning) needs review | classification summary |
 | `gated` | A published domain has neither `#(authorize)` nor a row filter | model read |
 | `secure_gates` | A gate reads a given that is not `#(secure)` | model read |
 | `locked_bases` | A source the package does not publish answers a count to an identity holding every role the register names. Its sources are read from the package's `.malloy` files and queried through each file's own path; with no files found, or a probe the server neither answered nor refused, it needs review | package files, a count per source |
-| `ceiling` | A domain declares no `#(carries)`, declares a class its `must_not_carry` forbids, or serves a class beyond it | package read, register |
+| `ceiling` | A domain declares no `#(carries)`, declares a class its `must_not_carry` forbids, or serves a class beyond it | classification summary, register |
 | `access` | A persona's outcome on a domain differs from the register, a gated domain answers a caller with no givens, or the register names a domain the package does not publish. A probe the server neither answered nor refused needs review | a count per domain per persona, and per gated domain with no givens |
 | `values` | A field's values prove more than its class allows, a de-identified domain serves day dates, five-digit ZIPs or uncapped values. Free text there needs review | `get_context`, an aggregate profile per field |
 

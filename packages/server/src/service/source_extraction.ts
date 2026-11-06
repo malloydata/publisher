@@ -44,7 +44,11 @@ import {
    AUTHORIZE_ROUTE,
 } from "./authorize_routes";
 import { modelInfoOf } from "./model_info";
-import { parseFilters, type FilterDefinition } from "./filter";
+import {
+   parseFilters,
+   sourceFilterNotes,
+   type FilterDefinition,
+} from "./filter";
 import {
    derivedStructsReachable,
    gateExprsForRoute,
@@ -391,15 +395,7 @@ export function extractSourcesFromModelDef(
          const sourceName = struct.as || struct.name;
          const annotations = annotationTexts(struct.annotations);
 
-         const collected: string[][] = [];
-         let cur = struct.annotations;
-         while (cur) {
-            if (cur.blockNotes) {
-               collected.push(cur.blockNotes.map((note) => note.text));
-            }
-            cur = cur.inherits;
-         }
-         const allAnnotations = collected.reverse().flat();
+         const allAnnotations = sourceFilterNotes(struct.annotations);
 
          let filters: ExtractedFilter[] | undefined;
          if (allAnnotations.length > 0) {

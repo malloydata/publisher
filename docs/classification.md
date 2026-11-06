@@ -145,16 +145,17 @@ refused rather than enforced, because it would make every field a leak. A refuse
 on publish and reload, and the package is absent from `list_packages` and reported in
 `get_status`'s `loadErrors` with the message, like any other load failure.
 
-## The classification summary on the package read
+## The classification summary
 
-`GET …/packages/{pkg}` carries `classification`: for each published entry point, the classes its
+`GET …/packages/{pkg}/classification` returns, for each published entry point, the classes its
 `#(carries)` declares and how many of its fields carry each class, inherited classes included,
-with the count left unclassified. It is on the single-package read only, never on a listing, and
-it covers only the sources discovery shows, so it reveals nothing curation hides. A source locked
-to every caller is left out, and the field is absent when nothing published carries a class.
+with the count left unclassified. It is a single-package read, never part of a listing or
+`/status`, and it covers only the sources discovery shows, so it reveals nothing curation hides. A
+source locked to every caller is left out, and `sources` is empty when nothing published carries a
+class.
 
 ```json
-"classification": {
+{
   "sources": [
     {
       "modelPath": "index.malloy",
@@ -199,8 +200,9 @@ in the review's control register, where a check proves it.
   in `GET …/packages/{pkg}` `warnings` and so in `get_status`. The point is the one an access
   policy makes: anything unclassified is data the policy has nothing to say about.
 - **A malformed note warns.** A `#(classification)` line with no class, unquoted, or that does
-  not parse warns `classification-malformed` naming the field or
-  source and the fix, whether or not coverage is in force; the usable lines beside it still count.
+  not parse warns `classification-malformed` with the fix, whether or not coverage is in force;
+  the usable lines beside it still count. A source gets one such warning however many of its
+  fields are malformed, naming up to twelve of them and counting the rest.
 
 ## The ceiling is checked per query
 
