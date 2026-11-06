@@ -9,6 +9,7 @@
  * installed, listed or swapped in for the package already served.
  */
 
+import { MAX_CONCURRENT_DRY_RUNS } from "../../../src/constants";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -258,43 +259,38 @@ describe("a dry-run publish", () => {
       }
    }, 60_000);
 
-   it("refuses a dry run past packageLoad.maxConcurrentDryRuns with 503, and admits one once a slot frees", async () => {
-      const restore = installVariables({
-         PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS: "1",
+   it("refuses a dry run past the server's concurrent dry runs with 503, and admits one once a slot frees", async () => {
+      const { environmentStore } = await import("../../../src/main_server");
+      const environment = await environmentStore.getEnvironment(
+         ENV_NAME,
+         false,
+      );
+      const source = writePackage("held", {
+         "orders.malloy": `source: orders is ${ROWS}\n`,
       });
-      try {
-         const { environmentStore } = await import("../../../src/main_server");
-         const environment = await environmentStore.getEnvironment(
-            ENV_NAME,
-            false,
-         );
-         const source = writePackage("held", {
-            "orders.malloy": `source: orders is ${ROWS}\n`,
-         });
-         let release!: () => void;
-         const downloaded = new Promise<void>((resolve) => {
-            release = resolve;
-         });
-         // The first dry run holds its slot while its download waits.
-         const held = environment.dryRunInstall(
-            "held",
+      let release!: () => void;
+      const downloaded = new Promise<void>((resolve) => {
+         release = resolve;
+      });
+      // Every slot is held while its download waits.
+      const held = Array.from({ length: MAX_CONCURRENT_DRY_RUNS }, (_, i) =>
+         environment.dryRunInstall(
+            `held${i}`,
             async (stagingPath) => {
                await downloaded;
                fs.cpSync(source, stagingPath, { recursive: true });
             },
             { readVersion: false, describe: (pkg) => pkg.getPackageName() },
-         );
-         const refused = await post("other", source, true);
-         expect(refused.status).toBe(503);
-         expect(String(refused.json.message)).toContain(
-            "packageLoad.maxConcurrentDryRuns",
-         );
-         release();
-         expect(await held).toBe("held");
-         expect((await post("other", source, true)).status).toBe(200);
-      } finally {
-         restore();
-      }
+         ),
+      );
+      const refused = await post("other", source, true);
+      expect(refused.status).toBe(503);
+      expect(String(refused.json.message)).toContain(
+         "as many as it runs at once",
+      );
+      release();
+      await Promise.all(held);
+      expect((await post("other", source, true)).status).toBe(200);
    }, 60_000);
 
    describe("with package versioning on", () => {

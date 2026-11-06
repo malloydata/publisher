@@ -14,8 +14,12 @@
  */
 
 import * as path from "path";
-import { getMaxOverlayBytes, getMaxOverlayFiles } from "../config";
-import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
+import {
+   MAX_OVERLAY_BYTES,
+   MAX_OVERLAY_FILES,
+   MODEL_FILE_SUFFIX,
+   NOTEBOOK_FILE_SUFFIX,
+} from "../constants";
 import { BadRequestError, PayloadTooLargeError } from "../errors";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import { lazyCounter } from "../telemetry";
@@ -32,7 +36,7 @@ export type OverlayRoute = "compile" | "query";
 
 const overlayRequests = lazyCounter(
    "publisher_request_overlay_total",
-   "Compile and query requests that carried a `files` overlay. Labels: route (compile|query), outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past PUBLISHER_MAX_OVERLAY_FILES or PUBLISHER_MAX_OVERLAY_BYTES, 413).",
+   "Compile and query requests that carried a `files` overlay. Labels: route (compile|query), outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past MAX_OVERLAY_FILES files or MAX_OVERLAY_BYTES bytes, 413).",
 );
 
 /**
@@ -69,13 +73,11 @@ function checkOverlayFiles(input: unknown): OverlayFile[] {
          "`files` must be an array of { path, content } entries.",
       );
    }
-   const maxFiles = getMaxOverlayFiles();
-   if (input.length > maxFiles) {
+   if (input.length > MAX_OVERLAY_FILES) {
       throw new PayloadTooLargeError(
-         `\`files\` holds ${input.length} files; this server takes at most ${maxFiles} per request (PUBLISHER_MAX_OVERLAY_FILES).`,
+         `\`files\` holds ${input.length} files; a request takes at most ${MAX_OVERLAY_FILES}.`,
       );
    }
-   const maxBytes = getMaxOverlayBytes();
    const seen = new Set<string>();
    const files: OverlayFile[] = [];
    let bytes = 0;
@@ -112,9 +114,9 @@ function checkOverlayFiles(input: unknown): OverlayFile[] {
       }
       seen.add(filePath);
       bytes += Buffer.byteLength(content, "utf8");
-      if (bytes > maxBytes) {
+      if (bytes > MAX_OVERLAY_BYTES) {
          throw new PayloadTooLargeError(
-            `\`files\` holds more than ${maxBytes} bytes of text; this server takes at most that per request (PUBLISHER_MAX_OVERLAY_BYTES).`,
+            `\`files\` holds more than ${MAX_OVERLAY_BYTES} bytes of text; a request takes at most that.`,
          );
       }
       files.push({ path: filePath, content });

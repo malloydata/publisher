@@ -16,6 +16,7 @@ import {
    normalizeModelPath,
    README_NAME,
    PACKAGE_INSTALL_RECORDS_DIR,
+   MAX_CONCURRENT_DRY_RUNS,
 } from "../constants";
 import {
    BadRequestError,
@@ -34,7 +35,6 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
-import { settings } from "../settings";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -2683,10 +2683,9 @@ export class Environment {
    ): Promise<T> {
       assertSafePackageName(packageName);
       this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
-      const limit = settings.get("packageLoad.maxConcurrentDryRuns");
-      if (Environment.dryRunsInFlight >= limit) {
+      if (Environment.dryRunsInFlight >= MAX_CONCURRENT_DRY_RUNS) {
          throw new DryRunCapacityError(
-            `This server is already running ${limit} dry-run publishes (packageLoad.maxConcurrentDryRuns); retry shortly or ask another server.`,
+            `This server is already running ${MAX_CONCURRENT_DRY_RUNS} dry-run publishes, as many as it runs at once; retry shortly or ask another server.`,
          );
       }
       Environment.dryRunsInFlight++;

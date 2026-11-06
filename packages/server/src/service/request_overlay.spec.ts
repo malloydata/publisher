@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { MAX_OVERLAY_BYTES, MAX_OVERLAY_FILES } from "../constants";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -10,7 +11,6 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import { installVariables } from "../test_helpers/settings_env";
 import {
    overlaidText,
    overlayByUrl,
@@ -19,16 +19,12 @@ import {
 
 describe("parseOverlayFiles", () => {
    let harness: MetricsHarness;
-   // Settings are read once at startup; a case installs the bound it needs.
-   let restoreSettings: (() => void) | undefined;
 
    beforeEach(async () => {
       harness = await startMetricsHarness();
       resetInstrumentsForTesting();
    });
    afterEach(async () => {
-      restoreSettings?.();
-      restoreSettings = undefined;
       await harness.shutdown();
    });
 
@@ -84,34 +80,28 @@ describe("parseOverlayFiles", () => {
       expect(parseOverlayFiles([], "compile")).toBeUndefined();
    });
 
-   it("refuses more files than PUBLISHER_MAX_OVERLAY_FILES with 413, counted refused_bounds", async () => {
-      restoreSettings?.();
-      restoreSettings = installVariables({
-         PUBLISHER_MAX_OVERLAY_FILES: "1",
-      });
-      expect(() =>
-         parseOverlayFiles(
-            [
-               { path: "a.malloy", content: "" },
-               { path: "b.malloy", content: "" },
-            ],
-            "compile",
-         ),
-      ).toThrow(PayloadTooLargeError);
+   it("refuses more files than a request takes with 413, counted refused_bounds", async () => {
+      const files = Array.from({ length: MAX_OVERLAY_FILES + 1 }, (_, i) => ({
+         path: `f${i}.malloy`,
+         content: "",
+      }));
+      expect(() => parseOverlayFiles(files, "compile")).toThrow(
+         PayloadTooLargeError,
+      );
       expect(await counted("refused_bounds")).toBe(1);
    });
 
    it("bounds the summed UTF-8 bytes, not characters", () => {
-      restoreSettings?.();
-      restoreSettings = installVariables({
-         PUBLISHER_MAX_OVERLAY_BYTES: "5",
-      });
-      // Three characters, six bytes.
+      // Fewer characters than the bound, but two bytes each.
+      const wide = "é".repeat(MAX_OVERLAY_BYTES / 2 + 1);
       expect(() =>
-         parseOverlayFiles([{ path: "a.malloy", content: "ééé" }], "query"),
+         parseOverlayFiles([{ path: "a.malloy", content: wide }], "query"),
       ).toThrow(PayloadTooLargeError);
       expect(
-         parseOverlayFiles([{ path: "a.malloy", content: "ab" }], "query"),
+         parseOverlayFiles(
+            [{ path: "a.malloy", content: "a".repeat(MAX_OVERLAY_BYTES) }],
+            "query",
+         ),
       ).toHaveLength(1);
    });
 });

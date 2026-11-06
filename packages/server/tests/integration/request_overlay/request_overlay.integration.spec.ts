@@ -10,10 +10,10 @@
  * as package files.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { MAX_OVERLAY_BYTES, MAX_OVERLAY_FILES } from "../../../src/constants";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import { writeTempPackage } from "../../../src/test_helpers/temp_package";
-import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startPackageEnv, type PackageEnv } from "../../harness/reports";
 
 const BASE = `source: base_source is duckdb.sql("select 1 as id, 'a' as name") extend {
@@ -84,13 +84,6 @@ describe("a request's files overlay (E2E)", () => {
    afterAll(async () => {
       await env?.stop();
       removePackage?.();
-   });
-
-   // Settings are read once at startup; a case installs the bound it needs.
-   let restoreSettings: (() => void) | undefined;
-   afterEach(() => {
-      restoreSettings?.();
-      restoreSettings = undefined;
    });
 
    describe("compile", () => {
@@ -241,31 +234,33 @@ describe("a request's files overlay (E2E)", () => {
 
    describe("bounds and entries", () => {
       it("refuses more files than the server takes with 413", async () => {
-         restoreSettings = installVariables({
-            PUBLISHER_MAX_OVERLAY_FILES: "2",
-         });
-         const files = ["a", "b", "c"].map((n) => ({
-            path: `${n}.malloy`,
-            content: "",
-         }));
+         const files = Array.from(
+            { length: MAX_OVERLAY_FILES + 1 },
+            (_, i) => ({
+               path: `f${i}.malloy`,
+               content: "",
+            }),
+         );
          const { status, body } = await compile("base.malloy", {
             scope: "package",
             files,
          });
          expect(status).toBe(413);
-         expect(body.message).toContain("PUBLISHER_MAX_OVERLAY_FILES");
+         expect(body.message).toContain(`at most ${MAX_OVERLAY_FILES}`);
       });
 
       it("refuses more bytes than the server takes with 413", async () => {
-         restoreSettings = installVariables({
-            PUBLISHER_MAX_OVERLAY_BYTES: "16",
-         });
          const { status, body } = await query("tracks.malloy", {
             query: "run: tracks -> { aggregate: n }",
-            files: [{ path: "base.malloy", content: BASE }],
+            files: [
+               {
+                  path: "base.malloy",
+                  content: BASE + " ".repeat(MAX_OVERLAY_BYTES),
+               },
+            ],
          });
          expect(status).toBe(413);
-         expect(body.message).toContain("PUBLISHER_MAX_OVERLAY_BYTES");
+         expect(body.message).toContain("bytes of text");
       });
 
       it.each([

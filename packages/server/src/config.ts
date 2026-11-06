@@ -752,23 +752,6 @@ export const getMaxResponseBytes = (): number =>
    settings.get("query.maxResponseBytes");
 
 /**
- * How many files one compile or query request may overlay
- * (`query.maxOverlayFiles`, `PUBLISHER_MAX_OVERLAY_FILES`); more is refused
- * with 413.
- */
-export const getMaxOverlayFiles = (): number =>
-   settings.get("query.maxOverlayFiles");
-
-/**
- * How many bytes of file text one compile or query request may overlay, summed
- * over its files (`query.maxOverlayBytes`, `PUBLISHER_MAX_OVERLAY_BYTES`); more
- * is refused with 413. The two routes that take an overlay accept a request
- * body this much larger than the server's usual limit.
- */
-export const getMaxOverlayBytes = (): number =>
-   settings.get("query.maxOverlayBytes");
-
-/**
  * Default row limit for a Malloy model query that carries no `LIMIT` of its
  * own (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, default
  * {@link DEFAULT_QUERY_ROW_LIMIT}). `0` is rejected: "return zero rows" would

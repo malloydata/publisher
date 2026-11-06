@@ -230,9 +230,6 @@ Under one precedence the flag replaces the variable, as it does for every other 
 |---|---|---|
 | `PUBLISHER_MAX_QUERY_ROWS` | `query.maxRows` | `PUBLISHER_QUERY_MAX_ROWS` |
 | `PUBLISHER_MAX_RESPONSE_BYTES` | `query.maxResponseBytes` | `PUBLISHER_QUERY_MAX_RESPONSE_BYTES` |
-| `PUBLISHER_MAX_OVERLAY_FILES` | `query.maxOverlayFiles` | `PUBLISHER_QUERY_MAX_OVERLAY_FILES` |
-| `PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS` | `packageLoad.maxConcurrentDryRuns` (default `2`) | unchanged |
-| `PUBLISHER_MAX_OVERLAY_BYTES` | `query.maxOverlayBytes` | `PUBLISHER_QUERY_MAX_OVERLAY_BYTES` |
 | `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT` | `query.defaultRowLimit` | `PUBLISHER_QUERY_DEFAULT_ROW_LIMIT` |
 | `PUBLISHER_QUERY_TIMEOUT_MS` | `query.timeoutMs` | unchanged |
 | `PUBLISHER_MAX_CONCURRENT_QUERIES` | `query.maxConcurrent` | `PUBLISHER_QUERY_MAX_CONCURRENT` |

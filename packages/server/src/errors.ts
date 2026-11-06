@@ -1005,7 +1005,7 @@ export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
 
 /**
  * A dry-run publish refused because the server is already running as many as
- * it allows (`packageLoad.maxConcurrentDryRuns`): a 503 like an admission
+ * it allows (`MAX_CONCURRENT_DRY_RUNS`): a 503 like an admission
  * refusal, which a caller answers by retrying or asking another server.
  */
 export class DryRunCapacityError extends PackageAdmissionRefusedError {}

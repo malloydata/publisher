@@ -1498,8 +1498,7 @@ paths:
         package being served. A frozen configuration refuses a dry run as it refuses a publish,
         since the server still downloads and loads the caller's content; so does memory
         backpressure (503).
-        A server runs at most PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS
-        (default 2) dry runs at once and refuses more with 503. With package
+        A server runs at most 2 dry runs at once and refuses more with 503. With package
         versioning on, a `description` that is not a string or a
         `manifestLocation` that names no manifest is the 400 a versioned
         publish answers.
@@ -4334,7 +4333,7 @@ components:
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
         A request is also refused with 413 when its `files` overlay (compile and
-        query) is past PUBLISHER_MAX_OVERLAY_FILES or PUBLISHER_MAX_OVERLAY_BYTES;
+        query) holds more than 500 files or 8 MiB of text;
         the message names the bound.
       content:
         application/json:
@@ -7996,8 +7995,7 @@ components:
             `publisher.json` are read from the package as published. A path that
             is absolute, has a "." or ".." segment or a backslash, names another
             kind of file, or appears twice is a 400; more than
-            PUBLISHER_MAX_OVERLAY_FILES files (default 500) or
-            PUBLISHER_MAX_OVERLAY_BYTES bytes of text (default 8 MiB) is a 413.
+            500 files or 8 MiB of text is a 413.
           items:
             $ref: "#/components/schemas/OverlayFile"
         queryMetadata:
@@ -9603,8 +9601,7 @@ components:
             `publisher.json` are read from the package as published. A path that
             is absolute, has a "." or ".." segment or a backslash, names another
             kind of file, or appears twice is a 400; more than
-            PUBLISHER_MAX_OVERLAY_FILES files (default 500) or
-            PUBLISHER_MAX_OVERLAY_BYTES bytes of text (default 8 MiB) is a 413.
+            500 files or 8 MiB of text is a 413.
           items:
             $ref: "#/components/schemas/OverlayFile"
 

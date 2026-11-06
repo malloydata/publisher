@@ -1089,42 +1089,6 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_MAX_RESPONSE_BYTES"),
       },
    ],
-   "query.maxOverlayFiles": [
-      { name: "unset", expect: value(500) },
-      {
-         name: "PUBLISHER_MAX_OVERLAY_FILES",
-         env: { PUBLISHER_MAX_OVERLAY_FILES: "20" },
-         expect: value(20),
-      },
-      {
-         name: "blank",
-         env: { PUBLISHER_MAX_OVERLAY_FILES: "" },
-         expect: value(500),
-      },
-      {
-         name: "zero",
-         env: { PUBLISHER_MAX_OVERLAY_FILES: "0" },
-         expect: fails("PUBLISHER_MAX_OVERLAY_FILES"),
-      },
-   ],
-   "query.maxOverlayBytes": [
-      { name: "unset", expect: value(8 * 1024 * 1024) },
-      {
-         name: "PUBLISHER_MAX_OVERLAY_BYTES",
-         env: { PUBLISHER_MAX_OVERLAY_BYTES: "4096" },
-         expect: value(4096),
-      },
-      {
-         name: "blank",
-         env: { PUBLISHER_MAX_OVERLAY_BYTES: "" },
-         expect: value(8 * 1024 * 1024),
-      },
-      {
-         name: "zero",
-         env: { PUBLISHER_MAX_OVERLAY_BYTES: "0" },
-         expect: fails("PUBLISHER_MAX_OVERLAY_BYTES"),
-      },
-   ],
    "query.defaultRowLimit": [
       { name: "unset", expect: value(1000) },
       {
@@ -1338,19 +1302,6 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "not a boolean",
          env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE: "maybe" },
          expect: fails("PUBLISHER_MEMORY_BACKPRESSURE"),
-      },
-   ],
-   "packageLoad.maxConcurrentDryRuns": [
-      { name: "unset", expect: value(2) },
-      {
-         name: "PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS",
-         env: { PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS: "5" },
-         expect: value(5),
-      },
-      {
-         name: "zero",
-         env: { PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS: "0" },
-         expect: fails("PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS"),
       },
    ],
    "packageLoad.workers": [

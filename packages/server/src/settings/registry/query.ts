@@ -3,8 +3,6 @@
 
 import {
    DEFAULT_MAX_CONCURRENT_QUERIES,
-   DEFAULT_MAX_OVERLAY_BYTES,
-   DEFAULT_MAX_OVERLAY_FILES,
    DEFAULT_MAX_QUERY_ROWS,
    DEFAULT_MAX_RESPONSE_BYTES,
    DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
@@ -32,22 +30,6 @@ export const query = [
       description:
          "Byte cap on ad-hoc connection SQL responses; 0 leaves only the row cap.",
       aliases: { env: ["PUBLISHER_MAX_RESPONSE_BYTES"] },
-   }),
-   setting({
-      key: "query.maxOverlayFiles",
-      type: integer({ min: 1 }),
-      default: DEFAULT_MAX_OVERLAY_FILES,
-      description:
-         "Files one compile or query request may overlay with `files`; more is refused with 413.",
-      aliases: { env: ["PUBLISHER_MAX_OVERLAY_FILES"] },
-   }),
-   setting({
-      key: "query.maxOverlayBytes",
-      type: integer({ min: 1 }),
-      default: DEFAULT_MAX_OVERLAY_BYTES,
-      description:
-         "Bytes of file text one compile or query request may overlay, summed over its files; more is refused with 413. The two routes accept a body this much larger than usual.",
-      aliases: { env: ["PUBLISHER_MAX_OVERLAY_BYTES"] },
    }),
    setting({
       key: "query.defaultRowLimit",
@@ -132,14 +114,6 @@ export const query = [
       default: 1,
       description: "Package-load worker threads.",
       aliases: { env: ["PACKAGE_LOAD_WORKERS"] },
-   }),
-   setting({
-      key: "packageLoad.maxConcurrentDryRuns",
-      type: integer({ min: 1 }),
-      default: 2,
-      description:
-         "Dry-run publishes this server runs at once; more are refused with 503. Each holds a whole download and load.",
-      aliases: { env: ["PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS"] },
    }),
    setting({
       key: "packageLoad.jobTimeoutMs",
