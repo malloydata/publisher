@@ -61,7 +61,7 @@ describe("settings at startup", () => {
       const status = await fetch(`http://127.0.0.1:${flagPort}/api/v0/status`);
       expect(status.ok).toBe(true);
       // The startup line names what was given and where it came from.
-      expect(server.output()).toContain("Settings not at their defaults: ");
+      expect(server.output()).toContain("Settings given: ");
       expect(server.output()).toContain(`port=${flagPort} from --port`);
       expect(server.output()).toContain(
          `mcp.port=${flagMcpPort} from --mcp_port`,

@@ -93,7 +93,7 @@ export const query = [
       type: number({ above: 0, below: 1 }),
       default: 0.8,
       description:
-         "Share of memory.maxBytes at which new package loads are refused.",
+         "Share of {memory.maxBytes} at which new package loads are refused.",
       notes: "High-water mark (fraction of `PUBLISHER_MAX_MEMORY_BYTES`). Must be in `(0, 1)` and strictly above the low-water mark.",
       aliases: { env: ["PUBLISHER_MEMORY_HIGH_WATER_FRACTION"] },
    }),
@@ -102,7 +102,7 @@ export const query = [
       type: number({ above: 0, below: 1 }),
       default: 0.7,
       description:
-         "Share of memory.maxBytes at which loads are admitted again; below the high-water mark.",
+         "Share of {memory.maxBytes} at which loads are admitted again; below the high-water mark.",
       notes: "Low-water mark (fraction of `PUBLISHER_MAX_MEMORY_BYTES`). Hysteresis: back-pressure clears when RSS dips below this value.",
       aliases: { env: ["PUBLISHER_MEMORY_LOW_WATER_FRACTION"] },
    }),

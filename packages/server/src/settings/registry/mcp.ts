@@ -28,7 +28,7 @@ export const mcp = [
             : "127.0.0.1",
       description: "Host the MCP server binds to.",
       notes: "Host binding for the MCP server. Takes precedence over `PUBLISHER_HOST`. Set `0.0.0.0` to expose MCP on the network, behind an authenticating gateway.",
-      defaultText: "`host` when given, else `127.0.0.1`",
+      defaultText: "{host} when given, else `127.0.0.1`",
       aliases: { env: ["MCP_HOST"], flags: ["--mcp_host"] },
    }),
    setting({
@@ -45,7 +45,7 @@ export const mcp = [
       type: boolean(),
       default: true,
       description:
-         "Write .mcp.json into the working directory, so an agent opened there finds this server; --no-mcp-config turns it off.",
+         "Do not write .mcp.json into the working directory. Without it the file is written, so an agent opened there finds this server, unless the directory already has one, is your home directory or the filesystem root, is inside a git working tree, or the MCP port bound is not the one requested.",
       notes: "Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes).",
       aliases: {
          env: ["PUBLISHER_NO_MCP_CONFIG"],

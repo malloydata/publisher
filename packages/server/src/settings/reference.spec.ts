@@ -12,6 +12,7 @@ import {
    REFERENCE_END,
    REFERENCE_START,
    settingsLine,
+   settingsReferenceTable,
    withReferenceTable,
 } from "./reference";
 
@@ -51,6 +52,28 @@ describe("the generated settings reference", () => {
          }
       }
    });
+
+   it("gives a negated name's default as unset, not the key's default read backwards", () => {
+      const doc = readDoc();
+      const negated = REGISTRY.filter((entry) => entry.aliases.negated);
+      expect(negated.map((entry) => entry.key)).toContain(
+         "mcp.configFileEnabled",
+      );
+      for (const entry of negated) {
+         const row = doc
+            .split("\n")
+            .find((line) => line.startsWith(`| \`${entry.key}\` |`));
+         expect(row, entry.key).toBeDefined();
+         // Setting | Env var | CLI flag | Default | Meaning
+         expect(row!.split(" | ")[3], entry.key).toBe("_unset_");
+      }
+   });
+
+   it("names another setting by its key, with no {key} reference left", () => {
+      const table = settingsReferenceTable();
+      expect(table).toContain("| `host` when given, else `127.0.0.1` |");
+      expect(table).not.toMatch(/\{(host|mcp\.host|root|config)\}/);
+   });
 });
 
 describe("--help", () => {
@@ -68,6 +91,26 @@ describe("--help", () => {
          /--port <n> +Port of the REST API and the web app\. \(default: 4000\)/,
       );
       expect(help).toContain("--help, -h");
+   });
+
+   it("names other settings by the flags that set them", () => {
+      const help = helpText();
+      expect(help).toContain("and MCP too unless --mcp_host is given.");
+      expect(help).toContain("(default: --host when given, else 127.0.0.1)");
+      expect(help).toContain("--host does not move it.");
+      expect(help).not.toMatch(/\{[a-zA-Z.]+\}|unless mcp\.host/);
+   });
+
+   it("gives a negated flag no default, and says what it stops", () => {
+      const line = helpText()
+         .split("\n")
+         .find((text) => text.trimStart().startsWith("--no-mcp-config "));
+      expect(line).toBeDefined();
+      expect(line).toContain(
+         "Do not write .mcp.json into the working directory.",
+      );
+      expect(line).toContain("is inside a git working tree");
+      expect(line).not.toContain("(default:");
    });
 });
 
@@ -89,9 +132,42 @@ describe("the startup settings line", () => {
             ),
       );
       expect(line).toBe(
-         "Settings not at their defaults: frozenConfig=true from <file>, port=4100 from PUBLISHER_PORT, environments from <file>, mcp.port=4141 from --mcp_port, admin.catalogDatabase=(set) from PUBLISHER_ADMIN_CATALOG_DATABASE",
+         "Settings given: frozenConfig=true from <file>, port=4100 from PUBLISHER_PORT, environments from <file>, mcp.port=4141 from --mcp_port, admin.catalogDatabase=(set) from PUBLISHER_ADMIN_CATALOG_DATABASE",
       );
       expect(line).not.toContain("pw");
+   });
+
+   it("names a setting given its default value too", () => {
+      expect(
+         withSettings({ argv: ["--port", "4000"] }, () =>
+            settingsLine(Settings.current()),
+         ),
+      ).toBe("Settings given: port=4000 from --port");
+   });
+
+   it("keeps an access key id and a URL's user and password out of the log", () => {
+      const line = withSettings(
+         {
+            env: {
+               PUBLISHER_ADMIN_STORAGE_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+               PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://k:s@minio:9000",
+               EMBEDDING_API_BASE: "https://user:hunter2@proxy.example/v1",
+            },
+         },
+         () => settingsLine(Settings.current()),
+      );
+      expect(line).toContain(
+         "admin.storage.keyId=(set) from PUBLISHER_ADMIN_STORAGE_KEY_ID",
+      );
+      expect(line).toContain(
+         'admin.storage.endpoint="https://***@minio:9000" from PUBLISHER_ADMIN_STORAGE_ENDPOINT',
+      );
+      expect(line).toContain(
+         'retrieval.embedding.baseUrl="https://***@proxy.example/v1" from EMBEDDING_API_BASE',
+      );
+      for (const leak of ["AKIAIOSFODNN7EXAMPLE", "k:s", "hunter2", "user:"]) {
+         expect(line).not.toContain(leak);
+      }
    });
 
    it("says so when every setting is at its default", () => {

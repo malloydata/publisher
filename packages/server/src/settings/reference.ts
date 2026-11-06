@@ -8,9 +8,13 @@ import { BooleanType, IntegerType, ListType, NumberType } from "./types";
 
 /**
  * What the registry generates: the settings table of docs/configuration.md,
- * `--help`, and the startup line naming each setting not at its default. Each
- * is built from the entries alone, so none can drift from what the server
- * reads; reference.spec.ts fails if the checked-in table does.
+ * `--help`, and the startup line naming each setting given. Each is built from
+ * the entries alone, so none can drift from what the server reads;
+ * reference.spec.ts fails if the checked-in table does.
+ *
+ * A description or default text names another setting as `{key}`, which the
+ * table shows as the key and `--help` as the flag that sets it, so neither
+ * reads in the other's terms.
  */
 
 /** Settings a variable or flag can give; the file-only ones have their own tables. */
@@ -32,7 +36,7 @@ export function settingsReferenceTable(): string {
          cell((entry.aliases.env ?? []).map(code).join(", ")),
          cell(flagSpecs(entry).map(code).join(", ")),
          cell(defaultText(entry, "markdown")),
-         cell(entry.notes ?? entry.description),
+         cell(withReferences(entry.notes ?? entry.description, "markdown")),
       ].join(" | "),
    );
    return [
@@ -64,7 +68,7 @@ export function helpText(): string {
    const width = Math.max(...flagged.map(({ spec }) => spec.length)) + 2;
    const lines = flagged.map(({ entry, spec }) => {
       const fallback = defaultText(entry, "text");
-      return `  ${spec.padEnd(width)}${entry.description}${fallback ? ` (default: ${fallback})` : ""}`;
+      return `  ${spec.padEnd(width)}${withReferences(entry.description, "text")}${fallback ? ` (default: ${fallback})` : ""}`;
    });
    return [
       "Malloy Publisher Server",
@@ -81,8 +85,9 @@ export function helpText(): string {
 
 /**
  * One line naming each setting a flag, variable or the file gave, and where it
- * came from. A secret shows as `(set)`, and a structured setting by its source
- * alone.
+ * came from, whether or not the value given is the default. A secret, or a
+ * value too close to one (`masked`), shows as `(set)`; a URL's user and
+ * password show as `***`; and a structured setting shows by its source alone.
  */
 export function settingsLine(settings: Settings): string {
    const given = REGISTRY.filter((entry) =>
@@ -93,9 +98,12 @@ export function settingsLine(settings: Settings): string {
       if (entry.kind === "structured") return `${entry.key} from ${from}`;
       let shown: string;
       try {
-         shown = entry.secret
-            ? "(set)"
-            : JSON.stringify(settings.get(key) as unknown);
+         shown =
+            entry.secret || entry.masked
+               ? "(set)"
+               : withoutUrlCredentials(
+                    JSON.stringify(settings.get(key) as unknown),
+                 );
       } catch {
          shown = "(invalid)";
       }
@@ -103,7 +111,26 @@ export function settingsLine(settings: Settings): string {
    });
    return given.length === 0
       ? "Settings: every setting is at its default."
-      : `Settings not at their defaults: ${given.join(", ")}`;
+      : `Settings given: ${given.join(", ")}`;
+}
+
+/** `https://user:pass@host` -> `https://***@host`, anywhere in `text`. */
+function withoutUrlCredentials(text: string): string {
+   return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s"/@]+@/gi, "$1***@");
+}
+
+/**
+ * `text` with each `{key}` naming a registered setting written for `style`:
+ * the key in the table, and in `--help` the flag that sets it (its first
+ * variable, where it has no flag).
+ */
+function withReferences(text: string, style: "markdown" | "text"): string {
+   return text.replace(/\{([a-zA-Z][a-zA-Z.]*)\}/g, (whole, key: string) => {
+      const entry = REGISTRY.find((candidate) => candidate.key === key);
+      if (!entry) return whole;
+      if (style === "markdown") return code(key);
+      return entry.aliases.flags?.[0] ?? entry.aliases.env?.[0] ?? key;
+   });
 }
 
 /** `--port <n>`, or a boolean's switches: `--serving-api-enabled`, `--no-...`. */
@@ -128,10 +155,14 @@ function defaultText(
    entry: RegisteredSetting,
    style: "markdown" | "text",
 ): string {
+   // A negated name says the opposite of the key (`--no-mcp-config` sets
+   // `mcp.configFileEnabled` off), so the key's default would read backwards
+   // beside it. Unset is the default; the description says what that does.
+   if (entry.aliases.negated) return style === "markdown" ? "_unset_" : "";
    if (entry.defaultText !== undefined) {
       return style === "markdown"
-         ? entry.defaultText
-         : entry.defaultText.replace(/[`_]/g, "");
+         ? withReferences(entry.defaultText, style)
+         : withReferences(entry.defaultText.replace(/[`_]/g, ""), style);
    }
    const fallback = entry.default;
    if (fallback === undefined) return style === "markdown" ? "_unset_" : "";

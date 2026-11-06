@@ -87,6 +87,11 @@ export interface Setting<K extends string = string, T = unknown> {
    readonly kind: SettingKind;
    /** No flag; never logged, reported, or echoed in an error. */
    readonly secret: boolean;
+   /**
+    * Not a secret, but too close to one to log: the startup line shows it as
+    * `(set)`, as it does a secret. An access key id, say.
+    */
+   readonly masked?: true;
    readonly aliases: Aliases;
    /** Carries the value type for `settings.get`; never set. */
    readonly valueType?: { value: T };
@@ -100,6 +105,7 @@ interface Entry<K extends string, T> {
    defaultText?: string;
    kind?: SettingKind;
    secret?: boolean;
+   masked?: true;
    aliases?: Aliases;
 }
 
@@ -124,6 +130,7 @@ export function setting<K extends string, T>(
          : {}),
       kind: entry.kind ?? "server",
       secret: entry.secret ?? false,
+      ...(entry.masked ? { masked: true as const } : {}),
       aliases: entry.aliases ?? {},
    };
 }
