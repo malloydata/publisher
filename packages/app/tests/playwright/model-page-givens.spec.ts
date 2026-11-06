@@ -86,4 +86,54 @@ test.describe("model-page-givens", () => {
       await expect(page).not.toHaveURL(/REGION=/);
       await expect(page).toHaveURL(/source=overview/);
    });
+
+   test("names a run's defaults as its controls do, where the source reads them", async ({
+      page,
+   }) => {
+      // `overview` is built on the imported `order_items` and reads all five
+      // givens in its own text, so the page can tell, and says nothing more.
+      await openOverview(page, "&REGION=West");
+      await expect(page.getByTestId("model-givens-unknown")).toHaveCount(0);
+      await page
+         .getByRole("region", { name: "Views" })
+         .getByRole("button", { name: /best_sellers/ })
+         .click();
+      const note = page.getByTestId("model-viewer-run-defaults");
+      await expect(note).toHaveText(
+         "Ran with the defaults Category: All, Brand: All, Ordered since: Jan 1, 2023, Minimum line total: Any.",
+      );
+   });
+
+   test("says when it can't tell whether a source reads the givens it shows", async ({
+      page,
+   }) => {
+      // `order_items` is declared in storefront.malloy, which overview.malloy
+      // imports: the page can't see what it reads.
+      await page.goto(`${MODEL}?source=order_items&REGION=West`);
+      await expect(
+         page.getByRole("heading", { name: "order_items", level: 1 }),
+      ).toBeVisible();
+      await expect(page.getByTestId("model-givens-unknown")).toHaveText(
+         "This page can't tell which of these givens this source reads, so a value set here may not apply to it.",
+      );
+      await page
+         .getByRole("region", { name: "Views" })
+         .getByRole("button", { name: /top_products/ })
+         .click();
+      await expect(page.getByTestId("model-viewer-run-defaults")).toHaveText(
+         /^This page can't tell which givens this source reads\. Where it reads one, it ran with Region: West and the defaults /,
+      );
+   });
+
+   test("lists the givens of a model that declares nothing else", async ({
+      page,
+   }) => {
+      await page.goto(`/${DEFAULT_ENV}/${PACKAGES.storefront}/givens.malloy`);
+      await expect(
+         page.getByText("This model defines no sources or queries."),
+      ).toBeVisible();
+      const declared = page.getByTestId("model-viewer-declared-givens");
+      await expect(declared).toContainText("CATEGORY");
+      await expect(declared).toContainText("Category");
+   });
 });
