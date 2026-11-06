@@ -23,6 +23,7 @@ import { queryDistinctValues } from "../mcp/tools/get_context_values";
 import { tryAcquireQuerySlot } from "../query_concurrency";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { buildRouteApp } from "../test_helpers/route_app";
+import { withSettings } from "../test_helpers/settings_env";
 import { accessIdentityOf, type AccessRecord } from "./access_record";
 import type { EnvironmentStore } from "./environment_store";
 
@@ -59,8 +60,6 @@ beforeEach(() => {
 afterEach(() => {
    info.mockRestore();
    sinon.restore();
-   delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
-   delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
 });
 
 function records(): AccessRecord[] {
@@ -183,8 +182,12 @@ describe("REST query writes exactly one record", () => {
    });
 
    it("on a timeout", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
-      await expect(rest(storeOf(HUNG))).rejects.toThrow();
+      await withSettings(
+         { env: { PUBLISHER_QUERY_TIMEOUT_MS: "20" } },
+         async () => {
+            await expect(rest(storeOf(HUNG))).rejects.toThrow();
+         },
+      );
       expect(records()).toMatchObject([{ outcome: "error", status: 504 }]);
    });
 
@@ -306,22 +309,26 @@ describe("MCP execute_query writes exactly one record", () => {
    });
 
    it("on a refusal at the concurrency cap", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1";
-      const held = tryAcquireQuerySlot("test");
-      try {
-         await withAuthorizeModel(MODEL, async ({ model }) => {
-            const result = await mcpHandler(storeOf(model))(
-               { ...MCP_ARGS, query: GATED },
-               EXTRA,
-            );
-            expect(result.isError).toBe(true);
-            expect(records()).toMatchObject([
-               { outcome: "error", status: 503 },
-            ]);
-         });
-      } finally {
-         held.release();
-      }
+      await withSettings(
+         { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
+         async () => {
+            const held = tryAcquireQuerySlot("test");
+            try {
+               await withAuthorizeModel(MODEL, async ({ model }) => {
+                  const result = await mcpHandler(storeOf(model))(
+                     { ...MCP_ARGS, query: GATED },
+                     EXTRA,
+                  );
+                  expect(result.isError).toBe(true);
+                  expect(records()).toMatchObject([
+                     { outcome: "error", status: 503 },
+                  ]);
+               });
+            } finally {
+               held.release();
+            }
+         },
+      );
    });
 });
 
@@ -518,29 +525,31 @@ describe("raw SQL writes exactly one record, as ungated", () => {
    });
 
    it("when it is refused", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1";
-      try {
-         const controller = controllerOver(
-            sinon.stub().resolves({ rows: [{ a: 1 }, { a: 2 }], totalRows: 2 }),
-         );
-         await expect(
-            controller.getConnectionQueryData(
-               "env",
-               "warehouse",
-               "SELECT a FROM t",
-               "",
-               undefined,
-               undefined,
-               undefined,
-               {},
-            ),
-         ).rejects.toBeInstanceOf(PayloadTooLargeError);
-         expect(records()).toMatchObject([
-            { outcome: "error", decision: "ungated" },
-         ]);
-      } finally {
-         delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-      }
+      await withSettings(
+         { env: { PUBLISHER_MAX_QUERY_ROWS: "1" } },
+         async () => {
+            const controller = controllerOver(
+               sinon
+                  .stub()
+                  .resolves({ rows: [{ a: 1 }, { a: 2 }], totalRows: 2 }),
+            );
+            await expect(
+               controller.getConnectionQueryData(
+                  "env",
+                  "warehouse",
+                  "SELECT a FROM t",
+                  "",
+                  undefined,
+                  undefined,
+                  undefined,
+                  {},
+               ),
+            ).rejects.toBeInstanceOf(PayloadTooLargeError);
+            expect(records()).toMatchObject([
+               { outcome: "error", decision: "ungated" },
+            ]);
+         },
+      );
    });
 
    it("redacts a credential the driver quotes back in its error", async () => {

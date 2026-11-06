@@ -171,7 +171,7 @@ describe("storage= serve routing with joins and views (end-to-end)", () => {
    });
 
    it("records the classified fields of a query it serves from storage", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel(
          MODEL_SRC.replace(
             "  measure: total",

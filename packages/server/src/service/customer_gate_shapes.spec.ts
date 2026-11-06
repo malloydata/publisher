@@ -20,15 +20,11 @@ import {
 } from "../package_load/package_load_pool";
 import { unrecordedAudit } from "./access_record";
 
-const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
 beforeAll(async () => {
-   process.env.PACKAGE_LOAD_WORKERS = "1";
    await __setPackageLoadPoolForTests(new PackageLoadPool(1));
 });
 afterAll(async () => {
    await __setPackageLoadPoolForTests(null);
-   if (ORIGINAL_WORKERS === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-   else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_WORKERS;
 });
 
 let temp: LoadedTempPackage | undefined;

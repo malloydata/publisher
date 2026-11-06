@@ -33,7 +33,6 @@ import {
 import { unrecordedAudit } from "./access_record";
 import { Package } from "./package";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const ROWS = `duckdb.sql("select * from (values (1,'org-a'),(2,'org-b'),(3,'org-b')) as t(id, org)")`;
 
 const MODEL = `##! experimental.givens
@@ -51,15 +50,12 @@ describe("a gate on a given that is not #(secure)", () => {
    let duckdb: DuckDBConnection;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {
