@@ -27,6 +27,28 @@ export function givensReadBy(
 }
 
 /**
+ * The names of the givens a model file declares itself (`NAME :: type`), as
+ * opposed to ones it holds because it imports them: the compiled model lists
+ * both, and doesn't say which file declared each.
+ */
+export function givensDeclaredIn(
+   sourceText: string | undefined,
+   givens: ReadonlyArray<GivenInfo>,
+): Set<string> {
+   if (!sourceText) return new Set();
+   const text = maskCommentsAndStrings(sourceText);
+   return new Set(
+      givens
+         .filter((g) =>
+            new RegExp(
+               `(?<![A-Za-z0-9_$.])\`?${escapeRegExp(g.name)}\`?\\s*::`,
+            ).test(text),
+         )
+         .map((g) => g.name),
+   );
+}
+
+/**
  * The givens a named query reads when the model doesn't say which source it
  * runs against: those its declaration names, plus those of every source of
  * the model it names (`givensBySource`, what a run on that source gates on).
@@ -39,15 +61,54 @@ export function givensOfNamedQuery(
    givensBySource: ReadonlyMap<string, ReadonlyArray<GivenInfo>> | undefined,
 ): GivenInfo[] | undefined {
    if (!code) return undefined;
+   return scanGivensOfNamedQuery(code, givens, givensBySource).givens;
+}
+
+/**
+ * {@link givensOfNamedQuery}, and which of its givens the page can't tie to
+ * the query either way (`unknown`): those of a source it names that the scan
+ * couldn't follow (`unknownBySource`), and, when the query runs over something
+ * that isn't one of the model's sources (an imported source the model doesn't
+ * export, another query, a `compose(…)`), every given its own text doesn't
+ * read, all of which it then returns. Without its text, every given, none
+ * known.
+ */
+export function scanGivensOfNamedQuery(
+   code: string | undefined,
+   givens: ReadonlyArray<GivenInfo>,
+   givensBySource: ReadonlyMap<string, ReadonlyArray<GivenInfo>> | undefined,
+   unknownBySource?: ReadonlyMap<string, ReadonlySet<string>>,
+): { givens: GivenInfo[]; unknown: ReadonlySet<string> } {
+   if (!code) {
+      return {
+         givens: [...givens],
+         unknown: new Set(givens.map((g) => g.name)),
+      };
+   }
    const text = maskCommentsAndStrings(code);
-   const read = new Set(givensReadBy(code, givens).map((g) => g.name));
+   const readHere = new Set(givensReadBy(code, givens).map((g) => g.name));
+   const read = new Set(readHere);
+   const unknown = new Set<string>();
+   const maybe = (name: string) => {
+      read.add(name);
+      if (!readHere.has(name)) unknown.add(name);
+   };
    for (const [source, sourceGivens] of givensBySource ?? []) {
       const named = new RegExp(
          `(?<![A-Za-z0-9_$.])\`?${escapeRegExp(source)}\`?(?![A-Za-z0-9_])`,
       );
-      if (named.test(text)) for (const g of sourceGivens) read.add(g.name);
+      if (!named.test(text)) continue;
+      for (const g of sourceGivens) read.add(g.name);
+      for (const name of unknownBySource?.get(source) ?? []) maybe(name);
    }
-   return givens.filter((g) => read.has(g.name));
+   const head = /^\s*query\s*:\s*`?[A-Za-z_]\w*`?\s+is\s+/.exec(text);
+   const base = head
+      ? sourceExpressionTarget(text.slice(head[0].length))
+      : undefined;
+   if (base === undefined || (base !== null && !givensBySource?.has(base))) {
+      for (const g of givens) maybe(g.name);
+   }
+   return { givens: givens.filter((g) => read.has(g.name)), unknown };
 }
 
 /**
@@ -66,11 +127,43 @@ export function givensForSource(
    sourceName: string,
    givens: GivenInfo[],
 ): GivenInfo[] {
+   return scanGivensForSource(sourceText, sourceName, givens).givens;
+}
+
+/**
+ * {@link givensForSource}, and which of the givens it returns the scan can't
+ * tie to the source either way (`unknown`), so the page can say a value set for
+ * one may not apply. Where it fell back to every given, that is each one the
+ * source's own text in this file doesn't read: a source built on an import that
+ * reads a given itself is known to read it. Empty where the scan could tell.
+ */
+export function scanGivensForSource(
+   sourceText: string | undefined,
+   sourceName: string,
+   givens: GivenInfo[],
+): { givens: GivenInfo[]; unknown: ReadonlySet<string> } {
+   if (givens.length === 0) return { givens: [], unknown: new Set() };
    const walk = walkSource(sourceText, sourceName, givens);
-   if (!walk || walk.unresolved) return [...givens];
-   return givens.filter(
-      (g) => walk.readHere.has(g.name) || !walk.readByAnySource.has(g.name),
-   );
+   if (!walk) {
+      return {
+         givens: [...givens],
+         unknown: new Set(givens.map((g) => g.name)),
+      };
+   }
+   if (walk.unresolved) {
+      return {
+         givens: [...givens],
+         unknown: new Set(
+            givens.filter((g) => !walk.readHere.has(g.name)).map((g) => g.name),
+         ),
+      };
+   }
+   return {
+      givens: givens.filter(
+         (g) => walk.readHere.has(g.name) || !walk.readByAnySource.has(g.name),
+      ),
+      unknown: new Set(),
+   };
 }
 
 /**

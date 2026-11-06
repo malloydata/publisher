@@ -53,6 +53,7 @@ export function ViewRow({
    run,
    runQuery,
    runGivens,
+   runGivensUnknown,
 }: {
    field: ExplorerField;
    modelPath: string;
@@ -68,6 +69,8 @@ export function ViewRow({
    runQuery?: string;
    /** The givens a run reads, where its source can't say (see RunResult). */
    runGivens?: ReadonlyArray<GivenInfo>;
+   /** Those of `runGivens` the page can't tie to the run either way. */
+   runGivensUnknown?: ReadonlySet<string>;
 }) {
    const query = runQuery ?? viewRunQuery(sourceName, field.name);
    // What this row sends: only the given values of the givens it reads.
@@ -255,6 +258,7 @@ export function ViewRow({
                         query={query}
                         sourceName={sourceName || undefined}
                         givens={runGivens}
+                        givensUnknown={runGivensUnknown}
                         mode={view === "result" ? "result" : "code"}
                         renderCode={renderCode}
                         onShownChange={setShownRun}

@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { givensForSource, givensInheritedBy, givensReadBy } from "./givenUsage";
+import {
+   givensDeclaredIn,
+   givensForSource,
+   givensInheritedBy,
+   givensReadBy,
+   scanGivensForSource,
+   scanGivensOfNamedQuery,
+} from "./givenUsage";
 
 const g = (name: string) => ({ name, type: "number", modelFile: "m.malloy" });
 const GIVENS = [g("MIN_AMOUNT"), g("CATEGORY"), g("UNUSED"), g("MIN")];
@@ -172,6 +179,31 @@ source: via_compose is compose(local, regional)
       ]);
    });
 
+   it("names the givens it can't tie to the source either way", () => {
+      const text = `import { regional } from "regions.malloy"
+source: local is duckdb.table('l') extend {
+  where: region = $REGION
+}
+source: overview is regional extend {
+  where: region = $REGION
+}
+source: via_import is regional extend {
+  measure: n is count()
+}
+`;
+      const given = [g("REGION"), g("CODE")];
+      const unknown = (source: string) => [
+         ...scanGivensForSource(text, source, given).unknown,
+      ];
+      // Its own text reads REGION; what `regional` reads, it can't see.
+      expect(unknown("overview")).toEqual(["CODE"]);
+      expect(unknown("via_import")).toEqual(["REGION", "CODE"]);
+      // A source declared in another file: none of them.
+      expect(unknown("regional")).toEqual(["REGION", "CODE"]);
+      // Traced to the end: it can tell.
+      expect(unknown("local")).toEqual([]);
+   });
+
    it("reaches a given an unexported source reads, through what extends or joins it", () => {
       const text = `source: base_orders is pg.table('public.orders') extend {
   where: amount >= $MIN_AMOUNT
@@ -205,5 +237,68 @@ source: by_target is pg.sql("SELECT 1") extend {
             new Set([...exported, "base_orders"]),
          ),
       ).toEqual(new Map());
+   });
+});
+
+describe("scanGivensOfNamedQuery", () => {
+   const given = [g("REGION"), g("CODE"), g("MIN")];
+   const names = (list: ReadonlyArray<{ name: string }>) =>
+      list.map((x) => x.name).sort();
+   // `items` is a model source whose own scan couldn't tie CODE to it.
+   const bySource = new Map([["items", [g("REGION"), g("CODE")]]]);
+   const unknownBySource = new Map([["items", new Set(["CODE"])]]);
+
+   it("takes a source it names, with what that source's scan couldn't tie", () => {
+      const scan = scanGivensOfNamedQuery(
+         "query: q is items -> { group_by: name }",
+         given,
+         bySource,
+         unknownBySource,
+      );
+      expect(names(scan.givens)).toEqual(["CODE", "REGION"]);
+      expect([...scan.unknown]).toEqual(["CODE"]);
+   });
+
+   it("can't tie any given it doesn't read itself when it runs over what the model doesn't hold", () => {
+      // `regional` comes from an import the model doesn't export.
+      const scan = scanGivensOfNamedQuery(
+         "query: q is regional -> { where: amount > $MIN; group_by: name }",
+         given,
+         bySource,
+         unknownBySource,
+      );
+      expect(names(scan.givens)).toEqual(["CODE", "MIN", "REGION"]);
+      expect([...scan.unknown].sort()).toEqual(["CODE", "REGION"]);
+   });
+
+   it("knows a query over a table reads only what its text does", () => {
+      const scan = scanGivensOfNamedQuery(
+         "query: q is duckdb.table('t') -> { where: amount > $MIN }",
+         given,
+         bySource,
+         unknownBySource,
+      );
+      expect(names(scan.givens)).toEqual(["MIN"]);
+      expect(scan.unknown.size).toBe(0);
+   });
+
+   it("is every given, none known, without its text", () => {
+      const scan = scanGivensOfNamedQuery(undefined, given, bySource);
+      expect(names(scan.givens)).toEqual(["CODE", "MIN", "REGION"]);
+      expect(scan.unknown.size).toBe(3);
+   });
+});
+
+describe("givensDeclaredIn", () => {
+   it("names the givens a file declares itself, not those it imports", () => {
+      const text = `import { CODE } from "codes.malloy"
+// MIN :: number in a comment is not a declaration
+given:
+  REGION :: filter<string> is f''
+`;
+      expect([
+         ...givensDeclaredIn(text, [g("REGION"), g("CODE"), g("MIN")]),
+      ]).toEqual(["REGION"]);
+      expect(givensDeclaredIn(undefined, [g("REGION")]).size).toBe(0);
    });
 });

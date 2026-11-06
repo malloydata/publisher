@@ -36,28 +36,30 @@ function formatDay(text: string): string {
    return Number.isNaN(date.getTime()) ? text : dayFormat.format(date);
 }
 
-/** A list of picked values, shortened to fit a button: `Outerwear +2`. */
-function summarizeList(values: string[]): string {
+/** A list of picked values, shortened to fit a button: `Outerwear +2`. In full, every one. */
+function summarizeList(values: string[], full: boolean): string {
    if (values.length === 0) return "";
    const joined = values.join(", ");
+   if (full) return joined;
    if (joined.length <= MAX_SUMMARY_CHARS || values.length === 1)
-      return truncate(joined);
-   return `${truncate(values[0] ?? "")} +${values.length - 1}`;
+      return truncate(joined, full);
+   return `${truncate(values[0] ?? "", full)} +${values.length - 1}`;
 }
 
-function truncate(text: string): string {
-   return text.length > MAX_SUMMARY_CHARS
+function truncate(text: string, full: boolean): string {
+   return !full && text.length > MAX_SUMMARY_CHARS
       ? `${text.slice(0, MAX_SUMMARY_CHARS - 1)}…`
       : text;
 }
 
 /** What a given with no value of its own shows: its default, or that it does not narrow. */
-function unsetSummary(given: Given): string {
+function unsetSummary(given: Given, full: boolean): string {
    // No default: nothing runs until it is set, so it does not read as "Any".
    if (isRequiredGiven(given)) return "Required";
    const type = given.type ?? "string";
    const shown = renderGivenDefault(type, given.default);
-   if (shown !== undefined && shown !== "") return summarizeText(type, shown);
+   if (shown !== undefined && shown !== "")
+      return summarizeText(type, shown, full);
    const inner = filterInnerType(type) ?? type;
    return given.control === "select" ||
       given.control === "multiselect" ||
@@ -67,11 +69,11 @@ function unsetSummary(given: Given): string {
 }
 
 /** A value written as text, read the way its type reads. */
-function summarizeText(type: string, text: string): string {
-   if (!isFilterType(type)) return truncate(formatDay(text));
+function summarizeText(type: string, text: string, full: boolean): string {
+   if (!isFilterType(type)) return truncate(formatDay(text), full);
    const inner = filterInnerType(type);
    if (inner === "string" && isPlainFilterList(text))
-      return summarizeList(decodeFilterList(text));
+      return summarizeList(decodeFilterList(text), full);
    if (inner === "number") {
       const between = decodeBetween(text);
       if (between) return `${between[0]}–${between[1]}`;
@@ -86,7 +88,21 @@ function summarizeText(type: string, text: string): string {
       if (days)
          return `${formatDay(days.firstDay)} – ${formatDay(days.lastDay)}`;
    }
-   return truncate(text);
+   return truncate(text, full);
+}
+
+function wordValue(
+   given: Given,
+   value: GivenValue | undefined,
+   full: boolean,
+): string {
+   if (value === null || value === undefined) return unsetSummary(given, full);
+   if (value instanceof Date)
+      return Number.isNaN(value.getTime()) ? "" : dayFormat.format(value);
+   if (typeof value === "boolean") return value ? "Yes" : "No";
+   if (typeof value === "number") return String(value);
+   if (value === "") return "(empty)";
+   return summarizeText(given.type ?? "string", value, full);
 }
 
 /**
@@ -99,11 +115,17 @@ export function summarizeGivenValue(
    given: Given,
    value: GivenValue | undefined,
 ): string {
-   if (value === null || value === undefined) return unsetSummary(given);
-   if (value instanceof Date)
-      return Number.isNaN(value.getTime()) ? "" : dayFormat.format(value);
-   if (typeof value === "boolean") return value ? "Yes" : "No";
-   if (typeof value === "number") return String(value);
-   if (value === "") return "(empty)";
-   return summarizeText(given.type ?? "string", value);
+   return wordValue(given, value, false);
+}
+
+/**
+ * A given's value in the same words, but whole: every picked value and no
+ * cut-off text. For a record of what produced a result, where nothing else
+ * holds the full value.
+ */
+export function describeGivenValue(
+   given: Given,
+   value: GivenValue | undefined,
+): string {
+   return wordValue(given, value, true);
 }

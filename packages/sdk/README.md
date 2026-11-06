@@ -458,7 +458,7 @@ It reads only the Publisher API, and sends nothing until a reader opens a row or
 - `renderSourceDetail`: a card under the source's header.
 - `describePickerSource`: a summary (marked as generated) and chips on a source's line in the picker.
 
-The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`. A run sends, and is cached under, only the values of the givens it reads, so changing another source's given leaves its result current. Which givens those are is read from the model file's text, so a source built on something the file doesn't declare (an imported source, a query) shows and sends every given.
+The viewer writes no value into Malloy text: a run is a view or a query by name, every name is quoted (`malloyIdentifier`), and given values travel as the request's `givens`. A run sends, and is cached under, only the values of the givens it reads, so changing another source's given leaves its result current. Which givens those are is read from the model file's text, so a source built on something the file doesn't declare (an imported source, a query) shows and sends every given, and the page says which of them it can't tell the source reads. A run's card names the defaults it ran at as the Givens controls word them (`Ordered since: Jan 1, 2023`).
 
 ---
 
