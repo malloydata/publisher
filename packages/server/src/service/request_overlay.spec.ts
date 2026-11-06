@@ -10,6 +10,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { installVariables } from "../test_helpers/settings_env";
 import {
    overlaidText,
    overlayByUrl,
@@ -18,14 +19,16 @@ import {
 
 describe("parseOverlayFiles", () => {
    let harness: MetricsHarness;
+   // Settings are read once at startup; a case installs the bound it needs.
+   let restoreSettings: (() => void) | undefined;
 
    beforeEach(async () => {
       harness = await startMetricsHarness();
       resetInstrumentsForTesting();
    });
    afterEach(async () => {
-      delete process.env.PUBLISHER_MAX_OVERLAY_FILES;
-      delete process.env.PUBLISHER_MAX_OVERLAY_BYTES;
+      restoreSettings?.();
+      restoreSettings = undefined;
       await harness.shutdown();
    });
 
@@ -77,7 +80,7 @@ describe("parseOverlayFiles", () => {
    });
 
    it("refuses more files than PUBLISHER_MAX_OVERLAY_FILES with 413, counted refused_bounds", async () => {
-      process.env.PUBLISHER_MAX_OVERLAY_FILES = "1";
+      restoreSettings = installVariables({ PUBLISHER_MAX_OVERLAY_FILES: "1" });
       expect(() =>
          parseOverlayFiles(
             [
@@ -91,7 +94,7 @@ describe("parseOverlayFiles", () => {
    });
 
    it("bounds the summed UTF-8 bytes, not characters", () => {
-      process.env.PUBLISHER_MAX_OVERLAY_BYTES = "5";
+      restoreSettings = installVariables({ PUBLISHER_MAX_OVERLAY_BYTES: "5" });
       // Three characters, six bytes.
       expect(() =>
          parseOverlayFiles([{ path: "a.malloy", content: "ééé" }], "query"),
@@ -99,13 +102,6 @@ describe("parseOverlayFiles", () => {
       expect(
          parseOverlayFiles([{ path: "a.malloy", content: "ab" }], "query"),
       ).toHaveLength(1);
-   });
-
-   it("refuses a bound that is not a positive integer at the first request", () => {
-      process.env.PUBLISHER_MAX_OVERLAY_FILES = "0";
-      expect(() => parseOverlayFiles([], "compile")).toThrow(
-         "PUBLISHER_MAX_OVERLAY_FILES",
-      );
    });
 });
 

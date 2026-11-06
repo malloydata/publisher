@@ -66,6 +66,8 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "admin.storage.endpoint": "PUBLISHER_ADMIN_STORAGE_ENDPOINT",
    "query.maxRows": "PUBLISHER_QUERY_MAX_ROWS",
    "query.maxResponseBytes": "PUBLISHER_QUERY_MAX_RESPONSE_BYTES",
+   "query.maxOverlayFiles": "PUBLISHER_QUERY_MAX_OVERLAY_FILES",
+   "query.maxOverlayBytes": "PUBLISHER_QUERY_MAX_OVERLAY_BYTES",
    "query.defaultRowLimit": "PUBLISHER_QUERY_DEFAULT_ROW_LIMIT",
    "query.timeoutMs": "PUBLISHER_QUERY_TIMEOUT_MS",
    "query.maxConcurrent": "PUBLISHER_QUERY_MAX_CONCURRENT",

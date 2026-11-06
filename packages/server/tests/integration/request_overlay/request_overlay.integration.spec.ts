@@ -13,6 +13,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import { writeTempPackage } from "../../../src/test_helpers/temp_package";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 import { startPackageEnv, type PackageEnv } from "../../harness/reports";
 
 const BASE = `source: base_source is duckdb.sql("select 1 as id, 'a' as name") extend {
@@ -85,9 +86,11 @@ describe("a request's files overlay (E2E)", () => {
       removePackage?.();
    });
 
+   // Settings are read once at startup; a case installs the bound it needs.
+   let restoreSettings: (() => void) | undefined;
    afterEach(() => {
-      delete process.env.PUBLISHER_MAX_OVERLAY_FILES;
-      delete process.env.PUBLISHER_MAX_OVERLAY_BYTES;
+      restoreSettings?.();
+      restoreSettings = undefined;
    });
 
    describe("compile", () => {
@@ -238,7 +241,9 @@ describe("a request's files overlay (E2E)", () => {
 
    describe("bounds and entries", () => {
       it("refuses more files than the server takes with 413", async () => {
-         process.env.PUBLISHER_MAX_OVERLAY_FILES = "2";
+         restoreSettings = installVariables({
+            PUBLISHER_MAX_OVERLAY_FILES: "2",
+         });
          const files = ["a", "b", "c"].map((n) => ({
             path: `${n}.malloy`,
             content: "",
@@ -252,7 +257,9 @@ describe("a request's files overlay (E2E)", () => {
       });
 
       it("refuses more bytes than the server takes with 413", async () => {
-         process.env.PUBLISHER_MAX_OVERLAY_BYTES = "16";
+         restoreSettings = installVariables({
+            PUBLISHER_MAX_OVERLAY_BYTES: "16",
+         });
          const { status, body } = await query("tracks.malloy", {
             query: "run: tracks -> { aggregate: n }",
             files: [{ path: "base.malloy", content: BASE }],

@@ -20,6 +20,8 @@ import {
    getMaxConcurrentQueries,
    getMaxQueryRows,
    getMaxResponseBytes,
+   getMaxOverlayBytes,
+   getMaxOverlayFiles,
    getMcpCorsOrigins,
    getMemoryGovernorConfig,
    getModelPageMode,
@@ -115,6 +117,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
 
    "query.maxRows": () => getMaxQueryRows(),
    "query.maxResponseBytes": () => getMaxResponseBytes(),
+   "query.maxOverlayFiles": () => getMaxOverlayFiles(),
+   "query.maxOverlayBytes": () => getMaxOverlayBytes(),
    "query.defaultRowLimit": () => getDefaultQueryRowLimit(),
    "query.timeoutMs": () => getQueryTimeoutMs(),
    "query.maxConcurrent": () => getMaxConcurrentQueries(),

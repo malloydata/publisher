@@ -70,6 +70,10 @@ export const DEFAULT_MAX_QUERY_ROWS = 100_000;
  * a non-streaming driver has already buffered the whole result.
  */
 export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
+/** Default for `query.maxOverlayFiles`: files one compile or query may overlay. */
+export const DEFAULT_MAX_OVERLAY_FILES = 500;
+/** Default for `query.maxOverlayBytes`: 8 MiB of overlay text per request. */
+export const DEFAULT_MAX_OVERLAY_BYTES = 8 * 1024 * 1024;
 /**
  * Wall-clock timeout (ms) for one query, SQL or Malloy
  * (`PUBLISHER_QUERY_TIMEOUT_MS`; `0` disables). Kept under the 10-minute
