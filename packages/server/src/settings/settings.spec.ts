@@ -923,9 +923,21 @@ describe("step 2: the derived names", () => {
    it("fails a literal secret in the file, and reads one given as a ${VAR}", () => {
       withSettings({ file: { authorize: { bypassSecret: "s3cret" } } }, () => {
          expect(() => settings.get("authorize.bypassSecret")).toThrow(
-            "a secret in the file must be a ${VAR} reference, not the value itself",
+            "a secret in the file must be one ${VAR} reference and nothing else, not the value itself or part of it",
          );
       });
+      // A literal around a reference is still a literal in the file, even
+      // when the variable is empty.
+      withSettings(
+         {
+            env: { X: "" },
+            file: { retrieval: { llm: { apiKey: "sk-live-abc${X}" } } },
+         },
+         () =>
+            expect(() => settings.get("retrieval.llm.apiKey")).toThrow(
+               "must be one ${VAR} reference and nothing else",
+            ),
+      );
       withSettings(
          {
             env: { BYPASS: "s3cret" },
@@ -933,5 +945,128 @@ describe("step 2: the derived names", () => {
          },
          () => expect(settings.get("authorize.bypassSecret")).toBe("s3cret"),
       );
+   });
+
+   it("fails an unset ${VAR} in the file only when no flag or variable gives the setting", () => {
+      const file = { retrieval: { llm: { apiKey: "${NOPE}" } } };
+      withSettings(
+         { env: { PUBLISHER_RETRIEVAL_LLM_API_KEY: "sk-env" }, file },
+         () => {
+            expect(settings.get("retrieval.llm.apiKey")).toBe("sk-env");
+            expect(Settings.current().errors()).toEqual([]);
+         },
+      );
+      withSettings({ file }, () =>
+         expect(() => settings.get("retrieval.llm.apiKey")).toThrow(
+            "${NOPE} is not set",
+         ),
+      );
+   });
+
+   it("collects a conflict on a launch setting rather than throwing out of the load", () => {
+      // The image's CMD passes --server_root; an operator sets the new variable.
+      const loaded = Settings.load({
+         argv: ["--server_root", "/publisher"],
+         env: { PUBLISHER_ROOT: "/data" },
+         cwd: "/nonexistent",
+      });
+      expect(loaded.errors().map((error) => error.message)).toEqual([
+         'root is given different values under its old and new names: --server_root ("/publisher") and PUBLISHER_ROOT ("/data"). Remove the old one.',
+      ]);
+      expect(loaded.configPath).toBeUndefined();
+      const config = Settings.load({
+         argv: [],
+         env: { PUBLISHER_CONFIG_PATH: "/a.json", PUBLISHER_CONFIG: "/b.json" },
+         cwd: "/nonexistent",
+      });
+      expect(config.errors()).toHaveLength(1);
+      expect(config.errors()[0].message).toContain(
+         "config is given different values",
+      );
+   });
+
+   it("compares a list's repeated flags as the list they build, and an unordered list as a set", () => {
+      withSettings(
+         {
+            env: { PUBLISHER_WATCH: "a,b" },
+            argv: ["--watch-env", "a", "--watch-env", "b"],
+         },
+         () => expect(settings.get("watchEnvironments")).toEqual(["a", "b"]),
+      );
+      // Only the first environment auto-reloads, so order matters there.
+      withSettings(
+         {
+            env: { PUBLISHER_WATCH: "a,b" },
+            argv: ["--watch-env", "b", "--watch-env", "a"],
+         },
+         () =>
+            expect(() => settings.get("watchEnvironments")).toThrow(
+               'PUBLISHER_WATCH (["a","b"]) and --watch-env (["b","a"])',
+            ),
+      );
+      withSettings(
+         {
+            env: {
+               MCP_CORS_ORIGINS: "https://a.test,https://b.test",
+               PUBLISHER_MCP_CORS_ORIGINS: "https://b.test,https://a.test",
+            },
+         },
+         () =>
+            expect(settings.get("mcp.corsOrigins")).toEqual([
+               "https://b.test",
+               "https://a.test",
+            ]),
+      );
+      withSettings(
+         {
+            env: {
+               MCP_CORS_ORIGINS: "https://a.test",
+               PUBLISHER_MCP_CORS_ORIGINS: "https://b.test",
+            },
+         },
+         () =>
+            expect(() => settings.get("mcp.corsOrigins")).toThrow(
+               "given different values",
+            ),
+      );
+   });
+
+   it("names the Kubernetes Service behind a tcp:// port variable", () => {
+      withSettings({ env: { PUBLISHER_MCP_PORT: "tcp://10.0.0.1:4040" } }, () =>
+         expect(() => settings.get("mcp.port")).toThrow(
+            'mcp.port from PUBLISHER_MCP_PORT: expected an integer from 0 to 65535, got "tcp://10.0.0.1:4040". That is the variable Kubernetes sets for a Service named "publisher-mcp" in the pod\'s namespace: set enableServiceLinks: false in the pod spec, or rename the Service.',
+         ),
+      );
+      withSettings({ env: { PUBLISHER_MCP_PORT: "40a0" } }, () => {
+         let message = "";
+         try {
+            settings.get("mcp.port");
+         } catch (error) {
+            message = (error as Error).message;
+         }
+         expect(message).not.toContain("Kubernetes");
+      });
+   });
+
+   it("warns that a boolean flag takes no value, and names the flag that turns it off", () => {
+      const loaded = Settings.load({
+         argv: ["--allow-proxy-connections", "false"],
+         env: {},
+         cwd: "/nonexistent",
+      });
+      expect(loaded.get("allow.proxyConnections")).toBe(true);
+      expect(loaded.warnings.map((warning) => warning.message)).toContain(
+         '--allow-proxy-connections takes no value, so the "false" after it is ignored and --allow-proxy-connections turns allow.proxyConnections on. To turn it off, write --no-allow-proxy-connections.',
+      );
+      const plain = Settings.load({
+         argv: ["--allow-proxy-connections", "--port", "4000"],
+         env: {},
+         cwd: "/nonexistent",
+      });
+      expect(
+         plain.warnings.some((warning) =>
+            warning.message.includes("takes no value"),
+         ),
+      ).toBe(false);
    });
 });

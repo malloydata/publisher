@@ -150,9 +150,20 @@ describe("settings by their derived names", () => {
          config: { authorize: { bypassSecret: "s3cret" }, environments: [] },
       });
       expect(stderr).toContain(
-         "a secret in the file must be a ${VAR} reference, not the value itself",
+         "a secret in the file must be one ${VAR} reference and nothing else",
       );
       expect(stderr).not.toContain("s3cret");
+   });
+
+   it("refuses a launch setting's conflict with PUBLISHER_INIT_FAILED, not a crash", async () => {
+      // The harness gives the root as SERVER_ROOT; this gives a different one
+      // under the new name, as `docker run -e PUBLISHER_ROOT=…` does against
+      // a CMD that passes the root.
+      const stderr = await refused({ env: { PUBLISHER_ROOT: root() } });
+      expect(stderr).toContain(
+         "root is given different values under its old and new names: SERVER_ROOT",
+      );
+      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
 
    it("ignores a launch setting in the file, and says so", async () => {

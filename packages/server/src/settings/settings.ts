@@ -200,6 +200,11 @@ export class Settings {
 }
 
 const VAR_REFERENCE = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
+/** A value that is one `${VAR}` reference and nothing else, as a secret in the file must be. */
+const WHOLE_REFERENCE = /^\$\{[A-Z_][A-Z0-9_]*\}$/;
+
+/** A `${VAR}` in a file value whose variable is not set. */
+class UnsetReference extends Error {}
 
 /**
  * A raw value from one source, before it is read as the setting's type.
@@ -313,6 +318,11 @@ class Loader {
    private readonly deprecated = new Set<string>();
    private readonly unknownFlags: string[] = [];
    private readonly flagsWithoutValue: string[] = [];
+   private readonly valuesAfterSwitches: Array<{
+      name: string;
+      flag: FlagName;
+      next: string;
+   }> = [];
    private file: Record<string, unknown> = {};
    private configPath: string | undefined;
    private fileError: Error | undefined;
@@ -334,11 +344,18 @@ class Loader {
       deprecated: string[];
    } {
       this.readFlags();
-      // The launch settings say which file to read and have no file key.
-      this.readFile(
-         this.valueOf("root") as string,
-         this.valueOf("config") as string | undefined,
-      );
+      // The launch settings say which file to read and have no file key. One
+      // that fails (an old and a new name that disagree) is reported with
+      // every other setting's error, so startup still prints
+      // PUBLISHER_INIT_FAILED; no file is read, since which one is unknown.
+      const root = this.resolve(this.byKey.get("root")!);
+      const config = this.resolve(this.byKey.get("config")!);
+      if (!("error" in root) && !("error" in config)) {
+         this.readFile(
+            root.value as string,
+            config.value as string | undefined,
+         );
+      }
       for (const entry of this.registry) this.resolve(entry);
       this.warnAboutFlags();
       this.warnAboutFileKeys();
@@ -405,6 +422,10 @@ class Loader {
          let raw: unknown;
          if (flag.switches !== undefined) {
             raw = flag.switches;
+            const next = this.argv[i + 1];
+            if (next !== undefined && readsAsBoolean(flag.entry, next)) {
+               this.valuesAfterSwitches.push({ name, flag, next });
+            }
          } else if (this.argv[i + 1]) {
             raw = this.argv[i + 1];
             i++;
@@ -431,6 +452,23 @@ class Loader {
       for (const name of this.flagsWithoutValue) {
          this.warnings.push({
             message: `${name} has no value after it, so it is ignored.`,
+         });
+      }
+      for (const { name, flag, next } of this.valuesAfterSwitches) {
+         const on = flag.switches!;
+         const opposite = namesOf(flag.entry).flags.find(
+            (other) =>
+               !other.old &&
+               this.byFlag.get(other.name)?.switches === !on &&
+               this.byFlag.get(other.name)?.entry === flag.entry,
+         );
+         this.warnings.push({
+            key: flag.entry.key,
+            message:
+               `${name} takes no value, so the "${next}" after it is ignored and ${name} turns ${flag.entry.key} ${on ? "on" : "off"}.` +
+               (opposite
+                  ? ` To turn it ${on ? "off" : "on"}, write ${opposite.name}.`
+                  : ""),
          });
       }
    }
@@ -526,6 +564,14 @@ class Loader {
       for (const candidate of this.candidates(entry)) {
          const result = this.parseCandidate(entry, candidate);
          if ("error" in result) {
+            // A file value whose ${VAR} is unset gives nothing. It fails
+            // startup only when no flag or variable gives the setting.
+            if (
+               result.error instanceof UnsetReference &&
+               parsed.some(({ candidate }) => candidate.kind !== "file")
+            ) {
+               continue;
+            }
             return { error: result.error, source: sourceOf(candidate) };
          }
          parsed.push({ candidate, value: result.value });
@@ -533,11 +579,14 @@ class Loader {
       for (const { candidate } of parsed) {
          if (candidate.old) this.warnDeprecated(entry, candidate);
       }
-      const olds = parsed.filter(({ candidate }) => candidate.old);
-      const currents = parsed.filter(({ candidate }) => !candidate.old);
+      // A repeated flag builds one list, so that list is what is compared.
+      const compared =
+         entry.type instanceof ListType ? joinListFlags(parsed) : parsed;
+      const olds = compared.filter(({ candidate }) => candidate.old);
+      const currents = compared.filter(({ candidate }) => !candidate.old);
       for (const old of olds) {
          const differing = currents.find(
-            (current) => !sameValue(current.value, old.value),
+            (current) => !sameValue(entry, current.value, old.value),
          );
          if (differing) {
             return {
@@ -623,12 +672,12 @@ class Loader {
          candidate.kind === "file" &&
          !(
             typeof candidate.raw === "string" &&
-            new RegExp(VAR_REFERENCE.source).test(candidate.raw)
+            WHOLE_REFERENCE.test(candidate.raw.trim())
          )
       ) {
          return {
             error: new Error(
-               `${entry.key} from ${source.kind === "default" ? "" : source.name}: a secret in the file must be a \${VAR} reference, not the value itself`,
+               `${entry.key} from ${source.kind === "default" ? "" : source.name}: a secret in the file must be one \${VAR} reference and nothing else, not the value itself or part of it`,
             ),
          };
       }
@@ -655,6 +704,7 @@ class Loader {
             this.typeExpected(entry, candidate),
             candidate.raw,
             entry.secret,
+            serviceLinkHint(candidate),
          );
          if (candidate.today && today.invalid === "warn") {
             const fallback = this.defaultOf(entry);
@@ -823,7 +873,7 @@ class Loader {
       return raw.replace(VAR_REFERENCE, (_match, name: string) => {
          const value = this.env[name];
          if (value === undefined) {
-            throw new Error(
+            throw new UnsetReference(
                `${entry.key} from ${this.configPath ?? PUBLISHER_CONFIG_NAME}: \${${name}} is not set`,
             );
          }
@@ -864,9 +914,83 @@ class Loader {
    }
 }
 
-/** Whether two parsed values are the same setting value. */
-function sameValue(a: unknown, b: unknown): boolean {
+/**
+ * Whether two parsed values are the same setting value. An unordered list's
+ * are compared as sets: `a,b` and `b,a` agree.
+ */
+function sameValue(entry: RegisteredSetting, a: unknown, b: unknown): boolean {
+   if (
+      entry.type instanceof ListType &&
+      !entry.type.ordered &&
+      Array.isArray(a) &&
+      Array.isArray(b)
+   ) {
+      const members = (list: unknown[]) => [...new Set(list)].sort();
+      return JSON.stringify(members(a)) === JSON.stringify(members(b));
+   }
    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * A list's flags as the one list they build, once for its current names and
+ * once for its old ones, beside its variables and file values.
+ */
+function joinListFlags(
+   parsed: Array<{ candidate: Candidate; value: unknown }>,
+): Array<{ candidate: Candidate; value: unknown }> {
+   const joined: Array<{ candidate: Candidate; value: unknown }> = [];
+   for (const old of [true, false]) {
+      const flags = parsed.filter(
+         ({ candidate }) => candidate.kind === "flag" && candidate.old === old,
+      );
+      if (flags.length === 0) continue;
+      joined.push({
+         candidate: {
+            ...flags[0].candidate,
+            name: [
+               ...new Set(flags.map(({ candidate }) => candidate.name)),
+            ].join(", "),
+         },
+         value: flags.flatMap(({ value }) => value as string[]),
+      });
+   }
+   return [
+      ...joined,
+      ...parsed.filter(({ candidate }) => candidate.kind !== "flag"),
+   ];
+}
+
+/** Whether an argument after a switch reads as a boolean: `--x false`. */
+function readsAsBoolean(entry: RegisteredSetting, next: string): boolean {
+   try {
+      (entry.type as BooleanType).fromString(next);
+      return true;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Kubernetes gives every pod a `<SERVICE>_PORT=tcp://<ip>:<port>` variable for
+ * each Service in its namespace unless the pod sets `enableServiceLinks:
+ * false`, so a Service named `publisher-mcp` sets `PUBLISHER_MCP_PORT`. "Expected
+ * an integer" alone would not lead anyone there.
+ */
+function serviceLinkHint(candidate: Candidate): string | undefined {
+   if (candidate.kind !== "env" || !candidate.name.endsWith("_PORT")) {
+      return undefined;
+   }
+   if (
+      typeof candidate.raw !== "string" ||
+      !/^tcp:\/\/[^\s/]+:\d+$/.test(candidate.raw.trim())
+   ) {
+      return undefined;
+   }
+   const service = candidate.name
+      .slice(0, -"_PORT".length)
+      .toLowerCase()
+      .replace(/_/g, "-");
+   return `That is the variable Kubernetes sets for a Service named "${service}" in the pod's namespace: set enableServiceLinks: false in the pod spec, or rename the Service.`;
 }
 
 /** The failure for a setting given different values under an old and a new name. */

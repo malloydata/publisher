@@ -24,7 +24,7 @@ RUN bun install
 RUN bun run build
 
 # Set environment variables
-ENV SERVER_ROOT=/app/server_root
+ENV PUBLISHER_ROOT=/app/server_root
 ENV PUBLISHER_HOST=0.0.0.0
 
 # Set the command to run the server

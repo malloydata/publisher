@@ -14,6 +14,7 @@ import { logger } from "./logger";
 import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
 import {
    referencedVariable,
+   REGISTRY,
    settings,
    Settings,
    type SettingValue,
@@ -458,6 +459,29 @@ function embeddingValue<K extends EmbeddingFileKey>(
 }
 
 /**
+ * A Google or Vertex embedding key: from a flag, a current variable
+ * (`PUBLISHER_RETRIEVAL_EMBEDDING_*`) or the file, never from `EMBEDDING_MODEL`,
+ * `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS`. Those were only ever the
+ * OpenAI-compatible provider's, and a leftover `EMBEDDING_API_BASE` would send
+ * the Google key, and the text embedded, to that endpoint.
+ */
+function googleEmbeddingValue<K extends EmbeddingFileKey>(
+   key: K,
+): SettingValue<K> | undefined {
+   const source = settings.source(key);
+   const old =
+      source.kind === "env" &&
+      REGISTRY.find((entry) => entry.key === key)?.aliases.env?.includes(
+         source.name,
+      );
+   if (!old) return settings.get(key);
+   const file = settings
+      .shadowed(key)
+      .find((shadowed) => shadowed.source.kind === "file");
+   return file?.value as SettingValue<K> | undefined;
+}
+
+/**
  * Embedding-provider settings for semantic `get_context` retrieval, or `null`
  * when disabled (no `EMBEDDING_API_KEY`), leaving lexical ranking.
  *
@@ -541,13 +565,13 @@ export function getEmbeddingSettings(
    if (provider === "google" || provider === "vertex") {
       const apiKey = settings.get("retrieval.embedding.apiKey") || undefined;
       if (provider === "google" && !apiKey) return null;
-      const model = settings.get("retrieval.embedding.model");
+      const model = googleEmbeddingValue("retrieval.embedding.model");
       if (!model) return null;
       return {
          provider,
          model,
-         dimensions: settings.get("retrieval.embedding.dimensions"),
-         baseUrl: settings.get("retrieval.embedding.baseUrl"),
+         dimensions: googleEmbeddingValue("retrieval.embedding.dimensions"),
+         baseUrl: googleEmbeddingValue("retrieval.embedding.baseUrl"),
          projectId: file?.projectId,
          location: file?.location,
          // Vertex authenticates with Application Default Credentials.
@@ -671,8 +695,8 @@ function overriddenFileValue(
 /**
  * The LLM settings in force, or `null` when every LLM feature is off. On iff
  * `retrieval.llm.provider` is set and either `LLM_API_KEY` is present or the
- * provider needs none (Ollama, Vertex). The key is an environment variable and
- * never a file entry. An ambient `OPENAI_API_KEY`-style variable is not read,
+ * provider needs none (Ollama, Vertex). The key is a variable, or in the file
+ * one `${VAR}` reference, never a literal. An ambient `OPENAI_API_KEY`-style variable is not read,
  * for the reason {@link getEmbeddingConfig} gives.
  */
 export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {

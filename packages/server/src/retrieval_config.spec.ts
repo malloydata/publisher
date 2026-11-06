@@ -389,6 +389,72 @@ describe("settings resolution and precedence", () => {
       });
    });
 
+   it("google and vertex never read the OpenAI-compatible variables", () => {
+      // A deployment that moved from an OpenAI-compatible provider to Google
+      // in the file and kept its variables: the Google key and the text
+      // embedded must not go to the old endpoint.
+      const leftovers = {
+         EMBEDDING_API_KEY: "gk",
+         EMBEDDING_MODEL: "text-embedding-3-small",
+         EMBEDDING_API_BASE: "https://api.openai.com/v1",
+         EMBEDDING_DIMENSIONS: "512",
+      };
+      const withModel = { provider: "google", model: "gemini-embedding-001" };
+      // An old variable that disagrees with the file fails startup, as any
+      // old name does, rather than reaching a request.
+      withSettings(
+         { env: leftovers, file: { retrieval: { embedding: withModel } } },
+         () => {
+            expect(() =>
+               getEmbeddingSettings(
+                  parseRetrievalConfig({ embedding: withModel })!.embedding,
+               ),
+            ).toThrow(
+               'retrieval.embedding.model is given different values under its old and new names: EMBEDDING_MODEL ("text-embedding-3-small")',
+            );
+         },
+      );
+      withSettings(
+         {
+            env: {
+               EMBEDDING_API_KEY: leftovers.EMBEDDING_API_KEY,
+               EMBEDDING_API_BASE: leftovers.EMBEDDING_API_BASE,
+               EMBEDDING_DIMENSIONS: leftovers.EMBEDDING_DIMENSIONS,
+            },
+            file: { retrieval: { embedding: withModel } },
+         },
+         () => {
+            const settings = getEmbeddingSettings(
+               parseRetrievalConfig({ embedding: withModel })!.embedding,
+            );
+            expect(settings).toMatchObject({
+               provider: "google",
+               model: "gemini-embedding-001",
+               apiKey: "gk",
+            });
+            expect(settings?.baseUrl).toBeUndefined();
+            expect(settings?.dimensions).toBeUndefined();
+         },
+      );
+      // A current name is a deliberate override, and is read.
+      withSettings(
+         {
+            env: {
+               EMBEDDING_API_KEY: "gk",
+               PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "https://proxy.test/v1",
+            },
+            file: { retrieval: { embedding: withModel } },
+         },
+         () => {
+            expect(
+               getEmbeddingSettings(
+                  parseRetrievalConfig({ embedding: withModel })!.embedding,
+               )?.baseUrl,
+            ).toBe("https://proxy.test/v1");
+         },
+      );
+   });
+
    it("prefixes from the file reach the settings and the provider", () => {
       setRetrievalConfig(
          parseRetrievalConfig({

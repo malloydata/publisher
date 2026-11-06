@@ -33,7 +33,7 @@ export const mcp = [
    }),
    setting({
       key: "mcp.corsOrigins",
-      type: list(),
+      type: list({ ordered: false }),
       default: [],
       description:
          "Origins that may read MCP responses cross-origin; * allows any, none denies.",

@@ -87,7 +87,7 @@ export const retrieval = [
       secret: true,
       description:
          "Key of the retrieval LLM; unset turns every LLM feature off, except for providers that need none.",
-      notes: 'API key for the chat model named by `retrieval.llm` in `publisher.config.json` (OpenAI, an OpenAI-compatible server, Anthropic or Google; not needed for `ollama` or `vertex`). Used for index-time keyphrases and source summaries. Unset with a keyed provider: every LLM feature is off and nothing errors. Never read from a file, never logged. See "Providers and the retrieval settings" below.',
+      notes: 'API key for the chat model named by `retrieval.llm` in `publisher.config.json` (OpenAI, an OpenAI-compatible server, Anthropic or Google; not needed for `ollama` or `vertex`). Used for index-time keyphrases and source summaries. Unset with a keyed provider: every LLM feature is off and nothing errors. In `publisher.config.json` only as one `${VAR}` reference; never logged. See "Providers and the retrieval settings" below.',
       aliases: { env: ["LLM_API_KEY"] },
    }),
 ];
