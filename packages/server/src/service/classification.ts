@@ -364,7 +364,7 @@ export interface FieldClassification {
    malformed?: string;
    /** True for a field under `private:` / `internal:`, which callers never reach. */
    hidden: boolean;
-   /** True for a dimension or measure; false for a view or a join. */
+   /** True for a dimension or measure, a record or array among them; false for a view or a join. */
    isField: boolean;
    /** `measure` for an aggregate or analytic expression, else `dimension`. */
    kind: "dimension" | "measure";
@@ -411,6 +411,13 @@ function isJoinField(f: IrField): boolean {
 
 function isAtomicField(f: IrField): boolean {
    return !isJoinField(f) && f.type !== "turtle" && !Array.isArray(f.fields);
+}
+
+/** A record or array value: join-shaped in the IR, but a dimension a caller selects whole. */
+function isRecordField(f: IrField): boolean {
+   return (
+      (f.type === "record" || f.type === "array") && Array.isArray(f.fields)
+   );
 }
 
 function fieldKind(f: IrField): "dimension" | "measure" {
@@ -884,6 +891,8 @@ interface OutputReads {
    value: string[][];
    filter: string[][];
    passthrough: boolean;
+   /** True for a `nest:`, whose outputs are each read on their own. */
+   nest?: boolean;
 }
 
 /**
@@ -919,6 +928,22 @@ export function readSourceClassifications(
    return lineage;
 }
 
+/**
+ * Whether a record or array has one value its parts are pieces of: built by an
+ * expression, a part of such a value, or a query output read as one field (a
+ * nest's outputs are each read on their own).
+ */
+function computesValue(
+   field: IrField,
+   out: OutputScope | undefined,
+   record: string | undefined,
+): boolean {
+   if (!isRecordField(field)) return false;
+   if (field.e !== undefined || record !== undefined) return true;
+   const reads = out?.outputs.reads.get(out.rel);
+   return reads !== undefined && !reads.nest;
+}
+
 function walkSourceClassifications(
    fields: IrField[] | undefined,
    outputs: QueryOutputs | undefined,
@@ -937,6 +962,8 @@ function walkSourceClassifications(
          /** The carried structs on the join path to it. */
          ceilings: Ceiling[];
          ceilingUnresolved: boolean;
+         /** The computed record or array whose value this field is a part of. */
+         record?: string;
       }
    >();
    const outputsOf = (q: IrQuery): QueryOutputs => {
@@ -952,6 +979,7 @@ function walkSourceClassifications(
       scope: OutputScope | undefined,
       ceilings: Ceiling[],
       ceilingUnresolved: boolean,
+      record: string | undefined,
    ): void => {
       for (const field of list) {
          const name = activeName(field);
@@ -981,6 +1009,7 @@ function walkSourceClassifications(
             out,
             ceilings,
             ceilingUnresolved,
+            record,
          });
          if (!isJoinField(field)) continue;
          if (
@@ -1004,6 +1033,7 @@ function walkSourceClassifications(
             inner,
             mergeCeilings(ceilings, through.ceilings),
             ceilingUnresolved || through.unresolved,
+            computesValue(field, out, record) ? path : undefined,
          );
       }
    };
@@ -1015,6 +1045,7 @@ function walkSourceClassifications(
       outputs ? { outputs, rel: "" } : undefined,
       [],
       false,
+      undefined,
    );
 
    const visiting = new Set<string>();
@@ -1032,22 +1063,34 @@ function walkSourceClassifications(
       let ceilingUnresolved = entry.ceilingUnresolved;
       const texts = annotationTexts(field.annotations);
       const own = readClassification(texts);
+      const outReads = out ? out.outputs.reads.get(out.rel) : undefined;
+      // A part of a computed record carries no expression of its own: it returns a piece of the record.
+      const partOf = outReads ? undefined : entry.record;
+      // A record with no one value, such as a struct column or a nest, returns its parts.
+      const parts =
+         isRecordField(field) && !computesValue(field, out, entry.record)
+            ? (field.fields ?? []).flatMap((f) => {
+                 const name = activeName(f);
+                 return name ? [`${path}.${name}`] : [];
+              })
+            : [];
       // An output of a query reads from the query's source, not from its own siblings.
-      const reads: OutputReads = (out
-         ? out.outputs.reads.get(out.rel)
-         : undefined) ?? {
-         value: out ? [] : fieldReferences(field.e),
-         filter: [],
-         // An output whose reads are unknown may be a copy.
-         passthrough: out ? true : isPassthrough(field.e),
-      };
+      const reads: OutputReads = outReads?.nest
+         ? // A nest's own summary names what its extend declares; its outputs carry what they read.
+           { value: [], filter: [], passthrough: false }
+         : (outReads ?? {
+              value: out || partOf ? [] : fieldReferences(field.e),
+              filter: [],
+              // An output whose reads are unknown may be a copy.
+              passthrough: out || partOf ? true : isPassthrough(field.e),
+           });
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
       const unresolved: string[] = [];
       const unresolvedRead = (refPath: string): void => {
          if (!unresolved.includes(refPath)) unresolved.push(refPath);
       };
-      const unread = out !== undefined && !out.outputs.reads.has(out.rel);
+      const unread = out !== undefined && !outReads && !partOf;
       if (unread) unresolvedRead(path);
       const take = (list: ClassifiedInput[]): void => {
          for (const c of list) {
@@ -1062,42 +1105,49 @@ function walkSourceClassifications(
             const name = ref.join(".");
             const refPath = owner && !out ? `${owner}.${name}` : name;
             if (refPath === path && !out) continue;
-            const input = out
-               ? out.outputs.base?.get(refPath)
-               : resolve(refPath);
-            if (!input) {
-               unresolvedRead(refPath);
-               continue;
-            }
-            // A read inherits the ceilings of whatever it reads through.
-            ceilings = mergeCeilings(ceilings, input.ceilings);
-            ceilingUnresolved ||= input.ceilingUnresolved;
-            if (input.unresolved.length > 0 && input.declared.length === 0) {
-               unresolvedRead(refPath);
-            }
-            // A classified input is an input; an unclassified one contributes
-            // the inputs IT was read from, so lineage crosses an intermediate.
-            take(
-               input.classifications.length > 0
-                  ? [
-                       {
-                          field: refPath,
-                          // A relabel declared below its input still passes the input's classes on.
-                          classifications: input.passthrough
-                             ? tokenSet([
-                                  ...input.classifications,
-                                  ...input.dropped,
-                               ])
-                             : input.classifications,
-                       },
-                    ]
-                  : input.inputs,
+            readInput(
+               refPath,
+               out ? out.outputs.base?.get(refPath) : resolve(refPath),
             );
-            // Every row of a filtered output reveals what its filter selects on, a filter here too, not a value.
-            filters.push(...input.filtered);
          }
       };
+      const readInput = (
+         refPath: string,
+         input: FieldClassification | undefined,
+      ): void => {
+         if (!input) {
+            unresolvedRead(refPath);
+            return;
+         }
+         // A read inherits the ceilings of whatever it reads through.
+         ceilings = mergeCeilings(ceilings, input.ceilings);
+         ceilingUnresolved ||= input.ceilingUnresolved;
+         if (input.unresolved.length > 0 && input.declared.length === 0) {
+            unresolvedRead(refPath);
+         }
+         // A classified input is an input; an unclassified one contributes
+         // the inputs IT was read from, so lineage crosses an intermediate.
+         take(
+            input.classifications.length > 0
+               ? [
+                    {
+                       field: refPath,
+                       // A relabel declared below its input still passes the input's classes on.
+                       classifications: input.passthrough
+                          ? tokenSet([
+                               ...input.classifications,
+                               ...input.dropped,
+                            ])
+                          : input.classifications,
+                    },
+                 ]
+               : input.inputs,
+         );
+         // Every row of a filtered output reveals what its filter selects on, a filter here too, not a value.
+         filters.push(...input.filtered);
+      };
       read(reads.value);
+      for (const p of partOf ? [partOf] : parts) readInput(p, resolve(p));
       const valueInputs = inputs.length;
       read(reads.filter);
       take(filters);
@@ -1113,7 +1163,7 @@ function walkSourceClassifications(
          inputs,
          ...(own.malformed ? { malformed: own.malformed } : {}),
          hidden,
-         isField: isAtomicField(field),
+         isField: isAtomicField(field) || isRecordField(field),
          kind: fieldKind(field),
          // A filter selects rows and copies no value, so only the value reads are "dropped".
          dropped:
@@ -1195,6 +1245,7 @@ function stageOutputs(
             value: queryFieldReads(qf),
             filter,
             passthrough: qf.type === "fieldref" || isPassthrough(qf.e),
+            ...(qf.type === "turtle" ? { nest: true } : {}),
          });
          const nested = qf.type === "turtle" ? qf.pipeline : undefined;
          if (nested?.length === 1 && depth < MAX_JOIN_RECURSION_DEPTH) {
@@ -1774,7 +1825,9 @@ export function classificationLeaks(
          } else {
             const why = c.malformed
                ? ` (it ${c.malformed})`
-               : " (it declares none and reads no classified field)";
+               : c.unresolved.length > 0
+                 ? ` (it reads ${c.unresolved.join(", ")}, which cannot be resolved against the source)`
+                 : " (it declares none and reads no classified field)";
             messages.push(
                `${where} carries [${allowed}] but exposes ${path}, which has ` +
                   `no class${why}. Every field reachable from a source with ` +

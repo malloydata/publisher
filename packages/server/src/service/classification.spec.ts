@@ -609,6 +609,117 @@ export { research }
       );
    });
 
+   const recordSurface = (body: string, carries = '#(carries) ["none"]\n') => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+${carries}source: research is people include { internal: social } extend {
+${body}
+}
+
+export { research }
+`,
+      );
+   };
+
+   it("refuses a record or array dimension over a classified field, exposed through a view or directly", async () => {
+      for (const [body, message] of [
+         [
+            "   internal dimension: addr is { v is social }\n   view: v is { select: addr }",
+            "carries [none] but its view v reads addr, classified pii.direct_identifier",
+         ],
+         [
+            "   internal dimension: addr is [social]\n   view: v is { select: addr }",
+            "carries [none] but its view v reads addr, classified pii.direct_identifier",
+         ],
+         [
+            "   internal dimension: addr is { v is social }\n   view: v is { group_by: addr }",
+            "carries [none] but its view v reads addr, classified pii.direct_identifier",
+         ],
+         [
+            "   dimension: r is { v is social }",
+            "carries [none] but exposes r, classified pii.direct_identifier, inferred from social (pii.direct_identifier)",
+         ],
+         [
+            "   dimension: a is [social]",
+            "carries [none] but exposes a, classified pii.direct_identifier, inferred from social (pii.direct_identifier)",
+         ],
+         [
+            '   #(classification) "none"\n   internal dimension: copy is social\n   dimension: r is { v is copy }',
+            "carries [none] but exposes r, classified none pii.direct_identifier, inferred from copy (none pii.direct_identifier)",
+         ],
+      ]) {
+         recordSurface(body);
+         expect(await loadError()).toContain(message);
+      }
+   });
+
+   it("refuses a record a query source returns whose child it cannot follow", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: q is people -> {
+   group_by: area
+   nest: n is {
+      extend: { dimension: z is social }
+      group_by: r is { v is z }
+   }
+}
+
+export { q }
+`,
+      );
+      expect(await loadError()).toContain(
+         "source q (index.malloy) carries [none] but exposes n.r, which has no class (it reads z, which cannot be resolved against the source)",
+      );
+   });
+
+   it("holds a record on a carried source an open one joins to the joined source's ceiling", async () => {
+      write(
+         "base.malloy",
+         `##! experimental.access_modifiers
+#(carries) ["none"]
+source: s is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   #(classification) "none"
+   dimension: sid is id
+   #(classification) "pii.direct_identifier"
+   internal dimension: social is ssn
+   dimension: r is { v is social }
+}
+source: hub is ${ROWS} include { internal: id, region, ssn, amount } extend {
+   join_one: rr is s on id = rr.sid
+   #(classification) "none"
+   measure: hc is count()
+}
+`,
+      );
+      write(
+         "index.malloy",
+         `import { hub, s } from "base.malloy"
+export { hub }
+`,
+      );
+      expect(await loadError()).toContain(
+         "source hub (index.malloy) exposes rr.r, classified pii.direct_identifier, through rr, which carries [none]",
+      );
+   });
+
+   it("twin: loads a record or array built from fields on the list, directly or through a view, and a record under no #(carries)", async () => {
+      recordSurface(
+         "   dimension: r is { v is area }\n   dimension: a is [area]\n   dimension: ar is [{ v is area }]\n   view: v is { select: r, a }",
+      );
+      expect(await warnings()).toEqual([]);
+      recordSurface("   dimension: r is { v is social }", "");
+      expect(await warnings()).toEqual([]);
+   });
+
    it("refuses a plain copy that declares a lower class than its input, and warns on a computed one", async () => {
       write("base.malloy", PEOPLE);
       write(

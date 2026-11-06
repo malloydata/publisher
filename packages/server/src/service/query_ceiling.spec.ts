@@ -75,6 +75,14 @@ source: open_s is duckdb.table("child") include { internal: * } extend {
    #(classification) "none"
    measure: c is count()
 }
+#(carries) ["none"]
+source: rel is duckdb.table("child") include { internal: * } extend {
+   join_one: p is people on id = p.id
+   #(classification) "none"
+   internal dimension: copy is p.ssn
+}
+source: rec_q is s extend { dimension: r is { v is p.ssn } } -> { select: r }
+source: nest_q is s -> { group_by: sid nest: n is { group_by: p.ssn } }
 `;
 
 async function run(
@@ -103,6 +111,76 @@ const DENIED: Array<[string, string, string]> = [
       "an extend field that reads a classified join field",
       "run: s extend { dimension: x is p.ssn } -> { group_by: x }",
       "x, which is classified phi.direct_identifier",
+   ],
+   [
+      "a selected extend record whose child reads a classified join field",
+      "run: s extend { dimension: r is { v is p.ssn } } -> { select: r }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "a selected extend array over a classified join field",
+      "run: s extend { dimension: a is [p.ssn] } -> { select: a }",
+      "a, which is classified phi.direct_identifier",
+   ],
+   [
+      "a grouped extend record over a classified join field",
+      "run: s extend { dimension: r is { v is p.ssn } } -> { group_by: r }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "a grouped extend array over a classified join field",
+      "run: s extend { dimension: a is [p.ssn] } -> { group_by: a }",
+      "a, which is classified phi.direct_identifier",
+   ],
+   [
+      "a nested extend record over a classified join field",
+      "run: s extend { dimension: r is { v is p.ssn } } -> { aggregate: c nest: z is { group_by: r } }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "a nested extend array over a classified join field",
+      "run: s extend { dimension: a is [p.ssn] } -> { aggregate: c nest: z is { group_by: a } }",
+      "a, which is classified phi.direct_identifier",
+   ],
+   [
+      "a record inside a record over a classified join field",
+      "run: s extend { dimension: r is { b is { v is p.ssn } } } -> { select: r }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "an array of records over a classified join field",
+      "run: s extend { dimension: a is [{ v is p.ssn }] } -> { select: a }",
+      "a, which is classified phi.direct_identifier",
+   ],
+   [
+      "a record over a raw internal column",
+      "run: s extend { dimension: r is { v is name } } -> { select: r }",
+      "r, which has no #(classification)",
+   ],
+   [
+      "a record a stage's own extend declares",
+      "run: s -> { extend: { dimension: r is { v is p.ssn } } select: r }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "a record a later stage's extend declares over a join it brings in",
+      "run: s -> { group_by: sid } -> { extend: { join_cross: self is s dimension: z is { v is self.p.ssn } } select: z }",
+      "z, which is classified phi.direct_identifier",
+   ],
+   [
+      "a record over an internal relabel declared lower than the field it copies",
+      "run: rel extend { dimension: r is { v is copy } } -> { select: r }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "a record a query source returns, read whole",
+      "run: rec_q -> { select: r }",
+      "r, which is classified phi.direct_identifier",
+   ],
+   [
+      "a nest a query source returns, read whole",
+      "run: nest_q -> { select: n }",
+      "n, which is classified phi.direct_identifier",
    ],
    [
       "a raw internal column read through extend",
@@ -370,6 +448,84 @@ describe("#(carries) is checked per query", () => {
             (await run(model, carried, unrecordedAudit(), true)).compactResult
                .length,
          ).toBeGreaterThan(0);
+      });
+   });
+
+   it("holds a record on a carried source joined into an open one to the joined source's ceiling", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         for (const query of [
+            "run: open_s extend { join_one: rr is s extend { dimension: r is { v is p.ssn } } on id = rr.sid } -> { select: rr.r }",
+            "run: open_s extend { join_one: rr is s extend { dimension: a is [p.ssn] } on id = rr.sid } -> { select: rr.a }",
+         ]) {
+            const err = await run(model, query).catch((e) => e);
+            expect(err).toBeInstanceOf(BadRequestError);
+            expect((err as Error).message).toContain(
+               "source rr carries [none]",
+            );
+            expect((err as Error).message).toContain(
+               "which is classified phi.direct_identifier",
+            );
+         }
+      });
+   });
+
+   it("refuses a record whose child it cannot follow", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const err = await run(
+            model,
+            "run: s -> { aggregate: c nest: n is { extend: { dimension: r is { v is p.ssn } } select: r } }",
+         ).catch((e) => e);
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect((err as Error).message).toContain(
+            "source s carries [none]; this query reads r, which Publisher cannot see completely",
+         );
+      });
+   });
+
+   it("twin: serves a record or array built from fields on the list, a real join named like one, and a record on an open source", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         for (const query of [
+            "run: s extend { dimension: r is { v is sid } } -> { select: r }",
+            "run: s extend { dimension: a is [sid] } -> { select: a }",
+            "run: s extend { dimension: r is { b is { v is sid, w is p.pid } } } -> { select: r }",
+            "run: s extend { dimension: a is [{ v is sid }] } -> { select: a }",
+            "run: s extend { dimension: r is { v is sid } } -> { group_by: r }",
+            "run: s extend { dimension: r is { v is sid } } -> { aggregate: c nest: z is { group_by: r } }",
+            "run: s extend { join_one: r is people on sid = r.key } -> { group_by: r.pid }",
+            "run: open_s extend { dimension: r is { v is p.ssn } } -> { select: r }",
+            "run: open_s extend { join_one: rr is s extend { dimension: r is { v is sid } } on id = rr.sid } -> { select: rr.r }",
+         ]) {
+            expect(
+               (await run(model, query)).compactResult.length,
+            ).toBeGreaterThan(0);
+         }
+      });
+   });
+
+   it("records a record's reads in fieldsRead, refused or served", async () => {
+      await withAuthorizeModel(MODEL, async ({ model }) => {
+         const refused = unrecordedAudit();
+         await run(
+            model,
+            "run: s extend { dimension: r is { v is p.ssn } } -> { select: r }",
+            refused,
+         ).catch(() => undefined);
+         expect(refused.summary?.fieldsRead.map((f) => f.path)).toEqual([
+            "p.ssn",
+            "r",
+         ]);
+         expect(refused.summary?.fieldsReadComplete).toBe(true);
+         const served = unrecordedAudit();
+         await run(
+            model,
+            "run: s extend { dimension: a is [sid] } -> { select: a }",
+            served,
+         );
+         expect(served.summary?.fieldsRead.map((f) => f.path)).toEqual([
+            "a",
+            "sid",
+         ]);
+         expect(served.summary?.fieldsReadComplete).toBe(true);
       });
    });
 });
