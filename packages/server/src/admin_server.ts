@@ -47,7 +47,7 @@ adminServer.on("error", (error: NodeJS.ErrnoException) => {
    process.exit(1);
 });
 // A file load or a snapshot delete can run for minutes, so this listener takes
-// the main API's socket limits. Read at boot, as there.
+// the main API's socket limits.
 applyServerTimeouts(adminServer, getServerSocketTimeoutMs());
 
 registerSignalHandlers(

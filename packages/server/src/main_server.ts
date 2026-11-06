@@ -438,8 +438,7 @@ app.use(unhandledErrorMiddleware);
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
 // Outlasts the query timeout, so a long query ends in its 504 rather than a
-// dropped connection. Read at boot, so a malformed PUBLISHER_QUERY_TIMEOUT_MS
-// stops the server here instead of failing each query.
+// dropped connection.
 const socketTimeoutMs = getServerSocketTimeoutMs();
 applyServerTimeouts(mainServer, socketTimeoutMs);
 
