@@ -3235,9 +3235,6 @@ export class Environment {
       if (!_package) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
-      if (body.name) {
-         _package.setName(body.name);
-      }
       // `setPackageMetadata` replaces the whole object, so omitted fields
       // carry over; a wiped `explores` would silently serve every model.
       const existing = _package.getPackageMetadata();
@@ -3326,6 +3323,10 @@ export class Environment {
       if (invalidMsg) {
          _package.setPackageMetadata(existing);
          throw new BadRequestError(invalidMsg);
+      }
+      // After the checks, so a refused PATCH leaves the name as it was.
+      if (body.name) {
+         _package.setName(body.name);
       }
 
       await this.writePackageManifest(packageName, {

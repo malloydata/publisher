@@ -95,6 +95,14 @@ source: leaky is ${ROWS} extend {
       expect(manifest.queryableSources).toBeUndefined();
    });
 
+   it("keeps the package's name when a PATCH that renames it is refused", async () => {
+      const pkg = await env.getPackage("pkg", false);
+      await expect(
+         env.updatePackage("pkg", { name: "renamed", queryableSources: "all" }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(pkg.getPackageName()).toBe("pkg");
+   });
+
    it("rolls a reinstall back when the new tree fails the gates under the body's listing, keeping the old tree and location", async () => {
       const before = await metadata();
       const newTree = path.join(rootDir, "next");
