@@ -16,6 +16,7 @@ import * as path from "path";
 import { logger } from "../../../src/logger";
 import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "package-dry-run-env";
 const ROWS = `duckdb.sql("select * from (values (1, 'web'), (2, 'store')) as t(id, channel)")`;
@@ -240,14 +241,16 @@ describe("a dry-run publish", () => {
    }, 60_000);
 
    describe("with package versioning on", () => {
-      const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
-      const saved = process.env[FLAG];
+      // Settings are read once at startup, so the in-process server gets the
+      // variable as a restart with it would.
+      let restoreSettings: (() => void) | undefined;
       beforeAll(() => {
-         process.env[FLAG] = "on";
+         restoreSettings = installVariables({
+            PUBLISHER_PACKAGE_VERSIONING: "on",
+         });
       });
       afterAll(() => {
-         if (saved === undefined) delete process.env[FLAG];
-         else process.env[FLAG] = saved;
+         restoreSettings?.();
       });
 
       it("refuses a tree whose publisher.json declares no version, as a versioned publish does", async () => {
