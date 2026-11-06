@@ -34,6 +34,13 @@ export async function loadMalloyTag(): Promise<MalloyTag> {
    return unwrapMalloyTag(await import("@malloydata/malloy-tag"));
 }
 
+/**
+ * The Explorer's query builder, for `SourcesExplorer` alone: ESLint lets only
+ * the Explorer's callers import this (`EXPLORER_CALLERS`).
+ */
 export async function loadQueryBuilder(): Promise<QueryBuilder> {
-   return unwrapQueryBuilder(await import("@malloydata/malloy-query-builder"));
+   return unwrapQueryBuilder(
+      // eslint-disable-next-line no-restricted-syntax -- the query builder's one loader, for the Explorer; every other rule still holds in this file
+      await import("@malloydata/malloy-query-builder"),
+   );
 }

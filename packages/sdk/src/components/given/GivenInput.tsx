@@ -114,6 +114,12 @@ export interface GivenInputProps {
     * that was cut off. Absent, typing filters `options` in the browser.
     */
    optionSearch?: OptionSearch;
+   /**
+    * The control is opening, for a caller that fetches `options` only when
+    * one is wanted (see `useSuggestOptions`' `only`). Called by a picker's
+    * list and by a filter button's popover; harmless to call again.
+    */
+   onOpen?: () => void;
 }
 
 /**
@@ -176,6 +182,7 @@ export function GivenInput({
    optionsFailed,
    optionsTruncated,
    optionSearch,
+   onOpen,
 }: GivenInputProps) {
    const label = given.label ?? given.name ?? "";
    const { theme: publisherTheme } = usePublisherTheme();
@@ -355,6 +362,7 @@ export function GivenInput({
                // MUI closes on select by default, which makes "and also Aurora"
                // cost a second click to reopen.
                disableCloseOnSelect={multiple}
+               onOpen={onOpen}
                // Free text keeps the control from being a cage: the suggest query
                // returns the common values, not necessarily every legal one.
                freeSolo

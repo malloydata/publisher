@@ -172,6 +172,20 @@ const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
 ];
 
 /**
+ * `PUBLISHER_MODEL_PAGE`: which page the Console shows for a model, `explorer`
+ * (the default) or `viewer`. Read from the environment only, and reported on
+ * `/status` as `modelPage`, where the Console reads it; the Console keeps both
+ * pages. The Explorer writes the queries it builds back to Malloy text through
+ * `@malloydata/malloy-interfaces`, which puts a string value in unescaped
+ * (`escapeString` is a TODO), so a drilled value holding a double quote
+ * rewrites the query. `viewer` shows a page that builds no query, and takes
+ * the Explorer out of the legacy notebook too.
+ */
+export type ModelPageMode = "explorer" | "viewer";
+
+const MODEL_PAGE_MODES: readonly ModelPageMode[] = ["explorer", "viewer"];
+
+/**
  * Who moves a package's `latest` version.
  *
  *  - `on-publish` (default): a publish makes the new version `latest` unless a
@@ -1414,7 +1428,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
  * blank). Matched case-insensitively. A value outside the set throws, naming
  * where it came from and what is allowed: a typo must not leave a server in a
  * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
- * `PUBLISHER_PACKAGE_VERSIONING` and `versionPromotion`.
+ * `PUBLISHER_PACKAGE_VERSIONING`, `PUBLISHER_MODEL_PAGE` and `versionPromotion`.
  */
 function parseModeSetting<T extends string>(
    raw: unknown,
@@ -1474,6 +1488,18 @@ export const isVersioningEnabled = (): boolean =>
       "PUBLISHER_PACKAGE_VERSIONING",
       PACKAGE_VERSIONING_MODES,
    ) === "on";
+
+/**
+ * The Console's model page, {@link ModelPageMode}: `PUBLISHER_MODEL_PAGE`, or
+ * `explorer` when unset. Read at call time, so a test can switch it; a value
+ * outside the set throws, and it is read at startup so a typo fails the boot.
+ */
+export const getModelPageMode = (): ModelPageMode =>
+   parseModeSetting(
+      process.env.PUBLISHER_MODEL_PAGE,
+      "PUBLISHER_MODEL_PAGE",
+      MODEL_PAGE_MODES,
+   ) ?? "explorer";
 
 /**
  * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when
