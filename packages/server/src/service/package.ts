@@ -364,6 +364,11 @@ export class Package {
    private entities: readonly ApiModelEntities[] | undefined;
    private packagePath: string;
    private malloyConfig: MalloyConfig;
+   /**
+    * Loaded by a dry run, to check and discard: its load records no
+    * per-package or deprecated-usage metrics. See {@link Package.create}.
+    */
+   private dryRun = false;
    /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
    private serveDestinationConfig?: () => MalloyConfig;
    /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
@@ -824,7 +829,15 @@ export class Package {
        * on a transient compile error would destroy the source.
        */
       cleanupDirectoryOnFailure: boolean = false,
+      /**
+       * `dryRun`: load to check, never to serve (`POST …/packages?dryRun=true`).
+       * The load is the same; it records no load metrics, deprecated-usage or
+       * entities-findings counts, and logs a failure as the caller's answer
+       * rather than as an error, since nothing served is affected.
+       */
+      options: { dryRun?: boolean } = {},
    ): Promise<Package> {
+      const dryRun = options.dryRun === true;
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -834,11 +847,13 @@ export class Package {
          duration: formatDuration(manifestValidationTime - startTime),
       });
 
+      // Declared outside the try, so a failed load can release it below.
+      let malloyConfig: MalloyConfig | undefined;
       try {
          // Built on the main thread: it owns the native connection handles
          // that serve queries, which cannot cross the isolate boundary. The
          // worker proxies non-duckdb lookups back through it during compile.
-         const malloyConfig = Package.buildPackageMalloyConfig(
+         malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
             typeof environmentMalloyConfig === "function"
                ? environmentMalloyConfig
@@ -852,17 +867,35 @@ export class Package {
             malloyConfig,
             startTime,
             manifestValidationTime,
+            dryRun,
          );
       } catch (error) {
-         logger.error(`Error loading package ${packageName}`, {
-            error: errMessage(error),
+         // No caller ever holds a package whose load failed, so its own
+         // connections (the package DuckDB the load opened) close here; the
+         // environment's connections are not the package's and stay open.
+         await malloyConfig?.shutdown("close").catch((shutdownError) => {
+            logger.warn(
+               `Failed to close the connections of package ${packageName} after a failed load`,
+               { error: errMessage(shutdownError) },
+            );
          });
-         const endTime = performance.now();
-         const executionTime = endTime - startTime;
-         this.packageLoadHistogram.record(executionTime, {
-            malloy_package_name: packageName,
-            status: packageLoadFailureStatus(error),
-         });
+         if (dryRun) {
+            logger.info(`Dry-run load of package ${packageName} failed`, {
+               packageName,
+               dryRun: true,
+               error: errMessage(error),
+            });
+         } else {
+            logger.error(`Error loading package ${packageName}`, {
+               error: errMessage(error),
+            });
+            const endTime = performance.now();
+            const executionTime = endTime - startTime;
+            this.packageLoadHistogram.record(executionTime, {
+               malloy_package_name: packageName,
+               status: packageLoadFailureStatus(error),
+            });
+         }
          // Clean up only when the caller opted in, and never a watch-mode
          // symlink: removing it would unmount the package on a half-typed save
          // until a restart.
@@ -1189,6 +1222,7 @@ export class Package {
       malloyConfig: MalloyConfig,
       startTime: number,
       manifestValidationTime: number,
+      dryRun: boolean,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1262,10 +1296,12 @@ export class Package {
       } catch (err) {
          // Only in-band compile failures reach here; a pool failure has no
          // timings to record.
-         recordPackageLoadPhases(
-            outcome.timings,
-            packageLoadFailureStatus(err),
-         );
+         if (!dryRun) {
+            recordPackageLoadPhases(
+               outcome.timings,
+               packageLoadFailureStatus(err),
+            );
+         }
          throw err;
       }
 
@@ -1280,6 +1316,7 @@ export class Package {
          models,
          malloyConfig,
       );
+      pkg.dryRun = dryRun;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<ReturnType<Package["applyLoadBuildPlan"]>>;
       let entitiesMs: number;
@@ -1308,15 +1345,25 @@ export class Package {
          await pkg.pushPreaggregateServeModels();
          pkg.logEmptyDiscoveryWarnings();
       } catch (err) {
-         recordPackageLoadPhases(
-            outcome.timings,
-            packageLoadFailureStatus(err),
-         );
+         if (!dryRun) {
+            recordPackageLoadPhases(
+               outcome.timings,
+               packageLoadFailureStatus(err),
+            );
+         }
          throw err;
       }
 
       // Recorded only now: a gate, the extraction or a companion compile can
       // still refuse the load above, and Package.create records that failure.
+      if (dryRun) {
+         logger.info(`Dry-run load of package ${packageName} succeeded`, {
+            packageName,
+            dryRun: true,
+            duration: formatDuration(executionTime),
+         });
+         return pkg;
+      }
       this.packageLoadHistogram.record(executionTime, {
          malloy_package_name: packageName,
          status: "success",
@@ -1655,9 +1702,12 @@ export class Package {
       if (findings.length > 0) {
          logger.warn("Package declares annotations an index cannot honor", {
             packageName: this.packageName,
+            dryRun: this.dryRun,
             reasons: findings.map((f) => f.reason),
          });
-         recordEntitiesFindings(findings.map((f) => f.reason));
+         if (!this.dryRun) {
+            recordEntitiesFindings(findings.map((f) => f.reason));
+         }
       }
       this.entities = Object.freeze(toApiEntities(results));
       logger.info("Package entities computed", {
@@ -3092,6 +3142,9 @@ export class Package {
 
    /** Count the deprecated features this package uses, once per load or reload. */
    private recordDeprecatedUsage(outcome: LoadPackageOutcome): void {
+      if (this.dryRun) {
+         return;
+      }
       recordDeprecatedFormatUsage(this.models);
       recordDeprecatedManifestKeys(
          outcome.packageMetadata.deprecatedManifestKeys,

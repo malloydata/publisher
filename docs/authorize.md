@@ -646,6 +646,20 @@ Both annotations evaluate expressions over **request-supplied givens**. There is
 - **It does not defend against a caller who sets their own givens.** Exposed directly to untrusted users, anyone can send `{"ROLE":"admin"}` and pass an `'admin' = $ROLE` lock. Do not treat either annotation as end-user authn/authz on a public endpoint.
 - **Identity-bound givens** — a verified token or trusted-proxy header populating reserved "system givens" the caller cannot override — is a planned milestone that would make authorize a standalone boundary. It is not implemented yet.
 
+### A compile request's `files` overlay is package content
+
+`POST …/models/{path}/compile` (scopes `file` and `package`) takes a `files` overlay: `.malloy` and
+`.malloynb` files read instead of, or beside, the package's own for that one compile. Overlay files
+are **package files, not caller-submitted text**. The rule above that rejects a gate in caller text
+does not apply to them, and their `#(authorize)` and `#(access_filter)` annotations gate exactly as a
+published file's do. So an overlay can declare, change or remove a gate on the sources it overlays,
+as editing the package could. A `source` text sent beside an overlay is still caller text and may
+not declare a gate (above). `/query` takes no overlay: a query runs against the package as served.
+
+That makes `files` an author's capability. Publisher does not decide who is an author: **a host must
+offer `files` only to callers who may edit the package**, and strip it from everyone else's requests,
+as it strips the authorize-bypass header below.
+
 ### Authorize bypass, for trusted data-management callers
 
 A `POST /…/query` request carrying the header `x-publisher-bypass-authorize` with the value of the server's `PUBLISHER_BYPASS_AUTHORIZE_SECRET` runs with gate evaluation **skipped**. The bypass is unavailable unless that variable is set: with it unset the header is ignored and gates are enforced. It exists for data management: an indexer or similar back-office caller is a machine identity with no givens, so a gated source returns 403 and is never scanned — an author who tags a dimension `#(index)` on a gated source otherwise gets an empty index, the tag having opted in and the gate having silently revoked it.
