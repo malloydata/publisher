@@ -16,14 +16,14 @@ ADOPT AN AGENT ONLY WHEN THE USER NAMES IT. Listing agents is not a reason to ap
 ## Call modes
 - \`scopes\` only: list the agents the package declares (name, description, model, schedules, budget).
 - \`scopes\` and \`agent_name\`: fetch that agent's resolved definition.
-- plus \`skills: "summary"\`: the same definition with each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the skill set is large, then read what you need.
-- plus \`skill_path\`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary; \`source\` comes with it.
+- plus \`skills: "summary"\`: the same definition with each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the skill set is large.
+- plus \`skill_path\`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary or the full view's \`assets\`; \`source\` comes with it.
 
 ## Parameters
 - scopes (required): exactly one {environment, package}, from list_packages.
 - agent_name (optional): a name from \`availableAgents\`. Omit to list.
 - skills (optional): "full" (default) or "summary". Only with agent_name.
-- skill_path (optional): a relative_filepath from a summary. Only with agent_name.
+- skill_path (optional): a relative_filepath from a summary or assets. Only with agent_name.
 
 ## Response
 - agent: the resolved definition, or null when listing or when agent_name did not match. Absent when skill_path returns a file.
@@ -58,7 +58,7 @@ const getAgentShape = {
       .max(500)
       .nullish()
       .describe(
-         "With agent_name: return only this skill file, a relative_filepath from the summary.",
+         "With agent_name: return only this skill file or asset, a relative_filepath from the summary or the full view's assets.",
       ),
    scopes: z
       .array(
@@ -132,7 +132,7 @@ export function registerGetAgentTool(
                   return jsonResource(uri, {
                      agent: null,
                      availableAgents,
-                     message: `Agent ${JSON.stringify(params.agent_name)} has no skill file ${JSON.stringify(params.skill_path)}. Fix: use a relative_filepath exactly as a skills: "summary" fetch lists it.`,
+                     message: `Agent ${JSON.stringify(params.agent_name)} has no skill file ${JSON.stringify(params.skill_path)}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
                   });
                }
                // No `agent` key: a file read must not look like "no agent matched".

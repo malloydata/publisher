@@ -425,6 +425,69 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("Failed to parse"),
       },
    ],
+   packageInlineFields: [
+      { name: "unset", expect: value(true) },
+      {
+         name: "PUBLISHER_PACKAGE_INLINE_FIELDS off",
+         env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "off" },
+         expect: value(false),
+      },
+      {
+         name: "on",
+         env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "on" },
+         expect: value(true),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_PACKAGE_INLINE_FIELDS: " OFF " },
+         expect: value(false),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "" },
+         expect: value(true),
+      },
+      {
+         name: "a boolean spelling is not one of its two values, and fails",
+         env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "false" },
+         expect: fails("PUBLISHER_PACKAGE_INLINE_FIELDS"),
+      },
+      {
+         name: "the file is not read today",
+         file: { packageInlineFields: "off" },
+         expect: warned(true, "is not read from the file"),
+      },
+   ],
+   modelPage: [
+      { name: "unset", expect: value("explorer") },
+      {
+         name: "PUBLISHER_MODEL_PAGE",
+         env: { PUBLISHER_MODEL_PAGE: "viewer" },
+         expect: value("viewer"),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_MODEL_PAGE: " Viewer " },
+         expect: value("viewer"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_MODEL_PAGE: " " },
+         expect: value("explorer"),
+      },
+      {
+         name: "a value outside the set fails",
+         env: { PUBLISHER_MODEL_PAGE: "both" },
+         expect: fails(
+            'modelPage from PUBLISHER_MODEL_PAGE: expected one of "explorer" or "viewer", got "both"',
+         ),
+      },
+      {
+         name: "the file is not read today",
+         file: { modelPage: "viewer" },
+         expect: warned("explorer", "is not read from the file"),
+      },
+   ],
    theme: [
       { name: "unset", expect: value(undefined) },
       {

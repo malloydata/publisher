@@ -33,11 +33,11 @@ function ModelPage() {
       writable,
    } = usePackageRoute({ always: true });
    const { server } = useServer();
-   // Every branch below has the same parent, the package, so the way up is
-   // built once here.
-   // Parameter values ride in the query string, so a Model's Run is a
-   // shareable link, the same as a report's.
-   const { params: givens, onGivensChange } = useGivenUrlParams();
+   // Given values ride in the query string, beside `?source=`, so a link to a
+   // model (and its Copy link) opens with the values the page was running with.
+   // The source is written by the same hook, so neither write drops the other
+   // or the fragment.
+   const { params: query, onGivensChange, setParam } = useGivenUrlParams();
    if (!params.environmentName) {
       return (
          <div>
@@ -139,10 +139,17 @@ function ModelPage() {
          <Box sx={PAGE_FRAME_SX}>
             <Model
                resourceUri={resourceUri}
+               // The Explorer page's named queries wait for their Run; the model
+               // viewer's run only when opened anyway.
                runOnDemand={true}
-               maxResultSize={512 * 1024}
-               givens={givens}
+               // The model viewer's source on screen is in the address, so a
+               // link to one opens on it. Replaced, not pushed: picking a source
+               // is a choice within this page, and Back should leave the model.
+               sourceName={query.source}
+               onSourceChange={(source) => setParam("source", source)}
+               givens={query}
                onGivensChange={onGivensChange}
+               maxResultSize={512 * 1024}
             />
          </Box>
       );

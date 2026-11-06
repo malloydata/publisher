@@ -4205,31 +4205,74 @@ describe("buildPgConnectionString", () => {
       else process.env.PGSSLMODE = previousPgSslMode;
    });
 
-   it("builds a DuckLake catalog's string exactly as before, whatever the new fields say", () => {
-      const withFields = buildPgConnectionString(
-         {
-            ...fields,
-            sslmode: "verify-full",
-            statementTimeoutMilliseconds: 5000,
-         },
-         { name: "lake", applyConnectionOptions: false },
-      );
-      expect(withFields).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p",
-      );
-      process.env.PGSSLMODE = "require";
+   it("builds a DuckLake catalog's string without its statement timeout, and with no sslmode when neither it nor PGSSLMODE sets one", () => {
       expect(
          buildPgConnectionString(
-            {
-               ...fields,
-               sslmode: "disable",
-               statementTimeoutMilliseconds: 5000,
-            },
+            { ...fields, statementTimeoutMilliseconds: 5000 },
             { name: "lake", applyConnectionOptions: false },
          ),
-      ).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
-      );
+      ).toBe("host=db.example.com port=5432 dbname=lake user=u password=p");
+   });
+
+   describe("a DuckLake catalog given as fields", () => {
+      // The worker's PGSSLMODE=allow makes libpq try plaintext first; a server
+      // that requires TLS refuses and logs each refusal.
+      beforeEach(() => {
+         process.env.PGSSLMODE = "allow";
+      });
+
+      it("takes its own sslmode over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "no-verify" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+         );
+         const verifyFull = buildPgConnectionString(
+            { ...fields, sslmode: "verify-full" },
+            { name: "lake", applyConnectionOptions: false },
+         );
+         expect(verifyFull).toContain("sslmode=verify-full");
+         expect(verifyFull).toContain("sslrootcert=");
+         expect(verifyFull).not.toContain("sslmode=allow");
+      });
+
+      it("gets no statement timeout, whatever the connection sets", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  ...fields,
+                  sslmode: "no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).not.toContain("statement_timeout");
+      });
+
+      it("takes its own disable over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "disable" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
+         );
+      });
+
+      it("falls back to the deployment PGSSLMODE when it sets no sslmode", () => {
+         expect(
+            buildPgConnectionString(fields, {
+               name: "lake",
+               applyConnectionOptions: false,
+            }),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=allow",
+         );
+      });
    });
 
    it("gives an attached database its statement timeout and its own sslmode", () => {

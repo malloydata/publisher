@@ -26,7 +26,7 @@ export const retrieval = [
       secret: true,
       description:
          "Key of the embedding provider; unset turns semantic search off, except for providers that need none.",
-      notes: 'Enables semantic (embedding-based) ranking for `get_context` question retrieval. Sent as a bearer token to the embedding endpoint. Unset: retrieval stays lexical (lunr/BM25), unchanged. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for get_context" below.',
+      notes: 'Turns on embedding closeness in `get_context`\'s search, and embedding ranking in `search_database_schema` (see below). Sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "How get_context searches" below.',
       aliases: { env: ["EMBEDDING_API_KEY"] },
    }),
    setting({
@@ -70,8 +70,9 @@ export const retrieval = [
       key: "retrieval.embedding.minSimilarity",
       type: number({ min: 0, below: 1 }),
       default: DEFAULT_EMBEDDING_MIN_SIMILARITY,
-      description: "Cosine-similarity floor a semantic match must clear.",
-      notes: 'Cosine-similarity floor a match must clear to be returned at all, for both `get_context` and `search_database_schema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below.',
+      description:
+         "Cosine-similarity floor a table must clear to be returned by search_database_schema.",
+      notes: "Cosine-similarity floor a table must clear to be returned by `search_database_schema`. `get_context` has no floor. Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp.",
       aliases: { env: ["EMBEDDING_MIN_SIMILARITY"] },
    }),
    setting({

@@ -735,6 +735,17 @@ function validateDuckLakeShape(
    if (storage?.s3Connection) {
       validateS3ProviderShape(storage.s3Connection, connection.name, origin);
    }
+   // The attach applies the catalog's own sslmode (buildPgConnectionString) and
+   // throws on a value it cannot honor, at every query or build. An enum check,
+   // like the guards above. A connectionString carries its own sslmode and the
+   // field is ignored beside it, so it is not checked there.
+   const catalogPg = connection.ducklakeConnection.catalog.postgresConnection;
+   if (catalogPg.sslmode != null && !catalogPg.connectionString) {
+      validatePostgresSslmode(
+         `DuckLake catalog of connection '${connection.name}'`,
+         catalogPg.sslmode,
+      );
+   }
    // metadataSchema reaches the ATTACH as a quoted string literal AND the
    // catalog-format preflight as a quoted identifier. Rather than escape one
    // value for two grammars, restrict it to a plain identifier.
