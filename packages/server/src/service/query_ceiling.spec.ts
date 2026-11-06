@@ -430,7 +430,9 @@ import { hub, comp_m } from "hub.malloy"
          ]) {
             const err = await run(model, query).catch((e) => e);
             expect(err).toBeInstanceOf(BadRequestError);
-            expect((err as Error).message).toContain(`${source} carries [none]`);
+            expect((err as Error).message).toContain(
+               `${source} carries [none]`,
+            );
             expect((err as Error).message).toContain(field);
          }
       });

@@ -677,7 +677,9 @@ function reachesCarries(roots: unknown[]): boolean {
          if (
             Array.isArray(notes) &&
             notes.some((n) =>
-               CARRIES_LINE.test(String((n as { text?: unknown })?.text).trim()),
+               CARRIES_LINE.test(
+                  String((n as { text?: unknown })?.text).trim(),
+               ),
             )
          ) {
             return true;

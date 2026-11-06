@@ -1524,7 +1524,9 @@ source: one_stage is p -> { group_by: social, n } extend {
       // A last stage that does not say what its `n` reads leaves `n` unresolved.
       const ir = md.contents["two_stage"] as unknown as {
          fields: never;
-         query: { pipeline: Array<{ queryFields: Array<{ path?: string[] }> }> };
+         query: {
+            pipeline: Array<{ queryFields: Array<{ path?: string[] }> }>;
+         };
       };
       const last = ir.query.pipeline[1];
       const two = readSourceClassifications(ir.fields, {
