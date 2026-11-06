@@ -130,6 +130,20 @@ describe("configured packages with package versioning on", () => {
       });
    });
 
+   it("publishes a package whose location is relative to the config, as the bundled examples' config names them", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      source("sales", "1.2.0");
+      configure([{ name: "sales", location: "../sources/sales" }]);
+
+      const s = await openStore();
+      expect(await versionsOf(s, "sales")).toEqual({
+         latest: "1.2.0",
+         ids: ["1.2.0"],
+      });
+      const environment = await s.getEnvironment(ENV, false);
+      expect(environment.getFailedPackages().has("sales")).toBe(false);
+   });
+
    it("records a package whose publisher.json declares no version as its load error, and loads the others", async () => {
       env.PUBLISHER_PACKAGE_VERSIONING = "on";
       configure([

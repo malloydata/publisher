@@ -1087,14 +1087,19 @@ export class EnvironmentStore {
    /**
     * Fetch a package location into `targetPath`: a GitHub URL, a gs:// or
     * s3:// prefix (or .zip), or a local directory or .zip. Callers pass a
-    * staging folder, so a long download holds no lock.
+    * staging folder, so a long download holds no lock. A relative or `~/`
+    * location is resolved as an unversioned load resolves it (resolveLocalPath):
+    * left relative, no branch below would claim it and nothing would be staged.
     */
    public async downloadPackageInto(
       environmentName: string,
       packageName: string,
-      packageLocation: string,
+      location: string,
       targetPath: string,
    ): Promise<void> {
+      const packageLocation = this.isLocalPath(location)
+         ? this.resolveLocalPath(location)
+         : location;
       const isCompressedFile = packageLocation.endsWith(".zip");
       if (
          packageLocation.startsWith("https://") ||
