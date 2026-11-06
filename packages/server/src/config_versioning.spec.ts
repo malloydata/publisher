@@ -9,6 +9,7 @@ import {
    getPersistStorageMode,
    getPublisherConfig,
    getVersionPromotionMode,
+   isPackageInlineFieldsEnabled,
    isVersioningEnabled,
 } from "./config";
 
@@ -146,6 +147,35 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
       process.env.PUBLISHER_PACKAGE_VERSIONING = "true";
       expect(() => isVersioningEnabled()).toThrow(
          'PUBLISHER_PACKAGE_VERSIONING must be one of off | on (got "true")',
+      );
+   });
+});
+
+describe("PUBLISHER_PACKAGE_INLINE_FIELDS", () => {
+   const FLAG = "PUBLISHER_PACKAGE_INLINE_FIELDS";
+   const saved = process.env[FLAG];
+   afterEach(() => {
+      if (saved === undefined) delete process.env[FLAG];
+      else process.env[FLAG] = saved;
+   });
+
+   it("is on when unset, empty or on, in any case", () => {
+      for (const value of [undefined, "", "on", " ON "]) {
+         if (value === undefined) delete process.env[FLAG];
+         else process.env[FLAG] = value;
+         expect(isPackageInlineFieldsEnabled()).toBe(true);
+      }
+   });
+
+   it("is off when off", () => {
+      process.env[FLAG] = "off";
+      expect(isPackageInlineFieldsEnabled()).toBe(false);
+   });
+
+   it("refuses any other value, naming the setting and the choices", () => {
+      process.env[FLAG] = "false";
+      expect(() => isPackageInlineFieldsEnabled()).toThrow(
+         'PUBLISHER_PACKAGE_INLINE_FIELDS must be one of off | on (got "false")',
       );
    });
 });

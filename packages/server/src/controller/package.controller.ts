@@ -7,7 +7,11 @@ import {
 } from "../package_state_metrics";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
-import { getVersionPromotionMode, isVersioningEnabled } from "../config";
+import {
+   getVersionPromotionMode,
+   isPackageInlineFieldsEnabled,
+   isVersioningEnabled,
+} from "../config";
 import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import type { HeaderSetter } from "../filter_deprecation";
 import {
@@ -16,6 +20,7 @@ import {
    internalErrorToHttpError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   BuildPlanUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
@@ -29,6 +34,21 @@ import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 
 type ApiPackage = components["schemas"]["Package"];
+type ApiModelEntities = components["schemas"]["ModelEntities"];
+type ApiBuildPlan = components["schemas"]["BuildPlan"];
+type ApiPackageServingState = components["schemas"]["PackageServingState"];
+type ApiClassificationSummary = components["schemas"]["ClassificationSummary"];
+
+/**
+ * A reload's result: the package response, the serving state it moved to
+ * (its new `servedRevision` and `sourceContentSha` among them), and which
+ * path ran.
+ */
+export type ReloadedPackage = {
+   metadata: ApiPackage;
+   operational: ReturnType<Package["getOperationalFields"]>;
+   mode: PackageReloadMode;
+};
 
 /**
  * Which path a reload took. `in-place` recompiles the tree already on disk and
@@ -109,14 +129,20 @@ export class PackageController {
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
-         metadata = (
-            await this.reloadPackage(
-               environmentName,
-               packageName,
-               "rest",
-               versionId,
-            )
-         ).metadata;
+         const reloaded = await this.reloadPackage(
+            environmentName,
+            packageName,
+            "rest",
+            versionId,
+         );
+         // The reload's receipt rides its own response, whatever
+         // PUBLISHER_PACKAGE_INLINE_FIELDS says, so a caller needs no second
+         // read that another reload could race.
+         metadata = {
+            ...reloaded.metadata,
+            servedRevision: reloaded.operational.servedRevision,
+            sourceContentSha: reloaded.operational.sourceContentSha,
+         };
       } else {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
@@ -126,26 +152,37 @@ export class PackageController {
             versionId,
          });
          metadata = _package.getPackageMetadata();
-         metadata.status = environment.describePackageStatus(packageName);
+         // Serving state (`GET …/status`), on a package response only while
+         // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
+         if (isPackageInlineFieldsEnabled()) {
+            metadata.status = environment.describePackageStatus(packageName);
+         }
          // A published version also carries the package's current `latest`.
          if (metadata.versionId) {
             metadata = await environment.describePackage(_package);
          }
       }
 
-      // Enriched on both paths, so `?reload=true` (the request that
-      // invalidates the index, and starts a caller's polling) carries it too.
-      const embeddingIndex = await this.embeddingIndexStatus(
-         environmentName,
-         packageName,
-      );
-      // The single-package read only: a listing and the `/status` poll stay
-      // cheap, and this one walks every published field (memoized).
-      const classification = await this.classificationSummary(
-         environmentName,
-         packageName,
-         versionId,
-      );
+      // `GET …/embedding-index` and `GET …/classification`, on a package
+      // response only while PUBLISHER_PACKAGE_INLINE_FIELDS is on, on both
+      // paths, so `?reload=true` (the request that invalidates the index)
+      // carries them too. Classification only on this single-package read: a
+      // listing and the `/status` poll never walk fields.
+      const inline = isPackageInlineFieldsEnabled();
+      const embeddingIndex = inline
+         ? await this.embeddingIndexStatus(
+              environmentName,
+              packageName,
+              versionId,
+           )
+         : undefined;
+      const classification = inline
+         ? await this.inlineClassification(
+              environmentName,
+              packageName,
+              versionId,
+           )
+         : undefined;
       return {
          ...metadata,
          ...(embeddingIndex ? { embeddingIndex } : {}),
@@ -154,22 +191,20 @@ export class PackageController {
    }
 
    /**
-    * The package's classification summary, or undefined when it classifies
-    * nothing or cannot be read. Never fails the request, like the index state.
+    * The deprecated inline `classification`: absent when nothing published
+    * is classified or the package cannot be read, never a failed request.
     */
-   private async classificationSummary(
+   private async inlineClassification(
       environmentName: string,
       packageName: string,
       versionId?: unknown,
-   ): Promise<ApiPackage["classification"] | undefined> {
+   ): Promise<ApiClassificationSummary | undefined> {
       try {
-         const environment = await this.environmentStore.getEnvironment(
+         const pkg = await this.loadedPackage(
             environmentName,
-            false,
-         );
-         const pkg = await environment.getPackage(packageName, false, {
+            packageName,
             versionId,
-         });
+         );
          return pkg.getClassificationSummary();
       } catch (error) {
          logger.debug("Could not read the package's classification summary", {
@@ -181,6 +216,116 @@ export class PackageController {
       }
    }
 
+   private environment(environmentName: string) {
+      return this.environmentStore.getEnvironment(environmentName, false);
+   }
+
+   /** The loaded package `versionId` names, for a sub-resource read. */
+   private async loadedPackage(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ) {
+      const environment = await this.environment(environmentName);
+      return environment.getPackage(packageName, false, { versionId });
+   }
+
+   /**
+    * `GET …/status`: how this server holds the package (or the named version)
+    * right now. Never loads it.
+    */
+   public async getPackageServingState(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiPackageServingState> {
+      const environment = await this.environment(environmentName);
+      return environment.describeServingState(packageName, versionId);
+   }
+
+   /**
+    * `GET …/entities`: the package's surface, as `GET …/models/{path}` shows
+    * it, or with `includeHiddenFilesAndSources` every file and source, for a
+    * host that indexes them.
+    */
+   public async getPackageEntities(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+      includeHiddenFilesAndSources = false,
+   ): Promise<ApiModelEntities[]> {
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      return includeHiddenFilesAndSources
+         ? [...(pkg.getEntities() ?? [])]
+         : pkg.getSurfaceEntities();
+   }
+
+   /**
+    * `GET …/build-plan`: the persist build plan of the load; an empty plan
+    * when the package declares no persist source, and 503 when the plan could
+    * not be derived at load.
+    */
+   public async getPackageBuildPlan(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiBuildPlan> {
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      if (pkg.isBuildPlanUnavailable()) {
+         throw new BuildPlanUnavailableError(
+            `The build plan of package ${packageName} could not be derived at load. Reload the package to derive it again; retrying the read does not.`,
+         );
+      }
+      return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+   }
+
+   /**
+    * `GET …/classification`: each published entry point's `#(carries)` and
+    * field count by class; `sources` is empty when nothing published is
+    * classified.
+    */
+   public async getPackageClassification(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<ApiClassificationSummary> {
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      return pkg.getClassificationSummary() ?? { sources: [] };
+   }
+
+   /** `GET …/embedding-index`: the state of the package's semantic index. */
+   public async getPackageEmbeddingIndex(
+      environmentName: string,
+      packageName: string,
+      versionId?: unknown,
+   ): Promise<NonNullable<ApiPackage["embeddingIndex"]>> {
+      // The version named, so an unknown one is a 404 and a pinned read
+      // describes that version's index, not latest's.
+      const pkg = await this.loadedPackage(
+         environmentName,
+         packageName,
+         versionId,
+      );
+      return getPackageEmbeddingStatus(
+         this.environmentStore,
+         environmentName,
+         packageName,
+         pkg,
+      );
+   }
+
    /**
     * The package's semantic-index state (`lexical` with no embedding
     * provider), or undefined when unreadable. Never fails the request: a
@@ -189,12 +334,20 @@ export class PackageController {
    private async embeddingIndexStatus(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiPackage["embeddingIndex"] | undefined> {
       try {
+         // The version named, as `GET …/embedding-index` reads it.
+         const pkg = await this.loadedPackage(
+            environmentName,
+            packageName,
+            versionId,
+         );
          return await getPackageEmbeddingStatus(
             this.environmentStore,
             environmentName,
             packageName,
+            pkg,
          );
       } catch (error) {
          logger.debug("Could not read the package's embedding index state", {
@@ -216,7 +369,7 @@ export class PackageController {
       packageName: string,
       trigger: ReloadTrigger = "rest",
       versionId?: unknown,
-   ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
+   ): Promise<ReloadedPackage> {
       try {
          const reloaded = await this.reloadPackageFrom(
             environmentName,
@@ -235,7 +388,7 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       versionId?: unknown,
-   ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
+   ): Promise<ReloadedPackage> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -252,6 +405,7 @@ export class PackageController {
          });
          return {
             metadata: await environment.describePackage(version),
+            operational: version.getOperationalFields(),
             mode: "unchanged",
          };
       }
@@ -293,11 +447,16 @@ export class PackageController {
          );
          return {
             metadata: reinstalled.getPackageMetadata(),
+            operational: reinstalled.getOperationalFields(),
             mode: "reinstalled",
          };
       }
       const _package = await environment.getPackage(packageName, true);
-      return { metadata: _package.getPackageMetadata(), mode: "in-place" };
+      return {
+         metadata: _package.getPackageMetadata(),
+         operational: _package.getOperationalFields(),
+         mode: "in-place",
+      };
    }
 
    /**

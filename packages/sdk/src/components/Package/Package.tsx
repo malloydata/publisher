@@ -211,6 +211,13 @@ export default function Package({
          ),
    });
 
+   // The package's agents, from their own route.
+   const agentsQuery = useQueryWithApiError({
+      queryKey: ["package-agents", environmentName, packageName, versionId],
+      queryFn: () =>
+         apiClients.agents.listAgents(environmentName, packageName, versionId),
+   });
+
    // One listing for both layouts, by path, shared with every other reader.
    const reportListing = useReportListing(
       environmentName,
@@ -351,7 +358,7 @@ export default function Package({
    ]);
 
    const description = pkgQuery.data?.data?.description ?? "";
-   const agents = pkgQuery.data?.data?.agents ?? [];
+   const agents = agentsQuery.data?.data ?? [];
    const readmePath = (
       reports.find((r) => r.path === README_NOTEBOOK) ??
       reports.find((r) => isRootReadme(r.path))

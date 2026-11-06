@@ -31,7 +31,7 @@ import {
    WriteVerifyError,
    PackageAdmissionRefusedError,
 } from "../errors";
-import { getPersistStorageMode } from "../config";
+import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -128,7 +128,9 @@ interface PackageInfo {
 }
 
 type ApiPackage = components["schemas"]["Package"];
-type ApiPackageStatus = NonNullable<ApiPackage["status"]>;
+type ApiPackageStatus = components["schemas"]["PackageStatus"];
+type ApiPackageStatusEntry = components["schemas"]["PackageStatusEntry"];
+type ApiPackageServingState = components["schemas"]["PackageServingState"];
 type ApiEnvironment = components["schemas"]["Environment"];
 type RetiredConnectionGeneration = {
    label: string;
@@ -288,6 +290,17 @@ function mergePackageManifest(
 
 /** Cap on runtime add failures kept per environment for /status. */
 const MAX_RECORDED_ADD_FAILURES = 100;
+
+/**
+ * How a package listing is built. `includeLoading` lists a first-time load as
+ * a bare entry; `operational` builds the `/status` entries: what a reconcile
+ * reads (`PackageStatusEntry`). While PUBLISHER_PACKAGE_INLINE_FIELDS is on an
+ * entry is the package's full response plus its serving state.
+ */
+export type PackageListingOptions = {
+   includeLoading?: boolean;
+   operational?: boolean;
+};
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
@@ -944,7 +957,7 @@ export class Environment {
     * a listed package always means one that can serve here.
     */
    public async listPackages(
-      options: { includeLoading?: boolean } = {},
+      options: PackageListingOptions = {},
    ): Promise<ApiPackage[]> {
       logger.debug("Listing packages", {
          environmentPath: this.environmentPath,
@@ -954,64 +967,85 @@ export class Environment {
             ...this.packageStatuses.keys(),
             ...(options.includeLoading ? this.loadsInFlight.keys() : []),
          ]);
-         const packageMetadata = await Promise.all(
-            Array.from(names).map(async (packageName) => {
-               const registered = this.packageStatuses.get(packageName)?.status;
-               if (registered === PackageStatus.UNLOADING) {
-                  return undefined;
-               }
-               try {
-                  const resident = this.packages.get(packageName);
-                  // A versioned package is listed as its latest; every other
-                  // package from its single slot below.
-                  if (
-                     resident === undefined &&
-                     (await this.versionService?.isVersioned(packageName))
-                  ) {
-                     return await this.listedVersionedPackage(packageName);
+         const packageMetadata: Array<ApiPackage | undefined> =
+            await Promise.all(
+               Array.from(names).map(async (packageName) => {
+                  const registered =
+                     this.packageStatuses.get(packageName)?.status;
+                  if (registered === PackageStatus.UNLOADING) {
+                     return undefined;
                   }
-                  let metadata: ApiPackage | undefined;
-                  if (resident !== undefined) {
-                     metadata = resident.getPackageMetadata();
-                  } else if (this.loadsInFlight.has(packageName)) {
-                     if (!options.includeLoading) {
-                        return undefined;
+                  try {
+                     const resident = this.packages.get(packageName);
+                     // A versioned package is listed as its latest; every other
+                     // package from its single slot below.
+                     if (
+                        resident === undefined &&
+                        (await this.versionService?.isVersioned(packageName))
+                     ) {
+                        // `/status` lists each version instead (see
+                        // listVersionEntries), so it skips loading the latest.
+                        if (options.operational) return undefined;
+                        return await this.listedVersionedPackage(packageName);
                      }
-                     metadata = { name: packageName };
-                  } else if (registered === PackageStatus.LOADING) {
-                     // An interrupted load: reloading it from this read path
-                     // would repeat the work on every listing.
+                     // A slim `/status` entry reads only the binding, so it skips
+                     // the package's metadata and the warnings computed with it.
+                     const slim =
+                        options.operational === true &&
+                        !isPackageInlineFieldsEnabled();
+                     let metadata: ApiPackage | undefined;
+                     let loaded: Package | undefined;
+                     if (resident !== undefined) {
+                        loaded = resident;
+                        if (slim) return this.statusEntry(packageName, loaded);
+                        metadata = resident.getPackageMetadata();
+                     } else if (this.loadsInFlight.has(packageName)) {
+                        if (!options.includeLoading) {
+                           return undefined;
+                        }
+                        metadata = { name: packageName };
+                     } else if (registered === PackageStatus.LOADING) {
+                        // An interrupted load: reloading it from this read path
+                        // would repeat the work on every listing.
+                        return undefined;
+                     } else if (registered === undefined) {
+                        // Listed only as a load in flight, which has since failed
+                        // (one that succeeded is resident or versioned): its
+                        // caller has the error, and a read never loads it.
+                        return undefined;
+                     } else {
+                        loaded = await this.getPackage(packageName, false);
+                        if (slim) return this.statusEntry(packageName, loaded);
+                        metadata = loaded.getPackageMetadata();
+                     }
+                     metadata.name = packageName;
+                     if (
+                        options.operational ||
+                        isPackageInlineFieldsEnabled()
+                     ) {
+                        metadata.status =
+                           this.describePackageStatus(packageName);
+                     }
+                     return metadata;
+                  } catch (error) {
+                     logger.error(
+                        `Failed to load package: ${packageName} due to : ${error}`,
+                     );
+                     // Redacted because getStatus returns it in a response body,
+                     // and a Postgres/DuckLake ATTACH failure carries the
+                     // connection string (keyword `password=` or URI userinfo).
+                     this.failedPackages.set(
+                        packageName,
+                        redactPgSecrets(
+                           error instanceof Error
+                              ? error.message
+                              : String(error),
+                        ),
+                     );
                      return undefined;
-                  } else if (registered === undefined) {
-                     // Listed only as a load in flight, which has since failed
-                     // (one that succeeded is resident or versioned): its
-                     // caller has the error, and a read never loads it.
-                     return undefined;
-                  } else {
-                     metadata = (
-                        await this.getPackage(packageName, false)
-                     ).getPackageMetadata();
                   }
-                  metadata.name = packageName;
-                  metadata.status = this.describePackageStatus(packageName);
-                  return metadata;
-               } catch (error) {
-                  logger.error(
-                     `Failed to load package: ${packageName} due to : ${error}`,
-                  );
-                  // Redacted because getStatus returns it in a response body,
-                  // and a Postgres/DuckLake ATTACH failure carries the
-                  // connection string (keyword `password=` or URI userinfo).
-                  this.failedPackages.set(
-                     packageName,
-                     redactPgSecrets(
-                        error instanceof Error ? error.message : String(error),
-                     ),
-                  );
-                  return undefined;
-               }
-            }),
-         );
+               }),
+            );
          return packageMetadata.filter(
             (metadata): metadata is ApiPackage => metadata !== undefined,
          );
@@ -1069,6 +1103,97 @@ export class Environment {
          ...(inFlight !== undefined
             ? { loadingSince: new Date(inFlight.since).toISOString() }
             : {}),
+      };
+   }
+
+   private packageResource(packageName: string): string {
+      return `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`;
+   }
+
+   /**
+    * A package's slim `GET /status` entry: what a reconcile reads, without the
+    * package's metadata (see PackageStatusEntry). `loaded` is the copy whose
+    * binding it reports, when one is in memory.
+    */
+   private statusEntry(
+      packageName: string,
+      loaded: Package | undefined,
+      versionId?: string,
+   ): ApiPackageStatusEntry {
+      const binding = loaded?.getOperationalFields();
+      return {
+         name: packageName,
+         resource: this.packageResource(packageName),
+         ...(versionId !== undefined && { versionId }),
+         status: this.describePackageStatus(packageName, versionId),
+         ...(binding && {
+            manifestBindingStatus: binding.manifestBindingStatus,
+            boundManifestUri: binding.boundManifestUri,
+         }),
+      };
+   }
+
+   /**
+    * `GET …/packages/{packageName}/status`: how this server holds the package,
+    * or the named version of it (its `latest` when none is named), right now.
+    * Never loads anything: a copy that is not in memory reports
+    * `status.serving` false and none of the load fields. 404 for a package
+    * this environment does not know.
+    */
+   public async describeServingState(
+      packageName: string,
+      rawVersionId?: unknown,
+   ): Promise<ApiPackageServingState> {
+      assertSafePackageName(packageName);
+      const resource = this.packageResource(packageName);
+      const versions = this.versionService;
+      if (
+         versions &&
+         (requestedVersionId(rawVersionId) !== undefined ||
+            (!this.packages.has(packageName) &&
+               (await versions.isVersioned(packageName))))
+      ) {
+         let versionId = requestedVersionId(rawVersionId);
+         if (versionId === undefined) {
+            const latest = await versions.latestOf(packageName);
+            if (latest === null) {
+               return {
+                  name: packageName,
+                  resource,
+                  versionId: null,
+                  status: this.describePackageStatus(packageName),
+               };
+            }
+            versionId = latest;
+         }
+         // 400 for a malformed id, 404 for a version this package lacks.
+         const row = await versions.getVersion(packageName, versionId);
+         const loaded = versions.cache.peek(packageName, row.versionId);
+         return {
+            name: packageName,
+            resource,
+            versionId: row.versionId,
+            loaded: loaded !== undefined,
+            archiveStatus: row.archiveStatus,
+            status: this.describePackageStatus(packageName, row.versionId),
+            ...loaded?.getOperationalFields(),
+         };
+      }
+      const resident = this.packages.get(packageName);
+      if (
+         resident === undefined &&
+         !this.packageStatuses.has(packageName) &&
+         !this.loadsInFlight.has(packageName)
+      ) {
+         throw new PackageNotFoundError(
+            `Package ${packageName} not found in environment ${this.environmentName}`,
+         );
+      }
+      return {
+         name: packageName,
+         resource,
+         status: this.describePackageStatus(packageName),
+         ...resident?.getOperationalFields(),
       };
    }
 
@@ -1781,7 +1906,11 @@ export class Environment {
          ...metadata,
          ...(description !== null ? { description } : {}),
          latestVersion: await this.versionService.latestOf(packageName),
-         status: this.describePackageStatus(packageName, versionId),
+         // Serving state (`GET …/status`), on a package response only while
+         // PUBLISHER_PACKAGE_INLINE_FIELDS is on.
+         ...(isPackageInlineFieldsEnabled() && {
+            status: this.describePackageStatus(packageName, versionId),
+         }),
       };
    }
 
@@ -1797,10 +1926,12 @@ export class Environment {
       if (latest === null) {
          return {
             name: packageName,
-            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            resource: this.packageResource(packageName),
             versionId: null,
             latestVersion: null,
-            status: this.describePackageStatus(packageName),
+            ...(isPackageInlineFieldsEnabled() && {
+               status: this.describePackageStatus(packageName),
+            }),
          };
       }
       const loaded = await this.getPackage(packageName, false, {
@@ -1836,13 +1967,17 @@ export class Environment {
       const rows = await versions.listAllVersions();
       for (const row of rows) {
          const loaded = versions.cache.peek(row.packageName, row.versionId);
-         const base: ApiPackage = loaded
-            ? loaded.getPackageMetadata()
-            : {
-                 name: row.packageName,
-                 resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${row.packageName}`,
-                 versionId: row.versionId,
-              };
+         // Slim unless PUBLISHER_PACKAGE_INLINE_FIELDS is on: what a reconcile
+         // reads, not the version's metadata (see PackageStatusEntry).
+         const base: ApiPackage = !isPackageInlineFieldsEnabled()
+            ? this.statusEntry(row.packageName, loaded, row.versionId)
+            : loaded
+              ? loaded.getPackageMetadata()
+              : {
+                   name: row.packageName,
+                   resource: this.packageResource(row.packageName),
+                   versionId: row.versionId,
+                };
          const list = entries.get(row.packageName) ?? [];
          list.push({
             ...base,
@@ -1863,7 +1998,7 @@ export class Environment {
          if (list.some((entry) => entry.versionId === versionId)) continue;
          list.push({
             name: packageName,
-            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            resource: this.packageResource(packageName),
             versionId,
             latestVersion: list[0]?.latestVersion ?? null,
             loaded: false,
@@ -3575,7 +3710,7 @@ export class Environment {
    }
 
    public async serialize(
-      options: { includeLoading?: boolean } = {},
+      options: PackageListingOptions = {},
    ): Promise<ApiEnvironment> {
       return {
          ...this.metadata,

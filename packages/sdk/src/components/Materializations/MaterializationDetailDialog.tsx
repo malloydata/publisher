@@ -18,6 +18,7 @@ import {
    Typography,
 } from "@mui/material";
 import { BuildPlan, Materialization } from "../../client";
+import { Loading, LOADING_COPY } from "../Loading";
 import { MONO_FONT_FAMILY } from "../styles";
 import ManifestView from "./ManifestView";
 import SectionLabel from "./SectionLabel";
@@ -33,13 +34,21 @@ import {
    statusLabel,
 } from "./utils";
 
+/**
+ * The package's current build plan (GET …/build-plan), shown for context. It
+ * is a property of the package version, not the historical run. A ready plan
+ * is null for a package with no persist sources, which is why the section
+ * renders an empty state rather than disappearing; a plan the server could not
+ * produce is `unavailable`, which must not read as that empty state.
+ */
+export type BuildPlanState =
+   | { status: "loading" }
+   | { status: "unavailable" }
+   | { status: "ready"; plan: BuildPlan | null };
+
 type MaterializationDetailDialogProps = {
    materialization: Materialization | null;
-   // The compiled package's current build plan (Package.buildPlan), shown for
-   // context. It is a property of the package version, not the historical run,
-   // and it is null for a package with no persist sources — which is why the
-   // section renders an empty state rather than disappearing.
-   buildPlan: BuildPlan | null;
+   buildPlan: BuildPlanState;
    onClose: () => void;
 };
 
@@ -50,7 +59,10 @@ export default function MaterializationDetailDialog({
 }: MaterializationDetailDialogProps) {
    const meta = materialization ? parseMetadata(materialization) : {};
    const refused = materialization ? refusedSourcesOf(materialization) : [];
-   const planSources = Object.values(buildPlan?.sources ?? {});
+   const planSources =
+      buildPlan.status === "ready"
+         ? Object.values(buildPlan.plan?.sources ?? {})
+         : [];
 
    return (
       <Dialog
@@ -218,7 +230,21 @@ export default function MaterializationDetailDialog({
 
                   <Box sx={{ mb: 3 }}>
                      <SectionLabel>Build plan</SectionLabel>
-                     {planSources.length === 0 ? (
+                     {buildPlan.status === "loading" ? (
+                        <Loading
+                           text={LOADING_COPY.loading}
+                           size={16}
+                           centered={false}
+                        />
+                     ) : buildPlan.status === "unavailable" ? (
+                        <Typography
+                           variant="body2"
+                           color="text.secondary"
+                           sx={{ fontStyle: "italic" }}
+                        >
+                           The build plan is unavailable.
+                        </Typography>
+                     ) : planSources.length === 0 ? (
                         <Typography
                            variant="body2"
                            color="text.secondary"
