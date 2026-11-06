@@ -206,6 +206,43 @@ describe("settings in a running server", () => {
       });
    });
 
+   describe("packageInlineFields", () => {
+      it("is logged at startup, in any case", async () => {
+         const server = await boot({
+            env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "Off" },
+         });
+         expect(server.output()).toContain(
+            "Package inline fields (PUBLISHER_PACKAGE_INLINE_FIELDS): off",
+         );
+      });
+
+      it("refuses to start on a value other than on or off", async () => {
+         expect(
+            await refused({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "false" } }),
+         ).toContain(
+            'packageInlineFields from PUBLISHER_PACKAGE_INLINE_FIELDS: expected one of "off" or "on", got "false"',
+         );
+      });
+   });
+
+   describe("modelPage", () => {
+      it("is reported on /status, in any case", async () => {
+         const server = await boot({ env: { PUBLISHER_MODEL_PAGE: "Viewer" } });
+         const body = (await (
+            await fetch(`${server.baseUrl}/api/v0/status`)
+         ).json()) as { modelPage?: string };
+         expect(body.modelPage).toBe("viewer");
+      });
+
+      it("refuses to start on a page outside its set", async () => {
+         expect(
+            await refused({ env: { PUBLISHER_MODEL_PAGE: "both" } }),
+         ).toContain(
+            'modelPage from PUBLISHER_MODEL_PAGE: expected one of "explorer" or "viewer", got "both"',
+         );
+      });
+   });
+
    describe("callerHeader", () => {
       /** Boot serving one package, query it once with `headers`, and return the log. */
       async function queried(

@@ -22,6 +22,7 @@ import {
    getMaxResponseBytes,
    getMcpCorsOrigins,
    getMemoryGovernorConfig,
+   getModelPageMode,
    getPartitionedWriteFlushThreshold,
    getPersistCollisionEnforce,
    getPersistStorageMode,
@@ -37,6 +38,7 @@ import {
    isDuckDBMemoryLimitDisabled,
    isDuckdbSetupSqlAllowed,
    isMcpIncludeHiddenFilesAndSources,
+   isPackageInlineFieldsEnabled,
    isPublisherConfigFrozen,
    isVersioningEnabled,
    schemaEmbeddingEnabled,
@@ -75,6 +77,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    callerHeader: () => callerHeaderName(),
    packageVersioning: () => isVersioningEnabled(),
    versionPromotion: () => getVersionPromotionMode(),
+   packageInlineFields: () => isPackageInlineFieldsEnabled(),
+   modelPage: () => getModelPageMode(),
    theme: ({ serverRoot }) => getInstanceTheme(serverRoot),
    environments: ({ serverRoot }) =>
       getPublisherConfig(serverRoot).environments.map(

@@ -827,7 +827,7 @@ def server_alive(a: argparse.Namespace) -> bool:
 
     A dead Publisher returns an empty body that the answerer reads as a bad
     answer and the judge scores as a miss (Publisher's own friction log, item
-    7; the VideoAmp run's server died mid-session and a raw probe caught it,
+    7; a past run's server died mid-session and a raw probe caught it,
     not the harness). So every attempt asks first. Local: the REST root.
     Platform: any HTTP answer from the MCP URL -- it says 405 to a bare GET,
     which is fine; refusal or timeout is not.
@@ -3760,7 +3760,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Lint the set's expected entities before a dollar is spent: an id the
     # model does not declare is a stale set, not a retrieval miss, and both
-    # VideoAmp platform runs carried five of them (the set was written against
+    # platform runs of one set carried five of them (the set was written against
     # a later package) which read as misses until someone checked by hand.
     declared = None
     if a.target != "platform" and a.publisher:

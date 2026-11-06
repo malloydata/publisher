@@ -58,6 +58,8 @@ export interface GivensPanelProps {
    };
    /** Overrides the `panel` layout's "Filters" heading. */
    title?: string;
+   /** A control is opening: for options fetched only once one is wanted. */
+   onControlOpen?: (name: string) => void;
 }
 
 /**
@@ -84,6 +86,7 @@ export function GivensPanel({
    optionSearch,
    apply,
    title,
+   onControlOpen,
 }: GivensPanelProps) {
    // In the builder the bar is also where filters are added, so it draws with
    // none: an empty row is the "+ Filter" button alone.
@@ -99,13 +102,15 @@ export function GivensPanel({
    // nothing when pressed.
    const offerReset = canReset ?? hasValues;
 
-   // A cut-off list, and the search that finds past it, for one control.
+   // A cut-off list, and the search that finds past it, for one control;
+   // and its opening, for options fetched only when wanted.
    const searchProps = (name: string | undefined) => {
       if (name === undefined) return {};
       const search = optionSearch?.get(name);
       return {
          ...(optionsTruncated?.has(name) ? { optionsTruncated: true } : {}),
          ...(search ? { optionSearch: search } : {}),
+         ...(onControlOpen ? { onOpen: () => onControlOpen(name) } : {}),
       };
    };
 

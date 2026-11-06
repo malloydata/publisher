@@ -87,7 +87,6 @@ describe("classification on get_context entities", () => {
          ...projectEntity(masked, "env", "pkg"),
          score: 1,
          targetScores: new Map([[0, 1]]),
-         bestTarget: 0,
       };
       const cards = toSourceResults(
          [ranked],
@@ -138,7 +137,6 @@ describe("classification on get_context entities", () => {
          ...projectEntity(entity("patients", "social"), "env", "pkg"),
          score: 1,
          targetScores: new Map([[0, 1]]),
-         bestTarget: 0,
       };
       expect(ranked.classifications).toEqual(["phi.direct_identifier"]);
       const cards = toSourceResults(

@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
+import { createHash } from "crypto";
 import path from "path";
 import {
    PACKAGE_AGENT_SKILLS_MAX_BYTES,
@@ -11,6 +12,19 @@ import {
    readPackageAgents,
    summarizeAgentSkillFile,
 } from "./package_skills";
+
+const isWindows = process.platform === "win32";
+const isRoot = process.getuid?.() === 0;
+// macOS and Windows default to case-insensitive filesystems, where two names that differ only by case cannot coexist.
+const caseSensitiveFs = (() => {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "case-probe-"));
+   try {
+      fs.writeFileSync(path.join(dir, "A"), "");
+      return !fs.existsSync(path.join(dir, "a"));
+   } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+   }
+})();
 
 describe("readPackageAgents", () => {
    let pkg: string;
@@ -69,6 +83,7 @@ describe("readPackageAgents", () => {
       expect(read(undefined)).toEqual({
          agents: new Map(),
          paths: [],
+         contentShas: new Map(),
          warnings: [],
       });
    });
@@ -432,7 +447,7 @@ describe("readPackageAgents", () => {
             "shared/conventions/SKILL.md",
             "---\nname: conventions\ndescription: d\n---\nbody",
          );
-         write("shared/conventions/assets/publisher.json", "{}");
+         write("shared/conventions/other/publisher.json", "{}");
          fs.rmSync(path.join(pkg, "agents/analyst/skills"), {
             recursive: true,
          });
@@ -665,6 +680,392 @@ describe("readPackageAgents", () => {
          const before = sha({ analyst: a, other: b }, "other");
          write("agents/analyst/instructions.md", "edited");
          expect(sha({ analyst: a, other: b }, "other")).toBe(before);
+      });
+   });
+
+   describe("assets", () => {
+      const ASSETS = "agents/analyst/skills/conventions/assets";
+      const MAX = 1024 * 1024;
+      const LISTED = "conventions/assets";
+      const agentOf = (result: ReturnType<typeof read>) =>
+         result.agents.get("analyst")!;
+      const listed = (result: ReturnType<typeof read>) =>
+         (agentOf(result).assets ?? []).map((a) => a.relative_filepath);
+      const warned = (result: ReturnType<typeof read>, ...needles: string[]) =>
+         result.warnings.some((w) => needles.every((n) => w.includes(n)));
+      const writeBytes = (rel: string, bytes: Buffer) => {
+         fs.mkdirSync(path.dirname(path.join(pkg, rel)), { recursive: true });
+         fs.writeFileSync(path.join(pkg, rel), bytes);
+      };
+      /** Every drop starts the way the service matches on it. */
+      const droppedWith = (needle: string) => {
+         const warning = dropped({ analyst: analyst() });
+         expect(
+            warning.startsWith("Package agent 'analyst' is not served:"),
+         ).toBe(true);
+         expect(warning).toContain(needle);
+      };
+
+      it("lists text assets with their size and sha, roots and package paths, and ignores dotfiles", () => {
+         write(`${ASSETS}/index.html`, "<h1>hi</h1>");
+         write(`${ASSETS}/css/app.css`, "body{}");
+         write(`${ASSETS}/.hidden/x.txt`, "ignored");
+         write(`${ASSETS}/.DS_Store`, "ignored");
+         const result = read({ analyst: analyst() });
+
+         expect(result.warnings).toEqual([]);
+         expect(agentOf(result).assets).toEqual([
+            {
+               relative_filepath: `${LISTED}/css/app.css`,
+               bytes: 6,
+               sha256: createHash("sha256").update("body{}").digest("hex"),
+            },
+            {
+               relative_filepath: `${LISTED}/index.html`,
+               bytes: 11,
+               sha256: createHash("sha256").update("<h1>hi</h1>").digest("hex"),
+            },
+         ]);
+         expect(agentOf(result).asset_roots).toEqual({
+            conventions: "agents/analyst/skills/conventions",
+         });
+         expect(result.paths).toContain(`${ASSETS}/css/app.css`);
+         expect(result.contentShas.get(`${ASSETS}/index.html`)).toBe(
+            agentOf(result).assets![1]!.sha256,
+         );
+         // Assets are listed, never served as skill text.
+         expect(
+            agentOf(result).skills.some((f) =>
+               f.relative_filepath.includes("assets"),
+            ),
+         ).toBe(false);
+      });
+
+      it("serves an agent with no assets, or an empty assets directory, with neither key", () => {
+         fs.mkdirSync(path.join(pkg, ASSETS), { recursive: true });
+         const result = read({ analyst: analyst() });
+         expect(result.warnings).toEqual([]);
+         expect("assets" in agentOf(result)).toBe(false);
+         expect("asset_roots" in agentOf(result)).toBe(false);
+         expect(result.contentShas.size).toBe(0);
+      });
+
+      it("moves definitionSha when an asset changes and not otherwise", () => {
+         const sha = () => agentOf(read({ analyst: analyst() })).definitionSha;
+         const bare = sha();
+         write(`${ASSETS}/a.txt`, "one");
+         const one = sha();
+         expect(one).not.toBe(bare);
+         expect(sha()).toBe(one);
+         write(`${ASSETS}/a.txt`, "two");
+         expect(sha()).not.toBe(one);
+      });
+
+      it("accepts a file one byte under 1 MiB and refuses one at 1 MiB", () => {
+         writeBytes(`${ASSETS}/under.txt`, Buffer.alloc(MAX - 1, "a"));
+         writeBytes(`${ASSETS}/exact.txt`, Buffer.alloc(MAX, "a"));
+         const result = read({ analyst: analyst() });
+         expect(listed(result)).toEqual([`${LISTED}/under.txt`]);
+         expect(warned(result, "exact.txt", `${MAX} byte file cap`)).toBe(true);
+      });
+
+      describe("skipped, with the agent still served", () => {
+         it("skips non-UTF-8 and NUL-bearing files", () => {
+            writeBytes(
+               `${ASSETS}/logo.png`,
+               Buffer.from([0x89, 0x50, 0xff, 0xfe]),
+            );
+            writeBytes(`${ASSETS}/nul.txt`, Buffer.from("a\0b"));
+            write(`${ASSETS}/ok.txt`, "fine");
+            const result = read({ analyst: analyst() });
+            expect(listed(result)).toEqual([`${LISTED}/ok.txt`]);
+            expect(warned(result, "logo.png", "not valid UTF-8")).toBe(true);
+            expect(warned(result, "nul.txt", "NUL")).toBe(true);
+         });
+
+         it("keeps a leading BOM so the listed sha is the file's", () => {
+            const bytes = Buffer.from("\uFEFFhello");
+            writeBytes(`${ASSETS}/bom.txt`, bytes);
+            const result = read({ analyst: analyst() });
+            expect(agentOf(result).assets![0]!.sha256).toBe(
+               createHash("sha256").update(bytes).digest("hex"),
+            );
+         });
+
+         it("skips Malloy files in any case", () => {
+            write(`${ASSETS}/m.malloy`, "source: x is a");
+            write(`${ASSETS}/n.MALLOYNB`, "{}");
+            const result = read({ analyst: analyst() });
+            expect(listed(result)).toEqual([]);
+            expect(warned(result, "m.malloy", "Malloy")).toBe(true);
+            expect(warned(result, "n.MALLOYNB", "Malloy")).toBe(true);
+         });
+
+         it("skips a bad segment name and a path over 200 characters", () => {
+            write(`${ASSETS}/has space.txt`, "x");
+            write(`${ASSETS}/_ok-1.2.txt`, "x");
+            write(`${ASSETS}/-dash.txt`, "x");
+            write(`${ASSETS}/${"a".repeat(200)}.txt`, "x");
+            const result = read({ analyst: analyst() });
+            expect(listed(result)).toEqual([`${LISTED}/_ok-1.2.txt`]);
+            expect(warned(result, "has space.txt", "name")).toBe(true);
+            expect(warned(result, "-dash.txt", "name")).toBe(true);
+            expect(warned(result, "200 characters")).toBe(true);
+         });
+
+         it("stops at 200 files and 4 MiB per agent", () => {
+            for (let i = 0; i < 201; i++) write(`${ASSETS}/f${i}.txt`, "x");
+            const files = read({ analyst: analyst() });
+            expect(listed(files)).toHaveLength(200);
+            expect(warned(files, "per-agent file cap")).toBe(true);
+
+            fs.rmSync(path.join(pkg, ASSETS), { recursive: true });
+            for (let i = 0; i < 5; i++) {
+               writeBytes(`${ASSETS}/big${i}.txt`, Buffer.alloc(900_000, "a"));
+            }
+            const bytes = read({ analyst: analyst() });
+            expect(listed(bytes)).toHaveLength(4);
+            expect(warned(bytes, "big4.txt", "per-agent cap")).toBe(true);
+         });
+
+         it("walks eight levels and warns about a ninth", () => {
+            const seven = Array.from({ length: 7 }, (_, i) => `d${i}`).join(
+               "/",
+            );
+            write(`${ASSETS}/${seven}/ok.txt`, "x");
+            write(`${ASSETS}/${seven}/d7/deep.txt`, "x");
+            const result = read({ analyst: analyst() });
+            expect(listed(result)).toEqual([`${LISTED}/${seven}/ok.txt`]);
+            expect(warned(result, "deeper than 8")).toBe(true);
+         });
+
+         // Empty directories fill the entry cap without reaching the file caps.
+         const fillEntries = (dirs: number) => {
+            write(`${ASSETS}/a.txt`, "x");
+            for (let i = 0; i < dirs; i++) {
+               fs.mkdirSync(
+                  path.join(pkg, ASSETS, `d${String(i).padStart(4, "0")}`),
+                  { recursive: true },
+               );
+            }
+            write(`${ASSETS}/z.txt`, "x");
+         };
+
+         it("walks exactly 1,000 entries per agent and stays served past that", () => {
+            fillEntries(998);
+            const atCap = read({ analyst: analyst() });
+            expect(listed(atCap)).toEqual([
+               `${LISTED}/a.txt`,
+               `${LISTED}/z.txt`,
+            ]);
+            expect(warned(atCap, "1000 entries")).toBe(false);
+
+            write(`${ASSETS}/zz.txt`, "x");
+            const over = read({ analyst: analyst() });
+            expect(over.agents.has("analyst")).toBe(true);
+            expect(listed(over)).toEqual([
+               `${LISTED}/a.txt`,
+               `${LISTED}/z.txt`,
+            ]);
+            expect(warned(over, "zz.txt", "1000 entries")).toBe(true);
+         });
+
+         it("rejects a large file with a NUL in its head and keeps the agent", () => {
+            const big = Buffer.alloc(900_000, "a");
+            big[10] = 0;
+            writeBytes(`${ASSETS}/blob.txt`, big);
+            const result = read({ analyst: analyst() });
+            expect(listed(result)).toEqual([]);
+            expect(warned(result, "blob.txt", "NUL")).toBe(true);
+            expect(result.contentShas.size).toBe(0);
+         });
+
+         // chmod revokes nothing on Windows or for root.
+         it.skipIf(isWindows || isRoot)(
+            "skips, rather than drops, an unreadable file under a path containing 'link'",
+            () => {
+               write(`${ASSETS}/link/x.txt`, "x");
+               fs.chmodSync(path.join(pkg, ASSETS, "link/x.txt"), 0);
+               write(`${ASSETS}/ok.txt`, "fine");
+               const result = read({ analyst: analyst() });
+               expect(result.agents.has("analyst")).toBe(true);
+               expect(listed(result)).toEqual([`${LISTED}/ok.txt`]);
+               expect(warned(result, "link/x.txt", "cannot be read")).toBe(
+                  true,
+               );
+            },
+         );
+
+         it("serves a skill named like an Object.prototype key, with its own root", () => {
+            write(
+               "agents/analyst/skills/__proto__/SKILL.md",
+               "---\nname: __proto__\ndescription: d\n---\n\nbody\n",
+            );
+            write("agents/analyst/skills/__proto__/assets/a.txt", "x");
+            const result = read({ analyst: analyst() });
+            expect(Object.keys(agentOf(result).asset_roots!).sort()).toEqual([
+               "__proto__",
+            ]);
+            expect(listed(result)).toEqual(["__proto__/assets/a.txt"]);
+         });
+
+         it("names the first twenty skips and counts the rest", () => {
+            for (let i = 0; i < 30; i++) write(`${ASSETS}/m${i}.malloy`, "x");
+            const result = read({ analyst: analyst() });
+            expect(
+               result.warnings.filter((w) => w.includes(".malloy")),
+            ).toHaveLength(20);
+            expect(warned(result, "10 further assets")).toBe(true);
+         });
+      });
+
+      describe("drops the agent", () => {
+         it("on a symlinked file, with the file named", () => {
+            write("outside.txt", "x");
+            fs.mkdirSync(path.join(pkg, ASSETS), { recursive: true });
+            fs.symlinkSync(
+               path.join(pkg, "outside.txt"),
+               path.join(pkg, ASSETS, "link.txt"),
+            );
+            droppedWith("link.txt");
+         });
+
+         it("on a symlinked file that points outside the package", () => {
+            fs.writeFileSync(path.join(outside, "secret.txt"), "s");
+            fs.mkdirSync(path.join(pkg, ASSETS), { recursive: true });
+            fs.symlinkSync(
+               path.join(outside, "secret.txt"),
+               path.join(pkg, ASSETS, "secret.txt"),
+            );
+            droppedWith("secret.txt");
+         });
+
+         it("on a symlink in a nested directory", () => {
+            write(`${ASSETS}/sub/real.txt`, "x");
+            fs.symlinkSync(
+               path.join(pkg, ASSETS, "sub/real.txt"),
+               path.join(pkg, ASSETS, "sub/alias.txt"),
+            );
+            droppedWith("alias.txt");
+         });
+
+         it("when assets is itself a symlink out of the package", () => {
+            analyst();
+            fs.mkdirSync(path.join(outside, "files"));
+            fs.writeFileSync(path.join(outside, "files/x.txt"), "x");
+            fs.symlinkSync(path.join(outside, "files"), path.join(pkg, ASSETS));
+            droppedWith("conventions/assets");
+         });
+
+         it("when assets is itself a symlink within the package", () => {
+            analyst();
+            write("elsewhere/x.txt", "x");
+            fs.symlinkSync(path.join(pkg, "elsewhere"), path.join(pkg, ASSETS));
+            droppedWith("conventions/assets");
+         });
+
+         it("on a nested publisher.json or SKILL.md, in any case", () => {
+            for (const name of [
+               "publisher.json",
+               "Publisher.JSON",
+               "SKILL.md",
+               "skill.md",
+            ]) {
+               fs.rmSync(path.join(pkg, ASSETS), {
+                  recursive: true,
+                  force: true,
+               });
+               write(`${ASSETS}/sub/${name}`, "{}");
+               droppedWith(name);
+            }
+         });
+
+         it("on '..' in a name", () => {
+            write(`${ASSETS}/a..b.txt`, "x");
+            droppedWith("a..b.txt");
+         });
+
+         it.skipIf(!caseSensitiveFs)(
+            "on two assets that differ only by case",
+            () => {
+               write(`${ASSETS}/Logo.svg`, "x");
+               write(`${ASSETS}/logo.svg`, "y");
+               droppedWith("only by case");
+            },
+         );
+
+         it.skipIf(!caseSensitiveFs)(
+            "on two directories that differ only by case",
+            () => {
+               write(`${ASSETS}/Dir/a.txt`, "x");
+               write(`${ASSETS}/dir/b.txt`, "y");
+               droppedWith("only by case");
+            },
+         );
+      });
+
+      describe("package budget", () => {
+         const writeSkill = (dir: string, files: number) => {
+            write(
+               `${dir}/s/SKILL.md`,
+               "---\nname: s\ndescription: d\n---\n\nbody\n",
+            );
+            for (let i = 0; i < files; i++) {
+               writeBytes(
+                  `${dir}/s/assets/f${i}.txt`,
+                  Buffer.alloc(1_000_000, "a"),
+               );
+            }
+         };
+         const agentAt = (dir: string) => {
+            write(`${dir}-instructions.md`, "brief");
+            return {
+               description: "d",
+               instructions: `${dir}-instructions.md`,
+               skills: [dir],
+            };
+         };
+
+         it("charges agents in manifest order, once per shared path", () => {
+            writeSkill("a", 4);
+            writeSkill("b", 4);
+            writeSkill("c", 4);
+            const result = read({
+               a: agentAt("a"),
+               b: agentAt("b"),
+               c: agentAt("c"),
+               // Shares a's directory, so none of it is charged again.
+               d: agentAt("a"),
+            });
+
+            expect(result.agents.get("a")!.assets).toHaveLength(4);
+            expect(result.agents.get("b")!.assets).toHaveLength(4);
+            expect(result.agents.get("c")!.assets).toBeUndefined();
+            expect(result.agents.get("d")!.assets).toHaveLength(4);
+            expect(
+               result.warnings.some(
+                  (w) =>
+                     w.startsWith("Package agent 'c'") &&
+                     w.includes("8388608 byte per-package cap"),
+               ),
+            ).toBe(true);
+         });
+
+         it("does not charge an agent that is dropped", () => {
+            writeSkill("a", 4);
+            writeSkill("b", 4);
+            writeSkill("c", 4);
+            // a is dropped after its files were walked.
+            write("a/s/assets/sub/publisher.json", "{}");
+            const result = read({
+               a: agentAt("a"),
+               b: agentAt("b"),
+               c: agentAt("c"),
+            });
+            expect(result.agents.has("a")).toBe(false);
+            expect(result.agents.get("b")!.assets).toHaveLength(4);
+            expect(result.agents.get("c")!.assets).toHaveLength(4);
+         });
       });
    });
 

@@ -116,7 +116,11 @@ export class ChatModelImpl implements ChatModel {
       );
       const usage = addUsage(first.usage, second.usage);
       try {
-         return { value: parseAndValidate(second.text, req.validate), usage };
+         return {
+            value: parseAndValidate(second.text, req.validate),
+            usage,
+            repaired: true,
+         };
       } catch (error) {
          throw new LlmJsonError(
             `${this.provider} ${this.model} did not return usable JSON after one repair: ${(error as Error).message}`,

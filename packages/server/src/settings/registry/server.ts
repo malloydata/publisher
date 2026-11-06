@@ -101,6 +101,22 @@ export const server = [
       },
    }),
    setting({
+      key: "packageInlineFields",
+      type: oneOf(["off", "on"]),
+      default: "on",
+      description:
+         "on keeps the fields that moved off Package (buildPlan, agents, secureGivens, embeddingIndex, the manifest-binding and serving fields) inline in a package response, marked deprecated; off leaves each where it now lives. A transition setting a later release turns off, then removes.",
+      aliases: { env: ["PUBLISHER_PACKAGE_INLINE_FIELDS"] },
+   }),
+   setting({
+      key: "modelPage",
+      type: oneOf(["explorer", "viewer"]),
+      default: "explorer",
+      description:
+         "The page the Console shows for a model, reported on /status as modelPage: explorer, or viewer, which builds no query and takes the Explorer out of the legacy notebook too.",
+      aliases: { env: ["PUBLISHER_MODEL_PAGE"] },
+   }),
+   setting({
       key: "theme",
       type: structured(),
       kind: "structured",

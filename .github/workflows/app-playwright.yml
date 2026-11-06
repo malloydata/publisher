@@ -146,3 +146,29 @@ jobs:
             packages/app/playwright-report
             packages/app/test-results-versions
           retention-days: 7
+
+      # The model viewer's specs, the same way: the suite above runs against a
+      # server on the default model page, the Explorer, so they skip
+      # themselves there. Run them again against a server of their own with
+      # PUBLISHER_MODEL_PAGE=viewer; EXPECT_MODEL_PAGE makes them fail rather
+      # than skip if the server reports another page.
+      - name: Run the model viewer specs with PUBLISHER_MODEL_PAGE=viewer
+        id: model-viewer
+        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
+        working-directory: packages/app
+        run: bunx playwright test --config=playwright.config.ts --output=test-results-model-viewer tests/playwright/model-page-literals.spec.ts tests/playwright/model-page-givens.spec.ts tests/playwright/model-viewer.spec.ts
+        env:
+          CI: "true"
+          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_MODEL_PAGE: viewer
+          EXPECT_MODEL_PAGE: viewer
+
+      - name: Upload the model viewer report and results
+        if: failure() && steps.model-viewer.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-model-viewer
+          path: |
+            packages/app/playwright-report
+            packages/app/test-results-model-viewer
+          retention-days: 7

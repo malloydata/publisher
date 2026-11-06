@@ -17,21 +17,29 @@ const UNREADABLE = "\0<unreadable>\0";
  * path. Paths are sorted (order-independent) and hashed with their content (a
  * rename moves the digest). The caller chooses the served set, plus `extra`
  * for served text that lives in no file; anything outside it is invisible.
+ * A path in `contentShas` is hashed by its already-computed sha256 instead of
+ * being read again.
  */
 export function computeSourceContentSha(
    packagePath: string,
    contentPaths: Iterable<string>,
    extra?: string,
+   contentShas?: ReadonlyMap<string, string>,
 ): string {
    const hash = createHash("sha256");
    for (const relativePath of [...contentPaths].sort()) {
       hash.update(relativePath);
       hash.update("\0");
-      const absolute = path.join(packagePath, relativePath);
-      try {
-         hash.update(fs.readFileSync(absolute));
-      } catch {
-         hash.update(UNREADABLE);
+      const precomputed = contentShas?.get(relativePath);
+      if (precomputed !== undefined) {
+         hash.update(`\0sha256\0${precomputed}`);
+      } else {
+         const absolute = path.join(packagePath, relativePath);
+         try {
+            hash.update(fs.readFileSync(absolute));
+         } catch {
+            hash.update(UNREADABLE);
+         }
       }
       hash.update("\0");
    }

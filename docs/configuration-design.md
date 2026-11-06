@@ -78,9 +78,6 @@ settings already resolved:
 
 - `mcp.host` defaults to `host` when `host` is given and to `127.0.0.1` otherwise, while `admin.host`
   defaults to `127.0.0.1` whatever `host` is.
-- `retrieval.fcj.judgeLlm.apiKey`, which
-  [#1469](https://github.com/malloydata/publisher/pull/1469) adds as `JUDGE_LLM_API_KEY`, defaults to
-  `retrieval.llm.apiKey`.
 - `useBundledDefault` is on when neither `root` nor `config` is given. Today only the two flags count,
   so `--server_root /x` with no config at `/x` serves nothing, while `SERVER_ROOT=/x` serves the bundled
   samples. Once a setting has one value whatever its source, the variable counts too, which changes the
@@ -307,7 +304,7 @@ keep their file paths and gain derived variables and flags.
 |---|---|---|---|---|
 | `versionPromotion` (file), `PUBLISHER_VERSION_PROMOTION` ([#1354](https://github.com/malloydata/publisher/pull/1354)) | `versionPromotion` (enum: `on-publish`, `explicit`) | unchanged | `--version-promotion` | the key and variable already follow this design; the flag is new |
 | `PUBLISHER_PACKAGE_VERSIONING` (#1354) | `packageVersioning` (enum: `on`, `off`) | unchanged | — | a transition setting that [#1381](https://github.com/malloydata/publisher/issues/1381) removes, so it keeps its name and is exempt from the `Enabled` rule |
-| `JUDGE_LLM_API_KEY` (#1469) | `retrieval.fcj.judgeLlm.apiKey` (secret, default `retrieval.llm.apiKey`) | `PUBLISHER_RETRIEVAL_FCJ_JUDGE_LLM_API_KEY` | — (secret) | `retrieval.fcj.judgeLlm` is provisional |
+| `PUBLISHER_MODEL_PAGE` (#1498) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
 
 Until step 2 ships, a new setting takes its derived name from the start, as `PUBLISHER_VERSION_PROMOTION`
 does, so it never needs an alias.
