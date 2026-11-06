@@ -130,6 +130,34 @@ describe("configured packages with package versioning on", () => {
       });
    });
 
+   it("publishes a package whose location is relative to the config, as the bundled examples' config names them, and restores it from there", async () => {
+      env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      source("sales", "1.2.0");
+      configure([{ name: "sales", location: "../sources/sales" }]);
+
+      const first = await openStore();
+      expect(await versionsOf(first, "sales")).toEqual({
+         latest: "1.2.0",
+         ids: ["1.2.0"],
+      });
+      const environment = await first.getEnvironment(ENV, false);
+      expect(environment.getFailedPackages().has("sales")).toBe(false);
+      await closeStore();
+
+      // A version whose tree is gone is fetched again from its recorded
+      // source location, so that location has to name the config's folder:
+      // left relative, the fetch would stage nothing.
+      fs.rmSync(path.join(root, "server", "publisher_data", ENV, "sales"), {
+         recursive: true,
+         force: true,
+      });
+      const second = await openStore();
+      const restored = await (
+         await second.getEnvironment(ENV, false)
+      ).getPackage("sales", false);
+      expect(restored.getVersionId()).toBe("1.2.0");
+   });
+
    it("records a package whose publisher.json declares no version as its load error, and loads the others", async () => {
       env.PUBLISHER_PACKAGE_VERSIONING = "on";
       configure([

@@ -679,17 +679,25 @@ export class EnvironmentStore {
                   "package versions are not available in this environment",
                );
             }
+            // A relative or `~/` location is the config's, resolved against
+            // its folder as an unversioned load resolves it (resolveLocalPath).
+            // downloadPackageInto stages only an absolute local path, and the
+            // recorded source location has to name the same folder when a
+            // later boot restores the version from it.
+            const location = this.isLocalPath(configured.location)
+               ? this.resolveLocalPath(configured.location)
+               : configured.location;
             await versions.publish(
                configured.name,
                (stagingPath) =>
                   this.downloadPackageInto(
                      environmentName,
                      configured.name,
-                     configured.location,
+                     location,
                      stagingPath,
                   ),
                {
-                  sourceLocation: configured.location,
+                  sourceLocation: location,
                   promotion: getVersionPromotionMode(),
                   validate: (loaded) => formatPublishRejections(loaded),
                },
