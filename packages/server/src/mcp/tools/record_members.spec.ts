@@ -26,6 +26,8 @@ const SQL = `select 1 as order_id,
 const MODEL = `##! experimental.access_modifiers
 source: customers is duckdb.sql("""select 7 as id, {'tier': 'gold'} as profile, [{'sku': 'x'}] as items""")
 
+source: tagged is duckdb.sql("""select 'A' as order_ref, ['red', 'blue'] as tags union all select 'B', ['red']""")
+
 source: renamed is duckdb.sql("""select 1 as k, {'city': 'Denver'} as delivery""") extend {
   dimension: ship_to is delivery
 } include { public: k, ship_to }
@@ -90,18 +92,25 @@ describe("record members (#1526)", () => {
       ).toBeUndefined();
    });
 
-   it("marks a repeated record's members many, and leaves an array of scalars alone", () => {
+   it("marks a repeated record's members many, and an array of scalars' element too", () => {
       expect(shape("orders", "lines.sku")).toEqual({
          dataType: "string",
          joinPath: undefined,
          recordPath: "lines",
          relationship: "many",
       });
+      // Malloy reads a scalar array's values as `tags.each`, its only member.
       expect(
-         fixture.pkgIndex.directEntities.filter((e) =>
-            e.name.startsWith("tags."),
-         ),
-      ).toEqual([]);
+         fixture.pkgIndex.directEntities
+            .filter((e) => e.source === "orders" && e.name.startsWith("tags."))
+            .map((e) => e.name),
+      ).toEqual(["tags.each"]);
+      expect(shape("orders", "tags.each")).toEqual({
+         dataType: "string",
+         joinPath: undefined,
+         recordPath: "tags",
+         relationship: "many",
+      });
    });
 
    it("reaches a joined source's record members through the join, as it does the source's other fields", () => {
@@ -231,6 +240,21 @@ describe("record members (#1526)", () => {
          ).toEqual([
             { sku: "a", n: 1 },
             { sku: "b", n: 1 },
+         ]);
+         // The question from #1526: two orders tagged [red, blue] and [red]
+         // hold two distinct tags, counted through the indexed `tags.each`.
+         expect(
+            await run(
+               "run: tagged -> { aggregate: distinct_tags is count(tags.each) }",
+            ),
+         ).toEqual([{ distinct_tags: 2 }]);
+         expect(
+            await run(
+               "run: tagged -> { group_by: tag is tags.each; aggregate: orders is count(); order_by: tag }",
+            ),
+         ).toEqual([
+            { tag: "blue", orders: 1 },
+            { tag: "red", orders: 2 },
          ]);
       } finally {
          await connection.close();

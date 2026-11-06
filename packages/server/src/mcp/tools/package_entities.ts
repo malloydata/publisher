@@ -358,8 +358,8 @@ const PLAIN_MEMBER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * A member of a repeated record (an array of records, `lines.sku`) has
  * relationship `many`, because aggregating through it counts each element; a
  * record inside a repeated record stays `many`. A member takes its record's
- * classification when it has none of its own. An array of scalars has no
- * members. A member whose name is not a plain identifier (PLAIN_MEMBER_NAME)
+ * classification when it has none of its own. An array of scalars has one
+ * member, its element, named `each` (`tags.each`), also `many`. A member whose name is not a plain identifier (PLAIN_MEMBER_NAME)
  * is not indexed, nor anything under it. At most MAX_RECORD_MEMBERS_PER_SOURCE
  * are indexed per source (`budget`), in schema order; a dropped member is
  * still queryable by name, only not offered by search.
@@ -393,6 +393,12 @@ function collectRecordMembers(args: {
    if (type?.kind === "array_type") {
       type = type.element_type;
       fanout = "many";
+      // An array of scalars has one member, its element, which Malloy names
+      // `each` (`tags.each`). Recursing on it as a record of one `each` field
+      // indexes it like any other member of a repeated record.
+      if (type && type.kind !== "record_type" && type.kind !== "array_type") {
+         type = { kind: "record_type", fields: [{ name: "each", type }] };
+      }
    }
    if (type?.kind !== "record_type" || depth > MAX_RECORD_DEPTH) return;
    for (const member of type.fields ?? []) {
