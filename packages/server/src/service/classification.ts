@@ -55,6 +55,8 @@
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { parseAnnotation } from "@malloydata/malloy-tag";
+import * as fs from "fs";
+import * as path from "path";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
 import {
@@ -98,10 +100,14 @@ export function isClassificationLine(text: string): boolean {
 /**
  * Whether anything in the package declares a `#(carries)` or a
  * `#(classification)`: the opt-in to the checks that refuse a load. Reads every
- * compiled source, hidden ones too, and every field under it.
+ * compiled source, hidden ones too, and every field under it. A model with no
+ * compiled form is judged by its text, and one whose text cannot be read counts
+ * as declaring, so a model that failed to compile cannot turn a refusal into a
+ * warning.
  */
 export function packageUsesClassification(
    models: ReadonlyMap<string, Model>,
+   packagePath: string,
 ): boolean {
    const seen = new Set<object>();
    const declares = (node: IrField | undefined, depth: number): boolean => {
@@ -116,14 +122,28 @@ export function packageUsesClassification(
       }
       return (node.fields ?? []).some((f) => declares(f, depth + 1));
    };
-   for (const model of models.values()) {
+   const textDeclares = (modelPath: string, model: Model): boolean => {
+      try {
+         const text =
+            model.getCompiledSourceText() ??
+            fs.readFileSync(path.join(packagePath, modelPath), "utf8");
+         return text.split("\n").some(isClassificationLine);
+      } catch {
+         return true;
+      }
+   };
+   for (const [modelPath, model] of models) {
       let modelDef: ModelDef | undefined;
       try {
          modelDef = model.getModelDef();
       } catch {
+         modelDef = undefined;
+      }
+      if (!modelDef) {
+         if (textDeclares(modelPath, model)) return true;
          continue;
       }
-      for (const def of Object.values(modelDef?.contents ?? {})) {
+      for (const def of Object.values(modelDef.contents ?? {})) {
          if (declares(def as IrField, 0)) return true;
       }
    }
@@ -576,8 +596,11 @@ function nextStageLineage(
  * earlier stage's outputs carrying what they read ({@link nextStageLineage}).
  * A stage Malloy gave no summary (one that reads no field) is read from its
  * query fields and filters instead, and `complete` is false when that stage
- * nests, which that read cannot follow. Undefined when the query names no
- * struct the lineage can read.
+ * nests, which that read cannot follow. An `extend:` name that is already in
+ * the lineage leaves `complete` false only when either meaning carries a class
+ * or cannot be resolved; two plain ones judge the same. `scopes` holds the
+ * lineage each stage's own names resolve against. Undefined when the query
+ * names no struct the lineage can read.
  */
 export function readQueryFieldReads(
    modelDef: ModelDef | undefined,
@@ -587,6 +610,7 @@ export function readQueryFieldReads(
         lineage: SourceLineage;
         fields: IrField[];
         paths: string[];
+        scopes: SourceLineage[];
         complete: boolean;
      }
    | undefined {
@@ -604,6 +628,7 @@ export function readQueryFieldReads(
       for (const r of refs) if (r.length > 0) paths.add(r.join("."));
    };
    let scope = first;
+   const scopes: SourceLineage[] = [first];
    stages.forEach((stage, i) => {
       // An `index:` reads every field its wildcard names, which no reference lists.
       if (stage.type === "index") complete = false;
@@ -627,6 +652,7 @@ export function readQueryFieldReads(
       // A later stage reads the one before it, already held to account, so
       // only what its own `extend:` brings in is a read of the source.
       scope = nextStageLineage(scope, stages[i - 1], stage);
+      scopes[i] = scope;
       const extend = stage.extendSource ?? [];
       if (extend.length === 0) return;
       const names = new Set(extend.flatMap((f) => activeName(f) ?? []));
@@ -636,8 +662,9 @@ export function readQueryFieldReads(
       }
       for (const [path, c] of scope) {
          if (!names.has(path.split(".")[0])) continue;
-         if (lineage.has(path)) complete = false;
-         else lineage.set(path, c);
+         const held = lineage.get(path);
+         if (!held) lineage.set(path, c);
+         else if (!sameJudgment(held, c)) complete = false;
       }
       if (scope.truncated) lineage.truncated = true;
       keep(refs.filter((r) => names.has(r[0])));
@@ -646,8 +673,24 @@ export function readQueryFieldReads(
       lineage,
       fields: input.fields,
       paths: Array.from(paths),
+      scopes,
       complete,
    };
+}
+
+/** Whether two meanings of one path are plain alike: no class, ceiling or unread input on either, so either judges the same. */
+function sameJudgment(a: FieldClassification, b: FieldClassification): boolean {
+   const plain = (c: FieldClassification): boolean =>
+      c.ceilings.length === 0 &&
+      !c.ceilingUnresolved &&
+      c.declared.length === 0 &&
+      c.classifications.length === 0 &&
+      c.dropped.length === 0 &&
+      c.filtered.length === 0 &&
+      c.unresolved.length === 0 &&
+      !c.unread &&
+      !c.malformed;
+   return plain(a) && plain(b) && a.isField === b.isField;
 }
 
 /**
@@ -826,25 +869,36 @@ export function ceilingRefusal(
          ? `${headOf(own.ceilings[0])} a struct which Publisher cannot see completely`
          : undefined;
    }
-   const paths = Array.from(
-      new Set([
-         ...reads.paths,
-         ...callerJoins.flatMap((j) =>
-            fieldReferences((j as { onExpression?: unknown }).onExpression)
-               .filter((r) => r.length > 0)
-               .map((r) => r.join(".")),
-         ),
-      ]),
-   ).sort(byCodepoint);
+   // A caller join's `on` reads the scope of the stage that declares it.
+   const stages = (query as IrQuery | undefined)?.pipeline ?? [];
+   const lookups = new Map<string, { path: string; lineage: SourceLineage }>();
+   const look = (path: string, lineage: SourceLineage, at: number): void => {
+      lookups.set(`${at}|${path}`, { path, lineage });
+   };
+   for (const path of reads.paths) look(path, reads.lineage, 0);
+   for (const join of callerJoins) {
+      const at = stages.findIndex((stage) =>
+         stage.extendSource?.includes(join as IrField),
+      );
+      const lineage = (at > 0 ? reads.scopes[at] : undefined) ?? reads.lineage;
+      for (const r of fieldReferences(
+         (join as { onExpression?: unknown }).onExpression,
+      )) {
+         if (r.length > 0) look(r.join("."), lineage, Math.max(at, 0));
+      }
+   }
+   const reading = Array.from(lookups.values()).sort((x, y) =>
+      byCodepoint(x.path, y.path),
+   );
    if (!reads.complete || reads.lineage.truncated) {
       const first = own.ceilings[0] ?? {
          source: "a joined source",
          classes: [],
       };
-      return `${headOf(first)} ${paths[0] ?? first.source}, which Publisher cannot see completely`;
+      return `${headOf(first)} ${reading[0]?.path ?? first.source}, which Publisher cannot see completely`;
    }
-   for (const path of paths) {
-      const known = reads.lineage.get(path);
+   for (const { path, lineage } of reading) {
+      const known = lineage.get(path);
       const applicable = mergeCeilings(own.ceilings, known?.ceilings ?? []);
       const unseen = (): string =>
          `${headOf(applicable[0] ?? { source: "a joined source", classes: [] })} ${path}, which Publisher cannot see completely`;

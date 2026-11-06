@@ -55,7 +55,7 @@ classes). It reads `GET /api/v0/status` for load refusals. Then:
   register names. Each must refuse. This is why the check runs from the package directory.
 - **Access.** It runs a count on every domain as every persona and compares the answer with the
   register: every row, the rows a row filter selects, or a refusal. It also runs a count on every
-  gated domain with no givens at all (`{}`), which must refuse. A probe is refused when the server
+  gated domain with no givens at all (`{}`), which must refuse; a domain gated only by a row filter may instead answer with no rows. A probe is refused when the server
   answers 403, or 404 with the query boundary's own refusal. Any other non-2xx, such as a 400 from a
   typo or a 401, never reached the gate, so the check reports it as needing review and never as a
   refusal.

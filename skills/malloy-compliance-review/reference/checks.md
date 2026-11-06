@@ -20,7 +20,7 @@ status. The rest are aggregate queries run as the register's personas. None read
 | `secure_gates` | A gate reads a given that is not `#(secure)` | model read |
 | `locked_bases` | A source the package does not publish answers a count to an identity holding every role the register names. Its sources are read from the package's `.malloy` files and queried through each file's own path; with no files found, or a probe the server neither answered nor refused, it needs review | package files, a count per source |
 | `ceiling` | A domain declares no `#(carries)`, declares a class its `must_not_carry` forbids, or serves a class beyond it | classification summary, register |
-| `access` | A persona's outcome on a domain differs from the register, a gated domain answers a caller with no givens, or the register names a domain the package does not publish. A probe the server neither answered nor refused needs review | a count per domain per persona, and per gated domain with no givens |
+| `access` | A persona's outcome on a domain differs from the register, a gated domain answers a caller with no givens (a domain gated only by a row filter may answer with no rows), or the register names a domain the package does not publish. A probe the server neither answered nor refused needs review | a count per domain per persona, and per gated domain with no givens |
 | `values` | A field's values prove more than its class allows, a de-identified domain serves day dates, five-digit ZIPs or uncapped values. Free text there needs review | `get_context`, an aggregate profile per field |
 
 ## What the values prove
@@ -51,7 +51,7 @@ counting as a refusal.
 ## Scoping
 
 A check runs once per review, however many controls name it. A control that names `values:research`
-takes only the findings about `research`; a scope that names no published domain, declared source or
-refusal kind fails as an unknown scope, and `locked_bases` scopes are checked against the sources the
+takes only the findings about `research`; a scope on `coverage`, `gated`, `secure_gates`, `ceiling` or `values` that names no published domain, or on any other
+check that names no domain, declared source or refusal kind, fails as an unknown scope, and `locked_bases` scopes are checked against the sources the
 package's files declare; if every finding is about another domain, the control
 holds for that check and the report says nothing it found touches `research`.

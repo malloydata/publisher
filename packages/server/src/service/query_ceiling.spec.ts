@@ -860,3 +860,89 @@ describe("the per-request model def is not rescanned for #(carries)", () => {
       expect(scans(true)).toBeLessThan(scans(undefined));
    });
 });
+
+const LATER_STAGE_MODEL = `##! experimental { access_modifiers composite_sources }
+#(carries) ["none"]
+source: carried is duckdb.sql("select 'AA' as code, 1 as n") extend {
+   #(classification) "none"
+   dimension: code_ is code
+}
+source: carrier_rows is duckdb.sql("select 'AA' as code, 'American' as nickname")
+source: flights is duckdb.sql("select 'AA' as carrier, 'x' as origin") extend {
+   join_one: carriers is carrier_rows on carrier = carriers.code
+}
+#(carries) ["none"]
+source: gated_flights is duckdb.sql("select 'AA' as carrier, 'x' as origin") extend {
+   #(classification) "none"
+   dimension: carrier_ is carrier
+   join_one: carriers is carrier_rows extend {
+      #(classification) "phi.direct_identifier"
+      dimension: nickname_ is nickname
+   } on carrier = carriers.code
+}
+`;
+
+const CARRIERS = "carrier_rows";
+
+const SERVED_LATER_STAGE: Array<[string, string]> = [
+   [
+      "a later-stage join that re-declares a join the source already has",
+      `run: flights -> { group_by: carrier; aggregate: n is count() } -> {
+         extend: { join_one: carriers is ${CARRIERS} on carrier = carriers.code }
+         group_by: carriers.nickname; aggregate: t is n.sum()
+      }`,
+   ],
+   [
+      "a later-stage dimension that re-declares a field the source has",
+      `run: flights -> { group_by: carrier; aggregate: n is count() } -> {
+         extend: { dimension: origin is upper(carrier) }
+         group_by: origin; aggregate: t is n.sum()
+      }`,
+   ],
+   [
+      "a later-stage join whose on reads a name an earlier stage output",
+      `run: flights -> { group_by: k is carrier } -> {
+         extend: { join_one: q is ${CARRIERS} on k = q.code }
+         group_by: q.nickname; aggregate: t is count()
+      }`,
+   ],
+];
+
+describe("a later `->` stage over a source with no ceiling", () => {
+   for (const [name, query] of SERVED_LATER_STAGE) {
+      it(`serves ${name}`, async () => {
+         await withAuthorizeModel(LATER_STAGE_MODEL, async ({ model }) => {
+            expect((await run(model, query)).compactResult.length).toBe(1);
+         });
+      });
+   }
+
+   it("twin: refuses a later-stage join that shadows a classified path under a ceiling", async () => {
+      await withAuthorizeModel(LATER_STAGE_MODEL, async ({ model }) => {
+         const err = await run(
+            model,
+            `run: gated_flights -> { group_by: carrier_; aggregate: n is count() } -> {
+               extend: { join_one: carriers is ${CARRIERS} extend { dimension: nickname_ is nickname } on carrier_ = carriers.code }
+               group_by: carriers.nickname_; aggregate: t is n.sum()
+            }`,
+         ).catch((e) => e);
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect((err as Error).message).toContain("carries [none]");
+         expect((err as Error).message).toContain("cannot see completely");
+      });
+   });
+
+   it("twin: refuses a later-stage join whose on reads an unclassified column an earlier stage output", async () => {
+      await withAuthorizeModel(LATER_STAGE_MODEL, async ({ model }) => {
+         const err = await run(
+            model,
+            `run: gated_flights -> { group_by: k is carrier; aggregate: n is count() } -> {
+               extend: { join_one: q is ${CARRIERS} on k = q.code }
+               group_by: q.code; aggregate: t is n.sum()
+            }`,
+         ).catch((e) => e);
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect((err as Error).message).toContain("carries [none]");
+      });
+   });
+});

@@ -404,7 +404,15 @@ class UncheckedIsNotPassedTest(unittest.TestCase):
         self.assertEqual(self.locked({("base", "clinical"): (403, "Access denied")})["status"], "pass")
 
     def test_a_404_that_is_not_the_surface_refusal_is_review(self):
-        self.assertEqual(self.locked({("base", "clinical"): (404, "Model index.malloy not found")})["status"], "review")
+        self.assertEqual(self.locked({("base", "clinical"): (404, "Some other 404")})["status"], "review")
+
+    def test_a_locked_probe_through_a_model_path_the_server_does_not_have_is_review(self):
+        ctl = self.locked({("base", "clinical"): (404, 'No queryable model "base.malloy".')})
+        self.assertEqual(ctl["status"], "review")
+        self.assertIn("404", ctl["findings"][0]["evidence"])
+
+    def test_a_locked_probe_hidden_by_the_surface_still_passes_beside_a_wrong_model_path(self):
+        self.assertEqual(self.locked({("base", "clinical"): (404, 'No queryable source "base".')})["status"], "pass")
 
     def test_an_unknown_locked_bases_scope_fails_and_a_declared_one_holds(self):
         ctl = self.locked({}, scope="patiens")
@@ -457,6 +465,45 @@ class UncheckedIsNotPassedTest(unittest.TestCase):
         self.assertIn("no identity", f[0]["text"])
         self.assertEqual(f[0]["domain"], "chart")
         self.assertIn({}, [q[1] for q in server.queries])
+
+    def anonymous(self, gates, rows):
+        """The access check of one domain, gated as `gates` says, that answers `rows` to a caller with no identity."""
+        src = source("ledger", [field("amount", ["none"])], carries=["none"], **gates)
+        reg = {**REGISTER, "access": {"ledger": {"clinician": "rows", "researcher": "rows"}},
+               "controls": [{"id": "AC-01", "checks": ["access"]}]}
+        server = FakeServer(fixture(sources=[src]),
+                            access={("ledger", "clinical"): 3, ("ledger", "researcher"): 3, ("ledger", ""): rows})
+        return c.run_check(server, reg)["controls"][0]
+
+    def test_a_row_filtered_only_domain_answering_zero_rows_with_no_identity_holds(self):
+        ctl = self.anonymous({"access_filter": [gate("org in $ORGS", "ORGS")]}, 0)
+        self.assertEqual([f["text"] for f in ctl["findings"] if "no identity" in f["text"]], [])
+
+    def test_a_row_filtered_only_domain_answering_rows_with_no_identity_fails(self):
+        ctl = self.anonymous({"access_filter": [gate("org in $ORGS", "ORGS")]}, 3)
+        self.assertTrue(any("no identity" in f["text"] and f["status"] == "fail" for f in ctl["findings"]))
+
+    def test_an_authorize_gated_domain_answering_zero_rows_with_no_identity_fails(self):
+        ctl = self.anonymous({"authorize": [gate("'clinical' in $ROLES", "ROLES")]}, 0)
+        self.assertTrue(any("no identity" in f["text"] and f["status"] == "fail" for f in ctl["findings"]))
+
+    def test_a_domain_gated_by_both_answering_zero_rows_with_no_identity_fails(self):
+        ctl = self.anonymous({"authorize": [gate("'clinical' in $ROLES", "ROLES")],
+                              "access_filter": [gate("org in $ORGS", "ORGS")]}, 0)
+        self.assertTrue(any("no identity" in f["text"] and f["status"] == "fail" for f in ctl["findings"]))
+
+    def test_a_scope_naming_a_register_domain_the_package_does_not_publish_fails(self):
+        reg = {**REGISTER, "domains": {**REGISTER["domains"], "archive": {}}}
+        server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        names = [f"{k}:archive" for k in ("values", "ceiling", "coverage", "gated", "secure_gates")]
+        r = c.run_check(server, {**reg, "controls": [{"id": n, "checks": [n]} for n in names]})
+        self.assertEqual([x["status"] for x in r["controls"]], ["fail"] * len(names))
+        self.assertIn("unknown scope", r["controls"][0]["findings"][0]["text"])
+
+    def test_a_scope_naming_a_published_domain_still_holds(self):
+        server = FakeServer(fixture(), access={("chart", "clinical"): 1, ("research", "researcher"): 1})
+        r = run(server, [{"id": "X", "checks": ["ceiling:research", "coverage:research"]}])
+        self.assertEqual(r["controls"][0]["status"], "pass")
 
     def test_a_gated_domain_whose_anonymous_probe_errors_is_review(self):
         server = FakeServer(fixture(), access={("chart", "clinical"): 40, ("research", "researcher"): 900},

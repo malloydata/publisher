@@ -128,6 +128,49 @@ source: visits is ${VISITS} extend {
       expect(await refusal()).toContain("source visits (m.malloy)");
    });
 
+   describe("a model that no longer compiles", () => {
+      const BYPASS = `${GIVENS}
+#(authorize) false
+source: people is ${PEOPLE}
+
+source: visits is ${VISITS} extend {
+   join_one: person is people on person.id = person_id
+}
+`;
+      const BROKEN = "source: broken is duckdb.sql(\n";
+
+      // A load throws on a failed model, so the placeholder comes from a reload.
+      async function reloadWith(unreadable: string) {
+         gateOnly = true;
+         write("m.malloy", BYPASS);
+         write("c.malloy", "source: ok is duckdb.sql('select 1 as a')\n");
+         const pkg = await load();
+         write("c.malloy", unreadable);
+         await pkg.reloadAllModels({});
+         return pkg;
+      }
+
+      it("refuses a bypass when the model that fails to compile declares a classification", async () => {
+         const pkg = await reloadWith(`#(classification) "none"\n${BROKEN}`);
+         expect(pkg.formatJoinBypasses()).toContain("source visits (m.malloy)");
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).filter(
+               (w) => w.code === "join-bypass",
+            ),
+         ).toHaveLength(0);
+      });
+
+      it("keeps a bypass a warning when the model that fails to compile declares no classification", async () => {
+         const pkg = await reloadWith(BROKEN);
+         expect(pkg.formatJoinBypasses()).toBe("");
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).filter(
+               (w) => w.code === "join-bypass",
+            ),
+         ).toHaveLength(1);
+      });
+   });
+
    it("refuses an open source that joins a locked base", async () => {
       write(
          "m.malloy",

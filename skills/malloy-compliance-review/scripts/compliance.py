@@ -435,7 +435,7 @@ def check_locked(gov, register, ctx):
         if rows is not None:
             out.append(finding("", "fail", f"{name} ({rel}) answered a caller holding every role",
                                f"{rows[0].get('n')} rows; an unpublished source should refuse everyone", name))
-        elif not refused(status, msg):
+        elif not refused(status, msg, rel):
             out.append(finding("", "review", f"{name} ({rel}) was not probed: the server neither answered nor refused",
                                f"{status}: {msg}", name))
     if not probed:
@@ -502,10 +502,12 @@ def check_access(gov, register, ctx):
         out.append(finding("", "fail", f"the register expects {d}, which the package does not publish",
                            "a renamed or removed domain leaves its expectations unchecked", d))
     # A caller with no identity holds no given, so every gate must refuse it.
-    gated = [s["name"] for s in published(gov) if s["authorize"] or s["accessFilter"]]
-    for d in gated:
+    gated = [s for s in published(gov) if s["authorize"] or s["accessFilter"]]
+    for s in gated:
+        d = s["name"]
         rows, status, msg = server.query(f"run: {d} -> {{ {count} }}", {})
-        if rows is not None:
+        # With only a row filter, an unset given admits the source and matches no rows.
+        if rows is not None and not (not s["authorize"] and int(rows[0]["n"]) == 0):
             out.append(finding("", "fail", f"{d} answered a caller with no identity",
                                f"{rows[0].get('n')} rows with no givens; a gate should refuse them", d))
         elif not refused(status, msg, server.model):
@@ -665,6 +667,9 @@ CHECKS = {
 
 LOAD_KINDS = ("ceiling", "join", "other")
 
+# These checks walk the published domains alone, so a scope naming anything else is never reported on.
+PUBLISHED_SCOPE = ("coverage", "gated", "secure_gates", "ceiling", "values")
+
 
 def unknown_scope(kind: str, scope: str, gov, register, ctx) -> dict[str, Any] | None:
     """A finding when `scope` names nothing the check could ever report on, so a
@@ -677,6 +682,8 @@ def unknown_scope(kind: str, scope: str, gov, register, ctx) -> dict[str, Any] |
                            f"read .malloy files under {pathlib.Path(ctx['server'].package_dir).resolve()}")
     elif gov is None:
         return None  # the package is not served, so the check is already reported as not checked
+    elif kind in PUBLISHED_SCOPE:
+        known = {s["name"] for s in published(gov)}
     else:
         known = ({s["name"] for s in published(gov)} | declared
                  | set(register.get("access", {})) | set(register.get("domains", {})))
@@ -684,7 +691,8 @@ def unknown_scope(kind: str, scope: str, gov, register, ctx) -> dict[str, Any] |
             known |= set(LOAD_KINDS)
     if scope in known:
         return None
-    return finding("", "fail", f"unknown scope {scope!r} on {kind}: it names no domain or source",
+    return finding("", "fail", f"unknown scope {scope!r} on {kind}: it names no "
+                   f"{'published domain' if kind in PUBLISHED_SCOPE else 'domain or source'}",
                    f"known: {', '.join(sorted(known)) or 'none'}")
 
 

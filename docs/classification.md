@@ -313,7 +313,9 @@ The ceiling also refuses shapes it could serve:
 
 - an `index:` query, in any model that reaches a `#(carries)`, even on a source with no ceiling;
 - an output Publisher cannot follow to what it reads, such as a `nest:` with stages of its own,
-  whether or not it declares a class. Flatten the nest into one stage, or move it out of the source.
+  whether or not it declares a class. Flatten the nest into one stage, or move it out of the source;
+- a later `->` stage whose `extend:` re-declares a name the source or an earlier stage already has,
+  when either meaning carries a class or a ceiling. Give the new name a different one.
 
 ## What it is not
 

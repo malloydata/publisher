@@ -2460,7 +2460,8 @@ export class Package {
          memo.joinBypass = {
             messages,
             strict:
-               messages.length > 0 && packageUsesClassification(this.models),
+               messages.length > 0 &&
+               packageUsesClassification(this.models, this.packagePath),
          };
       }
       return memo.joinBypass;
