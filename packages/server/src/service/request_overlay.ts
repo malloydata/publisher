@@ -31,12 +31,9 @@ export interface OverlayFile {
    content: string;
 }
 
-/** The routes that take an overlay, as `publisher_request_overlay_total` labels them. */
-export type OverlayRoute = "compile" | "query";
-
 const overlayRequests = lazyCounter(
    "publisher_request_overlay_total",
-   "Compile and query requests that carried a `files` overlay. Labels: route (compile|query), outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past MAX_OVERLAY_FILES files or MAX_OVERLAY_BYTES bytes, 413).",
+   "Compile requests that carried a `files` overlay. Labels: outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past MAX_OVERLAY_FILES files or MAX_OVERLAY_BYTES bytes, 413).",
 );
 
 /**
@@ -44,20 +41,16 @@ const overlayRequests = lazyCounter(
  * entry, an unsafe or non-model path, or a path given twice is a 400; more
  * files or bytes than the server's bounds is a 413. Counted either way.
  */
-export function parseOverlayFiles(
-   input: unknown,
-   route: OverlayRoute,
-): OverlayFile[] | undefined {
+export function parseOverlayFiles(input: unknown): OverlayFile[] | undefined {
    if (input === undefined || input === null) return undefined;
    try {
       const files = checkOverlayFiles(input);
       // An empty overlay overlays nothing: the request is an ordinary one.
       if (files.length === 0) return undefined;
-      overlayRequests().add(1, { route, outcome: "accepted" });
+      overlayRequests().add(1, { outcome: "accepted" });
       return files;
    } catch (error) {
       overlayRequests().add(1, {
-         route,
          outcome:
             error instanceof PayloadTooLargeError
                ? "refused_bounds"
@@ -151,18 +144,14 @@ export function overlaidText(
 }
 
 /**
- * Whether `requestPath` is a compile or query route, the two that take a
- * `files` overlay: `…/packages/{package}/models/{model path}/compile` or
- * `…/query`. Plain string checks rather than a pattern, so the work is
- * linear in the path's length whatever a caller sends.
+ * Whether `requestPath` is the compile route, the one that takes a `files`
+ * overlay: `…/packages/{package}/models/{model path}/compile`. Plain string
+ * checks rather than a pattern, so the work is linear in the path's length
+ * whatever a caller sends.
  */
 export function isOverlayRoute(requestPath: string): boolean {
-   const suffix = requestPath.endsWith("/compile")
-      ? "/compile"
-      : requestPath.endsWith("/query")
-        ? "/query"
-        : undefined;
-   if (suffix === undefined) return false;
+   const suffix = "/compile";
+   if (!requestPath.endsWith(suffix)) return false;
    const packages = requestPath.indexOf("/packages/");
    if (packages < 0) return false;
    const packageStart = packages + "/packages/".length;

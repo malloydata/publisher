@@ -1893,27 +1893,6 @@ export class Package {
       return manifest;
    }
 
-   /**
-    * Give `model`, compiled for one request outside the package (a `files`
-    * overlay), what each served model of this package has: the storage serve
-    * bindings, the serve destinations and the freshness resolvers, so it reads
-    * materialized tables as the served model would. Its colocated table names
-    * come from the build manifest it was compiled with. It gets no
-    * pre-aggregation companion: that compiles from the package's files, which
-    * the overlay replaces, so a pre-aggregated source in it serves live.
-    */
-   public prepareRequestModel(model: Model): Model {
-      model.setServeBindings(this.storageServeBindings);
-      if (this.serveDestinationConfig) {
-         model.setServeDestinationConfig(this.serveDestinationConfig);
-      }
-      model.setFreshnessResolver(() => this.getFreshBuildManifest());
-      model.setPreaggregateEntityIdResolver(() =>
-         this.getPreaggregateEntityIds(),
-      );
-      return model;
-   }
-
    /** Install the per-query freshness resolvers on every model; idempotent. */
    private wireFreshnessResolvers(): void {
       for (const model of this.models.values()) {

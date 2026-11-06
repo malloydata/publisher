@@ -360,8 +360,8 @@ app.use(
    }),
 );
 
-// Compile and query take a `files` overlay of up to MAX_OVERLAY_BYTES
-// of text, which JSON escaping can grow, so they parse a larger body; the
+// Compile takes a `files` overlay of up to MAX_OVERLAY_BYTES of text,
+// which JSON escaping can grow, so it parses a larger body; the
 // overlay's own bounds answer 413 past that. Parsed once: the general parser
 // below skips a body already read.
 const overlayBodyParser = bodyParser.json({

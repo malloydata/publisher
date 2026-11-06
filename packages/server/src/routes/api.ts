@@ -857,7 +857,6 @@ function registerQueryRoutes(
                caller: req.get(callerHeaderName()),
                traceId: traceIdOf(req),
             },
-            req.body.files,
          );
          setFilterDeprecationHeaders(res, { filterParams, bypassFilters });
          res.status(200).json(result);

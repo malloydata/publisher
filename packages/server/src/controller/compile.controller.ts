@@ -107,7 +107,7 @@ export class CompileController {
       if (typeof source === "string") text = source;
       else if (source !== undefined)
          throw new BadRequestError("`source` must be a string of Malloy text.");
-      const overlay = parseOverlayFiles(files, "compile");
+      const overlay = parseOverlayFiles(files);
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,

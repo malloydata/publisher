@@ -627,17 +627,15 @@ Both annotations evaluate expressions over **request-supplied givens**. There is
 - **It does not defend against a caller who sets their own givens.** Exposed directly to untrusted users, anyone can send `{"ROLE":"admin"}` and pass an `'admin' = $ROLE` lock. Do not treat either annotation as end-user authn/authz on a public endpoint.
 - **Identity-bound givens** — a verified token or trusted-proxy header populating reserved "system givens" the caller cannot override — is a planned milestone that would make authorize a standalone boundary. It is not implemented yet.
 
-### A request's `files` overlay is package content
+### A compile request's `files` overlay is package content
 
-`POST …/models/{path}/compile` (scopes `file` and `package`) and `POST …/models/{path}/query` take a
-`files` overlay: `.malloy` and `.malloynb` files read instead of, or beside, the package's own for
-that one request. Overlay files are **package files, not caller-submitted text**. The rule above that
-rejects a gate in caller text does not apply to them, and their `#(authorize)` and `#(access_filter)`
-annotations gate exactly as a published file's do. So an overlay can declare, change or remove a gate
-on the sources it overlays, as editing the package could. The model a query runs against is compiled
-from the overlaid files for that request alone, and the package's discovery surface does not restrict
-it, as on `/compile`; its own gates do. A `query` or `source` text sent beside an overlay is still
-caller text: it may not declare a gate (above), and `query` text stays restricted.
+`POST …/models/{path}/compile` (scopes `file` and `package`) takes a `files` overlay: `.malloy` and
+`.malloynb` files read instead of, or beside, the package's own for that one compile. Overlay files
+are **package files, not caller-submitted text**. The rule above that rejects a gate in caller text
+does not apply to them, and their `#(authorize)` and `#(access_filter)` annotations gate exactly as a
+published file's do. So an overlay can declare, change or remove a gate on the sources it overlays,
+as editing the package could. A `source` text sent beside an overlay is still caller text and may
+not declare a gate (above). `/query` takes no overlay: a query runs against the package as served.
 
 That makes `files` an author's capability. Publisher does not decide who is an author: **a host must
 offer `files` only to callers who may edit the package**, and strip it from everyone else's requests,

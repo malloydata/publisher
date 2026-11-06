@@ -30,14 +30,11 @@ describe("parseOverlayFiles", () => {
    });
 
    const counted = (outcome: string) =>
-      harness.collectCounter("publisher_request_overlay_total", {
-         route: "compile",
-         outcome,
-      });
+      harness.collectCounter("publisher_request_overlay_total", { outcome });
 
    it("is undefined, and uncounted, when the request has no files", async () => {
-      expect(parseOverlayFiles(undefined, "compile")).toBeUndefined();
-      expect(parseOverlayFiles(null, "compile")).toBeUndefined();
+      expect(parseOverlayFiles(undefined)).toBeUndefined();
+      expect(parseOverlayFiles(null)).toBeUndefined();
       expect(await counted("accepted")).toBe(0);
    });
 
@@ -46,7 +43,7 @@ describe("parseOverlayFiles", () => {
          { path: "a.malloy", content: "source: a is duckdb.sql('select 1')" },
          { path: "dir/b.malloynb", content: "" },
       ];
-      expect(parseOverlayFiles(files, "compile")).toEqual(files);
+      expect(parseOverlayFiles(files)).toEqual(files);
       expect(await counted("accepted")).toBe(1);
    });
 
@@ -70,15 +67,12 @@ describe("parseOverlayFiles", () => {
          ],
       ],
    ])("refuses %s with 400, counted refused_entry", async (_why, input) => {
-      expect(() => parseOverlayFiles(input, "compile")).toThrow(
-         BadRequestError,
-      );
+      expect(() => parseOverlayFiles(input)).toThrow(BadRequestError);
       expect(await counted("refused_entry")).toBe(1);
    });
 
    it("treats an empty overlay as none", () => {
-      expect(parseOverlayFiles([], "query")).toBeUndefined();
-      expect(parseOverlayFiles([], "compile")).toBeUndefined();
+      expect(parseOverlayFiles([])).toBeUndefined();
    });
 
    it("refuses more files than a request takes with 413, counted refused_bounds", async () => {
@@ -86,9 +80,7 @@ describe("parseOverlayFiles", () => {
          path: `f${i}.malloy`,
          content: "",
       }));
-      expect(() => parseOverlayFiles(files, "compile")).toThrow(
-         PayloadTooLargeError,
-      );
+      expect(() => parseOverlayFiles(files)).toThrow(PayloadTooLargeError);
       expect(await counted("refused_bounds")).toBe(1);
    });
 
@@ -96,13 +88,12 @@ describe("parseOverlayFiles", () => {
       // Fewer characters than the bound, but two bytes each.
       const wide = "é".repeat(MAX_OVERLAY_BYTES / 2 + 1);
       expect(() =>
-         parseOverlayFiles([{ path: "a.malloy", content: wide }], "query"),
+         parseOverlayFiles([{ path: "a.malloy", content: wide }]),
       ).toThrow(PayloadTooLargeError);
       expect(
-         parseOverlayFiles(
-            [{ path: "a.malloy", content: "a".repeat(MAX_OVERLAY_BYTES) }],
-            "query",
-         ),
+         parseOverlayFiles([
+            { path: "a.malloy", content: "a".repeat(MAX_OVERLAY_BYTES) },
+         ]),
       ).toHaveLength(1);
    });
 });
@@ -128,11 +119,10 @@ describe("overlayByUrl and overlaidText", () => {
 });
 
 describe("isOverlayRoute", () => {
-   it("matches the compile and query routes, for any model path", () => {
+   it("matches the compile route, for any model path", () => {
       for (const route of [
          "/api/v0/environments/e/packages/p/models/m.malloy/compile",
-         "/api/v0/environments/e/packages/p/models/m.malloy/query",
-         "/api/v0/environments/e/packages/p/models/dir/sub/m.malloy/query",
+         "/api/v0/environments/e/packages/p/models/dir/sub/m.malloy/compile",
       ]) {
          expect(isOverlayRoute(route)).toBe(true);
       }
@@ -141,9 +131,10 @@ describe("isOverlayRoute", () => {
    it("does not match any other route", () => {
       for (const route of [
          "/api/v0/environments/e/packages/p/models/m.malloy",
+         "/api/v0/environments/e/packages/p/models/m.malloy/query",
          "/api/v0/environments/e/packages/p/models/compile",
-         "/api/v0/environments/e/packages//models/m.malloy/query",
-         "/api/v0/environments/e/packages/p/notebooks/m.malloy/query",
+         "/api/v0/environments/e/packages//models/m.malloy/compile",
+         "/api/v0/environments/e/packages/p/notebooks/m.malloy/compile",
          "/api/v0/environments/e/connections/c/query",
          "/api/v0/environments/e/packages/p/query",
       ]) {

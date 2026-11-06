@@ -203,8 +203,6 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
    requestedSource?: string;
    /** True when the request carried query text. */
    adHoc: boolean;
-   /** True when the request carried a `files` overlay: the model was compiled for it alone. */
-   overlaid?: boolean;
    caller?: string;
    traceId?: string;
    outcome: AccessOutcome;

@@ -4,10 +4,9 @@
 /// <reference types="bun-types" />
 
 /**
- * A `files` overlay on `POST …/compile` and `POST …/query` over real HTTP: the
- * overlaid files are read instead of, or beside, the package's own for that one
- * request, are never written or seen by a later request, are bounded, and gate
- * as package files.
+ * A `files` overlay on `POST …/compile` over real HTTP: the overlaid files are
+ * read instead of, or beside, the package's own for that one request, are never
+ * written or seen by a later request, are bounded, and gate as package files.
  */
 
 import { MAX_OVERLAY_BYTES, MAX_OVERLAY_FILES } from "../../../src/constants";
@@ -61,12 +60,9 @@ describe("a request's files overlay (E2E)", () => {
       const res = await env.query(modelPath, body);
       return {
          status: res.status,
-         body: (await res.json()) as { result?: string; message?: string },
+         body: (await res.json()) as { message?: string },
       };
    };
-   const rowsOf = (result: string | undefined) =>
-      (JSON.parse(result ?? "{}") as { data?: { array_value?: unknown[] } })
-         .data?.array_value ?? [];
 
    beforeAll(async () => {
       const { dir, cleanup } = writeTempPackage(
@@ -168,35 +164,6 @@ describe("a request's files overlay (E2E)", () => {
       });
    });
 
-   describe("query", () => {
-      it("runs a query against the overlaid model", async () => {
-         const overlaid = TRACKS.replace(
-            "dimension: id2 is id * 2",
-            "dimension: id2 is id * 2\n   dimension: id3 is id * 3",
-         );
-         const { status, body } = await query("tracks.malloy", {
-            query: "run: tracks -> { group_by: id3 }",
-            files: [{ path: "tracks.malloy", content: overlaid }],
-         });
-         expect(status).toBe(200);
-         expect(rowsOf(body.result)).toHaveLength(1);
-      });
-
-      it("answers a model the overlay breaks with the compile's 400", async () => {
-         const { status } = await query("tracks.malloy", {
-            query: "run: tracks -> { aggregate: n }",
-            files: [
-               {
-                  path: "base.malloy",
-                  content: BASE.replace("base_source", "renamed"),
-               },
-            ],
-         });
-         expect(status).toBeGreaterThanOrEqual(400);
-         expect(status).toBeLessThan(500);
-      });
-   });
-
    describe("never outlives its request", () => {
       it("leaves the package's own files, models and answers as they were", async () => {
          await compile("tracks.malloy", {
@@ -210,19 +177,11 @@ describe("a request's files overlay (E2E)", () => {
                },
             ],
          });
-         await query("tracks.malloy", {
-            query: "run: tracks -> { aggregate: n }",
-            files: [{ path: "base.malloy", content: "source: oops is nope" }],
-         });
 
          const plain = await query("tracks.malloy", {
             query: "run: tracks -> { aggregate: n }",
          });
          expect(plain.status).toBe(200);
-         const without = await query("tracks.malloy", {
-            query: "run: tracks -> { group_by: id3 }",
-         });
-         expect(without.status).toBe(400);
          expect(await compile("base.malloy", { scope: "package" })).toEqual({
             status: 200,
             body: { status: "success", problems: [] },
@@ -250,8 +209,8 @@ describe("a request's files overlay (E2E)", () => {
       });
 
       it("refuses more bytes than the server takes with 413", async () => {
-         const { status, body } = await query("tracks.malloy", {
-            query: "run: tracks -> { aggregate: n }",
+         const { status, body } = await compile("tracks.malloy", {
+            scope: "package",
             files: [
                {
                   path: "base.malloy",
@@ -307,27 +266,18 @@ describe("a request's files overlay (E2E)", () => {
       });
 
       it("gates an overlaid model by its own annotations, as written", async () => {
-         const reopened = await query("gated.malloy", {
-            query: run,
+         const reopened = await compile("gated.malloy", {
+            scope: "file",
             givens: { ROLE: "viewer" },
-            files: [{ path: "gated.malloy", content: gated("viewer") }],
+            files: [{ path: "gated.malloy", content: gated("viewer") + run }],
          });
          expect(reopened.status).toBe(200);
-         const stillLocked = await query("gated.malloy", {
-            query: run,
+         const stillLocked = await compile("gated.malloy", {
+            scope: "file",
             givens: { ROLE: "viewer" },
-            files: [{ path: "gated.malloy", content: gated("admin") }],
+            files: [{ path: "gated.malloy", content: gated("admin") + run }],
          });
          expect(stillLocked.status).toBe(403);
-      });
-
-      it("still refuses a gate in caller query text beside an overlay", async () => {
-         const { status } = await query("gated.malloy", {
-            query: `#(authorize) true\nrun: secret -> { aggregate: total }`,
-            givens: { ROLE: "admin" },
-            files: [{ path: "gated.malloy", content: gated("admin") }],
-         });
-         expect(status).toBe(400);
       });
    });
 });

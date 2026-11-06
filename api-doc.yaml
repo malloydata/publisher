@@ -2346,11 +2346,6 @@ paths:
         fails only at the grammar and names no source to run (for example `run` with no colon) is also
         a 400, because a grammar error says nothing about the model, unless the model carries any
         `#(authorize)` or `#(access_filter)`, or the text joins a source off the surface.
-
-        With `files`, the model in the URL is compiled for this request alone with the overlaid files
-        read instead of the package's (see `QueryRequest.files`), and the query runs against it: an
-        author's tool can run a query over edits it has not saved. The overlaid model does not compile
-        with a 400 carrying its `problems`, as ad-hoc text does.
       parameters:
         - name: environmentName
           in: path
@@ -4332,8 +4327,8 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
-        A request is also refused with 413 when its `files` overlay (compile and
-        query) holds more than 500 files or 8 MiB of text;
+        A compile request is also refused with 413 when its `files` overlay
+        holds more than 500 files or 8 MiB of text;
         the message names the bound.
       content:
         application/json:
@@ -7975,29 +7970,6 @@ components:
             When true, skip server-side `#(filter)` injection entirely.
         givens:
           $ref: "#/components/schemas/GivenValues"
-        files:
-          type: array
-          description: >-
-            Package files read instead of, or beside, the package's own for this
-            request only: an entry whose path names a package file replaces it,
-            and one naming a new file adds it, so an import of it resolves.
-            The model in the URL is compiled for this request alone, and the
-            query runs against it. Like `/compile`, such a query is an authoring
-            query: the package's discovery surface does not restrict it, and the
-            overlaid files' own gates do. Nothing is written, cached or served
-            to another request. Overlay
-            files are author content, read exactly as the package's own files:
-            they are not restricted like ad-hoc text, and their `#(authorize)`
-            and `#(access_filter)` annotations gate as written, so a host must
-            offer `files` only to callers who may edit the package. An empty
-            list is no overlay. Only
-            `.malloy` and `.malloynb` files can be overlaid; data files and
-            `publisher.json` are read from the package as published. A path that
-            is absolute, has a "." or ".." segment or a backslash, names another
-            kind of file, or appears twice is a 400; more than
-            500 files or 8 MiB of text is a 413.
-          items:
-            $ref: "#/components/schemas/OverlayFile"
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-

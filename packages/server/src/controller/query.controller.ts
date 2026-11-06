@@ -23,12 +23,10 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
-import type { Model } from "../service/model";
 import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
-import { parseOverlayFiles } from "../service/request_overlay";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -64,8 +62,6 @@ export class QueryController {
       includeHiddenFilesAndSources?: boolean,
       clientSignal?: AbortSignal,
       audit: { caller?: string; traceId?: string } = {},
-      /** The request's `files` overlay, unchecked (see `request_overlay.ts`). */
-      files?: unknown,
    ): Promise<ApiQuery> {
       const started = performance.now();
       const base = {
@@ -76,7 +72,6 @@ export class QueryController {
          ...(queryName ? { queryName } : {}),
          ...(sourceName ? { requestedSource: sourceName } : {}),
          adHoc: Boolean(query),
-         ...(files !== undefined && files !== null ? { overlaid: true } : {}),
          ...(audit.caller ? { caller: audit.caller } : {}),
          ...(audit.traceId ? { traceId: audit.traceId } : {}),
       };
@@ -96,7 +91,6 @@ export class QueryController {
             bypassAuthorize,
             includeHiddenFilesAndSources,
             clientSignal,
-            files,
          );
          emitAccessRecord({
             ...base,
@@ -155,7 +149,6 @@ export class QueryController {
       includeHiddenFilesAndSources?: boolean,
       /** Aborted when the HTTP client disconnects: cancels the query with it. */
       clientSignal?: AbortSignal,
-      files?: unknown,
    ): Promise<{
       api: ApiQuery;
       access?: QueryAccessSummary;
@@ -169,7 +162,6 @@ export class QueryController {
       } catch (error) {
          throw new BadRequestError((error as Error).message);
       }
-      const overlay = parseOverlayFiles(files, "query");
 
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -182,30 +174,14 @@ export class QueryController {
       const p = await environment.getPackage(packageName, false, {
          versionId: metadata?.versionId,
       });
-      // The model is resolved inside the query's own time budget, so an
-      // overlaid compile is bound by the same timeout and client disconnect.
-      const resolveModel = async (abortSignal: AbortSignal): Promise<Model> => {
-         // An overlaid query compiles the model for this request alone. It is
-         // an authoring query, as on /compile: the package's surface does not
-         // restrict it, and the overlaid files' own gates do.
-         const resolved = overlay
-            ? await environment.compileOverlaidModel(
-                 p,
-                 modelPath,
-                 overlay,
-                 abortSignal,
-              )
-            : p.getModel(modelPath);
-         if (!resolved) {
-            // Worded exactly as Model.assertQueryBoundaryEarly's generic
-            // refusal, so a 404 cannot tell a gated hidden file from a missing one.
-            throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
-         }
-         return resolved;
-      };
-      {
+      const model = p.getModel(modelPath);
+
+      if (!model) {
+         // Worded exactly as Model.assertQueryBoundaryEarly's generic refusal,
+         // so a 404 cannot tell a gated hidden file from a missing one.
+         throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
+      } else {
          const {
-            model,
             result,
             access,
             serializedResult,
@@ -216,46 +192,40 @@ export class QueryController {
             executionTimeMs,
             queryCostBytes,
          } = await runWithQueryTimeout(
-            async (abortSignal) => {
-               const model = await resolveModel(abortSignal);
-               return {
-                  model,
-                  ...(await model.getQueryResults(
-                     sourceName,
-                     queryName,
-                     query,
-                     filterParams,
-                     bypassFilters,
-                     givens,
-                     abortSignal,
-                     buildQueryMetadataInput({
-                        environmentName,
-                        environment,
-                        pkg: p,
-                        request: requestMetadata,
-                        queryClass,
-                        // The version that answered (latest when none was
-                        // named), not the raw request value; undefined for a
-                        // package with no versions.
-                        version: p.getVersionId(),
-                        noLayersLogMessage:
-                           "No query-metadata layers for connection",
-                     }),
-                     // Serialize and byte-cap exactly the shape this request
-                     // receives, not the other one.
-                     compactJson ? "compact" : "full",
-                     bypassAuthorize,
-                     includeHiddenFilesAndSources,
-                  )),
-               };
-            },
+            (abortSignal) =>
+               model.getQueryResults(
+                  sourceName,
+                  queryName,
+                  query,
+                  filterParams,
+                  bypassFilters,
+                  givens,
+                  abortSignal,
+                  buildQueryMetadataInput({
+                     environmentName,
+                     environment,
+                     pkg: p,
+                     request: requestMetadata,
+                     queryClass,
+                     // The version that answered (latest when none was
+                     // named), not the raw request value; undefined for a
+                     // package with no versions.
+                     version: p.getVersionId(),
+                     noLayersLogMessage:
+                        "No query-metadata layers for connection",
+                  }),
+                  // Serialize and byte-cap exactly the shape this request
+                  // receives, not the other one.
+                  compactJson ? "compact" : "full",
+                  bypassAuthorize,
+                  includeHiddenFilesAndSources,
+               ),
             getQueryTimeoutMs(),
             clientSignal,
          );
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            // The model the query ran against: an overlay can add or drop the tag.
-            model.carriesReportTag(),
+            p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
          const api = {
             // Serialized by the model: re-stringifying here would copy the
