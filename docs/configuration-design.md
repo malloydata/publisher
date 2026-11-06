@@ -296,8 +296,10 @@ The block keeps its shape. Its scalar leaves gain a variable and a flag, and the
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | `retrieval.embedding.connectionSchemaIndexingEnabled` | `PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED` |
 | `LLM_API_KEY` | `retrieval.llm.apiKey` (secret) | `PUBLISHER_RETRIEVAL_LLM_API_KEY` |
 
-The other `retrieval` keys (`indexing.maxEntities`, `llm.provider`, `llm.model`, …, `egress.preset`)
-keep their file paths and gain derived variables and flags.
+The other `retrieval` keys (`llm.provider`, `llm.model`, …, `egress.preset`, `dimensionValues.enabled`)
+keep their file paths and gain derived variables and flags. `indexing.maxEntities` does nothing since
+[#1469](https://github.com/malloydata/publisher/pull/1469) (startup warns when it is set), so it gains
+none.
 
 ### Settings in open pull requests
 
@@ -306,6 +308,7 @@ keep their file paths and gain derived variables and flags.
 | `versionPromotion` (file), `PUBLISHER_VERSION_PROMOTION` ([#1354](https://github.com/malloydata/publisher/pull/1354)) | `versionPromotion` (enum: `on-publish`, `explicit`) | unchanged | `--version-promotion` | the key and variable already follow this design; the flag is new |
 | `PUBLISHER_PACKAGE_VERSIONING` (#1354) | `packageVersioning` (enum: `on`, `off`) | unchanged | — | a transition setting that [#1381](https://github.com/malloydata/publisher/issues/1381) removes, so it keeps its name and is exempt from the `Enabled` rule |
 | `PUBLISHER_MODEL_PAGE` (#1498) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
+| `PUBLISHER_PACKAGE_INLINE_FIELDS` (#1532) | `packageInlineFields` (enum: `on`, `off`) | unchanged | — | a transition setting that a later release turns off and the one after removes with the fields, so, like `packageVersioning`, it keeps its name and has no flag |
 
 Until step 2 ships, a new setting takes its derived name from the start, as `PUBLISHER_VERSION_PROMOTION`
 does, so it never needs an alias.

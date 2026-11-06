@@ -363,11 +363,12 @@ ENV NODE_ENV=production
 # tree guard that would normally cover /publisher cannot fire here, because
 # .dockerignore excludes .git from the image. Left on, every boot would write a
 # file into it, which matters to anyone bind-mounting a project at /publisher.
-# Pass -e PUBLISHER_NO_MCP_CONFIG= to opt back in. Note the same emptiness is
-# reachable by accident: `docker run -e PUBLISHER_NO_MCP_CONFIG` with no value,
-# or a Compose `environment:` entry with none, deletes this ENV when the host
-# does not have the variable, which re-enables the write.
-ENV PUBLISHER_NO_MCP_CONFIG=1
+# Pass -e PUBLISHER_MCP_CONFIG_FILE_ENABLED=true to opt back in. Note the same
+# effect is reachable by accident: `docker run -e PUBLISHER_MCP_CONFIG_FILE_ENABLED`
+# with no value, or a Compose `environment:` entry with none, deletes this ENV
+# when the host does not have the variable, which re-enables the write. The
+# image uses the current names, so a plain boot logs no deprecation warning.
+ENV PUBLISHER_MCP_CONFIG_FILE_ENABLED=false
 ENV PATH="/home/bun/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 # Set rather than left to USER, which derives HOME from /etc/passwd: run as
 # `--user 0`, the server would otherwise resolve ~/.duckdb under /root and find
@@ -390,7 +391,7 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
 # 4040); this just makes them discoverable.
 EXPOSE 4000 4040
 
-# Pass --server_root explicitly so the zero-arg bundled-default trigger
+# Pass --root explicitly so the zero-arg bundled-default trigger
 # in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire
 # inside the production container. Without this, a Docker image launched
 # with no mounted config would try to clone the bundled DuckDB samples
@@ -402,4 +403,4 @@ EXPOSE 4000 4040
 # and refuses to start an image whose USER is a name unless the pod also sets
 # runAsUser.
 USER 1000:1000
-CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]
+CMD ["bun", "run", "./packages/server/dist/server.mjs", "--root", "/publisher"]

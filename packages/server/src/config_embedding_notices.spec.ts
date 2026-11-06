@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { embeddingStartupNotices } from "./config";
 import type { RetrievalEmbeddingConfig } from "./retrieval_config";
+import { Settings } from "./settings";
 import { withSettings } from "./test_helpers/settings_env";
 
 /**
@@ -51,20 +52,22 @@ describe("embeddingStartupNotices", () => {
       expect(run(undefined)).toEqual([]);
    });
 
-   it("says when the file overrides a different EMBEDDING_MODEL and that a model change re-embeds", () => {
+   it("says when a variable overrides a different model in the file, and that a model change re-embeds", () => {
       const notices = run(
          {
             provider: "openai",
             model: "file-model",
          },
-         { EMBEDDING_API_KEY: "k", EMBEDDING_MODEL: "env-model" },
+         {
+            EMBEDDING_API_KEY: "k",
+            PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "env-model",
+         },
       );
       expect(notices).toHaveLength(1);
       expect(notices[0].level).toBe("info");
-      expect(notices[0].message).toContain(
-         'retrieval.embedding.model "file-model" in publisher.config.json overrides EMBEDDING_MODEL "env-model"',
+      expect(notices[0].message).toBe(
+         'PUBLISHER_RETRIEVAL_EMBEDDING_MODEL "env-model" overrides retrieval.embedding.model "file-model" in publisher.config.json. Changing the model or its dimensions re-embeds every package.',
       );
-      expect(notices[0].message).toContain("re-embed");
    });
 
    it("says the same for dimensions, and the host only for a base URL", () => {
@@ -77,23 +80,48 @@ describe("embeddingStartupNotices", () => {
          },
          {
             EMBEDDING_API_KEY: "k",
-            EMBEDDING_DIMENSIONS: "512",
-            EMBEDDING_API_BASE: "https://user:pw@env.example.com/v1/x",
+            PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "512",
+            PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL:
+               "https://user:pw@env.example.com/v1/x",
          },
       );
       const text = notices.map((n) => n.message).join("\n");
       expect(text).toContain(
-         "retrieval.embedding.dimensions 1024 in publisher.config.json overrides EMBEDDING_DIMENSIONS 512",
+         "PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS 512 overrides retrieval.embedding.dimensions 1024 in publisher.config.json",
       );
       expect(text).toContain(
-         'retrieval.embedding.baseUrl (host "file.example.com") in publisher.config.json overrides EMBEDDING_API_BASE (host "env.example.com")',
+         'PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL (host "env.example.com") overrides retrieval.embedding.baseUrl (host "file.example.com") in publisher.config.json',
       );
       // Never the credentials in the URL, nor its path.
       expect(text).not.toContain("pw");
       expect(text).not.toContain("/v1/x");
    });
 
-   it("says nothing when the file and the variable agree, or the variable is unset", () => {
+   it("has nothing to say for an old variable that differs from the file, which fails startup instead", () => {
+      withSettings(
+         {
+            env: { EMBEDDING_API_KEY: "k", EMBEDDING_MODEL: "env-model" },
+            file: {
+               retrieval: {
+                  embedding: { provider: "openai", model: "file-model" },
+               },
+            },
+         },
+         () => {
+            expect(
+               Settings.current()
+                  .errors()
+                  .map((error) => error.message),
+            ).toEqual([
+               expect.stringContaining(
+                  "retrieval.embedding.model is given different values",
+               ) as unknown as string,
+            ]);
+         },
+      );
+   });
+
+   it("says nothing when the file and a variable agree, or no variable is set", () => {
       expect(
          run({ provider: "openai", model: "m" }, { EMBEDDING_API_KEY: "k" }),
       ).toEqual([]);
@@ -106,8 +134,8 @@ describe("embeddingStartupNotices", () => {
             },
             {
                EMBEDDING_API_KEY: "k",
-               EMBEDDING_MODEL: "m",
-               EMBEDDING_DIMENSIONS: "512",
+               PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "m",
+               PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "512",
             },
          ),
       ).toEqual([]);

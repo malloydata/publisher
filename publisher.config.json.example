@@ -1,0 +1,95 @@
+{
+  "frozenConfig": false,
+  "servingApiEnabled": true,
+  "adminApiEnabled": true,
+  "port": 4000,
+  "host": null,
+  "rateLimit": 0,
+  "frameAncestors": "'self'",
+  "callerHeader": "x-publisher-caller",
+  "packageVersioning": "off",
+  "versionPromotion": "on-publish",
+  "packageInlineFields": "on",
+  "modelPage": "explorer",
+  "theme": null,
+  "environments": null,
+  "mcp": {
+    "port": 4040,
+    "host": null,
+    "corsOrigins": [],
+    "configFileEnabled": true,
+    "includeHiddenFilesAndSources": false,
+    "trace": null
+  },
+  "admin": {
+    "port": null,
+    "host": "127.0.0.1",
+    "catalogDatabase": null,
+    "storage": {
+      "provider": null,
+      "keyId": null,
+      "secret": null,
+      "region": null,
+      "endpoint": null
+    }
+  },
+  "query": {
+    "maxRows": 100000,
+    "maxResponseBytes": 50000000,
+    "defaultRowLimit": 1000,
+    "timeoutMs": 300000,
+    "maxConcurrent": 32,
+    "metadataEnabled": false
+  },
+  "postgres": {
+    "poolMax": 5
+  },
+  "memory": {
+    "maxBytes": 0,
+    "highWaterFraction": 0.8,
+    "lowWaterFraction": 0.7,
+    "checkIntervalMs": 5000,
+    "backpressureEnabled": true
+  },
+  "packageLoad": {
+    "workers": 1,
+    "jobTimeoutMs": 120000,
+    "schemaCacheBytes": 16777216
+  },
+  "duckdb": {
+    "extensionFetchPolicy": "on-demand",
+    "memoryLimit": null,
+    "tempDirectory": null,
+    "partitionedWriteFlushThreshold": "8192"
+  },
+  "ducklake": {
+    "rowGroupSizeBytes": null,
+    "targetFileSizeBytes": null
+  },
+  "persist": {
+    "storageMode": "off",
+    "collisionEnforcementEnabled": false
+  },
+  "materialization": {
+    "schedulerEnabled": false,
+    "schedulerIntervalMs": 60000,
+    "schedulerMaxFiresPerTick": 10
+  },
+  "allow": {
+    "proxyConnections": false,
+    "duckdbSetupSql": false,
+    "unverifiedSshHostKey": false,
+    "s3CredentialChain": "any"
+  },
+  "authorize": {
+    "bypassSecret": null
+  },
+  "logging": {
+    "level": "debug",
+    "responseBodiesEnabled": true
+  },
+  "shutdown": {
+    "drainDurationSeconds": 0,
+    "gracefulCloseTimeoutSeconds": 0
+  }
+}

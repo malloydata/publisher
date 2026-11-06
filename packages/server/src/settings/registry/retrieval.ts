@@ -33,12 +33,11 @@ export const retrieval = [
       key: "retrieval.embedding.model",
       type: string(),
       description: "Embedding model; text-embedding-3-small for OpenAI.",
-      notes: "Embedding model name sent to the endpoint. A `retrieval.embedding.model` in `publisher.config.json` wins over it.",
+      notes: "Embedding model name sent to the endpoint. Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.model` in `publisher.config.json`.",
       defaultText: "`text-embedding-3-small` for OpenAI",
       aliases: {
          env: ["EMBEDDING_MODEL"],
          file: ["retrieval.embedding.model"],
-         today: { fileFirst: true },
       },
    }),
    setting({
@@ -46,12 +45,11 @@ export const retrieval = [
       type: string(),
       description:
          "Base URL of the embedding API; default the provider's, else https://api.openai.com/v1.",
-      notes: "Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). A `retrieval.embedding.baseUrl` in `publisher.config.json` wins over it.",
+      notes: "Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.baseUrl` in `publisher.config.json`.",
       defaultText: "the provider's, else `https://api.openai.com/v1`",
       aliases: {
          env: ["EMBEDDING_API_BASE"],
          file: ["retrieval.embedding.baseUrl"],
-         today: { fileFirst: true },
       },
    }),
    setting({
@@ -59,11 +57,10 @@ export const retrieval = [
       type: integer({ min: 1 }),
       description:
          "dimensions request parameter; unset takes the provider's vector length.",
-      notes: "Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. A `retrieval.embedding.dimensions` in `publisher.config.json` wins over it.",
+      notes: "Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.dimensions` in `publisher.config.json`.",
       aliases: {
          env: ["EMBEDDING_DIMENSIONS"],
          file: ["retrieval.embedding.dimensions"],
-         today: { fileFirst: true },
       },
    }),
    setting({
@@ -90,7 +87,7 @@ export const retrieval = [
       secret: true,
       description:
          "Key of the retrieval LLM; unset turns every LLM feature off, except for providers that need none.",
-      notes: 'API key for the chat model named by `retrieval.llm` in `publisher.config.json` (OpenAI, an OpenAI-compatible server, Anthropic or Google; not needed for `ollama` or `vertex`). Used for index-time keyphrases and source summaries. Unset with a keyed provider: every LLM feature is off and nothing errors. Never read from a file, never logged. See "Providers and the retrieval settings" below.',
+      notes: 'API key for the chat model named by `retrieval.llm` in `publisher.config.json` (OpenAI, an OpenAI-compatible server, Anthropic or Google; not needed for `ollama` or `vertex`). Used for index-time keyphrases and source summaries. Unset with a keyed provider: every LLM feature is off and nothing errors. In `publisher.config.json` only as one `${VAR}` reference; never logged. See "Providers and the retrieval settings" below.',
       aliases: { env: ["LLM_API_KEY"] },
    }),
 ];

@@ -6,15 +6,18 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { withSettings } from "../test_helpers/settings_env";
-import { REGISTRY, Settings } from ".";
+import { REGISTRY, Settings, type SettingKey } from ".";
 import {
+   exampleConfigText,
    helpText,
+   inBlockWithLeaves,
    REFERENCE_END,
    REFERENCE_START,
    settingsLine,
    settingsReferenceTable,
    withReferenceTable,
 } from "./reference";
+import { derivedEnvName } from "./setting";
 
 const DOC = path.resolve(import.meta.dir, "../../../../docs/configuration.md");
 
@@ -53,7 +56,7 @@ describe("the generated settings reference", () => {
       }
    });
 
-   it("gives a negated name's default as unset, not the key's default read backwards", () => {
+   it("gives a setting with negated old names the key's default, which its derived names read the right way round", () => {
       const doc = readDoc();
       const negated = REGISTRY.filter((entry) => entry.aliases.negated);
       expect(negated.map((entry) => entry.key)).toContain(
@@ -64,8 +67,13 @@ describe("the generated settings reference", () => {
             .split("\n")
             .find((line) => line.startsWith(`| \`${entry.key}\` |`));
          expect(row, entry.key).toBeDefined();
-         // Setting | Env var | CLI flag | Default | Meaning
-         expect(row!.split(" | ")[3], entry.key).toBe("_unset_");
+         // Setting | Env var | CLI flag | Deprecated names | Default | Meaning
+         const cells = row!.split(" | ");
+         expect(cells[1], entry.key).toBe(`\`${derivedEnvName(entry.key)}\``);
+         for (const name of entry.aliases.env ?? []) {
+            expect(cells[3], entry.key).toContain(`\`${name}\``);
+         }
+         expect(cells[4], entry.key).toBe(`\`${String(entry.default)}\``);
       }
    });
 
@@ -73,6 +81,66 @@ describe("the generated settings reference", () => {
       const table = settingsReferenceTable();
       expect(table).toContain("| `host` when given, else `127.0.0.1` |");
       expect(table).not.toMatch(/\{(host|mcp\.host|root|config)\}/);
+   });
+});
+
+describe("publisher.config.json.example", () => {
+   const EXAMPLE = path.resolve(
+      import.meta.dir,
+      "../../../../publisher.config.json.example",
+   );
+   const readExample = () =>
+      fs.readFileSync(EXAMPLE, "utf8").replaceAll("\r\n", "\n");
+
+   it("is what the registry generates (run `bun run generate-settings-reference` after a registry change)", () => {
+      expect(readExample()).toBe(exampleConfigText());
+   });
+
+   it("holds every setting the file can hold, at its key", () => {
+      const example = JSON.parse(readExample()) as Record<string, unknown>;
+      const at = (key: string) =>
+         key
+            .split(".")
+            .reduce<unknown>(
+               (node, part) =>
+                  node !== null && typeof node === "object"
+                     ? (node as Record<string, unknown>)[part]
+                     : undefined,
+               example,
+            );
+      for (const entry of REGISTRY) {
+         // A launch setting decides which file is read, and `retrieval` is
+         // read as a whole block (see exampleConfig), so neither is there.
+         if (entry.kind === "launch" || inBlockWithLeaves(entry.key)) {
+            expect(at(entry.key), entry.key).toBeUndefined();
+            continue;
+         }
+         expect(at(entry.key), entry.key).not.toBeUndefined();
+      }
+      expect(inBlockWithLeaves("retrieval.llm.apiKey")).toBe(true);
+      expect(inBlockWithLeaves("mcp.port")).toBe(false);
+   });
+
+   it("changes nothing when copied in as the config, and warns about nothing", () => {
+      const read = (file?: Record<string, unknown>) =>
+         withSettings(file === undefined ? {} : { file }, () => {
+            const settings = Settings.current();
+            return {
+               warnings: settings.warnings.map((warning) => warning.message),
+               values: Object.fromEntries(
+                  REGISTRY.map((entry) => [
+                     entry.key,
+                     settings.get(entry.key as SettingKey) as unknown,
+                  ]),
+               ),
+            };
+         });
+      const copied = read(JSON.parse(readExample()));
+      expect(copied.warnings).toEqual([]);
+      // `mcp.host` follows `host` when it is given, so `host` is `null`
+      // there: given its own default, it would move MCP onto every interface.
+      expect(copied.values["mcp.host"]).toBe("127.0.0.1");
+      expect(copied.values).toEqual(read().values);
    });
 });
 
@@ -93,24 +161,28 @@ describe("--help", () => {
       expect(help).toContain("--help, -h");
    });
 
-   it("names other settings by the flags that set them", () => {
+   it("names other settings by the derived flags that set them", () => {
       const help = helpText();
-      expect(help).toContain("and MCP too unless --mcp_host is given.");
+      expect(help).toContain("and MCP too unless --mcp-host is given.");
       expect(help).toContain("(default: --host when given, else 127.0.0.1)");
       expect(help).toContain("--host does not move it.");
-      expect(help).not.toMatch(/\{[a-zA-Z.]+\}|unless mcp\.host/);
+      expect(help).not.toMatch(/\{[a-zA-Z.]+\}|unless mcp\.host|--mcp_host is/);
    });
 
-   it("gives a negated flag no default, and says what it stops", () => {
-      const line = helpText()
-         .split("\n")
-         .find((text) => text.trimStart().startsWith("--no-mcp-config "));
-      expect(line).toBeDefined();
-      expect(line).toContain(
-         "Do not write .mcp.json into the working directory.",
+   it("gives a setting with a negated old flag its derived switches and the key's default", () => {
+      const help = helpText();
+      expect(help).toContain(
+         "--mcp-config-file-enabled, --no-mcp-config-file-enabled",
       );
-      expect(line).toContain("is inside a git working tree");
-      expect(line).not.toContain("(default:");
+      const text = help
+         .split("\n")
+         .find((line) =>
+            line.includes("Write .mcp.json into the working directory"),
+         );
+      expect(text).toBeDefined();
+      expect(text).toContain("is inside a git working tree");
+      expect(text).toContain("(default: on)");
+      expect(text).toContain("(was --no-mcp-config)");
    });
 });
 

@@ -14,7 +14,7 @@ COPY packages/server/malloy-samples /app/server_root/malloy-samples
 RUN cp packages/server/publisher.config.json /app/server_root/
 
 # Set environment variables
-ENV SERVER_ROOT=/app/server_root
+ENV PUBLISHER_ROOT=/app/server_root
 ENV PUBLISHER_HOST=0.0.0.0
 
 # The command remains the same as in the base image

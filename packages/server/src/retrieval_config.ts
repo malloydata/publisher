@@ -231,6 +231,8 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
       "concurrency",
       "maxCallsPerSync",
       "maxCallsPerRequest",
+      // Read by the settings registry (retrieval.llm.apiKey), not here.
+      "apiKey",
    ];
    const fix = `"llm": { "provider": "anthropic", "model": "<model name>" }`;
    const obj = block(raw, "retrieval.llm", keys, fix);
@@ -328,6 +330,10 @@ function parseEmbedding(raw: unknown): RetrievalEmbeddingConfig | undefined {
       "location",
       "queryPrefix",
       "documentPrefix",
+      // Read by the settings registry (retrieval.embedding.*), not here.
+      "apiKey",
+      "minSimilarity",
+      "connectionSchemaIndexingEnabled",
    ];
    const fix = `"embedding": { "provider": "openai", "model": "text-embedding-3-small" }`;
    const obj = block(raw, "retrieval.embedding", keys, fix);
