@@ -13,6 +13,7 @@ import * as os from "os";
 import * as path from "path";
 import { PackageController } from "../../../src/controller/package.controller";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an
@@ -32,24 +33,12 @@ import { EnvironmentStore } from "../../../src/service/environment_store";
 const ENV = "org";
 const PKG = "sales";
 
-const ENV_VARS = [
-   "PUBLISHER_PACKAGE_VERSIONING",
-   "PUBLISHER_VERSION_PROMOTION",
-   "INITIALIZE_STORAGE",
-   "PUBLISHER_CONFIG_PATH",
-   "PUBLISHER_USE_BUNDLED_DEFAULT",
-] as const;
-const savedEnv = new Map<string, string | undefined>();
+let restoreSettings: (() => void) | undefined;
 
 let root: string;
 let store: EnvironmentStore | undefined;
 
 beforeEach(() => {
-   for (const name of ENV_VARS) {
-      savedEnv.set(name, process.env[name]);
-      delete process.env[name];
-   }
-   process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
    root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "version-startup-cleanup-")),
    );
@@ -58,14 +47,18 @@ beforeEach(() => {
 
 afterEach(async () => {
    await closeStore();
-   for (const [name, value] of savedEnv) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-   }
+   restoreSettings?.();
+   restoreSettings = undefined;
    fs.rmSync(root, { recursive: true, force: true });
 });
 
+/** Start a store as a boot does, with versioning on and no other variables. */
 async function openStore(): Promise<EnvironmentStore> {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PUBLISHER_PACKAGE_VERSIONING: "on" },
+      cwd: path.join(root, "server"),
+   }).restore;
    store = new EnvironmentStore(path.join(root, "server"));
    await store.finishedInitialization;
    return store;

@@ -61,6 +61,7 @@ import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
+import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -911,8 +912,10 @@ describe("connection integration tests", () => {
                // DO NOT copy this pattern into a test that points
                // EnvironmentStore at a non-empty or shared serverRoot
                // — it will delete state.
-               const previousInitializeStorage = process.env.INITIALIZE_STORAGE;
-               process.env.INITIALIZE_STORAGE = "true";
+               const { restore } = installSettings({
+                  env: { INITIALIZE_STORAGE: "true" },
+                  cwd: tempServerRoot,
+               });
 
                try {
                   const envStore = new EnvironmentStore(tempServerRoot);
@@ -958,11 +961,7 @@ describe("connection integration tests", () => {
                   }
                   expect(okModels.length).toBeGreaterThan(0);
                } finally {
-                  if (previousInitializeStorage === undefined) {
-                     delete process.env.INITIALIZE_STORAGE;
-                  } else {
-                     process.env.INITIALIZE_STORAGE = previousInitializeStorage;
-                  }
+                  restore();
                }
             },
             { timeout: 180000 },
@@ -2203,8 +2202,9 @@ describe("connection integration tests", () => {
                   );
                   return;
                }
-               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
-               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const { restore } = installSettings({
+                  env: { PUBLISHER_POSTGRES_POOL_MAX: "3" },
+               });
                const config = buildPlainPostgresConfig();
                try {
                   const connection =
@@ -2217,11 +2217,7 @@ describe("connection integration tests", () => {
                   expect(pool.options.max).toBe(3);
                } finally {
                   await config.releaseConnections();
-                  if (previous === undefined) {
-                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
-                  } else {
-                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
-                  }
+                  restore();
                }
             },
             { timeout: 30000 },
@@ -2798,7 +2794,7 @@ describe("connection integration tests", () => {
       // where an unscreened setupSQL would run first. The marker file is the
       // proof: setupSQL either ran (file present) or it did not.
       describe("DuckDB setupSQL opt-in", () => {
-         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let restoreSettings: (() => void) | undefined;
          let dir: string;
 
          beforeEach(async () => {
@@ -2806,11 +2802,8 @@ describe("connection integration tests", () => {
          });
 
          afterEach(async () => {
-            if (originalAllow === undefined) {
-               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-            } else {
-               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
-            }
+            restoreSettings?.();
+            restoreSettings = undefined;
             await fs.rm(dir, { recursive: true, force: true });
          });
 
@@ -2829,7 +2822,7 @@ describe("connection integration tests", () => {
             );
 
          it("refuses setupSQL without running it when the opt-in is unset", async () => {
-            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            restoreSettings = installSettings({ env: {} }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
@@ -2842,7 +2835,9 @@ describe("connection integration tests", () => {
          });
 
          it("runs setupSQL when the opt-in is set", async () => {
-            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));

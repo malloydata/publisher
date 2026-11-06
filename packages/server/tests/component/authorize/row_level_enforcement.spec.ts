@@ -45,6 +45,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 import { duckdbMalloyConfig } from "../../../src/test_helpers/temp_package";
 
 /**
@@ -1552,8 +1553,9 @@ run: joiner -> { aggregate: n is count() }
 
 describe("row-level authorize — storage routing", () => {
    it("CRITICAL — a row-level gated query does not route to storage", async () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-"));
       try {
@@ -1623,11 +1625,7 @@ source: X is duckdb.table('parent') extend {
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(2);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1657,8 +1655,9 @@ source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `);
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       try {
          // Confirms the premise: `hasAuthorize()` really is blind here, which
          // is why the guard removed from `queryEntryPointHasRowLevelGate`
@@ -1696,18 +1695,15 @@ source: X is duckdb.table('parent') extend {
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(2);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
       }
    });
 
    it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
       try {
@@ -1781,11 +1777,7 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
          // caused it — the isolated unit test below is what pins that.
          expect(result).toBeInstanceOf(AccessDeniedError);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1834,8 +1826,9 @@ source: W_except is X extend { except: org_id }
       // enforced by a whole-source boolean probe that ran regardless of
       // routing. That escape is gone: EVERY gate blocks storage now, whether
       // or not its condition happens to mention a column.
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(
          path.join(os.tmpdir(), "rla-storage-given-only-"),
@@ -1896,11 +1889,7 @@ source: X is duckdb.table('parent') extend {
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(4);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -1912,8 +1901,9 @@ source: X is duckdb.table('parent') extend {
    // swaps `runnable` for the shape and routing succeeds. A regression pin,
    // not a gap: a misbound plain `where:` must still deny, routed or not.
    it("CRITICAL — a plain (unannotated) where:-filtered source's misbound derivation still denies under storage routing", async () => {
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-plain-"));
       try {
@@ -1974,11 +1964,7 @@ source: X is duckdb.table('parent') extend {
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         if (originalMode === undefined) {
-            delete process.env.PERSIST_STORAGE_MODE;
-         } else {
-            process.env.PERSIST_STORAGE_MODE = originalMode;
-         }
+         restoreSettings();
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }

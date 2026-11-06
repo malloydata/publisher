@@ -120,6 +120,28 @@ export function parseFilterAnnotation(
    };
 }
 
+/** The annotation chain a source's `#(filter)` notes are read from. */
+export interface FilterNoteSource {
+   blockNotes?: { text: string }[];
+   inherits?: FilterNoteSource;
+}
+
+/**
+ * A source's `blockNotes` texts across its `extend` chain, the inherited base's
+ * first, so {@link parseFilters} lets an extending source override its base by
+ * name. The query path reads filters from here and nowhere else.
+ */
+export function sourceFilterNotes(
+   annotations: FilterNoteSource | undefined,
+): string[] {
+   const collected: string[][] = [];
+   for (let cur = annotations; cur; cur = cur.inherits) {
+      if (cur.blockNotes)
+         collected.push(cur.blockNotes.map((note) => note.text));
+   }
+   return collected.reverse().flat();
+}
+
 /** Extract all `#(filter)` definitions from a source's `blockNotes`. */
 export function parseFilters(annotations: string[]): FilterDefinition[] {
    // Keyed by name so an extending source's annotations, which come after
@@ -282,7 +304,7 @@ export class FilterValidationError extends Error {
 // ---------------------------------------------------------------------------
 
 /** Split on whitespace, respecting quotes: `name="Foo Bar" dimension=status`. */
-function tokenize(input: string): string[] {
+export function tokenize(input: string): string[] {
    const tokens: string[] = [];
    let current = "";
    let inQuote = false;

@@ -33,6 +33,7 @@ import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
 import { AccessDeniedError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
+import { settings } from "../settings";
 import {
    fieldPathsIn,
    findIrSource,
@@ -42,13 +43,9 @@ import {
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 
-/** The default request header a caller identity is read from. */
-export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
-
 /** The request header the deployment names for the caller identity, lowercased. */
 export function callerHeaderName(): string {
-   const configured = process.env.PUBLISHER_CALLER_HEADER?.trim();
-   return (configured || DEFAULT_CALLER_HEADER).toLowerCase();
+   return settings.get("callerHeader").toLowerCase();
 }
 
 /** A field the compiled query read, with its classes as the model declares or infers them. */

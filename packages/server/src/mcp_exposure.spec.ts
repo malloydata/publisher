@@ -16,8 +16,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import request from "supertest";
 import { getMcpCorsOrigins } from "./config";
-import { createMcpApp, resolveMcpHost } from "./routes/mcp";
+import { createMcpApp } from "./routes/mcp";
 import type { EnvironmentStore } from "./service/environment_store";
+import { settings } from "./settings";
+import {
+   installSettings,
+   type SettingsInput,
+   withSettings,
+} from "./test_helpers/settings_env";
 
 const ENV = "MCP_CORS_ORIGINS";
 
@@ -30,23 +36,24 @@ function mcpApp() {
    return createMcpApp({} as EnvironmentStore);
 }
 
+/** Settings with MCP_CORS_ORIGINS at `value`, or unset. */
+const corsEnv = (value: string | undefined): SettingsInput => ({
+   env: value === undefined ? {} : { [ENV]: value },
+});
+
 describe("MCP CORS allowlist", () => {
-   const saved = process.env[ENV];
+   let restore: (() => void) | undefined;
 
    afterEach(() => {
-      if (saved === undefined) {
-         delete process.env[ENV];
-      } else {
-         process.env[ENV] = saved;
-      }
+      restore?.();
+      restore = undefined;
    });
 
+   // The app reads the allowlist when it is built, so the settings stay
+   // installed until the test ends.
    const set = (value: string | undefined) => {
-      if (value === undefined) {
-         delete process.env[ENV];
-      } else {
-         process.env[ENV] = value;
-      }
+      restore?.();
+      restore = installSettings(corsEnv(value)).restore;
    };
 
    // The default. `cors()` with no options reflects the caller's own Origin,
@@ -127,32 +134,22 @@ describe("MCP CORS allowlist", () => {
 });
 
 describe("getMcpCorsOrigins", () => {
-   const saved = process.env[ENV];
-
-   afterEach(() => {
-      if (saved === undefined) {
-         delete process.env[ENV];
-      } else {
-         process.env[ENV] = saved;
-      }
-   });
+   const originsFrom = (value: string | undefined) =>
+      withSettings(corsEnv(value), () => getMcpCorsOrigins());
 
    it("defaults to false, which sends no allow-origin", () => {
-      delete process.env[ENV];
-      expect(getMcpCorsOrigins()).toBe(false);
+      expect(originsFrom(undefined)).toBe(false);
    });
 
    it("splits a comma-separated list", () => {
-      process.env[ENV] = "https://a.example, https://b.example";
-      expect(getMcpCorsOrigins()).toEqual([
+      expect(originsFrom("https://a.example, https://b.example")).toEqual([
          "https://a.example",
          "https://b.example",
       ]);
    });
 
    it("passes a wildcard through", () => {
-      process.env[ENV] = "*";
-      expect(getMcpCorsOrigins()).toBe("*");
+      expect(originsFrom("*")).toBe("*");
    });
 });
 
@@ -163,7 +160,15 @@ describe("getMcpCorsOrigins", () => {
  */
 describe("MCP host resolution", () => {
    const resolve_ = (MCP_HOST?: string, PUBLISHER_HOST?: string) =>
-      resolveMcpHost({ MCP_HOST, PUBLISHER_HOST });
+      withSettings(
+         {
+            env: {
+               ...(MCP_HOST === undefined ? {} : { MCP_HOST }),
+               ...(PUBLISHER_HOST === undefined ? {} : { PUBLISHER_HOST }),
+            },
+         },
+         () => settings.get("mcp.host"),
+      );
 
    it("binds loopback when neither host is set", () => {
       expect(resolve_(undefined, undefined)).toBe("127.0.0.1");

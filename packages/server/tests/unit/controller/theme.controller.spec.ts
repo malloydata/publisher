@@ -15,15 +15,24 @@ import { ThemeController } from "../../../src/controller/theme.controller";
 import { BadRequestError, FrozenConfigError } from "../../../src/errors";
 import { ThemeStore } from "../../../src/service/theme_store";
 import { StorageManager } from "../../../src/storage/StorageManager";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 
 const TEST_ROOT = path.join(process.cwd(), "test-temp-theme-controller");
 
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Write the config at TEST_ROOT and read the settings from it, as a server
+ * started on that root does: `frozenConfig` comes from them.
+ */
 function writeConfig(json: object) {
    if (!fs.existsSync(TEST_ROOT)) fs.mkdirSync(TEST_ROOT, { recursive: true });
    fs.writeFileSync(
       path.join(TEST_ROOT, PUBLISHER_CONFIG_NAME),
       JSON.stringify(json),
    );
+   restoreSettings?.();
+   restoreSettings = installSettings({ cwd: TEST_ROOT }).restore;
 }
 
 async function build(
@@ -36,7 +45,7 @@ async function build(
    });
    await sm.initialize(true);
    const store = new ThemeStore(sm, TEST_ROOT);
-   return { controller: new ThemeController(store, TEST_ROOT), sm };
+   return { controller: new ThemeController(store), sm };
 }
 
 describe("ThemeController", () => {
@@ -46,6 +55,8 @@ describe("ThemeController", () => {
       }
    });
    afterEach(() => {
+      restoreSettings?.();
+      restoreSettings = undefined;
       if (fs.existsSync(TEST_ROOT)) {
          fs.rmSync(TEST_ROOT, { recursive: true, force: true });
       }

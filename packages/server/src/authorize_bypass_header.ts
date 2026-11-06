@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { settings } from "./settings";
 import { createHash, timingSafeEqual } from "node:crypto";
 
 /**
@@ -64,7 +65,7 @@ const secretsMatch = (presented: string, configured: string): boolean => {
  * gate-disabling control.
  */
 export const readBypassAuthorize = (req: HeaderCarrier): true | undefined => {
-   const configured = process.env[BYPASS_AUTHORIZE_SECRET_ENV]?.trim();
+   const configured = settings.get("authorize.bypassSecret");
    if (!configured) {
       return undefined;
    }

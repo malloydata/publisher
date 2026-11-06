@@ -113,14 +113,27 @@ class Server:
                 break
         return out
 
+    def classification_summary(self, meta: dict[str, Any]) -> dict[str, Any]:
+        """The package's classification summary: each published domain's
+        #(carries) and its fields by class. Read from
+        `GET …/classification`; a server from before that route carries it on
+        the package read as `classification`, so a 404 there falls back to
+        `meta`, the package read."""
+        try:
+            return self.get_json("/classification")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+        return meta.get("classification") or {"sources": []}
+
     def inventory(self) -> dict[str, Any]:
-        """The published domains: the package read's classification summary
+        """The published domains: the package's classification summary
         (each domain's #(carries) and its fields by class), the model read of
         each domain's file (gates, and which givens are #(secure)), and
         get_context (each published dimension with its classes). Raises
         HTTPError when the package is not served."""
         meta = self.get_json("")
-        summary = meta.get("classification") or {"sources": []}
+        summary = self.classification_summary(meta)
         reads: dict[str, Any] = {}
         try:
             fields = self.context_fields()

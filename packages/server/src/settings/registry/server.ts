@@ -1,0 +1,134 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { DEFAULT_CALLER_HEADER } from "../../constants";
+import { setting } from "../setting";
+import { boolean, integer, oneOf, string, structured } from "../types";
+
+/** The configuration design's "Server (top level)" table. */
+export const server = [
+   setting({
+      key: "frozenConfig",
+      type: boolean(),
+      default: false,
+      description:
+         "Refuse changes to environments, packages and the theme through the API.",
+      aliases: { file: ["frozenConfig"], today: { file: "truthy" } },
+   }),
+   setting({
+      key: "servingApiEnabled",
+      type: boolean(),
+      default: true,
+      description:
+         "Run the main API and MCP, and the environments they serve; off runs only the admin API.",
+      aliases: {
+         env: ["PUBLISHER_SERVING_API_ENABLED"],
+         flags: ["--serving-api-enabled", "--no-serving-api-enabled"],
+         file: ["servingApiEnabled"],
+         today: { file: "boolean-or-reference" },
+      },
+   }),
+   setting({
+      key: "adminApiEnabled",
+      type: boolean(),
+      default: true,
+      description: "Allow the admin API; off refuses an admin setting.",
+      aliases: {
+         env: ["PUBLISHER_ADMIN_API_ENABLED"],
+         flags: ["--admin-api-enabled", "--no-admin-api-enabled"],
+         file: ["adminApiEnabled"],
+         today: { file: "boolean-or-reference" },
+      },
+   }),
+   setting({
+      key: "port",
+      type: integer({ min: 0, max: 65535 }),
+      default: 4000,
+      description: "Port of the REST API and the web app.",
+      aliases: {
+         env: ["PUBLISHER_PORT"],
+         flags: ["--port"],
+      },
+   }),
+   setting({
+      key: "host",
+      type: string(),
+      default: "0.0.0.0",
+      description:
+         "Host the REST API binds to, and MCP too unless mcp.host is given.",
+      aliases: { env: ["PUBLISHER_HOST"], flags: ["--host"] },
+   }),
+   setting({
+      key: "rateLimit",
+      type: integer({ min: 0 }),
+      default: 0,
+      description: "Requests per minute per client; 0 is unlimited.",
+      aliases: { env: ["PUBLISHER_RATE_LIMIT"] },
+   }),
+   setting({
+      key: "frameAncestors",
+      type: string(),
+      default: "'self'",
+      description:
+         "The Content-Security-Policy frame-ancestors source list: who may embed the app.",
+      aliases: { env: ["PUBLISHER_FRAME_ANCESTORS"] },
+   }),
+   setting({
+      key: "callerHeader",
+      type: string(),
+      default: DEFAULT_CALLER_HEADER,
+      description:
+         "Request header the access record copies as the caller: the identity the gateway in front of Publisher asserts.",
+      aliases: { env: ["PUBLISHER_CALLER_HEADER"] },
+   }),
+   setting({
+      key: "packageVersioning",
+      type: oneOf(["off", "on"]),
+      default: "off",
+      description:
+         "on publishes a package from a location as the version its publisher.json declares; off installs it in place. A transition setting #1381 removes.",
+      aliases: { env: ["PUBLISHER_PACKAGE_VERSIONING"] },
+   }),
+   setting({
+      key: "versionPromotion",
+      type: oneOf(["on-publish", "explicit"]),
+      default: "on-publish",
+      description:
+         "on-publish moves a package's latest to a newly published higher version; explicit leaves it to PUT …/latest.",
+      aliases: {
+         env: ["PUBLISHER_VERSION_PROMOTION"],
+         file: ["versionPromotion"],
+      },
+   }),
+   setting({
+      key: "packageInlineFields",
+      type: oneOf(["off", "on"]),
+      default: "on",
+      description:
+         "on keeps the fields that moved off Package (buildPlan, agents, secureGivens, embeddingIndex, the manifest-binding and serving fields) inline in a package response, marked deprecated; off leaves each where it now lives. A transition setting a later release turns off, then removes.",
+      aliases: { env: ["PUBLISHER_PACKAGE_INLINE_FIELDS"] },
+   }),
+   setting({
+      key: "modelPage",
+      type: oneOf(["explorer", "viewer"]),
+      default: "explorer",
+      description:
+         "The page the Console shows for a model, reported on /status as modelPage: explorer, or viewer, which builds no query and takes the Explorer out of the legacy notebook too.",
+      aliases: { env: ["PUBLISHER_MODEL_PAGE"] },
+   }),
+   setting({
+      key: "theme",
+      type: structured(),
+      kind: "structured",
+      description: "The instance-wide default theme of the app.",
+      aliases: { file: ["theme"] },
+   }),
+   setting({
+      key: "environments",
+      type: structured(),
+      kind: "structured",
+      description:
+         "The environments to serve, with their packages and connections.",
+      aliases: { file: ["environments", "projects"] },
+   }),
+];

@@ -220,7 +220,6 @@ source: visits is duckdb.sql("select 1 as id, 1 as person_id") extend {
    });
 });
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222',10),(2,'west','999-33-4444',20)) as t(id, region, ssn, amount)")`;
 
 describe("classification warnings on package load", () => {
@@ -229,15 +228,12 @@ describe("classification warnings on package load", () => {
    let duckdb: DuckDBConnection;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {
@@ -334,6 +330,28 @@ source: totals is ${ROWS} extend {
       });
       expect(found[0].message).toContain("Field social of source orders");
       expect(found[0].message).toContain("names nothing");
+   });
+
+   it("reports a source's malformed notes as one warning, however many fields have one", async () => {
+      write(
+         "orders.malloy",
+         `source: orders is ${ROWS} extend {
+   #(classification)
+   dimension: social is ssn
+   #(classification)
+   dimension: area is region
+}
+`,
+      );
+      const found = await warnings();
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject({
+         code: CLASSIFICATION_MALFORMED,
+         subject: "orders",
+      });
+      expect(found[0].message).toContain("2 malformed");
+      expect(found[0].message).toContain("Field social of source orders");
+      expect(found[0].message).toContain("Field area of source orders");
    });
 
    it("reads only the surface: a hidden base is reported where a published source reaches it, and a locked source not at all", async () => {

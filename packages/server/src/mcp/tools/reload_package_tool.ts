@@ -76,12 +76,15 @@ export function registerReloadPackageTool(
          );
 
          try {
-            const { metadata: pkg, mode } =
-               await packageController.reloadPackage(
-                  environmentName,
-                  packageName,
-                  "mcp",
-               );
+            const {
+               metadata: pkg,
+               operational,
+               mode,
+            } = await packageController.reloadPackage(
+               environmentName,
+               packageName,
+               "mcp",
+            );
 
             const payload = {
                status: "reloaded" as const,
@@ -90,11 +93,11 @@ export function registerReloadPackageTool(
                mode,
                name: pkg.name,
                // A reload succeeds whether or not it saw the caller's edit; an unchanged sha on a hashed file is the signal.
-               ...(pkg.sourceContentSha !== undefined && {
-                  sourceContentSha: pkg.sourceContentSha,
+               ...(operational.sourceContentSha !== undefined && {
+                  sourceContentSha: operational.sourceContentSha,
                }),
-               ...(pkg.servedRevision !== undefined && {
-                  servedRevision: pkg.servedRevision,
+               ...(operational.servedRevision !== undefined && {
+                  servedRevision: operational.servedRevision,
                }),
                ...(pkg.description !== undefined && {
                   description: pkg.description,

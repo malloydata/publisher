@@ -8,6 +8,7 @@ import * as path from "path";
 
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { withSettings } from "../test_helpers/settings_env";
 
 /**
  * The publish gate for the package's Malloy Persistence policy (persistence.md
@@ -427,21 +428,16 @@ source: b is duckdb.sql("SELECT 2 as y")
       "gates the publish rejection behind PERSIST_COLLISION_ENFORCE",
       async () => {
          const pkg = await loadPackage(COLLIDING_MODEL);
-         const prev = process.env.PERSIST_COLLISION_ENFORCE;
-         try {
-            delete process.env.PERSIST_COLLISION_ENFORCE;
-            // Default: warn-only, so the publish gate string is empty.
+         // Default: warn-only, so the publish gate string is empty.
+         withSettings({}, () => {
             expect(pkg.formatPersistenceCollisionRejections()).toBe("");
-            process.env.PERSIST_COLLISION_ENFORCE = "true";
-            // Enforced: the collision becomes a publish rejection.
+         });
+         // Enforced: the collision becomes a publish rejection.
+         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "true" } }, () => {
             expect(pkg.formatPersistenceCollisionRejections()).toContain(
                '"dup"',
             );
-         } finally {
-            if (prev === undefined)
-               delete process.env.PERSIST_COLLISION_ENFORCE;
-            else process.env.PERSIST_COLLISION_ENFORCE = prev;
-         }
+         });
       },
       { timeout: 30000 },
    );

@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Given } from "../../client";
-import { summarizeGivenValue } from "./filterSummary";
+import { describeGivenValue, summarizeGivenValue } from "./filterSummary";
 import {
    encodeAtLeast,
    encodeBetween,
@@ -104,5 +104,35 @@ describe("summarizeGivenValue", () => {
       const shown = summarizeGivenValue(given({ type: "string" }), text);
       expect(shown.length).toBe(28);
       expect(shown.endsWith("…")).toBe(true);
+   });
+});
+
+describe("describeGivenValue", () => {
+   // A run's note is the record of what produced the result, with no popover
+   // to hold the rest: the same words, never cut short.
+   it("words a value as the button does, but whole", () => {
+      const list = encodeFilterList([
+         "Outerwear",
+         "Footwear",
+         "Dresses",
+         "Swimwear",
+      ]);
+      expect(describeGivenValue(given({ type: "filter<string>" }), list)).toBe(
+         "Outerwear, Footwear, Dresses, Swimwear",
+      );
+      const text = "a".repeat(60);
+      expect(describeGivenValue(given({ type: "string" }), text)).toBe(text);
+      expect(
+         describeGivenValue(
+            given({ type: "filter<string>", control: "select" }),
+            undefined,
+         ),
+      ).toBe("All");
+      expect(
+         describeGivenValue(
+            given({ type: "date", default: "@2023-01-01" }),
+            undefined,
+         ),
+      ).toBe("Jan 1, 2023");
    });
 });

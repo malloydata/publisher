@@ -24,6 +24,26 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import type { ServeBinding } from "./materialization_serve_transform";
 import { Model } from "./model";
+import { installSettings } from "../test_helpers/settings_env";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 /**
  * `good` reads only the fact. `bad` reads through `j`, the fact's own join to a
@@ -119,12 +139,8 @@ async function rows(model: Model, query: string): Promise<unknown[]> {
 }
 
 describe("a lifted wrapper that does not compile costs only itself", () => {
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    it("keeps serving the clean wrapper from storage beside a broken one", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
 
       // Two stored rows. Live is empty, so two rows means the wrapper was on

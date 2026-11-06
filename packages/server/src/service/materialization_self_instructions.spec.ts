@@ -9,6 +9,7 @@ import {
    fakeSource,
 } from "../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../test_helpers/materialization_service_harness";
+import { installSettings } from "../test_helpers/settings_env";
 
 /**
  * Auto-run self-instructions: which sources an auto run instructs itself to
@@ -106,7 +107,9 @@ describe("deriveSelfInstructions", () => {
    });
 
    it("self-assigns the name= verbatim for a storage= source, exactly as a colocated build", () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      const { restore } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
       try {
          const compiled = compiledWith(
             {
@@ -144,7 +147,7 @@ describe("deriveSelfInstructions", () => {
          expect(wh.destination).toBeUndefined();
          expect(wh.physicalTableName).toBe("wh_src");
       } finally {
-         delete process.env.PERSIST_STORAGE_MODE;
+         restore();
       }
    });
 
@@ -169,8 +172,10 @@ describe("deriveSelfInstructions", () => {
    });
 
    describe("colocated #(authorize) gate", () => {
+      let restoreSettings: (() => void) | undefined;
       afterEach(() => {
-         delete process.env.PERSIST_STORAGE_MODE;
+         restoreSettings?.();
+         restoreSettings = undefined;
       });
 
       it("refuses a colocated authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
@@ -238,7 +243,9 @@ describe("deriveSelfInstructions", () => {
       });
 
       it("still refuses a storage= authorize-gated source via the existing path, unchanged", () => {
-         process.env.PERSIST_STORAGE_MODE = "on";
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
          const storageGated = fakeSource({
             name: "s1",
             sourceEntityId: "f1f1f1f1f1f1f1f1",
@@ -305,7 +312,9 @@ describe("deriveSelfInstructions", () => {
       });
 
       it("records a refused storage= source under the storage tier", () => {
-         process.env.PERSIST_STORAGE_MODE = "on";
+         const { restore } = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         });
          try {
             const compiled = compiledWith(
                {
@@ -328,7 +337,7 @@ describe("deriveSelfInstructions", () => {
                /cannot be materialized into a storage destination/,
             );
          } finally {
-            delete process.env.PERSIST_STORAGE_MODE;
+            restore();
          }
       });
 

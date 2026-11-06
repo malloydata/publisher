@@ -13,6 +13,7 @@ import * as os from "os";
 import * as path from "path";
 import { PackageController } from "../../../src/controller/package.controller";
 import { EnvironmentStore } from "../../../src/service/environment_store";
+import { installSettings } from "../../../src/test_helpers/settings_env";
 
 /**
  * Where an UNVERSIONED package restores its serve bindings from the worker's
@@ -33,9 +34,9 @@ const PKG = "pkg___1.0.0";
 let root: string;
 let source: string;
 let store: EnvironmentStore | undefined;
+let restoreSettings: (() => void) | undefined;
 
 beforeEach(() => {
-   delete process.env.PUBLISHER_PACKAGE_VERSIONING;
    root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "local-store-restore-")),
    );
@@ -46,10 +47,17 @@ beforeEach(() => {
 
 afterEach(async () => {
    await closeStore();
+   restoreSettings?.();
+   restoreSettings = undefined;
    fs.rmSync(root, { recursive: true, force: true });
 });
 
+/** Start a store as a boot does, with no variables set, so versioning is off. */
 async function openStore(): Promise<EnvironmentStore> {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      cwd: path.join(root, "server"),
+   }).restore;
    store = new EnvironmentStore(path.join(root, "server"));
    await store.finishedInitialization;
    return store;

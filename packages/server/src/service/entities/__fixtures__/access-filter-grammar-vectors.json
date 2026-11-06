@@ -1,0 +1,570 @@
+{
+  "_comment": "Expected results are the output of parseAuthorizeGrammarBody (packages/server/src/service/authorize_grammar.ts) on the access_filter route, recorded at Publisher v0.11.1 (publisherVersion). Bodies are drawn from authorize_grammar.spec.ts plus edge cases. There is no generator script: when the grammar changes, re-run each body through parseAuthorizeGrammarBody, update the expected results, and set publisherVersion.",
+  "publisherVersion": "0.11.1",
+  "vectors": [
+    {
+      "body": "region = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "region",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "region = $REGION",
+      "givens": {},
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "region",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "org_id in $GROUPS",
+      "givens": {
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "org_id",
+            "given": "GROUPS",
+            "op": "in"
+          }
+        ]
+      }
+    },
+    {
+      "body": "org_id in $GROUPS",
+      "givens": {
+        "GROUPS": "number[]"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "org_id",
+            "given": "GROUPS",
+            "op": "in"
+          }
+        ]
+      }
+    },
+    {
+      "body": "org_id in $GROUPS",
+      "givens": {
+        "GROUPS": "string[]"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "org_id",
+            "given": "GROUPS",
+            "op": "in"
+          }
+        ]
+      }
+    },
+    {
+      "body": "region = $REGION and org_id in $GROUPS",
+      "givens": {
+        "REGION": "string",
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "region",
+            "given": "REGION",
+            "op": "="
+          },
+          {
+            "field_path": "org_id",
+            "given": "GROUPS",
+            "op": "in"
+          }
+        ]
+      }
+    },
+    {
+      "body": "region = $A and org.region = $B",
+      "givens": {
+        "A": "string",
+        "B": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "region",
+            "given": "A",
+            "op": "="
+          },
+          {
+            "field_path": "org.region",
+            "given": "B",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "`cost center` = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "cost center",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "account.`cost.center` = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "account.cost.center",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "`region` = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "region",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "  region   =   $REGION  ",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "region",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "REGION_ID = $REGION AND org_id in $GROUPS",
+      "givens": {
+        "REGION": "string",
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "REGION_ID",
+            "given": "REGION",
+            "op": "="
+          },
+          {
+            "field_path": "org_id",
+            "given": "GROUPS",
+            "op": "in"
+          }
+        ]
+      }
+    },
+    {
+      "body": "`and` = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "and",
+            "given": "REGION",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "a = $A and b = $B and c = $C",
+      "givens": {
+        "A": "string",
+        "B": "number",
+        "C": "date"
+      },
+      "expect": {
+        "ok": true,
+        "terms": [
+          {
+            "field_path": "a",
+            "given": "A",
+            "op": "="
+          },
+          {
+            "field_path": "b",
+            "given": "B",
+            "op": "="
+          },
+          {
+            "field_path": "c",
+            "given": "C",
+            "op": "="
+          }
+        ]
+      }
+    },
+    {
+      "body": "   ",
+      "givens": {},
+      "expect": {
+        "ok": false,
+        "cause": "empty_body"
+      }
+    },
+    {
+      "body": "",
+      "givens": {},
+      "expect": {
+        "ok": false,
+        "cause": "empty_body"
+      }
+    },
+    {
+      "body": "true",
+      "givens": {},
+      "expect": {
+        "ok": false,
+        "cause": "sentinel_in_access_filter"
+      }
+    },
+    {
+      "body": "false",
+      "givens": {},
+      "expect": {
+        "ok": false,
+        "cause": "sentinel_in_access_filter"
+      }
+    },
+    {
+      "body": "TRUE",
+      "givens": {},
+      "expect": {
+        "ok": false,
+        "cause": "sentinel_in_access_filter"
+      }
+    },
+    {
+      "body": "true and org_id = $A",
+      "givens": {
+        "A": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "malformed_body"
+      }
+    },
+    {
+      "body": "region = $REGION or org_id = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "compound_boolean"
+      }
+    },
+    {
+      "body": "not region = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "compound_boolean"
+      }
+    },
+    {
+      "body": "region != $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "negated_operator"
+      }
+    },
+    {
+      "body": "region > $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "comparison_operator"
+      }
+    },
+    {
+      "body": "region <= $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "comparison_operator"
+      }
+    },
+    {
+      "body": "upper(region) = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "left_not_field_path"
+      }
+    },
+    {
+      "body": "1 = 1",
+      "givens": {},
+      "expect": {
+        "ok": false,
+        "cause": "left_not_field_path"
+      }
+    },
+    {
+      "body": "region = 'east'",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "missing_given_reference"
+      }
+    },
+    {
+      "body": "region like $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "malformed_body"
+      }
+    },
+    {
+      "body": "org_id = $REGION and region = $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "duplicate_given"
+      }
+    },
+    {
+      "body": "region = $A and region = $B",
+      "givens": {
+        "A": "string",
+        "B": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "duplicate_field_path"
+      }
+    },
+    {
+      "body": "`region` = $A and region = $B",
+      "givens": {
+        "A": "string",
+        "B": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "duplicate_field_path"
+      }
+    },
+    {
+      "body": "org_id = $GROUPS",
+      "givens": {
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "operator_arity_mismatch"
+      }
+    },
+    {
+      "body": "region in $REGION",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "operator_arity_mismatch"
+      }
+    },
+    {
+      "body": "org_id = $GROUPS",
+      "givens": {
+        "GROUPS": "number[]"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "operator_arity_mismatch"
+      }
+    },
+    {
+      "body": "region = $REGION and 'admin' = $ROLE",
+      "givens": {
+        "REGION": "string",
+        "ROLE": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "source_level_term_in_access_filter"
+      }
+    },
+    {
+      "body": "'finance' in $GROUPS",
+      "givens": {
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "source_level_term_in_access_filter"
+      }
+    },
+    {
+      "body": "'admin' = $ROLE",
+      "givens": {
+        "ROLE": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "source_level_term_in_access_filter"
+      }
+    },
+    {
+      "body": "$ROLE = 'admin'",
+      "givens": {
+        "ROLE": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "source_level_term_in_access_filter"
+      }
+    },
+    {
+      "body": "$GROUPS in 'finance'",
+      "givens": {
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "reversed_in_operands"
+      }
+    },
+    {
+      "body": "region = $REGION and bogus",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "malformed_body"
+      }
+    },
+    {
+      "body": "region = $REGION and",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "malformed_body"
+      }
+    },
+    {
+      "body": "region = (a and b)",
+      "givens": {
+        "REGION": "string"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "missing_given_reference"
+      }
+    },
+    {
+      "body": "region = $REGION and 'x' in $GROUPS and bad",
+      "givens": {
+        "REGION": "string",
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "malformed_body"
+      }
+    },
+    {
+      "body": "'rock or roll' in $GROUPS",
+      "givens": {
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "source_level_term_in_access_filter"
+      }
+    },
+    {
+      "body": "'research and development' in $GROUPS",
+      "givens": {
+        "GROUPS": "array"
+      },
+      "expect": {
+        "ok": false,
+        "cause": "source_level_term_in_access_filter"
+      }
+    }
+  ]
+}
