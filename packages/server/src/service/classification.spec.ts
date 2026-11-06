@@ -683,6 +683,51 @@ export { computed_q }
       ]);
    });
 
+   it("follows a query source's output through every stage, so a copy two stages down is still a copy", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: copy_q is people -> { group_by: y is social } -> {
+   group_by:
+      #(classification) "none"
+      x is y
+}
+
+export { copy_q }
+`,
+      );
+      expect(await loadError()).toContain(
+         "source copy_q (index.malloy) carries [none] but exposes x, declared none over a plain copy of y (pii.direct_identifier)",
+      );
+   });
+
+   it("twin: a computed output two stages down declared lower still loads, with a downgrade warning", async () => {
+      write("base.malloy", PEOPLE);
+      write(
+         "index.malloy",
+         `##! experimental.access_modifiers
+import "base.malloy"
+
+#(carries) ["none"]
+source: computed_q is people -> { group_by: y is social } -> {
+   group_by:
+      #(classification) "none"
+      x is concat(y, '')
+}
+
+export { computed_q }
+`,
+      );
+      const found = await warnings();
+      expect(found.map((w) => [w.code, w.subject])).toEqual([
+         [CLASSIFICATION_DOWNGRADE, "computed_q"],
+      ]);
+   });
+
    it("gives a query source's output the classes its stage reads, filters included", async () => {
       write("base.malloy", PEOPLE);
       write(
@@ -1413,6 +1458,9 @@ source: two_stage is p -> {
 } -> {
    select: social
 }
+source: nested_two is p -> {
+   nest: m is { group_by: social } -> { select: social }
+}
 `,
       });
       const md = modelDefs["m.malloy"] as ModelDef;
@@ -1432,7 +1480,19 @@ source: two_stage is p -> {
          ir("two_stage").fields,
          ir("two_stage").query,
       );
-      expect(two.get("social")?.unresolved).toEqual(["social"]);
+      expect(two.get("social")).toMatchObject({
+         classifications: ["phi"],
+         unresolved: [],
+         passthrough: true,
+      });
+      const nested = readSourceClassifications(
+         ir("nested_two").fields,
+         ir("nested_two").query,
+      );
+      expect(nested.get("m.social")).toMatchObject({
+         unresolved: ["m.social"],
+         passthrough: true,
+      });
    });
 
    it("passes an unresolved read up through an undeclared intermediate, and reads an extend field against the outputs", async () => {
@@ -1460,7 +1520,25 @@ source: one_stage is p -> { group_by: social, n } extend {
          };
          return readSourceClassifications(ir.fields, ir.query);
       };
-      const two = lineage("two_stage");
+      expect(lineage("two_stage").get("y")?.unresolved).toEqual([]);
+      // A last stage that does not say what its `n` reads leaves `n` unresolved.
+      const ir = md.contents["two_stage"] as unknown as {
+         fields: never;
+         query: { pipeline: Array<{ queryFields: Array<{ path?: string[] }> }> };
+      };
+      const last = ir.query.pipeline[1];
+      const two = readSourceClassifications(ir.fields, {
+         ...ir.query,
+         pipeline: [
+            ir.query.pipeline[0],
+            {
+               ...last,
+               queryFields: last.queryFields.filter(
+                  (qf) => qf.path?.at(-1) !== "n",
+               ),
+            },
+         ],
+      } as never);
       expect(two.get("y")?.unresolved).toEqual(["n"]);
       expect(two.get("z")?.unresolved).toEqual(["y"]);
       const one = lineage("one_stage");
