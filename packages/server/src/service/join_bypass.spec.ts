@@ -3,8 +3,9 @@
 
 /**
  * An author join from a published source that bypasses a gate on what it
- * joins refuses the package load; one gated on the same givens, or a hidden
- * entry nobody can enter, loads. Drives `Package.create` on the worker path.
+ * joins loads with a `join-bypass` warning; one gated on the same givens, or a
+ * hidden entry nobody can enter, loads with none. Drives `Package.create` on
+ * the worker path.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
@@ -20,7 +21,6 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { BadRequestError } from "../errors";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -38,7 +38,7 @@ given: ROLES :: string[]
 given: ORGS :: string[]
 `;
 
-describe("join bypass refusal on package load", () => {
+describe("join bypass warnings on package load", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
@@ -66,24 +66,8 @@ describe("join bypass refusal on package load", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
-   // A package that classifies anything opts in to refusing a bypass; `gateOnly` leaves that out.
-   let gateOnly = false;
-   beforeEach(() => {
-      gateOnly = false;
-   });
-   const MARKER = `
-source: classified_marker is duckdb.sql("select 1 as a") extend {
-   #(classification) "none"
-   dimension: b is a
-}
-`;
-
    function write(file: string, text: string): void {
-      const entry = file === "m.malloy" || file === "index.malloy";
-      fs.writeFileSync(
-         path.join(tempDir, file),
-         entry && !gateOnly ? text + MARKER : text,
-      );
+      fs.writeFileSync(path.join(tempDir, file), text);
    }
 
    async function load() {
@@ -94,84 +78,49 @@ source: classified_marker is duckdb.sql("select 1 as a") extend {
       return Package.create("env", "pkg", tempDir, config);
    }
 
-   async function refusal(): Promise<string> {
-      try {
-         await load();
-      } catch (error) {
-         expect(error).toBeInstanceOf(BadRequestError);
-         return (error as Error).message;
-      }
-      throw new Error(
-         "expected the load to be refused, but the package loaded",
-      );
+   /** The `join-bypass` warnings of a load that did not throw. */
+   async function bypasses(): Promise<string[]> {
+      const warnings = (await load()).getPackageMetadata().warnings ?? [];
+      return warnings
+         .filter((w) => w.code === "join-bypass")
+         .map((w) => w.message ?? "");
    }
 
-   it("loads a package of gates alone with the bypass as a join-bypass warning, and refuses it once the package classifies anything", async () => {
-      const model = `${GIVENS}
+   /** The `join-bypass` warning text of a load that did not throw. */
+   async function warned(): Promise<string> {
+      const found = await bypasses();
+      expect(found).not.toHaveLength(0);
+      return found.join("\n");
+   }
+
+   it("loads a package that declares #(classification) with the bypass as a warning, beside the classification warning", async () => {
+      write(
+         "m.malloy",
+         `${GIVENS}
 #(authorize) false
 source: people is ${PEOPLE}
 
 source: visits is ${VISITS} extend {
    join_one: person is people on person.id = person_id
+   #(classification) "none"
+   dimension: v is id
+   #(classification)
+   dimension: w is id
 }
-`;
-      gateOnly = true;
-      write("m.malloy", model);
+`,
+      );
       const warnings = (await load()).getPackageMetadata().warnings ?? [];
       const bypass = warnings.filter((w) => w.code === "join-bypass");
       expect(bypass).toHaveLength(1);
       expect(bypass[0].message).toContain(
          "source visits (m.malloy) is open to every caller and joins person (source people), which is locked",
       );
-      gateOnly = false;
-      write("m.malloy", model);
-      expect(await refusal()).toContain("source visits (m.malloy)");
+      expect(
+         warnings.filter((w) => w.code === "classification-malformed"),
+      ).not.toHaveLength(0);
    });
 
-   describe("a model that no longer compiles", () => {
-      const BYPASS = `${GIVENS}
-#(authorize) false
-source: people is ${PEOPLE}
-
-source: visits is ${VISITS} extend {
-   join_one: person is people on person.id = person_id
-}
-`;
-      const BROKEN = "source: broken is duckdb.sql(\n";
-
-      // A load throws on a failed model, so the placeholder comes from a reload.
-      async function reloadWith(unreadable: string) {
-         gateOnly = true;
-         write("m.malloy", BYPASS);
-         write("c.malloy", "source: ok is duckdb.sql('select 1 as a')\n");
-         const pkg = await load();
-         write("c.malloy", unreadable);
-         await pkg.reloadAllModels({});
-         return pkg;
-      }
-
-      it("refuses a bypass when the model that fails to compile declares a classification", async () => {
-         const pkg = await reloadWith(`#(classification) "none"\n${BROKEN}`);
-         expect(pkg.formatJoinBypasses()).toContain("source visits (m.malloy)");
-         expect(
-            (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "join-bypass",
-            ),
-         ).toHaveLength(0);
-      });
-
-      it("keeps a bypass a warning when the model that fails to compile declares no classification", async () => {
-         const pkg = await reloadWith(BROKEN);
-         expect(pkg.formatJoinBypasses()).toBe("");
-         expect(
-            (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "join-bypass",
-            ),
-         ).toHaveLength(1);
-      });
-   });
-
-   it("refuses an open source that joins a locked base", async () => {
+   it("warns on an open source that joins a locked base", async () => {
       write(
          "m.malloy",
          `${GIVENS}
@@ -183,13 +132,13 @@ source: visits is ${VISITS} extend {
 }
 `,
       );
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain(
          "source visits (m.malloy) is open to every caller and joins person (source people), which is locked",
       );
    });
 
-   it("refuses a source re-opened with true over a join to a source that inherits its lock through extend", async () => {
+   it("warns on a source re-opened with true over a join to a source that inherits its lock through extend", async () => {
       write(
          "m.malloy",
          `${GIVENS}
@@ -207,13 +156,13 @@ source: visits is visits_base extend {
 }
 `,
       );
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain(
          "source visits (m.malloy) is open to every caller and joins person (source people), which is locked",
       );
    });
 
-   it("refuses an entry gated on other givens than the joined filter reads", async () => {
+   it("warns on an entry gated on other givens than the joined filter reads", async () => {
       write(
          "m.malloy",
          `${GIVENS}
@@ -226,7 +175,7 @@ source: visits is ${VISITS} extend {
 }
 `,
       );
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain(
          "source visits (m.malloy) joins person (source people), whose gate reads $ORGS, which no gate on visits reads",
       );
@@ -251,8 +200,7 @@ source: visits is ${VISITS} extend {
 }
 `,
       );
-      const pkg = await load();
-      expect(pkg.getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
    it("follows nested joins from the entry, and skips an entry nobody can enter", async () => {
@@ -282,7 +230,7 @@ export { audit }
       );
       // `visits` is hidden (not exported), so its own bypass is not an entry;
       // `audit` is published and reaches people through visit.person.
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain(
          "source audit (index.malloy) joins visit.person",
       );
@@ -293,7 +241,7 @@ export { audit }
 source: chart is ${PEOPLE}
 `;
 
-   it("refuses an entry locked to one role that joins a source locked to another, naming the missing term", async () => {
+   it("warns on an entry locked to one role that joins a source locked to another, naming the missing term", async () => {
       write(
          "m.malloy",
          `${GIVENS}${CHART}
@@ -303,7 +251,7 @@ source: invoices is ${VISITS} extend {
 }
 `,
       );
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain("source invoices (m.malloy)");
       expect(message).toContain("'clinician' in $ROLES");
       expect(message).toContain("join an extension of the source joined as c");
@@ -319,7 +267,7 @@ source: visits_view is ${VISITS} extend {
 }
 `,
       );
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
    it("loads an entry whose lock carries every joined term plus its own", async () => {
@@ -332,10 +280,10 @@ source: visits_view is ${VISITS} extend {
 }
 `,
       );
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
-   it("refuses an open entry that joins a locked source inside a -> pipeline stage", async () => {
+   it("warns on an open entry that joins a locked source inside a -> pipeline stage", async () => {
       write(
          "m.malloy",
          `${GIVENS}
@@ -350,7 +298,7 @@ source: sneaky is open_visits -> {
 }
 `,
       );
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain(
          "source sneaky (m.malloy) is open to every caller and joins vault, which is locked",
       );
@@ -372,10 +320,10 @@ source: visits is ${VISITS} extend {
 }
 `,
       );
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
-   it("refuses a locked source joined inside a -> pipeline stage", async () => {
+   it("warns on a locked source joined inside a -> pipeline stage", async () => {
       write(
          "m.malloy",
          `${GIVENS}${CHART}
@@ -387,7 +335,7 @@ source: sneaky is open_visits -> {
 }
 `,
       );
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain("source sneaky (m.malloy)");
       expect(message).toContain("'clinician' in $ROLES");
    });
@@ -400,7 +348,7 @@ source: secrets is duckdb.sql("select 1 as id, 'x' as secret")
 }
 `;
 
-   it("refuses an open entry derived with -> from a hidden source that joins a locked one", async () => {
+   it("warns on an open entry derived with -> from a hidden source that joins a locked one", async () => {
       write("base.malloy", `${GIVENS}${SECRETS}${STAGING}`);
       write(
          "index.malloy",
@@ -412,7 +360,7 @@ source: pub is staging -> { group_by: id, leak is secrets.secret }
 export { pub }
 `,
       );
-      expect(await refusal()).toContain(
+      expect(await warned()).toContain(
          "source pub (index.malloy) is open to every caller and joins secrets, which is locked",
       );
    });
@@ -437,10 +385,10 @@ source: pub is staging -> { group_by: id, label is lookup.label }
 export { pub }
 `,
       );
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
-   it("refuses an open compose entry whose member joins a locked source, and loads one over open sources", async () => {
+   it("warns on an open compose entry whose member joins a locked source, and loads one over open sources", async () => {
       const composed = (
          join: string,
       ) => `##! experimental { composite_sources givens }
@@ -457,7 +405,7 @@ source: pub is compose(a, b) -> { group_by: k }
          "m.malloy",
          composed("join_one: secrets on secrets.id = person_id"),
       );
-      expect(await refusal()).toContain(
+      expect(await warned()).toContain(
          "source pub (m.malloy) is open to every caller and joins secrets, which is locked",
       );
       write(
@@ -466,7 +414,7 @@ source: pub is compose(a, b) -> { group_by: k }
             'join_one: lookup is duckdb.sql("select 1 as id") on lookup.id = person_id',
          ).replace(SECRETS, ""),
       );
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
    it("compares row-level terms by given name only: a filter on the same given over a column the join does not tie still loads", async () => {
@@ -482,7 +430,7 @@ source: visits is ${VISITS} extend {
 }
 `,
       );
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 
    it("counts a gate on a source hidden from discovery when a walk is cut short", async () => {
@@ -507,7 +455,7 @@ source: s0 is ${PEOPLE} extend {
 export { s0 }
 `,
       );
-      expect(await refusal()).toContain(
+      expect(await warned()).toContain(
          "source s0 (index.malloy) joins more than 16 deep",
       );
    });
@@ -526,16 +474,16 @@ export { s0 }
       return `${out}\nexport { s0 }\n`;
    }
 
-   it("reads 16 joins from the entry and refuses a 17th in a package that has a gate", async () => {
+   it("reads 16 joins from the entry and warns on a 17th in a package that has a gate", async () => {
       write("m.malloy", chain(16, true));
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
       write("m.malloy", chain(17, true));
-      const message = await refusal();
+      const message = await warned();
       expect(message).toContain("source s0 (m.malloy)");
       expect(message).toContain("joins more than 16 deep");
    });
 
-   it("refuses a fan-out past the join-path budget in a package that has a gate", async () => {
+   it("warns on a fan-out past the join-path budget in a package that has a gate", async () => {
       let out = `${GIVENS}source: f10 is ${PEOPLE}\n`;
       for (let i = 9; i >= 0; i--) {
          const gate = i === 0 ? "#(authorize) 'auditor' in $ROLES\n" : "";
@@ -546,7 +494,7 @@ export { s0 }
 `;
       }
       write("m.malloy", `${out}\nexport { f0 }\n`);
-      expect(await refusal()).toContain("join paths");
+      expect(await warned()).toContain("join paths");
    });
 
    const SHAPES: Array<[string, () => string, string]> = [
@@ -601,32 +549,22 @@ source: invoices is ${VISITS} extend {
    ];
 
    for (const [name, model, fragment] of SHAPES) {
-      it(`${name}: a package of gates alone loads with a join-bypass warning, and one that classifies anything refuses`, async () => {
-         gateOnly = true;
+      it(`${name}: warns, and the walk cut short carries no added note`, async () => {
          write("m.malloy", model());
-         const warnings = (await load()).getPackageMetadata().warnings ?? [];
-         const matched = warnings.filter(
-            (w) => w.code === "join-bypass" && w.message?.includes(fragment),
-         );
+         const matched = (await bypasses()).filter((m) => m.includes(fragment));
          expect(matched).not.toHaveLength(0);
-         // A walk cut short exposes no named rows, so it gets no "expose those rows" note.
+         // A walk cut short exposes no named rows, so it gets no note about exposing them.
          const truncated = fragment === "joins more than 16 deep";
-         for (const w of matched) {
-            const note = expect(w.message);
+         for (const message of matched) {
+            const note = expect(message);
             (truncated ? note.not : note).toContain(
-               "if this entry should expose those rows, there is nothing to do",
+               "a compliance review flags it",
             );
          }
-         gateOnly = false;
-         write("m.malloy", model());
-         const refused = await refusal();
-         expect(refused).toContain(fragment);
-         expect(refused).not.toContain("there is nothing to do");
       });
    }
 
    it("names the source a join to a refinement reaches, read from what it extends", async () => {
-      gateOnly = true;
       write(
          "m.malloy",
          `${GIVENS}
@@ -652,7 +590,7 @@ source: visits is ${VISITS} extend {
 
    it("loads a source past the bound when no source in the package has a gate", async () => {
       write("m.malloy", chain(17, false));
-      expect((await load()).getPackageMetadata().name).toBe("pkg");
+      expect(await bypasses()).toEqual([]);
    });
 });
 

@@ -55,8 +55,6 @@
 
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { parseAnnotation } from "@malloydata/malloy-tag";
-import * as fs from "fs";
-import * as path from "path";
 import type { components } from "../api";
 import { annotationTexts, type AnnotationsDef } from "./annotations";
 import {
@@ -95,59 +93,6 @@ function annotationText(a: AnnotationText): string {
 export function isClassificationLine(text: string): boolean {
    const t = text.trim();
    return CLASSIFICATION_LINE.test(t) || CARRIES_LINE.test(t);
-}
-
-/**
- * Whether anything in the package declares a `#(carries)` or a
- * `#(classification)`: the opt-in to the checks that refuse a load. Reads every
- * compiled source, hidden ones too, and every field under it. A model with no
- * compiled form is judged by its text, and one whose text cannot be read counts
- * as declaring, so a model that failed to compile cannot turn a refusal into a
- * warning.
- */
-export function packageUsesClassification(
-   models: ReadonlyMap<string, Model>,
-   packagePath: string,
-): boolean {
-   const seen = new Set<object>();
-   const declares = (node: IrField | undefined, depth: number): boolean => {
-      if (!node || seen.has(node) || depth > MAX_JOIN_RECURSION_DEPTH + 1) {
-         return false;
-      }
-      seen.add(node);
-      if (
-         (annotationTexts(node.annotations) ?? []).some(isClassificationLine)
-      ) {
-         return true;
-      }
-      return (node.fields ?? []).some((f) => declares(f, depth + 1));
-   };
-   const textDeclares = (modelPath: string, model: Model): boolean => {
-      try {
-         const text =
-            model.getCompiledSourceText() ??
-            fs.readFileSync(path.join(packagePath, modelPath), "utf8");
-         return text.split("\n").some(isClassificationLine);
-      } catch {
-         return true;
-      }
-   };
-   for (const [modelPath, model] of models) {
-      let modelDef: ModelDef | undefined;
-      try {
-         modelDef = model.getModelDef();
-      } catch {
-         modelDef = undefined;
-      }
-      if (!modelDef) {
-         if (textDeclares(modelPath, model)) return true;
-         continue;
-      }
-      for (const def of Object.values(modelDef.contents ?? {})) {
-         if (declares(def as IrField, 0)) return true;
-      }
-   }
-   return false;
 }
 
 /** Codepoint order, so two servers on identical bytes agree. */
@@ -697,13 +642,18 @@ function sameJudgment(a: FieldClassification, b: FieldClassification): boolean {
  * Whether any struct the compiled model reaches declares a `#(carries)`: its
  * sources and whatever they join, compose, run on or extend, an imported one
  * included, since `contents` holds only the names a file imports. A caller
- * cannot add one. Read once per compiled model.
+ * cannot add one. The cheap pre-check before a query is read; read once per
+ * compiled model.
  */
 export function modelDeclaresCarries(modelDef: ModelDef | undefined): boolean {
    if (!modelDef) return false;
    let declared = carriesMemo.get(modelDef);
    if (declared === undefined) {
-      declared = reachesCarries(Object.values(modelDef.contents ?? {}));
+      declared = walkForCarries(
+         Object.values(modelDef.contents ?? {}),
+         modelDef,
+         false,
+      );
       carriesMemo.set(modelDef, declared);
    }
    return declared;
@@ -711,8 +661,39 @@ export function modelDeclaresCarries(modelDef: ModelDef | undefined): boolean {
 
 const carriesMemo = new WeakMap<object, boolean>();
 
-/** Whether a note on the `#(carries)` route sits anywhere under `roots`. */
-function reachesCarries(roots: unknown[]): boolean {
+/** Per root struct, then per model def, since a name resolves against the model def it is read in. */
+const reachMemo = new WeakMap<object, WeakMap<object, boolean>>();
+
+/**
+ * Whether a `#(carries)` sits anywhere under `roots`: the structs a query runs
+ * on, joins or extends. A name that resolves to nothing is unknown and counts
+ * as one, in a model that declares any, so what Publisher cannot see stays
+ * refused; a model that declares none has nothing for a query to reach.
+ */
+export function reachesCarries(
+   roots: ReadonlyArray<unknown>,
+   modelDef: ModelDef | undefined,
+): boolean {
+   if (!modelDef || !modelDeclaresCarries(modelDef)) return false;
+   return roots.some((root) => {
+      if (!root || typeof root !== "object") return false;
+      let byModel = reachMemo.get(root);
+      if (!byModel) reachMemo.set(root, (byModel = new WeakMap()));
+      let reaches = byModel.get(modelDef);
+      if (reaches === undefined) {
+         reaches = walkForCarries([root], modelDef, true);
+         byModel.set(modelDef, reaches);
+      }
+      return reaches;
+   });
+}
+
+/** A `query.structRef` name is followed through `contents`; one that resolves to nothing is `unknownReaches`. */
+function walkForCarries(
+   roots: unknown[],
+   modelDef: ModelDef,
+   unknownReaches: boolean,
+): boolean {
    const seen = new Set<object>();
    const stack = [...roots];
    while (stack.length > 0) {
@@ -740,7 +721,13 @@ function reachesCarries(roots: unknown[]): boolean {
       for (const [key, value] of Object.entries(obj)) {
          // Expressions and positions hold no struct.
          if (key === "e" || key === "at" || key === "location") continue;
-         if (value && typeof value === "object") stack.push(value);
+         if (key === "structRef" && typeof value === "string") {
+            const base = modelDef.contents?.[value];
+            if (base) stack.push(base);
+            else if (unknownReaches) return true;
+         } else if (value && typeof value === "object") {
+            stack.push(value);
+         }
       }
    }
    return false;
@@ -814,11 +801,12 @@ function mergeCeilings(a: Ceiling[], b: Ceiling[]): Ceiling[] {
 function strictestCarries(
    ceilings: readonly Ceiling[],
    unresolved: boolean,
+   entry: IrField,
    modelDef: ModelDef | undefined,
 ): { declared: boolean; classes: Set<string>; malformed?: string } {
    const malformed =
       ceilings.find((c) => c.malformed)?.malformed ??
-      (unresolved && (ceilings.length > 0 || modelDeclaresCarries(modelDef))
+      (unresolved && (ceilings.length > 0 || reachesCarries([entry], modelDef))
          ? "runs on a source Publisher cannot read, so what its #(carries) holds it to is unknown"
          : undefined);
    const lists = ceilings.map((c) => new Set(c.classes));
@@ -846,10 +834,7 @@ export function ceilingRefusal(
    modelDef: ModelDef | undefined,
    query: unknown,
    callerJoins: readonly unknown[] = [],
-   declaresCarries = modelDeclaresCarries(modelDef),
 ): string | undefined {
-   // A model that declares no #(carries) has nothing to hold a read to.
-   if (!declaresCarries) return undefined;
    const ref = (query as IrQuery | undefined)?.structRef;
    const { entry, member } = queryRoots(modelDef, query as IrQuery);
    const own = structCeilings(
@@ -858,9 +843,16 @@ export function ceilingRefusal(
       typeof ref === "string" ? ref : (entry?.as ?? entry?.name ?? ""),
       member,
    );
+   // A query that reaches no #(carries) has no ceiling to hold a read to, whatever else the model carries.
+   if (
+      own.ceilings.length === 0 &&
+      !reachesCarries([entry, member, query, ...callerJoins], modelDef)
+   ) {
+      return undefined;
+   }
    const headOf = (c: Ceiling): string =>
       `source ${c.source} carries [${c.classes.join(", ")}]; this query reads`;
-   if (own.unresolved && (own.ceilings.length > 0 || declaresCarries)) {
+   if (own.unresolved) {
       return `source ${typeof ref === "string" ? ref : (entry?.as ?? entry?.name ?? "")} runs on a source which Publisher cannot see completely`;
    }
    const reads = readQueryFieldReads(modelDef, query);
@@ -907,7 +899,7 @@ export function ceilingRefusal(
       if (!known.isField) continue;
       if (
          (known.unresolved.length > 0 && known.declared.length === 0) ||
-         (known.ceilingUnresolved && declaresCarries)
+         known.ceilingUnresolved
       ) {
          return unseen();
       }
@@ -1429,8 +1421,6 @@ export interface PublishedSource {
    ir: IrField;
    /** The strictest `#(carries)` the source is held to: its own and its query's base's. */
    carries: { declared: boolean; classes: Set<string>; malformed?: string };
-   /** Whether the compiled model declares a `#(carries)` anywhere, which makes an unreadable struct a refusal. */
-   modelCarries: boolean;
    deniedToAll: boolean;
    /** Reachable dimensions and measures a caller can read, by path. */
    fields: Array<[string, FieldClassification]>;
@@ -1521,9 +1511,9 @@ export function publishedSources(
             carries: strictestCarries(
                chain.ceilings,
                chain.unresolved,
+               ir,
                modelDef,
             ),
-            modelCarries: modelDeclaresCarries(modelDef),
             deniedToAll: apiSource ? isDeniedToAll(apiSource) : false,
             fields,
             hiddenRead,
@@ -1767,7 +1757,10 @@ export function classificationLeaks(
       const where = `source ${s.source} (${s.modelPath})`;
       // A read through a carried join is held to that join's list even when the source carries none.
       for (const [path, c] of s.fields) {
-         if (c.ceilingUnresolved && s.modelCarries) {
+         if (
+            c.ceilingUnresolved &&
+            reachesCarries([s.ir], models.get(s.modelPath)?.getModelDef())
+         ) {
             messages.push(
                `${where} exposes ${path}, which reads through a source whose #(carries) Publisher cannot read, so what holds it is unknown.`,
             );

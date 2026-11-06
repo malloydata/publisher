@@ -5708,9 +5708,8 @@ components:
                   copy under `#(carries)` refuses the load instead).
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
-                  join, or one for a walk cut short at the join bound; `warn`;
-                  a package that declares `#(carries)` or `#(classification)`
-                  refuses the load instead; see docs/authorize.md).
+                  join, or one for a walk cut short at the join bound; always
+                  a `warn`, never a load refusal; see docs/authorize.md).
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,

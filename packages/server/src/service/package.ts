@@ -146,7 +146,6 @@ import {
 import {
    carriesCeilingLeaks,
    classificationLeaks,
-   packageUsesClassification,
    classificationWarnings,
    prepareCeilingQueries,
    type PreparedCeilingQueries,
@@ -274,8 +273,7 @@ interface ClassificationMemo {
    listing: string;
    summary?: { value: ApiClassificationSummary | undefined };
    warnings?: ApiPackageWarning[];
-   /** The join-bypass findings and whether the package opted in to refusing them. */
-   joinBypass?: { messages: string[]; strict: boolean };
+   joinBypass?: string[];
 }
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
@@ -325,11 +323,11 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    return "error";
 }
 
-/** Why a join-bypass finding only warns in a package of gates alone (docs/authorize.md, "Gates are edge controls"). */
-const GATE_ONLY_JOIN_BYPASS =
-   "Each gate governs only the source a query enters through, and this package declares no " +
-   "#(carries) or #(classification), so it loads as written: if this entry should expose those " +
-   "rows, there is nothing to do; otherwise apply the fix above.";
+/** Why a join-bypass finding is a warning and not a refusal (docs/authorize.md, "Gates are edge controls"). */
+const JOIN_BYPASS_NOTE =
+   "Each gate governs only the source a query enters through, so exposing these rows to every " +
+   "caller this entry admits is the author's choice, and a compliance review flags it; " +
+   "otherwise apply the fix above.";
 
 export class Package {
    private environmentName: string;
@@ -2501,51 +2499,29 @@ export class Package {
       }
    }
 
-   /** {@link joinBypasses}, memoized: the load gate and the `/status` warnings both read it. */
-   private joinBypassFindings(): { messages: string[]; strict: boolean } {
+   /** {@link joinBypasses}, memoized per models map and listing. */
+   private joinBypassFindings(): string[] {
       const memo = this.currentClassificationMemo();
       if (!memo.joinBypass) {
          const { isListed, includeHidden } = this.gateScope();
-         const messages = joinBypasses(this.models, isListed, includeHidden);
-         memo.joinBypass = {
-            messages,
-            strict:
-               messages.length > 0 &&
-               packageUsesClassification(this.models, this.packagePath),
-         };
+         memo.joinBypass = joinBypasses(this.models, isListed, includeHidden);
       }
       return memo.joinBypass;
    }
 
    /**
-    * REJECTION messages for every author join from a published source that
-    * bypasses a gate on what it joins (`join_bypass.ts`), one per line, empty
-    * when there are none. Strict at load, like a `#(carries)` leak, but only
-    * in a package that declares `#(carries)` or `#(classification)`: a package
-    * of gates alone loads as it always has, and
-    * {@link joinBypassWarnings} reports them instead.
-    */
-   public formatJoinBypasses(): string {
-      const { messages, strict } = this.joinBypassFindings();
-      return strict ? messages.join("\n") : "";
-   }
-
-   /**
-    * The join bypasses of a package that has not opted in to refusing them, as
-    * `join-bypass` warnings: each gate governs its own entry point, so a join
-    * from a broader one is the author's choice of what that entry exposes.
+    * The join bypasses of every published source, as `join-bypass` warnings:
+    * each gate governs its own entry point, so a join from a broader one is the
+    * author's choice of what that entry exposes.
     */
    public joinBypassWarnings(): ApiPackageWarning[] {
-      const { messages, strict } = this.joinBypassFindings();
-      return strict
-         ? []
-         : messages.map((message) => ({
-              code: JOIN_BYPASS,
-              severity: "warn" as const,
-              message: isTruncatedWalkFinding(message)
-                 ? message
-                 : `${message} ${GATE_ONLY_JOIN_BYPASS}`,
-           }));
+      return this.joinBypassFindings().map((message) => ({
+         code: JOIN_BYPASS,
+         severity: "warn" as const,
+         message: isTruncatedWalkFinding(message)
+            ? message
+            : `${message} ${JOIN_BYPASS_NOTE}`,
+      }));
    }
 
    /**

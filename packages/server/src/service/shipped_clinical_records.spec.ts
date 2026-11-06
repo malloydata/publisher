@@ -10,8 +10,9 @@
  *     givens, and each surface's gates decide the way the policy's workforce
  *     table says.
  *   - Each seeded violation under `violations/` has the outcome its README
- *     promises: the two mechanical ones refuse the load with their reason,
- *     and the ones that only a review can catch load, and leak.
+ *     promises: the one a `#(carries)` ceiling catches refuses the load with
+ *     its reason, a join bypass loads with a `join-bypass` warning, and the
+ *     ones that only a review can catch load, and leak.
  *
  * Runs through `Package.create`, because the refusals and the query boundary
  * are package-level.
@@ -318,17 +319,8 @@ describe("examples/clinical-records, the data app's queries", () => {
 });
 
 describe("examples/clinical-records, seeded violations", () => {
-   it.each([
-      [
-         "01-research-reidentifies",
-         "source research (index.malloy) carries [none, phi.clinical, phi.financial, phi.quasi_identifier] but exposes person.ssn",
-      ],
-      [
-         "05-billing-reopened",
-         "source billing (index.malloy) is open to every caller and joins patient (source patients_core), which is locked",
-      ],
-   ])("refuses %s", async (name, reason) => {
-      const { dir, cleanup } = withViolation(name);
+   it("refuses 01-research-reidentifies with its reason", async () => {
+      const { dir, cleanup } = withViolation("01-research-reidentifies");
       try {
          let caught: unknown;
          try {
@@ -338,7 +330,31 @@ describe("examples/clinical-records, seeded violations", () => {
             caught = error;
          }
          expect(caught).toBeInstanceOf(BadRequestError);
-         expect((caught as Error).message).toContain(reason);
+         expect((caught as Error).message).toContain(
+            "source research (index.malloy) carries [none, phi.clinical, phi.financial, phi.quasi_identifier] but exposes person.ssn",
+         );
+      } finally {
+         cleanup();
+      }
+   });
+
+   it("loads 05-billing-reopened with a join-bypass warning naming billing joining patient", async () => {
+      const { dir, cleanup } = withViolation("05-billing-reopened");
+      try {
+         const { pkg, close } = await load(dir);
+         try {
+            const bypass = (pkg.getPackageMetadata().warnings ?? []).filter(
+               (w) => w.code === "join-bypass",
+            );
+            expect(bypass.length).toBeGreaterThan(0);
+            expect(bypass.map((w) => w.message)).toContainEqual(
+               expect.stringContaining(
+                  "source billing (index.malloy) is open to every caller and joins patient (source patients_core), which is locked",
+               ),
+            );
+         } finally {
+            await close();
+         }
       } finally {
          cleanup();
       }

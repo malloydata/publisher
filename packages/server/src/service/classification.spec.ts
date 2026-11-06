@@ -264,13 +264,17 @@ describe("classification warnings on package load", () => {
       fs.writeFileSync(target, text);
    }
 
-   async function warnings() {
+   async function allWarnings() {
       const config = new MalloyConfig({ connections: {} });
       config.wrapConnections(
          () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
       );
       const pkg = await Package.create("env", "pkg", tempDir, config);
-      return (pkg.getPackageMetadata().warnings ?? []).filter((w) =>
+      return pkg.getPackageMetadata().warnings ?? [];
+   }
+
+   async function warnings() {
+      return (await allWarnings()).filter((w) =>
          (w.code ?? "").startsWith("classification-"),
       );
    }
@@ -1475,7 +1479,7 @@ ${extra}
       ).toEqual([]);
    });
 
-   it("runs the leak and join-bypass gates over a source the surface hides under queryableSources all", async () => {
+   it("runs the leak gate and the join-bypass warning over a source the surface hides under queryableSources all", async () => {
       write("base.malloy", PEOPLE);
       write(
          "index.malloy",
@@ -1502,14 +1506,20 @@ source: bridge is ${ROWS} extend { join_one: locked is vault on locked.id = id }
       hidden(leak);
       expect(await warnings()).toEqual([]);
       hidden(bypass);
-      expect(await warnings()).toEqual([]);
+      expect(
+         (await allWarnings()).filter((w) => w.code === "join-bypass"),
+      ).toEqual([]);
       manifest({ queryableSources: "all" });
       hidden(leak);
       expect(await loadError()).toContain(
          "source hid (hidden.malloy) carries [none]",
       );
       hidden(bypass);
-      expect(await loadError()).toContain("source bridge (hidden.malloy)");
+      const bypasses = (await allWarnings()).filter(
+         (w) => w.code === "join-bypass",
+      );
+      expect(bypasses).toHaveLength(1);
+      expect(bypasses[0].message).toContain("source bridge (hidden.malloy)");
    });
 
    it("refuses a #(carries) source whose PHI sits four joins deep, and loads its twin declared none", async () => {

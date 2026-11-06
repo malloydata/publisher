@@ -144,17 +144,6 @@ function judgeLoadGates(pkg: Package, prepared: PreparedCeilingQueries): void {
       );
       throw new BadRequestError(ceiling);
    }
-   // An author join that bypasses a gate is strict at load for the same
-   // reason (the joined rows reach every admitted caller unscoped), but only
-   // in a package that opted in to classification; otherwise it is a warning.
-   const bypasses = pkg.formatJoinBypasses();
-   if (bypasses) {
-      logger.error(
-         `Package ${packageName} has a join that bypasses a gate on what it joins`,
-         { packageName, detail: bypasses },
-      );
-      throw new BadRequestError(bypasses);
-   }
    // `#@ preaggregate` is strict at load too (see
    // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
    // only warns.

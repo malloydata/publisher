@@ -10,7 +10,12 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { unrecordedAudit, type QueryAudit } from "./access_record";
-import { ceilingRefusal, modelDeclaresCarries } from "./classification";
+import {
+   carriesCeilingLeaks,
+   ceilingRefusal,
+   modelDeclaresCarries,
+   prepareCeilingQueries,
+} from "./classification";
 import type { Model } from "./model";
 
 const MODEL = `##! experimental { access_modifiers composite_sources }
@@ -324,17 +329,37 @@ describe("#(carries) is checked per query", () => {
       });
    });
 
-   it("refuses a shape it cannot read once the model declares a ceiling, and serves a traceable read of an open source", async () => {
+   it("refuses a shape it cannot read when the query can reach a ceiling, and serves one that cannot", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {
          const err = await run(model, "run: hub -> { index: r.sid }").catch(
             (e) => e,
          );
          expect(err).toBeInstanceOf(BadRequestError);
          expect((err as Error).message).toContain("cannot see completely");
-         expect(
-            (await run(model, "run: open_s -> { group_by: p.pid }"))
-               .compactResult.length,
-         ).toBeGreaterThan(0);
+         for (const query of [
+            "run: open_s -> { group_by: p.pid }",
+            "run: open_s -> { index: p.pid }",
+         ]) {
+            expect(
+               (await run(model, query)).compactResult.length,
+            ).toBeGreaterThan(0);
+         }
+      });
+   });
+
+   it("loads a named query that reaches no ceiling beside a source that carries one, and refuses its twin over the carried source", async () => {
+      const named = `${MODEL}
+query: open_index is open_s -> { index: * }
+query: carried_index is s -> { index: * }
+`;
+      await withAuthorizeModel(named, async ({ model, error }) => {
+         expect(error).toBeUndefined();
+         const leaks = carriesCeilingLeaks(
+            await prepareCeilingQueries(new Map([["m.malloy", model]])),
+            () => true,
+         );
+         expect(leaks).toHaveLength(1);
+         expect(leaks[0]).toContain("query carried_index");
       });
    });
 
@@ -760,7 +785,7 @@ describe("an unreadable chain on a joined struct", () => {
       ],
    };
 
-   it("refuses a read through it when the model declares #(carries) anywhere", () => {
+   it("refuses a read through it, since a name that resolves to nothing may hide a ceiling", () => {
       const refusal = ceilingRefusal(
          modelDefWith({ structRef: "missing", pipeline: [] }) as never,
          query,
@@ -819,45 +844,6 @@ describe("a read whose head shadows a name the first stage outputs", () => {
       expect(ceilingRefusal(modelDef as never, queryReading("m", ["m"]))).toBe(
          undefined,
       );
-   });
-});
-
-describe("the per-request model def is not rescanned for #(carries)", () => {
-   it("skips the scan when the caller already knows the model declares one", () => {
-      const scans = (declared?: boolean): number => {
-         let count = 0;
-         const contents = new Proxy(
-            {
-               s: {
-                  name: "s",
-                  type: "table",
-                  annotations: {
-                     blockNotes: [{ text: '#(carries) ["none"]\n' }],
-                  },
-                  fields: [{ name: "a", type: "string" }],
-               },
-            },
-            {
-               ownKeys(target) {
-                  count++;
-                  return Reflect.ownKeys(target);
-               },
-            },
-         );
-         const query = {
-            structRef: "s",
-            pipeline: [
-               {
-                  type: "reduce",
-                  queryFields: [{ type: "fieldref", path: ["a"] }],
-                  refSummary: { fieldUsage: [{ path: ["a"] }] },
-               },
-            ],
-         };
-         ceilingRefusal({ contents } as never, query, [], declared);
-         return count;
-      };
-      expect(scans(true)).toBeLessThan(scans(undefined));
    });
 });
 

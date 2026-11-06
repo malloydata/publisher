@@ -31,10 +31,17 @@ given: ORGS :: string[]
 source: tidy is ${ROWS}
 `;
 
+   const LEAK = `#(carries) ["none"]
+source: leaky is ${ROWS} extend {
+   #(classification) "phi.direct_identifier"
+   dimension: key is id
+}
+`;
+
    const BYPASS = `#(authorize) false
 source: vault is ${ROWS}
 
-source: leaky is ${ROWS} extend {
+source: bridge is ${ROWS} extend {
    join_one: locked is vault on locked.id = id
 }
 `;
@@ -55,12 +62,8 @@ source: leaky is ${ROWS} extend {
             explores: ["index.malloy"],
          }),
       );
-      // Classifying anything is what makes a join bypass refuse rather than warn.
-      await write(
-         "index.malloy",
-         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
-      );
-      await write("hidden.malloy", BYPASS);
+      await write("index.malloy", `source: open is ${ROWS}\n`);
+      await write("hidden.malloy", LEAK);
       await write("clean.malloy", CLEAN);
       env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
@@ -73,7 +76,7 @@ source: leaky is ${ROWS} extend {
    const metadata = async () =>
       (await env.getPackage("pkg", false)).getPackageMetadata();
 
-   it("refuses switching to queryableSources all over a hidden join bypass, and keeps the old metadata", async () => {
+   it("refuses switching to queryableSources all over a hidden #(carries) leak, and keeps the old metadata", async () => {
       const before = await metadata();
       let error: unknown;
       try {
@@ -86,7 +89,7 @@ source: leaky is ${ROWS} extend {
       }
       expect(error).toBeInstanceOf(BadRequestError);
       expect((error as Error).message).toContain(
-         "source leaky (hidden.malloy) is open to every caller and joins locked (source vault), which is locked",
+         "source leaky (hidden.malloy) carries [none] but exposes key, classified phi.direct_identifier",
       );
       expect(await metadata()).toEqual(before);
       const manifest = JSON.parse(
@@ -117,9 +120,9 @@ source: leaky is ${ROWS} extend {
       );
       await fs.writeFile(
          path.join(newTree, "index.malloy"),
-         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
+         `source: open is ${ROWS}\n`,
       );
-      await fs.writeFile(path.join(newTree, "hidden.malloy"), BYPASS);
+      await fs.writeFile(path.join(newTree, "hidden.malloy"), LEAK);
       const download = (staging: string) =>
          fs.cp(newTree, staging, { recursive: true });
       let error: unknown;
@@ -159,9 +162,9 @@ source: leaky is ${ROWS} extend {
       );
       await fs.writeFile(
          path.join(newTree, "index.malloy"),
-         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
+         `source: open is ${ROWS}\n`,
       );
-      await fs.writeFile(path.join(newTree, "hidden.malloy"), BYPASS);
+      await fs.writeFile(path.join(newTree, "hidden.malloy"), LEAK);
       await env.installPackage(
          "pkg",
          (staging) => fs.cp(newTree, staging, { recursive: true }),
@@ -171,20 +174,20 @@ source: leaky is ${ROWS} extend {
       expect((await metadata()).location).toBe("gs://bucket/next.zip");
    });
 
-   it("accepts the same PATCH in a package of gates alone, reporting the bypass as a warning", async () => {
+   it("accepts a PATCH over a hidden join bypass in a package that declares #(classification), reporting it as one warning", async () => {
       const dir = path.join(envPath, "gates");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
          path.join(dir, "publisher.json"),
          JSON.stringify({
             name: "gates",
-            description: "gates only",
+            description: "classified, with a bypass",
             explores: ["index.malloy"],
          }),
       );
       await fs.writeFile(
          path.join(dir, "index.malloy"),
-         `source: open is ${ROWS}\n`,
+         `source: open is ${ROWS} extend {\n   #(classification) "none"\n   dimension: key is id\n}\n`,
       );
       await fs.writeFile(path.join(dir, "hidden.malloy"), BYPASS);
       await env.addPackage("gates");
@@ -199,7 +202,7 @@ source: leaky is ${ROWS} extend {
       expect(warnings?.filter((w) => w.code === "join-bypass")).toHaveLength(1);
    });
 
-   it("refuses adding a source with a join bypass to explores, and keeps the old metadata", async () => {
+   it("refuses adding a source with a #(carries) leak to explores, and keeps the old metadata", async () => {
       const before = await metadata();
       let error: unknown;
       try {
