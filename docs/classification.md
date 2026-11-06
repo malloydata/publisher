@@ -110,6 +110,11 @@ entry point, who may enter and what they may see, sit on the same object and can
 that extends another and declares none inherits the base's list, the way it inherits a gate; its
 own declaration replaces it.
 
+Declaring `#(carries)` or `#(classification)` anywhere in a package also makes a join past a
+stricter gate refuse the load rather than warn. A gate governs only its own entry point, but these
+annotations claim what an entry point may expose, and such a join would break that claim (see
+[Gates are edge controls](authorize.md#gates-are-edge-controls)).
+
 **A leak refuses the package load.** When a dimension, measure or view reachable from a
 `#(carries)` source, its own, inherited, inferred, or reached through a join, carries any class not
 on the list, or carries no class at all, the package does not load, the way a gate that does not
@@ -279,17 +284,21 @@ Both follow what a caller can reach, not what a file declares:
 
 Reads `#(carries)` does not yet hold to the list:
 
-- A multi-stage view used through `nest:` is not traced past its first stage, and its access record
-  claims a complete field list.
+- A caller query that nests a multi-stage view (`run: s -> { group_by: k nest: v }`) is not traced
+  past the view's first stage, and its access record claims a complete field list.
 - An expression over a classified and an unclassified field takes only the classified input's class.
 - A field that is both read and filtered on loses the filter's contribution.
-- Per query, a passthrough relabel read through a joined `#(carries)` source is charged only its
-  declared class. The package load refuses it, so this reaches only a model served without the load gates.
-- In a multi-stage `->` source, a downgrade in a middle stage is not checked. An earlier stage's
-  filter is merged by name with a later filter or value read of the same name, so its class can be lost.
+- In a multi-stage `->` source, a field computed in a middle stage and declared below its inputs
+  (`#(classification) "none"` over `concat(social, '')`) loads with no `classification-downgrade`
+  warning, and a later stage serves it.
+- In a multi-stage `->` source, an earlier stage's filter is dropped when a later stage, or a `->`
+  source built on it, reads or filters a field of the same name, so its class is lost.
 
-The ceiling also refuses one shape it could serve: an `index:` query, in any model that reaches a
-`#(carries)`, even on a source with no ceiling.
+The ceiling also refuses shapes it could serve:
+
+- an `index:` query, in any model that reaches a `#(carries)`, even on a source with no ceiling;
+- an output Publisher cannot follow to what it reads, such as a `nest:` with stages of its own,
+  whether or not it declares a class. Flatten the nest into one stage, or move it out of the source.
 
 ## What it is not
 
