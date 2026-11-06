@@ -679,17 +679,25 @@ export class EnvironmentStore {
                   "package versions are not available in this environment",
                );
             }
+            // A relative or `~/` location is the config's, resolved against
+            // its folder as an unversioned load resolves it (resolveLocalPath).
+            // downloadPackageInto stages only an absolute local path, and the
+            // recorded source location has to name the same folder when a
+            // later boot restores the version from it.
+            const location = this.isLocalPath(configured.location)
+               ? this.resolveLocalPath(configured.location)
+               : configured.location;
             await versions.publish(
                configured.name,
                (stagingPath) =>
                   this.downloadPackageInto(
                      environmentName,
                      configured.name,
-                     configured.location,
+                     location,
                      stagingPath,
                   ),
                {
-                  sourceLocation: configured.location,
+                  sourceLocation: location,
                   promotion: getVersionPromotionMode(),
                   validate: (loaded) => formatPublishRejections(loaded),
                },
@@ -1087,19 +1095,14 @@ export class EnvironmentStore {
    /**
     * Fetch a package location into `targetPath`: a GitHub URL, a gs:// or
     * s3:// prefix (or .zip), or a local directory or .zip. Callers pass a
-    * staging folder, so a long download holds no lock. A relative or `~/`
-    * location is resolved as an unversioned load resolves it (resolveLocalPath):
-    * left relative, no branch below would claim it and nothing would be staged.
+    * staging folder, so a long download holds no lock.
     */
    public async downloadPackageInto(
       environmentName: string,
       packageName: string,
-      location: string,
+      packageLocation: string,
       targetPath: string,
    ): Promise<void> {
-      const packageLocation = this.isLocalPath(location)
-         ? this.resolveLocalPath(location)
-         : location;
       const isCompressedFile = packageLocation.endsWith(".zip");
       if (
          packageLocation.startsWith("https://") ||
