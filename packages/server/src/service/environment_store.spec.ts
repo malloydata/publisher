@@ -17,7 +17,6 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, EnvironmentNotFoundError } from "../errors";
-import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { stubStorageManager } from "../test_helpers/storage_manager_stub";
 import { Environment, PackageStatus } from "./environment";
@@ -1723,6 +1722,24 @@ describe("EnvironmentStore Service", () => {
       expect(status.initError).toBeUndefined();
    });
 
+   // A value outside the set stops startup in the settings loader, before any
+   // store exists; the contract table and the first-boot specs cover that.
+   it("reports the model page the Console shows, the Explorer by default", async () => {
+      await environmentStore.finishedInitialization;
+      await withSettings({ cwd: serverRootPath }, async () =>
+         expect((await environmentStore.getStatus()).modelPage).toBe(
+            "explorer",
+         ),
+      );
+      await withSettings(
+         { cwd: serverRootPath, env: { PUBLISHER_MODEL_PAGE: "viewer" } },
+         async () =>
+            expect((await environmentStore.getStatus()).modelPage).toBe(
+               "viewer",
+            ),
+      );
+   });
+
    it("should handle invalid field names in publisher config without crashing", async () => {
       // Create publisher config with invalid field names (ramen instead of name, papa instead of packages)
       const publisherConfigPath = path.join(
@@ -2874,12 +2891,10 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
    });
 
    afterEach(() => {
       embeddingCleanupBlocks = false;
-      _resetEmbeddingIndexStateForTests();
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
       }
@@ -2896,8 +2911,9 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       embeddingCleanupBlocks = true;
       await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
 
+      // The first statement of the cleanup; it never resolves, so it is the only one.
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
@@ -2911,7 +2927,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       await store.deleteEnvironmentFromDatabase("wiring-env");
 
       const deletes = embeddingCleanupRuns.filter((r) =>
-         r.sql.includes("DELETE FROM entity_embeddings"),
+         r.sql.includes("DELETE FROM catalog_nodes"),
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env"]);

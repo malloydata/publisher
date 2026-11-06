@@ -811,11 +811,12 @@ function libpqConnectionString(
  * The libpq conninfo a DuckDB `TYPE postgres` attach opens a postgres connection
  * with.
  *
- * `applyConnectionOptions` decides whether the connection's own `sslmode` and
- * `statementTimeoutMilliseconds` reach the string: false for a DuckLake
- * catalog, true for an attached database and a federated source. When false or
- * unset, TLS comes from the deployment PGSSLMODE. A raw connectionString keeps
- * its own settings, but `sslmode=no-verify` (or an inherited
+ * A connection given as fields uses its own `sslmode` when it sets one, and the
+ * deployment PGSSLMODE otherwise. `applyConnectionOptions` decides whether
+ * `statementTimeoutMilliseconds` reaches the string: false for a DuckLake
+ * catalog, true for an attached database and a federated source. A raw
+ * connectionString keeps its own settings (and, for a catalog, ignores the
+ * `sslmode` field), but `sslmode=no-verify` (or an inherited
  * PGSSLMODE=no-verify) becomes `require`, which libpq accepts.
  *
  * Exported for tests.
@@ -849,16 +850,19 @@ export function buildPgConnectionString(
 
    if (applyConnectionOptions) {
       parts.push(...libpqStatementTimeoutParts(name, pg));
-      if (pg.sslmode != null) {
-         parts.push(
-            ...libpqSslmodeParts(
-               `Connection '${name}'`,
-               pg.sslmode,
-               defaultProxiedAttachTrust(),
-            ),
-         );
-         return parts.join(" ");
-      }
+   }
+   // A DuckLake catalog honors its own sslmode too: libpq keeps the last
+   // sslmode it reads, so falling through to PGSSLMODE (allow on a worker)
+   // would make every catalog attach try plaintext first.
+   if (pg.sslmode != null) {
+      parts.push(
+         ...libpqSslmodeParts(
+            `Connection '${name}'`,
+            pg.sslmode,
+            defaultProxiedAttachTrust(),
+         ),
+      );
+      return parts.join(" ");
    }
 
    const pgSSLMode = externalEnv("PGSSLMODE");

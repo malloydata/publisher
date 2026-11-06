@@ -152,13 +152,8 @@ describe("Package.getClassificationSummary", () => {
       expect(pkg.getClassificationSummary()).toBeUndefined();
    });
 
-   it("stays off the package metadata the status poll reads, and a PATCH body cannot store it", async () => {
+   it("stays off the package metadata the status poll reads", async () => {
       const pkg = await load({ "base.malloy": BASE, "index.malloy": INDEX });
-      expect(pkg.getPackageMetadata().classification).toBeUndefined();
-      pkg.setPackageMetadata({
-         ...pkg.getPackageMetadata(),
-         classification: { sources: [] },
-      });
-      expect(pkg.getPackageMetadata().classification).toBeUndefined();
+      expect("classification" in pkg.getPackageMetadata()).toBe(false);
    });
 });

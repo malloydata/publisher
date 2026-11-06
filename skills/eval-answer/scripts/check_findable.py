@@ -209,15 +209,25 @@ def embedding_index(rest_url: str, environment: str, package: str,
     server-side state as a broken answer key. None also covers a server too old
     to send the field.
     """
-    url = (f"{rest_url.rstrip('/')}/api/v0/environments/"
-           f"{urllib.parse.quote(environment)}/packages/"
-           f"{urllib.parse.quote(package)}")
+    package_url = (f"{rest_url.rstrip('/')}/api/v0/environments/"
+                   f"{urllib.parse.quote(environment)}/packages/"
+                   f"{urllib.parse.quote(package)}")
+    # Its own route; a server from before the route carries it on the
+    # package resource instead.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            body = json.loads(r.read())
+        with urllib.request.urlopen(f"{package_url}/embedding-index",
+                                    timeout=timeout) as r:
+            index = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return None
+        try:
+            with urllib.request.urlopen(package_url, timeout=timeout) as r:
+                index = json.loads(r.read()).get("embeddingIndex")
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
     except (urllib.error.URLError, OSError, ValueError):
         return None
-    index = body.get("embeddingIndex")
     if not isinstance(index, dict) or not isinstance(index.get("status"), str):
         return None
     return index

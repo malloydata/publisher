@@ -6511,6 +6511,11 @@ export class Model {
     * its own (as does a served notebook), only the exported names that trace
     * to the package surface: a source it may read, or a query over one.
     */
+   /** {@link publishedNames}, for a reader that applies the same rule to its own view of the file. */
+   public getPublishedNames(): Set<string> | undefined {
+      return this.publishedNames();
+   }
+
    private publishedNames(): Set<string> | undefined {
       if (!this.discoveryCurationEnabled) return undefined;
       const exports = this.modelDef?.exports;

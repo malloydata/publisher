@@ -1,0 +1,334 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the package resource and its sub-resources GET …/entities reports the surface by default, and every model with includeHiddenFilesAndSources 1`] = `
+[
+  {
+    "fields": [
+      {
+        "annotations": [],
+        "code": "duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")",
+        "dataType": "number",
+        "kind": "column",
+        "name": "id",
+        "source": "helper",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel",
+        "source": "helper",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "helper",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+    ],
+    "givens": [],
+    "modelPath": "helper.malloy",
+    "sourceSchemas": [
+      {
+        "annotations": [],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+        ],
+        "name": "helper",
+      },
+    ],
+    "sources": [
+      {
+        "agentHidden": false,
+        "joinOnly": false,
+        "modelPath": "helper.malloy",
+        "name": "helper",
+        "queryable": false,
+      },
+    ],
+  },
+  {
+    "fields": [
+      {
+        "annotations": [],
+        "code": "duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")",
+        "dataType": "number",
+        "kind": "column",
+        "name": "id",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")",
+        "dataType": "string",
+        "kind": "column",
+        "name": "channel",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "duckdb.sql("select * from (values (1, 'web', 'us'), (2, 'store', 'eu')) as t(id, channel, region)")",
+        "dataType": "string",
+        "kind": "column",
+        "name": "region",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+      {
+        "annotations": [
+          "#(index)",
+        ],
+        "code": "region_label is concat('r-', region)",
+        "dataType": "string",
+        "indexFingerprint": {
+          "requiredFilterDimensions": [
+            "channel",
+          ],
+          "sqlHash": "231faf770b8f8a79dd1e083d9dab0c8612c05911c85d1c5715413a6943e92d74",
+        },
+        "kind": "dimension",
+        "name": "region_label",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+      {
+        "annotations": [],
+        "code": "order_count is count()",
+        "dataType": "number",
+        "kind": "measure",
+        "name": "order_count",
+        "source": "orders",
+        "table": {
+          "connection": "duckdb",
+        },
+      },
+    ],
+    "givens": [
+      {
+        "annotations": [
+          
+"#(secure)
+"
+,
+        ],
+        "name": "ROLES",
+        "required": true,
+        "secure": true,
+        "type": "string[]",
+      },
+    ],
+    "modelPath": "orders.malloy",
+    "sourceSchemas": [
+      {
+        "annotations": [
+          "#(doc) Orders in every channel.",
+          "#(filter) name=channel dimension=channel type=equal required",
+        ],
+        "fields": [
+          {
+            "kind": "column",
+            "name": "id",
+            "type": "number",
+          },
+          {
+            "kind": "column",
+            "name": "channel",
+            "type": "string",
+          },
+          {
+            "kind": "column",
+            "name": "region",
+            "type": "string",
+          },
+          {
+            "annotations": [
+              "#(index)",
+            ],
+            "kind": "dimension",
+            "name": "region_label",
+            "type": "string",
+          },
+          {
+            "kind": "measure",
+            "name": "order_count",
+            "type": "number",
+          },
+        ],
+        "name": "orders",
+      },
+    ],
+    "sources": [
+      {
+        "agentHidden": false,
+        "doc": "Orders in every channel.",
+        "filters": [
+          {
+            "dimension": "channel",
+            "implicit": false,
+            "name": "channel",
+            "required": true,
+            "type": "equal",
+          },
+        ],
+        "joinOnly": false,
+        "modelPath": "orders.malloy",
+        "name": "orders",
+        "queryable": true,
+      },
+    ],
+  },
+]
+`;
+
+exports[`the package resource and its sub-resources each response's field set, with inline fields off and on 1`] = `
+{
+  "off: /status entry": [
+    "boundManifestUri",
+    "manifestBindingStatus",
+    "name",
+    "resource",
+    "status",
+  ],
+  "off: listing": [
+    "explores",
+    "location",
+    "manifestLocation",
+    "materialization",
+    "name",
+    "queryMetadata",
+    "queryableSources",
+    "resource",
+    "scope",
+    "warnings",
+  ],
+  "off: package": [
+    "explores",
+    "location",
+    "manifestLocation",
+    "materialization",
+    "name",
+    "queryMetadata",
+    "queryableSources",
+    "resource",
+    "scope",
+    "warnings",
+  ],
+  "off: …/status": [
+    "boundManifestUri",
+    "manifestBindingStatus",
+    "manifestEntryCount",
+    "name",
+    "resource",
+    "servedRevision",
+    "sourceContentSha",
+    "status",
+  ],
+  "on: /status entry": [
+    "boundManifestUri",
+    "buildPlan",
+    "explores",
+    "location",
+    "manifestBindingStatus",
+    "manifestEntryCount",
+    "manifestLocation",
+    "materialization",
+    "name",
+    "queryMetadata",
+    "queryableSources",
+    "resource",
+    "scope",
+    "secureGivens",
+    "servedRevision",
+    "sourceContentSha",
+    "status",
+    "warnings",
+  ],
+  "on: listing": [
+    "boundManifestUri",
+    "buildPlan",
+    "explores",
+    "location",
+    "manifestBindingStatus",
+    "manifestEntryCount",
+    "manifestLocation",
+    "materialization",
+    "name",
+    "queryMetadata",
+    "queryableSources",
+    "resource",
+    "scope",
+    "secureGivens",
+    "servedRevision",
+    "sourceContentSha",
+    "status",
+    "warnings",
+  ],
+  "on: package": [
+    "boundManifestUri",
+    "buildPlan",
+    "embeddingIndex",
+    "explores",
+    "location",
+    "manifestBindingStatus",
+    "manifestEntryCount",
+    "manifestLocation",
+    "materialization",
+    "name",
+    "queryMetadata",
+    "queryableSources",
+    "resource",
+    "scope",
+    "secureGivens",
+    "servedRevision",
+    "sourceContentSha",
+    "status",
+    "warnings",
+  ],
+  "on: …/status": [
+    "boundManifestUri",
+    "manifestBindingStatus",
+    "manifestEntryCount",
+    "name",
+    "resource",
+    "servedRevision",
+    "sourceContentSha",
+    "status",
+  ],
+}
+`;

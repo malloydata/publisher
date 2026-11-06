@@ -40,6 +40,8 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    // Not in the design's tables: a setting added since takes its derived name
    // from the start, as the design asks of a new setting.
    callerHeader: "PUBLISHER_CALLER_HEADER",
+   packageInlineFields: "PUBLISHER_PACKAGE_INLINE_FIELDS",
+   modelPage: "PUBLISHER_MODEL_PAGE",
    packageVersioning: "PUBLISHER_PACKAGE_VERSIONING",
    versionPromotion: "PUBLISHER_VERSION_PROMOTION",
    root: "PUBLISHER_ROOT",
@@ -716,18 +718,26 @@ describe("step 2: the derived names", () => {
             cwd: "/nonexistent",
          }).warnings.map((warning) => warning.message),
       ).toContain("Unknown flag --admin-catalog-database, so it is ignored.");
-      // packageVersioning is no secret, but the design gives it no flag.
-      const versioning = Settings.load({
-         argv: ["--package-versioning", "on"],
-         env: {},
-         cwd: "/nonexistent",
-      });
-      expect(versioning.get("packageVersioning")).toBe("off");
-      expect(
-         versioning.warnings.some((warning) =>
-            warning.message.startsWith("Unknown flag --package-versioning"),
-         ),
-      ).toBe(true);
+      // No secrets, but the design gives them no flag: the flag their key
+      // would derive is unknown, and the setting keeps its default.
+      const noFlag: Array<[SettingKey, string, string, string]> = [
+         ["packageVersioning", "--package-versioning", "on", "off"],
+         ["packageInlineFields", "--package-inline-fields", "off", "on"],
+         ["modelPage", "--model-page", "viewer", "explorer"],
+      ];
+      for (const [key, flag, given, unchanged] of noFlag) {
+         const loaded = Settings.load({
+            argv: [flag, given],
+            env: {},
+            cwd: "/nonexistent",
+         });
+         expect(loaded.get(key)).toBe(unchanged);
+         expect(
+            loaded.warnings.some((warning) =>
+               warning.message.startsWith(`Unknown flag ${flag}`),
+            ),
+         ).toBe(true);
+      }
    });
 
    it("reads every setting but a launch setting from its key in the file", () => {

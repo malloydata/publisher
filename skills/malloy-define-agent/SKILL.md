@@ -1,6 +1,6 @@
 ---
 name: malloy-define-agent
-description: Define a package agent - a named brief, with its own skills, optional schedules and a run budget, declared in a package's publisher.json. Use when the user asks to create, add, change or fix an agent in a package, or wants a recurring or unattended job such as a weekly report. Not for adopting an agent that already exists (that is malloy-run-agent), and not for a one-off question, which you just answer.
+description: Define a package agent - a named brief, with its own skills, optional schedules and a run budget, declared in a package's publisher.json. Use when the user asks to create, add, change or fix an agent in a package, or wants a recurring or unattended job. Not for adopting an agent that already exists (that is malloy-run-agent), and not for a one-off question, which you just answer.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 
 > **Tool names** are written bare here - `get_agent`, `reload_package`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-A package agent is a named brief an author ships inside a package: instructions, optional skills of its own, optional scheduled tasks and an optional run budget. Publisher parses and serves the definition; a caller adopts it with `get_agent` (see `malloy-run-agent`). The files are ordinary package files, so you write them like any other model change.
+A package agent is a named brief an author ships inside a package: instructions, optional skills of its own, optional scheduled tasks and an optional run budget. Publisher parses and serves the definition; a caller adopts it with `get_agent` (see `malloy-run-agent`). The files are ordinary package files, so you write them like any other model change. A package does not need models to carry agents: one that holds only `publisher.json` and its agent files is valid.
 
 ## When to create one
 
@@ -48,22 +48,44 @@ Agents live under the `agents` object of the package's `publisher.json`, keyed b
 | `description` | Required. One line saying what the agent is for. |
 | `instructions` | Required. Package-relative path of a `.md` file with no frontmatter. At most 16 KB. |
 | `model` | Optional. A model name, or `inherit` (the default) for the caller's own. |
-| `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/`). Frontmatter `name` must match the directory name. All of the agent's skill files together are at most 256 KB; over that, the agent is dropped, not truncated. |
-| `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field cron expression in UTC, and the package-relative path of a Markdown task file of at most 16 KB. |
+| `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` (and optionally `reference/` and `assets/`). Frontmatter `name` must match the directory name. All of the agent's Markdown (`SKILL.md` and `reference/*.md`) together is at most 256 KB; over that, the agent is dropped, not truncated. `assets/` has its own budget (below). |
+| `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field cron expression in UTC, and the package-relative path of a `.md` task file of at most 16 KB. |
 | `budget` | Optional. An object whose optional fields are `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set only the ones the work needs; an unset field keeps the platform's default. |
 
 Put each agent's files under `agents/<name>/` so they stay together. Never point an agent at a path outside the package.
 
+Two layout rules drop the agent:
+
+- **No nested `publisher.json`.** An `instructions` or task file may not sit under a directory (below the package root) that holds its own `publisher.json`, and neither may an agent's skills directory, its skill directories or their `reference/`. A nested manifest would make that directory a second package root.
+- **No duplicate skill paths.** If two entries in `skills` hold the same `<skill>/SKILL.md` (or reference file), they collide. Give each skill one directory in one place.
+
 ## What is live today
 
-- Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs when someone asks for it. Say so to the user rather than promising a recurring job.
-- **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored, and a draft version's budget is ignored in favor of the published version's. Set the budget the work needs, not the biggest value.
+- Schedules and budgets are **parsed, validated and shown** (`get_agent`, the agent REST endpoints) and nothing more. **Scheduled execution is not live yet**: a `schedules` entry does not make anything run. A task runs only when someone asks for it. Say so to the user rather than promising a recurring job. Keep the `cron` field real anyway: Publisher requires it and a future scheduler will read it.
+- **Nothing enforces a budget yet either.** Once a platform does, it clamps each field to its own maximum, so a larger number is not an error but is not honored. Set the budget the work needs, not the biggest value.
 
 ## Strict keys: a typo drops the whole agent
 
 The manifest is an allowlist. An agent with a key Publisher does not know, an unknown key inside `schedules` or `budget`, a bad name, a missing file, a bad cron, a non-positive-integer budget value or an over-cap file is **not served at all**. The package still loads, and the reason appears in its load warnings. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `budget` is new, so a server older than the release that added it drops an agent that sets one; a load warning saying the server does not know `budget` means it is too old. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
 
 Agents are read only when the package loads, so after editing call `reload_package` first: its response carries the load warnings, including any agent that was dropped and why. Then call `get_agent` with `scopes` alone to list what is served; an agent missing from the list was dropped.
+
+If `reload_package` or `get_agent` is not among your tools, do not assume the edit worked. Publish or reload the package through whatever the surface offers, then read the package's load warnings (over REST, `GET /api/v0/environments/{env}/packages/{pkg}` returns them and `GET .../packages/{pkg}/agents` lists the served agents). If the surface offers neither, tell the user you could not confirm the agent is served.
+
+## Task files: one brief, one run
+
+A task file is the brief for one run: the goal, the inputs, what done looks like and what to report, in a few KB. The instructions file and each task file are capped at 16 KB, and **a single file over the cap drops the whole agent**: it is not served and every use of it disappears, leaving only a package load warning. Call `reload_package` and read its warnings after every edit to an instructions or task file.
+
+Where things go:
+
+- **Standing behavior** (tone, rules, what to never do) goes in `instructions`.
+- **Procedure shared by several tasks, or by ad-hoc asks,** goes in one of the agent's own skills (`SKILL.md`, with `reference/*.md` files for the long parts; the agent's skill files total at most 256 KB). The task names it: "use the `weekly-metrics` skill". A task file has no reference files of its own, so a task that has grown too big is split by moving procedure into a skill, never into more task files.
+- **Write each task to run with no saved state.** Say what to do when there is no prior run, no earlier output and no saved state (for example, start from the full period rather than "since the last check").
+- **Start every task file with a `# Title` heading;** clients index and route by it.
+- **Name the file so it reads as a short label** (`weekly-report.md`, under about 24 characters): a client may build a label for the task from its file name.
+- **No shell preprocessing** in task text or in the task path: no exclamation mark directly before a backtick, and no code fence whose opening backticks are followed by an exclamation mark. Some hosts run such text as a shell command, so clients skip a task that has it.
+- **Files the agent copies go in the skill's `assets/`, never in Markdown.** A chart module, a component library, a page template, a stylesheet: anything the agent drops into what it builds rather than reads. Publisher lists assets without their contents and the caller copies them, so they cost no context and are never retyped. Pasting code into a `SKILL.md` or reference file "to copy byte for byte" spends that file's bytes as output tokens on every build and invites copy errors. Point at an asset by its skill-relative path (`assets/charts.js`). Limits: UTF-8 text only (ship images as SVG), each file under 1 MiB, at most 4 MiB and 200 files per agent and 8 MiB per package, path segments of letters, digits, `.`, `_` and `-`. A file that breaks one, or a `.malloy` file, is skipped with a load warning. A symlink, a nested `publisher.json` or `SKILL.md`, `..` in a name or two names differing only in case drops the whole agent, so keep `assets/` plain files.
+- **Markdown is what the model reads, so keep it short.** One-sentence skill `description`s: every caller lists all skills' descriptions against one shared budget. Keep each `SKILL.md` under 500 lines, link reference files one level deep from it (no reference that points to another reference), and start any reference over 100 lines with a table of contents.
 
 ## Writing instructions that work unattended
 
@@ -80,7 +102,7 @@ The reader of `instructions` and task files has no one to ask. Write for a run n
 
 1. Confirm the job, and that the user wants an agent rather than an answer.
 2. Pick a name that meets the regex, and a one-line description.
-3. Write `agents/<name>/instructions.md`, and a task file per schedule.
-4. Add skills only for knowledge the agent needs and the package does not already carry.
+3. Write `agents/<name>/instructions.md`, and a task file per schedule (a `# Title` heading, a short file name, a few KB).
+4. Add skills only for knowledge the agent needs and the package does not already carry. Put any file the agent copies under that skill's `assets/`.
 5. Add the `agents.<name>` entry to `publisher.json`, with a `budget` if the work has natural limits, setting only the fields that matter (`{ "wall_clock_minutes": 60 }` alone is fine).
 6. Call `reload_package`, read its load warnings, then `get_agent` to confirm the agent is served. Tell the user plainly that schedules do not run and budgets are not enforced yet.

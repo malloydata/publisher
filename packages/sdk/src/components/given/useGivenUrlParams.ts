@@ -15,6 +15,12 @@ export interface UseGivenUrlParamsResult {
       next: Record<string, string>,
       managed: readonly string[],
    ) => void;
+   /**
+    * One parameter of the host's own (the source on screen, say), written the
+    * same way: merged into the query string, in place, keeping the fragment;
+    * `undefined` removes it.
+    */
+   setParam: (name: string, value: string | undefined) => void;
 }
 
 /**
@@ -45,6 +51,11 @@ export interface UseGivenUrlParamsResult {
  *   every value tried. And a navigation that names only `search` resolves to an
  *   empty fragment, which dropped whatever anchor the reader arrived on;
  *   `setSearchParams` has that problem, which is why this navigates itself.
+ *   A host's own parameter goes through the same write (`setParam`).
+ * - **Writes in one tick build on each other.** Each starts from the query
+ *   string the last one wrote while the router has yet to commit it, not from
+ *   the location this render saw, so a given's report beside a source pick
+ *   keeps both.
  */
 export function useGivenUrlParams(): UseGivenUrlParamsResult {
    const [searchParams] = useSearchParams();
@@ -57,6 +68,24 @@ export function useGivenUrlParams(): UseGivenUrlParamsResult {
    );
 
    const writtenRef = useRef<Set<string>>(new Set());
+   // The query string last written, and the location it was written over: a
+   // write while that location is still current builds on it, not on a search
+   // the write before it has already replaced.
+   const pendingRef = useRef<{ key: string; search: string } | null>(null);
+
+   const write = useCallback(
+      (change: (merged: URLSearchParams) => void) => {
+         const pending = pendingRef.current;
+         const merged = new URLSearchParams(
+            pending?.key === location.key ? pending.search : location.search,
+         );
+         change(merged);
+         const search = merged.toString();
+         pendingRef.current = { key: location.key, search };
+         navigate({ search, hash: location.hash }, { replace: true });
+      },
+      [navigate, location],
+   );
 
    const onGivensChange = useCallback(
       (next: Record<string, string>, managed: readonly string[]) => {
@@ -66,22 +95,28 @@ export function useGivenUrlParams(): UseGivenUrlParamsResult {
             ...Object.keys(next),
             ...managed,
          ]);
-         const merged = new URLSearchParams(location.search);
-         for (const name of ours) {
-            if (!Object.prototype.hasOwnProperty.call(next, name)) {
-               merged.delete(name);
+         write((merged) => {
+            for (const name of ours) {
+               if (!Object.prototype.hasOwnProperty.call(next, name)) {
+                  merged.delete(name);
+               }
             }
-         }
-         for (const [name, value] of Object.entries(next)) {
-            merged.set(name, value);
-         }
-         navigate(
-            { search: merged.toString(), hash: location.hash },
-            { replace: true },
-         );
+            for (const [name, value] of Object.entries(next)) {
+               merged.set(name, value);
+            }
+         });
       },
-      [navigate, location],
+      [write],
    );
 
-   return { params, onGivensChange };
+   const setParam = useCallback(
+      (name: string, value: string | undefined) =>
+         write((merged) => {
+            if (value === undefined) merged.delete(name);
+            else merged.set(name, value);
+         }),
+      [write],
+   );
+
+   return { params, onGivensChange, setParam };
 }

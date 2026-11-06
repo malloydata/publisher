@@ -95,6 +95,8 @@ When reviewing tables and columns, capture:
 
 **Every recommendation must be grounded in queried data, not schema inference.** During discovery, run `execute_query` to validate assumptions before proposing anything in later steps.
 
+**Sample before you scan.** A full-table `group_by` or `count()` over a large or warehouse-backed table is slow and can be costly. Shrink the input, not the output: a `where:` on a recent date range, or a first stage `select: *; limit: N` piped into the aggregate (the second stage sees only the selected columns, so use `where:` when you need the source's measures or joins). A `limit` on the aggregate itself still reads every row. On BigQuery a `limit` cuts time but not bytes billed; only a `where:` on the partition column cuts the bill. Run the full scan only when the sample leaves a question it cannot answer, and the user has accepted the cost. **Uniqueness is always that case:** a sample can find a duplicate key but never rule one out, so the duplicate-key and join-cardinality checks need the full table before you declare `primary_key` or `join_one`. If the user declines the scan, use `join_many`, do not declare the key as `primary_key`, and record it as unverified.
+
 | What to validate | Query to run |
 |-----------------|-------------|
 | **Denormalized vs joined values** | Compare pre-computed columns (e.g., `customers.order_count`) against the actual joined aggregate (`count()` from `orders`). Report discrepancy rate. If >0%, flag for user decision. |
@@ -103,7 +105,7 @@ When reviewing tables and columns, capture:
 | **Categorical column cardinality** | Query distinct values. A `status` column with 5 values behaves differently from one with 500. |
 | **Column usefulness** | Query NULL rates. Columns that are >95% NULL are candidates for `internal`. |
 | **Join cardinality** | Query FK uniqueness: `group_by: fk_col, aggregate: row_count is count(), having: row_count > 1`. Determines `join_one` vs `join_many`. |
-| **Revenue/amount columns** | When multiple money columns exist (`total`, `subtotal`, `amount`, `price`), query a sample to understand how they relate (does `total = subtotal + tax`?). |
+| **Revenue/amount columns** | When multiple money columns exist (`total`, `subtotal`, `amount`, `price`), query a sample (not the whole table) to understand how they relate (does `total = subtotal + tax`?). |
 | **Join key value compatibility** | For every proposed join, sample 5-10 actual values from each side. Check for format mismatches: abbreviations ("4th Av" vs "4 Avenue"), ordinals ("23 St" vs "23rd St"), casing, prefixes. Mismatched values mean the join won't work even if column names match. |
 | **Mixed-grain rows** | For each key table, run top-N and bottom-N by primary metric. Look for summary/aggregate rows mixed with detail data (e.g., "System Total" rows in a station-level table). These corrupt measures if not filtered out. |
 

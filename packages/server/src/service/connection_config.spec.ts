@@ -1050,6 +1050,86 @@ describe("ducklake shape validation", () => {
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
    });
+
+   // The attach applies a catalog's own sslmode and throws on one it cannot
+   // honor, so a bad value is caught here instead of at every query or build.
+   const withCatalogPg = (pg: Record<string, unknown>): ApiConnection =>
+      ({
+         ...valid,
+         ducklakeConnection: {
+            ...valid.ducklakeConnection,
+            catalog: {
+               postgresConnection: {
+                  ...valid.ducklakeConnection!.catalog!.postgresConnection,
+                  ...pg,
+               },
+            },
+         },
+      }) as ApiConnection;
+
+   it("accepts a catalog sslmode the attach can apply", () => {
+      for (const ok of ["disable", "no-verify", "verify-full"]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: ok })],
+               "/tmp/env",
+            ),
+         ).not.toThrow();
+      }
+   });
+
+   it("rejects a catalog sslmode the attach would refuse", () => {
+      for (const bad of ["require", "prefer", "allow", ""]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: bad })],
+               "/tmp/env",
+            ),
+         ).toThrow(
+            /DuckLake catalog of connection 'lake' has unsupported sslmode/,
+         );
+      }
+   });
+
+   it("rejects a catalog verify-ca with no CA bundle", () => {
+      const saved = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: "verify-ca" })],
+               "/tmp/env",
+            ),
+         ).toThrow(/uses sslmode 'verify-ca' but no readable CA bundle/);
+      } finally {
+         if (saved === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = saved;
+      }
+   });
+
+   it("ignores a catalog sslmode beside a connectionString, which the attach ignores too", () => {
+      expect(() =>
+         assembleEnvironmentConnections(
+            [
+               withCatalogPg({
+                  connectionString: "host=h dbname=d sslmode=require",
+                  sslmode: "require",
+               }),
+            ],
+            "/tmp/env",
+         ),
+      ).not.toThrow();
+   });
+
+   it("rejects a destination whose catalog sslmode the attach would refuse, alone", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         withCatalogPg({ sslmode: "require" }),
+         valid,
+      ]);
+      expect(rejected.map((r) => r.name)).toEqual(["lake"]);
+      expect(rejected[0].reason).toMatch(/unsupported sslmode 'require'/);
+      expect(accepted).toHaveLength(1);
+   });
 });
 
 // Malloy qualifies every `dataset.table` path with the connection's projectId.

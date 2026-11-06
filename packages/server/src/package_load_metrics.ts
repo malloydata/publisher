@@ -15,7 +15,11 @@
  * meter (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { lazyHistogram, resetInstrumentsForTesting } from "./telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 /**
  * Load-duration buckets (ms), shared by every load-timing histogram. OTel's
@@ -98,6 +102,8 @@ export function recordPackageLoadPhases(
  * - `lint`: linting them.
  * - `build_plan`: applying the persist build plan the worker derived, or
  *   deriving it here when the worker left it at its soft deadline.
+ * - `entities`: extracting what each model declares for an indexer (served
+ *   at `GET …/entities`), its `#(index)` fingerprint queries included.
  * - `total`: the load end to end, as `Package.create` runs it.
  *
  * Each is wall-clock time. The main-thread stages yield to the event loop as
@@ -111,11 +117,12 @@ export type PackageLoadPhase =
    | "discovery"
    | "lint"
    | "build_plan"
+   | "entities"
    | "total";
 
 const phaseDuration = lazyHistogram(
    "publisher_package_load_phase_duration_ms",
-   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
+   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, entities, total).",
    { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 
@@ -130,6 +137,36 @@ export function recordPackageLoadPhaseDurations(
       if (ms === undefined) continue;
       phaseDuration().record(ms, { phase });
    }
+}
+
+const entitiesFindings = lazyCounter(
+   "publisher_package_entities_findings_total",
+   "Annotations a package load warned about and left out of its entities because an index cannot honor them, one per declaration. Label: reason (multiple_required_filters, parameterized_source, not_a_dimension, schedule_not_allowed_on_dimension, sharing_not_allowed_on_dimension, required_filter_missing_dimension, required_filter_non_public_dimension).",
+);
+
+/** Count a load's annotations an index cannot honor, one per reason code. */
+export function recordEntitiesFindings(reasons: readonly string[]): void {
+   for (const reason of reasons) entitiesFindings().add(1, { reason });
+}
+
+/**
+ * What the extraction leaves out of a load's entities rather than failing it:
+ * a model file whose extraction threw (it reports an error instead), an
+ * `#(index)` dimension whose fingerprint query did not compile (it reports no
+ * fingerprint), or a model whose part of the query surface could not be read.
+ */
+export type EntitiesDegradation =
+   | "file_extract_failed"
+   | "fingerprint_failed"
+   | "surface_read_failed";
+
+const entitiesDegraded = lazyCounter(
+   "publisher_package_entities_degraded_total",
+   "Parts of a load's entities the extraction left out instead of failing the load. Label: kind (file_extract_failed, fingerprint_failed, surface_read_failed).",
+);
+
+export function recordEntitiesDegraded(kind: EntitiesDegradation): void {
+   entitiesDegraded().add(1, { kind });
 }
 
 /** Test-only: drop cached instruments so a fresh `MeterProvider` captures emissions. */

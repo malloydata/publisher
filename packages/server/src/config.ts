@@ -161,6 +161,18 @@ export type PublisherConfig = {
 export type PackageVersioningMode = "off" | "on";
 
 /**
+ * `PUBLISHER_MODEL_PAGE`: which page the Console shows for a model, `explorer`
+ * (the default) or `viewer`. Read from the environment only, and reported on
+ * `/status` as `modelPage`, where the Console reads it; the Console keeps both
+ * pages. The Explorer writes the queries it builds back to Malloy text through
+ * `@malloydata/malloy-interfaces`, which puts a string value in unescaped
+ * (`escapeString` is a TODO), so a drilled value holding a double quote
+ * rewrites the query. `viewer` shows a page that builds no query, and takes
+ * the Explorer out of the legacy notebook too.
+ */
+export type ModelPageMode = "explorer" | "viewer";
+
+/**
  * Who moves a package's `latest` version.
  *
  *  - `on-publish` (default): a publish makes the new version `latest` unless a
@@ -1120,11 +1132,37 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 };
 
 /**
+ * `PUBLISHER_PACKAGE_INLINE_FIELDS`: `on` (the default) or `off`. A TRANSITION
+ * flag. On, a package response still carries the fields that moved off
+ * `Package` (`buildPlan`, `agents`, `secureGivens`, `embeddingIndex`, the
+ * manifest-binding and serving fields), marked deprecated, as it did before
+ * they moved. Off, it carries only the package's own fields, and each moved
+ * field is read where it now lives: `GET …/build-plan`, `…/agents`,
+ * `…/entities`, `…/embedding-index`, or the package's entry in `GET /status`. A later
+ * release turns it off by default, and the one after removes it with the
+ * fields.
+ */
+export type PackageInlineFieldsMode = "off" | "on";
+
+/**
+ * Whether a package response carries the moved fields inline
+ * (`PUBLISHER_PACKAGE_INLINE_FIELDS`; on when unset).
+ */
+export const isPackageInlineFieldsEnabled = (): boolean =>
+   settings.get("packageInlineFields") === "on";
+
+/**
  * Whether a publish from a location publishes versions
  * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset).
  */
 export const isVersioningEnabled = (): boolean =>
    settings.get("packageVersioning") === "on";
+
+/**
+ * The Console's model page, {@link ModelPageMode}: `PUBLISHER_MODEL_PAGE`, or
+ * `explorer` when unset.
+ */
+export const getModelPageMode = (): ModelPageMode => settings.get("modelPage");
 
 /**
  * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when

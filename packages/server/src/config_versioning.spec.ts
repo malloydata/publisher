@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import {
    getPersistStorageMode,
    getVersionPromotionMode,
+   isPackageInlineFieldsEnabled,
    isVersioningEnabled,
 } from "./config";
 import { Settings } from "./settings";
@@ -127,6 +128,33 @@ describe("PUBLISHER_PACKAGE_VERSIONING", () => {
       withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: "true" } }, () =>
          expect(() => isVersioningEnabled()).toThrow(
             'packageVersioning from PUBLISHER_PACKAGE_VERSIONING: expected one of "off" or "on", got "true"',
+         ),
+      );
+   });
+});
+
+// The transition flag for the fields that moved off Package: on unless set to
+// off, so a server that sets nothing answers as it did before they moved.
+describe("PUBLISHER_PACKAGE_INLINE_FIELDS", () => {
+   it("is on when unset, empty or on, in any case", () => {
+      withSettings({}, () => expect(isPackageInlineFieldsEnabled()).toBe(true));
+      for (const value of ["", "on", " ON "]) {
+         withSettings({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: value } }, () =>
+            expect(isPackageInlineFieldsEnabled()).toBe(true),
+         );
+      }
+   });
+
+   it("is off when off", () => {
+      withSettings({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "off" } }, () =>
+         expect(isPackageInlineFieldsEnabled()).toBe(false),
+      );
+   });
+
+   it("refuses any other value, naming the setting and the choices", () => {
+      withSettings({ env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "false" } }, () =>
+         expect(() => isPackageInlineFieldsEnabled()).toThrow(
+            'packageInlineFields from PUBLISHER_PACKAGE_INLINE_FIELDS: expected one of "off" or "on", got "false"',
          ),
       );
    });
