@@ -325,7 +325,7 @@ describe("examples/clinical-records, seeded violations", () => {
       ],
       [
          "05-billing-reopened",
-         "source billing (index.malloy) is open to every caller and joins patient, which is locked",
+         "source billing (index.malloy) is open to every caller and joins patient (source patients_core), which is locked",
       ],
    ])("refuses %s", async (name, reason) => {
       const { dir, cleanup } = withViolation(name);
