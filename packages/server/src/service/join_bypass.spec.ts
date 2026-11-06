@@ -125,7 +125,7 @@ source: visits is ${VISITS} extend {
       const bypass = warnings.filter((w) => w.code === "join-bypass");
       expect(bypass).toHaveLength(1);
       expect(bypass[0].message).toContain(
-         "source visits (m.malloy) is open to every caller and joins person, which is locked",
+         "source visits (m.malloy) is open to every caller and joins person (source people), which is locked",
       );
       gateOnly = false;
       write("m.malloy", model);
@@ -146,7 +146,7 @@ source: visits is ${VISITS} extend {
       );
       const message = await refusal();
       expect(message).toContain(
-         "source visits (m.malloy) is open to every caller and joins person, which is locked",
+         "source visits (m.malloy) is open to every caller and joins person (source people), which is locked",
       );
    });
 
@@ -170,7 +170,7 @@ source: visits is visits_base extend {
       );
       const message = await refusal();
       expect(message).toContain(
-         "source visits (m.malloy) is open to every caller and joins person, which is locked",
+         "source visits (m.malloy) is open to every caller and joins person (source people), which is locked",
       );
    });
 
@@ -189,7 +189,7 @@ source: visits is ${VISITS} extend {
       );
       const message = await refusal();
       expect(message).toContain(
-         "source visits (m.malloy) joins person, whose gate reads $ORGS, which no gate on visits reads",
+         "source visits (m.malloy) joins person (source people), whose gate reads $ORGS, which no gate on visits reads",
       );
       expect(message).toContain("#(access_filter) person.<column> in $ORGS");
    });
@@ -520,7 +520,7 @@ source: visits is ${VISITS} extend {
    join_one: person is people on person.id = person_id
 }
 `,
-         "is open to every caller and joins person, which is locked",
+         "is open to every caller and joins person (source people), which is locked",
       ],
       [
          "an entry that does not read the joined row filter's given",
@@ -566,14 +566,20 @@ source: invoices is ${VISITS} extend {
          gateOnly = true;
          write("m.malloy", model());
          const warnings = (await load()).getPackageMetadata().warnings ?? [];
-         expect(
-            warnings.filter(
-               (w) => w.code === "join-bypass" && w.message?.includes(fragment),
-            ),
-         ).not.toHaveLength(0);
+         const matched = warnings.filter(
+            (w) => w.code === "join-bypass" && w.message?.includes(fragment),
+         );
+         expect(matched).not.toHaveLength(0);
+         for (const w of matched) {
+            expect(w.message).toContain(
+               "if this entry should expose those rows, there is nothing to do",
+            );
+         }
          gateOnly = false;
          write("m.malloy", model());
-         expect(await refusal()).toContain(fragment);
+         const refused = await refusal();
+         expect(refused).toContain(fragment);
+         expect(refused).not.toContain("there is nothing to do");
       });
    }
 

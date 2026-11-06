@@ -72,7 +72,15 @@ interface IrJoin {
    type?: string;
    fields?: IrJoin[];
    annotations?: AnnotationsDef;
+   sourceID?: string;
    query?: { pipeline?: Parameters<typeof stageJoins>[0] };
+}
+
+/** A join's path, with the source it joins when that differs from the join's own name. */
+function joinedLabel(field: IrJoin, path: string): string {
+   const source = field.sourceID?.split("@")[0];
+   const name = field.as ?? field.name;
+   return source && source !== name ? `${path} (source ${source})` : path;
 }
 
 const isAdmitAll = (expr: string) => expr.trim().toLowerCase() === "true";
@@ -301,13 +309,14 @@ export function joinBypasses(
                }
                const name = field.as ?? field.name ?? "?";
                const path = prefix ? `${prefix}.${name}` : name;
+               const joined = joinedLabel(field, path);
                const gates = gatesOn(field, modelDef);
                const lock = lockTermsOf(gates.authorize);
                if (lock === "false") {
                   // A gated entry over a locked base is the curated-extension pattern.
                   if (entryGates.length === 0) {
                      messages.push(
-                        `${where} is open to every caller and joins ${path}, ` +
+                        `${where} is open to every caller and joins ${joined}, ` +
                            `which is locked (#(authorize) false). A gate ` +
                            `fires only on the source a query enters through, ` +
                            `so the lock does not fire through this join and ` +
@@ -320,7 +329,7 @@ export function joinBypasses(
                   const missingTerm = missingLockTerm(lock, entryTerms);
                   if (missingTerm !== undefined) {
                      messages.push(
-                        `${where} joins ${path}, which is locked to ` +
+                        `${where} joins ${joined}, which is locked to ` +
                            `${missingTerm}, a term no #(authorize) on ` +
                            `${sourceInfo.name} requires. A gate fires only ` +
                            `on the source a query enters through, so every ` +
@@ -338,7 +347,7 @@ export function joinBypasses(
                   ).filter((g) => !entryGivens.has(g));
                   if (missing.length > 0) {
                      messages.push(
-                        `${where} joins ${path}, whose gate reads ` +
+                        `${where} joins ${joined}, whose gate reads ` +
                            `$${missing.join(", $")}, which no gate on ` +
                            `${sourceInfo.name} reads. A gate fires only on the ` +
                            `source a query enters through, so ${path}'s rows ` +

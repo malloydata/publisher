@@ -319,6 +319,12 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    return "error";
 }
 
+/** Why a join-bypass finding only warns in a package of gates alone (docs/authorize.md, "Gates are edge controls"). */
+const GATE_ONLY_JOIN_BYPASS =
+   "Each gate governs only the source a query enters through, and this package declares no " +
+   "#(carries) or #(classification), so it loads as written: if this entry should expose those " +
+   "rows, there is nothing to do; otherwise apply the fix above.";
+
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -2441,7 +2447,11 @@ export class Package {
       return strict ? messages.join("\n") : "";
    }
 
-   /** The join bypasses of a package that has not opted in to refusing them, as `join-bypass` warnings. */
+   /**
+    * The join bypasses of a package that has not opted in to refusing them, as
+    * `join-bypass` warnings: each gate governs its own entry point, so a join
+    * from a broader one is the author's choice of what that entry exposes.
+    */
    public joinBypassWarnings(): ApiPackageWarning[] {
       const { messages, strict } = this.joinBypassFindings();
       return strict
@@ -2449,7 +2459,7 @@ export class Package {
          : messages.map((message) => ({
               code: JOIN_BYPASS,
               severity: "warn" as const,
-              message,
+              message: `${message} ${GATE_ONLY_JOIN_BYPASS}`,
            }));
    }
 

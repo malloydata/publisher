@@ -84,7 +84,7 @@ source: leaky is ${ROWS} extend {
       }
       expect(error).toBeInstanceOf(BadRequestError);
       expect((error as Error).message).toContain(
-         "source leaky (hidden.malloy) is open to every caller and joins locked, which is locked",
+         "source leaky (hidden.malloy) is open to every caller and joins locked (source vault), which is locked",
       );
       expect(await metadata()).toEqual(before);
       const manifest = JSON.parse(
