@@ -3578,7 +3578,11 @@ export class Model {
       packagePath: string,
       modelPath: string,
       malloyConfig: ModelConnectionInput,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         /** Files read instead of the package's, by `file://` URL (see `createModelRuntime`). */
+         overlay?: ReadonlyMap<string, string>;
+      },
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.

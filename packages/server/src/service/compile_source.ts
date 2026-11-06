@@ -54,6 +54,12 @@ import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { Package } from "./package";
 import { carriesArtifactTag, isReportEligiblePath } from "./report";
 import { translatorMalloyError } from "./translator_error";
+import { overlayKey, overlayKeyOfPath } from "./overlay_key";
+import {
+   overlayByUrl,
+   overlaidText,
+   type OverlayFile,
+} from "./request_overlay";
 
 /**
  * Append-scope compile refusals, by reason.
@@ -173,6 +179,11 @@ interface CompileRequest {
    includeSql: boolean;
    givens: Record<string, GivenValue> | undefined;
    scope: CompileScope;
+   /**
+    * Package files read instead of, or beside, the package's own for this
+    * compile only (scopes "file" and "package"; see `request_overlay.ts`).
+    */
+   overlay?: readonly OverlayFile[];
 }
 
 /**
@@ -210,6 +221,7 @@ export async function compileSource(
    givens?: Record<string, GivenValue>,
    scope: CompileScope = "append",
    versionId?: unknown,
+   overlay?: readonly OverlayFile[],
 ): Promise<CompileSourceResult> {
    const request: CompileRequest = {
       packageName,
@@ -218,6 +230,7 @@ export async function compileSource(
       includeSql,
       givens,
       scope,
+      ...(overlay && overlay.length > 0 ? { overlay } : {}),
    };
    assertValidCompileRequest(request);
    const compileIn = async (versioned: Package | undefined) => {
@@ -247,6 +260,7 @@ function assertValidCompileRequest({
    source,
    includeSql,
    scope,
+   overlay,
 }: CompileRequest): void {
    assertSafePackageName(packageName);
    assertSafeRelativeModelPath(modelName);
@@ -260,7 +274,29 @@ function assertValidCompileRequest({
    // required: "append" and "file" compile the submitted text (nothing to
    // do without it), while "package" is a dry-run of the files as saved and
    // takes source only as an optional what-if replacement for modelPath.
-   if (source === undefined && scope !== "package") {
+   if (overlay !== undefined) {
+      if (scope === "append") {
+         throw new BadRequestError(
+            `\`files\` is not available at scope "append", which checks text ` +
+               `against the package as published. Fix: use scope "file" or ` +
+               `"package".`,
+         );
+      }
+      if (
+         source !== undefined &&
+         overlaidText(overlay, modelName) !== undefined
+      ) {
+         throw new BadRequestError(
+            `"${modelName}" is given twice, as \`source\` and in \`files\`. ` +
+               `Fix: send its text in one of them.`,
+         );
+      }
+   }
+   // At scope "file" the model's text may come from the overlay instead.
+   const modelTextGiven =
+      source !== undefined ||
+      (scope === "file" && overlaidText(overlay, modelName) !== undefined);
+   if (!modelTextGiven && scope !== "package") {
       throw new BadRequestError(
          `Compile scope "${scope}" requires a source to compile. ` +
             `Fix: pass the Malloy text in "source", or use scope "package" ` +
@@ -310,7 +346,11 @@ async function openCompileContext(
    /** The published version compiled in; undefined for the unversioned slot. */
    versioned: Package | undefined,
 ): Promise<CompileContext> {
-   const { packageName, modelName, source, givens, scope } = request;
+   const { packageName, modelName, givens, scope, overlay } = request;
+   // At scope "file" the model's text may be the overlay's.
+   const source =
+      request.source ??
+      (scope === "file" ? overlaidText(overlay, modelName) : undefined);
    // Sanitized join: input segments are allowlisted above; the
    // resolve-and-contain check here is the secondary guard CodeQL's
    // path-injection sanitizer recognises.
@@ -336,15 +376,17 @@ async function openCompileContext(
          ? await appendToSavedModel(modelPath, source, virtualUri)
          : { fullSource: source ?? "", callerRegion: undefined };
 
-   // Serve the source for the virtual file and read everything else from
-   // disk; at "package" with no source, nothing is substituted.
+   // Serve the source for the virtual file, then the request's overlay, and
+   // read everything else from disk; at "package" with no source, the virtual
+   // file is not substituted.
    const substitute = scope !== "package" || source !== undefined;
+   const overlaid = overlayByUrl(packagePath, overlay);
    const interceptingReader = {
       readURL: async (url: URL) => {
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
       },
    };
 
@@ -353,9 +395,10 @@ async function openCompileContext(
 
    const { gateModel, hasExactGateModel } = await resolveGateModel(
       pkg,
-      request,
+      { ...request, source },
       modelPath,
       packagePath,
+      overlaid,
    );
    // A document is gated cell by cell, so one restricted cell does not refuse
    // the cells the caller may read. Text over the document budget is not
@@ -429,6 +472,7 @@ async function openCompileContext(
 
    return {
       ...request,
+      source,
       environmentName: host.environmentName,
       modelPath,
       packagePath,
@@ -497,7 +541,28 @@ async function resolveGateModel(
    { packageName, modelName, source }: CompileRequest,
    modelPath: string,
    packagePath: string,
+   /** The request's overlay by `file://` URL; empty when it has none. */
+   overlaid: ReadonlyMap<string, string>,
 ): Promise<{ gateModel: Model | undefined; hasExactGateModel: boolean }> {
+   // An overlay is author content, gated as the package's own files are: the
+   // gates are the overlaid namespace's, so the model is compiled against it.
+   if (overlaid.size > 0 && source !== undefined) {
+      const withTarget = new Map(overlaid);
+      withTarget.set(overlayKeyOfPath(modelPath), source);
+      return {
+         gateModel: await Model.create(
+            packageName,
+            packagePath,
+            modelName,
+            pkg.getMalloyConfig(),
+            {
+               buildManifest: pkg.getBuildManifestEntries(),
+               overlay: withTarget,
+            },
+         ),
+         hasExactGateModel: true,
+      };
+   }
    // /compile can act as a schema oracle (columns in compile errors) and,
    // with includeSql, leak SQL, so the locks the text names are decided
    // BEFORE compiling against the package's cached Model, as on the query
@@ -996,9 +1061,10 @@ async function compilePackageDryRun(
          : (compiled.modelSourceText ??
            (compiled.modelPath === modelName && source !== undefined
               ? source
-              : await fs.promises
+              : (overlaidText(ctx.overlay, compiled.modelPath) ??
+                (await fs.promises
                    .readFile(path.join(packagePath, compiled.modelPath), "utf8")
-                   .catch(() => undefined)));
+                   .catch(() => undefined)))));
       if (lintText !== undefined) {
          collect(
             notebookLintProblems(
@@ -1094,6 +1160,14 @@ async function loadPackageInWorker(ctx: CompileContext) {
          collectProblems: true,
          replacement:
             source === undefined ? undefined : { modelPath: modelName, source },
+         ...(ctx.overlay
+            ? {
+                 overlay: ctx.overlay.map((file) => ({
+                    modelPath: file.path,
+                    source: file.content,
+                 })),
+              }
+            : {}),
       });
    } catch (error) {
       // Same split as Package.loadViaWorker: compile errors and an

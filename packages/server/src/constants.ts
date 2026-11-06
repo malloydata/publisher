@@ -70,6 +70,19 @@ export const DEFAULT_MAX_QUERY_ROWS = 100_000;
  * a non-streaming driver has already buffered the whole result.
  */
 export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
+/** Files one compile or query request may overlay with `files`; more is a 413. */
+export const MAX_OVERLAY_FILES = 500;
+/**
+ * Bytes of file text one compile or query request may overlay, summed over its
+ * files; more is a 413. The two routes accept a request body this much larger
+ * than the server's usual limit.
+ */
+export const MAX_OVERLAY_BYTES = 8 * 1024 * 1024;
+/**
+ * Dry-run publishes a server runs at once; more are refused with 503. Each
+ * holds a whole download and load.
+ */
+export const MAX_CONCURRENT_DRY_RUNS = 2;
 /**
  * Wall-clock timeout (ms) for one query, SQL or Malloy
  * (`PUBLISHER_QUERY_TIMEOUT_MS`; `0` disables). Kept under the 10-minute
