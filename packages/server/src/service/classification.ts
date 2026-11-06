@@ -1092,6 +1092,8 @@ function walkSourceClassifications(
       };
       const unread = out !== undefined && !outReads && !partOf;
       if (unread) unresolvedRead(path);
+      // A nest is charged through its parts; one with no readable parts has no known reads.
+      if (outReads?.nest && parts.length === 0) unresolvedRead(path);
       const take = (list: ClassifiedInput[]): void => {
          for (const c of list) {
             if (seenInput.has(c.field)) continue;
