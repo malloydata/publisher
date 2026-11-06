@@ -77,9 +77,34 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
-# REST, not MCP: an MCP reply escapes its inner JSON, so grepping it for the sha matches nothing.
-RELOAD = """curl -s -m 60 "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" \\
-  | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
+# REST, not MCP: an MCP reply escapes its inner JSON. The sha is read from the
+# package's serving state after the reload (the reload response itself carries
+# it only while the server inlines the serving fields). A failed reload prints
+# its error and stops, so the previous load's sha is never shown for it.
+RELOAD = """reload_body=$(mktemp)
+reload_code=$(curl -s -m 60 -o "$reload_body" -w "%{{http_code}}" "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" || echo 000)
+if [ "$reload_code" != "200" ]; then
+  echo "reload failed (HTTP $reload_code):"; cat "$reload_body"; echo; rm -f "$reload_body"; exit 1
+fi
+rm -f "$reload_body"
+python3 -c '
+import json, urllib.request
+base = "{rest_url}/api/v0"
+def get(path):
+    try:
+        with urllib.request.urlopen(base + path, timeout=30) as r:
+            return json.load(r)
+    except Exception:
+        return {{}}
+sha = get("/environments/{environment}/packages/{package}/status").get("sourceContentSha")
+if not sha:  # a server from before that route: the package`s /status entry
+    for e in get("/status").get("environments") or []:
+        for p in (e.get("packages") or []) if e.get("name") == "{environment}" else []:
+            if p.get("name") == "{package}" and p.get("sourceContentSha"):
+                sha = p["sourceContentSha"]
+if sha:
+    print("\\"sourceContentSha\\":\\"%s\\"" % sha)
+'"""
 
 SYNC_SCRIPT = """#!/bin/bash
 set -euo pipefail

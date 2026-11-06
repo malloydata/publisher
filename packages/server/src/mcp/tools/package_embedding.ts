@@ -10,17 +10,19 @@ import {
 } from "../../service/embedding_provider";
 import { fcjStatusOf, kickFcjBuild } from "../context/engine_state";
 import type { EmbeddingIndexStatus } from "./embedding_index";
-import { getPackageIndex } from "./package_entities";
+import { getPackageIndex, packageIndexOf } from "./package_entities";
 
 /**
  * The search index state for one package: the build state of the find, list,
  * judge engine's index (see ../context/engine_state.ts). `lexical`, by design,
- * when no embedding provider is configured.
+ * when no embedding provider is configured. `loaded` is the package (or the
+ * version of it) already resolved; without it, the served package's.
  */
 export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
+   loaded?: Package,
 ): Promise<EmbeddingIndexStatus> {
    const empty = {
       embeddedRows: 0,
@@ -42,11 +44,9 @@ export async function getPackageEmbeddingStatus(
       };
    }
    if (!provider) return { status: "lexical", ...empty };
-   const pkgIndex = await getPackageIndex(
-      environmentStore,
-      environmentName,
-      packageName,
-   );
+   const pkgIndex = loaded
+      ? await packageIndexOf(loaded, packageName)
+      : await getPackageIndex(environmentStore, environmentName, packageName);
    const fcj = fcjStatusOf(pkgIndex.pkg);
    return {
       ...empty,

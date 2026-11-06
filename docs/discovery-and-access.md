@@ -157,6 +157,12 @@ hidden source's schema. A compliance review treats the same gap as a finding: an
 with no `#(authorize) false` is one export away from open, and the `locked_bases` check in
 [compliance-review.md](compliance-review.md) fails it.
 
+`GET …/packages/{pkg}/entities`, what each model declares in the form an indexer reads, follows the
+surface the way `GET …/models/{path}` does: by default it reports only the package's discovery
+surface, and it withholds a source locked with `#(authorize) false`. With
+`includeHiddenFilesAndSources=true` it returns every `.malloy` file and every source, for a host that
+indexes them; as with `/compile`, admit that flag at the gateway only for that host.
+
 The boundary checks the source a query **runs**. A query over an exported source that joins a
 hidden source still runs, and returns the joined fields.
 

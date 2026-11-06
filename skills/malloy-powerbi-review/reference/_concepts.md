@@ -20,7 +20,7 @@ Reference table for translating Power BI (TMDL / DAX) constructs to Malloy. Refe
 | `table X` whose partition is a DAX expression | Computed source, or push upstream | A calculated table |
 | `/// description text` | `#(doc)` tag | Triple-slash doc comment, directly above the object |
 | `isHidden: true` (or bare `isHidden`) | **not a direct mapping** | Classify the reason first; see `rls-roles.md`. Do NOT map it to `internal:` mechanically: Power BI hides surrogate keys by default and `internal` fields are unreachable through join paths. |
-| `role R` + `metadataPermission` / `columnPermission` | `private:` / `internal:` | Object-level security, a real permission; see `rls-roles.md` |
+| `role R` + `metadataPermission` / `columnPermission` | `private:`, never `internal:` | Object-level security, a real permission. `internal:` fields stay readable through a query's `extend`/`include`. If only some roles lost the column, see `rls-roles.md` |
 | `displayFolder:` | nothing | Authoring convenience, no Malloy equivalent |
 | `hierarchy` with `level` | nothing structural | Note level order as drill intent |
 | `role R` + `tablePermission` | `#(access_filter)` / `#(authorize)` | Narrow grammar; see `rls-roles.md` |
