@@ -14,12 +14,17 @@
  */
 
 import * as path from "path";
-import { pathToFileURL } from "url";
 import { getMaxOverlayBytes, getMaxOverlayFiles } from "../config";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
-import { BadRequestError, PayloadTooLargeError } from "../errors";
+import {
+   BadRequestError,
+   FeatureDisabledError,
+   PayloadTooLargeError,
+} from "../errors";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import { lazyCounter } from "../telemetry";
+import { overlayKeyOfPath } from "./overlay_key";
+import { settings } from "../settings";
 
 /** One overlaid file: its package-relative path and its whole text. */
 export interface OverlayFile {
@@ -32,13 +37,14 @@ export type OverlayRoute = "compile" | "query";
 
 const overlayRequests = lazyCounter(
    "publisher_request_overlay_total",
-   "Compile and query requests that carried a `files` overlay. Labels: route (compile|query), outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past PUBLISHER_MAX_OVERLAY_FILES or PUBLISHER_MAX_OVERLAY_BYTES, 413).",
+   "Compile and query requests that carried a `files` overlay. Labels: route (compile|query), outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past PUBLISHER_MAX_OVERLAY_FILES or PUBLISHER_MAX_OVERLAY_BYTES, 413 | refused_disabled = the server does not accept an overlay (query.filesOverlayEnabled off), 403).",
 );
 
 /**
- * The request's `files`, checked: undefined when absent. A malformed entry, an
- * unsafe or non-model path, or a path given twice is a 400; more files or bytes
- * than the server's bounds is a 413. Counted either way.
+ * The request's `files`, checked: undefined when absent or empty. A malformed
+ * entry, an unsafe or non-model path, or a path given twice is a 400; more
+ * files or bytes than the server's bounds is a 413; any overlay on a server
+ * without `query.filesOverlayEnabled` is a 403. Counted either way.
  */
 export function parseOverlayFiles(
    input: unknown,
@@ -47,6 +53,13 @@ export function parseOverlayFiles(
    if (input === undefined || input === null) return undefined;
    try {
       const files = checkOverlayFiles(input);
+      // An empty overlay overlays nothing: the request is an ordinary one.
+      if (files.length === 0) return undefined;
+      if (!settings.get("query.filesOverlayEnabled")) {
+         throw new FeatureDisabledError(
+            "`files` is not accepted by this server: its overlay files are package content whose gates apply as written. A deployment turns it on with PUBLISHER_QUERY_FILES_OVERLAY_ENABLED=true, behind a host that offers it only to callers who may edit the package.",
+         );
+      }
       overlayRequests().add(1, { route, outcome: "accepted" });
       return files;
    } catch (error) {
@@ -55,7 +68,9 @@ export function parseOverlayFiles(
          outcome:
             error instanceof PayloadTooLargeError
                ? "refused_bounds"
-               : "refused_entry",
+               : error instanceof FeatureDisabledError
+                 ? "refused_disabled"
+                 : "refused_entry",
       });
       throw error;
    }
@@ -131,7 +146,7 @@ export function overlayByUrl(
    const byUrl = new Map<string, string>();
    for (const file of files ?? []) {
       byUrl.set(
-         pathToFileURL(path.join(packagePath, file.path)).href,
+         overlayKeyOfPath(path.join(packagePath, file.path)),
          file.content,
       );
    }

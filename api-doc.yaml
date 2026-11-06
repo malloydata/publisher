@@ -1498,6 +1498,11 @@ paths:
         package being served. A frozen configuration refuses a dry run as it refuses a publish,
         since the server still downloads and loads the caller's content; so does memory
         backpressure (503).
+        A server runs at most PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS
+        (default 2) dry runs at once and refuses more with 503. With package
+        versioning on, a `description` that is not a string or a
+        `manifestLocation` that names no manifest is the 400 a versioned
+        publish answers.
 
         ## Versioned publish
 
@@ -7984,8 +7989,11 @@ components:
             to another request. Overlay
             files are author content, read exactly as the package's own files:
             they are not restricted like ad-hoc text, and their `#(authorize)`
-            and `#(access_filter)` annotations gate as written, so a host should
-            offer `files` only to callers who may edit the package. Only
+            and `#(access_filter)` annotations gate as written. So the server
+            refuses `files` with 403 unless it was started with
+            PUBLISHER_QUERY_FILES_OVERLAY_ENABLED=true, and a deployment that
+            turns it on must offer `files` only to callers who may edit the
+            package. An empty list is no overlay. Only
             `.malloy` and `.malloynb` files can be overlaid; data files and
             `publisher.json` are read from the package as published. A path that
             is absolute, has a "." or ".." segment or a backslash, names another
@@ -9590,8 +9598,11 @@ components:
             both is a 400. Overlay
             files are author content, read exactly as the package's own files:
             they are not restricted like ad-hoc text, and their `#(authorize)`
-            and `#(access_filter)` annotations gate as written, so a host should
-            offer `files` only to callers who may edit the package. Only
+            and `#(access_filter)` annotations gate as written. So the server
+            refuses `files` with 403 unless it was started with
+            PUBLISHER_QUERY_FILES_OVERLAY_ENABLED=true, and a deployment that
+            turns it on must offer `files` only to callers who may edit the
+            package. An empty list is no overlay. Only
             `.malloy` and `.malloynb` files can be overlaid; data files and
             `publisher.json` are read from the package as published. A path that
             is absolute, has a "." or ".." segment or a backslash, names another

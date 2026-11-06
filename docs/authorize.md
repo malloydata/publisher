@@ -640,7 +640,9 @@ it, as on `/compile`; its own gates do. A `query` or `source` text sent beside a
 caller text: it may not declare a gate (above), and `query` text stays restricted.
 
 That makes `files` an author's capability. Publisher does not decide who is an author: **a host must
-offer `files` only to callers who may edit the package**, and strip it from everyone else's requests,
+offer `files` only to callers who may edit the package**. So a server refuses `files` (403) unless
+it was started with `query.filesOverlayEnabled` (`PUBLISHER_QUERY_FILES_OVERLAY_ENABLED=true`), which a
+deployment turns on only behind a host that makes that check, and strip it from everyone else's requests,
 as it strips the authorize-bypass header below.
 
 ### Authorize bypass, for trusted data-management callers

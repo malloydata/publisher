@@ -34,6 +34,14 @@ export const query = [
       aliases: { env: ["PUBLISHER_MAX_RESPONSE_BYTES"] },
    }),
    setting({
+      key: "query.filesOverlayEnabled",
+      type: boolean(),
+      default: false,
+      description:
+         "Accept a `files` overlay on compile and query. Overlay files are package content, so their gates apply as written: turn it on only behind a host that offers `files` to callers who may edit the package.",
+      aliases: { env: ["PUBLISHER_QUERY_FILES_OVERLAY_ENABLED"] },
+   }),
+   setting({
       key: "query.maxOverlayFiles",
       type: integer({ min: 1 }),
       default: DEFAULT_MAX_OVERLAY_FILES,
@@ -132,6 +140,14 @@ export const query = [
       default: 1,
       description: "Package-load worker threads.",
       aliases: { env: ["PACKAGE_LOAD_WORKERS"] },
+   }),
+   setting({
+      key: "packageLoad.maxConcurrentDryRuns",
+      type: integer({ min: 1 }),
+      default: 2,
+      description:
+         "Dry-run publishes this server runs at once; more are refused with 503. Each holds a whole download and load.",
+      aliases: { env: ["PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS"] },
    }),
    setting({
       key: "packageLoad.jobTimeoutMs",

@@ -23,6 +23,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
+import type { Model } from "../service/model";
 import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
@@ -181,19 +182,30 @@ export class QueryController {
       const p = await environment.getPackage(packageName, false, {
          versionId: metadata?.versionId,
       });
-      // An overlaid query compiles the model for this request alone. It is an
-      // authoring query, as on /compile: the package's surface does not
-      // restrict it, and the overlaid files' own gates do.
-      const model = overlay
-         ? await environment.compileOverlaidModel(p, modelPath, overlay)
-         : p.getModel(modelPath);
-
-      if (!model) {
-         // Worded exactly as Model.assertQueryBoundaryEarly's generic refusal,
-         // so a 404 cannot tell a gated hidden file from a missing one.
-         throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
-      } else {
+      // The model is resolved inside the query's own time budget, so an
+      // overlaid compile is bound by the same timeout and client disconnect.
+      const resolveModel = async (abortSignal: AbortSignal): Promise<Model> => {
+         // An overlaid query compiles the model for this request alone. It is
+         // an authoring query, as on /compile: the package's surface does not
+         // restrict it, and the overlaid files' own gates do.
+         const resolved = overlay
+            ? await environment.compileOverlaidModel(
+                 p,
+                 modelPath,
+                 overlay,
+                 abortSignal,
+              )
+            : p.getModel(modelPath);
+         if (!resolved) {
+            // Worded exactly as Model.assertQueryBoundaryEarly's generic
+            // refusal, so a 404 cannot tell a gated hidden file from a missing one.
+            throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
+         }
+         return resolved;
+      };
+      {
          const {
+            model,
             result,
             access,
             serializedResult,
@@ -204,40 +216,46 @@ export class QueryController {
             executionTimeMs,
             queryCostBytes,
          } = await runWithQueryTimeout(
-            (abortSignal) =>
-               model.getQueryResults(
-                  sourceName,
-                  queryName,
-                  query,
-                  filterParams,
-                  bypassFilters,
-                  givens,
-                  abortSignal,
-                  buildQueryMetadataInput({
-                     environmentName,
-                     environment,
-                     pkg: p,
-                     request: requestMetadata,
-                     queryClass,
-                     // The version that answered (latest when none was
-                     // named), not the raw request value; undefined for a
-                     // package with no versions.
-                     version: p.getVersionId(),
-                     noLayersLogMessage:
-                        "No query-metadata layers for connection",
-                  }),
-                  // Serialize and byte-cap exactly the shape this request
-                  // receives, not the other one.
-                  compactJson ? "compact" : "full",
-                  bypassAuthorize,
-                  includeHiddenFilesAndSources,
-               ),
+            async (abortSignal) => {
+               const model = await resolveModel(abortSignal);
+               return {
+                  model,
+                  ...(await model.getQueryResults(
+                     sourceName,
+                     queryName,
+                     query,
+                     filterParams,
+                     bypassFilters,
+                     givens,
+                     abortSignal,
+                     buildQueryMetadataInput({
+                        environmentName,
+                        environment,
+                        pkg: p,
+                        request: requestMetadata,
+                        queryClass,
+                        // The version that answered (latest when none was
+                        // named), not the raw request value; undefined for a
+                        // package with no versions.
+                        version: p.getVersionId(),
+                        noLayersLogMessage:
+                           "No query-metadata layers for connection",
+                     }),
+                     // Serialize and byte-cap exactly the shape this request
+                     // receives, not the other one.
+                     compactJson ? "compact" : "full",
+                     bypassAuthorize,
+                     includeHiddenFilesAndSources,
+                  )),
+               };
+            },
             getQueryTimeoutMs(),
             clientSignal,
          );
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            p.getModel(modelPath)?.carriesReportTag() ?? false,
+            // The model the query ran against: an overlay can add or drop the tag.
+            model.carriesReportTag(),
          );
          const api = {
             // Serialized by the model: re-stringifying here would copy the

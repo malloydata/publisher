@@ -823,11 +823,13 @@ export class Package {
          duration: formatDuration(manifestValidationTime - startTime),
       });
 
+      // Declared outside the try, so a failed load can release it below.
+      let malloyConfig: MalloyConfig | undefined;
       try {
          // Built on the main thread: it owns the native connection handles
          // that serve queries, which cannot cross the isolate boundary. The
          // worker proxies non-duckdb lookups back through it during compile.
-         const malloyConfig = Package.buildPackageMalloyConfig(
+         malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
             typeof environmentMalloyConfig === "function"
                ? environmentMalloyConfig
@@ -844,6 +846,15 @@ export class Package {
             dryRun,
          );
       } catch (error) {
+         // No caller ever holds a package whose load failed, so its own
+         // connections (the package DuckDB the load opened) close here; the
+         // environment's connections are not the package's and stay open.
+         await malloyConfig?.shutdown("close").catch((shutdownError) => {
+            logger.warn(
+               `Failed to close the connections of package ${packageName} after a failed load`,
+               { error: errMessage(shutdownError) },
+            );
+         });
          if (dryRun) {
             logger.info(`Dry-run load of package ${packageName} failed`, {
                packageName,
@@ -1880,6 +1891,27 @@ export class Package {
          validUntil: nextStaleSince ?? Infinity,
       };
       return manifest;
+   }
+
+   /**
+    * Give `model`, compiled for one request outside the package (a `files`
+    * overlay), what each served model of this package has: the storage serve
+    * bindings, the serve destinations and the freshness resolvers, so it reads
+    * materialized tables as the served model would. Its colocated table names
+    * come from the build manifest it was compiled with. It gets no
+    * pre-aggregation companion: that compiles from the package's files, which
+    * the overlay replaces, so a pre-aggregated source in it serves live.
+    */
+   public prepareRequestModel(model: Model): Model {
+      model.setServeBindings(this.storageServeBindings);
+      if (this.serveDestinationConfig) {
+         model.setServeDestinationConfig(this.serveDestinationConfig);
+      }
+      model.setFreshnessResolver(() => this.getFreshBuildManifest());
+      model.setPreaggregateEntityIdResolver(() =>
+         this.getPreaggregateEntityIds(),
+      );
+      return model;
    }
 
    /** Install the per-query freshness resolvers on every model; idempotent. */

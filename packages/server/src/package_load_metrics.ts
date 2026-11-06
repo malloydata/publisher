@@ -177,18 +177,20 @@ export function resetPackageLoadMetricsForTesting(): void {
 /**
  * How a dry-run publish ended: `loaded`, the package would publish; `refused`,
  * the publish would answer 4xx; `backpressure`, memory pressure refused to load
- * it (503), which says nothing about the package; `failed`, any other
+ * it (503), which says nothing about the package; `at_capacity`, the server was
+ * already running as many dry runs as it allows (503); `failed`, any other
  * server-side failure.
  */
 export type PackageDryRunOutcome =
    | "loaded"
    | "refused"
    | "backpressure"
+   | "at_capacity"
    | "failed";
 
 const dryRunDuration = lazyHistogram(
    "publisher_package_dry_run_duration",
-   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; backpressure = memory pressure refused the load; failed = any other server-side failure).",
+   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; backpressure = memory pressure refused the load; at_capacity = packageLoad.maxConcurrentDryRuns already running; failed = any other server-side failure).",
    { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 

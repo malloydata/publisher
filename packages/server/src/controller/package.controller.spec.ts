@@ -1463,6 +1463,33 @@ describe("PackageController.dryRunPackage", () => {
       expect((answer as { versionId?: string }).versionId).toBe("1.2.0");
    });
 
+   it("with versioning on, refuses the request fields a versioned publish refuses, before loading anything", async () => {
+      versioningOn();
+      const { controller, seen } = controllerWith(
+         async (options) => options.describe(loadedPackage, "1.2.0"),
+         { versioned: true },
+      );
+      await expect(
+         controller.dryRunPackage("env", {
+            ...body,
+            manifestLocation: "relative/manifest.json",
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      await expect(
+         controller.dryRunPackage("env", {
+            ...body,
+            description: 7 as unknown as string,
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(seen).toHaveLength(0);
+      // A manifest location it can read, and null (serve live), are accepted.
+      await controller.dryRunPackage("env", {
+         ...body,
+         manifestLocation: "gs://bucket/manifest.json",
+      });
+      expect(seen).toHaveLength(1);
+   });
+
    it("does not read a version when versioning is off", async () => {
       const { controller, seen } = controllerWith(
          async (options) => options.describe(loadedPackage, undefined),

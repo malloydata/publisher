@@ -11,6 +11,7 @@ import {
    type QueryMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { pathToFileURL } from "url";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { MalloySQLStatementType } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
@@ -25,6 +26,7 @@ import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import { parseMalloynb } from "./deprecated/malloynb";
 import { modelInfoOf } from "./model_info";
+import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import { type RunnableNotebookCell } from "./model_notebook_cell";
 
 export type ModelType = "model" | "notebook";
@@ -68,7 +70,7 @@ export async function createModelRuntime(
    }
    // A model the overlay holds is the overlay's, whether or not it is on disk.
    const overlaidModel =
-      options?.overlay?.has(new URL(`file://${fullModelPath}`).href) === true;
+      options?.overlay?.has(overlayKeyOfPath(fullModelPath)) === true;
    if (!overlaidModel) {
       try {
          if (!(await fs.stat(fullModelPath)).isFile()) {
@@ -90,7 +92,9 @@ export async function createModelRuntime(
       );
    }
 
-   const modelURL = new URL(`file://${fullModelPath}`);
+   // `pathToFileURL`, as /compile's virtual file is: a hand-built `file://`
+   // differs for a path with `%`, `#` or `?`, and on Windows.
+   const modelURL = pathToFileURL(fullModelPath);
    const baseUrl = new URL(".", modelURL);
    const importBaseURL = baseUrl;
    const overlay = options?.overlay;
@@ -98,7 +102,8 @@ export async function createModelRuntime(
       overlay && overlay.size > 0
          ? {
               readURL: async (url: URL) =>
-                 overlay.get(url.href) ?? (await URL_READER.readURL(url)),
+                 overlay.get(overlayKey(url)) ??
+                 (await URL_READER.readURL(url)),
            }
          : URL_READER;
    // Only the model's own text: the Runtime lives as long as the Model, and imports' text is never asked for.

@@ -392,6 +392,8 @@ export function internalErrorToHttpError(
    } else if (error instanceof ServerConfigurationError) {
       logInternal("Server configuration error", error, "warn");
       return httpError(500, error.message);
+   } else if (error instanceof FeatureDisabledError) {
+      return httpError(403, error.message);
    } else if (error instanceof FrozenConfigError) {
       return httpError(403, error.message);
    } else if (error instanceof AccessDeniedError) {
@@ -870,6 +872,17 @@ export class FrozenConfigError extends Error {
 }
 
 /**
+ * A request uses something this server was not started with turned on (403):
+ * the message names the setting that turns it on.
+ */
+export class FeatureDisabledError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "FeatureDisabledError";
+   }
+}
+
+/**
  * A request refused access to a source (403): an unsatisfied `#(authorize)`,
  * or a gate that could not apply at all. An `#(access_filter)` matching no row
  * is not this; that is a 200 with empty rows.
@@ -1002,6 +1015,13 @@ export class ServiceUnavailableError extends Error {
  * 503 the caller answers by placing the package elsewhere, not a fault.
  */
 export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
+
+/**
+ * A dry-run publish refused because the server is already running as many as
+ * it allows (`packageLoad.maxConcurrentDryRuns`): a 503 like an admission
+ * refusal, which a caller answers by retrying or asking another server.
+ */
+export class DryRunCapacityError extends PackageAdmissionRefusedError {}
 
 /**
  * A response would exceed a server-side size cap (e.g.

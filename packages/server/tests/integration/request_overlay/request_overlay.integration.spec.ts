@@ -79,15 +79,21 @@ describe("a request's files overlay (E2E)", () => {
       );
       removePackage = cleanup;
       env = await startPackageEnv("request-overlay-env", { overlay: dir });
+      // A deployment turns the overlay on; these cases run as one that has.
+      restoreSuiteSettings = installVariables({
+         PUBLISHER_QUERY_FILES_OVERLAY_ENABLED: "true",
+      });
    }, 300_000);
 
    afterAll(async () => {
+      restoreSuiteSettings?.();
       await env?.stop();
       removePackage?.();
    });
 
    // Settings are read once at startup; a case installs the bound it needs.
    let restoreSettings: (() => void) | undefined;
+   let restoreSuiteSettings: (() => void) | undefined;
    afterEach(() => {
       restoreSettings?.();
       restoreSettings = undefined;
@@ -240,6 +246,18 @@ describe("a request's files overlay (E2E)", () => {
    });
 
    describe("bounds and entries", () => {
+      it("refuses an overlay with 403 on a server that does not accept one", async () => {
+         restoreSettings = installVariables({});
+         const { status, body } = await query("tracks.malloy", {
+            query: "run: tracks -> { aggregate: n }",
+            files: [{ path: "base.malloy", content: BASE }],
+         });
+         expect(status).toBe(403);
+         expect(body.message).toContain(
+            "PUBLISHER_QUERY_FILES_OVERLAY_ENABLED",
+         );
+      });
+
       it("refuses more files than the server takes with 413", async () => {
          restoreSettings = installVariables({
             PUBLISHER_MAX_OVERLAY_FILES: "2",

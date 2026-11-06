@@ -29,10 +29,12 @@ import {
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
+   DryRunCapacityError,
    PackageAdmissionRefusedError,
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
+import { settings } from "../settings";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -662,17 +664,25 @@ export class Environment {
     * The model is the request's alone: nothing is written, cached or swapped
     * into the package. An unversioned package compiles under its lock, as
     * `/compile` does, so the files it still reads from disk are never caught
-    * mid-install; a published version's files never change.
+    * mid-install; a published version's files never change. It serves as the
+    * package's own models do (see {@link Package.prepareRequestModel}).
     */
    public async compileOverlaidModel(
       pkg: Package,
       modelPath: string,
       overlay: readonly OverlayFile[],
+      /**
+       * The query's timeout and client disconnect. A compile cannot be
+       * interrupted, so it is checked before the lock is taken and again
+       * before the model is used.
+       */
+      signal?: AbortSignal,
    ): Promise<Model> {
       assertSafeRelativeModelPath(modelPath);
       const packagePath = pkg.getPackagePath();
-      const compile = () =>
-         Model.create(
+      const compile = () => {
+         signal?.throwIfAborted();
+         return Model.create(
             pkg.getPackageName(),
             packagePath,
             modelPath,
@@ -682,9 +692,12 @@ export class Environment {
                overlay: overlayByUrl(packagePath, overlay),
             },
          );
-      return pkg.getVersionId() !== undefined
+      };
+      const model = await (pkg.getVersionId() !== undefined
          ? compile()
-         : this.withPackageLock(pkg.getPackageName(), compile);
+         : this.withPackageLock(pkg.getPackageName(), compile));
+      signal?.throwIfAborted();
+      return pkg.prepareRequestModel(model);
    }
 
    public listApiConnections(): ApiConnection[] {
@@ -2648,14 +2661,6 @@ export class Environment {
    }
 
    /**
-    * Load a package from `downloader`'s tree exactly as {@link installPackage}
-    * would, run `validate` on it, and discard it: the served package, its lock,
-    * its status and the package map are never touched, so nothing becomes
-    * readable and no post-load work starts. Returns the loaded package for the
-    * caller to describe; it serves nothing. Refused like an install under
-    * memory backpressure, since it holds a whole load.
-    */
-   /**
     * Load the tree `downloader` writes as `packageName` and run the publish
     * checks on it, exactly as a publish of it would, then discard it: nothing
     * is installed, swapped or recorded, and the package already served under
@@ -2678,8 +2683,44 @@ export class Environment {
    ): Promise<T> {
       assertSafePackageName(packageName);
       this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
+      const limit = settings.get("packageLoad.maxConcurrentDryRuns");
+      if (Environment.dryRunsInFlight >= limit) {
+         throw new DryRunCapacityError(
+            `This server is already running ${limit} dry-run publishes (packageLoad.maxConcurrentDryRuns); retry shortly or ask another server.`,
+         );
+      }
+      Environment.dryRunsInFlight++;
+      try {
+         return await this.dryRunInstallAdmitted(
+            packageName,
+            downloader,
+            options,
+         );
+      } finally {
+         Environment.dryRunsInFlight--;
+      }
+   }
+
+   /**
+    * Dry runs running on this server, across environments: each holds a whole
+    * download and load, so they are capped together.
+    */
+   private static dryRunsInFlight = 0;
+
+   private async dryRunInstallAdmitted<T>(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+      options: {
+         validate?: (pkg: Package) => string | undefined;
+         readVersion: boolean;
+         describe: (pkg: Package, versionId: string | undefined) => T;
+      },
+   ): Promise<T> {
       const stagingPath = await this.stageDownload(packageName, downloader);
       try {
+         // Admitted again before the load: the download can be long, and
+         // memory may have filled meanwhile.
+         this.assertCanAdmitNewPackage(packageName, "dry-run a package", false);
          const versionId = options.readVersion
             ? (await readManifestVersion(stagingPath)).versionId
             : undefined;

@@ -54,6 +54,7 @@ import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { Package } from "./package";
 import { carriesArtifactTag, isReportEligiblePath } from "./report";
 import { translatorMalloyError } from "./translator_error";
+import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import {
    overlayByUrl,
    overlaidText,
@@ -385,7 +386,7 @@ async function openCompileContext(
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return overlaid.get(url.href) ?? URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
       },
    };
 
@@ -547,7 +548,7 @@ async function resolveGateModel(
    // gates are the overlaid namespace's, so the model is compiled against it.
    if (overlaid.size > 0 && source !== undefined) {
       const withTarget = new Map(overlaid);
-      withTarget.set(new URL(`file://${modelPath}`).href, source);
+      withTarget.set(overlayKeyOfPath(modelPath), source);
       return {
          gateModel: await Model.create(
             packageName,

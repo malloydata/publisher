@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { MalloyConfig } from "@malloydata/malloy";
 import { logger } from "../../../src/logger";
 import { Package } from "../../../src/service/package";
 import { startRestE2E } from "../../harness/rest_e2e";
@@ -205,6 +206,23 @@ describe("a dry-run publish", () => {
       expect(closed).toBeGreaterThanOrEqual(1);
    }, 60_000);
 
+   it("closes the connections of a load that fails to compile", async () => {
+      const shutdown = spyOn(MalloyConfig.prototype, "shutdown");
+      try {
+         const broken = writePackage("brokenclose", {
+            "orders.malloy": `source: orders is ${ROWS} extend { dimension: x is nope }\n`,
+         });
+         const status = (await post("brokenclose", broken, true)).status;
+         expect(status).toBeGreaterThanOrEqual(400);
+         expect(status).toBeLessThan(500);
+         expect(
+            shutdown.mock.calls.filter((call) => call[0] === "close").length,
+         ).toBeGreaterThanOrEqual(1);
+      } finally {
+         shutdown.mockRestore();
+      }
+   }, 60_000);
+
    it("is not counted or logged as a load of the package it names", async () => {
       const histogram = (
          Package as unknown as {
@@ -237,6 +255,45 @@ describe("a dry-run publish", () => {
       } finally {
          recorded.mockRestore();
          errorLog.mockRestore();
+      }
+   }, 60_000);
+
+   it("refuses a dry run past packageLoad.maxConcurrentDryRuns with 503, and admits one once a slot frees", async () => {
+      const restore = installVariables({
+         PUBLISHER_PACKAGE_LOAD_MAX_CONCURRENT_DRY_RUNS: "1",
+      });
+      try {
+         const { environmentStore } = await import("../../../src/main_server");
+         const environment = await environmentStore.getEnvironment(
+            ENV_NAME,
+            false,
+         );
+         const source = writePackage("held", {
+            "orders.malloy": `source: orders is ${ROWS}\n`,
+         });
+         let release!: () => void;
+         const downloaded = new Promise<void>((resolve) => {
+            release = resolve;
+         });
+         // The first dry run holds its slot while its download waits.
+         const held = environment.dryRunInstall(
+            "held",
+            async (stagingPath) => {
+               await downloaded;
+               fs.cpSync(source, stagingPath, { recursive: true });
+            },
+            { readVersion: false, describe: (pkg) => pkg.getPackageName() },
+         );
+         const refused = await post("other", source, true);
+         expect(refused.status).toBe(503);
+         expect(String(refused.json.message)).toContain(
+            "packageLoad.maxConcurrentDryRuns",
+         );
+         release();
+         expect(await held).toBe("held");
+         expect((await post("other", source, true)).status).toBe(200);
+      } finally {
+         restore();
       }
    }, 60_000);
 

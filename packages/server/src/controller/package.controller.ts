@@ -18,6 +18,7 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
+   DryRunCapacityError,
    PackageAdmissionRefusedError,
    PackageVersionError,
    BuildPlanUnavailableError,
@@ -463,14 +464,6 @@ export class PackageController {
    }
 
    /**
-    * `POST …/packages?dryRun=true`: load the tree at `body.location` and run
-    * the publish checks exactly as a publish would, answering the same
-    * refusal (400, 424) or the package as it would load, warnings included,
-    * and install nothing. Nothing is served or readable, and a frozen config
-    * does not refuse it, since it changes nothing. Version lifecycle checks
-    * (an existing version, `latest`) are not part of it: it judges the tree.
-    */
-   /**
     * `POST …/packages?dryRun=true`: what a publish of the tree at `location`
     * would answer, with nothing installed. A 200 is the package as it would
     * load, with the `location` it came from and, with versioning on, the
@@ -500,6 +493,11 @@ export class PackageController {
          environmentName,
          false,
       );
+      const versioned = Boolean(
+         environment.getVersionService() && isVersioningEnabled(),
+      );
+      // The request's own fields, refused as a versioned publish refuses them.
+      if (versioned) versionedPublishFields(body);
       const started = performance.now();
       let outcome: PackageDryRunOutcome = "loaded";
       try {
@@ -515,9 +513,7 @@ export class PackageController {
             {
                validate: (loaded) => formatPublishRejections(loaded),
                // A versioned publish refuses a tree with no valid version.
-               readVersion: Boolean(
-                  environment.getVersionService() && isVersioningEnabled(),
-               ),
+               readVersion: versioned,
                describe: (pkg, versionId) => ({
                   ...pkg.getPackageMetadata(),
                   location: bodyLocation,
@@ -699,15 +695,7 @@ export class PackageController {
       location: string,
       body: ApiPackage,
    ): Promise<Package> {
-      const fields = body as Record<string, unknown>;
-      if (
-         fields.description !== undefined &&
-         fields.description !== null &&
-         typeof fields.description !== "string"
-      ) {
-         throw new BadRequestError("`description` must be a string.");
-      }
-      const manifestLocation = versionManifestLocation(fields.manifestLocation);
+      const { manifestLocation } = versionedPublishFields(body);
       const published = await versions.publish(packageName, download, {
          sourceLocation: location,
          manifestLocation,
@@ -933,10 +921,34 @@ export class PackageController {
  * error once when it answers.
  */
 function dryRunOutcome(error: unknown): PackageDryRunOutcome {
+   if (error instanceof DryRunCapacityError) {
+      return "at_capacity";
+   }
    if (error instanceof PackageAdmissionRefusedError) {
       return "backpressure";
    }
    return internalErrorToHttpError(error as Error, { log: false }).status < 500
       ? "refused"
       : "failed";
+}
+
+/**
+ * The request fields a versioned publish checks before it downloads anything:
+ * a `description` that is not a string, or a `manifestLocation` that names no
+ * manifest, is a 400.
+ */
+function versionedPublishFields(body: ApiPackage): {
+   manifestLocation: string | null | undefined;
+} {
+   const fields = body as Record<string, unknown>;
+   if (
+      fields.description !== undefined &&
+      fields.description !== null &&
+      typeof fields.description !== "string"
+   ) {
+      throw new BadRequestError("`description` must be a string.");
+   }
+   return {
+      manifestLocation: versionManifestLocation(fields.manifestLocation),
+   };
 }

@@ -4,7 +4,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { BadRequestError, PayloadTooLargeError } from "../errors";
+import {
+   BadRequestError,
+   FeatureDisabledError,
+   PayloadTooLargeError,
+} from "../errors";
 import { resetInstrumentsForTesting } from "../telemetry";
 import {
    startMetricsHarness,
@@ -25,6 +29,9 @@ describe("parseOverlayFiles", () => {
    beforeEach(async () => {
       harness = await startMetricsHarness();
       resetInstrumentsForTesting();
+      restoreSettings = installVariables({
+         PUBLISHER_QUERY_FILES_OVERLAY_ENABLED: "true",
+      });
    });
    afterEach(async () => {
       restoreSettings?.();
@@ -79,8 +86,28 @@ describe("parseOverlayFiles", () => {
       expect(await counted("refused_entry")).toBe(1);
    });
 
+   it("refuses any overlay on a server that does not accept one, with 403, counted refused_disabled", async () => {
+      restoreSettings?.();
+      restoreSettings = installVariables({});
+      expect(() =>
+         parseOverlayFiles([{ path: "a.malloy", content: "" }], "compile"),
+      ).toThrow(FeatureDisabledError);
+      expect(await counted("refused_disabled")).toBe(1);
+   });
+
+   it("treats an empty overlay as none, accepted or not", () => {
+      expect(parseOverlayFiles([], "query")).toBeUndefined();
+      restoreSettings?.();
+      restoreSettings = installVariables({});
+      expect(parseOverlayFiles([], "compile")).toBeUndefined();
+   });
+
    it("refuses more files than PUBLISHER_MAX_OVERLAY_FILES with 413, counted refused_bounds", async () => {
-      restoreSettings = installVariables({ PUBLISHER_MAX_OVERLAY_FILES: "1" });
+      restoreSettings?.();
+      restoreSettings = installVariables({
+         PUBLISHER_QUERY_FILES_OVERLAY_ENABLED: "true",
+         PUBLISHER_MAX_OVERLAY_FILES: "1",
+      });
       expect(() =>
          parseOverlayFiles(
             [
@@ -94,7 +121,11 @@ describe("parseOverlayFiles", () => {
    });
 
    it("bounds the summed UTF-8 bytes, not characters", () => {
-      restoreSettings = installVariables({ PUBLISHER_MAX_OVERLAY_BYTES: "5" });
+      restoreSettings?.();
+      restoreSettings = installVariables({
+         PUBLISHER_QUERY_FILES_OVERLAY_ENABLED: "true",
+         PUBLISHER_MAX_OVERLAY_BYTES: "5",
+      });
       // Three characters, six bytes.
       expect(() =>
          parseOverlayFiles([{ path: "a.malloy", content: "ééé" }], "query"),
